@@ -1,0 +1,71 @@
+import { z } from "zod";
+import type { FastifyInstance } from "fastify";
+import type { SchedulerService } from "../services/scheduler.js";
+import type { SettingsStore } from "../services/settings-store.js";
+
+const mcpServerSchema = z.discriminatedUnion("transport", [
+  z.object({
+    name: z.string().trim().min(1).max(120),
+    enabled: z.boolean(),
+    transport: z.literal("stdio"),
+    command: z.string().trim().min(1).max(300),
+    args: z.array(z.string().trim().min(1).max(300)).max(40).optional()
+  }),
+  z.object({
+    name: z.string().trim().min(1).max(120),
+    enabled: z.boolean(),
+    transport: z.literal("http"),
+    url: z.string().trim().url(),
+    bearerTokenEnvVar: z.string().trim().min(1).max(120).nullable().optional()
+  })
+]);
+
+const updateSettingsSchema = z.object({
+  defaultProvider: z.enum(["codex", "claude"]).optional(),
+  maxAgents: z.coerce.number().int().min(1).max(20).optional(),
+  branchPrefix: z.string().trim().min(1).max(80).optional(),
+  gitUsername: z.string().trim().min(1).max(120).optional(),
+  agentRules: z.string().max(12000).optional(),
+  mcpServers: z.array(mcpServerSchema).max(25).optional(),
+  openaiBaseUrl: z.string().trim().url().nullable().optional()
+});
+
+const updateCredentialsSchema = z.object({
+  githubToken: z.string().trim().min(1).optional(),
+  openaiApiKey: z.string().trim().min(1).optional(),
+  anthropicApiKey: z.string().trim().min(1).optional(),
+  clearGithubToken: z.boolean().optional(),
+  clearOpenAiApiKey: z.boolean().optional(),
+  clearAnthropicApiKey: z.boolean().optional()
+});
+
+export const registerSettingsRoutes = (
+  app: FastifyInstance,
+  deps: {
+    settingsStore: SettingsStore;
+    scheduler: SchedulerService;
+  }
+): void => {
+  app.get("/settings", async () => deps.settingsStore.getSettings());
+
+  app.patch("/settings", async (request, reply) => {
+    const parsed = updateSettingsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const settings = await deps.settingsStore.updateSettings(parsed.data);
+    await deps.scheduler.onSettingsChanged();
+    return reply.send(settings);
+  });
+
+  app.patch("/settings/credentials", async (request, reply) => {
+    const parsed = updateCredentialsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const settings = await deps.settingsStore.updateCredentials(parsed.data);
+    return reply.send(settings);
+  });
+};

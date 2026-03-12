@@ -1,0 +1,20 @@
+{
+  "name": "agentswarm",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w @agentswarm/server\" \"npm run dev -w @agentswarm/web\"",
+    "dev:server": "npm run dev -w @agentswarm/server",
+    "dev:web": "npm run dev -w @agentswarm/web",
+    "build": "npm run build -w @agentswarm/shared-types && npm run build -w @agentswarm/server && npm run build -w @agentswarm/web",
+    "lint": "npm run lint -w @agentswarm/server && npm run lint -w @agentswarm/web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1",
+    "typescript": "^5.6.3"
+  }
+}

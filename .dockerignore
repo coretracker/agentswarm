@@ -1,0 +1,8 @@
+node_modules
+.git
+npm-debug.log*
+dist
+.vite
+apps/web/.next
+apps/server/dist
+local-plans

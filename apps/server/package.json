@@ -1,0 +1,26 @@
+{
+  "name": "@agentswarm/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@agentswarm/shared-types": "*",
+    "@fastify/cors": "^10.0.1",
+    "fastify": "^5.0.0",
+    "ioredis": "^5.4.1",
+    "nanoid": "^5.1.0",
+    "socket.io": "^4.8.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.8.6",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}

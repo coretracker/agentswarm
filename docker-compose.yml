@@ -1,0 +1,58 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    environment:
+      - PORT=4000
+      - REDIS_URL=redis://redis:6379
+      - GIT_USER_NAME=AgentSwarm Bot
+      - GIT_USER_EMAIL=agentswarm@local.dev
+      - LOCAL_PLANS_ROOT=/plans
+      - REPO_CACHE_ROOT=/repo-cache
+      - REPO_CACHE_VOLUME=agentswarm_repo_cache
+      - RUNTIME_PAYLOAD_ROOT=/runtime-payloads
+      - RUNTIME_PAYLOAD_VOLUME=agentswarm_runtime_payloads
+      - TASK_WORKSPACE_ROOT=/task-workspaces
+      - TASK_WORKSPACE_HOST_ROOT=${PWD}/task-workspaces
+      - SECRET_KEY_PATH=/secrets/agentswarm.key
+      - CORS_ORIGIN=http://localhost:3217
+    ports:
+      - "4000:4000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./local-plans:/plans
+      - repo_cache:/repo-cache
+      - runtime_payloads:/runtime-payloads
+      - ./task-workspaces:/task-workspaces
+      - server_secrets:/secrets
+    depends_on:
+      - redis
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:4000
+      - NEXT_PUBLIC_SOCKET_URL=http://localhost:4000
+    ports:
+      - "3217:3217"
+    depends_on:
+      - server
+
+volumes:
+  redis_data:
+  repo_cache:
+    name: agentswarm_repo_cache
+  runtime_payloads:
+    name: agentswarm_runtime_payloads
+  server_secrets:
+    name: agentswarm_server_secrets
