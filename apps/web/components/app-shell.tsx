@@ -46,7 +46,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   AgentSwarm
                 </Typography.Title>
                 <Typography.Text style={{ color: token.colorTextSecondary }}>
-                  Container-first orchestration for Codex tasks
+                  Container-first orchestration for coding tasks
                 </Typography.Text>
               </Flex>
             </Flex>
