@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
+import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { TaskStore } from "../services/task-store.js";
@@ -40,9 +41,10 @@ export const registerImportRoutes = (
     repositoryStore: RepositoryStore;
     taskStore: TaskStore;
     scheduler: SchedulerService;
+    auth: AuthService;
   }
 ): void => {
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/issues", async (request, reply) => {
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/issues", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
     const repoId = String(request.query.repoId ?? "").trim();
     if (!repoId) {
       return reply.status(400).send({ message: "repoId is required" });
@@ -65,7 +67,7 @@ export const registerImportRoutes = (
     }
   });
 
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/pull-requests", async (request, reply) => {
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/pull-requests", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
     const repoId = String(request.query.repoId ?? "").trim();
     if (!repoId) {
       return reply.status(400).send({ message: "repoId is required" });
@@ -88,7 +90,7 @@ export const registerImportRoutes = (
     }
   });
 
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/branches", async (request, reply) => {
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/branches", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
     const repoId = String(request.query.repoId ?? "").trim();
     if (!repoId) {
       return reply.status(400).send({ message: "repoId is required" });
@@ -111,7 +113,7 @@ export const registerImportRoutes = (
     }
   });
 
-  app.post("/imports/issue", async (request, reply) => {
+  app.post("/imports/issue", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
     const parsed = issueImportSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
@@ -142,7 +144,7 @@ export const registerImportRoutes = (
     }
   });
 
-  app.post("/imports/pull-request", async (request, reply) => {
+  app.post("/imports/pull-request", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
     const parsed = pullRequestImportSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });

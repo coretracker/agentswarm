@@ -14,7 +14,12 @@ const envSchema = z.object({
   TASK_WORKSPACE_ROOT: z.string().default("/task-workspaces"),
   TASK_WORKSPACE_HOST_ROOT: z.string().default("/tmp/agentswarm-task-workspaces"),
   SECRET_KEY_PATH: z.string().default("/secrets/agentswarm.key"),
-  CORS_ORIGIN: z.string().default("http://localhost:3217")
+  CORS_ORIGIN: z.string().default("http://localhost:3217"),
+  DEFAULT_ADMIN_NAME: z.string().default("Administrator"),
+  DEFAULT_ADMIN_EMAIL: z.string().email().default("admin@agentswarm.local"),
+  DEFAULT_ADMIN_PASSWORD: z.string().min(8).default("admin123!"),
+  AUTH_COOKIE_NAME: z.string().default("agentswarm_session"),
+  AUTH_SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(7)
 });
 
 export const env = envSchema.parse(process.env);
