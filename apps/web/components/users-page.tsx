@@ -1,0 +1,273 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import type { Role, User } from "@agentswarm/shared-types";
+import {
+  App,
+  Button,
+  Card,
+  Flex,
+  Form,
+  Input,
+  Modal,
+  Popconfirm,
+  Select,
+  Space,
+  Switch,
+  Table,
+  Tag,
+  Tooltip,
+  Typography
+} from "antd";
+import dayjs from "dayjs";
+import { api } from "../src/api/client";
+import { useAuth } from "./auth-provider";
+
+interface UserFormValues {
+  name: string;
+  email: string;
+  password?: string;
+  active: boolean;
+  roleIds: string[];
+}
+
+export function UsersPage() {
+  const { message } = App.useApp();
+  const { can, session } = useAuth();
+  const [form] = Form.useForm<UserFormValues>();
+  const [users, setUsers] = useState<User[]>([]);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+
+  const canCreateUsers = can("user:create");
+  const canEditUsers = can("user:edit");
+  const canDeleteUsers = can("user:delete");
+  const canReadRoles = can("settings:read");
+  const canEditRoles = can("settings:edit");
+
+  const loadUsers = async () => {
+    setLoading(true);
+    try {
+      const [nextUsers, nextRoles] = await Promise.all([
+        api.listUsers(),
+        canReadRoles ? api.listRoles().catch(() => []) : Promise.resolve([])
+      ]);
+      setUsers(nextUsers);
+      setRoles(nextRoles);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadUsers();
+  }, [canReadRoles]);
+
+  const openCreateModal = () => {
+    setEditingUser(null);
+    form.setFieldsValue({
+      name: "",
+      email: "",
+      password: "",
+      active: true,
+      roleIds: []
+    });
+    setModalOpen(true);
+  };
+
+  const openEditModal = (user: User) => {
+    setEditingUser(user);
+    form.setFieldsValue({
+      name: user.name,
+      email: user.email,
+      password: "",
+      active: user.active,
+      roleIds: user.roles.map((role) => role.id)
+    });
+    setModalOpen(true);
+  };
+
+  const currentUserId = session?.user.id ?? null;
+
+  return (
+    <>
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
+          <Flex vertical gap={0}>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              Users
+            </Typography.Title>
+            <Typography.Text type="secondary">
+              Manage application access, activation state, and role assignments.
+            </Typography.Text>
+          </Flex>
+          {canCreateUsers ? (
+            <Button type="primary" onClick={openCreateModal}>
+              Add User
+            </Button>
+          ) : null}
+        </Flex>
+
+        <Card bordered={false}>
+          <Table<User>
+            rowKey="id"
+            loading={loading}
+            dataSource={users}
+            pagination={{ pageSize: 10 }}
+            columns={[
+              { title: "Name", dataIndex: "name" },
+              { title: "Email", dataIndex: "email" },
+              {
+                title: "Status",
+                dataIndex: "active",
+                render: (active: boolean) => <Tag color={active ? "green" : "default"}>{active ? "Active" : "Disabled"}</Tag>
+              },
+              {
+                title: "Roles",
+                render: (_, user) => {
+                  const roleNameById = new Map(roles.map((role) => [role.id, role.name]));
+                  if (user.roles.length === 0) {
+                    return <Typography.Text type="secondary">No roles</Typography.Text>;
+                  }
+
+                  return (
+                    <Space size={[4, 4]} wrap>
+                      {user.roles.map((role) => (
+                        <Tag key={role.id}>{roleNameById.get(role.id) ?? role.name}</Tag>
+                      ))}
+                    </Space>
+                  );
+                }
+              },
+              {
+                title: "Last Login",
+                dataIndex: "lastLoginAt",
+                render: (value: string | null) =>
+                  value ? dayjs(value).format("YYYY-MM-DD HH:mm") : <Typography.Text type="secondary">Never</Typography.Text>
+              },
+              {
+                title: "Actions",
+                render: (_, user) => {
+                  const isSelf = user.id === currentUserId;
+                  return (
+                    <Space>
+                      {canEditUsers ? (
+                        <Button onClick={() => openEditModal(user)}>Edit</Button>
+                      ) : null}
+                      {canDeleteUsers ? (
+                        <Tooltip title={isSelf ? "You cannot delete your own account" : undefined}>
+                          <Popconfirm
+                            title="Delete user?"
+                            description={`Delete ${user.email}?`}
+                            disabled={isSelf}
+                            onConfirm={async () => {
+                              try {
+                                await api.deleteUser(user.id);
+                                message.success("User deleted");
+                                await loadUsers();
+                              } catch (error) {
+                                message.error(error instanceof Error ? error.message : "Failed to delete user");
+                              }
+                            }}
+                          >
+                            <Button danger disabled={isSelf}>
+                              Delete
+                            </Button>
+                          </Popconfirm>
+                        </Tooltip>
+                      ) : null}
+                    </Space>
+                  );
+                }
+              }
+            ]}
+          />
+        </Card>
+      </Space>
+
+      <Modal
+        open={modalOpen}
+        title={editingUser ? "Edit User" : "Add User"}
+        footer={null}
+        onCancel={() => setModalOpen(false)}
+        destroyOnHidden
+      >
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={async (values) => {
+            setSubmitting(true);
+            try {
+              if (editingUser) {
+                await api.updateUser(editingUser.id, {
+                  name: values.name,
+                  email: values.email,
+                  password: values.password?.trim() || undefined,
+                  active: values.active,
+                  roleIds: canEditRoles ? values.roleIds : undefined
+                });
+                message.success("User updated");
+              } else {
+                await api.createUser({
+                  name: values.name,
+                  email: values.email,
+                  password: values.password?.trim() || "",
+                  active: values.active,
+                  roleIds: canEditRoles ? values.roleIds : undefined
+                });
+                message.success("User created");
+              }
+
+              setModalOpen(false);
+              await loadUsers();
+            } catch (error) {
+              message.error(error instanceof Error ? error.message : "Failed to save user");
+            } finally {
+              setSubmitting(false);
+            }
+          }}
+        >
+          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a user name" }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="email" label="Email" rules={[{ required: true, message: "Enter an email address" }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item
+            name="password"
+            label={editingUser ? "Password" : "Password"}
+            rules={editingUser ? [] : [{ required: true, message: "Enter a password" }]}
+            extra={editingUser ? "Leave blank to keep the current password." : undefined}
+          >
+            <Input.Password />
+          </Form.Item>
+          <Form.Item
+            name="active"
+            label="Active"
+            valuePropName="checked"
+            extra={editingUser?.id === currentUserId ? "Your own account cannot be disabled." : undefined}
+          >
+            <Switch disabled={editingUser?.id === currentUserId} />
+          </Form.Item>
+          {canEditRoles ? (
+            <Form.Item name="roleIds" label="Roles">
+              <Select
+                mode="multiple"
+                options={roles.map((role) => ({
+                  label: role.name,
+                  value: role.id
+                }))}
+              />
+            </Form.Item>
+          ) : null}
+          <Button type="primary" htmlType="submit" loading={submitting} block>
+            {editingUser ? "Save Changes" : "Create User"}
+          </Button>
+        </Form>
+      </Modal>
+    </>
+  );
+}

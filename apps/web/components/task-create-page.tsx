@@ -18,6 +18,7 @@ import { Alert, Button, Card, Checkbox, Col, Collapse, Flex, Form, Input, Row, S
 import { api } from "../src/api/client";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useSettings } from "../src/hooks/useSettings";
+import { useAuth } from "./auth-provider";
 
 type BlankTaskValues = {
   sourceType: "blank";
@@ -76,6 +77,7 @@ const providerProfileOptions: Array<{ label: string; value: ProviderProfile }> =
 
 export function TaskCreatePage() {
   const router = useRouter();
+  const { can } = useAuth();
   const { repositories } = useRepositories();
   const { settings } = useSettings();
   const [form] = Form.useForm<TaskCreateSubmitValues>();
@@ -85,6 +87,7 @@ export function TaskCreatePage() {
   const [githubBranches, setGitHubBranches] = useState<GitHubBranchReference[]>([]);
   const [githubOptionsLoading, setGitHubOptionsLoading] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
+  const canReadRepositoryMetadata = can("repo:read");
 
   const selectedRepoId = Form.useWatch("repoId", form);
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
@@ -110,6 +113,23 @@ export function TaskCreatePage() {
 
   const selectedIssue = githubIssues.find((issue) => issue.number === selectedIssueNumber) ?? null;
   const selectedPullRequest = githubPullRequests.find((pullRequest) => pullRequest.number === selectedPullRequestNumber) ?? null;
+  const sourceOptions: Array<{ label: string; value: TaskSourceType }> = [
+    { label: "Blank", value: "blank" },
+    ...(canReadRepositoryMetadata
+      ? [
+          { label: "From Issue", value: "issue" as const },
+          { label: "From Pull Request", value: "pull_request" as const }
+        ]
+      : [])
+  ];
+
+  useEffect(() => {
+    if (canReadRepositoryMetadata || selectedSourceType === "blank") {
+      return;
+    }
+
+    form.setFieldValue("sourceType", "blank");
+  }, [canReadRepositoryMetadata, form, selectedSourceType]);
 
   useEffect(() => {
     if (!settings) {
@@ -122,7 +142,7 @@ export function TaskCreatePage() {
   }, [form, settings]);
 
   useEffect(() => {
-    if (!selectedRepoId) {
+    if (!selectedRepoId || !canReadRepositoryMetadata) {
       setGitHubIssues([]);
       setGitHubPullRequests([]);
       setGitHubBranches([]);
@@ -150,7 +170,7 @@ export function TaskCreatePage() {
     return () => {
       active = false;
     };
-  }, [selectedRepoId]);
+  }, [canReadRepositoryMetadata, selectedRepoId]);
 
   const pageTitle =
     selectedSourceType === "issue"
@@ -361,11 +381,7 @@ export function TaskCreatePage() {
               <Card bordered={false} title="Configuration" styles={{ body: { display: "flex", flexDirection: "column", gap: 0 } }}>
                 <Form.Item name="sourceType" label="Source" rules={[{ required: true }]}> 
                   <Select
-                    options={[
-                      { label: "Blank", value: "blank" },
-                      { label: "From Issue", value: "issue" },
-                      { label: "From Pull Request", value: "pull_request" }
-                    ]}
+                    options={sourceOptions}
                     onChange={(value: TaskSourceType) => {
                       if (value === "pull_request") {
                         form.setFieldValue("taskType", "plan");
@@ -476,10 +492,16 @@ export function TaskCreatePage() {
                       loading={githubOptionsLoading}
                       placeholder={selectedRepository?.defaultBranch ?? "develop"}
                       optionFilterProp="label"
-                      options={githubBranches.map((branch) => ({
-                        label: branch.isDefault ? `${branch.name} (default)` : branch.name,
-                        value: branch.name
-                      }))}
+                      options={
+                        canReadRepositoryMetadata
+                          ? githubBranches.map((branch) => ({
+                              label: branch.isDefault ? `${branch.name} (default)` : branch.name,
+                              value: branch.name
+                            }))
+                          : selectedRepository
+                            ? [{ label: selectedRepository.defaultBranch, value: selectedRepository.defaultBranch }]
+                            : []
+                      }
                     />
                   </Form.Item>
                 ) : null}

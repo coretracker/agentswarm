@@ -5,6 +5,7 @@ import type { Repository } from "@agentswarm/shared-types";
 import { Button, Card, Flex, Form, Input, Modal, Popconfirm, Space, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { useRepositories } from "../src/hooks/useRepositories";
+import { useAuth } from "./auth-provider";
 
 type RepositoryFormValues = {
   name: string;
@@ -16,11 +17,15 @@ type RepositoryFormValues = {
 
 export function RepositoriesPage() {
   const { repositories, loading } = useRepositories();
+  const { can } = useAuth();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Repository | null>(null);
   const [form] = Form.useForm<RepositoryFormValues>();
   const [submitting, setSubmitting] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
+  const canCreateRepository = can("repo:create");
+  const canEditRepository = can("repo:edit");
+  const canDeleteRepository = can("repo:delete");
 
   const openCreate = () => {
     setEditing(null);
@@ -57,9 +62,11 @@ export function RepositoriesPage() {
             </Typography.Title>
             <Typography.Text type="secondary">Manage reusable repository definitions and their local plan folders.</Typography.Text>
           </Flex>
-          <Button type="primary" onClick={openCreate}>
-            Add Repository
-          </Button>
+          {canCreateRepository ? (
+            <Button type="primary" onClick={openCreate}>
+              Add Repository
+            </Button>
+          ) : null}
         </Flex>
 
         <Card bordered={false}>
@@ -88,17 +95,19 @@ export function RepositoriesPage() {
               title: "Actions",
               render: (_, repository) => (
                 <Space>
-                  <Button onClick={() => openEdit(repository)}>Edit</Button>
-                  <Popconfirm
-                    title="Delete repository?"
-                    description="Tasks keep their stored snapshot, but this repository will be removed from quick selection."
-                    onConfirm={async () => {
-                      await api.deleteRepository(repository.id);
-                      messageApi.success("Repository deleted");
-                    }}
-                  >
-                    <Button danger>Delete</Button>
-                  </Popconfirm>
+                  {canEditRepository ? <Button onClick={() => openEdit(repository)}>Edit</Button> : null}
+                  {canDeleteRepository ? (
+                    <Popconfirm
+                      title="Delete repository?"
+                      description="Tasks keep their stored snapshot, but this repository will be removed from quick selection."
+                      onConfirm={async () => {
+                        await api.deleteRepository(repository.id);
+                        messageApi.success("Repository deleted");
+                      }}
+                    >
+                      <Button danger>Delete</Button>
+                    </Popconfirm>
+                  ) : null}
                 </Space>
               )
             }

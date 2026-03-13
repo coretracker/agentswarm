@@ -48,6 +48,7 @@ import { useTask } from "../src/hooks/useTask";
 import { useTaskMessages } from "../src/hooks/useTaskMessages";
 import { useTaskRuns } from "../src/hooks/useTaskRuns";
 import { normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
+import { useAuth } from "./auth-provider";
 
 const statusColor: Record<Task["status"], string> = {
   plan_queued: "gold",
@@ -335,6 +336,7 @@ function ExpandableMessageContent({ children, fadeColor }: { children: ReactNode
 
 export function TaskDetailPage({ taskId }: { taskId: string }) {
   const router = useRouter();
+  const { can, canAll } = useAuth();
   const { task, setTask, loading } = useTask(taskId);
   const { messages: taskMessages, loading: messagesLoading } = useTaskMessages(taskId);
   const { runs: taskRuns, loading: runsLoading } = useTaskRuns(taskId);
@@ -371,6 +373,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const isReviewTask = taskType === "review";
   const isAskTask = taskType === "ask";
   const isArchived = task?.status === "archived";
+  const canEditTask = can("task:edit");
+  const canDeleteTask = can("task:delete");
+  const canCreateFollowUp = canAll(["task:create", "repo:list"]);
   const isQueued =
     task?.status === "plan_queued" ||
     task?.status === "build_queued" ||
@@ -381,13 +386,24 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     task?.status === "building" ||
     task?.status === "reviewing" ||
     task?.status === "asking";
-  const canCancel = isQueued || isActive;
-  const canAccept = task?.status === "review" || task?.status === "answered" || (isImplementationTask && task?.status === "failed");
-  const canDelete = !!task && !isActive && !isArchived;
-  const canArchive = !!task && !isActive && !isArchived;
-  const canContinueOnBranch = !isArchived && isImplementationTask && !!task?.branchName && (task.status === "review" || task.status === "accepted");
-  const canCreateFixTask = !isArchived && isReviewTask && !!task?.resultMarkdown && (task.status === "review" || task.status === "accepted");
-  const canEditPlan = isPlanTask && !!task?.planMarkdown?.trim() && !isActive && !isArchived;
+  const canCancel = canEditTask && (isQueued || isActive);
+  const canAccept =
+    canEditTask && (task?.status === "review" || task?.status === "answered" || (isImplementationTask && task?.status === "failed"));
+  const canDelete = canDeleteTask && !!task && !isActive && !isArchived;
+  const canArchive = canEditTask && !!task && !isActive && !isArchived;
+  const canContinueOnBranch =
+    canCreateFollowUp &&
+    !isArchived &&
+    isImplementationTask &&
+    !!task?.branchName &&
+    (task.status === "review" || task.status === "accepted");
+  const canCreateFixTask =
+    canCreateFollowUp &&
+    !isArchived &&
+    isReviewTask &&
+    !!task?.resultMarkdown &&
+    (task.status === "review" || task.status === "accepted");
+  const canEditPlan = canEditTask && isPlanTask && !!task?.planMarkdown?.trim() && !isActive && !isArchived;
   const currentTaskProvider = task?.provider ?? "codex";
   const currentTaskProviderProfile = task?.providerProfile ?? "deep";
   const currentTaskModelOverride = task?.modelOverride ?? "";
@@ -628,10 +644,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const runtimeBranchLabel = task ? (isImplementationTask ? task.branchName ?? task.baseBranch : task.baseBranch) : "";
   const githubDiffTarget = task ? getGitHubDiffTarget(task) : null;
   const chatActionLabel = taskActionLabel[selectedChatAction];
-  const chatClosed = !task || task.status === "accepted" || task.status === "archived" || task.status === "cancelled";
+  const hasReadOnlyTaskAccess = !canEditTask;
+  const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "accepted" || task.status === "archived" || task.status === "cancelled";
   const chatDisabled = chatClosed || (selectedChatAction !== "comment" && (isQueued || isActive));
   const chatPlaceholder = chatDisabled
-    ? chatClosed
+    ? hasReadOnlyTaskAccess
+      ? "You have read-only access to this task."
+      : chatClosed
       ? task?.status === "archived"
         ? "This task is archived and read-only."
         : "This task is closed. Create a follow-up task to continue."
@@ -807,8 +826,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   };
   const moreActionItems = task && !isArchived
     ? [
-        { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" },
-        { key: "config", label: "Config" },
+        canEditTask ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
+        canEditTask ? { key: "config", label: "Config" } : null,
         canContinueOnBranch ? { key: "continue", label: "Continue On Branch" } : null,
         canCreateFixTask ? { key: "fix", label: "Create Fix Task" } : null,
         canArchive ? { key: "archive", label: "Archive Task" } : null,
@@ -922,7 +941,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                     </ReactMarkdown>
                   ) : null}
 
-                  {isPlanTask && !isEditingPlan ? (
+                  {canEditTask && isPlanTask && !isEditingPlan ? (
                     <Space direction="vertical" size={12} style={{ width: "100%" }}>
                       <Input.TextArea
                         rows={4}
@@ -1022,7 +1041,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               label: taskActionLabel[action],
               value: action
             }))}
-            disabled={chatClosed}
+                      disabled={chatClosed}
             onChange={(value) => {
               selectedChatActionRef.current = true;
               setSelectedChatAction(value);
@@ -1213,6 +1232,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                         }
                       }}
                       disabled={
+                        !canEditTask ||
                         !task ||
                         task.builtPlanRunIds.includes(run.id) ||
                         isQueued ||
@@ -1340,6 +1360,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               message="Archived task"
               description="Archived tasks are read-only. You can review history, plans, output, and diffs, but you cannot restart or change the task."
             />
+          ) : !canEditTask ? (
+            <Alert
+              type="info"
+              showIcon
+              message="Read-only task access"
+              description="This account can review task state and history, but it cannot change the task."
+            />
           ) : null}
           {task ? (
             <Flex justify="space-between" align="center" gap={12} wrap="wrap">
@@ -1379,7 +1406,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   >
                     {isImplementationTask ? "Accept & Push" : "Accept"}
                   </Button>
-                ) : isImplementationTask && task.status !== "accepted" && task.status !== "archived" ? (
+                ) : canEditTask && isImplementationTask && task.status !== "accepted" && task.status !== "archived" ? (
                   <>
                     {isPlanTask && hasExecutionContext ? (
                       <Button
@@ -1420,7 +1447,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   </>
                 ) : null}
 
-                {!canCancel && !canAccept && isReviewTask && task.status !== "accepted" && task.status !== "archived" ? (
+                {!canCancel && !canAccept && canEditTask && isReviewTask && task.status !== "accepted" && task.status !== "archived" ? (
                   <Button
                     type="primary"
                     onClick={async () => {
@@ -1438,7 +1465,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   </Button>
                 ) : null}
 
-                {!canCancel && !canAccept && isAskTask && task.status !== "accepted" && task.status !== "archived" ? (
+                {!canCancel && !canAccept && canEditTask && isAskTask && task.status !== "accepted" && task.status !== "archived" ? (
                   <Button
                     type="primary"
                     onClick={async () => {
@@ -1529,7 +1556,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         onCancel={() => setIsConfigModalOpen(false)}
         onOk={handleSaveConfig}
         okText="Save Config"
-        okButtonProps={{ loading: submitting === "config", disabled: !configDirty || isArchived }}
+        okButtonProps={{ loading: submitting === "config", disabled: !canEditTask || !configDirty || isArchived }}
         destroyOnClose={false}
       >
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
@@ -1540,7 +1567,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               options={providerOptions}
               onChange={(value) => setProviderInput(value)}
               style={{ width: "100%", marginTop: 6 }}
-              disabled={isArchived}
+              disabled={!canEditTask || isArchived}
             />
           </div>
           <div>
@@ -1550,7 +1577,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               options={providerProfileOptions}
               onChange={(value) => setProviderProfileInput(value)}
               style={{ width: "100%", marginTop: 6 }}
-              disabled={isArchived}
+              disabled={!canEditTask || isArchived}
             />
           </div>
           <div>
@@ -1560,7 +1587,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               onChange={(event) => setModelOverrideInput(event.target.value)}
               placeholder={providerInput === "claude" ? "sonnet or opus" : "gpt-5.4"}
               style={{ width: "100%", marginTop: 6 }}
-              disabled={isArchived}
+              disabled={!canEditTask || isArchived}
             />
           </div>
           {isImplementationTask ? (
@@ -1574,7 +1601,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 ]}
                 onChange={(value) => setBranchStrategyInput(value)}
                 style={{ width: "100%", marginTop: 6 }}
-                disabled={isArchived}
+                disabled={!canEditTask || isArchived}
               />
             </div>
           ) : null}
@@ -1583,7 +1610,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </Modal>
 
       <Modal
-        open={followUpMode !== null}
+        open={followUpMode !== null && canCreateFollowUp}
         title={followUpTitle}
         onCancel={() => {
           followUpForm.resetFields();

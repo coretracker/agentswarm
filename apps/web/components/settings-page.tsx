@@ -1,11 +1,31 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { AgentProvider, McpServerTransport, SystemSettings } from "@agentswarm/shared-types";
-import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
-import { Alert, Button, Card, Divider, Flex, Form, Input, InputNumber, Select, Space, Switch, Tag, Typography, message } from "antd";
+import type { AgentProvider, McpServerTransport, PermissionScope, Role, SystemSettings } from "@agentswarm/shared-types";
+import { PERMISSION_SCOPE_GROUPS } from "@agentswarm/shared-types";
+import { DeleteOutlined, LockOutlined, PlusOutlined } from "@ant-design/icons";
+import {
+  Alert,
+  App,
+  Button,
+  Card,
+  Checkbox,
+  Divider,
+  Flex,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Select,
+  Space,
+  Switch,
+  Table,
+  Tag,
+  Typography
+} from "antd";
 import { api } from "../src/api/client";
 import { useSettings } from "../src/hooks/useSettings";
+import { useAuth } from "./auth-provider";
 
 interface McpServerFormItem {
   name: string;
@@ -31,6 +51,12 @@ interface CredentialForm {
   githubToken?: string;
   openaiApiKey?: string;
   anthropicApiKey?: string;
+}
+
+interface RoleFormValues {
+  name: string;
+  description: string;
+  scopes: PermissionScope[];
 }
 
 const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
@@ -62,12 +88,29 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
 });
 
 export function SettingsPage() {
-  const { settings, loading } = useSettings();
+  const { message } = App.useApp();
+  const { can } = useAuth();
+  const { loading, setSettings, settings } = useSettings();
   const [generalForm] = Form.useForm<GeneralSettingsForm>();
   const [credentialForm] = Form.useForm<CredentialForm>();
+  const [roleForm] = Form.useForm<RoleFormValues>();
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [rolesLoading, setRolesLoading] = useState(true);
   const [savingGeneral, setSavingGeneral] = useState(false);
   const [savingCredentials, setSavingCredentials] = useState(false);
-  const [messageApi, contextHolder] = message.useMessage();
+  const [savingRole, setSavingRole] = useState(false);
+  const [roleModalOpen, setRoleModalOpen] = useState(false);
+  const [editingRole, setEditingRole] = useState<Role | null>(null);
+  const canEditSettings = can("settings:edit");
+
+  const loadRoles = async () => {
+    setRolesLoading(true);
+    try {
+      setRoles(await api.listRoles());
+    } finally {
+      setRolesLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (!settings) {
@@ -77,26 +120,39 @@ export function SettingsPage() {
     generalForm.setFieldsValue(toFormValues(settings));
   }, [generalForm, settings]);
 
+  useEffect(() => {
+    void loadRoles();
+  }, []);
+
   return (
     <>
-      {contextHolder}
       <Space direction="vertical" size={16} style={{ width: "100%" }}>
         <Flex vertical gap={0}>
           <Typography.Title level={2} style={{ margin: 0 }}>
             Settings
           </Typography.Title>
           <Typography.Text type="secondary">
-            Concurrency, branch defaults, provider rules, MCP servers, and provider credentials.
+            Concurrency, runtime defaults, provider credentials, and role-based access control.
           </Typography.Text>
         </Flex>
+
+        {!canEditSettings ? (
+          <Alert
+            type="info"
+            showIcon
+            message="Read-only access"
+            description="This account can view system configuration and roles, but it cannot change them."
+          />
+        ) : null}
 
         <Form
           form={generalForm}
           layout="vertical"
+          disabled={!canEditSettings}
           onFinish={async (values) => {
             setSavingGeneral(true);
             try {
-              await api.updateSettings({
+              const nextSettings = await api.updateSettings({
                 defaultProvider: values.defaultProvider,
                 maxAgents: values.maxAgents,
                 branchPrefix: values.branchPrefix,
@@ -125,7 +181,10 @@ export function SettingsPage() {
                       }
                 )
               });
-              messageApi.success("Settings saved");
+              setSettings(nextSettings);
+              message.success("Settings saved");
+            } catch (error) {
+              message.error(error instanceof Error ? error.message : "Failed to save settings");
             } finally {
               setSavingGeneral(false);
             }
@@ -139,169 +198,114 @@ export function SettingsPage() {
               <Form.Item name="maxAgents" label="Max Agents" rules={[{ required: true }]}>
                 <InputNumber min={1} max={20} style={{ width: "100%" }} />
               </Form.Item>
-              <Form.Item
-                name="branchPrefix"
-                label="Feature Branch Prefix"
-                rules={[{ required: true, whitespace: true, message: "Enter a branch prefix" }]}
-                extra="Used for generated feature branches, for example agentswarm/my-task-1234abcd."
-              >
+              <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
                 <Input placeholder="agentswarm" />
               </Form.Item>
-              <Form.Item
-                name="gitUsername"
-                label="Git Username"
-                rules={[{ required: true, whitespace: true, message: "Enter a git username" }]}
-                extra="Used together with the stored git token for HTTPS clone/push. For GitHub PAT auth, x-access-token is usually correct."
-              >
+              <Form.Item name="gitUsername" label="Git Username" rules={[{ required: true, whitespace: true }]}>
                 <Input placeholder="x-access-token" />
               </Form.Item>
-              <Form.Item
-                name="openaiBaseUrl"
-                label="OpenAI Base URL"
-                extra="Optional. Leave blank to use the default OpenAI API endpoint."
-              >
+              <Form.Item name="openaiBaseUrl" label="OpenAI Base URL">
                 <Input placeholder="https://api.openai.com/v1" />
               </Form.Item>
             </Space>
           </Card>
 
           <Card bordered={false} loading={loading} title="Agent Rules" style={{ marginTop: 16 }}>
-            <Space direction="vertical" size={12} style={{ width: "100%", maxWidth: 900 }}>
-              <Alert
-                type="info"
-                showIcon
-                message="Applied on every agent spawn"
-                description="These rules are injected into every plan, build, review, ask, and iterate prompt before the selected provider runs."
+            <Form.Item
+              name="agentRules"
+              label="Global Agent Rules"
+              extra="Applied to every plan, build, review, ask, and iterate run."
+              style={{ marginBottom: 0 }}
+            >
+              <Input.TextArea
+                rows={10}
+                placeholder={"- Prefer pnpm over npm\n- Run unit tests before finalizing\n- Never change generated files by hand"}
               />
-              <Form.Item
-                name="agentRules"
-                label="Global Agent Rules"
-                extra="Use this for repository-wide instructions like architecture constraints, testing expectations, or coding policies."
-                style={{ marginBottom: 0 }}
-              >
-                <Input.TextArea
-                  rows={10}
-                  placeholder={"- Prefer pnpm over npm\n- Run unit tests before finalizing\n- Never change generated files by hand"}
-                />
-              </Form.Item>
-            </Space>
+            </Form.Item>
           </Card>
 
           <Card bordered={false} loading={loading} title="MCP Servers" style={{ marginTop: 16 }}>
-            <Space direction="vertical" size={16} style={{ width: "100%" }}>
-              <Alert
-                type="info"
-                showIcon
-                message="Rendered into provider runtime config"
-                description="Each spawned agent gets a generated provider-specific MCP config. To avoid exposing credentials, the UI only supports command and args for stdio servers and bearer-token env-var references for HTTP servers."
-              />
-
-              <Form.List name="mcpServers">
-                {(fields, { add, remove }) => (
-                  <Space direction="vertical" size={16} style={{ width: "100%" }}>
-                    {fields.map((field) => {
-                      return (
-                        <Card
-                          key={field.key}
-                          size="small"
-                          title={`Server ${field.name + 1}`}
-                          extra={
-                            <Button danger type="text" icon={<DeleteOutlined />} onClick={() => remove(field.name)}>
-                              Remove
-                            </Button>
-                          }
+            <Form.List name="mcpServers">
+              {(fields, { add, remove }) => (
+                <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                  {fields.map((field) => (
+                    <Card
+                      key={field.key}
+                      size="small"
+                      title={`Server ${field.name + 1}`}
+                      extra={
+                        <Button
+                          danger
+                          type="text"
+                          icon={<DeleteOutlined />}
+                          disabled={!canEditSettings}
+                          onClick={() => remove(field.name)}
                         >
-                          <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                            <Form.Item
-                              name={[field.name, "name"]}
-                              label="Name"
-                              rules={[{ required: true, whitespace: true, message: "Enter a server name" }]}
-                            >
-                              <Input placeholder="memory" />
-                            </Form.Item>
-
-                            <Form.Item name={[field.name, "enabled"]} label="Enabled" valuePropName="checked">
-                              <Switch />
-                            </Form.Item>
-
-                            <Form.Item
-                              name={[field.name, "transport"]}
-                              label="Transport"
-                              rules={[{ required: true, message: "Select a transport" }]}
-                            >
-                              <Select options={transportOptions} />
-                            </Form.Item>
-
-                            <Form.Item noStyle shouldUpdate>
-                              {() => {
-                                const transport = generalForm.getFieldValue(["mcpServers", field.name, "transport"]) ?? "stdio";
-
-                                return transport === "http" ? (
-                                  <>
-                                    <Form.Item
-                                      name={[field.name, "url"]}
-                                      label="URL"
-                                      rules={[{ required: true, whitespace: true, message: "Enter the MCP server URL" }]}
-                                    >
-                                      <Input placeholder="https://example.com/mcp" />
-                                    </Form.Item>
-                                    <Form.Item
-                                      name={[field.name, "bearerTokenEnvVar"]}
-                                      label="Bearer Token Env Var"
-                                      extra="Optional. If set, AgentSwarm will reference this env var in the generated provider config and pass it through only if it already exists in the server container environment."
-                                    >
-                                      <Input placeholder="MY_MCP_TOKEN" />
-                                    </Form.Item>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Form.Item
-                                      name={[field.name, "command"]}
-                                      label="Command"
-                                      rules={[{ required: true, whitespace: true, message: "Enter the stdio command" }]}
-                                    >
-                                      <Input placeholder="docker" />
-                                    </Form.Item>
-                                    <Form.Item
-                                      name={[field.name, "argsText"]}
-                                      label="Arguments"
-                                      extra="One argument per line. Example: run, -i, --rm, my-mcp-image"
-                                    >
-                                      <Input.TextArea rows={6} placeholder={"run\n-i\n--rm\nmcp/memory"} />
-                                    </Form.Item>
-                                  </>
-                                );
-                              }}
-                            </Form.Item>
-                          </Space>
-                        </Card>
-                      );
-                    })}
-
-                    <Button
-                      type="dashed"
-                      icon={<PlusOutlined />}
-                      onClick={() =>
-                        add({
-                          name: "",
-                          enabled: true,
-                          transport: "stdio",
-                          command: "",
-                          argsText: ""
-                        })
+                          Remove
+                        </Button>
                       }
                     >
-                      Add MCP Server
-                    </Button>
-                  </Space>
-                )}
-              </Form.List>
+                      <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                        <Form.Item name={[field.name, "name"]} label="Name" rules={[{ required: true, whitespace: true }]}>
+                          <Input placeholder="memory" />
+                        </Form.Item>
+                        <Form.Item name={[field.name, "enabled"]} label="Enabled" valuePropName="checked">
+                          <Switch />
+                        </Form.Item>
+                        <Form.Item name={[field.name, "transport"]} label="Transport" rules={[{ required: true }]}>
+                          <Select options={transportOptions} />
+                        </Form.Item>
+                        <Form.Item noStyle shouldUpdate>
+                          {() => {
+                            const transport = generalForm.getFieldValue(["mcpServers", field.name, "transport"]) ?? "stdio";
+                            return transport === "http" ? (
+                              <>
+                                <Form.Item name={[field.name, "url"]} label="URL" rules={[{ required: true, whitespace: true }]}>
+                                  <Input placeholder="https://example.com/mcp" />
+                                </Form.Item>
+                                <Form.Item name={[field.name, "bearerTokenEnvVar"]} label="Bearer Token Env Var">
+                                  <Input placeholder="MY_MCP_TOKEN" />
+                                </Form.Item>
+                              </>
+                            ) : (
+                              <>
+                                <Form.Item name={[field.name, "command"]} label="Command" rules={[{ required: true, whitespace: true }]}>
+                                  <Input placeholder="docker" />
+                                </Form.Item>
+                                <Form.Item name={[field.name, "argsText"]} label="Arguments">
+                                  <Input.TextArea rows={6} placeholder={"run\n-i\n--rm\nmcp/memory"} />
+                                </Form.Item>
+                              </>
+                            );
+                          }}
+                        </Form.Item>
+                      </Space>
+                    </Card>
+                  ))}
 
-            </Space>
+                  <Button
+                    type="dashed"
+                    icon={<PlusOutlined />}
+                    disabled={!canEditSettings}
+                    onClick={() =>
+                      add({
+                        name: "",
+                        enabled: true,
+                        transport: "stdio",
+                        command: "",
+                        argsText: ""
+                      })
+                    }
+                  >
+                    Add MCP Server
+                  </Button>
+                </Space>
+              )}
+            </Form.List>
           </Card>
 
           <Flex justify="flex-start" style={{ marginTop: 16 }}>
-            <Button type="primary" htmlType="submit" loading={savingGeneral}>
+            <Button type="primary" htmlType="submit" loading={savingGeneral} disabled={!canEditSettings}>
               Save Settings
             </Button>
           </Flex>
@@ -329,116 +333,280 @@ export function SettingsPage() {
             ) : null
           }
         >
-          <Space direction="vertical" size={16} style={{ width: "100%", maxWidth: 520 }}>
-            <Alert
-              type="info"
-              showIcon
-              message="Credentials are write-only"
-              description="Tokens are encrypted on the server with a local key volume. They are never returned by the API or rendered back into the UI."
-            />
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Credentials are write-only"
+            description="Tokens are encrypted on the server and never returned by the API."
+          />
+          <Form
+            form={credentialForm}
+            layout="vertical"
+            disabled={!canEditSettings}
+            onFinish={async (values) => {
+              setSavingCredentials(true);
+              try {
+                const nextSettings = await api.updateCredentials({
+                  githubToken: values.githubToken?.trim() || undefined,
+                  openaiApiKey: values.openaiApiKey?.trim() || undefined,
+                  anthropicApiKey: values.anthropicApiKey?.trim() || undefined
+                });
+                credentialForm.resetFields();
+                setSettings(nextSettings);
+                message.success("Credentials updated");
+              } catch (error) {
+                message.error(error instanceof Error ? error.message : "Failed to update credentials");
+              } finally {
+                setSavingCredentials(false);
+              }
+            }}
+          >
+            <Form.Item name="githubToken" label="GitHub Token">
+              <Input.Password placeholder={settings?.githubTokenConfigured ? "Configured. Enter a new token to replace it." : "github_pat_..."} />
+            </Form.Item>
+            <Form.Item name="openaiApiKey" label="OpenAI API Key">
+              <Input.Password placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."} />
+            </Form.Item>
+            <Form.Item name="anthropicApiKey" label="Anthropic API Key">
+              <Input.Password placeholder={settings?.anthropicApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-ant-..."} />
+            </Form.Item>
+            <Space wrap>
+              <Button type="primary" htmlType="submit" loading={savingCredentials} disabled={!canEditSettings}>
+                Save Credentials
+              </Button>
+              <Button
+                danger
+                loading={savingCredentials}
+                disabled={!canEditSettings}
+                onClick={async () => {
+                  setSavingCredentials(true);
+                  try {
+                    const nextSettings = await api.updateCredentials({ clearGithubToken: true });
+                    setSettings(nextSettings);
+                    credentialForm.resetFields(["githubToken"]);
+                    message.success("GitHub token cleared");
+                  } catch (error) {
+                    message.error(error instanceof Error ? error.message : "Failed to clear GitHub token");
+                  } finally {
+                    setSavingCredentials(false);
+                  }
+                }}
+              >
+                Clear GitHub Token
+              </Button>
+              <Button
+                danger
+                loading={savingCredentials}
+                disabled={!canEditSettings}
+                onClick={async () => {
+                  setSavingCredentials(true);
+                  try {
+                    const nextSettings = await api.updateCredentials({ clearOpenAiApiKey: true });
+                    setSettings(nextSettings);
+                    credentialForm.resetFields(["openaiApiKey"]);
+                    message.success("OpenAI API key cleared");
+                  } catch (error) {
+                    message.error(error instanceof Error ? error.message : "Failed to clear OpenAI API key");
+                  } finally {
+                    setSavingCredentials(false);
+                  }
+                }}
+              >
+                Clear OpenAI API Key
+              </Button>
+              <Button
+                danger
+                loading={savingCredentials}
+                disabled={!canEditSettings}
+                onClick={async () => {
+                  setSavingCredentials(true);
+                  try {
+                    const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
+                    setSettings(nextSettings);
+                    credentialForm.resetFields(["anthropicApiKey"]);
+                    message.success("Anthropic API key cleared");
+                  } catch (error) {
+                    message.error(error instanceof Error ? error.message : "Failed to clear Anthropic API key");
+                  } finally {
+                    setSavingCredentials(false);
+                  }
+                }}
+              >
+                Clear Anthropic API Key
+              </Button>
+            </Space>
+          </Form>
+        </Card>
 
-            <Form
-              form={credentialForm}
-              layout="vertical"
-              onFinish={async (values) => {
-                setSavingCredentials(true);
-                try {
-                  await api.updateCredentials({
-                    githubToken: values.githubToken?.trim() || undefined,
-                    openaiApiKey: values.openaiApiKey?.trim() || undefined,
-                    anthropicApiKey: values.anthropicApiKey?.trim() || undefined
-                  });
-                  credentialForm.resetFields();
-                  messageApi.success("Credentials updated");
-                } finally {
-                  setSavingCredentials(false);
-                }
+        <Card
+          bordered={false}
+          loading={rolesLoading}
+          title="Roles"
+          extra={
+            <Button
+              type="primary"
+              disabled={!canEditSettings}
+              onClick={() => {
+                setEditingRole(null);
+                roleForm.setFieldsValue({ name: "", description: "", scopes: [] });
+                setRoleModalOpen(true);
               }}
             >
-              <Form.Item
-                name="githubToken"
-                label="GitHub Token"
-                extra="Used for GitHub API imports and Git operations against private GitHub repositories."
-              >
-                <Input.Password
-                  placeholder={settings?.githubTokenConfigured ? "Configured. Enter a new token to replace it." : "github_pat_..."}
-                />
-              </Form.Item>
-              <Form.Item
-                name="openaiApiKey"
-                label="OpenAI API Key"
-                extra="Used by Codex runtime containers."
-              >
-                <Input.Password
-                  placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."}
-                />
-              </Form.Item>
-              <Form.Item
-                name="anthropicApiKey"
-                label="Anthropic API Key"
-                extra="Used by runtime containers to authenticate Claude Code."
-              >
-                <Input.Password
-                  placeholder={settings?.anthropicApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-ant-..."}
-                />
-              </Form.Item>
-              <Space wrap>
-                <Button type="primary" htmlType="submit" loading={savingCredentials}>
-                  Save Credentials
-                </Button>
-                <Button
-                  danger
-                  loading={savingCredentials}
-                  onClick={async () => {
-                    setSavingCredentials(true);
-                    try {
-                      await api.updateCredentials({ clearGithubToken: true });
-                      credentialForm.resetFields(["githubToken"]);
-                      messageApi.success("GitHub token cleared");
-                    } finally {
-                      setSavingCredentials(false);
-                    }
-                  }}
-                >
-                  Clear GitHub Token
-                </Button>
-                <Button
-                  danger
-                  loading={savingCredentials}
-                  onClick={async () => {
-                    setSavingCredentials(true);
-                    try {
-                      await api.updateCredentials({ clearOpenAiApiKey: true });
-                      credentialForm.resetFields(["openaiApiKey"]);
-                      messageApi.success("OpenAI API key cleared");
-                    } finally {
-                      setSavingCredentials(false);
-                    }
-                  }}
-                >
-                  Clear OpenAI API Key
-                </Button>
-                <Button
-                  danger
-                  loading={savingCredentials}
-                  onClick={async () => {
-                    setSavingCredentials(true);
-                    try {
-                      await api.updateCredentials({ clearAnthropicApiKey: true });
-                      credentialForm.resetFields(["anthropicApiKey"]);
-                      messageApi.success("Anthropic API key cleared");
-                    } finally {
-                      setSavingCredentials(false);
-                    }
-                  }}
-                >
-                  Clear Anthropic API Key
-                </Button>
-              </Space>
-            </Form>
-          </Space>
+              Add Role
+            </Button>
+          }
+        >
+          <Table<Role>
+            rowKey="id"
+            pagination={false}
+            dataSource={roles}
+            columns={[
+              {
+                title: "Name",
+                dataIndex: "name",
+                render: (value: string, role) => (
+                  <Space>
+                    <Typography.Text strong>{value}</Typography.Text>
+                    {role.isSystem ? <Tag icon={<LockOutlined />}>System</Tag> : null}
+                  </Space>
+                )
+              },
+              {
+                title: "Description",
+                dataIndex: "description",
+                render: (value: string) => value || <Typography.Text type="secondary">None</Typography.Text>
+              },
+              {
+                title: "Scopes",
+                render: (_, role) => (
+                  <Space size={[4, 4]} wrap>
+                    {role.scopes.map((scope) => (
+                      <Tag key={scope}>{scope}</Tag>
+                    ))}
+                  </Space>
+                )
+              },
+              {
+                title: "Actions",
+                render: (_, role) => (
+                  <Space>
+                    <Button
+                      disabled={!canEditSettings || role.isSystem}
+                      onClick={() => {
+                        setEditingRole(role);
+                        roleForm.setFieldsValue({
+                          name: role.name,
+                          description: role.description,
+                          scopes: role.scopes
+                        });
+                        setRoleModalOpen(true);
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      danger
+                      disabled={!canEditSettings || role.isSystem}
+                      onClick={async () => {
+                        try {
+                          await api.deleteRole(role.id);
+                          message.success("Role deleted");
+                          await loadRoles();
+                        } catch (error) {
+                          message.error(error instanceof Error ? error.message : "Failed to delete role");
+                        }
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  </Space>
+                )
+              }
+            ]}
+          />
         </Card>
       </Space>
+
+      <Modal
+        open={roleModalOpen}
+        title={editingRole ? `Edit Role: ${editingRole.name}` : "Add Role"}
+        footer={null}
+        onCancel={() => setRoleModalOpen(false)}
+        destroyOnHidden
+      >
+        <Form
+          form={roleForm}
+          layout="vertical"
+          onFinish={async (values) => {
+            setSavingRole(true);
+            try {
+              if (editingRole) {
+                await api.updateRole(editingRole.id, values);
+                message.success("Role updated");
+              } else {
+                await api.createRole(values);
+                message.success("Role created");
+              }
+
+              setRoleModalOpen(false);
+              await loadRoles();
+            } catch (error) {
+              message.error(error instanceof Error ? error.message : "Failed to save role");
+            } finally {
+              setSavingRole(false);
+            }
+          }}
+        >
+          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a role name" }]}>
+            <Input disabled={!canEditSettings || editingRole?.isSystem} />
+          </Form.Item>
+          <Form.Item name="description" label="Description">
+            <Input.TextArea rows={3} disabled={!canEditSettings || editingRole?.isSystem} />
+          </Form.Item>
+          <Form.Item name="scopes" hidden rules={[{ required: true, message: "Select at least one scope" }]}>
+            <Select mode="multiple" options={[]} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate>
+            {() => {
+              const selectedScopes = (roleForm.getFieldValue("scopes") ?? []) as PermissionScope[];
+              return (
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  {PERMISSION_SCOPE_GROUPS.map((group) => (
+                    <Card key={group.label} size="small" title={group.label}>
+                      <Checkbox.Group
+                        style={{ width: "100%" }}
+                        disabled={!canEditSettings || editingRole?.isSystem}
+                        value={group.scopes.filter((scope) => selectedScopes.includes(scope))}
+                        options={group.scopes.map((scope) => ({
+                          label: scope,
+                          value: scope
+                        }))}
+                        onChange={(checkedValues) => {
+                          const currentScopes = (roleForm.getFieldValue("scopes") ?? []) as PermissionScope[];
+                          const groupScopeSet = new Set(group.scopes);
+                          const otherScopes = currentScopes.filter((scope) => !groupScopeSet.has(scope));
+                          roleForm.setFieldValue("scopes", [...otherScopes, ...(checkedValues as PermissionScope[])]);
+                        }}
+                      />
+                    </Card>
+                  ))}
+                </Space>
+              );
+            }}
+          </Form.Item>
+          <Button
+            type="primary"
+            htmlType="submit"
+            loading={savingRole}
+            disabled={!canEditSettings || editingRole?.isSystem}
+            block
+            style={{ marginTop: 16 }}
+          >
+            {editingRole ? "Save Role" : "Create Role"}
+          </Button>
+        </Form>
+      </Modal>
     </>
   );
 }

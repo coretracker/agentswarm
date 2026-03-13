@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { AntdRegistry } from "@ant-design/nextjs-registry";
 import { ConfigProvider } from "antd";
 import { AppShell } from "../components/app-shell";
+import { AuthProvider } from "../components/auth-provider";
 import { appAntdTheme } from "../src/theme/antd-theme";
 import "./globals.css";
 import "react-diff-view/style/index.css";
@@ -17,7 +18,9 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       <body>
         <AntdRegistry>
           <ConfigProvider theme={appAntdTheme}>
-            <AppShell>{children}</AppShell>
+            <AuthProvider>
+              <AppShell>{children}</AppShell>
+            </AuthProvider>
           </ConfigProvider>
         </AntdRegistry>
       </body>
