@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   getAgentProviderLabel,
   getTaskStatusLabel,
@@ -12,7 +12,7 @@ import {
 import { Button, Card, DatePicker, Divider, Flex, Input, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, message } from "antd";
 import { PushpinFilled, PushpinOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "../src/api/client";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useTasks } from "../src/hooks/useTasks";
@@ -30,6 +30,7 @@ const statusOptions: Array<{ label: string; value: TaskStatus }> = [
   { label: "In Review", value: "review" },
   { label: "Answered", value: "answered" },
   { label: "Accepted", value: "accepted" },
+  { label: "Archived", value: "archived" },
   { label: "Cancelled", value: "cancelled" },
   { label: "Failed", value: "failed" }
 ];
@@ -47,12 +48,14 @@ const statusColor: Record<TaskStatus, string> = {
   review: "orange",
   answered: "lime",
   accepted: "green",
+  archived: "default",
   cancelled: "default",
   failed: "red"
 };
 
 export function TasksPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { tasks, setTasks, loading } = useTasks();
   const { repositories } = useRepositories();
   const [titleFilter, setTitleFilter] = useState("");
@@ -61,9 +64,23 @@ export function TasksPage() {
   const [createdAtFilter, setCreatedAtFilter] = useState<string | null>(null);
   const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
+  const archivedView = searchParams.get("view") === "archived";
+  const visibleStatusOptions = useMemo(
+    () => (archivedView ? statusOptions.filter((option) => option.value === "archived") : statusOptions.filter((option) => option.value !== "archived")),
+    [archivedView]
+  );
+
+  useEffect(() => {
+    if (statusFilter && !visibleStatusOptions.some((option) => option.value === statusFilter)) {
+      setStatusFilter(undefined);
+    }
+  }, [statusFilter, visibleStatusOptions]);
 
   const filteredTasks = useMemo(() => {
     return tasks.filter((task) => {
+      if (archivedView ? task.status !== "archived" : task.status === "archived") {
+        return false;
+      }
       if (titleFilter && !task.title.toLowerCase().includes(titleFilter.toLowerCase())) {
         return false;
       }
@@ -78,7 +95,7 @@ export function TasksPage() {
       }
       return true;
     });
-  }, [createdAtFilter, repoFilter, statusFilter, tasks, titleFilter]);
+  }, [archivedView, createdAtFilter, repoFilter, statusFilter, tasks, titleFilter]);
 
   const handleDeleteTask = async (task: Task) => {
     setDeletingTaskId(task.id);
@@ -127,9 +144,18 @@ export function TasksPage() {
         <Flex align="center" justify="space-between" gap={16} wrap="wrap">
           <Flex vertical gap={0}>
             <Typography.Title level={2} style={{ margin: 0 }}>
-              Tasks
+              {archivedView ? "Archived Tasks" : "Tasks"}
             </Typography.Title>
-            <Typography.Text type="secondary">Track plan, review, and ask tasks across their execution lifecycle.</Typography.Text>
+            <Space size={8} wrap>
+              <Typography.Text type="secondary">
+                {archivedView
+                  ? "Archived tasks are read-only and kept out of the active work queue."
+                  : "Track plan, review, and ask tasks across their execution lifecycle."}
+              </Typography.Text>
+              <Typography.Link onClick={() => router.push(archivedView ? "/tasks" : "/tasks?view=archived")}>
+                {archivedView ? "Active Tasks" : "Archived"}
+              </Typography.Link>
+            </Space>
           </Flex>
           <Button type="primary" onClick={() => router.push("/tasks/new")}>
             New Task
@@ -144,7 +170,7 @@ export function TasksPage() {
               placeholder="Filter by status"
               style={{ minWidth: 180 }}
               value={statusFilter}
-              options={statusOptions}
+              options={visibleStatusOptions}
               onChange={(value) => setStatusFilter(value)}
             />
             <Select
@@ -232,7 +258,7 @@ export function TasksPage() {
                       okButtonProps={{ danger: true, loading: deletingTaskId === task.id }}
                       onConfirm={() => handleDeleteTask(task)}
                     >
-                      <Button danger size="small" disabled={isActiveTaskStatus(task.status)}>
+                      <Button danger size="small" disabled={isActiveTaskStatus(task.status) || task.status === "archived"}>
                         Delete
                       </Button>
                     </Popconfirm>

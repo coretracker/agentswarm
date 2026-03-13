@@ -76,7 +76,7 @@ export class SchedulerService {
       return false;
     }
 
-    if (isActiveTaskStatus(task.status) || task.status === "accepted") {
+    if (isActiveTaskStatus(task.status) || task.status === "accepted" || task.status === "archived") {
       return false;
     }
 
@@ -169,6 +169,13 @@ export class SchedulerService {
     try {
       const task = await this.taskStore.getTask(taskId);
       if (!task) {
+        return;
+      }
+
+      if (!isQueuedTaskStatus(task.status)) {
+        if (task.status === "archived") {
+          await this.taskStore.appendLog(taskId, "Scheduler: archived task skipped before execution.");
+        }
         return;
       }
 

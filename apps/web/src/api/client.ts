@@ -98,6 +98,10 @@ export const api = {
     request<Task>(`/tasks/${id}/accept`, {
       method: "POST"
     }),
+  archiveTask: (id: string) =>
+    request<Task>(`/tasks/${id}/archive`, {
+      method: "POST"
+    }),
   deleteTask: (id: string) =>
     request<void>(`/tasks/${id}`, {
       method: "DELETE"

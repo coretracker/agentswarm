@@ -20,6 +20,7 @@ export type TaskStatus =
   | "review"
   | "answered"
   | "accepted"
+  | "archived"
   | "cancelled"
   | "failed";
 
@@ -312,7 +313,7 @@ export const isActiveTaskStatus = (status: TaskStatus): boolean =>
   status === "asking";
 
 export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
-  status === "accepted" || status === "cancelled" || status === "failed";
+  status === "accepted" || status === "archived" || status === "cancelled" || status === "failed";
 export const getTaskStatusLabel = (status: TaskStatus): string =>
   ({
     plan_queued: "Plan Queued",
@@ -327,6 +328,7 @@ export const getTaskStatusLabel = (status: TaskStatus): string =>
     review: "In Review",
     answered: "Answered",
     accepted: "Accepted",
+    archived: "Archived",
     cancelled: "Cancelled",
     failed: "Failed"
   })[status];
