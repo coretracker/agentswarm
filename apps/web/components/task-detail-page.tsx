@@ -11,6 +11,7 @@ import {
   type TaskAction,
   type TaskMessageAction,
   type TaskMessage,
+  type TaskLiveDiff,
   type TaskRun,
   type AgentProvider,
   type TaskBranchStrategy,
@@ -336,6 +337,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { task, setTask, loading } = useTask(taskId);
   const { messages: taskMessages, loading: messagesLoading } = useTaskMessages(taskId);
   const { runs: taskRuns, loading: runsLoading } = useTaskRuns(taskId);
+  const [liveDiff, setLiveDiff] = useState<TaskLiveDiff | null>(null);
+  const [liveDiffLoading, setLiveDiffLoading] = useState(false);
+  const [liveDiffError, setLiveDiffError] = useState<string | null>(null);
+  const [liveDiffRefreshKey, setLiveDiffRefreshKey] = useState(0);
   const [followUpForm] = Form.useForm();
   const [iterateInput, setIterateInput] = useState("");
   const [chatInput, setChatInput] = useState("");
@@ -421,7 +426,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const hasOutputTab = isPlanTask
     ? (task?.planMarkdown?.trim().length ?? 0) > 0
     : (task?.resultMarkdown?.trim().length ?? 0) > 0;
-  const hasDiffTab = (task?.branchDiff?.trim().length ?? 0) > 0;
+  const hasStoredDiff = (task?.branchDiff?.trim().length ?? 0) > 0;
+  const canRequestLiveDiff = !!task && (isReviewTask || isBuildTask || (isPlanTask && task.lastAction === "build"));
+  const hasLiveDiff = liveDiff?.live ?? false;
+  const renderedDiff = hasLiveDiff ? liveDiff?.diff ?? "" : task?.branchDiff ?? "";
+  const hasDiffTab = hasStoredDiff || canRequestLiveDiff;
   const allowedChatActions = useMemo(() => getAllowedComposerActions(taskType), [taskType]);
 
   useEffect(() => {
@@ -429,6 +438,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     selectedChatActionRef.current = false;
     setSelectedChatAction(defaultAction);
   }, [taskId, task?.id]);
+
+  useEffect(() => {
+    setLiveDiff(null);
+    setLiveDiffError(null);
+    setLiveDiffLoading(false);
+  }, [taskId]);
 
   useEffect(() => {
     if (!allowedChatActions.includes(selectedChatAction)) {
@@ -466,6 +481,40 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setPlanPreview(false);
     }
   }, [isEditingPlan, task]);
+
+  useEffect(() => {
+    if (activeMainTab !== "diff" || !task || !canRequestLiveDiff) {
+      return;
+    }
+
+    let cancelled = false;
+    const loadLiveDiff = async () => {
+      setLiveDiffLoading(true);
+      try {
+        const snapshot = await api.getTaskLiveDiff(task.id);
+        if (!cancelled) {
+          setLiveDiff(snapshot);
+          setLiveDiffError(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setLiveDiffError(error instanceof Error ? error.message : "Failed to refresh live diff");
+        }
+      } finally {
+        if (!cancelled) {
+          setLiveDiffLoading(false);
+        }
+      }
+    };
+
+    void loadLiveDiff();
+    const timer = window.setInterval(() => void loadLiveDiff(), 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeMainTab, canRequestLiveDiff, liveDiffRefreshKey, task?.id, task?.updatedAt, task?.workspaceBaseRef]);
 
   useEffect(() => {
     if (!task) {
@@ -873,6 +922,23 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const diffContent = hasDiffTab ? (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Flex justify="space-between" align="center" wrap="wrap" gap={12}>
+        <Typography.Text type="secondary">
+          {hasLiveDiff
+            ? `Live workspace diff · updated ${dayjs(liveDiff?.fetchedAt).format("HH:mm:ss")}`
+            : hasStoredDiff
+              ? "Showing last captured diff from task state because no live workspace diff is available."
+              : liveDiff?.message ?? "Live diff will appear once the task workspace exists."}
+        </Typography.Text>
+        <Button
+          onClick={() => setLiveDiffRefreshKey((current) => current + 1)}
+          loading={liveDiffLoading}
+          disabled={!canRequestLiveDiff}
+        >
+          Refresh
+        </Button>
+      </Flex>
+      {liveDiffError ? <Alert type="warning" showIcon message="Live diff refresh failed" description={liveDiffError} /> : null}
       {githubDiffTarget ? (
         <Flex justify="flex-end">
           <Button href={githubDiffTarget.href} target="_blank" rel="noreferrer">
@@ -881,10 +947,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         </Flex>
       ) : null}
       {isReviewTask
-        ? renderParsedDiff(task?.branchDiff ?? "", `No diff captured for ${task?.baseBranch} against ${task?.repoDefaultBranch}.`, {
+        ? renderParsedDiff(renderedDiff, `No diff captured for ${task?.baseBranch} against ${task?.repoDefaultBranch}.`, {
             collapseFiles: true
           })
-        : renderParsedDiff(task?.branchDiff ?? "", "No diff captured yet. Run Build to generate one.", { collapseFiles: true })}
+        : renderParsedDiff(
+            renderedDiff,
+            hasLiveDiff ? "No current workspace changes detected." : "No diff captured yet. Run Build to generate one.",
+            { collapseFiles: true }
+          )}
     </Space>
   ) : null;
 

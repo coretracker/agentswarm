@@ -83,6 +83,13 @@ export interface Task {
   errorMessage: string | null;
 }
 
+export interface TaskLiveDiff {
+  diff: string | null;
+  live: boolean;
+  fetchedAt: string;
+  message: string | null;
+}
+
 export interface TaskMessage {
   id: string;
   taskId: string;

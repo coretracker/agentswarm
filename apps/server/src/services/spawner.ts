@@ -7,6 +7,7 @@ import {
   type AgentProvider,
   type McpServerConfig,
   type Task,
+  type TaskLiveDiff,
   type TaskAction,
   type TaskReviewVerdict
 } from "@agentswarm/shared-types";
@@ -159,6 +160,65 @@ export class SpawnerService {
     });
   }
 
+  private runCommandCaptureRaw(command: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...extraEnv } });
+
+      let stdout = "";
+      let stderr = "";
+
+      proc.stdout.on("data", (data) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on("error", reject);
+      proc.on("close", (code) => {
+        if (code === 0) {
+          resolve(stdout);
+          return;
+        }
+
+        reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+      });
+    });
+  }
+
+  private runCommandCaptureAllowExitCodes(
+    command: string,
+    args: string[],
+    allowedExitCodes: number[],
+    extraEnv: NodeJS.ProcessEnv = {}
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...extraEnv } });
+
+      let stdout = "";
+      let stderr = "";
+
+      proc.stdout.on("data", (data) => {
+        stdout += data.toString();
+      });
+
+      proc.stderr.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on("error", reject);
+      proc.on("close", (code) => {
+        if (code === 0 || (code !== null && allowedExitCodes.includes(code))) {
+          resolve(stdout);
+          return;
+        }
+
+        reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+      });
+    });
+  }
+
   private async ensureGitAskPassScript(): Promise<string | null> {
     if (this.gitAskPassPath) {
       return this.gitAskPassPath;
@@ -211,6 +271,24 @@ esac
 
   private async gitCommandCapture(args: string[], githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
     return this.runCommandCapture("git", args, await this.buildGitEnv(args, githubToken, gitUsername));
+  }
+
+  private async gitCommandCaptureRaw(args: string[], githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
+    return this.runCommandCaptureRaw("git", args, await this.buildGitEnv(args, githubToken, gitUsername));
+  }
+
+  private async gitCommandCaptureAllowExitCodes(
+    args: string[],
+    allowedExitCodes: number[],
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string> {
+    return this.runCommandCaptureAllowExitCodes(
+      "git",
+      args,
+      allowedExitCodes,
+      await this.buildGitEnv(args, githubToken, gitUsername)
+    );
   }
 
   private async withRepoLock<T>(repoKey: string, fn: () => Promise<T>): Promise<T> {
@@ -438,6 +516,144 @@ esac
     } catch {
       return false;
     }
+  }
+
+  private async refExists(workspacePath: string, ref: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<boolean> {
+    try {
+      await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "--verify", ref], githubToken, gitUsername);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async resolveLiveDiffBaseRef(
+    task: Task,
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string | null> {
+    if (task.taskType === "review") {
+      const defaultRef = `origin/${task.repoDefaultBranch}`;
+      if (!(await this.refExists(workspacePath, defaultRef, githubToken, gitUsername))) {
+        return null;
+      }
+
+      try {
+        return await this.gitCommandCapture(["-C", workspacePath, "merge-base", defaultRef, "HEAD"], githubToken, gitUsername);
+      } catch {
+        return null;
+      }
+    }
+
+    if (task.workspaceBaseRef && (await this.refExists(workspacePath, task.workspaceBaseRef, githubToken, gitUsername))) {
+      return task.workspaceBaseRef;
+    }
+
+    const remoteBranchRef = task.branchName ? `origin/${task.branchName}` : null;
+    if (remoteBranchRef && (await this.refExists(workspacePath, remoteBranchRef, githubToken, gitUsername))) {
+      return remoteBranchRef;
+    }
+
+    const remoteBaseRef = `origin/${task.baseBranch}`;
+    if (await this.refExists(workspacePath, remoteBaseRef, githubToken, gitUsername)) {
+      return remoteBaseRef;
+    }
+
+    return (await this.refExists(workspacePath, "HEAD", githubToken, gitUsername)) ? "HEAD" : null;
+  }
+
+  private async collectUntrackedFileDiff(
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string> {
+    const output = await this.gitCommandCaptureRaw(
+      ["-C", workspacePath, "ls-files", "--others", "--exclude-standard", "-z"],
+      githubToken,
+      gitUsername
+    );
+    const untrackedFiles = output.split("\0").filter((line) => line.length > 0);
+    if (untrackedFiles.length === 0) {
+      return "";
+    }
+
+    const patches: string[] = [];
+    for (const filePath of untrackedFiles) {
+      try {
+        const patch = await this.gitCommandCaptureAllowExitCodes(
+          ["-C", workspacePath, "diff", "--no-index", "--relative", "--", "/dev/null", filePath],
+          [1],
+          githubToken,
+          gitUsername
+        );
+        if (patch.trim().length > 0) {
+          patches.push(patch.trimEnd());
+        }
+      } catch {
+        // Best effort: ignore files that disappear during collection.
+      }
+    }
+
+    return patches.join("\n");
+  }
+
+  private async collectLiveDiff(
+    workspacePath: string,
+    baseRef: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string> {
+    const trackedDiff = await this.gitCommandCapture(["-C", workspacePath, "diff", baseRef], githubToken, gitUsername);
+    const untrackedDiff = await this.collectUntrackedFileDiff(workspacePath, githubToken, gitUsername);
+
+    return [trackedDiff, untrackedDiff].filter((chunk) => chunk.trim().length > 0).join("\n").trim();
+  }
+
+  async getLiveTaskDiff(task: Task): Promise<TaskLiveDiff> {
+    const fetchedAt = new Date().toISOString();
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const workspaceExists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+
+    if (!workspaceExists) {
+      return {
+        diff: null,
+        live: false,
+        fetchedAt,
+        message: "Local workspace is unavailable for this task."
+      };
+    }
+
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const baseRef = await this.resolveLiveDiffBaseRef(
+      task,
+      workspacePath,
+      runtimeCredentials.githubToken,
+      runtimeCredentials.gitUsername
+    );
+    if (!baseRef) {
+      return {
+        diff: null,
+        live: false,
+        fetchedAt,
+        message: "No compare base is available yet."
+      };
+    }
+
+    const diff = await this.collectLiveDiff(
+      workspacePath,
+      baseRef,
+      runtimeCredentials.githubToken,
+      runtimeCredentials.gitUsername
+    );
+    return {
+      diff: diff || null,
+      live: true,
+      fetchedAt,
+      message: null
+    };
   }
 
   private async prepareWorkspace(
@@ -810,6 +1026,9 @@ esac
           workspace: preparedWorkspace
         };
       });
+      if (action === "build" && !task.workspaceBaseRef) {
+        await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
+      }
       const runtimeMcpEnv = this.collectRuntimeMcpEnv(settings.mcpServers);
       const providerConfigPath = path.join(payloadDir, providerDefinition.configFileName);
       const resultMarkdownPath = path.join(payloadDir, "result.md");
@@ -1016,9 +1235,6 @@ esac
           });
         }
       } else {
-        if (!task.workspaceBaseRef) {
-          await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
-        }
         const diffBaseRef = task.workspaceBaseRef ?? workspace.workspaceBaseRef;
         const { branchDiff, providerCommitted } = await this.finalizeBuild(
           task,
