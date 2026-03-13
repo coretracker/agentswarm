@@ -107,7 +107,7 @@ docker compose up --build
 After the stack is running:
 
 1. Sign in with the seeded admin account from `.env.example` or your local `.env`:
-   - email: `admin@localhost`
+   - email: `admin@agentswarm.local`
    - password: `admin123!`
 2. Rotate the seeded admin password immediately and create the real users and roles you want to use.
 3. Open `Settings` and configure the provider credentials you actually want to use:

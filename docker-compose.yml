@@ -25,7 +25,7 @@ services:
       - SECRET_KEY_PATH=/secrets/agentswarm.key
       - CORS_ORIGIN=http://localhost:3217
       - DEFAULT_ADMIN_NAME=${DEFAULT_ADMIN_NAME:-Administrator}
-      - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@localhost}
+      - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@agentswarm.local}
       - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-admin123!}
       - AUTH_COOKIE_NAME=${AUTH_COOKIE_NAME:-agentswarm_session}
       - AUTH_SESSION_TTL_DAYS=${AUTH_SESSION_TTL_DAYS:-7}
