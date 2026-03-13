@@ -16,7 +16,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "../src/api/client";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useTasks } from "../src/hooks/useTasks";
-import { getSeenTaskIds, markTaskSeen, subscribeToSeenTasks } from "../src/utils/seen-tasks";
+import { getSeenTaskVersions, isTaskSeen, markTaskSeen, migrateSeenTaskVersions, subscribeToSeenTasks, type SeenTaskVersions } from "../src/utils/seen-tasks";
 
 const statusOptions: Array<{ label: string; value: TaskStatus }> = [
   { label: "Plan Queued", value: "plan_queued" },
@@ -59,7 +59,7 @@ export function TasksPage() {
   const searchParams = useSearchParams();
   const { tasks, setTasks, loading } = useTasks();
   const { repositories } = useRepositories();
-  const [seenTaskIds, setSeenTaskIds] = useState<Set<string>>(new Set());
+  const [seenTaskVersions, setSeenTaskVersions] = useState<SeenTaskVersions>({});
   const [titleFilter, setTitleFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<TaskStatus | undefined>();
   const [repoFilter, setRepoFilter] = useState<string | undefined>();
@@ -79,13 +79,20 @@ export function TasksPage() {
   }, [statusFilter, visibleStatusOptions]);
 
   useEffect(() => {
-    const syncSeenTaskIds = () => {
-      setSeenTaskIds(getSeenTaskIds());
+    const syncSeenTaskVersions = () => {
+      setSeenTaskVersions(getSeenTaskVersions());
     };
 
-    syncSeenTaskIds();
-    return subscribeToSeenTasks(syncSeenTaskIds);
+    syncSeenTaskVersions();
+    return subscribeToSeenTasks(syncSeenTaskVersions);
   }, []);
+
+  useEffect(() => {
+    const migratedSeenTaskVersions = migrateSeenTaskVersions(seenTaskVersions, tasks);
+    if (migratedSeenTaskVersions) {
+      setSeenTaskVersions(migratedSeenTaskVersions);
+    }
+  }, [seenTaskVersions, tasks]);
 
   const filteredTasks = useMemo(() => {
     return tasks.filter((task) => {
@@ -122,8 +129,21 @@ export function TasksPage() {
   };
 
   const handleTogglePin = async (task: Task) => {
+    const wasSeen = isTaskSeen(task, seenTaskVersions);
+
     try {
       const updatedTask = await api.updateTaskPin(task.id, { pinned: !task.pinned });
+      if (wasSeen) {
+        markTaskSeen(updatedTask);
+        setSeenTaskVersions((current) =>
+          current[updatedTask.id] === updatedTask.updatedAt
+            ? current
+            : {
+                ...current,
+                [updatedTask.id]: updatedTask.updatedAt
+              }
+        );
+      }
       setTasks((current) =>
         current
           .map((item) =>
@@ -207,15 +227,16 @@ export function TasksPage() {
             style={{ cursor: "pointer" }}
             onRow={(record) => ({
               onClick: () => {
-                markTaskSeen(record.id);
-                setSeenTaskIds((current) => {
-                  if (current.has(record.id)) {
+                markTaskSeen(record);
+                setSeenTaskVersions((current) => {
+                  if (current[record.id] === record.updatedAt) {
                     return current;
                   }
 
-                  const next = new Set(current);
-                  next.add(record.id);
-                  return next;
+                  return {
+                    ...current,
+                    [record.id]: record.updatedAt
+                  };
                 });
                 router.push(`/tasks/${record.id}`);
               }
@@ -227,7 +248,7 @@ export function TasksPage() {
                 render: (value: string, task) => (
                   <Space size={8}>
                     {task.pinned ? <PushpinFilled style={{ color: "#1C8057" }} /> : null}
-                    {!seenTaskIds.has(task.id) ? (
+                    {!isTaskSeen(task, seenTaskVersions) ? (
                       <span
                         aria-label="Unseen task"
                         style={{

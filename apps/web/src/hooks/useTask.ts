@@ -33,7 +33,6 @@ export const useTask = (taskId: string) => {
           return;
         }
 
-        markTaskSeen(item.id);
         setTask(item);
         setLoading(false);
       })
@@ -50,6 +49,14 @@ export const useTask = (taskId: string) => {
       active = false;
     };
   }, [taskId]);
+
+  useEffect(() => {
+    if (!task) {
+      return;
+    }
+
+    markTaskSeen(task);
+  }, [task]);
 
   useEffect(() => {
     if (!socket) {
