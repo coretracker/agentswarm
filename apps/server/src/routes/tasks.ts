@@ -132,6 +132,15 @@ export const registerTaskRoutes = (
     return deps.taskStore.listRuns(task.id);
   });
 
+  app.get<{ Params: { id: string } }>("/tasks/:id/live-diff", async (request, reply) => {
+    const task = await deps.taskStore.getTask(request.params.id);
+    if (!task) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    return deps.spawner.getLiveTaskDiff(task);
+  });
+
   app.post("/tasks", async (request, reply) => {
     const parsed = createTaskSchema.safeParse(request.body);
     if (!parsed.success) {

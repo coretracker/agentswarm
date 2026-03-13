@@ -12,6 +12,7 @@ import type {
   Repository,
   SystemSettings,
   Task,
+  TaskLiveDiff,
   TaskMessage,
   TaskRun,
   TaskAction,
@@ -51,6 +52,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   listTasks: () => request<Task[]>("/tasks"),
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
+  getTaskLiveDiff: (id: string) => request<TaskLiveDiff>(`/tasks/${id}/live-diff`),
   listTaskMessages: (id: string) => request<TaskMessage[]>(`/tasks/${id}/messages`),
   listTaskRuns: (id: string) => request<TaskRun[]>(`/tasks/${id}/runs`),
   createTask: (input: CreateTaskInput) =>
