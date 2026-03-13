@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
+import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
 
@@ -44,11 +45,12 @@ export const registerSettingsRoutes = (
   deps: {
     settingsStore: SettingsStore;
     scheduler: SchedulerService;
+    auth: AuthService;
   }
 ): void => {
-  app.get("/settings", async () => deps.settingsStore.getSettings());
+  app.get("/settings", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => deps.settingsStore.getSettings());
 
-  app.patch("/settings", async (request, reply) => {
+  app.patch("/settings", { preHandler: deps.auth.requireAllScopes(["settings:edit"]) }, async (request, reply) => {
     const parsed = updateSettingsSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
@@ -59,7 +61,7 @@ export const registerSettingsRoutes = (
     return reply.send(settings);
   });
 
-  app.patch("/settings/credentials", async (request, reply) => {
+  app.patch("/settings/credentials", { preHandler: deps.auth.requireAllScopes(["settings:edit"]) }, async (request, reply) => {
     const parsed = updateCredentialsSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });

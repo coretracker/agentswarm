@@ -4,6 +4,7 @@ import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { isActiveTaskStatus, type Task, type TaskAction, type TaskType } from "@agentswarm/shared-types";
 import { env } from "../config/env.js";
+import type { AuthService } from "../lib/auth.js";
 import { resolveLocalPlanRevisionPath } from "../lib/plan-path.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
@@ -103,11 +104,12 @@ export const registerTaskRoutes = (
     repositoryStore: RepositoryStore;
     scheduler: SchedulerService;
     spawner: SpawnerService;
+    auth: AuthService;
   }
 ): void => {
-  app.get("/tasks", async () => deps.taskStore.listTasks());
+  app.get("/tasks", { preHandler: deps.auth.requireAllScopes(["task:list"]) }, async () => deps.taskStore.listTasks());
 
-  app.get<{ Params: { id: string } }>("/tasks/:id", async (request, reply) => {
+  app.get<{ Params: { id: string } }>("/tasks/:id", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });
@@ -116,7 +118,7 @@ export const registerTaskRoutes = (
     return task;
   });
 
-  app.get<{ Params: { id: string } }>("/tasks/:id/messages", async (request, reply) => {
+  app.get<{ Params: { id: string } }>("/tasks/:id/messages", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });
@@ -125,7 +127,7 @@ export const registerTaskRoutes = (
     return deps.taskStore.listMessages(task.id);
   });
 
-  app.get<{ Params: { id: string } }>("/tasks/:id/runs", async (request, reply) => {
+  app.get<{ Params: { id: string } }>("/tasks/:id/runs", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });
@@ -134,7 +136,7 @@ export const registerTaskRoutes = (
     return deps.taskStore.listRuns(task.id);
   });
 
-  app.get<{ Params: { id: string } }>("/tasks/:id/live-diff", async (request, reply) => {
+  app.get<{ Params: { id: string } }>("/tasks/:id/live-diff", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });
@@ -143,7 +145,7 @@ export const registerTaskRoutes = (
     return deps.spawner.getLiveTaskDiff(task);
   });
 
-  app.post("/tasks", async (request, reply) => {
+  app.post("/tasks", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:list"]) }, async (request, reply) => {
     const parsed = createTaskSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
@@ -165,7 +167,7 @@ export const registerTaskRoutes = (
     return reply.status(201).send(refreshed);
   });
 
-  app.post<{ Params: { id: string } }>("/tasks/:id/actions", async (request, reply) => {
+  app.post<{ Params: { id: string } }>("/tasks/:id/actions", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const parsed = triggerTaskActionSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
@@ -201,7 +203,7 @@ export const registerTaskRoutes = (
     return reply.send(refreshed);
   });
 
-  app.post<{ Params: { id: string } }>("/tasks/:id/cancel", async (request, reply) => {
+  app.post<{ Params: { id: string } }>("/tasks/:id/cancel", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });
@@ -220,7 +222,7 @@ export const registerTaskRoutes = (
     return reply.send(refreshed);
   });
 
-  app.patch<{ Params: { id: string } }>("/tasks/:id/config", async (request, reply) => {
+  app.patch<{ Params: { id: string } }>("/tasks/:id/config", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const parsed = updateTaskConfigSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
@@ -251,7 +253,7 @@ export const registerTaskRoutes = (
     return reply.send(updated);
   });
 
-  app.patch<{ Params: { id: string } }>("/tasks/:id/pin", async (request, reply) => {
+  app.patch<{ Params: { id: string } }>("/tasks/:id/pin", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const parsed = updateTaskPinSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
@@ -273,7 +275,7 @@ export const registerTaskRoutes = (
     return reply.send(updated);
   });
 
-  app.patch<{ Params: { id: string } }>("/tasks/:id/plan", async (request, reply) => {
+  app.patch<{ Params: { id: string } }>("/tasks/:id/plan", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const parsed = updateTaskPlanSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
@@ -321,7 +323,7 @@ export const registerTaskRoutes = (
     return reply.send((await deps.taskStore.getTask(task.id)) ?? updated);
   });
 
-  app.post<{ Params: { id: string } }>("/tasks/:id/messages", async (request, reply) => {
+  app.post<{ Params: { id: string } }>("/tasks/:id/messages", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const parsed = createTaskMessageSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
@@ -365,7 +367,7 @@ export const registerTaskRoutes = (
     return reply.send(refreshed);
   });
 
-  app.post<{ Params: { id: string; runId: string } }>("/tasks/:id/build-from-run/:runId", async (request, reply) => {
+  app.post<{ Params: { id: string; runId: string } }>("/tasks/:id/build-from-run/:runId", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });
@@ -415,7 +417,7 @@ export const registerTaskRoutes = (
     return reply.send(await deps.taskStore.getTask(task.id));
   });
 
-  app.post<{ Params: { id: string } }>("/tasks/:id/accept", async (request, reply) => {
+  app.post<{ Params: { id: string } }>("/tasks/:id/accept", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });
@@ -443,7 +445,7 @@ export const registerTaskRoutes = (
     return reply.send(accepted);
   });
 
-  app.post<{ Params: { id: string } }>("/tasks/:id/archive", async (request, reply) => {
+  app.post<{ Params: { id: string } }>("/tasks/:id/archive", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });
@@ -463,7 +465,7 @@ export const registerTaskRoutes = (
     return reply.send(refreshed);
   });
 
-  app.delete<{ Params: { id: string } }>("/tasks/:id", async (request, reply) => {
+  app.delete<{ Params: { id: string } }>("/tasks/:id", { preHandler: deps.auth.requireAllScopes(["task:delete"]) }, async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });
@@ -483,7 +485,7 @@ export const registerTaskRoutes = (
   });
 
   // Backward compatibility: /run maps to build.
-  app.post<{ Params: { id: string } }>("/tasks/:id/run", async (request, reply) => {
+  app.post<{ Params: { id: string } }>("/tasks/:id/run", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });

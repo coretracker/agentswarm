@@ -1,30 +1,48 @@
 "use client";
 
 import type {
+  AuthSession,
+  CreateRoleInput,
   CreateTaskFromIssueInput,
   CreateTaskFromPullRequestInput,
   CreateTaskMessageInput,
   CreateRepositoryInput,
   CreateTaskInput,
+  CreateUserInput,
   GitHubBranchReference,
   GitHubIssueReference,
   GitHubPullRequestReference,
+  LoginInput,
   Repository,
+  Role,
   SystemSettings,
   Task,
   TaskLiveDiff,
   TaskMessage,
   TaskRun,
   TaskAction,
+  UpdateRoleInput,
   UpdateTaskPlanInput,
   UpdateTaskPinInput,
   UpdateCredentialSettingsInput,
   UpdateTaskConfigInput,
   UpdateRepositoryInput,
-  UpdateSettingsInput
+  UpdateSettingsInput,
+  UpdateUserInput,
+  User
 } from "@agentswarm/shared-types";
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -35,11 +53,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     ...init,
     headers,
-    cache: "no-store"
+    cache: "no-store",
+    credentials: "include"
   });
 
   if (!response.ok) {
-    throw new Error(await response.text());
+    const raw = await response.text();
+    let message = raw || response.statusText;
+    try {
+      const parsed = JSON.parse(raw) as { message?: string };
+      message = parsed.message ?? message;
+    } catch {
+      // Keep the raw response body when the server does not return JSON.
+    }
+
+    throw new ApiError(response.status, message);
   }
 
   if (response.status === 204) {
@@ -50,6 +78,48 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  login: (input: LoginInput) =>
+    request<AuthSession>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  logout: () =>
+    request<void>("/auth/logout", {
+      method: "POST"
+    }),
+  getSession: () => request<AuthSession>("/auth/session"),
+  listUsers: () => request<User[]>("/users"),
+  getUser: (id: string) => request<User>(`/users/${id}`),
+  createUser: (input: CreateUserInput) =>
+    request<User>("/users", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateUser: (id: string, input: UpdateUserInput) =>
+    request<User>(`/users/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteUser: (id: string) =>
+    request<void>(`/users/${id}`, {
+      method: "DELETE"
+    }),
+  listRoles: () => request<Role[]>("/roles"),
+  getRole: (id: string) => request<Role>(`/roles/${id}`),
+  createRole: (input: CreateRoleInput) =>
+    request<Role>("/roles", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateRole: (id: string, input: UpdateRoleInput) =>
+    request<Role>(`/roles/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteRole: (id: string) =>
+    request<void>(`/roles/${id}`, {
+      method: "DELETE"
+    }),
   listTasks: () => request<Task[]>("/tasks"),
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
   getTaskLiveDiff: (id: string) => request<TaskLiveDiff>(`/tasks/${id}/live-diff`),

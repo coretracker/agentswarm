@@ -70,6 +70,9 @@ Each task execution runs in a short-lived Docker container. The server prepares 
 ## Security model
 
 - Provider API credentials and GitHub token are configured through the Settings UI
+- Authentication uses httpOnly session cookies backed by Redis
+- Roles are scope-based and managed from the Settings UI
+- Users are managed from the Users screen after signing in
 - Credentials are stored encrypted on the server with a local key volume
 - Credentials are never returned by the API
 - Provider containers do not own git push credentials; the server performs commit and push after successful build execution
@@ -96,25 +99,30 @@ docker compose up --build
 
 ### Open the app
 
-- Web UI: `http://localhost:3217`
+- Web UI: `http://localhost:3217/login`
 - Server health: `http://localhost:4000/health`
 
 ## First-time setup
 
 After the stack is running:
 
-1. Open `Settings`
-2. Configure the credentials you actually want to use:
+1. Sign in with the seeded admin account from `.env.example` or your local `.env`:
+   - email: `admin@agentswarm.local`
+   - password: `admin123!`
+2. Rotate the seeded admin password immediately and create the real users and roles you want to use.
+3. Open `Settings` and configure the provider credentials you actually want to use:
    - `Git Username`
    - `GitHub Token`
    - `OpenAI API Key`
    - `Anthropic API Key`
    - optional `OpenAI Base URL`
-3. Add one or more repositories
-4. Create a task from:
+4. Add one or more repositories
+5. Create a task from:
    - blank input
    - GitHub issue
    - GitHub pull request
+
+The seeded admin password is only applied when the bootstrap user is first created. Restarting the stack does not reset that password.
 
 ## Runtime behavior
 

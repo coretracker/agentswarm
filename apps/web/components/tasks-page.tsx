@@ -17,6 +17,7 @@ import { api } from "../src/api/client";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useTasks } from "../src/hooks/useTasks";
 import { getSeenTaskVersions, isTaskSeen, markTaskSeen, migrateSeenTaskVersions, subscribeToSeenTasks, type SeenTaskVersions } from "../src/utils/seen-tasks";
+import { useAuth } from "./auth-provider";
 
 const statusOptions: Array<{ label: string; value: TaskStatus }> = [
   { label: "Plan Queued", value: "plan_queued" },
@@ -57,6 +58,7 @@ const statusColor: Record<TaskStatus, string> = {
 export function TasksPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { can } = useAuth();
   const { tasks, setTasks, loading } = useTasks();
   const { repositories } = useRepositories();
   const [seenTaskVersions, setSeenTaskVersions] = useState<SeenTaskVersions>({});
@@ -66,6 +68,9 @@ export function TasksPage() {
   const [createdAtFilter, setCreatedAtFilter] = useState<string | null>(null);
   const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
+  const canCreateTask = can("task:create");
+  const canEditTask = can("task:edit");
+  const canDeleteTask = can("task:delete");
   const archivedView = searchParams.get("view") === "archived";
   const visibleStatusOptions = useMemo(
     () => (archivedView ? statusOptions.filter((option) => option.value === "archived") : statusOptions.filter((option) => option.value !== "archived")),
@@ -188,9 +193,11 @@ export function TasksPage() {
               </Typography.Link>
             </Space>
           </Flex>
-          <Button type="primary" onClick={() => router.push("/tasks/new")}>
-            New Task
-          </Button>
+          {canCreateTask ? (
+            <Button type="primary" onClick={() => router.push("/tasks/new")}>
+              New Task
+            </Button>
+          ) : null}
         </Flex>
 
         <Card bordered={false}>
@@ -308,17 +315,27 @@ export function TasksPage() {
                 width: 170,
                 render: (_value, task) => (
                   <Space onClick={(event) => event.stopPropagation()}>
-                    <Popconfirm
-                      title="Delete task"
-                      description={`Delete "${task.title}"?`}
-                      okText="Delete"
-                      okButtonProps={{ danger: true, loading: deletingTaskId === task.id }}
-                      onConfirm={() => handleDeleteTask(task)}
-                    >
-                      <Button danger size="small" disabled={isActiveTaskStatus(task.status) || task.status === "archived"}>
-                        Delete
-                      </Button>
-                    </Popconfirm>
+                    {canEditTask ? (
+                      <Button
+                        size="small"
+                        icon={task.pinned ? <PushpinFilled /> : <PushpinOutlined />}
+                        onClick={() => void handleTogglePin(task)}
+                        disabled={task.status === "archived"}
+                      />
+                    ) : null}
+                    {canDeleteTask ? (
+                      <Popconfirm
+                        title="Delete task"
+                        description={`Delete "${task.title}"?`}
+                        okText="Delete"
+                        okButtonProps={{ danger: true, loading: deletingTaskId === task.id }}
+                        onConfirm={() => handleDeleteTask(task)}
+                      >
+                        <Button danger size="small" disabled={isActiveTaskStatus(task.status) || task.status === "archived"}>
+                          Delete
+                        </Button>
+                      </Popconfirm>
+                    ) : null}
                   </Space>
                 )
               }

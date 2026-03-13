@@ -31,6 +31,125 @@ export type TaskComplexity = "trivial" | "normal" | "complex";
 export type TaskPlanningMode = "direct-build" | "plan-first";
 export type TaskBranchStrategy = "feature_branch" | "work_on_branch";
 export type McpServerTransport = "stdio" | "http";
+export type PermissionScope =
+  | "task:list"
+  | "task:create"
+  | "task:read"
+  | "task:edit"
+  | "task:delete"
+  | "repo:list"
+  | "repo:read"
+  | "repo:create"
+  | "repo:edit"
+  | "repo:delete"
+  | "settings:read"
+  | "settings:edit"
+  | "user:list"
+  | "user:create"
+  | "user:read"
+  | "user:edit"
+  | "user:delete";
+
+export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
+  "task:list",
+  "task:create",
+  "task:read",
+  "task:edit",
+  "task:delete",
+  "repo:list",
+  "repo:read",
+  "repo:create",
+  "repo:edit",
+  "repo:delete",
+  "settings:read",
+  "settings:edit",
+  "user:list",
+  "user:create",
+  "user:read",
+  "user:edit",
+  "user:delete"
+];
+
+export interface PermissionScopeGroup {
+  label: string;
+  scopes: PermissionScope[];
+}
+
+export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
+  { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:delete"] },
+  { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
+  { label: "Settings", scopes: ["settings:read", "settings:edit"] },
+  { label: "Users", scopes: ["user:list", "user:create", "user:read", "user:edit", "user:delete"] }
+];
+
+export interface Role {
+  id: string;
+  name: string;
+  description: string;
+  scopes: PermissionScope[];
+  isSystem: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UserRoleRef {
+  id: string;
+  name: string;
+  isSystem: boolean;
+}
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  active: boolean;
+  roles: UserRoleRef[];
+  lastLoginAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuthSessionUser extends User {
+  scopes: PermissionScope[];
+}
+
+export interface AuthSession {
+  user: AuthSessionUser;
+  expiresAt: string;
+}
+
+export interface LoginInput {
+  email: string;
+  password: string;
+}
+
+export interface CreateRoleInput {
+  name: string;
+  description?: string;
+  scopes: PermissionScope[];
+}
+
+export interface UpdateRoleInput {
+  name?: string;
+  description?: string;
+  scopes?: PermissionScope[];
+}
+
+export interface CreateUserInput {
+  name: string;
+  email: string;
+  password: string;
+  active?: boolean;
+  roleIds?: string[];
+}
+
+export interface UpdateUserInput {
+  name?: string;
+  email?: string;
+  password?: string;
+  active?: boolean;
+  roleIds?: string[];
+}
 
 export interface Repository {
   id: string;
