@@ -51,6 +51,8 @@ const createTaskMessageSchema = z.object({
   action: z.enum(["plan", "build", "review", "ask", "comment"]).optional()
 });
 
+const archivedTaskReadOnlyMessage = "Archived tasks are read-only";
+
 const getInitialAction = (task: Pick<Task, "taskType" | "planningMode" | "planMarkdown">): TaskAction => {
   if (task.taskType === "review") {
     return "review";
@@ -174,6 +176,10 @@ export const registerTaskRoutes = (
       return reply.status(404).send({ message: "Task not found" });
     }
 
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
     if (!allowedActionsByTaskType[task.taskType].includes(parsed.data.action)) {
       return reply.status(409).send({ message: `Action ${parsed.data.action} is not supported for ${task.taskType} tasks` });
     }
@@ -201,6 +207,10 @@ export const registerTaskRoutes = (
       return reply.status(404).send({ message: "Task not found" });
     }
 
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
     const accepted = await deps.scheduler.cancelTask(task.id);
     if (!accepted) {
       return reply.status(409).send({ message: "Task cannot be cancelled in its current state" });
@@ -219,6 +229,10 @@ export const registerTaskRoutes = (
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
     const updated = await deps.taskStore.patchTask(task.id, {
@@ -248,6 +262,10 @@ export const registerTaskRoutes = (
       return reply.status(404).send({ message: "Task not found" });
     }
 
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
     const updated = await deps.taskStore.patchTask(task.id, {
       pinned: parsed.data.pinned
     });
@@ -264,6 +282,10 @@ export const registerTaskRoutes = (
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
     if (task.taskType !== "plan") {
@@ -310,6 +332,10 @@ export const registerTaskRoutes = (
       return reply.status(404).send({ message: "Task not found" });
     }
 
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
     const action = parsed.data.action ?? getChatActionForTask(task);
 
     if (action !== "comment" && isActiveTaskStatus(task.status)) {
@@ -343,6 +369,10 @@ export const registerTaskRoutes = (
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
     if (task.taskType !== "plan") {
@@ -391,6 +421,10 @@ export const registerTaskRoutes = (
       return reply.status(404).send({ message: "Task not found" });
     }
 
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
     const canAcceptImplementationFailure = (task.taskType === "plan" || task.taskType === "build") && task.status === "failed";
     if (task.status !== "review" && task.status !== "answered" && !canAcceptImplementationFailure) {
       return reply.status(409).send({ message: "Only completed task results can be accepted" });
@@ -409,10 +443,34 @@ export const registerTaskRoutes = (
     return reply.send(accepted);
   });
 
+  app.post<{ Params: { id: string } }>("/tasks/:id/archive", async (request, reply) => {
+    const task = await deps.taskStore.getTask(request.params.id);
+    if (!task) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: "Task is already archived" });
+    }
+
+    if (isActiveTaskStatus(task.status)) {
+      return reply.status(409).send({ message: "Active tasks cannot be archived" });
+    }
+
+    await deps.taskStore.archiveTask(task.id);
+    await deps.taskStore.appendLog(task.id, "Task archived by user.");
+    const refreshed = await deps.taskStore.getTask(task.id);
+    return reply.send(refreshed);
+  });
+
   app.delete<{ Params: { id: string } }>("/tasks/:id", async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
     if (isActiveTaskStatus(task.status)) {
@@ -429,6 +487,10 @@ export const registerTaskRoutes = (
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
       return reply.status(404).send({ message: "Task not found" });
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
     const accepted = await deps.scheduler.triggerAction(task.id, getInitialAction(task));

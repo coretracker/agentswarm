@@ -131,6 +131,7 @@ export class TaskStore {
       status === "review" ||
       status === "answered" ||
       status === "accepted" ||
+      status === "archived" ||
       status === "cancelled" ||
       status === "failed"
     ) {
@@ -694,6 +695,27 @@ export class TaskStore {
       ...task,
       ...extra,
       status,
+      logs: [],
+      updatedAt: nowIso()
+    };
+
+    await this.redis.set(this.taskKey(taskId), JSON.stringify(next));
+    await this.eventBus.publish({ type: "task:updated", payload: next });
+    return next;
+  }
+
+  async archiveTask(taskId: string): Promise<Task | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    await this.rewriteQueueWithoutTask(taskId);
+
+    const next: Task = {
+      ...task,
+      status: "archived",
+      enqueued: false,
       logs: [],
       updatedAt: nowIso()
     };
