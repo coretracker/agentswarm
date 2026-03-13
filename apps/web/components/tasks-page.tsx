@@ -10,6 +10,7 @@ import {
   type TaskStatus
 } from "@agentswarm/shared-types";
 import { Button, Card, DatePicker, Divider, Flex, Input, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, message } from "antd";
+import { PushpinFilled, PushpinOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
 import { api } from "../src/api/client";
@@ -92,6 +93,33 @@ export function TasksPage() {
     }
   };
 
+  const handleTogglePin = async (task: Task) => {
+    try {
+      const updatedTask = await api.updateTaskPin(task.id, { pinned: !task.pinned });
+      setTasks((current) =>
+        current
+          .map((item) =>
+            item.id === task.id
+              ? {
+                  ...item,
+                  ...updatedTask,
+                  logs: updatedTask.logs.length > 0 ? updatedTask.logs : item.logs
+                }
+              : item
+          )
+          .sort((a, b) => {
+            if (a.pinned !== b.pinned) {
+              return a.pinned ? -1 : 1;
+            }
+            return b.createdAt.localeCompare(a.createdAt);
+          })
+      );
+      messageApi.success(updatedTask.pinned ? `Pinned "${task.title}"` : `Unpinned "${task.title}"`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to update task pin");
+    }
+  };
+
   return (
     <>
       {contextHolder}
@@ -146,7 +174,13 @@ export function TasksPage() {
             columns={[
               {
                 title: "Title",
-                dataIndex: "title"
+                dataIndex: "title",
+                render: (value: string, task) => (
+                  <Space size={8}>
+                    {task.pinned ? <PushpinFilled style={{ color: "#1C8057" }} /> : null}
+                    <span>{value}</span>
+                  </Space>
+                )
               },
               {
                 title: "Repository",
@@ -188,9 +222,9 @@ export function TasksPage() {
               {
                 title: "Actions",
                 key: "actions",
-                width: 120,
+                width: 170,
                 render: (_value, task) => (
-                  <div onClick={(event) => event.stopPropagation()}>
+                  <Space onClick={(event) => event.stopPropagation()}>
                     <Popconfirm
                       title="Delete task"
                       description={`Delete "${task.title}"?`}
@@ -202,7 +236,7 @@ export function TasksPage() {
                         Delete
                       </Button>
                     </Popconfirm>
-                  </div>
+                  </Space>
                 )
               }
             ]}

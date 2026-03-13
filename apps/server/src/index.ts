@@ -35,7 +35,7 @@ const bootstrap = async (): Promise<void> => {
   const scheduler = new SchedulerService(taskStore, settingsStore, spawner);
   const githubImportService = new GitHubImportService(settingsStore);
 
-  registerTaskRoutes(app, { taskStore, repositoryStore, scheduler });
+  registerTaskRoutes(app, { taskStore, repositoryStore, scheduler, spawner });
   registerRepositoryRoutes(app, { repositoryStore });
   registerSettingsRoutes(app, { settingsStore, scheduler });
   registerImportRoutes(app, { githubImportService, repositoryStore, taskStore, scheduler });

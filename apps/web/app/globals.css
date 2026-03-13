@@ -15,27 +15,3 @@ pre {
   word-break: break-word;
   font-family: "SFMono-Regular", "Consolas", monospace;
 }
-
-.task-detail-main-tabs {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-}
-
-.task-detail-main-tabs .ant-tabs-nav {
-  flex: 0 0 auto;
-  margin: 0 0 12px;
-}
-
-.task-detail-main-tabs .ant-tabs-content-holder,
-.task-detail-main-tabs .ant-tabs-content,
-.task-detail-main-tabs .ant-tabs-tabpane {
-  height: 100%;
-  min-height: 0;
-}
-
-.task-detail-main-tabs .ant-tabs-content-holder,
-.task-detail-main-tabs .ant-tabs-tabpane {
-  overflow: hidden;
-}

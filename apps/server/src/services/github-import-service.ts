@@ -2,6 +2,9 @@ import type {
   CreateTaskFromIssueInput,
   CreateTaskFromPullRequestInput,
   CreateTaskInput,
+  GitHubBranchReference,
+  GitHubIssueReference,
+  GitHubPullRequestReference,
   Repository
 } from "@agentswarm/shared-types";
 import type { SettingsStore } from "./settings-store.js";
@@ -36,6 +39,10 @@ interface GitHubPullRequest {
   html_url: string;
   head: { ref: string };
   base: { ref: string };
+}
+
+interface GitHubBranch {
+  name: string;
 }
 
 interface ReviewThreadCommentNode {
@@ -157,6 +164,42 @@ export class GitHubImportService {
     return response.json() as Promise<T>;
   }
 
+  async listOpenIssues(repository: Repository): Promise<GitHubIssueReference[]> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const issues = await this.fetchGitHubJson<GitHubIssue[]>(`/repos/${owner}/${repo}/issues?state=open&sort=updated&direction=desc&per_page=50`);
+
+    return issues
+      .filter((issue) => !issue.pull_request)
+      .map((issue) => ({
+        number: issue.number,
+        title: issue.title,
+        url: issue.html_url
+      }));
+  }
+
+  async listOpenPullRequests(repository: Repository): Promise<GitHubPullRequestReference[]> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const pullRequests = await this.fetchGitHubJson<GitHubPullRequest[]>(`/repos/${owner}/${repo}/pulls?state=open&sort=updated&direction=desc&per_page=50`);
+
+    return pullRequests.map((pullRequest) => ({
+      number: pullRequest.number,
+      title: pullRequest.title,
+      url: pullRequest.html_url,
+      headBranch: pullRequest.head.ref,
+      baseBranch: pullRequest.base.ref
+    }));
+  }
+
+  async listBranches(repository: Repository): Promise<GitHubBranchReference[]> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const branches = await this.fetchGitHubJson<GitHubBranch[]>(`/repos/${owner}/${repo}/branches?per_page=100`);
+
+    return branches.map((branch) => ({
+      name: branch.name,
+      isDefault: branch.name === repository.defaultBranch
+    }));
+  }
+
   async buildTaskInputFromIssue(repository: Repository, input: CreateTaskFromIssueInput): Promise<CreateTaskInput> {
     const { owner, repo } = parseGitHubRepository(repository.url);
     const issue = await this.fetchGitHubJson<GitHubIssue>(`/repos/${owner}/${repo}/issues/${input.issueNumber}`);
@@ -207,8 +250,7 @@ export class GitHubImportService {
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,
       baseBranch: input.baseBranch?.trim() || repository.defaultBranch,
-      skipPlan: taskType === "plan" ? input.skipPlan : false,
-      branchStrategy: taskType === "plan" ? input.branchStrategy ?? "feature_branch" : "feature_branch",
+      branchStrategy: taskType === "plan" || taskType === "build" ? input.branchStrategy ?? "feature_branch" : "feature_branch",
       model: input.model,
       reasoningEffort: input.reasoningEffort,
       queueMode: input.queueMode
@@ -313,7 +355,6 @@ export class GitHubImportService {
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,
       baseBranch: pullRequest.head.ref,
-      skipPlan: input.skipPlan,
       branchStrategy: "work_on_branch",
       model: input.model,
       reasoningEffort: input.reasoningEffort,

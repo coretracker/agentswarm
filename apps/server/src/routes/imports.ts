@@ -9,13 +9,12 @@ const issueImportSchema = z.object({
   repoId: z.string().min(1),
   issueNumber: z.coerce.number().int().positive(),
   includeComments: z.boolean().optional(),
-  taskType: z.enum(["plan", "ask"]).optional(),
+  taskType: z.enum(["plan", "build", "ask"]).optional(),
   title: z.string().trim().optional(),
   provider: z.enum(["codex", "claude"]).optional(),
   providerProfile: z.enum(["quick", "balanced", "deep", "super_deep", "unlimited"]).optional(),
   modelOverride: z.string().trim().min(1).optional(),
   baseBranch: z.string().trim().min(1).optional(),
-  skipPlan: z.boolean().optional(),
   branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
   queueMode: z.enum(["manual", "auto"]).optional(),
   model: z.string().trim().min(1).optional(),
@@ -29,7 +28,6 @@ const pullRequestImportSchema = z.object({
   provider: z.enum(["codex", "claude"]).optional(),
   providerProfile: z.enum(["quick", "balanced", "deep", "super_deep", "unlimited"]).optional(),
   modelOverride: z.string().trim().min(1).optional(),
-  skipPlan: z.boolean().optional(),
   queueMode: z.enum(["manual", "auto"]).optional(),
   model: z.string().trim().min(1).optional(),
   reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
@@ -44,6 +42,75 @@ export const registerImportRoutes = (
     scheduler: SchedulerService;
   }
 ): void => {
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/issues", async (request, reply) => {
+    const repoId = String(request.query.repoId ?? "").trim();
+    if (!repoId) {
+      return reply.status(400).send({ message: "repoId is required" });
+    }
+
+    try {
+      const repository = await deps.repositoryStore.getRepository(repoId);
+      if (!repository) {
+        return reply.status(404).send({ message: "Repository not found" });
+      }
+
+      const issues = await deps.githubImportService.listOpenIssues(repository);
+      return reply.send(issues);
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/pull-requests", async (request, reply) => {
+    const repoId = String(request.query.repoId ?? "").trim();
+    if (!repoId) {
+      return reply.status(400).send({ message: "repoId is required" });
+    }
+
+    try {
+      const repository = await deps.repositoryStore.getRepository(repoId);
+      if (!repository) {
+        return reply.status(404).send({ message: "Repository not found" });
+      }
+
+      const pullRequests = await deps.githubImportService.listOpenPullRequests(repository);
+      return reply.send(pullRequests);
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/branches", async (request, reply) => {
+    const repoId = String(request.query.repoId ?? "").trim();
+    if (!repoId) {
+      return reply.status(400).send({ message: "repoId is required" });
+    }
+
+    try {
+      const repository = await deps.repositoryStore.getRepository(repoId);
+      if (!repository) {
+        return reply.status(404).send({ message: "Repository not found" });
+      }
+
+      const branches = await deps.githubImportService.listBranches(repository);
+      return reply.send(branches);
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
   app.post("/imports/issue", async (request, reply) => {
     const parsed = issueImportSchema.safeParse(request.body);
     if (!parsed.success) {

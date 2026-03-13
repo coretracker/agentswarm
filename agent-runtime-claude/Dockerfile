@@ -1,6 +1,6 @@
 FROM node:20-alpine
 
-RUN apk add --no-cache git bash openssh-client ripgrep su-exec \
+RUN apk add --no-cache git bash openssh-client ripgrep curl su-exec \
   && npm install -g @anthropic-ai/claude-code \
   && addgroup -S agent \
   && adduser -S -G agent -h /home/agent agent \

@@ -18,6 +18,10 @@ const defaultActionForTask = (task: { taskType: TaskType; planMarkdown: string |
     return "ask";
   }
 
+  if (task.taskType === "build") {
+    return "build";
+  }
+
   return task.planMarkdown || task.planningMode === "direct-build" ? "build" : "plan";
 };
 
@@ -149,8 +153,7 @@ export class SchedulerService {
         await this.taskStore.patchTask(task.id, {
           enqueued: false,
           lastAction: queueEntry.action,
-          latestIterationInput:
-            queueEntry.action === "iterate" ? queueEntry.iterateInput ?? task.latestIterationInput : task.latestIterationInput
+          latestIterationInput: typeof queueEntry.iterateInput === "string" ? queueEntry.iterateInput : task.latestIterationInput
         });
         this.activeTaskIds.add(task.id);
 

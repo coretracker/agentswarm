@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type {
   AgentProvider,
+  GitHubBranchReference,
+  GitHubIssueReference,
+  GitHubPullRequestReference,
   ProviderProfile,
   Repository,
   TaskBranchStrategy,
@@ -11,7 +14,7 @@ import type {
   TaskSourceType,
   TaskType
 } from "@agentswarm/shared-types";
-import { Alert, Button, Card, Checkbox, Col, Collapse, Flex, Form, Input, InputNumber, Row, Select, Space, Typography, message } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Collapse, Flex, Form, Input, Row, Select, Space, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useSettings } from "../src/hooks/useSettings";
@@ -26,7 +29,6 @@ type BlankTaskValues = {
   providerProfile: ProviderProfile;
   modelOverride?: string;
   baseBranch: string;
-  skipPlan: boolean;
   branchStrategy: TaskBranchStrategy;
   queueMode: TaskQueueMode;
 };
@@ -37,12 +39,11 @@ type IssueTaskValues = {
   repoId: string;
   issueNumber: number;
   includeComments: boolean;
-  taskType: Extract<TaskType, "plan" | "ask">;
+  taskType: Extract<TaskType, "plan" | "build" | "ask">;
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride?: string;
   baseBranch: string;
-  skipPlan: boolean;
   branchStrategy: TaskBranchStrategy;
   queueMode: TaskQueueMode;
 };
@@ -55,7 +56,6 @@ type PullRequestTaskValues = {
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride?: string;
-  skipPlan: boolean;
   queueMode: TaskQueueMode;
 };
 
@@ -80,6 +80,10 @@ export function TaskCreatePage() {
   const { settings } = useSettings();
   const [form] = Form.useForm<TaskCreateSubmitValues>();
   const [submitting, setSubmitting] = useState(false);
+  const [githubIssues, setGitHubIssues] = useState<GitHubIssueReference[]>([]);
+  const [githubPullRequests, setGitHubPullRequests] = useState<GitHubPullRequestReference[]>([]);
+  const [githubBranches, setGitHubBranches] = useState<GitHubBranchReference[]>([]);
+  const [githubOptionsLoading, setGitHubOptionsLoading] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
 
   const selectedRepoId = Form.useWatch("repoId", form);
@@ -87,12 +91,15 @@ export function TaskCreatePage() {
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "plan";
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
+  const selectedIssueNumber = Form.useWatch("issueNumber", form);
+  const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
   const isBlankSource = selectedSourceType === "blank";
   const isIssueSource = selectedSourceType === "issue";
   const isPullRequestSource = selectedSourceType === "pull_request";
-  const effectiveTaskType =
-    isPullRequestSource || (isIssueSource && selectedTaskType === "review") ? "plan" : selectedTaskType;
+  const effectiveTaskType = isPullRequestSource ? "plan" : selectedTaskType;
   const isPlanTask = effectiveTaskType === "plan";
+  const isBuildTask = effectiveTaskType === "build";
+  const isImplementationTask = isPlanTask || isBuildTask;
   const baseBranchLabel = isIssueSource ? "Base Branch" : isBlankSource ? "Base Branch" : undefined;
   const queueModeHelp =
     effectiveTaskType === "plan"
@@ -100,6 +107,9 @@ export function TaskCreatePage() {
       : "Manual waits for a user trigger. Auto lets the scheduler pick up this task as soon as capacity is available.";
   const providerMissingCredentials =
     selectedProvider === "codex" ? !settings?.openaiApiKeyConfigured : !settings?.anthropicApiKeyConfigured;
+
+  const selectedIssue = githubIssues.find((issue) => issue.number === selectedIssueNumber) ?? null;
+  const selectedPullRequest = githubPullRequests.find((pullRequest) => pullRequest.number === selectedPullRequestNumber) ?? null;
 
   useEffect(() => {
     if (!settings) {
@@ -111,6 +121,37 @@ export function TaskCreatePage() {
     }
   }, [form, settings]);
 
+  useEffect(() => {
+    if (!selectedRepoId) {
+      setGitHubIssues([]);
+      setGitHubPullRequests([]);
+      setGitHubBranches([]);
+      return;
+    }
+
+    let active = true;
+    setGitHubOptionsLoading(true);
+
+    void Promise.all([
+      api.listGitHubBranches(selectedRepoId).catch(() => []),
+      api.listGitHubIssues(selectedRepoId).catch(() => []),
+      api.listGitHubPullRequests(selectedRepoId).catch(() => [])
+    ]).then(([branches, issues, pullRequests]) => {
+      if (!active) {
+        return;
+      }
+
+      setGitHubBranches(branches);
+      setGitHubIssues(issues);
+      setGitHubPullRequests(pullRequests);
+      setGitHubOptionsLoading(false);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedRepoId]);
+
   const pageTitle =
     selectedSourceType === "issue"
       ? "New Task From Issue"
@@ -118,6 +159,8 @@ export function TaskCreatePage() {
         ? "New Task From Pull Request"
         : selectedTaskType === "review"
           ? "New Review Task"
+          : selectedTaskType === "build"
+            ? "New Build Task"
           : selectedTaskType === "ask"
             ? "New Ask Task"
             : "New Plan Task";
@@ -139,8 +182,7 @@ export function TaskCreatePage() {
               providerProfile: values.providerProfile,
               modelOverride: values.modelOverride?.trim() || undefined,
               baseBranch: values.baseBranch,
-              skipPlan: values.taskType === "plan" ? values.skipPlan : false,
-              branchStrategy: values.taskType === "plan" ? values.branchStrategy : undefined,
+              branchStrategy: values.taskType === "plan" || values.taskType === "build" ? values.branchStrategy : undefined,
               queueMode: values.queueMode
             })
           : values.sourceType === "pull_request"
@@ -151,7 +193,6 @@ export function TaskCreatePage() {
                 provider: values.provider,
                 providerProfile: values.providerProfile,
                 modelOverride: values.modelOverride?.trim() || undefined,
-                skipPlan: values.skipPlan,
                 queueMode: values.queueMode
               })
             : await api.createTask({
@@ -163,7 +204,6 @@ export function TaskCreatePage() {
                 providerProfile: values.providerProfile,
                 modelOverride: values.modelOverride?.trim() || undefined,
                 baseBranch: values.baseBranch,
-                skipPlan: values.skipPlan,
                 branchStrategy: values.branchStrategy,
                 queueMode: values.queueMode
               });
@@ -173,8 +213,8 @@ export function TaskCreatePage() {
           ? "Review task created and started"
           : task.taskType === "ask"
             ? "Ask task created and started"
-            : task.lastAction === "build"
-              ? "Plan task created and direct build started"
+            : task.taskType === "build"
+              ? "Build task created and build started"
               : "Plan task created and planning started"
       );
       router.push(`/tasks/${task.id}`);
@@ -230,6 +270,18 @@ export function TaskCreatePage() {
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
             Imported against repository <Typography.Text code>{selectedRepository?.name ?? "unknown"}</Typography.Text>.
           </Typography.Paragraph>
+          {selectedIssue ? (
+            <Alert
+              type="success"
+              showIcon
+              message={`Issue #${selectedIssue.number}: ${selectedIssue.title}`}
+              description={
+                <Typography.Link href={selectedIssue.url} target="_blank">
+                  Open issue in GitHub
+                </Typography.Link>
+              }
+            />
+          ) : null}
         </Flex>
       );
     }
@@ -248,6 +300,23 @@ export function TaskCreatePage() {
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
           The task targets the pull request head branch and uses <Typography.Text code>work_on_branch</Typography.Text>.
         </Typography.Paragraph>
+        {selectedPullRequest ? (
+          <Alert
+            type="success"
+            showIcon
+            message={`PR #${selectedPullRequest.number}: ${selectedPullRequest.title}`}
+            description={
+              <Space wrap>
+                <Typography.Link href={selectedPullRequest.url} target="_blank">
+                  Open pull request in GitHub
+                </Typography.Link>
+                <Typography.Text type="secondary">
+                  {selectedPullRequest.baseBranch} {"->"} {selectedPullRequest.headBranch}
+                </Typography.Text>
+              </Space>
+            }
+          />
+        ) : null}
       </Flex>
     );
   };
@@ -265,7 +334,6 @@ export function TaskCreatePage() {
           providerProfile: "deep",
           queueMode: "manual",
           branchStrategy: "feature_branch",
-          skipPlan: false,
           includeComments: true
         }}
         onFinish={handleSubmit}
@@ -331,6 +399,7 @@ export function TaskCreatePage() {
                     <Select
                       options={[
                         { label: "Plan", value: "plan" },
+                        { label: "Build", value: "build" },
                         { label: "Review", value: "review" },
                         { label: "Ask", value: "ask" }
                       ]}
@@ -358,13 +427,23 @@ export function TaskCreatePage() {
 
                 {isIssueSource ? (
                   <>
-                    <Form.Item name="issueNumber" label="Issue Number" rules={[{ required: true }]}> 
-                      <InputNumber min={1} style={{ width: "100%" }} placeholder="123" />
+                    <Form.Item name="issueNumber" label="Issue" rules={[{ required: true }]}> 
+                      <Select
+                        showSearch
+                        loading={githubOptionsLoading}
+                        placeholder="Select open issue"
+                        optionFilterProp="label"
+                        options={githubIssues.map((issue) => ({
+                          label: `#${issue.number} ${issue.title}`,
+                          value: issue.number
+                        }))}
+                      />
                     </Form.Item>
                     <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}> 
                       <Select
                         options={[
                           { label: "Plan", value: "plan" },
+                          { label: "Build", value: "build" },
                           { label: "Ask", value: "ask" }
                         ]}
                       />
@@ -376,24 +455,36 @@ export function TaskCreatePage() {
                 ) : null}
 
                 {isPullRequestSource ? (
-                  <Form.Item name="pullRequestNumber" label="Pull Request Number" rules={[{ required: true }]}> 
-                    <InputNumber min={1} style={{ width: "100%" }} placeholder="456" />
+                  <Form.Item name="pullRequestNumber" label="Pull Request" rules={[{ required: true }]}> 
+                    <Select
+                      showSearch
+                      loading={githubOptionsLoading}
+                      placeholder="Select open pull request"
+                      optionFilterProp="label"
+                      options={githubPullRequests.map((pullRequest) => ({
+                        label: `#${pullRequest.number} ${pullRequest.title}`,
+                        value: pullRequest.number
+                      }))}
+                    />
                   </Form.Item>
                 ) : null}
 
                 {(isBlankSource || isIssueSource) && baseBranchLabel ? (
                   <Form.Item name="baseBranch" label={baseBranchLabel} rules={[{ required: true }]}> 
-                    <Input placeholder={selectedRepository?.defaultBranch ?? "develop"} />
+                    <Select
+                      showSearch
+                      loading={githubOptionsLoading}
+                      placeholder={selectedRepository?.defaultBranch ?? "develop"}
+                      optionFilterProp="label"
+                      options={githubBranches.map((branch) => ({
+                        label: branch.isDefault ? `${branch.name} (default)` : branch.name,
+                        value: branch.name
+                      }))}
+                    />
                   </Form.Item>
                 ) : null}
 
-                {(isBlankSource && isPlanTask) || (isIssueSource && selectedTaskType === "plan") || isPullRequestSource ? (
-                  <Form.Item name="skipPlan" valuePropName="checked">
-                    <Checkbox>Skip plan and start with build</Checkbox>
-                  </Form.Item>
-                ) : null}
-
-                {(isBlankSource && isPlanTask) || (isIssueSource && selectedTaskType === "plan") ? (
+                {(isBlankSource && isImplementationTask) || (isIssueSource && (selectedTaskType === "plan" || selectedTaskType === "build")) ? (
                   <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]}> 
                     <Select
                       options={[

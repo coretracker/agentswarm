@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   getAgentProviderLabel,
   getProviderProfileLabel,
@@ -8,6 +8,10 @@ import {
   getTaskStatusLabel,
   getTaskTypeLabel,
   type Task,
+  type TaskAction,
+  type TaskMessageAction,
+  type TaskMessage,
+  type TaskRun,
   type AgentProvider,
   type TaskBranchStrategy,
   type ProviderProfile
@@ -16,10 +20,11 @@ import {
   Alert,
   Button,
   Card,
-  Checkbox,
+  Collapse,
   Descriptions,
   Divider,
   Dropdown,
+  Empty,
   Flex,
   Form,
   Input,
@@ -31,7 +36,7 @@ import {
   Typography,
   message
 } from "antd";
-import { MoreOutlined } from "@ant-design/icons";
+import { MoreOutlined, PushpinOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -39,6 +44,8 @@ import { Diff, Hunk } from "react-diff-view";
 import remarkGfm from "remark-gfm";
 import { api } from "../src/api/client";
 import { useTask } from "../src/hooks/useTask";
+import { useTaskMessages } from "../src/hooks/useTaskMessages";
+import { useTaskRuns } from "../src/hooks/useTaskRuns";
 import { normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
 
 const statusColor: Record<Task["status"], string> = {
@@ -58,6 +65,74 @@ const statusColor: Record<Task["status"], string> = {
   failed: "red"
 };
 
+const runStatusColor: Record<TaskRun["status"], string> = {
+  running: "processing",
+  succeeded: "green",
+  failed: "red",
+  cancelled: "default"
+};
+
+const taskActionLabel: Record<TaskMessageAction | TaskAction, string> = {
+  plan: "Plan",
+  build: "Build",
+  iterate: "Iterate Plan",
+  review: "Review",
+  ask: "Ask",
+  comment: "Comment"
+};
+
+type ComposerAction = TaskMessageAction;
+
+function getAllowedComposerActions(taskType: Task["taskType"]): ComposerAction[] {
+  if (taskType === "review") {
+    return ["review", "ask", "comment"];
+  }
+
+  if (taskType === "ask") {
+    return ["ask", "review", "comment"];
+  }
+
+  return ["plan", "build", "review", "ask", "comment"];
+}
+
+function getDefaultComposerAction(task: Task | null): ComposerAction {
+  if (!task) {
+    return "plan";
+  }
+
+  if (task.taskType === "review") {
+    return "review";
+  }
+
+  if (task.taskType === "ask") {
+    return "ask";
+  }
+
+  if (task.taskType === "build") {
+    return "build";
+  }
+
+  if (task.branchDiff?.trim() || task.status === "review" || task.lastAction === "build") {
+    return "build";
+  }
+
+  return "plan";
+}
+
+function formatRunDuration(startedAt: string, finishedAt: string | null): string {
+  const start = dayjs(startedAt);
+  const end = finishedAt ? dayjs(finishedAt) : dayjs();
+  const totalSeconds = Math.max(0, end.diff(start, "second"));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+
+  return `${seconds}s`;
+}
+
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: "Codex", value: "codex" },
   { label: "Claude Code", value: "claude" }
@@ -71,7 +146,7 @@ const providerProfileOptions: Array<{ label: string; value: ProviderProfile }> =
   { label: "Unlimited", value: "unlimited" }
 ];
 
-function renderParsedDiff(diffText: string, emptyMessage: string): ReactNode {
+function renderParsedDiff(diffText: string, emptyMessage: string, options?: { collapseFiles?: boolean }): ReactNode {
   if (!diffText.trim()) {
     return (
       <Card size="small">
@@ -89,6 +164,31 @@ function renderParsedDiff(diffText: string, emptyMessage: string): ReactNode {
 
     if (files.length === 0) {
       throw new Error("No diff files parsed");
+    }
+
+    if (options?.collapseFiles) {
+      return (
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          {files.map((file) => (
+            <Collapse
+              key={`${file.oldRevision}-${file.newRevision}-${file.oldPath}-${file.newPath}`}
+              size="small"
+              defaultActiveKey={[]}
+              items={[
+                {
+                  key: "file",
+                  label: file.newPath || file.oldPath || "Changed file",
+                  children: (
+                    <Diff viewType="unified" diffType={file.type} hunks={file.hunks}>
+                      {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
+                    </Diff>
+                  )
+                }
+              ]}
+            />
+          ))}
+        </Space>
+      );
     }
 
     return (
@@ -153,7 +253,7 @@ function getGitHubDiffTarget(task: Task): { href: string; label: string } | null
     };
   }
 
-  if (task.taskType === "plan") {
+  if (task.taskType === "plan" || task.taskType === "build") {
     const targetBranch = task.branchName ?? task.baseBranch;
     if (!targetBranch) {
       return null;
@@ -177,27 +277,91 @@ function getGitHubDiffTarget(task: Task): { href: string; label: string } | null
 
 type FollowUpMode = "continue" | "fix" | null;
 
+function ExpandableMessageContent({ children, fadeColor }: { children: ReactNode; fadeColor: string }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [hasOverflow, setHasOverflow] = useState(false);
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) {
+      return;
+    }
+
+    const measure = () => {
+      setHasOverflow(element.scrollHeight > 320);
+    };
+
+    const frame = window.requestAnimationFrame(measure);
+    if (typeof ResizeObserver === "undefined") {
+      return () => window.cancelAnimationFrame(frame);
+    }
+
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [children]);
+
+  return (
+    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+      <div style={{ position: "relative", maxHeight: expanded ? "none" : 320, overflow: "hidden" }}>
+        <div ref={containerRef}>{children}</div>
+        {!expanded && hasOverflow ? (
+          <div
+            style={{
+              position: "absolute",
+              inset: "auto 0 0 0",
+              height: 64,
+              background: `linear-gradient(to bottom, rgba(255,255,255,0), ${fadeColor})`,
+              pointerEvents: "none"
+            }}
+          />
+        ) : null}
+      </div>
+      {hasOverflow ? (
+        <Button type="link" size="small" style={{ padding: 0, alignSelf: "flex-start" }} onClick={() => setExpanded((current) => !current)}>
+          {expanded ? "Show Less" : "Show More"}
+        </Button>
+      ) : null}
+    </Space>
+  );
+}
+
 export function TaskDetailPage({ taskId }: { taskId: string }) {
   const router = useRouter();
   const { task, setTask, loading } = useTask(taskId);
+  const { messages: taskMessages, loading: messagesLoading } = useTaskMessages(taskId);
+  const { runs: taskRuns, loading: runsLoading } = useTaskRuns(taskId);
   const [followUpForm] = Form.useForm();
   const [iterateInput, setIterateInput] = useState("");
+  const [chatInput, setChatInput] = useState("");
   const [providerInput, setProviderInput] = useState<AgentProvider>("codex");
   const [providerProfileInput, setProviderProfileInput] = useState<ProviderProfile>("deep");
   const [modelOverrideInput, setModelOverrideInput] = useState("");
   const [branchStrategyInput, setBranchStrategyInput] = useState<TaskBranchStrategy>("feature_branch");
+  const [isEditingPlan, setIsEditingPlan] = useState(false);
+  const [planDraft, setPlanDraft] = useState("");
+  const [planPreview, setPlanPreview] = useState(false);
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>(null);
-  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<"context" | "logs" | "plan" | "diff">("logs");
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "diff">("chat");
+  const [expandedRunKeys, setExpandedRunKeys] = useState<string[]>([]);
+  const [buildingFromRunId, setBuildingFromRunId] = useState<string | null>(null);
+  const [selectedChatAction, setSelectedChatAction] = useState<ComposerAction>("plan");
   const [submitting, setSubmitting] = useState<
-    null | "plan" | "build" | "iterate" | "review" | "ask" | "cancel" | "config" | "accept" | "delete" | "continue" | "fix"
+    null | "plan" | "build" | "iterate" | "review" | "ask" | "cancel" | "config" | "accept" | "delete" | "continue" | "fix" | "savePlan" | "message" | "pin"
   >(null);
   const [messageApi, contextHolder] = message.useMessage();
-  const logsContainerRef = useRef<HTMLDivElement | null>(null);
-  const [logsAutoFollow, setLogsAutoFollow] = useState(true);
-  const autoTabSignatureRef = useRef<string | null>(null);
+  const selectedChatActionRef = useRef(false);
 
   const taskType = task?.taskType ?? "plan";
   const isPlanTask = taskType === "plan";
+  const isBuildTask = taskType === "build";
+  const isImplementationTask = isPlanTask || isBuildTask;
   const isReviewTask = taskType === "review";
   const isAskTask = taskType === "ask";
   const isQueued =
@@ -211,21 +375,23 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     task?.status === "reviewing" ||
     task?.status === "asking";
   const canCancel = isQueued || isActive;
-  const canAccept = task?.status === "review" || task?.status === "answered";
+  const canAccept = task?.status === "review" || task?.status === "answered" || (isImplementationTask && task?.status === "failed");
   const canDelete = !!task && !isActive;
-  const canContinueOnBranch = isPlanTask && !!task?.branchName && (task.status === "review" || task.status === "accepted");
+  const canContinueOnBranch = isImplementationTask && !!task?.branchName && (task.status === "review" || task.status === "accepted");
   const canCreateFixTask = isReviewTask && !!task?.resultMarkdown && (task.status === "review" || task.status === "accepted");
+  const canEditPlan = isPlanTask && !!task?.planMarkdown?.trim() && !isActive;
   const currentTaskProvider = task?.provider ?? "codex";
   const currentTaskProviderProfile = task?.providerProfile ?? "deep";
   const currentTaskModelOverride = task?.modelOverride ?? "";
   const currentTaskBranchStrategy = task?.branchStrategy ?? "feature_branch";
   const hasExecutionContext = (task?.executionSummary?.trim().length ?? 0) > 0;
-  const isDirectBuildTask = task?.planningMode === "direct-build";
+  const planDraftTrimmed = planDraft.trim();
+  const planDraftChanged = planDraft !== (task?.planMarkdown ?? "");
   const configDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
     modelOverrideInput.trim() !== currentTaskModelOverride ||
-    (isPlanTask && branchStrategyInput !== currentTaskBranchStrategy);
+    (isImplementationTask && branchStrategyInput !== currentTaskBranchStrategy);
 
   const resultStatusText = isPlanTask
     ? task?.lastAction === "iterate"
@@ -235,6 +401,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       : task?.status === "plan_queued"
         ? "Plan queued"
         : "Planning in progress"
+    : isBuildTask
+      ? task?.status === "build_queued"
+        ? "Build queued"
+        : "Build in progress"
     : isReviewTask
       ? task?.status === "review_queued"
         ? "Review queued"
@@ -252,16 +422,25 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     ? (task?.planMarkdown?.trim().length ?? 0) > 0
     : (task?.resultMarkdown?.trim().length ?? 0) > 0;
   const hasDiffTab = (task?.branchDiff?.trim().length ?? 0) > 0;
+  const allowedChatActions = useMemo(() => getAllowedComposerActions(taskType), [taskType]);
 
   useEffect(() => {
-    const element = logsContainerRef.current;
+    const defaultAction = getDefaultComposerAction(task ?? null);
+    selectedChatActionRef.current = false;
+    setSelectedChatAction(defaultAction);
+  }, [taskId, task?.id]);
 
-    if (!element || !logsAutoFollow) {
+  useEffect(() => {
+    if (!allowedChatActions.includes(selectedChatAction)) {
+      selectedChatActionRef.current = false;
+      setSelectedChatAction(getDefaultComposerAction(task ?? null));
       return;
     }
 
-    element.scrollTop = element.scrollHeight;
-  }, [logsAutoFollow, task?.logs]);
+    if (!selectedChatActionRef.current) {
+      setSelectedChatAction(getDefaultComposerAction(task ?? null));
+    }
+  }, [allowedChatActions, selectedChatAction, task]);
 
   useEffect(() => {
     if (!task) {
@@ -275,51 +454,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   }, [task]);
 
   useEffect(() => {
+    if (!task || task.taskType !== "plan" || !task.planMarkdown?.trim()) {
+      setIsEditingPlan(false);
+      setPlanPreview(false);
+      setPlanDraft("");
+      return;
+    }
+
+    if (!isEditingPlan) {
+      setPlanDraft(task.planMarkdown);
+      setPlanPreview(false);
+    }
+  }, [isEditingPlan, task]);
+
+  useEffect(() => {
     if (!task) {
       return;
     }
 
-    const visibleTabKeys = new Set<"context" | "logs" | "plan" | "diff">(["context", "logs"]);
-    if (hasOutputTab) {
-      visibleTabKeys.add("plan");
+    if (activeMainTab === "diff" && !hasDiffTab) {
+      setActiveMainTab("chat");
     }
-    if (hasDiffTab) {
-      visibleTabKeys.add("diff");
-    }
-
-    const signature = [
-      task.status,
-      task.lastAction ?? "none",
-      task.taskType,
-      hasOutputTab ? "output" : "no-output",
-      hasDiffTab ? "diff" : "no-diff"
-    ].join(":");
-
-    const preferredTab: "context" | "logs" | "plan" | "diff" = isPlanTask
-      ? hasDiffTab && task.lastAction === "build"
-        ? "diff"
-        : hasOutputTab && task.status === "planned"
-          ? "plan"
-          : "logs"
-      : hasOutputTab && !isActive
-        ? "plan"
-        : "logs";
-
-    if (!visibleTabKeys.has(activeWorkspaceTab)) {
-      setActiveWorkspaceTab(visibleTabKeys.has(preferredTab) ? preferredTab : "logs");
-      autoTabSignatureRef.current = signature;
-      return;
-    }
-
-    if (autoTabSignatureRef.current === signature) {
-      return;
-    }
-
-    autoTabSignatureRef.current = signature;
-    if (visibleTabKeys.has(preferredTab)) {
-      setActiveWorkspaceTab(preferredTab);
-    }
-  }, [activeWorkspaceTab, hasDiffTab, hasOutputTab, isActive, isPlanTask, task]);
+  }, [activeMainTab, hasDiffTab, task]);
 
   const markdownComponents = {
     h1: ({ children }: { children?: React.ReactNode }) => <Typography.Title level={3}>{children}</Typography.Title>,
@@ -400,17 +556,65 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   }
 
-  const outputTitle = isPlanTask ? "Plan" : isReviewTask ? "Review" : "Answer";
+  const outputTitle = isPlanTask ? "Plan" : isBuildTask ? "Summary" : isReviewTask ? "Review" : "Answer";
   const baseBranchLabel = isReviewTask ? "Branch To Review" : isAskTask ? "Context Branch" : "Base Branch";
   const requirementsLabel = isAskTask ? "Question" : "Requirements";
   const followUpBranch = task ? (isReviewTask ? task.baseBranch : task.branchName ?? task.baseBranch) : "";
   const followUpTitle = followUpMode === "fix" ? "Create Fix Task" : "New Task On Existing Branch";
   const providerLabel = task ? getAgentProviderLabel(task.provider) : "Agent";
-  const runtimeBranchLabel = task ? (isPlanTask ? task.branchName ?? task.baseBranch : task.baseBranch) : "";
+  const runtimeBranchLabel = task ? (isImplementationTask ? task.branchName ?? task.baseBranch : task.baseBranch) : "";
   const githubDiffTarget = task ? getGitHubDiffTarget(task) : null;
-  const subtitle = ["Task Context", "Logs", ...(hasOutputTab ? [outputTitle] : []), ...(hasDiffTab ? ["Diff"] : [])].join(" | ");
+  const chatActionLabel = taskActionLabel[selectedChatAction];
+  const chatClosed = !task || task.status === "accepted" || task.status === "cancelled";
+  const chatDisabled = chatClosed || (selectedChatAction !== "comment" && (isQueued || isActive));
+  const chatPlaceholder = chatDisabled
+    ? chatClosed
+      ? "This task is closed. Create a follow-up task to continue."
+      : "Wait for the current run to finish before sending another instruction."
+    : selectedChatAction === "comment"
+      ? "Add a comment to the task history"
+    : selectedChatAction === "ask"
+      ? "Ask a repository question or refine the last answer"
+      : selectedChatAction === "review"
+        ? "Add review instructions for the next pass"
+        : selectedChatAction === "build"
+          ? "Describe the next implementation change for this branch"
+          : hasExecutionContext
+            ? "Describe how the current plan should change before the next run"
+            : "Add instructions for the first planning pass";
+  const duplicatedRunSummaries = new Set(
+    taskRuns
+      .filter((entry) => entry.summary?.trim())
+      .map((entry) => `${entry.action}:${entry.summary?.trim()}`)
+  );
+  const chatTimeline = [
+    ...taskMessages
+      .filter(
+        (entry) =>
+          entry.role !== "system" &&
+          !(entry.role === "assistant" && entry.action && duplicatedRunSummaries.has(`${entry.action}:${entry.content.trim()}`))
+      )
+      .map((entry) => ({
+        key: `message-${entry.id}`,
+        kind: "message" as const,
+        timestamp: entry.createdAt,
+        message: entry
+      })),
+    ...taskRuns.map((entry) => ({
+      key: `run-${entry.id}`,
+      kind: "run" as const,
+      timestamp: entry.startedAt,
+      run: entry
+    }))
+  ].sort((left, right) => {
+    if (left.timestamp === right.timestamp) {
+      return left.key.localeCompare(right.key);
+    }
+
+    return left.timestamp.localeCompare(right.timestamp);
+  });
   const openFollowUp = (mode: FollowUpMode) => {
-    followUpForm.setFieldsValue({ title: "", requirements: "", skipPlan: false });
+    followUpForm.setFieldsValue({ title: "", requirements: "", taskType: "build" });
     setFollowUpMode(mode);
   };
   const handleDeleteTask = async () => {
@@ -427,295 +631,598 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
+  const handleCancelPlanEdit = () => {
+    setPlanDraft(task?.planMarkdown ?? "");
+    setPlanPreview(false);
+    setIsEditingPlan(false);
+  };
+  const handleSavePlan = async () => {
+    if (!task || !isPlanTask || planDraftTrimmed.length === 0) {
+      return;
+    }
+
+    setSubmitting("savePlan");
+    try {
+      const updatedTask = await api.updateTaskPlan(task.id, { planMarkdown: planDraftTrimmed });
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: current.logs
+            }
+          : updatedTask
+      );
+      setPlanDraft(updatedTask.planMarkdown ?? planDraftTrimmed);
+      setPlanPreview(false);
+      setIsEditingPlan(false);
+      setActiveMainTab("context");
+      messageApi.success("Plan updated");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+  const handleSaveConfig = async () => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("config");
+    try {
+      const updatedTask = await api.updateTaskConfig(task.id, {
+        provider: providerInput,
+        providerProfile: providerProfileInput,
+        modelOverride: modelOverrideInput.trim() || null,
+        branchStrategy: isImplementationTask ? branchStrategyInput : undefined
+      });
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      setIsConfigModalOpen(false);
+      messageApi.success(isActive ? "Execution config updated. It will apply to the next run." : "Execution config updated");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+  const handleTogglePin = async () => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("pin");
+    try {
+      const updatedTask = await api.updateTaskPin(task.id, { pinned: !task.pinned });
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success(updatedTask.pinned ? "Task pinned" : "Task unpinned");
+    } finally {
+      setSubmitting(null);
+    }
+  };
   const moreActionItems = task
     ? [
+        { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" },
+        { key: "config", label: "Config" },
         canContinueOnBranch ? { key: "continue", label: "Continue On Branch" } : null,
         canCreateFixTask ? { key: "fix", label: "Create Fix Task" } : null,
         canDelete ? { key: "delete", label: "Delete Task", danger: true } : null
       ].filter(Boolean)
     : [];
   const hasMoreActions = moreActionItems.length > 0;
-  const workspaceItems = [
-    {
-      key: "context",
-      label: "Task Context",
-      children: (
-        <div style={{ height: "100%", overflow: "auto", paddingRight: 4 }}>
-          <Descriptions column={2} size="small">
-            <Descriptions.Item label="Repository">{task?.repoName}</Descriptions.Item>
-            <Descriptions.Item label="Task Type">{task ? getTaskTypeLabel(task.taskType) : ""}</Descriptions.Item>
-            <Descriptions.Item label="Queue Mode">{task?.queueMode}</Descriptions.Item>
-            <Descriptions.Item label={baseBranchLabel}>{task?.baseBranch}</Descriptions.Item>
-            <Descriptions.Item label="Repository Default Branch">{task?.repoDefaultBranch}</Descriptions.Item>
-            {isPlanTask ? <Descriptions.Item label="Branch Strategy">{task ? getTaskBranchStrategyLabel(task.branchStrategy) : ""}</Descriptions.Item> : null}
-            {isPlanTask ? <Descriptions.Item label="Target Branch">{task?.branchName ?? "(pending)"}</Descriptions.Item> : null}
-            {isReviewTask ? (
-              <Descriptions.Item label="Review Verdict">
-                {task?.reviewVerdict ? (
-                  <Tag color={task.reviewVerdict === "approved" ? "green" : "orange"}>
-                    {task.reviewVerdict === "approved" ? "approved" : "changes_requested"}
-                  </Tag>
-                ) : (
-                  "(pending)"
-                )}
-              </Descriptions.Item>
-            ) : null}
-            <Descriptions.Item label="Provider">{getAgentProviderLabel(currentTaskProvider)}</Descriptions.Item>
-            <Descriptions.Item label="Profile">{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
-            <Descriptions.Item label="Model Override">{currentTaskModelOverride || "(provider default)"}</Descriptions.Item>
-            {isPlanTask ? <Descriptions.Item label="Complexity">{task?.complexity}</Descriptions.Item> : null}
-            {isPlanTask ? (
-              <Descriptions.Item label="Planning Mode">
-                {task?.planningMode === "direct-build" ? "Skip Plan" : "Plan First"}
-              </Descriptions.Item>
-            ) : null}
-            <Descriptions.Item label="Created">{task ? dayjs(task.createdAt).format("YYYY-MM-DD HH:mm") : ""}</Descriptions.Item>
-            <Descriptions.Item label="Status">{task ? getTaskStatusLabel(task.status) : ""}</Descriptions.Item>
-            <Descriptions.Item label="Last Action">{task?.lastAction ?? "draft"}</Descriptions.Item>
-            {isPlanTask ? <Descriptions.Item label="Plan File">{task?.planPath ?? "(pending)"}</Descriptions.Item> : null}
-          </Descriptions>
+  const contextContent = (
+    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      <Card size="small">
+        <Descriptions column={2} size="small">
+          <Descriptions.Item label="Repository">{task?.repoName}</Descriptions.Item>
+          <Descriptions.Item label="Task Type">{task ? getTaskTypeLabel(task.taskType) : ""}</Descriptions.Item>
+          <Descriptions.Item label="Queue Mode">{task?.queueMode}</Descriptions.Item>
+          <Descriptions.Item label={baseBranchLabel}>{task?.baseBranch}</Descriptions.Item>
+          <Descriptions.Item label="Repository Default Branch">{task?.repoDefaultBranch}</Descriptions.Item>
+          {isImplementationTask ? <Descriptions.Item label="Branch Strategy">{task ? getTaskBranchStrategyLabel(task.branchStrategy) : ""}</Descriptions.Item> : null}
+          {isImplementationTask ? <Descriptions.Item label="Target Branch">{task?.branchName ?? "(pending)"}</Descriptions.Item> : null}
+          {isReviewTask ? (
+            <Descriptions.Item label="Review Verdict">
+              {task?.reviewVerdict ? (
+                <Tag color={task.reviewVerdict === "approved" ? "green" : "orange"}>
+                  {task.reviewVerdict === "approved" ? "approved" : "changes_requested"}
+                </Tag>
+              ) : (
+                "(pending)"
+              )}
+            </Descriptions.Item>
+          ) : null}
+          <Descriptions.Item label="Provider">{getAgentProviderLabel(currentTaskProvider)}</Descriptions.Item>
+          <Descriptions.Item label="Profile">{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
+          <Descriptions.Item label="Model Override">{currentTaskModelOverride || "(provider default)"}</Descriptions.Item>
+          {isImplementationTask ? <Descriptions.Item label="Complexity">{task?.complexity}</Descriptions.Item> : null}
+          {isImplementationTask ? (
+            <Descriptions.Item label="Planning Mode">
+              {isBuildTask ? "Build Only" : "Plan First"}
+            </Descriptions.Item>
+          ) : null}
+          <Descriptions.Item label="Created">{task ? dayjs(task.createdAt).format("YYYY-MM-DD HH:mm") : ""}</Descriptions.Item>
+          <Descriptions.Item label="Status">{task ? getTaskStatusLabel(task.status) : ""}</Descriptions.Item>
+          <Descriptions.Item label="Last Action">{task?.lastAction ?? "draft"}</Descriptions.Item>
+          {isPlanTask ? <Descriptions.Item label="Plan File">{task?.planPath ?? "(pending)"}</Descriptions.Item> : null}
+        </Descriptions>
 
-          <Divider orientation="left">{requirementsLabel}</Divider>
-          <Typography.Paragraph style={codeTextStyle}>{task?.requirements}</Typography.Paragraph>
+        <Divider orientation="left">{requirementsLabel}</Divider>
+        <Typography.Paragraph style={codeTextStyle}>{task?.requirements}</Typography.Paragraph>
+      </Card>
 
-          <Divider orientation="left">Execution Config</Divider>
-          <Flex wrap gap={12} align="flex-end">
-            <div style={{ flex: "1 1 180px", minWidth: 180 }}>
-              <Typography.Text type="secondary">Provider</Typography.Text>
-              <Select value={providerInput} options={providerOptions} onChange={(value) => setProviderInput(value)} style={{ width: "100%", marginTop: 6 }} />
-            </div>
-            <div style={{ flex: "1 1 180px", minWidth: 180 }}>
-              <Typography.Text type="secondary">Profile</Typography.Text>
-              <Select
-                value={providerProfileInput}
-                options={providerProfileOptions}
-                onChange={(value) => setProviderProfileInput(value)}
-                style={{ width: "100%", marginTop: 6 }}
-              />
-            </div>
-            <div style={{ flex: "1 1 220px", minWidth: 220 }}>
-              <Typography.Text type="secondary">Model Override</Typography.Text>
-              <Input
-                value={modelOverrideInput}
-                onChange={(event) => setModelOverrideInput(event.target.value)}
-                placeholder={providerInput === "claude" ? "sonnet or opus" : "gpt-5.4"}
-                style={{ width: "100%", marginTop: 6 }}
-              />
-            </div>
-            {isPlanTask ? (
-              <div style={{ flex: "1 1 220px", minWidth: 220 }}>
-                <Typography.Text type="secondary">Branch Strategy</Typography.Text>
-                <Select
-                  value={branchStrategyInput}
-                  options={[
-                    { label: "Create feature branch", value: "feature_branch" },
-                    { label: "Work on existing branch", value: "work_on_branch" }
-                  ]}
-                  onChange={(value) => setBranchStrategyInput(value)}
-                  style={{ width: "100%", marginTop: 6 }}
-                />
-              </div>
-            ) : null}
-            <Space wrap size={12}>
-              <Button
-                onClick={async () => {
-                  if (!task) {
-                    return;
-                  }
+      {!isPlanTask && hasOutputTab ? (
+        <Collapse
+          size="small"
+          defaultActiveKey={["plan-panel"]}
+          items={[
+            {
+              key: "plan-panel",
+              label: outputTitle,
+              children: (
+                <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                  {isActive ? (
+                    <Alert
+                      type="info"
+                      showIcon
+                      message={resultStatusText}
+                      description={
+                        isPlanTask
+                          ? `${providerLabel} is currently updating the markdown plan only. Watch the logs tab; this section will refresh when the new plan is stored.`
+                          : isReviewTask
+                            ? `${providerLabel} is reviewing the selected branch against the repository default branch and your requirements.`
+                            : `${providerLabel} is answering the repository question using the selected branch as context.`
+                      }
+                    />
+                  ) : null}
 
-                  setSubmitting("config");
-                  try {
-                    const updatedTask = await api.updateTaskConfig(task.id, {
-                      provider: providerInput,
-                      providerProfile: providerProfileInput,
-                      modelOverride: modelOverrideInput.trim() || null,
-                      branchStrategy: isPlanTask ? branchStrategyInput : undefined
-                    });
-                    setTask((current) =>
-                      current
-                        ? {
-                            ...current,
-                            ...updatedTask,
-                            logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
-                          }
-                        : updatedTask
-                    );
-                    messageApi.success(isActive ? "Execution config updated. It will apply to the next run." : "Execution config updated");
-                  } finally {
-                    setSubmitting(null);
-                  }
-                }}
-                disabled={!configDirty}
-                loading={submitting === "config"}
-              >
-                Save Config
-              </Button>
-              {isActive ? <Typography.Text type="secondary">Applies on the next run.</Typography.Text> : null}
-            </Space>
-          </Flex>
-        </div>
-      )
-    },
-    {
-      key: "logs",
-      label: "Logs",
-      children: (
-        <div
-          ref={logsContainerRef}
-          onScroll={(event) => {
-            const element = event.currentTarget;
-            const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 24;
-            setLogsAutoFollow(nearBottom);
-          }}
-          style={{
-            height: "100%",
-            overflow: "auto",
-            padding: "16px 18px",
-            background: "#0b0f14",
-            borderRadius: 8
-          }}
-        >
-          <Flex justify="space-between" align="center" style={{ marginBottom: 12 }}>
-            <Typography.Text style={{ color: "rgba(255,255,255,0.75)" }}>
-              {providerLabel} · {task?.lastAction ?? "draft"} · {runtimeBranchLabel}
-            </Typography.Text>
-            <Typography.Text style={{ color: "rgba(255,255,255,0.55)" }}>
-              {logsAutoFollow ? "Following" : "Paused"}
-            </Typography.Text>
-          </Flex>
-          <pre
-            style={{
-              margin: 0,
-              color: "#d8e1ee",
-              fontFamily: "\"SFMono-Regular\", Consolas, monospace",
-              fontSize: 12,
-              lineHeight: 1.65,
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word"
-            }}
-          >
-            {task?.logs.join("\n") || "No logs yet."}
-          </pre>
-        </div>
-      )
-    },
-    ...(hasOutputTab
-      ? [
-          {
-            key: "plan",
-            label: outputTitle,
-            children: (
-              <Flex vertical gap={16} style={{ height: "100%", minHeight: 0 }}>
-                {isActive ? (
-                  <Alert
-                    type="info"
-                    showIcon
-                    message={resultStatusText}
-                    description={
-                      isPlanTask
-                        ? `${providerLabel} is currently updating the markdown plan only. Watch the logs tab; this section will refresh when the new plan is stored.`
-                        : isReviewTask
-                          ? `${providerLabel} is reviewing the selected branch against the repository default branch and your requirements.`
-                          : `${providerLabel} is answering the repository question using the selected branch as context.`
-                    }
-                  />
-                ) : null}
-
-                <div style={{ flex: 1, minHeight: 0, overflow: "auto", paddingRight: 4 }}>
                   {isPlanTask ? (
+                    <Flex justify="space-between" align="center" wrap="wrap" gap={12}>
+                      <Typography.Text type="secondary">
+                        {isEditingPlan ? (planPreview ? "Previewing manual plan edit" : "Editing approved plan markdown") : "Approved plan markdown"}
+                      </Typography.Text>
+                      {canEditPlan ? (
+                        isEditingPlan ? (
+                          <Space wrap>
+                            <Button onClick={() => setPlanPreview((current) => !current)}>
+                              {planPreview ? "Edit Draft" : "Preview"}
+                            </Button>
+                            <Button onClick={handleCancelPlanEdit}>Cancel</Button>
+                            <Button
+                              type="primary"
+                              onClick={handleSavePlan}
+                              disabled={!planDraftChanged || planDraftTrimmed.length === 0}
+                              loading={submitting === "savePlan"}
+                            >
+                              Save
+                            </Button>
+                          </Space>
+                        ) : (
+                          <Button onClick={() => setIsEditingPlan(true)}>Edit Plan</Button>
+                        )
+                      ) : null}
+                    </Flex>
+                  ) : null}
+
+                  {isPlanTask && isEditingPlan && !planPreview ? (
+                    <Input.TextArea value={planDraft} onChange={(event) => setPlanDraft(event.target.value)} rows={20} style={{ resize: "vertical" }} />
+                  ) : isPlanTask ? (
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                      {task?.planMarkdown ?? ""}
+                      {isEditingPlan ? planDraft : (task?.planMarkdown ?? "")}
                     </ReactMarkdown>
                   ) : task?.resultMarkdown ? (
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                       {task.resultMarkdown}
                     </ReactMarkdown>
                   ) : null}
-                </div>
 
-                {isPlanTask ? (
-                  <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                    <Input.TextArea
-                      rows={4}
-                      placeholder="Iterate the plan with another instruction"
-                      value={iterateInput}
-                      onChange={(event) => setIterateInput(event.target.value)}
-                    />
-                    <Space wrap>
-                      <Button
-                        onClick={async () => {
-                          if (!task) {
-                            return;
-                          }
+                  {isPlanTask && !isEditingPlan ? (
+                    <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                      <Input.TextArea
+                        rows={4}
+                        placeholder="Iterate the plan with another instruction"
+                        value={iterateInput}
+                        onChange={(event) => setIterateInput(event.target.value)}
+                      />
+                      <Space wrap>
+                        <Button
+                          onClick={async () => {
+                            if (!task) {
+                              return;
+                            }
 
-                          setSubmitting("iterate");
-                          try {
-                            await api.triggerTaskAction(task.id, "iterate", iterateInput.trim());
-                            setIterateInput("");
-                            messageApi.success("Plan iteration started");
-                          } finally {
-                            setSubmitting(null);
-                          }
-                        }}
-                        disabled={!hasExecutionContext || iterateInput.trim().length === 0 || task?.status === "accepted"}
-                        loading={submitting === "iterate"}
-                      >
-                        Iterate Plan
-                      </Button>
-                      <Typography.Text type="secondary">
-                        Latest plan iteration: {task?.latestIterationInput ?? "none"}
-                      </Typography.Text>
+                            setSubmitting("iterate");
+                            try {
+                              await api.triggerTaskAction(task.id, "iterate", iterateInput.trim());
+                              setIterateInput("");
+                              messageApi.success("Plan iteration started");
+                            } finally {
+                              setSubmitting(null);
+                            }
+                          }}
+                          disabled={!hasExecutionContext || iterateInput.trim().length === 0 || task?.status === "accepted"}
+                          loading={submitting === "iterate"}
+                        >
+                          Iterate Plan
+                        </Button>
+                        <Typography.Text type="secondary">Latest plan iteration: {task?.latestIterationInput ?? "none"}</Typography.Text>
+                      </Space>
                     </Space>
-                  </Space>
-                ) : null}
-              </Flex>
+                  ) : null}
+                </Space>
+              )
+            }
+          ]}
+        />
+      ) : null}
+
+    </Space>
+  );
+
+  const diffContent = hasDiffTab ? (
+    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      {githubDiffTarget ? (
+        <Flex justify="flex-end">
+          <Button href={githubDiffTarget.href} target="_blank" rel="noreferrer">
+            {githubDiffTarget.label}
+          </Button>
+        </Flex>
+      ) : null}
+      {isReviewTask
+        ? renderParsedDiff(task?.branchDiff ?? "", `No diff captured for ${task?.baseBranch} against ${task?.repoDefaultBranch}.`, {
+            collapseFiles: true
+          })
+        : renderParsedDiff(task?.branchDiff ?? "", "No diff captured yet. Run Build to generate one.", { collapseFiles: true })}
+    </Space>
+  ) : null;
+
+  const chatComposer = (
+    <Flex vertical gap={12}>
+      <Input.TextArea
+        rows={4}
+        value={chatInput}
+        onChange={(event) => setChatInput(event.target.value)}
+        placeholder={chatPlaceholder}
+        disabled={chatDisabled}
+      />
+      <Flex justify="space-between" align="center" gap={12} wrap="wrap">
+        <Typography.Text type="secondary">Next run: {chatActionLabel}</Typography.Text>
+        <Space.Compact size="middle">
+          <Select
+            value={selectedChatAction}
+            options={allowedChatActions.map((action) => ({
+              label: taskActionLabel[action],
+              value: action
+            }))}
+            disabled={chatClosed}
+            onChange={(value) => {
+              selectedChatActionRef.current = true;
+              setSelectedChatAction(value);
+            }}
+            style={{ minWidth: 140 }}
+          />
+          <Button
+            type="primary"
+            loading={submitting === "message"}
+            disabled={chatDisabled || chatInput.trim().length === 0}
+            onClick={async () => {
+              if (!task || chatInput.trim().length === 0) {
+                return;
+              }
+
+              setSubmitting("message");
+              try {
+                const updatedTask = await api.createTaskMessage(task.id, {
+                  content: chatInput.trim(),
+                  action: selectedChatAction
+                });
+                setTask((current) =>
+                  current
+                    ? {
+                        ...current,
+                        ...updatedTask,
+                        logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+                      }
+                    : updatedTask
+                );
+                setChatInput("");
+                messageApi.success(
+                  selectedChatAction === "comment"
+                    ? "Comment added to history"
+                    : `${taskActionLabel[selectedChatAction]} queued from history`
+                );
+              } catch (error) {
+                const nextMessage = error instanceof Error ? error.message : "Task execution could not be started";
+                messageApi.error(nextMessage);
+              } finally {
+                setSubmitting(null);
+              }
+            }}
+          >
+            Send
+          </Button>
+        </Space.Compact>
+      </Flex>
+    </Flex>
+  );
+
+  const chatHistory = chatTimeline.length > 0 ? (
+    <Flex vertical gap={12} style={{ width: "100%" }}>
+      {chatTimeline.map((entry) => {
+        if (entry.kind === "message") {
+          const entryMessage = entry.message;
+          const messageColor =
+            entryMessage.role === "user"
+              ? "rgba(28,128,87,0.08)"
+              : entryMessage.role === "assistant"
+                ? "#ffffff"
+                : "rgba(107,143,163,0.08)";
+          const isCompactMessage = entryMessage.role === "user";
+
+          return (
+            <Flex key={entry.key}>
+              <Card
+                size="small"
+                bodyStyle={{
+                  background: messageColor,
+                  padding: isCompactMessage ? "10px 12px" : undefined
+                }}
+                style={{ width: "100%" }}
+              >
+                {isCompactMessage ? (
+                  <Flex align="baseline" gap={8} wrap="wrap">
+                    <Tag color="green" style={{ marginInlineEnd: 0 }}>
+                      {entryMessage.role}
+                    </Tag>
+                    {entryMessage.action ? (
+                      <Tag style={{ marginInlineEnd: 0 }}>{taskActionLabel[entryMessage.action]}</Tag>
+                    ) : null}
+                    <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
+                    <Typography.Text style={{ whiteSpace: "pre-wrap" }}>{entryMessage.content}</Typography.Text>
+                  </Flex>
+                ) : (
+                  <>
+                    <Flex justify="space-between" align="center" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
+                      <Space wrap size={8}>
+                        <Tag color="blue">assistant</Tag>
+                        {entryMessage.action ? <Tag>{taskActionLabel[entryMessage.action]}</Tag> : null}
+                      </Space>
+                      <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
+                    </Flex>
+                    <ExpandableMessageContent fadeColor={messageColor}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                        {entryMessage.content}
+                      </ReactMarkdown>
+                    </ExpandableMessageContent>
+                  </>
+                )}
+              </Card>
+            </Flex>
+          );
+        }
+
+        const run = entry.run;
+        const collapseItems = [
+          {
+            key: run.id,
+            label: `Logs${run.logs.length > 0 ? ` (${run.logs.length})` : ""}`,
+            children: (
+              <div
+                style={{
+                  padding: "14px 16px",
+                  background: "#0b0f14",
+                  borderRadius: 8
+                }}
+              >
+                <pre
+                  style={{
+                    margin: 0,
+                    color: "#d8e1ee",
+                    fontFamily: "\"SFMono-Regular\", Consolas, monospace",
+                    fontSize: 12,
+                    lineHeight: 1.65,
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word"
+                  }}
+                >
+                  {run.logs.join("\n") || "No logs captured for this run."}
+                </pre>
+              </div>
             )
           }
-        ]
-      : []),
+        ];
+        const isCollapsibleSummaryRun = run.action === "plan" || run.action === "iterate" || run.action === "build";
+        const normalizedRunSummary =
+          run.status === "failed" && run.errorMessage
+            ? (() => {
+                const summary = run.summary?.trim();
+                const errorMessage = run.errorMessage.trim();
+                if (!summary) {
+                  return null;
+                }
+                if (summary === errorMessage || summary === `Task failed: ${errorMessage}`) {
+                  return null;
+                }
+                return summary;
+              })()
+            : run.summary?.trim() || null;
+        const summaryCollapseItems = normalizedRunSummary
+          ? [
+              {
+                key: `${run.id}-summary`,
+                label: run.action === "build" ? "Implementation Summary" : run.action === "plan" || run.action === "iterate" ? "Plan" : "Summary",
+                extra:
+                  isPlanTask && (run.action === "plan" || run.action === "iterate") ? (
+                    <Button
+                      size="small"
+                      type="link"
+                      onClick={async (event) => {
+                        event.stopPropagation();
+                        if (!task || task.builtPlanRunIds.includes(run.id)) {
+                          return;
+                        }
+
+                        setSubmitting("build");
+                        setBuildingFromRunId(run.id);
+                        try {
+                          const updatedTask = await api.buildTaskFromRun(task.id, run.id);
+                          setTask((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  ...updatedTask,
+                                  logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+                                }
+                              : updatedTask
+                          );
+                          messageApi.success("Build started from selected plan");
+                        } catch (error) {
+                          const nextMessage = error instanceof Error ? error.message : "Build could not be started";
+                          messageApi.error(nextMessage);
+                        } finally {
+                          setBuildingFromRunId(null);
+                          setSubmitting(null);
+                        }
+                      }}
+                      disabled={
+                        !task ||
+                        task.builtPlanRunIds.includes(run.id) ||
+                        isQueued ||
+                        isActive ||
+                        task.status === "accepted" ||
+                        task.status === "cancelled"
+                      }
+                      loading={submitting === "build" && buildingFromRunId === run.id}
+                    >
+                      {task?.builtPlanRunIds.includes(run.id) ? "Built" : "Build"}
+                    </Button>
+                  ) : null,
+                children: (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    {normalizedRunSummary}
+                  </ReactMarkdown>
+                )
+              }
+            ]
+          : [];
+
+        return (
+          <Flex key={entry.key}>
+            <Card size="small" style={{ width: "100%" }}>
+              <Flex justify="space-between" align="center" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
+                <Space wrap size={8}>
+                  <Tag color={runStatusColor[run.status]}>{run.status}</Tag>
+                  <Tag>{taskActionLabel[run.action]}</Tag>
+                  <Tag>{getAgentProviderLabel(run.provider)}</Tag>
+                </Space>
+                <Typography.Text type="secondary">
+                  {dayjs(run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(run.startedAt, run.finishedAt)}
+                </Typography.Text>
+              </Flex>
+              <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+                Branch: <Typography.Text code>{run.branchName ?? "(pending)"}</Typography.Text>
+              </Typography.Paragraph>
+              {normalizedRunSummary ? (
+                isCollapsibleSummaryRun ? (
+                  <Collapse size="small" defaultActiveKey={[]} items={summaryCollapseItems} style={{ marginBottom: 12 }} />
+                ) : (
+                  <div style={{ marginBottom: 12 }}>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                      {normalizedRunSummary}
+                    </ReactMarkdown>
+                  </div>
+                )
+              ) : null}
+              {run.errorMessage ? (
+                <div
+                  style={{
+                    marginBottom: 12,
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    background: "rgba(201,92,92,0.08)",
+                    border: "1px solid rgba(201,92,92,0.18)"
+                  }}
+                >
+                  <Typography.Text strong type="danger">
+                    Run failed
+                  </Typography.Text>
+                  <Typography.Paragraph type="danger" style={{ margin: "4px 0 0", whiteSpace: "pre-wrap" }}>
+                    {run.errorMessage}
+                  </Typography.Paragraph>
+                </div>
+              ) : null}
+              <Collapse
+                size="small"
+                activeKey={expandedRunKeys.includes(run.id) ? [run.id] : []}
+                onChange={(keys) =>
+                  setExpandedRunKeys((current) => {
+                    const isOpen = Array.isArray(keys) ? keys.length > 0 : Boolean(keys);
+                    return isOpen ? (current.includes(run.id) ? current : [...current, run.id]) : current.filter((key) => key !== run.id);
+                  })
+                }
+                items={collapseItems}
+              />
+            </Card>
+          </Flex>
+        );
+      })}
+    </Flex>
+  ) : <Empty description={messagesLoading || runsLoading ? "Loading history..." : "No history yet."} image={Empty.PRESENTED_IMAGE_SIMPLE} />;
+
+  const mainTabItems = [
+    {
+      key: "chat",
+      label: "History",
+      children: (
+        <Space direction="vertical" size={16} style={{ width: "100%" }}>
+          {chatHistory}
+          {chatComposer}
+        </Space>
+      )
+    },
     ...(hasDiffTab
       ? [
           {
             key: "diff",
             label: "Diff",
-            children: (
-              <div style={{ height: "100%", overflow: "auto", paddingRight: 4 }}>
-                {githubDiffTarget ? (
-                  <Flex justify="flex-end" style={{ marginBottom: 12 }}>
-                    <Button href={githubDiffTarget.href} target="_blank" rel="noreferrer">
-                      {githubDiffTarget.label}
-                    </Button>
-                  </Flex>
-                ) : null}
-                {isReviewTask
-                  ? renderParsedDiff(task?.branchDiff ?? "", `No diff captured for ${task?.baseBranch} against ${task?.repoDefaultBranch}.`)
-                  : renderParsedDiff(task?.branchDiff ?? "", "No diff captured yet. Run Build to generate one.")}
-              </div>
-            )
+            children: diffContent
           }
         ]
-      : [])
+      : []),
+    {
+      key: "context",
+      label: "Context",
+      children: contextContent
+    }
   ];
 
   return (
     <>
       {contextHolder}
-      <Flex
-        vertical
-        gap={16}
-        style={{ width: "100%", minHeight: "calc(100dvh - 112px)", height: "calc(100dvh - 112px)", overflow: "hidden", paddingBottom: 16 }}
-      >
-        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-          <Flex vertical gap={0}>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              {task?.title ?? "Task Detail"}
-            </Typography.Title>
-            <Typography.Text type="secondary">{subtitle}</Typography.Text>
-          </Flex>
+      <Flex vertical gap={16} style={{ width: "100%", paddingBottom: 16 }}>
+        <Flex vertical gap={12}>
+          <Typography.Title level={2} style={{ margin: 0 }}>
+            {task?.title ?? "Task Detail"}
+          </Typography.Title>
           {task ? (
-            <Space wrap>
-              <Tag color={statusColor[task.status]}>{getTaskStatusLabel(task.status)}</Tag>
-              {canCancel ? (
+            <Flex justify="space-between" align="center" gap={12} wrap="wrap">
+              <Space wrap size={8}>
+                <Tag color={statusColor[task.status]}>{getTaskStatusLabel(task.status)}</Tag>
+              </Space>
+              <Space wrap size={8} style={{ justifyContent: "flex-end" }}>
+                {canCancel ? (
                 <Button
                   danger
                   onClick={async () => {
@@ -731,154 +1238,205 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 >
                   Cancel
                 </Button>
-              ) : canAccept ? (
-                <Button
-                  type="primary"
-                  onClick={async () => {
-                    setSubmitting("accept");
-                    try {
-                      await api.acceptTask(task.id);
-                      messageApi.success("Task accepted");
-                    } finally {
-                      setSubmitting(null);
-                    }
-                  }}
-                  loading={submitting === "accept"}
-                >
-                  Accept
-                </Button>
-              ) : isPlanTask && task.status !== "accepted" ? (
-                <>
-                  {hasExecutionContext ? (
-                    <Button
-                      onClick={async () => {
-                        setSubmitting("plan");
-                        try {
-                          await api.triggerTaskAction(task.id, "plan");
-                          messageApi.success("Planning started");
-                        } finally {
-                          setSubmitting(null);
-                        }
-                      }}
-                      loading={submitting === "plan"}
-                    >
-                      Re-Plan
-                    </Button>
-                  ) : null}
+                ) : canAccept ? (
                   <Button
+                    type="primary"
                     onClick={async () => {
-                      setSubmitting(hasExecutionContext ? "build" : "plan");
+                      setSubmitting("accept");
                       try {
-                        await api.triggerTaskAction(task.id, hasExecutionContext ? "build" : "plan");
-                        messageApi.success(hasExecutionContext ? "Build started" : "Planning started");
+                        await api.acceptTask(task.id);
+                        messageApi.success(isImplementationTask ? "Changes accepted and pushed" : "Task accepted");
                       } finally {
                         setSubmitting(null);
                       }
                     }}
-                    type="primary"
-                    loading={submitting === (hasExecutionContext ? "build" : "plan")}
+                    loading={submitting === "accept"}
                   >
-                    {hasExecutionContext ? "Build" : "Plan"}
+                    {isImplementationTask ? "Accept & Push" : "Accept"}
                   </Button>
-                </>
-              ) : null}
+                ) : isImplementationTask && task.status !== "accepted" ? (
+                  <>
+                    {isPlanTask && hasExecutionContext ? (
+                      <Button
+                        onClick={async () => {
+                          setSubmitting("plan");
+                          try {
+                            await api.triggerTaskAction(task.id, "plan");
+                            messageApi.success("Planning started");
+                          } finally {
+                            setSubmitting(null);
+                          }
+                        }}
+                        disabled={isEditingPlan}
+                        loading={submitting === "plan"}
+                      >
+                        Re-Plan
+                      </Button>
+                    ) : null}
+                    {isBuildTask || !hasExecutionContext ? (
+                      <Button
+                        onClick={async () => {
+                          const nextAction = isBuildTask ? "build" : "plan";
+                          setSubmitting(nextAction);
+                          try {
+                            await api.triggerTaskAction(task.id, nextAction);
+                            messageApi.success(nextAction === "build" ? "Build started" : "Planning started");
+                          } finally {
+                            setSubmitting(null);
+                          }
+                        }}
+                        disabled={isEditingPlan}
+                        type="primary"
+                        loading={submitting === (isBuildTask ? "build" : "plan")}
+                      >
+                        {isBuildTask ? "Build" : "Plan"}
+                      </Button>
+                    ) : null}
+                  </>
+                ) : null}
 
-              {!canCancel && !canAccept && isReviewTask && task.status !== "accepted" ? (
-                <Button
-                  type="primary"
-                  onClick={async () => {
-                    setSubmitting("review");
-                    try {
-                      await api.triggerTaskAction(task.id, "review");
-                      messageApi.success("Review started");
-                    } finally {
-                      setSubmitting(null);
-                    }
-                  }}
-                  loading={submitting === "review"}
-                >
-                  Run Review
-                </Button>
-              ) : null}
-
-              {!canCancel && !canAccept && isAskTask && task.status !== "accepted" ? (
-                <Button
-                  type="primary"
-                  onClick={async () => {
-                    setSubmitting("ask");
-                    try {
-                      await api.triggerTaskAction(task.id, "ask");
-                      messageApi.success("Question submitted");
-                    } finally {
-                      setSubmitting(null);
-                    }
-                  }}
-                  loading={submitting === "ask"}
-                >
-                  Ask Again
-                </Button>
-              ) : null}
-
-              {hasMoreActions ? (
-                <Dropdown
-                  menu={{
-                    items: moreActionItems,
-                    onClick: ({ key }) => {
-                      if (key === "continue") {
-                        openFollowUp("continue");
-                        return;
+                {!canCancel && !canAccept && isReviewTask && task.status !== "accepted" ? (
+                  <Button
+                    type="primary"
+                    onClick={async () => {
+                      setSubmitting("review");
+                      try {
+                        await api.triggerTaskAction(task.id, "review");
+                        messageApi.success("Review started");
+                      } finally {
+                        setSubmitting(null);
                       }
+                    }}
+                    loading={submitting === "review"}
+                  >
+                    Run Review
+                  </Button>
+                ) : null}
 
-                      if (key === "fix") {
-                        openFollowUp("fix");
-                        return;
+                {!canCancel && !canAccept && isAskTask && task.status !== "accepted" ? (
+                  <Button
+                    type="primary"
+                    onClick={async () => {
+                      setSubmitting("ask");
+                      try {
+                        await api.triggerTaskAction(task.id, "ask");
+                        messageApi.success("Question submitted");
+                      } finally {
+                        setSubmitting(null);
                       }
+                    }}
+                    loading={submitting === "ask"}
+                  >
+                    Ask Again
+                  </Button>
+                ) : null}
 
-                      if (key === "delete") {
-                        Modal.confirm({
-                          title: "Delete task?",
-                          content: "This removes the task and its stored logs.",
-                          okText: "Delete",
-                          okButtonProps: { danger: true, loading: submitting === "delete" },
-                          onOk: handleDeleteTask
-                        });
+                {hasMoreActions ? (
+                  <Dropdown
+                    menu={{
+                      items: moreActionItems,
+                      onClick: ({ key }) => {
+                        if (key === "continue") {
+                          openFollowUp("continue");
+                          return;
+                        }
+
+                        if (key === "config") {
+                          setIsConfigModalOpen(true);
+                          return;
+                        }
+
+                        if (key === "pin") {
+                          void handleTogglePin();
+                          return;
+                        }
+
+                        if (key === "fix") {
+                          openFollowUp("fix");
+                          return;
+                        }
+
+                        if (key === "delete") {
+                          Modal.confirm({
+                            title: "Delete task?",
+                            content: "This removes the task and its stored logs.",
+                            okText: "Delete",
+                            okButtonProps: { danger: true, loading: submitting === "delete" },
+                            onOk: handleDeleteTask
+                          });
+                        }
                       }
-                    }
-                  }}
-                  trigger={["click"]}
-                >
-                  <Button icon={<MoreOutlined />}>More</Button>
-                </Dropdown>
-              ) : null}
-            </Space>
+                    }}
+                    trigger={["click"]}
+                  >
+                    <Button icon={<MoreOutlined />}>More</Button>
+                  </Dropdown>
+                ) : null}
+              </Space>
+            </Flex>
           ) : null}
         </Flex>
 
         {loading ? (
           <Card loading bordered={false} />
         ) : task ? (
-          <Flex vertical gap={16} style={{ flex: 1, minHeight: 0 }}>
-            {task.status === "failed" ? (
-              <Alert
-                type="error"
-                showIcon
-                message="Task failed"
-                description={task.errorMessage?.trim() || "The task failed without a captured error message. Check the realtime logs for the last runtime output."}
-              />
-            ) : null}
-
-            <Card bordered={false} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }} bodyStyle={{ flex: 1, minHeight: 0, overflow: "hidden", paddingTop: 0 }}>
-              <Tabs
-                activeKey={activeWorkspaceTab}
-                onChange={(value) => setActiveWorkspaceTab(value as "context" | "logs" | "plan" | "diff")}
-                className="task-detail-main-tabs"
-                style={{ height: "100%" }}
-                items={workspaceItems}
-              />
+          <Flex vertical gap={16}>
+            <Card bordered={false}>
+              <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff")} items={mainTabItems} />
             </Card>
           </Flex>
         ) : null}
       </Flex>
+
+      <Modal
+        open={isConfigModalOpen}
+        title="Execution Config"
+        onCancel={() => setIsConfigModalOpen(false)}
+        onOk={handleSaveConfig}
+        okText="Save Config"
+        okButtonProps={{ loading: submitting === "config", disabled: !configDirty }}
+        destroyOnClose={false}
+      >
+        <Space direction="vertical" size={16} style={{ width: "100%" }}>
+          <div>
+            <Typography.Text type="secondary">Provider</Typography.Text>
+            <Select value={providerInput} options={providerOptions} onChange={(value) => setProviderInput(value)} style={{ width: "100%", marginTop: 6 }} />
+          </div>
+          <div>
+            <Typography.Text type="secondary">Profile</Typography.Text>
+            <Select
+              value={providerProfileInput}
+              options={providerProfileOptions}
+              onChange={(value) => setProviderProfileInput(value)}
+              style={{ width: "100%", marginTop: 6 }}
+            />
+          </div>
+          <div>
+            <Typography.Text type="secondary">Model Override</Typography.Text>
+            <Input
+              value={modelOverrideInput}
+              onChange={(event) => setModelOverrideInput(event.target.value)}
+              placeholder={providerInput === "claude" ? "sonnet or opus" : "gpt-5.4"}
+              style={{ width: "100%", marginTop: 6 }}
+            />
+          </div>
+          {isImplementationTask ? (
+            <div>
+              <Typography.Text type="secondary">Branch Strategy</Typography.Text>
+              <Select
+                value={branchStrategyInput}
+                options={[
+                  { label: "Create feature branch", value: "feature_branch" },
+                  { label: "Work on existing branch", value: "work_on_branch" }
+                ]}
+                onChange={(value) => setBranchStrategyInput(value)}
+                style={{ width: "100%", marginTop: 6 }}
+              />
+            </div>
+          ) : null}
+          {isActive ? <Typography.Text type="secondary">Changes apply to the next run.</Typography.Text> : null}
+        </Space>
+      </Modal>
 
       <Modal
         open={followUpMode !== null}
@@ -894,8 +1452,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Form
             form={followUpForm}
             layout="vertical"
-            initialValues={{ skipPlan: false }}
-            onFinish={async (values: { title: string; requirements: string; skipPlan: boolean }) => {
+            initialValues={{ taskType: "build" }}
+            onFinish={async (values: { title: string; requirements: string; taskType: "plan" | "build" }) => {
               const followUpAction = followUpMode === "fix" ? "fix" : "continue";
               setSubmitting(followUpAction);
               try {
@@ -917,8 +1475,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                           normalizedRequirements || "- None provided."
                         ].join("\n")
                       : normalizedRequirements,
-                  taskType: "plan",
-                  skipPlan: values.skipPlan,
+                  taskType: values.taskType,
                   repoId: task.repoId,
                   baseBranch: followUpBranch,
                   branchStrategy: "work_on_branch",
@@ -930,9 +1487,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 followUpForm.resetFields();
                 setFollowUpMode(null);
                 messageApi.success(
-                  nextTask.lastAction === "build"
-                    ? "Follow-up task created and build started on branch"
-                    : "Follow-up task created and planning started on branch"
+                  nextTask.taskType === "build"
+                    ? "Follow-up build task created and started on branch"
+                    : "Follow-up plan task created and planning started on branch"
                 );
                 router.push(`/tasks/${nextTask.id}`);
               } finally {
@@ -973,8 +1530,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   }
                 />
               </Form.Item>
-              <Form.Item name="skipPlan" valuePropName="checked">
-                <Checkbox>Skip plan and start with build</Checkbox>
+              <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
+                <Select
+                  options={[
+                    { label: "Plan", value: "plan" },
+                    { label: "Build", value: "build" }
+                  ]}
+                />
               </Form.Item>
               <Button type="primary" htmlType="submit" loading={submitting === "continue" || submitting === "fix"}>
                 {followUpMode === "fix" ? "Create Fix Task" : "Create Continued Task"}

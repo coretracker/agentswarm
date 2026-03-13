@@ -1,9 +1,11 @@
 export type TaskQueueMode = "manual" | "auto";
 export type TaskMode = TaskQueueMode;
-export type TaskType = "plan" | "review" | "ask";
+export type TaskType = "plan" | "build" | "review" | "ask";
 export type TaskReviewVerdict = "approved" | "changes_requested";
 export type AgentProvider = "codex" | "claude";
 export type ProviderProfile = "quick" | "balanced" | "deep" | "super_deep" | "unlimited";
+export type TaskMessageRole = "user" | "assistant" | "system";
+export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 
 export type TaskStatus =
   | "plan_queued"
@@ -22,6 +24,7 @@ export type TaskStatus =
   | "failed";
 
 export type TaskAction = "plan" | "build" | "iterate" | "review" | "ask";
+export type TaskMessageAction = TaskAction | "comment";
 export type TaskReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type TaskComplexity = "trivial" | "normal" | "complex";
 export type TaskPlanningMode = "direct-build" | "plan-first";
@@ -42,6 +45,7 @@ export interface Repository {
 export interface Task {
   id: string;
   title: string;
+  pinned: boolean;
   repoId: string;
   repoName: string;
   repoUrl: string;
@@ -56,6 +60,9 @@ export interface Task {
   complexity: TaskComplexity;
   planningMode: TaskPlanningMode;
   branchName: string | null;
+  currentPlanRunId: string | null;
+  builtPlanRunIds: string[];
+  workspaceBaseRef: string | null;
   requirements: string;
   planPath: string | null;
   planMarkdown: string | null;
@@ -76,6 +83,29 @@ export interface Task {
   errorMessage: string | null;
 }
 
+export interface TaskMessage {
+  id: string;
+  taskId: string;
+  role: TaskMessageRole;
+  content: string;
+  action: TaskMessageAction | null;
+  createdAt: string;
+}
+
+export interface TaskRun {
+  id: string;
+  taskId: string;
+  action: TaskAction;
+  provider: AgentProvider;
+  branchName: string | null;
+  status: TaskRunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  summary: string | null;
+  errorMessage: string | null;
+  logs: string[];
+}
+
 export interface McpServerConfig {
   name: string;
   enabled: boolean;
@@ -84,6 +114,25 @@ export interface McpServerConfig {
   args?: string[];
   url?: string | null;
   bearerTokenEnvVar?: string | null;
+}
+
+export interface GitHubIssueReference {
+  number: number;
+  title: string;
+  url: string;
+}
+
+export interface GitHubPullRequestReference {
+  number: number;
+  title: string;
+  url: string;
+  headBranch: string;
+  baseBranch: string;
+}
+
+export interface GitHubBranchReference {
+  name: string;
+  isDefault: boolean;
 }
 
 export interface SystemSettings {
@@ -124,7 +173,6 @@ export interface CreateTaskInput {
   providerProfile?: ProviderProfile;
   modelOverride?: string;
   baseBranch?: string;
-  skipPlan?: boolean;
   branchStrategy?: TaskBranchStrategy;
   queueMode?: TaskQueueMode;
   mode?: TaskMode;
@@ -138,13 +186,12 @@ export interface CreateTaskFromIssueInput {
   repoId: string;
   issueNumber: number;
   includeComments?: boolean;
-  taskType?: Extract<TaskType, "plan" | "ask">;
+  taskType?: Extract<TaskType, "plan" | "build" | "ask">;
   title?: string;
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
   baseBranch?: string;
-  skipPlan?: boolean;
   branchStrategy?: TaskBranchStrategy;
   queueMode?: TaskQueueMode;
   model?: string;
@@ -158,7 +205,6 @@ export interface CreateTaskFromPullRequestInput {
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
-  skipPlan?: boolean;
   queueMode?: TaskQueueMode;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
@@ -174,6 +220,19 @@ export interface UpdateTaskConfigInput {
   providerProfile: ProviderProfile;
   modelOverride?: string | null;
   branchStrategy?: TaskBranchStrategy;
+}
+
+export interface UpdateTaskPinInput {
+  pinned: boolean;
+}
+
+export interface UpdateTaskPlanInput {
+  planMarkdown: string;
+}
+
+export interface CreateTaskMessageInput {
+  content: string;
+  action?: TaskMessageAction;
 }
 
 export const getTaskBranchStrategyLabel = (strategy: TaskBranchStrategy): string =>
@@ -200,6 +259,7 @@ export const getProviderProfileLabel = (profile: ProviderProfile): string =>
 export const getTaskTypeLabel = (taskType: TaskType): string =>
   ({
     plan: "Plan",
+    build: "Build",
     review: "Review",
     ask: "Ask"
   })[taskType];
@@ -299,9 +359,20 @@ export interface TaskLogEvent {
   type: "task:log";
   payload: {
     taskId: string;
+    runId?: string | null;
     line: string;
     timestamp: string;
   };
+}
+
+export interface TaskMessageEvent {
+  type: "task:message";
+  payload: TaskMessage;
+}
+
+export interface TaskRunEvent {
+  type: "task:run_updated";
+  payload: TaskRun;
 }
 
 export interface SettingsEvent {
@@ -314,4 +385,4 @@ export interface RepositoryEvent {
   payload: Repository | { id: string };
 }
 
-export type RealtimeEvent = TaskEvent | TaskDeletedEvent | TaskLogEvent | SettingsEvent | RepositoryEvent;
+export type RealtimeEvent = TaskEvent | TaskDeletedEvent | TaskLogEvent | TaskMessageEvent | TaskRunEvent | SettingsEvent | RepositoryEvent;

@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
@@ -63,18 +63,21 @@ const buildPrompt = () => {
   const approvedPlanSection = manifest.planMarkdown?.trim()
     ? `\nApproved plan markdown:\n${manifest.planMarkdown}\n`
     : `\nNo approved plan markdown is available for this task.\nFallback execution summary:\n${manifest.executionSummary}\n`;
+  const followUpInstructionSection = manifest.iterationInput?.trim()
+    ? `\nAdditional user instruction:\n${manifest.iterationInput}\n`
+    : "";
 
   switch (manifest.action) {
     case "plan":
-      return `You are planning work for the repository at ${manifest.workspacePath}.\n\nTask title:\n${manifest.title}\n\nRequirements:\n${manifest.requirements}\n\nRepository profile:\n${manifest.repoProfile}${rulesSection}\nInspect the repository and create an implementation plan in markdown with sections:\n- Overview\n- Repo Findings\n- Files To Change\n- Implementation Steps\n- Validation\n- Risks\n\nImportant:\n- Return only markdown content for the plan.\n- Do not ask for additional input.\n- Be concrete. The plan must describe the likely code changes, not just process steps.\n- In \"Overview\", summarize the problem and intended outcome without repeating the full requirements.\n- In \"Repo Findings\", list the concrete files, modules, or code paths you inspected and why they matter.\n- In \"Repo Findings\", include short code snippets only when they clarify a key implementation constraint.\n- In \"Files To Change\", organize the plan file-by-file, explain why each file matters, and include the proposed edits directly under that file entry.\n- Do not create a separate \"Suggested Code Changes\" section.\n- When proposing file edits, prefer fenced markdown code blocks whose language is set to diff.\n- For diff blocks, prefer full git-style unified diffs with diff --git, ---, +++, and valid @@ -old,+new @@ hunk headers so the UI can render them reliably.\n- In \"Validation\", list only the concrete checks or commands needed to verify the planned change.\n- Omit \"Risks\" if there are no meaningful risks.\n- Do not actually modify files during planning.`;
+      return `You are planning work for the repository at ${manifest.workspacePath}.\n\nTask title:\n${manifest.title}\n\nRequirements:\n${manifest.requirements}\n\nRepository profile:\n${manifest.repoProfile}${followUpInstructionSection}${rulesSection}\nInspect the repository and create an implementation plan in markdown with sections:\n- Overview\n- Repo Findings\n- Files To Change\n- Implementation Steps\n- Validation\n- Risks\n\nImportant:\n- Return only markdown content for the plan.\n- Do not ask for additional input.\n- Be concrete. The plan must describe the likely code changes, not just process steps.\n- In \"Overview\", summarize the problem and intended outcome without repeating the full requirements.\n- In \"Repo Findings\", list the concrete files, modules, or code paths you inspected and why they matter.\n- In \"Repo Findings\", include short code snippets only when they clarify a key implementation constraint.\n- In \"Files To Change\", organize the plan file-by-file, explain why each file matters, and include the proposed edits directly under that file entry.\n- Do not create a separate \"Suggested Code Changes\" section.\n- When proposing file edits, prefer fenced markdown code blocks whose language is set to diff.\n- For diff blocks, prefer full git-style unified diffs with diff --git, ---, +++, and valid @@ -old,+new @@ hunk headers so the UI can render them reliably.\n- In \"Validation\", list only the concrete checks or commands needed to verify the planned change.\n- Omit \"Risks\" if there are no meaningful risks.\n- Do not actually modify files during planning.`;
     case "build":
-      return `You are implementing a task in the repository at ${manifest.workspacePath}.\n\nTask title:\n${manifest.title}\n\nRequirements:\n${manifest.requirements}\n\nRepository profile:\n${manifest.repoProfile}${approvedPlanSection}${rulesSection}\nImplement the required code changes directly in this repository, then stop.\nUse the approved plan as the primary implementation guide when it is available.\nOnly rely on the fallback execution summary when no approved plan exists.\nStay close to the planned files and implementation steps.\nDo not do broad repository exploration unless the approved plan is clearly blocked by the actual code.`;
+      return `You are implementing a task in the repository at ${manifest.workspacePath}.\n\nTask title:\n${manifest.title}\n\nRequirements:\n${manifest.requirements}\n\nRepository profile:\n${manifest.repoProfile}${approvedPlanSection}${followUpInstructionSection}${rulesSection}\nImplement the required code changes directly in this repository, then stop.\nUse the approved plan as the primary implementation guide when it is available.\nOnly rely on the fallback execution summary when no approved plan exists.\nStay close to the planned files and implementation steps.\nDo not do broad repository exploration unless the approved plan is clearly blocked by the actual code.\nDo not run git commit, git push, or create your own local commits.\nDo not summarize hypothetical commits. The server will handle commit and push after the run.\nLeave file modifications in the working tree and return a markdown summary of the completed code changes and validation results.`;
     case "iterate":
       return `You are revising an implementation plan for the repository at ${manifest.workspacePath}.\n\nTask title:\n${manifest.title}\n\nRequirements:\n${manifest.requirements}\n\nRepository profile:\n${manifest.repoProfile}\n\nCurrent plan markdown:\n${manifest.planMarkdown || "(no plan has been generated yet; use the execution summary below as the current draft)"}\n\nCurrent execution summary:\n${manifest.executionSummary}\n\nIteration request:\n${manifest.iterationInput}${rulesSection}\nRevise the plan to incorporate the iteration request, then stop.\nReturn only the complete updated markdown plan.\nKeep the same plan structure and sections as the initial planning step.\nDo not modify files.`;
     case "review":
-      return `You are reviewing the implementation on branch ${manifest.baseBranch} in the repository at ${manifest.workspacePath}.\n\nCompare it against the repository default branch:\n${manifest.repoDefaultBranch}\n\nRequirements:\n${manifest.requirements}\n\nRepository profile:\n${manifest.repoProfile}${rulesSection}\nInspect the branch diff against ${manifest.repoDefaultBranch} and the relevant changed files, then return a markdown review with sections:\n- Verdict\n- Summary\n- Findings\n- Recommended Changes\n- Validation\n\nImportant:\n- Return only markdown.\n- In \"Verdict\", output exactly one of: approved, changes_requested.\n- If the implementation is acceptable, say approved and keep findings concise.\n- If changes are needed, explain the concrete issues and how to fix them.\n- Do not modify files.`;
+      return `You are reviewing the implementation on branch ${manifest.baseBranch} in the repository at ${manifest.workspacePath}.\n\nCompare it against the repository default branch:\n${manifest.repoDefaultBranch}\n\nRequirements:\n${manifest.requirements}\n\nRepository profile:\n${manifest.repoProfile}${followUpInstructionSection}${rulesSection}\nInspect the branch diff against ${manifest.repoDefaultBranch} and the relevant changed files, then return a markdown review with sections:\n- Verdict\n- Summary\n- Findings\n- Recommended Changes\n- Validation\n\nImportant:\n- Return only markdown.\n- In \"Verdict\", output exactly one of: approved, changes_requested.\n- If the implementation is acceptable, say approved and keep findings concise.\n- If changes are needed, explain the concrete issues and how to fix them.\n- Do not modify files.`;
     case "ask":
-      return `You are answering a repository question for the branch ${manifest.baseBranch} at ${manifest.workspacePath}.\n\nTask title:\n${manifest.title}\n\nQuestion:\n${manifest.requirements}\n\nRepository profile:\n${manifest.repoProfile}${rulesSection}\nAnswer the question in markdown only.\nIf code snippets help, use fenced code blocks.\nDo not modify files.`;
+      return `You are answering a repository question for the branch ${manifest.baseBranch} at ${manifest.workspacePath}.\n\nTask title:\n${manifest.title}\n\nQuestion:\n${manifest.requirements}\n\nRepository profile:\n${manifest.repoProfile}${followUpInstructionSection}${rulesSection}\nAnswer the question in markdown only.\nIf code snippets help, use fenced code blocks.\nDo not modify files.`;
     default:
       throw new Error(`Unsupported action: ${manifest.action}`);
   }
@@ -114,10 +117,15 @@ if (manifest.resolvedMaxTurns) {
   args.push("--max-turns", String(manifest.resolvedMaxTurns));
 }
 
+const workspaceStats = await stat(manifest.workspacePath);
+const runtimeIdentity = workspaceStats.uid > 0 && workspaceStats.gid > 0 ? `${workspaceStats.uid}:${workspaceStats.gid}` : "agent:agent";
+const runtimeHome = path.join("/runtime", `claude-home-${runtimeIdentity.replace(/[:/]/g, "-")}`);
+await mkdir(runtimeHome, { recursive: true });
+
 console.log(`[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}`);
 console.log(`[runtime] claude max_turns=${manifest.resolvedMaxTurns ?? "default"}`);
-await runCommand("chown", ["-R", "agent:agent", manifest.workspacePath, path.dirname(manifest.resultJsonPath)]);
-console.log("[runtime] prepared workspace ownership for unprivileged claude execution");
+await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(manifest.resultJsonPath)]);
+console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);
 
 let finalMarkdown = "";
 let resultSubtype = null;
@@ -126,8 +134,14 @@ const assistantLines = [];
 const toolBlocks = new Map();
 let sawPartialAssistantText = false;
 let partialTextBuffer = "";
-const proc = spawn("su-exec", ["agent:agent", "claude", ...args], {
-  env: { ...process.env, HOME: "/home/agent" },
+const proc = spawn("su-exec", [runtimeIdentity, "claude", ...args], {
+  env: {
+    ...process.env,
+    HOME: runtimeHome,
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "safe.directory",
+    GIT_CONFIG_VALUE_0: manifest.workspacePath
+  },
   cwd: manifest.workspacePath,
   stdio: ["ignore", "pipe", "pipe"]
 });

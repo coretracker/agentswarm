@@ -3,12 +3,20 @@
 import type {
   CreateTaskFromIssueInput,
   CreateTaskFromPullRequestInput,
+  CreateTaskMessageInput,
   CreateRepositoryInput,
   CreateTaskInput,
+  GitHubBranchReference,
+  GitHubIssueReference,
+  GitHubPullRequestReference,
   Repository,
   SystemSettings,
   Task,
+  TaskMessage,
+  TaskRun,
   TaskAction,
+  UpdateTaskPlanInput,
+  UpdateTaskPinInput,
   UpdateCredentialSettingsInput,
   UpdateTaskConfigInput,
   UpdateRepositoryInput,
@@ -43,6 +51,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   listTasks: () => request<Task[]>("/tasks"),
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
+  listTaskMessages: (id: string) => request<TaskMessage[]>(`/tasks/${id}/messages`),
+  listTaskRuns: (id: string) => request<TaskRun[]>(`/tasks/${id}/runs`),
   createTask: (input: CreateTaskInput) =>
     request<Task>("/tasks", {
       method: "POST",
@@ -58,10 +68,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
+  listGitHubIssues: (repoId: string) =>
+    request<GitHubIssueReference[]>(`/imports/github/issues?repoId=${encodeURIComponent(repoId)}`),
+  listGitHubPullRequests: (repoId: string) =>
+    request<GitHubPullRequestReference[]>(`/imports/github/pull-requests?repoId=${encodeURIComponent(repoId)}`),
+  listGitHubBranches: (repoId: string) =>
+    request<GitHubBranchReference[]>(`/imports/github/branches?repoId=${encodeURIComponent(repoId)}`),
   triggerTaskAction: (id: string, action: TaskAction, iterateInput?: string) =>
     request<Task>(`/tasks/${id}/actions`, {
       method: "POST",
       body: JSON.stringify({ action, iterateInput })
+    }),
+  createTaskMessage: (id: string, input: CreateTaskMessageInput) =>
+    request<Task>(`/tasks/${id}/messages`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  buildTaskFromRun: (id: string, runId: string) =>
+    request<Task>(`/tasks/${id}/build-from-run/${runId}`, {
+      method: "POST"
     }),
   cancelTask: (id: string) =>
     request<Task>(`/tasks/${id}/cancel`, {
@@ -77,6 +102,16 @@ export const api = {
     }),
   updateTaskConfig: (id: string, input: UpdateTaskConfigInput) =>
     request<Task>(`/tasks/${id}/config`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskPlan: (id: string, input: UpdateTaskPlanInput) =>
+    request<Task>(`/tasks/${id}/plan`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskPin: (id: string, input: UpdateTaskPinInput) =>
+    request<Task>(`/tasks/${id}/pin`, {
       method: "PATCH",
       body: JSON.stringify(input)
     }),

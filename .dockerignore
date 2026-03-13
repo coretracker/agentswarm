@@ -6,3 +6,4 @@ dist
 apps/web/.next
 apps/server/dist
 local-plans
+task-workspaces
