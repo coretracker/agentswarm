@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { Task } from "@agentswarm/shared-types";
 import { api } from "../api/client";
+import { markTaskSeen } from "../utils/seen-tasks";
 import { useSocket } from "./useSocket";
 
 interface TaskLogPayload {
@@ -32,6 +33,7 @@ export const useTask = (taskId: string) => {
           return;
         }
 
+        markTaskSeen(item.id);
         setTask(item);
         setLoading(false);
       })

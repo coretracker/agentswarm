@@ -16,6 +16,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "../src/api/client";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useTasks } from "../src/hooks/useTasks";
+import { getSeenTaskIds, markTaskSeen, subscribeToSeenTasks } from "../src/utils/seen-tasks";
 
 const statusOptions: Array<{ label: string; value: TaskStatus }> = [
   { label: "Plan Queued", value: "plan_queued" },
@@ -58,6 +59,7 @@ export function TasksPage() {
   const searchParams = useSearchParams();
   const { tasks, setTasks, loading } = useTasks();
   const { repositories } = useRepositories();
+  const [seenTaskIds, setSeenTaskIds] = useState<Set<string>>(new Set());
   const [titleFilter, setTitleFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<TaskStatus | undefined>();
   const [repoFilter, setRepoFilter] = useState<string | undefined>();
@@ -75,6 +77,15 @@ export function TasksPage() {
       setStatusFilter(undefined);
     }
   }, [statusFilter, visibleStatusOptions]);
+
+  useEffect(() => {
+    const syncSeenTaskIds = () => {
+      setSeenTaskIds(getSeenTaskIds());
+    };
+
+    syncSeenTaskIds();
+    return subscribeToSeenTasks(syncSeenTaskIds);
+  }, []);
 
   const filteredTasks = useMemo(() => {
     return tasks.filter((task) => {
@@ -195,7 +206,19 @@ export function TasksPage() {
             pagination={{ pageSize: 10 }}
             style={{ cursor: "pointer" }}
             onRow={(record) => ({
-              onClick: () => router.push(`/tasks/${record.id}`)
+              onClick: () => {
+                markTaskSeen(record.id);
+                setSeenTaskIds((current) => {
+                  if (current.has(record.id)) {
+                    return current;
+                  }
+
+                  const next = new Set(current);
+                  next.add(record.id);
+                  return next;
+                });
+                router.push(`/tasks/${record.id}`);
+              }
             })}
             columns={[
               {
@@ -204,6 +227,19 @@ export function TasksPage() {
                 render: (value: string, task) => (
                   <Space size={8}>
                     {task.pinned ? <PushpinFilled style={{ color: "#1C8057" }} /> : null}
+                    {!seenTaskIds.has(task.id) ? (
+                      <span
+                        aria-label="Unseen task"
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          backgroundColor: "#1677ff",
+                          display: "inline-block",
+                          flex: "0 0 auto"
+                        }}
+                      />
+                    ) : null}
                     <span>{value}</span>
                   </Space>
                 )
