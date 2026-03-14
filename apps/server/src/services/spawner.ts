@@ -856,7 +856,7 @@ esac
     }
   }
 
-  async publishAcceptedTask(task: Task): Promise<Task> {
+  async pushTaskBranch(task: Task): Promise<Task> {
     const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
     const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
     if (!branchName) {
@@ -868,10 +868,10 @@ esac
       .then(() => true)
       .catch(() => false);
     if (!exists) {
-      throw new Error("No local workspace exists for this task. Build it again before accepting.");
+      throw new Error("No local workspace exists for this task. Build it again before pushing.");
     }
 
-    await this.taskStore.appendLog(task.id, `Spawner: publishing local commits from ${branchName}.`);
+    await this.taskStore.appendLog(task.id, `Spawner: pushing local commits from ${branchName}.`);
 
     await this.gitCommand(["-C", workspacePath, "add", "-A"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     let createdLocalCommit = false;
@@ -919,11 +919,16 @@ esac
       await this.gitCommand(["-C", workspacePath, "push", "-u", "origin", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     }
 
+    await this.taskStore.appendLog(task.id, `Spawner: pushed local branch ${branchName} to origin.`);
+    return (await this.taskStore.getTask(task.id)) ?? task;
+  }
+
+  async publishAcceptedTask(task: Task): Promise<Task> {
+    await this.pushTaskBranch(task);
     const accepted = await this.taskStore.setStatus(task.id, "accepted", {
       errorMessage: null,
       enqueued: false
     });
-    await this.taskStore.appendLog(task.id, `Spawner: pushed local branch ${branchName} to origin.`);
     await this.cleanupTaskArtifacts(task, { preservePlanFile: true });
     if (!accepted) {
       throw new Error("Failed to update task after publishing");
@@ -1265,13 +1270,13 @@ esac
           action,
           content:
             runtimeResult.summaryMarkdown.trim() ||
-            "Build completed locally. Review the diff, then accept to push the branch."
+            "Build completed locally. Review the diff, then push the branch when ready."
         });
         if (runId) {
           await this.taskStore.updateRun(runId, {
             status: "succeeded",
             finishedAt,
-            summary: runtimeResult.summaryMarkdown.trim() || "Build completed locally. Review the diff and accept to push."
+            summary: runtimeResult.summaryMarkdown.trim() || "Build completed locally. Review the diff and push when ready."
           });
         }
       }

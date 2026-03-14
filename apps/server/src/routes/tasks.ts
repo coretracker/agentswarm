@@ -417,6 +417,28 @@ export const registerTaskRoutes = (
     return reply.send(await deps.taskStore.getTask(task.id));
   });
 
+  app.post<{ Params: { id: string } }>("/tasks/:id/push", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const task = await deps.taskStore.getTask(request.params.id);
+    if (!task) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    if (task.taskType !== "plan" && task.taskType !== "build") {
+      return reply.status(409).send({ message: "Only implementation tasks can be pushed" });
+    }
+
+    if (task.status !== "review" && task.status !== "failed") {
+      return reply.status(409).send({ message: "Only completed implementation tasks can be pushed" });
+    }
+
+    const pushed = await deps.spawner.pushTaskBranch(task);
+    return reply.send(pushed);
+  });
+
   app.post<{ Params: { id: string } }>("/tasks/:id/accept", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
@@ -459,6 +481,7 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: "Active tasks cannot be archived" });
     }
 
+    await deps.spawner.cleanupTaskArtifacts(task, { preservePlanFile: true });
     await deps.taskStore.archiveTask(task.id);
     await deps.taskStore.appendLog(task.id, "Task archived by user.");
     const refreshed = await deps.taskStore.getTask(task.id);

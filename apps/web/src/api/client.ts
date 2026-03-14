@@ -164,8 +164,8 @@ export const api = {
     request<Task>(`/tasks/${id}/cancel`, {
       method: "POST"
     }),
-  acceptTask: (id: string) =>
-    request<Task>(`/tasks/${id}/accept`, {
+  pushTask: (id: string) =>
+    request<Task>(`/tasks/${id}/push`, {
       method: "POST"
     }),
   archiveTask: (id: string) =>
