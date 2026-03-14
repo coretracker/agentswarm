@@ -389,6 +389,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canCancel = canEditTask && (isQueued || isActive);
   const canPull = canEditTask && isImplementationTask && (task?.status === "review" || task?.status === "failed");
   const canPush = canPull;
+  const pullCount = task?.pullCount ?? 0;
+  const pushCount = task?.pushCount ?? 0;
   const hasCompletedNonImplementationResult = task?.status === "review" || task?.status === "answered";
   const canDelete = canDeleteTask && !!task && !isActive && !isArchived;
   const canArchive = canEditTask && !!task && !isActive && !isArchived;
@@ -1481,13 +1483,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
                 {canPull ? (
                   <Button onClick={handlePullTask} loading={submitting === "pull"}>
-                    Pull
+                    {`Pull (${pullCount})`}
                   </Button>
                 ) : null}
 
                 {canPush ? (
                   <Button onClick={handlePushTask} loading={submitting === "push"}>
-                    Push
+                    {`Push (${pushCount})`}
                   </Button>
                 ) : null}
 

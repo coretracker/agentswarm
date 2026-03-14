@@ -54,6 +54,15 @@ const createTaskMessageSchema = z.object({
 
 const archivedTaskReadOnlyMessage = "Archived tasks are read-only";
 
+const withBranchSyncCounts = async (spawner: SpawnerService, task: Task): Promise<Task> => {
+  const { pullCount, pushCount } = await spawner.getTaskBranchSyncCounts(task);
+  return {
+    ...task,
+    pullCount,
+    pushCount
+  };
+};
+
 const getInitialAction = (task: Pick<Task, "taskType" | "planningMode" | "planMarkdown">): TaskAction => {
   if (task.taskType === "review") {
     return "review";
@@ -115,7 +124,7 @@ export const registerTaskRoutes = (
       return reply.status(404).send({ message: "Task not found" });
     }
 
-    return task;
+    return withBranchSyncCounts(deps.spawner, task);
   });
 
   app.get<{ Params: { id: string } }>("/tasks/:id/messages", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
@@ -436,7 +445,7 @@ export const registerTaskRoutes = (
     }
 
     const pushed = await deps.spawner.pushTaskBranch(task);
-    return reply.send(pushed);
+    return reply.send(await withBranchSyncCounts(deps.spawner, pushed));
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/pull", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
@@ -458,7 +467,7 @@ export const registerTaskRoutes = (
     }
 
     const pulled = await deps.spawner.pullTaskBranch(task);
-    return reply.send(pulled);
+    return reply.send(await withBranchSyncCounts(deps.spawner, pulled));
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/accept", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {

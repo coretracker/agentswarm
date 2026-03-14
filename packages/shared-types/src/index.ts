@@ -190,6 +190,8 @@ export interface Task {
   reviewVerdict: TaskReviewVerdict | null;
   executionSummary: string;
   branchDiff: string | null;
+  pullCount?: number;
+  pushCount?: number;
   latestIterationInput: string | null;
   lastAction: TaskAction | null;
   queueMode: TaskQueueMode;

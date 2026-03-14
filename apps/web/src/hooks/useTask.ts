@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Task } from "@agentswarm/shared-types";
 import { api } from "../api/client";
 import { markTaskSeen } from "../utils/seen-tasks";
@@ -21,6 +21,11 @@ export const useTask = (taskId: string) => {
   const socket = useSocket();
   const [task, setTask] = useState<Task | null>(null);
   const [loading, setLoading] = useState(true);
+  const activeTaskIdRef = useRef(taskId);
+
+  useEffect(() => {
+    activeTaskIdRef.current = taskId;
+  }, [taskId]);
 
   useEffect(() => {
     let active = true;
@@ -77,6 +82,25 @@ export const useTask = (taskId: string) => {
             }
           : nextTask
       );
+
+      void api
+        .getTask(nextTask.id)
+        .then((fullTask) => {
+          if (activeTaskIdRef.current !== fullTask.id) {
+            return;
+          }
+
+          setTask((current) =>
+            current
+              ? {
+                  ...current,
+                  ...fullTask,
+                  logs: fullTask.logs.length > 0 ? fullTask.logs : current.logs
+                }
+              : fullTask
+          );
+        })
+        .catch(() => undefined);
     };
 
     const onTaskLog = (payload: TaskLogPayload) => {

@@ -527,6 +527,74 @@ esac
     }
   }
 
+  async getTaskBranchSyncCounts(task: Task): Promise<{ pullCount: number; pushCount: number }> {
+    if ((task.taskType !== "plan" && task.taskType !== "build") || (task.status !== "review" && task.status !== "failed" && task.status !== "accepted")) {
+      return { pullCount: 0, pushCount: 0 };
+    }
+
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
+    if (!branchName) {
+      return { pullCount: 0, pushCount: 0 };
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const exists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      return { pullCount: 0, pushCount: 0 };
+    }
+
+    try {
+      if (!(await this.localBranchExists(workspacePath, branchName, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
+        return { pullCount: 0, pushCount: 0 };
+      }
+
+      await this.gitCommand(["-C", workspacePath, "fetch", "origin"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+
+      let pullCount = 0;
+      let pushCount = 0;
+      const remoteRef = `origin/${branchName}`;
+      const remoteExists = await this.refExists(workspacePath, remoteRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+
+      if (remoteExists) {
+        const divergence = await this.gitCommandCapture(
+          ["-C", workspacePath, "rev-list", "--left-right", "--count", `${branchName}...${remoteRef}`],
+          runtimeCredentials.githubToken,
+          runtimeCredentials.gitUsername
+        );
+        const [aheadRaw, behindRaw] = divergence.trim().split(/\s+/);
+        pushCount = Number.parseInt(aheadRaw ?? "0", 10) || 0;
+        pullCount = Number.parseInt(behindRaw ?? "0", 10) || 0;
+      } else if (branchName !== task.baseBranch) {
+        const baseRef = `origin/${task.baseBranch}`;
+        if (await this.refExists(workspacePath, baseRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername)) {
+          const localOnly = await this.gitCommandCapture(
+            ["-C", workspacePath, "rev-list", "--count", `${baseRef}..${branchName}`],
+            runtimeCredentials.githubToken,
+            runtimeCredentials.gitUsername
+          );
+          pushCount = Number.parseInt(localOnly.trim(), 10) || 0;
+        }
+      }
+
+      const dirtyOutput = await this.gitCommandCaptureAllowExitCodes(
+        ["-C", workspacePath, "status", "--porcelain"],
+        [0],
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername
+      );
+      if (dirtyOutput.trim().length > 0) {
+        pushCount += 1;
+      }
+
+      return { pullCount, pushCount };
+    } catch {
+      return { pullCount: 0, pushCount: 0 };
+    }
+  }
+
   private async resolveLiveDiffBaseRef(
     task: Task,
     workspacePath: string,
