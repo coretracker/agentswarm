@@ -408,7 +408,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const currentTaskProviderProfile = task?.providerProfile ?? "deep";
   const currentTaskModelOverride = task?.modelOverride ?? "";
   const currentTaskBranchStrategy = task?.branchStrategy ?? "feature_branch";
-  const hasExecutionContext = (task?.executionSummary?.trim().length ?? 0) > 0;
   const planDraftTrimmed = planDraft.trim();
   const planDraftChanged = planDraft !== (task?.planMarkdown ?? "");
   const configDirty =
@@ -1425,23 +1424,22 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                         Re-Plan
                       </Button>
                     ) : null}
-                    {isBuildTask || !hasExecutionContext ? (
+                    {isBuildTask ? (
                       <Button
                         onClick={async () => {
-                          const nextAction = isBuildTask ? "build" : "plan";
-                          setSubmitting(nextAction);
+                          setSubmitting("build");
                           try {
-                            await api.triggerTaskAction(task.id, nextAction);
-                            messageApi.success(nextAction === "build" ? "Build started" : "Planning started");
+                            await api.triggerTaskAction(task.id, "build");
+                            messageApi.success("Build started");
                           } finally {
                             setSubmitting(null);
                           }
                         }}
                         disabled={isEditingPlan}
                         type="primary"
-                        loading={submitting === (isBuildTask ? "build" : "plan")}
+                        loading={submitting === "build"}
                       >
-                        {isBuildTask ? "Build" : "Plan"}
+                        Build
                       </Button>
                     ) : null}
                   </>
