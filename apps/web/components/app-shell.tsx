@@ -102,9 +102,6 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Flex align="center" gap={12}>
               <Flex vertical gap={0} style={{ minWidth: 0 }}>
                 <Typography.Text strong>{session.user.name}</Typography.Text>
-                <Typography.Text type="secondary" ellipsis style={{ maxWidth: 220 }}>
-                  {session.user.email}
-                </Typography.Text>
               </Flex>
               <Button
                 icon={<LogoutOutlined />}
