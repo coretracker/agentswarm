@@ -361,7 +361,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [buildingFromRunId, setBuildingFromRunId] = useState<string | null>(null);
   const [selectedChatAction, setSelectedChatAction] = useState<ComposerAction>("plan");
   const [submitting, setSubmitting] = useState<
-    null | "plan" | "build" | "iterate" | "review" | "ask" | "cancel" | "config" | "accept" | "archive" | "delete" | "continue" | "fix" | "savePlan" | "message" | "pin"
+    null | "plan" | "build" | "iterate" | "review" | "ask" | "cancel" | "config" | "pull" | "push" | "archive" | "delete" | "continue" | "fix" | "savePlan" | "message" | "pin"
   >(null);
   const [messageApi, contextHolder] = message.useMessage();
   const selectedChatActionRef = useRef(false);
@@ -387,8 +387,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     task?.status === "reviewing" ||
     task?.status === "asking";
   const canCancel = canEditTask && (isQueued || isActive);
-  const canAccept =
-    canEditTask && (task?.status === "review" || task?.status === "answered" || (isImplementationTask && task?.status === "failed"));
+  const canPull = canEditTask && isImplementationTask && (task?.status === "review" || task?.status === "failed");
+  const canPush = canPull;
+  const pullCount = task?.pullCount ?? 0;
+  const pushCount = task?.pushCount ?? 0;
+  const hasCompletedNonImplementationResult = task?.status === "review" || task?.status === "answered";
   const canDelete = canDeleteTask && !!task && !isActive && !isArchived;
   const canArchive = canEditTask && !!task && !isActive && !isArchived;
   const canContinueOnBranch =
@@ -823,13 +826,60 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
+  const handlePushTask = async () => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("push");
+    try {
+      const updatedTask = await api.pushTask(task.id);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success("Changes pushed");
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to push changes");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+  const handlePullTask = async () => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("pull");
+    try {
+      const updatedTask = await api.pullTask(task.id);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success("Changes pulled");
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to pull changes");
+    } finally {
+      setSubmitting(null);
+    }
+  };
   const moreActionItems = task && !isArchived
     ? [
         canEditTask ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
         canEditTask ? { key: "config", label: "Config" } : null,
         canContinueOnBranch ? { key: "continue", label: "Continue On Branch" } : null,
         canCreateFixTask ? { key: "fix", label: "Create Fix Task" } : null,
-        canArchive ? { key: "archive", label: "Archive Task" } : null,
         canDelete ? { key: "delete", label: "Delete Task", danger: true } : null
       ].filter(Boolean)
     : [];
@@ -1389,22 +1439,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 >
                   Cancel
                 </Button>
-                ) : canAccept ? (
-                  <Button
-                    type="primary"
-                    onClick={async () => {
-                      setSubmitting("accept");
-                      try {
-                        await api.acceptTask(task.id);
-                        messageApi.success(isImplementationTask ? "Changes accepted and pushed" : "Task accepted");
-                      } finally {
-                        setSubmitting(null);
-                      }
-                    }}
-                    loading={submitting === "accept"}
-                  >
-                    {isImplementationTask ? "Accept & Push" : "Accept"}
-                  </Button>
                 ) : canEditTask && isImplementationTask && task.status !== "accepted" && task.status !== "archived" ? (
                   <>
                     {isPlanTask && hasExecutionContext ? (
@@ -1445,7 +1479,19 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   </>
                 ) : null}
 
-                {!canCancel && !canAccept && canEditTask && isReviewTask && task.status !== "accepted" && task.status !== "archived" ? (
+                {canPull ? (
+                  <Button onClick={handlePullTask} loading={submitting === "pull"}>
+                    {`Pull (${pullCount})`}
+                  </Button>
+                ) : null}
+
+                {canPush ? (
+                  <Button onClick={handlePushTask} loading={submitting === "push"}>
+                    {`Push (${pushCount})`}
+                  </Button>
+                ) : null}
+
+                {!canCancel && !hasCompletedNonImplementationResult && canEditTask && isReviewTask && task.status !== "accepted" && task.status !== "archived" ? (
                   <Button
                     type="primary"
                     onClick={async () => {
@@ -1463,7 +1509,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   </Button>
                 ) : null}
 
-                {!canCancel && !canAccept && canEditTask && isAskTask && task.status !== "accepted" && task.status !== "archived" ? (
+                {!canCancel && !hasCompletedNonImplementationResult && canEditTask && isAskTask && task.status !== "accepted" && task.status !== "archived" ? (
                   <Button
                     type="primary"
                     onClick={async () => {
@@ -1478,6 +1524,23 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                     loading={submitting === "ask"}
                   >
                     Ask Again
+                  </Button>
+                ) : null}
+
+                {canArchive ? (
+                  <Button
+                    danger
+                    loading={submitting === "archive"}
+                    onClick={() =>
+                      Modal.confirm({
+                        title: "Archive task?",
+                        content: "Archived tasks become read-only and cannot be restarted.",
+                        okText: "Archive",
+                        onOk: handleArchiveTask
+                      })
+                    }
+                  >
+                    Archive
                   </Button>
                 ) : null}
 
@@ -1503,16 +1566,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
                         if (key === "fix") {
                           openFollowUp("fix");
-                          return;
-                        }
-
-                        if (key === "archive") {
-                          Modal.confirm({
-                            title: "Archive task?",
-                            content: "Archived tasks become read-only and cannot be restarted.",
-                            okText: "Archive",
-                            onOk: handleArchiveTask
-                          });
                           return;
                         }
 
