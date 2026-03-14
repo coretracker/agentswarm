@@ -439,6 +439,28 @@ export const registerTaskRoutes = (
     return reply.send(pushed);
   });
 
+  app.post<{ Params: { id: string } }>("/tasks/:id/pull", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const task = await deps.taskStore.getTask(request.params.id);
+    if (!task) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    if (task.taskType !== "plan" && task.taskType !== "build") {
+      return reply.status(409).send({ message: "Only implementation tasks can be pulled" });
+    }
+
+    if (task.status !== "review" && task.status !== "failed") {
+      return reply.status(409).send({ message: "Only completed implementation tasks can be pulled" });
+    }
+
+    const pulled = await deps.spawner.pullTaskBranch(task);
+    return reply.send(pulled);
+  });
+
   app.post<{ Params: { id: string } }>("/tasks/:id/accept", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {

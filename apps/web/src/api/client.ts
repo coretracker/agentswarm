@@ -164,6 +164,10 @@ export const api = {
     request<Task>(`/tasks/${id}/cancel`, {
       method: "POST"
     }),
+  pullTask: (id: string) =>
+    request<Task>(`/tasks/${id}/pull`, {
+      method: "POST"
+    }),
   pushTask: (id: string) =>
     request<Task>(`/tasks/${id}/push`, {
       method: "POST"

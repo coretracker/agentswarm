@@ -856,6 +856,72 @@ esac
     }
   }
 
+  async pullTaskBranch(task: Task): Promise<Task> {
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
+    if (!branchName) {
+      throw new Error("No target branch available for pulling");
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const exists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      throw new Error("No local workspace exists for this task. Build it again before pulling.");
+    }
+
+    await this.taskStore.appendLog(task.id, `Spawner: pulling remote changes into ${branchName}.`);
+
+    if (await this.localBranchExists(workspacePath, branchName, runtimeCredentials.githubToken, runtimeCredentials.gitUsername)) {
+      await this.gitCommand(["-C", workspacePath, "checkout", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    }
+
+    await this.gitCommand(["-C", workspacePath, "fetch", "origin"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+
+    const remoteRef = `origin/${branchName}`;
+    if (!(await this.refExists(workspacePath, remoteRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
+      throw new Error(`Remote branch ${branchName} does not exist yet. Push it first before pulling.`);
+    }
+
+    if (!(await this.localBranchExists(workspacePath, branchName, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
+      await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, remoteRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    }
+
+    await this.gitCommand(["-C", workspacePath, "add", "-A"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    let createdLocalCommit = false;
+    try {
+      await this.gitCommand(["-C", workspacePath, "diff", "--cached", "--quiet"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (!message.includes("exited with code 1")) {
+        throw error;
+      }
+
+      await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.gitCommand(["-C", workspacePath, "commit", "-m", `feat(agentswarm): ${task.title}`], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      createdLocalCommit = true;
+    }
+
+    if (createdLocalCommit) {
+      await this.taskStore.appendLog(task.id, "Spawner: created a local commit from workspace changes before pulling.");
+    }
+
+    await this.gitCommand(["-C", workspacePath, "fetch", "origin"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    await this.gitCommand(["-C", workspacePath, "rebase", remoteRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
+      async (error) => {
+        await this.gitCommand(["-C", workspacePath, "rebase", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
+          () => undefined
+        );
+        throw error;
+      }
+    );
+
+    await this.taskStore.appendLog(task.id, `Spawner: pulled remote branch ${branchName} into the local workspace.`);
+    return (await this.taskStore.getTask(task.id)) ?? task;
+  }
+
   async pushTaskBranch(task: Task): Promise<Task> {
     const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
     const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;

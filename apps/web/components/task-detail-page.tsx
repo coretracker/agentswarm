@@ -361,7 +361,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [buildingFromRunId, setBuildingFromRunId] = useState<string | null>(null);
   const [selectedChatAction, setSelectedChatAction] = useState<ComposerAction>("plan");
   const [submitting, setSubmitting] = useState<
-    null | "plan" | "build" | "iterate" | "review" | "ask" | "cancel" | "config" | "push" | "archive" | "delete" | "continue" | "fix" | "savePlan" | "message" | "pin"
+    null | "plan" | "build" | "iterate" | "review" | "ask" | "cancel" | "config" | "pull" | "push" | "archive" | "delete" | "continue" | "fix" | "savePlan" | "message" | "pin"
   >(null);
   const [messageApi, contextHolder] = message.useMessage();
   const selectedChatActionRef = useRef(false);
@@ -387,7 +387,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     task?.status === "reviewing" ||
     task?.status === "asking";
   const canCancel = canEditTask && (isQueued || isActive);
-  const canPush = canEditTask && isImplementationTask && (task?.status === "review" || task?.status === "failed");
+  const canPull = canEditTask && isImplementationTask && (task?.status === "review" || task?.status === "failed");
+  const canPush = canPull;
   const hasCompletedNonImplementationResult = task?.status === "review" || task?.status === "answered";
   const canDelete = canDeleteTask && !!task && !isActive && !isArchived;
   const canArchive = canEditTask && !!task && !isActive && !isArchived;
@@ -844,6 +845,30 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       messageApi.success("Changes pushed");
     } catch (error) {
       messageApi.error(error instanceof Error ? error.message : "Failed to push changes");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+  const handlePullTask = async () => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("pull");
+    try {
+      const updatedTask = await api.pullTask(task.id);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success("Changes pulled");
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to pull changes");
     } finally {
       setSubmitting(null);
     }
@@ -1452,6 +1477,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                       </Button>
                     ) : null}
                   </>
+                ) : null}
+
+                {canPull ? (
+                  <Button onClick={handlePullTask} loading={submitting === "pull"}>
+                    Pull
+                  </Button>
                 ) : null}
 
                 {canPush ? (
