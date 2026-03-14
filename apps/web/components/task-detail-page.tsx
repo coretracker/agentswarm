@@ -411,6 +411,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const currentTaskProviderProfile = task?.providerProfile ?? "deep";
   const currentTaskModelOverride = task?.modelOverride ?? "";
   const currentTaskBranchStrategy = task?.branchStrategy ?? "feature_branch";
+  const hasExecutionContext = (task?.executionSummary?.trim().length ?? 0) > 0;
   const planDraftTrimmed = planDraft.trim();
   const planDraftChanged = planDraft !== (task?.planMarkdown ?? "");
   const configDirty =
