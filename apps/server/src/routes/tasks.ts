@@ -318,6 +318,8 @@ export const registerTaskRoutes = (
     const manualRun = await deps.taskStore.createRun(task.id, {
       action: "plan",
       provider: task.provider,
+      providerProfile: task.providerProfile,
+      modelOverride: task.modelOverride,
       branchName: task.branchName ?? task.baseBranch
     });
     if (manualRun) {

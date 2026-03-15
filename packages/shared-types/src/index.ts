@@ -287,6 +287,8 @@ export interface TaskRun {
   taskId: string;
   action: TaskAction;
   provider: AgentProvider;
+  providerProfile: ProviderProfile;
+  modelOverride: string | null;
   branchName: string | null;
   status: TaskRunStatus;
   startedAt: string;

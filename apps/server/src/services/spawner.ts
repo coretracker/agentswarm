@@ -1203,6 +1203,8 @@ esac
       const run = await this.taskStore.createRun(task.id, {
         action,
         provider: task.provider,
+        providerProfile: task.providerProfile,
+        modelOverride: task.modelOverride,
         branchName
       });
       runId = run?.id ?? null;

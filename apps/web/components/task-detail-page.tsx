@@ -151,7 +151,11 @@ function formatTokenUsage(tokenUsage: TaskRun["tokenUsage"]): string {
   return `${total} total (${input} in / ${output} out)`;
 }
 
-function getTaskTokenTotals(runs: TaskRun[], modelId: string) {
+function getRunModel(run: TaskRun): string {
+  return run.modelOverride ?? getDefaultModelForProvider(run.provider);
+}
+
+function getTaskTokenTotals(runs: TaskRun[]) {
   const availableRuns = runs.filter((run) => run.tokenUsage?.status === "available");
   if (availableRuns.length === 0) {
     return null;
@@ -159,13 +163,25 @@ function getTaskTokenTotals(runs: TaskRun[], modelId: string) {
 
   const inputTokens = availableRuns.reduce((sum, run) => sum + (run.tokenUsage?.inputTokens ?? 0), 0);
   const outputTokens = availableRuns.reduce((sum, run) => sum + (run.tokenUsage?.outputTokens ?? 0), 0);
-  const cost = estimateCost(modelId, inputTokens, outputTokens);
+
+  // Sum costs per run using each run's own model for accuracy
+  let totalCost: number | null = 0;
+  for (const run of availableRuns) {
+    if (!run.tokenUsage?.inputTokens || !run.tokenUsage.outputTokens) continue;
+    const runCost = estimateCost(getRunModel(run), run.tokenUsage.inputTokens, run.tokenUsage.outputTokens);
+    if (runCost === null) {
+      totalCost = null;
+      break;
+    }
+    totalCost += runCost.totalCost;
+  }
+
   return {
     runCount: availableRuns.length,
     inputTokens,
     outputTokens,
     totalTokens: inputTokens + outputTokens,
-    cost
+    cost: totalCost !== null ? { totalCost, currency: "USD" as const, isEstimate: true as const } : null
   };
 }
 
@@ -366,9 +382,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { messages: taskMessages, loading: messagesLoading } = useTaskMessages(taskId);
   const { runs: taskRuns, loading: runsLoading } = useTaskRuns(taskId);
   const taskTokenTotals = useMemo(() => {
-    const model = task?.modelOverride ?? getDefaultModelForProvider(task?.provider ?? "codex");
-    return getTaskTokenTotals(taskRuns, model);
-  }, [task?.modelOverride, task?.provider, taskRuns]);
+    return getTaskTokenTotals(taskRuns);
+  }, [taskRuns]);
   const [liveDiff, setLiveDiff] = useState<TaskLiveDiff | null>(null);
   const [liveDiffLoading, setLiveDiffLoading] = useState(false);
   const [liveDiffError, setLiveDiffError] = useState<string | null>(null);
@@ -1197,14 +1212,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 style={{ width: "100%" }}
               >
                 {isCompactMessage ? (
-                  <Flex align="baseline" gap={8} wrap="wrap">
-                    <Tag color="green" style={{ marginInlineEnd: 0 }}>
-                      {entryMessage.role}
-                    </Tag>
-                    {entryMessage.action ? (
-                      <Tag style={{ marginInlineEnd: 0 }}>{taskActionLabel[entryMessage.action]}</Tag>
-                    ) : null}
-                    <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
+                  <Flex vertical gap={4}>
+                    <Flex align="baseline" gap={8} wrap="wrap">
+                      <Tag color="green" style={{ marginInlineEnd: 0 }}>
+                        {entryMessage.role}
+                      </Tag>
+                      {entryMessage.action ? (
+                        <Tag style={{ marginInlineEnd: 0 }}>{taskActionLabel[entryMessage.action]}</Tag>
+                      ) : null}
+                      <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
+                    </Flex>
                     <Typography.Text style={{ whiteSpace: "pre-wrap" }}>{entryMessage.content}</Typography.Text>
                   </Flex>
                 ) : (
@@ -1357,8 +1374,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   if (run.tokenUsage?.status !== "available" || !run.tokenUsage.inputTokens || !run.tokenUsage.outputTokens) {
                     return `Tokens: ${tokenStr}`;
                   }
-                  const model = task?.modelOverride ?? getDefaultModelForProvider(task?.provider ?? "codex");
-                  const cost = estimateCost(model, run.tokenUsage.inputTokens, run.tokenUsage.outputTokens);
+                  const cost = estimateCost(getRunModel(run), run.tokenUsage.inputTokens, run.tokenUsage.outputTokens);
                   return `Tokens: ${tokenStr}${cost ? ` · est. ${formatCost(cost.totalCost)}` : ""}`;
                 })()}
               </Typography.Paragraph>
