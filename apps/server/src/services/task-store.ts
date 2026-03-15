@@ -201,13 +201,20 @@ export class TaskStore {
     };
   }
 
+  private normalizeRun(run: TaskRun): TaskRun {
+    return {
+      ...run,
+      tokenUsage: run.tokenUsage ?? null
+    };
+  }
+
   private async getStoredRun(runId: string): Promise<TaskRun | null> {
     const raw = await this.redis.get(this.taskRunKey(runId));
     if (!raw) {
       return null;
     }
 
-    return { ...(JSON.parse(raw) as TaskRun), logs: [] };
+    return { ...this.normalizeRun(JSON.parse(raw) as TaskRun), logs: [] };
   }
 
   private async hydrateRun(run: TaskRun): Promise<TaskRun> {
@@ -513,6 +520,7 @@ export class TaskStore {
       finishedAt: null,
       summary: null,
       errorMessage: null,
+      tokenUsage: null,
       logs: []
     };
 
@@ -527,7 +535,7 @@ export class TaskStore {
 
   async updateRun(
     runId: string,
-    patch: Partial<Pick<TaskRun, "status" | "finishedAt" | "summary" | "errorMessage" | "branchName">>
+    patch: Partial<Pick<TaskRun, "status" | "finishedAt" | "summary" | "errorMessage" | "branchName" | "tokenUsage">>
   ): Promise<TaskRun | null> {
     const run = await this.getStoredRun(runId);
     if (!run) {

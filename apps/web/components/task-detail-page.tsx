@@ -136,6 +136,33 @@ function formatRunDuration(startedAt: string, finishedAt: string | null): string
   return `${seconds}s`;
 }
 
+function formatTokenUsage(tokenUsage: TaskRun["tokenUsage"]): string {
+  if (!tokenUsage || tokenUsage.status !== "available") {
+    return tokenUsage?.note ?? "Unavailable";
+  }
+
+  const input = tokenUsage.inputTokens?.toLocaleString() ?? "?";
+  const output = tokenUsage.outputTokens?.toLocaleString() ?? "?";
+  const total = tokenUsage.totalTokens?.toLocaleString() ?? "?";
+  return `${total} total (${input} in / ${output} out)`;
+}
+
+function getTaskTokenTotals(runs: TaskRun[]) {
+  const availableRuns = runs.filter((run) => run.tokenUsage?.status === "available");
+  if (availableRuns.length === 0) {
+    return null;
+  }
+
+  const inputTokens = availableRuns.reduce((sum, run) => sum + (run.tokenUsage?.inputTokens ?? 0), 0);
+  const outputTokens = availableRuns.reduce((sum, run) => sum + (run.tokenUsage?.outputTokens ?? 0), 0);
+  return {
+    runCount: availableRuns.length,
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens
+  };
+}
+
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: "Codex", value: "codex" },
   { label: "Claude Code", value: "claude" }
@@ -340,6 +367,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { task, setTask, loading } = useTask(taskId);
   const { messages: taskMessages, loading: messagesLoading } = useTaskMessages(taskId);
   const { runs: taskRuns, loading: runsLoading } = useTaskRuns(taskId);
+  const taskTokenTotals = useMemo(() => getTaskTokenTotals(taskRuns), [taskRuns]);
   const [liveDiff, setLiveDiff] = useState<TaskLiveDiff | null>(null);
   const [liveDiffLoading, setLiveDiffLoading] = useState(false);
   const [liveDiffError, setLiveDiffError] = useState<string | null>(null);
@@ -1321,6 +1349,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
                 Branch: <Typography.Text code>{run.branchName ?? "(pending)"}</Typography.Text>
               </Typography.Paragraph>
+              <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+                Tokens: {formatTokenUsage(run.tokenUsage)}
+              </Typography.Paragraph>
               {normalizedRunSummary ? (
                 isCollapsibleSummaryRun ? (
                   <Collapse size="small" defaultActiveKey={[]} items={summaryCollapseItems} style={{ marginBottom: 12 }} />
@@ -1558,6 +1589,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         ) : task ? (
           <Flex vertical gap={16}>
             <Card bordered={false}>
+              {taskTokenTotals ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  message={`Token usage: ${taskTokenTotals.totalTokens.toLocaleString()} total (${taskTokenTotals.inputTokens.toLocaleString()} in / ${taskTokenTotals.outputTokens.toLocaleString()} out) across ${taskTokenTotals.runCount} run${taskTokenTotals.runCount === 1 ? "" : "s"}.`}
+                  style={{ marginBottom: 16 }}
+                />
+              ) : null}
               <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff")} items={mainTabItems} />
             </Card>
           </Flex>
