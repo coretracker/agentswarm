@@ -221,6 +221,14 @@ export interface TaskMessage {
   createdAt: string;
 }
 
+export interface TaskRunTokenUsage {
+  status: "available" | "unavailable";
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  note?: string | null;
+}
+
 export interface TaskRun {
   id: string;
   taskId: string;
@@ -232,6 +240,7 @@ export interface TaskRun {
   finishedAt: string | null;
   summary: string | null;
   errorMessage: string | null;
+  tokenUsage: TaskRunTokenUsage | null;
   logs: string[];
 }
 

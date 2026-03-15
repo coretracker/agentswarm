@@ -128,6 +128,7 @@ await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(mani
 console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);
 
 let finalMarkdown = "";
+let latestTokenUsage = null;
 let resultSubtype = null;
 let resultDetails = null;
 const assistantLines = [];
@@ -153,6 +154,18 @@ const truncateForLog = (value, maxLength = 320) => {
   }
 
   return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value;
+};
+
+const toTokenUsage = (usage) => {
+  const inputTokens = Number.isFinite(usage?.input_tokens) ? usage.input_tokens : null;
+  const outputTokens = Number.isFinite(usage?.output_tokens) ? usage.output_tokens : null;
+  return {
+    status: inputTokens !== null || outputTokens !== null ? "available" : "unavailable",
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null,
+    note: null
+  };
 };
 
 const flushPartialTextBuffer = () => {
@@ -327,6 +340,9 @@ const handleRawStreamEvent = (rawEvent) => {
       const usage = rawEvent.usage
         ? ` input=${rawEvent.usage.input_tokens ?? "?"} output=${rawEvent.usage.output_tokens ?? "?"}`
         : "";
+      if (rawEvent.usage) {
+        latestTokenUsage = toTokenUsage(rawEvent.usage);
+      }
       console.log(`[runtime] claude message_delta stop_reason=${stopReason}${usage}`);
       return;
     }
@@ -408,7 +424,14 @@ await writeFile(
       changedFiles: [],
       metadata: {
         provider: manifest.provider,
-        action: manifest.action
+        action: manifest.action,
+        tokenUsage: latestTokenUsage ?? {
+          status: "unavailable",
+          inputTokens: null,
+          outputTokens: null,
+          totalTokens: null,
+          note: "No usage returned by Claude runtime."
+        }
       }
     },
     null,

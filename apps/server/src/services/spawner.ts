@@ -9,6 +9,7 @@ import {
   type Task,
   type TaskLiveDiff,
   type TaskAction,
+  type TaskRun,
   type TaskReviewVerdict
 } from "@agentswarm/shared-types";
 import { makeBranchName } from "../lib/branch.js";
@@ -83,6 +84,21 @@ interface RuntimeResultPayload {
   changedFiles?: string[];
   metadata?: Record<string, unknown>;
 }
+
+const normalizeTokenUsage = (value: unknown): TaskRun["tokenUsage"] => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return {
+    status: candidate.status === "available" ? "available" : "unavailable",
+    inputTokens: typeof candidate.inputTokens === "number" ? candidate.inputTokens : null,
+    outputTokens: typeof candidate.outputTokens === "number" ? candidate.outputTokens : null,
+    totalTokens: typeof candidate.totalTokens === "number" ? candidate.totalTokens : null,
+    note: typeof candidate.note === "string" ? candidate.note : null
+  };
+};
 
 interface WorkspacePreparation {
   workspacePath: string;
@@ -1341,7 +1357,8 @@ esac
           await this.taskStore.updateRun(runId, {
             status: "succeeded",
             finishedAt,
-            summary: finalMarkdown
+            summary: finalMarkdown,
+            tokenUsage: normalizeTokenUsage(runtimeResult.metadata?.tokenUsage)
           });
           await this.taskStore.patchTask(task.id, { currentPlanRunId: runId });
         }
@@ -1370,7 +1387,8 @@ esac
           await this.taskStore.updateRun(runId, {
             status: "succeeded",
             finishedAt,
-            summary: finalMarkdown
+            summary: finalMarkdown,
+            tokenUsage: normalizeTokenUsage(runtimeResult.metadata?.tokenUsage)
           });
         }
       } else {
@@ -1410,7 +1428,8 @@ esac
           await this.taskStore.updateRun(runId, {
             status: "succeeded",
             finishedAt,
-            summary: runtimeResult.summaryMarkdown.trim() || "Build completed locally. Review the diff and push when ready."
+            summary: runtimeResult.summaryMarkdown.trim() || "Build completed locally. Review the diff and push when ready.",
+            tokenUsage: normalizeTokenUsage(runtimeResult.metadata?.tokenUsage)
           });
         }
       }

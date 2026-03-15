@@ -144,7 +144,14 @@ await writeFile(
       changedFiles: [],
       metadata: {
         provider: manifest.provider,
-        action: manifest.action
+        action: manifest.action,
+        tokenUsage: {
+          status: "unavailable",
+          inputTokens: null,
+          outputTokens: null,
+          totalTokens: null,
+          note: "Codex CLI usage is not exposed by the current runtime integration."
+        }
       }
     },
     null,
