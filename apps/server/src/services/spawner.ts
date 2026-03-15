@@ -862,6 +862,9 @@ esac
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<{ branchDiff: string; changedFiles: string[]; commitSha: string; providerCommitted: boolean }> {
+    // Remove the ephemeral .agentswarm directory before staging so it never appears in the PR diff.
+    await rm(path.join(workspacePath, ".agentswarm"), { recursive: true, force: true }).catch(() => undefined);
+
     await this.gitCommand(["-C", workspacePath, "add", "-A"], githubToken, gitUsername);
 
     try {
@@ -1224,6 +1227,15 @@ esac
 
       const payloadPaths = await this.writeRuntimePayloadFiles(manifest, providerDefinition.getProviderConfig(settings.mcpServers));
       await appendRunLog(`Spawner: runtime payload files ready at ${payloadDir}.`);
+
+      // Write the plan as a file inside the workspace so the build/iterate agent
+      // can read it on demand rather than receiving it as a large prompt string.
+      const workspacePlanPath = path.join(workspace.workspacePath, ".agentswarm", "PLAN.md");
+      if ((action === "build" || action === "iterate") && task.planMarkdown?.trim()) {
+        await mkdir(path.dirname(workspacePlanPath), { recursive: true });
+        await writeFile(workspacePlanPath, `${task.planMarkdown.trim()}\n`, "utf8");
+        await appendRunLog("Spawner: wrote plan file to workspace at .agentswarm/PLAN.md.");
+      }
       await appendRunLog(
         `Spawner: runtime config includes provider=${task.provider}, profile=${task.providerProfile}, ${settings.mcpServers.length} MCP server${settings.mcpServers.length === 1 ? "" : "s"}, ${settings.agentRules.trim() ? "global rules" : "no global rules"}, and ${repository?.rules?.trim() ? "repository rules" : "no repository rules"}.`
       );
