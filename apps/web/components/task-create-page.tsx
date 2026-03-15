@@ -14,7 +14,12 @@ import type {
   TaskSourceType,
   TaskType
 } from "@agentswarm/shared-types";
-import { Alert, Button, Card, Checkbox, Col, Collapse, Flex, Form, Input, Row, Select, Space, Typography, message } from "antd";
+import {
+  getDefaultModelForProvider,
+  getEffortOptionsForProvider
+} from "@agentswarm/shared-types";
+import { useProviderModels } from "../src/hooks/useProviderModels";
+import { Alert, Button, Card, Checkbox, Col, Flex, Form, Input, Row, Select, Space, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useSettings } from "../src/hooks/useSettings";
@@ -27,8 +32,8 @@ type BlankTaskValues = {
   requirements: string;
   taskType: TaskType;
   provider: AgentProvider;
+  model: string;
   providerProfile: ProviderProfile;
-  modelOverride?: string;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
   queueMode: TaskQueueMode;
@@ -42,8 +47,8 @@ type IssueTaskValues = {
   includeComments: boolean;
   taskType: Extract<TaskType, "plan" | "build" | "ask">;
   provider: AgentProvider;
+  model: string;
   providerProfile: ProviderProfile;
-  modelOverride?: string;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
   queueMode: TaskQueueMode;
@@ -55,24 +60,16 @@ type PullRequestTaskValues = {
   repoId: string;
   pullRequestNumber: number;
   provider: AgentProvider;
+  model: string;
   providerProfile: ProviderProfile;
-  modelOverride?: string;
   queueMode: TaskQueueMode;
 };
 
 type TaskCreateSubmitValues = BlankTaskValues | IssueTaskValues | PullRequestTaskValues;
 
 const providerOptions = (hasOpenAi: boolean, hasAnthropic: boolean): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
-  { label: "Codex", value: "codex", disabled: !hasOpenAi },
-  { label: "Claude Code", value: "claude", disabled: !hasAnthropic }
-];
-
-const providerProfileOptions: Array<{ label: string; value: ProviderProfile }> = [
-  { label: "Quick", value: "quick" },
-  { label: "Balanced", value: "balanced" },
-  { label: "Deep", value: "deep" },
-  { label: "Super Deep", value: "super_deep" },
-  { label: "Unlimited", value: "unlimited" }
+  { label: "Codex (OpenAI)", value: "codex", disabled: !hasOpenAi },
+  { label: "Claude Code (Anthropic)", value: "claude", disabled: !hasAnthropic }
 ];
 
 export function TaskCreatePage() {
@@ -93,6 +90,7 @@ export function TaskCreatePage() {
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "plan";
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
+  const { models: providerModels, loading: providerModelsLoading } = useProviderModels(selectedProvider);
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
   const selectedIssueNumber = Form.useWatch("issueNumber", form);
   const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
@@ -138,6 +136,20 @@ export function TaskCreatePage() {
 
     if (!form.isFieldTouched("provider") && form.getFieldValue("provider") !== settings.defaultProvider) {
       form.setFieldValue("provider", settings.defaultProvider);
+    }
+
+    if (!form.isFieldTouched("model")) {
+      const defaultModel = settings.defaultProvider === "claude"
+        ? settings.claudeDefaultModel
+        : settings.codexDefaultModel;
+      form.setFieldValue("model", defaultModel);
+    }
+
+    if (!form.isFieldTouched("providerProfile")) {
+      const defaultEffort = settings.defaultProvider === "claude"
+        ? settings.claudeDefaultEffort
+        : settings.codexDefaultEffort;
+      form.setFieldValue("providerProfile", defaultEffort);
     }
   }, [form, settings]);
 
@@ -200,7 +212,7 @@ export function TaskCreatePage() {
               title: values.title?.trim() || undefined,
               provider: values.provider,
               providerProfile: values.providerProfile,
-              modelOverride: values.modelOverride?.trim() || undefined,
+              modelOverride: values.model || undefined,
               baseBranch: values.baseBranch,
               branchStrategy: values.taskType === "plan" || values.taskType === "build" ? values.branchStrategy : undefined,
               queueMode: values.queueMode
@@ -212,7 +224,7 @@ export function TaskCreatePage() {
                 title: values.title?.trim() || undefined,
                 provider: values.provider,
                 providerProfile: values.providerProfile,
-                modelOverride: values.modelOverride?.trim() || undefined,
+                modelOverride: values.model || undefined,
                 queueMode: values.queueMode
               })
             : await api.createTask({
@@ -222,7 +234,7 @@ export function TaskCreatePage() {
                 taskType: values.taskType,
                 provider: values.provider,
                 providerProfile: values.providerProfile,
-                modelOverride: values.modelOverride?.trim() || undefined,
+                modelOverride: values.model || undefined,
                 baseBranch: values.baseBranch,
                 branchStrategy: values.branchStrategy,
                 queueMode: values.queueMode
@@ -351,7 +363,12 @@ export function TaskCreatePage() {
           sourceType: "blank",
           taskType: "plan",
           provider: settings?.defaultProvider ?? "codex",
-          providerProfile: "deep",
+          model: settings
+            ? (settings.defaultProvider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel)
+            : getDefaultModelForProvider("codex"),
+          providerProfile: settings
+            ? (settings.defaultProvider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort)
+            : "deep",
           queueMode: "manual",
           branchStrategy: "feature_branch",
           includeComments: true
@@ -424,11 +441,27 @@ export function TaskCreatePage() {
                 ) : null}
 
                 <Form.Item name="provider" label="Provider" rules={[{ required: true }]}> 
-                  <Select options={providerOptions(Boolean(settings?.openaiApiKeyConfigured), Boolean(settings?.anthropicApiKeyConfigured))} />
+                  <Select
+                    options={providerOptions(Boolean(settings?.openaiApiKeyConfigured), Boolean(settings?.anthropicApiKeyConfigured))}
+                    onChange={(value: AgentProvider) => {
+                      const defaultModel = value === "claude"
+                        ? (settings?.claudeDefaultModel ?? getDefaultModelForProvider(value))
+                        : (settings?.codexDefaultModel ?? getDefaultModelForProvider(value));
+                      const defaultEffort = value === "claude"
+                        ? (settings?.claudeDefaultEffort ?? "deep")
+                        : (settings?.codexDefaultEffort ?? "deep");
+                      form.setFieldValue("model", defaultModel);
+                      form.setFieldValue("providerProfile", defaultEffort);
+                    }}
+                  />
                 </Form.Item>
 
-                <Form.Item name="providerProfile" label="Provider Profile" rules={[{ required: true }]}> 
-                  <Select options={providerProfileOptions} />
+                <Form.Item name="model" label="Model" rules={[{ required: true }]}> 
+                  <Select options={providerModels} loading={providerModelsLoading} showSearch optionFilterProp="label" />
+                </Form.Item>
+
+                <Form.Item name="providerProfile" label={selectedProvider === "claude" ? "Max Turns" : "Reasoning Effort"} rules={[{ required: true }]}> 
+                  <Select options={getEffortOptionsForProvider(selectedProvider)} />
                 </Form.Item>
 
                 {providerMissingCredentials ? (
@@ -526,19 +559,6 @@ export function TaskCreatePage() {
                   />
                 </Form.Item>
 
-                <Collapse
-                  items={[
-                    {
-                      key: "advanced",
-                      label: "Advanced Provider Overrides",
-                      children: (
-                        <Form.Item name="modelOverride" label="Model Override" style={{ marginBottom: 0 }}>
-                          <Input placeholder={selectedProvider === "claude" ? "sonnet or opus" : "gpt-5.4"} />
-                        </Form.Item>
-                      )
-                    }
-                  ]}
-                />
               </Card>
             </Col>
 

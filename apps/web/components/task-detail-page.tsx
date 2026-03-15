@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   getAgentProviderLabel,
+  getDefaultModelForProvider,
+  getEffortOptionsForProvider,
   getProviderProfileLabel,
   getTaskBranchStrategyLabel,
   getTaskStatusLabel,
@@ -45,9 +47,11 @@ import { Diff, Hunk } from "react-diff-view";
 import remarkGfm from "remark-gfm";
 import { api } from "../src/api/client";
 import { useTask } from "../src/hooks/useTask";
+import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useTaskMessages } from "../src/hooks/useTaskMessages";
 import { useTaskRuns } from "../src/hooks/useTaskRuns";
 import { normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
+import { estimateCost, formatCost } from "../src/utils/pricing";
 import { useAuth } from "./auth-provider";
 
 const statusColor: Record<Task["status"], string> = {
@@ -147,7 +151,7 @@ function formatTokenUsage(tokenUsage: TaskRun["tokenUsage"]): string {
   return `${total} total (${input} in / ${output} out)`;
 }
 
-function getTaskTokenTotals(runs: TaskRun[]) {
+function getTaskTokenTotals(runs: TaskRun[], modelId: string) {
   const availableRuns = runs.filter((run) => run.tokenUsage?.status === "available");
   if (availableRuns.length === 0) {
     return null;
@@ -155,25 +159,19 @@ function getTaskTokenTotals(runs: TaskRun[]) {
 
   const inputTokens = availableRuns.reduce((sum, run) => sum + (run.tokenUsage?.inputTokens ?? 0), 0);
   const outputTokens = availableRuns.reduce((sum, run) => sum + (run.tokenUsage?.outputTokens ?? 0), 0);
+  const cost = estimateCost(modelId, inputTokens, outputTokens);
   return {
     runCount: availableRuns.length,
     inputTokens,
     outputTokens,
-    totalTokens: inputTokens + outputTokens
+    totalTokens: inputTokens + outputTokens,
+    cost
   };
 }
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
-  { label: "Codex", value: "codex" },
-  { label: "Claude Code", value: "claude" }
-];
-
-const providerProfileOptions: Array<{ label: string; value: ProviderProfile }> = [
-  { label: "Quick", value: "quick" },
-  { label: "Balanced", value: "balanced" },
-  { label: "Deep", value: "deep" },
-  { label: "Super Deep", value: "super_deep" },
-  { label: "Unlimited", value: "unlimited" }
+  { label: "Codex (OpenAI)", value: "codex" },
+  { label: "Claude Code (Anthropic)", value: "claude" }
 ];
 
 function renderParsedDiff(diffText: string, emptyMessage: string, options?: { collapseFiles?: boolean }): ReactNode {
@@ -367,7 +365,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { task, setTask, loading } = useTask(taskId);
   const { messages: taskMessages, loading: messagesLoading } = useTaskMessages(taskId);
   const { runs: taskRuns, loading: runsLoading } = useTaskRuns(taskId);
-  const taskTokenTotals = useMemo(() => getTaskTokenTotals(taskRuns), [taskRuns]);
+  const taskTokenTotals = useMemo(() => {
+    const model = task?.modelOverride ?? getDefaultModelForProvider(task?.provider ?? "codex");
+    return getTaskTokenTotals(taskRuns, model);
+  }, [task?.modelOverride, task?.provider, taskRuns]);
   const [liveDiff, setLiveDiff] = useState<TaskLiveDiff | null>(null);
   const [liveDiffLoading, setLiveDiffLoading] = useState(false);
   const [liveDiffError, setLiveDiffError] = useState<string | null>(null);
@@ -377,8 +378,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [chatInput, setChatInput] = useState("");
   const [providerInput, setProviderInput] = useState<AgentProvider>("codex");
   const [providerProfileInput, setProviderProfileInput] = useState<ProviderProfile>("deep");
-  const [modelOverrideInput, setModelOverrideInput] = useState("");
+  const [modelInput, setModelInput] = useState<string>("gpt-5.4");
   const [branchStrategyInput, setBranchStrategyInput] = useState<TaskBranchStrategy>("feature_branch");
+  const { models: providerModels, loading: providerModelsLoading } = useProviderModels(providerInput);
   const [isEditingPlan, setIsEditingPlan] = useState(false);
   const [planDraft, setPlanDraft] = useState("");
   const [planPreview, setPlanPreview] = useState(false);
@@ -445,7 +447,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const configDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelOverrideInput.trim() !== currentTaskModelOverride ||
+    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)) ||
     (isImplementationTask && branchStrategyInput !== currentTaskBranchStrategy);
 
   const resultStatusText = isPlanTask
@@ -514,7 +516,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
     setProviderInput(task.provider ?? "codex");
     setProviderProfileInput(task.providerProfile ?? "deep");
-    setModelOverrideInput(task.modelOverride ?? "");
+    setModelInput(task.modelOverride ?? getDefaultModelForProvider(task.provider ?? "codex"));
     setBranchStrategyInput(task.branchStrategy ?? "feature_branch");
   }, [task]);
 
@@ -787,7 +789,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       const updatedTask = await api.updateTaskConfig(task.id, {
         provider: providerInput,
         providerProfile: providerProfileInput,
-        modelOverride: modelOverrideInput.trim() || null,
+        modelOverride: modelInput || null,
         branchStrategy: isImplementationTask ? branchStrategyInput : undefined
       });
       setTask((current) =>
@@ -936,8 +938,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             </Descriptions.Item>
           ) : null}
           <Descriptions.Item label="Provider">{getAgentProviderLabel(currentTaskProvider)}</Descriptions.Item>
-          <Descriptions.Item label="Profile">{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
-          <Descriptions.Item label="Model Override">{currentTaskModelOverride || "(provider default)"}</Descriptions.Item>
+          <Descriptions.Item label="Model">{currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)}</Descriptions.Item>
+          <Descriptions.Item label={currentTaskProvider === "claude" ? "Max Turns" : "Reasoning Effort"}>{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
           {isImplementationTask ? <Descriptions.Item label="Complexity">{task?.complexity}</Descriptions.Item> : null}
           {isImplementationTask ? (
             <Descriptions.Item label="Planning Mode">
@@ -1350,7 +1352,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 Branch: <Typography.Text code>{run.branchName ?? "(pending)"}</Typography.Text>
               </Typography.Paragraph>
               <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                Tokens: {formatTokenUsage(run.tokenUsage)}
+                {(() => {
+                  const tokenStr = formatTokenUsage(run.tokenUsage);
+                  if (run.tokenUsage?.status !== "available" || !run.tokenUsage.inputTokens || !run.tokenUsage.outputTokens) {
+                    return `Tokens: ${tokenStr}`;
+                  }
+                  const model = task?.modelOverride ?? getDefaultModelForProvider(task?.provider ?? "codex");
+                  const cost = estimateCost(model, run.tokenUsage.inputTokens, run.tokenUsage.outputTokens);
+                  return `Tokens: ${tokenStr}${cost ? ` · est. ${formatCost(cost.totalCost)}` : ""}`;
+                })()}
               </Typography.Paragraph>
               {normalizedRunSummary ? (
                 isCollapsibleSummaryRun ? (
@@ -1593,7 +1603,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 <Alert
                   type="info"
                   showIcon
-                  message={`Token usage: ${taskTokenTotals.totalTokens.toLocaleString()} total (${taskTokenTotals.inputTokens.toLocaleString()} in / ${taskTokenTotals.outputTokens.toLocaleString()} out) across ${taskTokenTotals.runCount} run${taskTokenTotals.runCount === 1 ? "" : "s"}.`}
+                  message={[
+                    `${taskTokenTotals.totalTokens.toLocaleString()} tokens`,
+                    `(${taskTokenTotals.inputTokens.toLocaleString()} in / ${taskTokenTotals.outputTokens.toLocaleString()} out)`,
+                    `across ${taskTokenTotals.runCount} run${taskTokenTotals.runCount === 1 ? "" : "s"}`,
+                    taskTokenTotals.cost
+                      ? `· est. ${formatCost(taskTokenTotals.cost.totalCost)}`
+                      : null
+                  ].filter(Boolean).join(" ")}
                   style={{ marginBottom: 16 }}
                 />
               ) : null}
@@ -1618,27 +1635,33 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Select
               value={providerInput}
               options={providerOptions}
-              onChange={(value) => setProviderInput(value)}
+              onChange={(value) => {
+                setProviderInput(value);
+                setModelInput(getDefaultModelForProvider(value));
+              }}
               style={{ width: "100%", marginTop: 6 }}
               disabled={!canEditTask || isArchived}
             />
           </div>
           <div>
-            <Typography.Text type="secondary">Profile</Typography.Text>
+            <Typography.Text type="secondary">Model</Typography.Text>
+            <Select
+              value={modelInput}
+              options={providerModels}
+              loading={providerModelsLoading}
+              showSearch
+              optionFilterProp="label"
+              onChange={(value) => setModelInput(value)}
+              style={{ width: "100%", marginTop: 6 }}
+              disabled={!canEditTask || isArchived}
+            />
+          </div>
+          <div>
+            <Typography.Text type="secondary">{providerInput === "claude" ? "Max Turns" : "Reasoning Effort"}</Typography.Text>
             <Select
               value={providerProfileInput}
-              options={providerProfileOptions}
+              options={getEffortOptionsForProvider(providerInput)}
               onChange={(value) => setProviderProfileInput(value)}
-              style={{ width: "100%", marginTop: 6 }}
-              disabled={!canEditTask || isArchived}
-            />
-          </div>
-          <div>
-            <Typography.Text type="secondary">Model Override</Typography.Text>
-            <Input
-              value={modelOverrideInput}
-              onChange={(event) => setModelOverrideInput(event.target.value)}
-              placeholder={providerInput === "claude" ? "sonnet or opus" : "gpt-5.4"}
               style={{ width: "100%", marginTop: 6 }}
               disabled={!canEditTask || isArchived}
             />

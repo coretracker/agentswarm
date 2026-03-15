@@ -2,15 +2,20 @@ import type Redis from "ioredis";
 import type {
   AgentProvider,
   McpServerConfig,
+  ProviderProfile,
   SystemSettings,
   UpdateCredentialSettingsInput,
   UpdateSettingsInput
 } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
-import { normalizeProvider, DEFAULT_PROVIDER } from "../lib/provider-config.js";
+import { normalizeProvider, DEFAULT_PROVIDER, normalizeProviderProfile } from "../lib/provider-config.js";
+import { defaultModelForProvider } from "../lib/provider-config.js";
 import { CredentialStore, type RuntimeCredentials } from "./credential-store.js";
 
 const SETTINGS_KEY = "agentswarm:settings";
+
+const DEFAULT_CODEX_EFFORT: ProviderProfile = "deep";
+const DEFAULT_CLAUDE_EFFORT: ProviderProfile = "deep";
 
 const defaultSettings: SystemSettings = {
   defaultProvider: DEFAULT_PROVIDER,
@@ -22,7 +27,11 @@ const defaultSettings: SystemSettings = {
   openaiBaseUrl: null,
   githubTokenConfigured: false,
   openaiApiKeyConfigured: false,
-  anthropicApiKeyConfigured: false
+  anthropicApiKeyConfigured: false,
+  codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.4",
+  codexDefaultEffort: DEFAULT_CODEX_EFFORT,
+  claudeDefaultModel: defaultModelForProvider("claude", DEFAULT_CLAUDE_EFFORT) ?? "claude-sonnet-4-5",
+  claudeDefaultEffort: DEFAULT_CLAUDE_EFFORT
 };
 
 const normalizeBranchPrefix = (value: string | undefined): string => {
@@ -137,7 +146,11 @@ export class SettingsStore {
       gitUsername: normalizeGitUsername(parsed.gitUsername),
       agentRules: normalizeAgentRules(parsed.agentRules),
       mcpServers: normalizeMcpServers(parsed.mcpServers),
-      openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null
+      openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null,
+      codexDefaultModel: parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(parsed.codexDefaultEffort) ?? defaultSettings.codexDefaultEffort,
+      claudeDefaultModel: parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(parsed.claudeDefaultEffort) ?? defaultSettings.claudeDefaultEffort
     };
 
     if (
@@ -176,7 +189,11 @@ export class SettingsStore {
           ? current.openaiBaseUrl
           : input.openaiBaseUrl?.trim()
             ? input.openaiBaseUrl.trim()
-            : null
+            : null,
+      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
+      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort
     };
 
     await this.redis.set(SETTINGS_KEY, JSON.stringify(nextBase));

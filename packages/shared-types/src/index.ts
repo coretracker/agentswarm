@@ -4,6 +4,57 @@ export type TaskType = "plan" | "build" | "review" | "ask";
 export type TaskReviewVerdict = "approved" | "changes_requested";
 export type AgentProvider = "codex" | "claude";
 export type ProviderProfile = "quick" | "balanced" | "deep" | "super_deep" | "unlimited";
+
+export interface ProviderModelOption {
+  label: string;
+  value: string;
+}
+
+export interface ProviderEffortOption {
+  label: string;
+  value: ProviderProfile;
+}
+
+export const CODEX_MODELS: ProviderModelOption[] = [
+  { label: "GPT-5.4", value: "gpt-5.4" },
+  { label: "o3", value: "o3" },
+  { label: "o4-mini", value: "o4-mini" },
+  { label: "o3-mini", value: "o3-mini" },
+  { label: "GPT-4.1", value: "gpt-4.1" },
+  { label: "GPT-4o", value: "gpt-4o" }
+];
+
+export const CLAUDE_MODELS: ProviderModelOption[] = [
+  { label: "Claude Opus 4", value: "claude-opus-4-5" },
+  { label: "Claude Sonnet 4.5", value: "claude-sonnet-4-5" },
+  { label: "Claude Sonnet 4", value: "claude-sonnet-4" },
+  { label: "Claude Haiku 3.5", value: "claude-haiku-3-5" }
+];
+
+export const CODEX_EFFORT_OPTIONS: ProviderEffortOption[] = [
+  { label: "Low", value: "quick" },
+  { label: "Medium", value: "balanced" },
+  { label: "High", value: "deep" },
+  { label: "Max", value: "super_deep" },
+  { label: "Unlimited", value: "unlimited" }
+];
+
+export const CLAUDE_EFFORT_OPTIONS: ProviderEffortOption[] = [
+  { label: "8 turns", value: "quick" },
+  { label: "16 turns", value: "balanced" },
+  { label: "32 turns", value: "deep" },
+  { label: "48 turns", value: "super_deep" },
+  { label: "Unlimited", value: "unlimited" }
+];
+
+export const getModelsForProvider = (provider: AgentProvider): ProviderModelOption[] =>
+  provider === "claude" ? CLAUDE_MODELS : CODEX_MODELS;
+
+export const getEffortOptionsForProvider = (provider: AgentProvider): ProviderEffortOption[] =>
+  provider === "claude" ? CLAUDE_EFFORT_OPTIONS : CODEX_EFFORT_OPTIONS;
+
+export const getDefaultModelForProvider = (provider: AgentProvider): string =>
+  provider === "claude" ? "claude-sonnet-4-5" : "gpt-5.4";
 export type TaskMessageRole = "user" | "assistant" | "system";
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 
@@ -284,6 +335,10 @@ export interface SystemSettings {
   githubTokenConfigured: boolean;
   openaiApiKeyConfigured: boolean;
   anthropicApiKeyConfigured: boolean;
+  codexDefaultModel: string;
+  codexDefaultEffort: ProviderProfile;
+  claudeDefaultModel: string;
+  claudeDefaultEffort: ProviderProfile;
 }
 
 export interface CreateRepositoryInput {
@@ -471,6 +526,10 @@ export interface UpdateSettingsInput {
   agentRules?: string;
   mcpServers?: McpServerConfig[];
   openaiBaseUrl?: string | null;
+  codexDefaultModel?: string;
+  codexDefaultEffort?: ProviderProfile;
+  claudeDefaultModel?: string;
+  claudeDefaultEffort?: ProviderProfile;
 }
 
 export interface UpdateCredentialSettingsInput {

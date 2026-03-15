@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { AgentProvider, McpServerTransport, PermissionScope, Role, SystemSettings } from "@agentswarm/shared-types";
-import { PERMISSION_SCOPE_GROUPS } from "@agentswarm/shared-types";
+import type { AgentProvider, McpServerTransport, PermissionScope, ProviderProfile, Role, SystemSettings } from "@agentswarm/shared-types";
+import { PERMISSION_SCOPE_GROUPS, getEffortOptionsForProvider } from "@agentswarm/shared-types";
 import { DeleteOutlined, LockOutlined, PlusOutlined } from "@ant-design/icons";
 import {
   Alert,
@@ -25,6 +25,7 @@ import {
 } from "antd";
 import { api } from "../src/api/client";
 import { useSettings } from "../src/hooks/useSettings";
+import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useAuth } from "./auth-provider";
 
 interface McpServerFormItem {
@@ -45,6 +46,10 @@ interface GeneralSettingsForm {
   openaiBaseUrl: string;
   agentRules: string;
   mcpServers: McpServerFormItem[];
+  codexDefaultModel: string;
+  codexDefaultEffort: ProviderProfile;
+  claudeDefaultModel: string;
+  claudeDefaultEffort: ProviderProfile;
 }
 
 interface CredentialForm {
@@ -84,7 +89,11 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
     argsText: (server.args ?? []).join("\n"),
     url: server.url ?? "",
     bearerTokenEnvVar: server.bearerTokenEnvVar ?? ""
-  }))
+  })),
+  codexDefaultModel: settings.codexDefaultModel,
+  codexDefaultEffort: settings.codexDefaultEffort,
+  claudeDefaultModel: settings.claudeDefaultModel,
+  claudeDefaultEffort: settings.claudeDefaultEffort
 });
 
 export function SettingsPage() {
@@ -102,6 +111,8 @@ export function SettingsPage() {
   const [roleModalOpen, setRoleModalOpen] = useState(false);
   const [editingRole, setEditingRole] = useState<Role | null>(null);
   const canEditSettings = can("settings:edit");
+  const { models: codexModels, loading: codexModelsLoading } = useProviderModels("codex");
+  const { models: claudeModels, loading: claudeModelsLoading } = useProviderModels("claude");
 
   const loadRoles = async () => {
     setRolesLoading(true);
@@ -159,6 +170,10 @@ export function SettingsPage() {
                 gitUsername: values.gitUsername,
                 openaiBaseUrl: values.openaiBaseUrl?.trim() ? values.openaiBaseUrl.trim() : null,
                 agentRules: values.agentRules ?? "",
+                codexDefaultModel: values.codexDefaultModel,
+                codexDefaultEffort: values.codexDefaultEffort,
+                claudeDefaultModel: values.claudeDefaultModel,
+                claudeDefaultEffort: values.claudeDefaultEffort,
                 mcpServers: (values.mcpServers ?? []).map((server) =>
                   server.transport === "http"
                     ? {
@@ -207,6 +222,43 @@ export function SettingsPage() {
               <Form.Item name="openaiBaseUrl" label="OpenAI Base URL">
                 <Input placeholder="https://api.openai.com/v1" />
               </Form.Item>
+            </Space>
+          </Card>
+
+          <Card bordered={false} loading={loading} title="Provider Defaults" style={{ marginTop: 16 }}>
+            <Space direction="vertical" size={24} style={{ width: "100%", maxWidth: 560 }}>
+              <div>
+                <Typography.Text strong>Codex (OpenAI)</Typography.Text>
+                <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 8 }}>
+                  <Form.Item name="codexDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
+                    <Select
+                      options={codexModels}
+                      loading={codexModelsLoading}
+                      showSearch
+                      optionFilterProp="label"
+                    />
+                  </Form.Item>
+                  <Form.Item name="codexDefaultEffort" label="Default Reasoning Effort" style={{ marginBottom: 0 }}>
+                    <Select options={getEffortOptionsForProvider("codex")} />
+                  </Form.Item>
+                </Space>
+              </div>
+              <div>
+                <Typography.Text strong>Claude Code (Anthropic)</Typography.Text>
+                <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 8 }}>
+                  <Form.Item name="claudeDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
+                    <Select
+                      options={claudeModels}
+                      loading={claudeModelsLoading}
+                      showSearch
+                      optionFilterProp="label"
+                    />
+                  </Form.Item>
+                  <Form.Item name="claudeDefaultEffort" label="Default Max Turns" style={{ marginBottom: 0 }}>
+                    <Select options={getEffortOptionsForProvider("claude")} />
+                  </Form.Item>
+                </Space>
+              </div>
             </Space>
           </Card>
 

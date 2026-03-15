@@ -1,6 +1,7 @@
 "use client";
 
 import type {
+  AgentProvider,
   AuthSession,
   CreateRoleInput,
   CreateTaskFromIssueInput,
@@ -13,6 +14,7 @@ import type {
   GitHubIssueReference,
   GitHubPullRequestReference,
   LoginInput,
+  ProviderModelOption,
   Repository,
   Role,
   SystemSettings,
@@ -31,6 +33,11 @@ import type {
   UpdateUserInput,
   User
 } from "@agentswarm/shared-types";
+
+export interface ProviderModelsResponse {
+  models: ProviderModelOption[];
+  source: "api" | "static";
+}
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
@@ -211,6 +218,8 @@ export const api = {
       method: "DELETE"
     }),
   getSettings: () => request<SystemSettings>("/settings"),
+  listModels: (provider: AgentProvider) =>
+    request<ProviderModelsResponse>(`/settings/models?provider=${encodeURIComponent(provider)}`),
   updateSettings: (input: UpdateSettingsInput) =>
     request<SystemSettings>("/settings", {
       method: "PATCH",

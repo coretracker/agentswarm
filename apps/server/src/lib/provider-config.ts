@@ -44,7 +44,7 @@ export const normalizeModelOverride = (
 
 export const defaultModelForProvider = (provider: AgentProvider, profile: ProviderProfile): string | null => {
   if (provider === "claude") {
-    return profile === "quick" || profile === "balanced" ? "sonnet" : "opus";
+    return profile === "quick" || profile === "balanced" ? "claude-sonnet-4-5" : "claude-opus-4-5";
   }
 
   return "gpt-5.4";
