@@ -411,7 +411,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const currentTaskProviderProfile = task?.providerProfile ?? "deep";
   const currentTaskModelOverride = task?.modelOverride ?? "";
   const currentTaskBranchStrategy = task?.branchStrategy ?? "feature_branch";
-  const hasExecutionContext = (task?.executionSummary?.trim().length ?? 0) > 0;
+  const hasExecutionContext = Boolean(task?.executionSummary?.trim());
   const planDraftTrimmed = planDraft.trim();
   const planDraftChanged = planDraft !== (task?.planMarkdown ?? "");
   const configDirty =
@@ -1440,45 +1440,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 >
                   Cancel
                 </Button>
-                ) : canEditTask && isImplementationTask && task.status !== "accepted" && task.status !== "archived" ? (
-                  <>
-                    {isPlanTask && hasExecutionContext ? (
-                      <Button
-                        onClick={async () => {
-                          setSubmitting("plan");
-                          try {
-                            await api.triggerTaskAction(task.id, "plan");
-                            messageApi.success("Planning started");
-                          } finally {
-                            setSubmitting(null);
-                          }
-                        }}
-                        disabled={isEditingPlan}
-                        loading={submitting === "plan"}
-                      >
-                        Re-Plan
-                      </Button>
-                    ) : null}
-                    {isBuildTask || !hasExecutionContext ? (
-                      <Button
-                        onClick={async () => {
-                          const nextAction = isBuildTask ? "build" : "plan";
-                          setSubmitting(nextAction);
-                          try {
-                            await api.triggerTaskAction(task.id, nextAction);
-                            messageApi.success(nextAction === "build" ? "Build started" : "Planning started");
-                          } finally {
-                            setSubmitting(null);
-                          }
-                        }}
-                        disabled={isEditingPlan}
-                        type="primary"
-                        loading={submitting === (isBuildTask ? "build" : "plan")}
-                      >
-                        {isBuildTask ? "Build" : "Plan"}
-                      </Button>
-                    ) : null}
-                  </>
                 ) : null}
 
                 {canPull ? (

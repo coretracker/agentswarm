@@ -262,7 +262,7 @@ export function TasksPage() {
                           width: 8,
                           height: 8,
                           borderRadius: "50%",
-                          backgroundColor: "#1677ff",
+                          backgroundColor: "rgb(255, 22, 154)",
                           display: "inline-block",
                           flex: "0 0 auto"
                         }}
