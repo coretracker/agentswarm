@@ -377,7 +377,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [iterateInput, setIterateInput] = useState("");
   const [chatInput, setChatInput] = useState("");
   const [providerInput, setProviderInput] = useState<AgentProvider>("codex");
-  const [providerProfileInput, setProviderProfileInput] = useState<ProviderProfile>("deep");
+  const [providerProfileInput, setProviderProfileInput] = useState<ProviderProfile>("high");
   const [modelInput, setModelInput] = useState<string>("gpt-5.4");
   const [branchStrategyInput, setBranchStrategyInput] = useState<TaskBranchStrategy>("feature_branch");
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(providerInput);
@@ -438,7 +438,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     (task.status === "review" || task.status === "accepted");
   const canEditPlan = canEditTask && isPlanTask && !!task?.planMarkdown?.trim() && !isActive && !isArchived;
   const currentTaskProvider = task?.provider ?? "codex";
-  const currentTaskProviderProfile = task?.providerProfile ?? "deep";
+  const currentTaskProviderProfile = task?.providerProfile ?? "high";
   const currentTaskModelOverride = task?.modelOverride ?? "";
   const currentTaskBranchStrategy = task?.branchStrategy ?? "feature_branch";
   const hasExecutionContext = Boolean(task?.executionSummary?.trim());
@@ -515,7 +515,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     setProviderInput(task.provider ?? "codex");
-    setProviderProfileInput(task.providerProfile ?? "deep");
+    setProviderProfileInput(task.providerProfile ?? "high");
     setModelInput(task.modelOverride ?? getDefaultModelForProvider(task.provider ?? "codex"));
     setBranchStrategyInput(task.branchStrategy ?? "feature_branch");
   }, [task]);
@@ -939,7 +939,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           ) : null}
           <Descriptions.Item label="Provider">{getAgentProviderLabel(currentTaskProvider)}</Descriptions.Item>
           <Descriptions.Item label="Model">{currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)}</Descriptions.Item>
-          <Descriptions.Item label={currentTaskProvider === "claude" ? "Max Turns" : "Reasoning Effort"}>{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
+          <Descriptions.Item label="Effort">{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
           {isImplementationTask ? <Descriptions.Item label="Complexity">{task?.complexity}</Descriptions.Item> : null}
           {isImplementationTask ? (
             <Descriptions.Item label="Planning Mode">
@@ -1657,7 +1657,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             />
           </div>
           <div>
-            <Typography.Text type="secondary">{providerInput === "claude" ? "Max Turns" : "Reasoning Effort"}</Typography.Text>
+            <Typography.Text type="secondary">Effort</Typography.Text>
             <Select
               value={providerProfileInput}
               options={getEffortOptionsForProvider(providerInput)}

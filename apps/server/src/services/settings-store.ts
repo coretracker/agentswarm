@@ -14,8 +14,8 @@ import { CredentialStore, type RuntimeCredentials } from "./credential-store.js"
 
 const SETTINGS_KEY = "agentswarm:settings";
 
-const DEFAULT_CODEX_EFFORT: ProviderProfile = "deep";
-const DEFAULT_CLAUDE_EFFORT: ProviderProfile = "deep";
+const DEFAULT_CODEX_EFFORT: ProviderProfile = "high";
+const DEFAULT_CLAUDE_EFFORT: ProviderProfile = "high";
 
 const defaultSettings: SystemSettings = {
   defaultProvider: DEFAULT_PROVIDER,

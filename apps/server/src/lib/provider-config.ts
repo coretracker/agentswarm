@@ -1,34 +1,41 @@
 import type { AgentProvider, ProviderProfile, TaskReasoningEffort } from "@agentswarm/shared-types";
 
 export const DEFAULT_PROVIDER: AgentProvider = "codex";
-export const DEFAULT_PROVIDER_PROFILE: ProviderProfile = "deep";
+export const DEFAULT_PROVIDER_PROFILE: ProviderProfile = "high";
 
 export const normalizeProvider = (value: string | undefined | null): AgentProvider =>
   value === "claude" ? "claude" : "codex";
 
 export const normalizeProviderProfile = (
-  profile: ProviderProfile | undefined | null,
+  profile: ProviderProfile | string | undefined | null,
   legacyReasoningEffort?: TaskReasoningEffort | null
 ): ProviderProfile => {
-  if (
-    profile === "quick" ||
-    profile === "balanced" ||
-    profile === "deep" ||
-    profile === "super_deep" ||
-    profile === "unlimited"
-  ) {
+  if (profile === "low" || profile === "medium" || profile === "high" || profile === "max") {
     return profile;
   }
 
+  // Map old custom profile names to native values
+  switch (profile) {
+    case "quick":
+      return "low";
+    case "balanced":
+      return "medium";
+    case "deep":
+    case "super_deep":
+    case "unlimited":
+      return "high";
+  }
+
+  // Map legacy reasoningEffort field to native values
   switch (legacyReasoningEffort) {
     case "minimal":
     case "low":
-      return "quick";
+      return "low";
     case "medium":
-      return "balanced";
+      return "medium";
     case "high":
     case "xhigh":
-      return "deep";
+      return "high";
     default:
       return DEFAULT_PROVIDER_PROFILE;
   }
@@ -44,26 +51,21 @@ export const normalizeModelOverride = (
 
 export const defaultModelForProvider = (provider: AgentProvider, profile: ProviderProfile): string | null => {
   if (provider === "claude") {
-    return profile === "quick" || profile === "balanced" ? "claude-sonnet-4-5" : "claude-opus-4-5";
+    return profile === "low" || profile === "medium" ? "claude-sonnet-4-5" : "claude-opus-4-5";
   }
 
   return "gpt-5.4";
 };
 
-export const codexReasoningEffortForProfile = (profile: ProviderProfile): TaskReasoningEffort =>
-  ({
-    quick: "low",
-    balanced: "medium",
-    deep: "xhigh",
-    super_deep: "xhigh",
-    unlimited: "xhigh"
-  } as const)[profile];
+/** Codex CLI accepts "low", "medium", "high" natively; "max" is not supported — fall back to "high". */
+export const codexReasoningEffortForProfile = (profile: ProviderProfile): string =>
+  profile === "max" ? "high" : profile;
 
+/** Claude CLI uses --max-turns; "max" means unlimited (undefined = no flag). */
 export const claudeMaxTurnsForProfile = (profile: ProviderProfile): number | undefined =>
   ({
-    quick: 8,
-    balanced: 16,
-    deep: 32,
-    super_deep: 48,
-    unlimited: undefined
+    low: 8,
+    medium: 16,
+    high: 32,
+    max: undefined
   })[profile];

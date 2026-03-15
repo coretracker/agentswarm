@@ -250,7 +250,7 @@ export function SettingsPage() {
                         optionFilterProp="label"
                       />
                     </Form.Item>
-                    <Form.Item name="codexDefaultEffort" label="Default Reasoning Effort" style={{ marginBottom: 0 }}>
+                    <Form.Item name="codexDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
                       <Select options={getEffortOptionsForProvider("codex")} />
                     </Form.Item>
                   </Space>
@@ -267,7 +267,7 @@ export function SettingsPage() {
                         optionFilterProp="label"
                       />
                     </Form.Item>
-                    <Form.Item name="claudeDefaultEffort" label="Default Max Turns" style={{ marginBottom: 0 }}>
+                    <Form.Item name="claudeDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
                       <Select options={getEffortOptionsForProvider("claude")} />
                     </Form.Item>
                   </Space>
