@@ -1440,44 +1440,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 >
                   Cancel
                 </Button>
-                ) : canEditTask && isImplementationTask && task.status !== "accepted" && task.status !== "archived" ? (
-                  <>
-                    {isPlanTask && hasExecutionContext ? (
-                      <Button
-                        onClick={async () => {
-                          setSubmitting("plan");
-                          try {
-                            await api.triggerTaskAction(task.id, "plan");
-                            messageApi.success("Planning started");
-                          } finally {
-                            setSubmitting(null);
-                          }
-                        }}
-                        disabled={isEditingPlan}
-                        loading={submitting === "plan"}
-                      >
-                        Re-Plan
-                      </Button>
-                    ) : null}
-                    {isBuildTask ? (
-                      <Button
-                        onClick={async () => {
-                          setSubmitting("build");
-                          try {
-                            await api.triggerTaskAction(task.id, "build");
-                            messageApi.success("Build started");
-                          } finally {
-                            setSubmitting(null);
-                          }
-                        }}
-                        disabled={isEditingPlan}
-                        type="primary"
-                        loading={submitting === "build"}
-                      >
-                        Build
-                      </Button>
-                    ) : null}
-                  </>
                 ) : null}
 
                 {canPull ? (
