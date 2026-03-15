@@ -3,7 +3,9 @@ export type TaskMode = TaskQueueMode;
 export type TaskType = "plan" | "build" | "review" | "ask";
 export type TaskReviewVerdict = "approved" | "changes_requested";
 export type AgentProvider = "codex" | "claude";
-export type ProviderProfile = "quick" | "balanced" | "deep" | "super_deep" | "unlimited";
+
+/** Native effort values from providers. "max" is Claude-only. */
+export type ProviderProfile = "low" | "medium" | "high" | "max";
 
 export interface ProviderModelOption {
   label: string;
@@ -31,20 +33,19 @@ export const CLAUDE_MODELS: ProviderModelOption[] = [
   { label: "Claude Haiku 3.5", value: "claude-haiku-3-5" }
 ];
 
+/** Codex natively supports low / medium / high reasoning effort. */
 export const CODEX_EFFORT_OPTIONS: ProviderEffortOption[] = [
-  { label: "Low", value: "quick" },
-  { label: "Medium", value: "balanced" },
-  { label: "High", value: "deep" },
-  { label: "Max", value: "super_deep" },
-  { label: "Unlimited", value: "unlimited" }
+  { label: "Low", value: "low" },
+  { label: "Medium", value: "medium" },
+  { label: "High", value: "high" }
 ];
 
+/** Claude supports low / medium / high / max effort (max = unlimited turns, Opus 4 only). */
 export const CLAUDE_EFFORT_OPTIONS: ProviderEffortOption[] = [
-  { label: "8 turns", value: "quick" },
-  { label: "16 turns", value: "balanced" },
-  { label: "32 turns", value: "deep" },
-  { label: "48 turns", value: "super_deep" },
-  { label: "Unlimited", value: "unlimited" }
+  { label: "Low", value: "low" },
+  { label: "Medium", value: "medium" },
+  { label: "High", value: "high" },
+  { label: "Max", value: "max" }
 ];
 
 export const getModelsForProvider = (provider: AgentProvider): ProviderModelOption[] =>
@@ -77,6 +78,7 @@ export type TaskStatus =
 
 export type TaskAction = "plan" | "build" | "iterate" | "review" | "ask";
 export type TaskMessageAction = TaskAction | "comment";
+/** @deprecated Use ProviderProfile instead. Kept for Redis migration in task-store. */
 export type TaskReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type TaskComplexity = "trivial" | "normal" | "complex";
 export type TaskPlanningMode = "direct-build" | "plan-first";
@@ -285,6 +287,8 @@ export interface TaskRun {
   taskId: string;
   action: TaskAction;
   provider: AgentProvider;
+  providerProfile: ProviderProfile;
+  modelOverride: string | null;
   branchName: string | null;
   status: TaskRunStatus;
   startedAt: string;
@@ -442,11 +446,10 @@ export const getAgentProviderLabel = (provider: AgentProvider): string =>
 
 export const getProviderProfileLabel = (profile: ProviderProfile): string =>
   ({
-    quick: "Quick",
-    balanced: "Balanced",
-    deep: "Deep",
-    super_deep: "Super Deep",
-    unlimited: "Unlimited"
+    low: "Low",
+    medium: "Medium",
+    high: "High",
+    max: "Max"
   })[profile];
 
 export const getTaskTypeLabel = (taskType: TaskType): string =>

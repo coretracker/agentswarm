@@ -17,7 +17,7 @@ const createTaskSchema = z.object({
   requirements: z.string().min(1),
   taskType: z.enum(["plan", "build", "review", "ask"]).optional(),
   provider: z.enum(["codex", "claude"]).optional(),
-  providerProfile: z.enum(["quick", "balanced", "deep", "super_deep", "unlimited"]).optional(),
+  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
   modelOverride: z.string().trim().min(1).optional(),
   baseBranch: z.string().min(1).optional(),
   branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
@@ -34,7 +34,7 @@ const triggerTaskActionSchema = z.object({
 
 const updateTaskConfigSchema = z.object({
   provider: z.enum(["codex", "claude"]),
-  providerProfile: z.enum(["quick", "balanced", "deep", "super_deep", "unlimited"]),
+  providerProfile: z.enum(["low", "medium", "high", "max"]),
   modelOverride: z.string().trim().nullable().optional(),
   branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional()
 });
@@ -318,6 +318,8 @@ export const registerTaskRoutes = (
     const manualRun = await deps.taskStore.createRun(task.id, {
       action: "plan",
       provider: task.provider,
+      providerProfile: task.providerProfile,
+      modelOverride: task.modelOverride,
       branchName: task.branchName ?? task.baseBranch
     });
     if (manualRun) {

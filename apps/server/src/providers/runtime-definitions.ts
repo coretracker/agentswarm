@@ -91,7 +91,7 @@ export interface ProviderRuntimeDefinition {
   getRuntimeEnv(credentials: RuntimeCredentials & { openaiBaseUrl: string | null }): Record<string, string | undefined>;
   getProviderConfig(servers: McpServerConfig[]): string;
   getResolvedModel(modelOverride: string | null, profile: ProviderProfile): string | null;
-  getResolvedProfileSettings(profile: ProviderProfile): { reasoningEffort?: string; maxTurns?: number };
+  getResolvedProfileSettings(profile: ProviderProfile): { reasoningEffort?: string; maxTurns?: number | undefined };
 }
 
 export const providerRuntimeDefinitions: Record<AgentProvider, ProviderRuntimeDefinition> = {

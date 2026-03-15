@@ -10,7 +10,7 @@ import {
   type TaskStatus
 } from "@agentswarm/shared-types";
 import { Button, Card, DatePicker, Divider, Flex, Input, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, message } from "antd";
-import { PushpinFilled, PushpinOutlined } from "@ant-design/icons";
+import { PushpinFilled } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "../src/api/client";
@@ -133,43 +133,24 @@ export function TasksPage() {
     }
   };
 
-  const handleTogglePin = async (task: Task) => {
-    const wasSeen = isTaskSeen(task, seenTaskVersions);
+  const [archivingTaskId, setArchivingTaskId] = useState<string | null>(null);
 
+  const handleArchiveTask = async (task: Task) => {
+    setArchivingTaskId(task.id);
     try {
-      const updatedTask = await api.updateTaskPin(task.id, { pinned: !task.pinned });
-      if (wasSeen) {
-        markTaskSeen(updatedTask);
-        setSeenTaskVersions((current) =>
-          current[updatedTask.id] === updatedTask.updatedAt
-            ? current
-            : {
-                ...current,
-                [updatedTask.id]: updatedTask.updatedAt
-              }
-        );
-      }
+      const updatedTask = await api.archiveTask(task.id);
       setTasks((current) =>
-        current
-          .map((item) =>
-            item.id === task.id
-              ? {
-                  ...item,
-                  ...updatedTask,
-                  logs: updatedTask.logs.length > 0 ? updatedTask.logs : item.logs
-                }
-              : item
-          )
-          .sort((a, b) => {
-            if (a.pinned !== b.pinned) {
-              return a.pinned ? -1 : 1;
-            }
-            return b.createdAt.localeCompare(a.createdAt);
-          })
+        current.map((item) =>
+          item.id === task.id
+            ? { ...item, ...updatedTask, logs: updatedTask.logs.length > 0 ? updatedTask.logs : item.logs }
+            : item
+        )
       );
-      messageApi.success(updatedTask.pinned ? `Pinned "${task.title}"` : `Unpinned "${task.title}"`);
+      messageApi.success(`Archived "${task.title}"`);
     } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to update task pin");
+      messageApi.error(error instanceof Error ? error.message : "Failed to archive task");
+    } finally {
+      setArchivingTaskId(null);
     }
   };
 
@@ -262,7 +243,7 @@ export function TasksPage() {
                           width: 8,
                           height: 8,
                           borderRadius: "50%",
-                          backgroundColor: "rgb(255, 22, 154)",
+                          backgroundColor: "#1C8057",
                           display: "inline-block",
                           flex: "0 0 auto"
                         }}
@@ -315,13 +296,18 @@ export function TasksPage() {
                 width: 170,
                 render: (_value, task) => (
                   <Space onClick={(event) => event.stopPropagation()}>
-                    {canEditTask ? (
-                      <Button
-                        size="small"
-                        icon={task.pinned ? <PushpinFilled /> : <PushpinOutlined />}
-                        onClick={() => void handleTogglePin(task)}
-                        disabled={task.status === "archived"}
-                      />
+                    {canEditTask && !archivedView ? (
+                      <Popconfirm
+                        title="Archive task"
+                        description={`Archive "${task.title}"?`}
+                        okText="Archive"
+                        okButtonProps={{ loading: archivingTaskId === task.id }}
+                        onConfirm={() => void handleArchiveTask(task)}
+                      >
+                        <Button size="small" disabled={isActiveTaskStatus(task.status)}>
+                          Archive
+                        </Button>
+                      </Popconfirm>
                     ) : null}
                     {canDeleteTask ? (
                       <Popconfirm
@@ -331,7 +317,7 @@ export function TasksPage() {
                         okButtonProps={{ danger: true, loading: deletingTaskId === task.id }}
                         onConfirm={() => handleDeleteTask(task)}
                       >
-                        <Button danger size="small" disabled={isActiveTaskStatus(task.status) || task.status === "archived"}>
+                        <Button danger size="small" disabled={isActiveTaskStatus(task.status)}>
                           Delete
                         </Button>
                       </Popconfirm>

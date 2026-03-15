@@ -62,7 +62,7 @@ const mcpServerSchema = z.discriminatedUnion("transport", [
   })
 ]);
 
-const providerProfileEnum = z.enum(["quick", "balanced", "deep", "super_deep", "unlimited"]);
+const providerProfileEnum = z.enum(["low", "medium", "high", "max"]);
 
 const updateSettingsSchema = z.object({
   defaultProvider: z.enum(["codex", "claude"]).optional(),

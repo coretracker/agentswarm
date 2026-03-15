@@ -6,6 +6,7 @@ import {
   isQueuedTaskStatus,
   type AgentProvider,
   type CreateTaskInput,
+  type ProviderProfile,
   type Repository,
   type Task,
   type TaskAction,
@@ -503,7 +504,16 @@ export class TaskStore {
     return this.hydrateRun(run);
   }
 
-  async createRun(taskId: string, input: { action: TaskAction; provider: AgentProvider; branchName: string | null }): Promise<TaskRun | null> {
+  async createRun(
+    taskId: string,
+    input: {
+      action: TaskAction;
+      provider: AgentProvider;
+      providerProfile: ProviderProfile;
+      modelOverride: string | null;
+      branchName: string | null;
+    }
+  ): Promise<TaskRun | null> {
     const task = await this.getStoredTask(taskId);
     if (!task) {
       return null;
@@ -514,6 +524,8 @@ export class TaskStore {
       taskId,
       action: input.action,
       provider: input.provider,
+      providerProfile: input.providerProfile,
+      modelOverride: input.modelOverride,
       branchName: input.branchName,
       status: "running",
       startedAt: nowIso(),

@@ -32,6 +32,12 @@ export function LoginPage() {
     >
       <Card bordered={false} style={{ width: "100%", maxWidth: 440, boxShadow: "0 24px 60px rgba(15, 23, 42, 0.12)" }}>
         <Flex vertical gap={8} style={{ marginBottom: 24 }}>
+          <Flex align="center" gap={12} style={{ marginBottom: 8 }}>
+            <img src="/logo.svg" alt="AgentSwarm logo" style={{ width: 22, height: 32, display: "block" }} />
+            <Typography.Title level={3} style={{ margin: 0 }}>
+              AgentSwarm
+            </Typography.Title>
+          </Flex>
           <Typography.Title level={2} style={{ margin: 0 }}>
             Sign in
           </Typography.Title>

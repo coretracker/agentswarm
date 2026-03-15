@@ -18,7 +18,7 @@ const PRICING: Record<string, ModelPricing> = {
 
   // OpenAI — GPT-5 family
   "gpt-5":       { inputPerMTok: 1.25,  outputPerMTok: 10.00 },
-  "gpt-5.4":     { inputPerMTok: 1.25,  outputPerMTok: 10.00 },
+  "gpt-5.4":     { inputPerMTok: 2.50,  outputPerMTok: 15.00 },
   "gpt-5-mini":  { inputPerMTok: 0.25,  outputPerMTok: 2.00  },
 
   // OpenAI — GPT-4.1 family

@@ -368,7 +368,7 @@ export function TaskCreatePage() {
             : getDefaultModelForProvider("codex"),
           providerProfile: settings
             ? (settings.defaultProvider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort)
-            : "deep",
+            : "high",
           queueMode: "manual",
           branchStrategy: "feature_branch",
           includeComments: true
@@ -448,8 +448,8 @@ export function TaskCreatePage() {
                         ? (settings?.claudeDefaultModel ?? getDefaultModelForProvider(value))
                         : (settings?.codexDefaultModel ?? getDefaultModelForProvider(value));
                       const defaultEffort = value === "claude"
-                        ? (settings?.claudeDefaultEffort ?? "deep")
-                        : (settings?.codexDefaultEffort ?? "deep");
+                        ? (settings?.claudeDefaultEffort ?? "high")
+                        : (settings?.codexDefaultEffort ?? "high");
                       form.setFieldValue("model", defaultModel);
                       form.setFieldValue("providerProfile", defaultEffort);
                     }}
@@ -460,7 +460,7 @@ export function TaskCreatePage() {
                   <Select options={providerModels} loading={providerModelsLoading} showSearch optionFilterProp="label" />
                 </Form.Item>
 
-                <Form.Item name="providerProfile" label={selectedProvider === "claude" ? "Max Turns" : "Reasoning Effort"} rules={[{ required: true }]}> 
+                <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}> 
                   <Select options={getEffortOptionsForProvider(selectedProvider)} />
                 </Form.Item>
 
