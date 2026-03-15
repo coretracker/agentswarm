@@ -51,6 +51,71 @@ const extractReviewVerdict = (markdown) => {
   return null;
 };
 
+const safeParseJson = (value) => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+const readTokenCount = (...values) => {
+  for (const value of values) {
+    if (Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return null;
+};
+
+const toTokenUsage = (usage) => {
+  if (!usage || typeof usage !== "object") {
+    return null;
+  }
+
+  const inputTokens = readTokenCount(usage.input_tokens, usage.inputTokens, usage.prompt_tokens, usage.promptTokens);
+  const outputTokens = readTokenCount(usage.output_tokens, usage.outputTokens, usage.completion_tokens, usage.completionTokens);
+  const totalTokens = readTokenCount(
+    usage.total_tokens,
+    usage.totalTokens,
+    inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null
+  );
+
+  if (inputTokens === null && outputTokens === null && totalTokens === null) {
+    return null;
+  }
+
+  return {
+    status: "available",
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    note: null
+  };
+};
+
+const findTokenUsage = (value, depth = 0) => {
+  if (!value || typeof value !== "object" || depth > 5) {
+    return null;
+  }
+
+  const directUsage = toTokenUsage(value);
+  if (directUsage) {
+    return directUsage;
+  }
+
+  const entries = Array.isArray(value) ? value : Object.values(value);
+  for (const entry of entries) {
+    const nestedUsage = findTokenUsage(entry, depth + 1);
+    if (nestedUsage) {
+      return nestedUsage;
+    }
+  }
+
+  return null;
+};
+
 const buildPrompt = () => {
   const rulesSection = manifest.agentRules?.trim()
     ? `\nGlobal Agent Rules:\n${manifest.agentRules}\n\nThese rules apply to every action unless they directly conflict with the explicit task requirements.\n`
@@ -108,6 +173,7 @@ const args = [
   manifest.workspacePath,
   "--color",
   "never",
+  "--json",
   "--output-last-message",
   lastMessageFile
 ];
@@ -119,13 +185,46 @@ if (manifest.resolvedReasoningEffort) {
 }
 args.push(prompt);
 
+let latestTokenUsage = null;
 const execProc = spawn("codex", args, { env: process.env, cwd: manifest.workspacePath, stdio: ["ignore", "pipe", "pipe"] });
-execProc.stdout.on("data", (chunk) => process.stdout.write(chunk));
+let stdoutBuffer = "";
+
+const processStdoutLine = (line) => {
+  if (!line.trim()) {
+    return;
+  }
+
+  const event = safeParseJson(line);
+  if (!event) {
+    return;
+  }
+
+  const tokenUsage = findTokenUsage(event);
+  if (tokenUsage) {
+    latestTokenUsage = tokenUsage;
+    console.log(
+      `[runtime] codex token usage input=${tokenUsage.inputTokens ?? "?"} output=${tokenUsage.outputTokens ?? "?"} total=${tokenUsage.totalTokens ?? "?"}`
+    );
+  }
+};
+
+execProc.stdout.on("data", (chunk) => {
+  const text = chunk.toString();
+  process.stdout.write(text);
+  stdoutBuffer += text;
+  const lines = stdoutBuffer.split("\n");
+  stdoutBuffer = lines.pop() ?? "";
+
+  for (const line of lines) {
+    processStdoutLine(line);
+  }
+});
 execProc.stderr.on("data", (chunk) => process.stderr.write(chunk));
 await new Promise((resolve, reject) => {
   execProc.on("error", reject);
   execProc.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`codex exited with code ${code ?? "unknown"}`))));
 });
+processStdoutLine(stdoutBuffer);
 
 const summaryMarkdown = (await readFile(lastMessageFile, "utf8").catch(() => "")).trim();
 if (!summaryMarkdown) {
@@ -145,12 +244,12 @@ await writeFile(
       metadata: {
         provider: manifest.provider,
         action: manifest.action,
-        tokenUsage: {
+        tokenUsage: latestTokenUsage ?? {
           status: "unavailable",
           inputTokens: null,
           outputTokens: null,
           totalTokens: null,
-          note: "Codex CLI usage is not exposed by the current runtime integration."
+          note: "Codex CLI did not emit token usage in JSON output."
         }
       }
     },
