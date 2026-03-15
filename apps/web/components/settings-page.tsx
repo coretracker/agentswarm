@@ -206,19 +206,72 @@ export function SettingsPage() {
           }}
         >
           <Space direction="vertical" size={16} style={{ width: "100%", maxWidth: 720 }}>
-            <Card bordered={false} loading={loading} title="Runtime">
-              <Space direction="vertical" size={16} style={{ width: "100%" }}>
-                <Form.Item name="defaultProvider" label="Default Provider" rules={[{ required: true }]}>
-                  <Select options={providerOptions} />
-                </Form.Item>
-                <Form.Item
-                  name="maxAgents"
-                  label="Concurrent Agents"
-                  extra="Hard limit on how many agents can run in parallel."
-                  rules={[{ required: true }]}
-                >
-                  <InputNumber min={1} max={20} style={{ width: "100%" }} />
-                </Form.Item>
+            <Card bordered={false} loading={loading} title="AI Provider Settings">
+              <Space direction="vertical" size={24} style={{ width: "100%" }}>
+                <div>
+                  <Typography.Text strong>Runtime Defaults</Typography.Text>
+                  <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 8 }}>
+                    <Form.Item name="defaultProvider" label="Default Provider" rules={[{ required: true }]}>
+                      <Select options={providerOptions} />
+                    </Form.Item>
+                    <Form.Item
+                      name="maxAgents"
+                      label="Concurrent Agents"
+                      extra="Hard limit on how many agents can run in parallel."
+                      rules={[{ required: true }]}
+                    >
+                      <InputNumber min={1} max={20} style={{ width: "100%" }} />
+                    </Form.Item>
+                  </Space>
+                </div>
+
+                <div>
+                  <Typography.Text strong>Provider API</Typography.Text>
+                  <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 8 }}>
+                    <Form.Item
+                      name="openaiBaseUrl"
+                      label="OpenAI Base URL"
+                      extra="Override when pointing to a proxy or self-hosted gateway."
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input placeholder="https://api.openai.com/v1" />
+                    </Form.Item>
+                  </Space>
+                </div>
+
+                <div>
+                  <Typography.Text strong>Codex (OpenAI)</Typography.Text>
+                  <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 8 }}>
+                    <Form.Item name="codexDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
+                      <Select
+                        options={codexModels}
+                        loading={codexModelsLoading}
+                        showSearch
+                        optionFilterProp="label"
+                      />
+                    </Form.Item>
+                    <Form.Item name="codexDefaultEffort" label="Default Reasoning Effort" style={{ marginBottom: 0 }}>
+                      <Select options={getEffortOptionsForProvider("codex")} />
+                    </Form.Item>
+                  </Space>
+                </div>
+
+                <div>
+                  <Typography.Text strong>Claude Code (Anthropic)</Typography.Text>
+                  <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 8 }}>
+                    <Form.Item name="claudeDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
+                      <Select
+                        options={claudeModels}
+                        loading={claudeModelsLoading}
+                        showSearch
+                        optionFilterProp="label"
+                      />
+                    </Form.Item>
+                    <Form.Item name="claudeDefaultEffort" label="Default Max Turns" style={{ marginBottom: 0 }}>
+                      <Select options={getEffortOptionsForProvider("claude")} />
+                    </Form.Item>
+                  </Space>
+                </div>
               </Space>
             </Card>
 
@@ -237,54 +290,7 @@ export function SettingsPage() {
                 </Form.Item>
               </Space>
             </Card>
-
-            <Card bordered={false} loading={loading} title="LLM API">
-              <Form.Item
-                name="openaiBaseUrl"
-                label="OpenAI Base URL"
-                extra="Override when pointing to a proxy or self-hosted gateway."
-              >
-                <Input placeholder="https://api.openai.com/v1" />
-              </Form.Item>
-            </Card>
           </Space>
-
-          <Card bordered={false} loading={loading} title="Provider Defaults" style={{ marginTop: 16 }}>
-            <Space direction="vertical" size={24} style={{ width: "100%", maxWidth: 560 }}>
-              <div>
-                <Typography.Text strong>Codex (OpenAI)</Typography.Text>
-                <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 8 }}>
-                  <Form.Item name="codexDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
-                    <Select
-                      options={codexModels}
-                      loading={codexModelsLoading}
-                      showSearch
-                      optionFilterProp="label"
-                    />
-                  </Form.Item>
-                  <Form.Item name="codexDefaultEffort" label="Default Reasoning Effort" style={{ marginBottom: 0 }}>
-                    <Select options={getEffortOptionsForProvider("codex")} />
-                  </Form.Item>
-                </Space>
-              </div>
-              <div>
-                <Typography.Text strong>Claude Code (Anthropic)</Typography.Text>
-                <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 8 }}>
-                  <Form.Item name="claudeDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
-                    <Select
-                      options={claudeModels}
-                      loading={claudeModelsLoading}
-                      showSearch
-                      optionFilterProp="label"
-                    />
-                  </Form.Item>
-                  <Form.Item name="claudeDefaultEffort" label="Default Max Turns" style={{ marginBottom: 0 }}>
-                    <Select options={getEffortOptionsForProvider("claude")} />
-                  </Form.Item>
-                </Space>
-              </div>
-            </Space>
-          </Card>
 
           <Card bordered={false} loading={loading} title="Agent Rules" style={{ marginTop: 16 }}>
             <Form.Item
