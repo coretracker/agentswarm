@@ -205,78 +205,67 @@ export function SettingsPage() {
             }
           }}
         >
-          <Space direction="vertical" size={16} style={{ width: "100%", maxWidth: 720 }}>
-            <Card bordered={false} loading={loading} title="AI Provider Settings">
-              <Space direction="vertical" size={24} style={{ width: "100%" }}>
-                <div>
-                  <Typography.Text strong>Runtime Defaults</Typography.Text>
-                  <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 8 }}>
-                    <Form.Item name="defaultProvider" label="Default Provider" rules={[{ required: true }]}>
-                      <Select options={providerOptions} />
-                    </Form.Item>
-                    <Form.Item
-                      name="maxAgents"
-                      label="Concurrent Agents"
-                      extra="Hard limit on how many agents can run in parallel."
-                      rules={[{ required: true }]}
-                    >
-                      <InputNumber min={1} max={20} style={{ width: "100%" }} />
-                    </Form.Item>
-                  </Space>
-                </div>
+          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            <Card bordered={false} loading={loading} title="Runtime Controls">
+              <Flex vertical gap={16} style={{ width: "100%" }}>
+                <Form.Item name="defaultProvider" label="Default Provider" rules={[{ required: true }]}>
+                  <Select options={providerOptions} />
+                </Form.Item>
+                <Form.Item
+                  name="maxAgents"
+                  label="Concurrent Agents"
+                  extra="Hard limit on how many agents can run in parallel."
+                  rules={[{ required: true }]}
+                >
+                  <InputNumber min={1} max={20} style={{ width: "100%" }} />
+                </Form.Item>
+              </Flex>
+            </Card>
 
+            <Card bordered={false} loading={loading} title="Provider Defaults">
+              <Flex vertical gap={24} style={{ width: "100%" }}>
                 <div>
-                  <Typography.Text strong>Provider API</Typography.Text>
-                  <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 8 }}>
+                  <Typography.Text strong>OpenAI Gateway</Typography.Text>
+                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
                     <Form.Item
                       name="openaiBaseUrl"
-                      label="OpenAI Base URL"
-                      extra="Override when pointing to a proxy or self-hosted gateway."
+                      label="Base URL Override"
+                      extra="Set when pointing to a proxy or self-hosted gateway."
                       style={{ marginBottom: 0 }}
                     >
                       <Input placeholder="https://api.openai.com/v1" />
                     </Form.Item>
-                  </Space>
+                  </Flex>
                 </div>
 
                 <div>
                   <Typography.Text strong>Codex (OpenAI)</Typography.Text>
-                  <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 8 }}>
+                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
                     <Form.Item name="codexDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
-                      <Select
-                        options={codexModels}
-                        loading={codexModelsLoading}
-                        showSearch
-                        optionFilterProp="label"
-                      />
+                      <Select options={codexModels} loading={codexModelsLoading} showSearch optionFilterProp="label" />
                     </Form.Item>
                     <Form.Item name="codexDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
                       <Select options={getEffortOptionsForProvider("codex")} />
                     </Form.Item>
-                  </Space>
+                  </Flex>
                 </div>
 
                 <div>
                   <Typography.Text strong>Claude Code (Anthropic)</Typography.Text>
-                  <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 8 }}>
+                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
                     <Form.Item name="claudeDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
-                      <Select
-                        options={claudeModels}
-                        loading={claudeModelsLoading}
-                        showSearch
-                        optionFilterProp="label"
-                      />
+                      <Select options={claudeModels} loading={claudeModelsLoading} showSearch optionFilterProp="label" />
                     </Form.Item>
                     <Form.Item name="claudeDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
                       <Select options={getEffortOptionsForProvider("claude")} />
                     </Form.Item>
-                  </Space>
+                  </Flex>
                 </div>
-              </Space>
+              </Flex>
             </Card>
 
             <Card bordered={false} loading={loading} title="Git & Branching">
-              <Space direction="vertical" size={16} style={{ width: "100%" }}>
+              <Flex vertical gap={16} style={{ width: "100%" }}>
                 <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
                   <Input placeholder="agentswarm" />
                 </Form.Item>
@@ -288,103 +277,103 @@ export function SettingsPage() {
                 >
                   <Input placeholder="x-access-token" />
                 </Form.Item>
-              </Space>
+              </Flex>
             </Card>
-          </Space>
 
-          <Card bordered={false} loading={loading} title="Agent Rules" style={{ marginTop: 16 }}>
-            <Form.Item
-              name="agentRules"
-              label="Global Agent Rules"
-              extra="Applied to every plan, build, review, ask, and iterate run."
-              style={{ marginBottom: 0 }}
-            >
-              <Input.TextArea
-                rows={10}
-                placeholder={"- Prefer pnpm over npm\n- Run unit tests before finalizing\n- Never change generated files by hand"}
-              />
-            </Form.Item>
-          </Card>
+            <Card bordered={false} loading={loading} title="Agent Guardrails">
+              <Form.Item
+                name="agentRules"
+                label="Global Agent Rules"
+                extra="Applied to every plan, build, review, ask, and iterate run."
+                style={{ marginBottom: 0 }}
+              >
+                <Input.TextArea
+                  rows={10}
+                  placeholder={"- Prefer pnpm over npm\n- Run unit tests before finalizing\n- Never change generated files by hand"}
+                />
+              </Form.Item>
+            </Card>
 
-          <Card bordered={false} loading={loading} title="MCP Servers" style={{ marginTop: 16 }}>
-            <Form.List name="mcpServers">
-              {(fields, { add, remove }) => (
-                <Space direction="vertical" size={16} style={{ width: "100%" }}>
-                  {fields.map((field) => (
-                    <Card
-                      key={field.key}
-                      size="small"
-                      title={`Server ${field.name + 1}`}
-                      extra={
-                        <Button
-                          danger
-                          type="text"
-                          icon={<DeleteOutlined />}
-                          disabled={!canEditSettings}
-                          onClick={() => remove(field.name)}
-                        >
-                          Remove
-                        </Button>
+            <Card bordered={false} loading={loading} title="MCP Servers">
+              <Form.List name="mcpServers">
+                {(fields, { add, remove }) => (
+                  <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                    {fields.map((field) => (
+                      <Card
+                        key={field.key}
+                        size="small"
+                        title={`Server ${field.name + 1}`}
+                        extra={
+                          <Button
+                            danger
+                            type="text"
+                            icon={<DeleteOutlined />}
+                            disabled={!canEditSettings}
+                            onClick={() => remove(field.name)}
+                          >
+                            Remove
+                          </Button>
+                        }
+                      >
+                        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                          <Form.Item name={[field.name, "name"]} label="Name" rules={[{ required: true, whitespace: true }]}>
+                            <Input placeholder="memory" />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "enabled"]} label="Enabled" valuePropName="checked">
+                            <Switch />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "transport"]} label="Transport" rules={[{ required: true }]}>
+                            <Select options={transportOptions} />
+                          </Form.Item>
+                          <Form.Item noStyle shouldUpdate>
+                            {() => {
+                              const transport = generalForm.getFieldValue(["mcpServers", field.name, "transport"]) ?? "stdio";
+                              return transport === "http" ? (
+                                <>
+                                  <Form.Item name={[field.name, "url"]} label="URL" rules={[{ required: true, whitespace: true }]}>
+                                    <Input placeholder="https://example.com/mcp" />
+                                  </Form.Item>
+                                  <Form.Item name={[field.name, "bearerTokenEnvVar"]} label="Bearer Token Env Var">
+                                    <Input placeholder="MY_MCP_TOKEN" />
+                                  </Form.Item>
+                                </>
+                              ) : (
+                                <>
+                                  <Form.Item name={[field.name, "command"]} label="Command" rules={[{ required: true, whitespace: true }]}>
+                                    <Input placeholder="docker" />
+                                  </Form.Item>
+                                  <Form.Item name={[field.name, "argsText"]} label="Arguments">
+                                    <Input.TextArea rows={6} placeholder={"run\n-i\n--rm\nmcp/memory"} />
+                                  </Form.Item>
+                                </>
+                              );
+                            }}
+                          </Form.Item>
+                        </Space>
+                      </Card>
+                    ))}
+
+                    <Button
+                      type="dashed"
+                      icon={<PlusOutlined />}
+                      disabled={!canEditSettings}
+                      onClick={() =>
+                        add({
+                          name: "",
+                          enabled: true,
+                          transport: "stdio",
+                          command: "",
+                          argsText: ""
+                        })
                       }
                     >
-                      <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                        <Form.Item name={[field.name, "name"]} label="Name" rules={[{ required: true, whitespace: true }]}>
-                          <Input placeholder="memory" />
-                        </Form.Item>
-                        <Form.Item name={[field.name, "enabled"]} label="Enabled" valuePropName="checked">
-                          <Switch />
-                        </Form.Item>
-                        <Form.Item name={[field.name, "transport"]} label="Transport" rules={[{ required: true }]}>
-                          <Select options={transportOptions} />
-                        </Form.Item>
-                        <Form.Item noStyle shouldUpdate>
-                          {() => {
-                            const transport = generalForm.getFieldValue(["mcpServers", field.name, "transport"]) ?? "stdio";
-                            return transport === "http" ? (
-                              <>
-                                <Form.Item name={[field.name, "url"]} label="URL" rules={[{ required: true, whitespace: true }]}>
-                                  <Input placeholder="https://example.com/mcp" />
-                                </Form.Item>
-                                <Form.Item name={[field.name, "bearerTokenEnvVar"]} label="Bearer Token Env Var">
-                                  <Input placeholder="MY_MCP_TOKEN" />
-                                </Form.Item>
-                              </>
-                            ) : (
-                              <>
-                                <Form.Item name={[field.name, "command"]} label="Command" rules={[{ required: true, whitespace: true }]}>
-                                  <Input placeholder="docker" />
-                                </Form.Item>
-                                <Form.Item name={[field.name, "argsText"]} label="Arguments">
-                                  <Input.TextArea rows={6} placeholder={"run\n-i\n--rm\nmcp/memory"} />
-                                </Form.Item>
-                              </>
-                            );
-                          }}
-                        </Form.Item>
-                      </Space>
-                    </Card>
-                  ))}
-
-                  <Button
-                    type="dashed"
-                    icon={<PlusOutlined />}
-                    disabled={!canEditSettings}
-                    onClick={() =>
-                      add({
-                        name: "",
-                        enabled: true,
-                        transport: "stdio",
-                        command: "",
-                        argsText: ""
-                      })
-                    }
-                  >
-                    Add MCP Server
-                  </Button>
-                </Space>
-              )}
-            </Form.List>
-          </Card>
+                      Add MCP Server
+                    </Button>
+                  </Space>
+                )}
+              </Form.List>
+            </Card>
+          </Space>
 
           <Flex justify="flex-start" style={{ marginTop: 16 }}>
             <Button type="primary" htmlType="submit" loading={savingGeneral} disabled={!canEditSettings}>
