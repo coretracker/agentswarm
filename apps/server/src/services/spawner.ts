@@ -382,38 +382,110 @@ esac
     return path.join(env.REPO_CACHE_ROOT, "profiles", `${repoCacheKey}-${branchKey}.json`);
   }
 
-  private buildRepoProfileSummary(baseBranch: string, headSha: string, topLevelEntries: string[], rootPackageJson: string | null, workspacePackageSummaries: string[]): string {
-    const lines = [
+  private buildRepoProfileSummary(
+    baseBranch: string,
+    headSha: string,
+    allFilePaths: string[],
+    rootPackageJson: string | null,
+    workspacePackageSummaries: string[]
+  ): string {
+    const lines: string[] = [
       "# Repo Profile",
-      `- Base branch: ${baseBranch}`,
-      `- Head: ${headSha.slice(0, 12)}`,
-      `- Top-level entries: ${truncate(topLevelEntries.slice(0, 16).join(", ") || "(unknown)", 240)}`
+      `- Branch: ${baseBranch}  Head: ${headSha.slice(0, 12)}`
     ];
 
+    // --- package.json metadata ---
     if (rootPackageJson) {
       try {
-        const parsed = JSON.parse(rootPackageJson) as { scripts?: Record<string, string>; workspaces?: string[] | { packages?: string[] } };
-        const scripts = Object.keys(parsed.scripts ?? {}).slice(0, 8);
+        const parsed = JSON.parse(rootPackageJson) as {
+          scripts?: Record<string, string>;
+          workspaces?: string[] | { packages?: string[] };
+        };
+        const scripts = Object.keys(parsed.scripts ?? {}).slice(0, 10);
         const workspacePatterns = Array.isArray(parsed.workspaces)
           ? parsed.workspaces
-          : parsed.workspaces?.packages ?? [];
-
-        if (scripts.length > 0) {
-          lines.push(`- Root scripts: ${scripts.join(", ")}`);
-        }
-        if (workspacePatterns.length > 0) {
-          lines.push(`- Workspaces: ${workspacePatterns.slice(0, 8).join(", ")}`);
-        }
+          : (parsed.workspaces?.packages ?? []);
+        if (scripts.length > 0) lines.push(`- Root scripts: ${scripts.join(", ")}`);
+        if (workspacePatterns.length > 0) lines.push(`- Workspaces: ${workspacePatterns.slice(0, 8).join(", ")}`);
       } catch {
         // Best effort only.
       }
     }
 
     if (workspacePackageSummaries.length > 0) {
-      lines.push(`- Package summaries: ${workspacePackageSummaries.join(" | ")}`);
+      lines.push(`- Packages: ${workspacePackageSummaries.join(" | ")}`);
     }
 
-    lines.push("- Use deterministic search before broad exploration.");
+    // --- 2-level directory map ---
+    // Group every file under its top-two-level folder (e.g. "apps/server").
+    // Within each group keep only filenames (no full paths) to stay compact.
+    const MAX_DIRS = 40;
+    const MAX_FILES_PER_DIR = 16;
+
+    const dirMap = new Map<string, string[]>();
+    for (const filePath of allFilePaths) {
+      const parts = filePath.split("/");
+      // Key = top two directory segments (or top one for root-level files).
+      const key = parts.length >= 3 ? `${parts[0]}/${parts[1]}` : parts[0];
+      const fileName = parts[parts.length - 1];
+      if (!dirMap.has(key)) dirMap.set(key, []);
+      const files = dirMap.get(key)!;
+      if (files.length < MAX_FILES_PER_DIR) files.push(fileName);
+      else if (files.length === MAX_FILES_PER_DIR) files.push("…");
+    }
+
+    // Sort: root-level files first, then alphabetically by path.
+    const sorted = [...dirMap.entries()].sort(([a], [b]) => {
+      const aDepth = a.includes("/") ? 1 : 0;
+      const bDepth = b.includes("/") ? 1 : 0;
+      return aDepth - bDepth || a.localeCompare(b);
+    });
+
+    lines.push("\n## Directory map");
+    let dirCount = 0;
+    for (const [dir, files] of sorted) {
+      if (dirCount++ >= MAX_DIRS) { lines.push("  … (more directories omitted)"); break; }
+      const isRootFile = !dir.includes("/");
+      // Deduplicate filenames (same name can appear across sub-subdirs).
+      const unique = [...new Set(files)];
+      if (isRootFile) {
+        // Root-level entry — just show it directly.
+        lines.push(`  ${dir}`);
+      } else {
+        lines.push(`  ${dir}/: ${unique.join(", ")}`);
+      }
+    }
+
+    // --- Notable files agents commonly look for ---
+    const notable: string[] = [];
+    const notablePatterns: Array<[RegExp, string]> = [
+      [/^(src\/)?index\.(ts|tsx|js|mjs)$/, "entry"],
+      [/^(src\/)?main\.(ts|tsx|js|mjs)$/, "entry"],
+      [/^(src\/)?server\.(ts|js|mjs)$/, "entry"],
+      [/^(src\/)?app\.(ts|tsx|js|mjs)$/, "entry"],
+      [/^Dockerfile$/, "docker"],
+      [/^docker-compose\.ya?ml$/, "docker"],
+      [/^tsconfig\.json$/, "typescript"],
+      [/^\.env\.example$/, "env template"],
+      [/^AGENTS\.md$/i, "agent rules"],
+      [/^CLAUDE\.md$/i, "agent rules"],
+      [/^README\.md$/i, "readme"],
+    ];
+    for (const filePath of allFilePaths) {
+      const fileName = filePath.split("/").pop() ?? "";
+      for (const [pattern, label] of notablePatterns) {
+        if (pattern.test(fileName) || pattern.test(filePath)) {
+          notable.push(`${filePath} (${label})`);
+          break;
+        }
+      }
+    }
+    if (notable.length > 0) {
+      lines.push("\n## Notable files");
+      for (const n of notable.slice(0, 20)) lines.push(`  ${n}`);
+    }
+
+    lines.push("\n- Use Grep/Glob for targeted search before broad LS exploration.");
     return lines.join("\n");
   }
 
@@ -446,20 +518,19 @@ esac
       // Cache miss.
     }
 
-    const topLevelEntriesRaw = await this.gitCommandCapture(["--git-dir", mirrorPath, "ls-tree", "--name-only", ref], githubToken, gitUsername);
-    const topLevelEntries = topLevelEntriesRaw
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .slice(0, 20);
-
     const rootPackageJson = await this.readGitFile(mirrorPath, ref, "package.json", githubToken, gitUsername);
-    const packagePathsRaw = await this.gitCommandCapture(["--git-dir", mirrorPath, "ls-tree", "-r", "--name-only", ref], githubToken, gitUsername);
-    const workspacePackagePaths = packagePathsRaw
+
+    // Fetch every file path in the repo once — used for both the directory map
+    // and workspace package discovery, so we only pay the git cost once.
+    const allFilePathsRaw = await this.gitCommandCapture(["--git-dir", mirrorPath, "ls-tree", "-r", "--name-only", ref], githubToken, gitUsername);
+    const allFilePaths = allFilePathsRaw
       .split("\n")
       .map((line) => line.trim())
-      .filter((line) => /^(apps|packages|services)\//.test(line) && line.endsWith("/package.json"))
-      .slice(0, 6);
+      .filter(Boolean);
+
+    const workspacePackagePaths = allFilePaths
+      .filter((line) => /^(apps|packages|services|libs)\//.test(line) && line.endsWith("/package.json"))
+      .slice(0, 8);
 
     const workspacePackageSummaries: string[] = [];
     for (const packagePath of workspacePackagePaths) {
@@ -470,14 +541,16 @@ esac
 
       try {
         const parsed = JSON.parse(packageJson) as { name?: string; scripts?: Record<string, string> };
-        const scripts = Object.keys(parsed.scripts ?? {}).filter((name) => ["build", "test", "lint", "dev", "start"].includes(name)).slice(0, 4);
+        const scripts = Object.keys(parsed.scripts ?? {})
+          .filter((name) => ["build", "test", "lint", "dev", "start"].includes(name))
+          .slice(0, 4);
         workspacePackageSummaries.push(`${parsed.name ?? packagePath}: ${scripts.join("/") || "no common scripts"}`);
       } catch {
         workspacePackageSummaries.push(packagePath);
       }
     }
 
-    const summary = this.buildRepoProfileSummary(task.baseBranch, headSha, topLevelEntries, rootPackageJson, workspacePackageSummaries);
+    const summary = this.buildRepoProfileSummary(task.baseBranch, headSha, allFilePaths, rootPackageJson, workspacePackageSummaries);
     await mkdir(path.dirname(profilePath), { recursive: true });
     await writeFile(
       profilePath,
