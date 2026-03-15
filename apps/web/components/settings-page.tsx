@@ -205,25 +205,49 @@ export function SettingsPage() {
             }
           }}
         >
-          <Card bordered={false} loading={loading}>
-            <Space direction="vertical" size={16} style={{ width: "100%", maxWidth: 560 }}>
-              <Form.Item name="defaultProvider" label="Default Provider" rules={[{ required: true }]}>
-                <Select options={providerOptions} />
-              </Form.Item>
-              <Form.Item name="maxAgents" label="Max Agents" rules={[{ required: true }]}>
-                <InputNumber min={1} max={20} style={{ width: "100%" }} />
-              </Form.Item>
-              <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
-                <Input placeholder="agentswarm" />
-              </Form.Item>
-              <Form.Item name="gitUsername" label="Git Username" rules={[{ required: true, whitespace: true }]}>
-                <Input placeholder="x-access-token" />
-              </Form.Item>
-              <Form.Item name="openaiBaseUrl" label="OpenAI Base URL">
+          <Space direction="vertical" size={16} style={{ width: "100%", maxWidth: 720 }}>
+            <Card bordered={false} loading={loading} title="Runtime">
+              <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                <Form.Item name="defaultProvider" label="Default Provider" rules={[{ required: true }]}>
+                  <Select options={providerOptions} />
+                </Form.Item>
+                <Form.Item
+                  name="maxAgents"
+                  label="Concurrent Agents"
+                  extra="Hard limit on how many agents can run in parallel."
+                  rules={[{ required: true }]}
+                >
+                  <InputNumber min={1} max={20} style={{ width: "100%" }} />
+                </Form.Item>
+              </Space>
+            </Card>
+
+            <Card bordered={false} loading={loading} title="Git & Branching">
+              <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
+                  <Input placeholder="agentswarm" />
+                </Form.Item>
+                <Form.Item
+                  name="gitUsername"
+                  label="Git Username"
+                  extra="Used for authenticated pushes from the runtime."
+                  rules={[{ required: true, whitespace: true }]}
+                >
+                  <Input placeholder="x-access-token" />
+                </Form.Item>
+              </Space>
+            </Card>
+
+            <Card bordered={false} loading={loading} title="LLM API">
+              <Form.Item
+                name="openaiBaseUrl"
+                label="OpenAI Base URL"
+                extra="Override when pointing to a proxy or self-hosted gateway."
+              >
                 <Input placeholder="https://api.openai.com/v1" />
               </Form.Item>
-            </Space>
-          </Card>
+            </Card>
+          </Space>
 
           <Card bordered={false} loading={loading} title="Provider Defaults" style={{ marginTop: 16 }}>
             <Space direction="vertical" size={24} style={{ width: "100%", maxWidth: 560 }}>
