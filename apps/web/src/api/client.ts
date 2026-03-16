@@ -201,6 +201,10 @@ export const api = {
     request<Task>(`/tasks/${id}/push`, {
       method: "POST"
     }),
+  mergeTask: (id: string) =>
+    request<Task>(`/tasks/${id}/merge`, {
+      method: "POST"
+    }),
   archiveTask: (id: string) =>
     request<Task>(`/tasks/${id}/archive`, {
       method: "POST"

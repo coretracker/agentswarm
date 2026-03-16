@@ -462,6 +462,44 @@ export const registerTaskRoutes = (
     return reply.send(await withBranchSyncCounts(deps.spawner, pulled));
   });
 
+  app.post<{ Params: { id: string } }>("/tasks/:id/merge", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const task = await deps.taskStore.getTask(request.params.id);
+    if (!task) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    if (task.taskType !== "plan" && task.taskType !== "build") {
+      return reply.status(409).send({ message: "Only implementation tasks can be merged" });
+    }
+
+    if (task.branchStrategy !== "feature_branch") {
+      return reply.status(409).send({ message: "Only feature-branch tasks have a mergeable branch" });
+    }
+
+    if (task.status !== "review" && task.status !== "accepted") {
+      return reply.status(409).send({ message: "Only completed tasks can be merged" });
+    }
+
+    if (!task.branchName) {
+      return reply.status(409).send({ message: "Task branch is not available for merging" });
+    }
+
+    if (!task.repoDefaultBranch) {
+      return reply.status(409).send({ message: "Repository default branch is not configured for this task" });
+    }
+
+    if (task.branchName === task.repoDefaultBranch) {
+      return reply.status(409).send({ message: "Task branch cannot merge into itself" });
+    }
+
+    const merged = await deps.spawner.mergeTaskBranch(task);
+    return reply.send(await withBranchSyncCounts(deps.spawner, merged));
+  });
+
   app.post<{ Params: { id: string } }>("/tasks/:id/accept", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {

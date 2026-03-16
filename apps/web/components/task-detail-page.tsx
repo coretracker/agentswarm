@@ -397,7 +397,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [buildingFromRunId, setBuildingFromRunId] = useState<string | null>(null);
   const [selectedChatAction, setSelectedChatAction] = useState<ComposerAction>("plan");
   const [submitting, setSubmitting] = useState<
-    null | "plan" | "build" | "iterate" | "review" | "ask" | "cancel" | "config" | "pull" | "push" | "archive" | "delete" | "continue" | "fix" | "savePlan" | "message" | "pin"
+    null | "plan" | "build" | "iterate" | "review" | "ask" | "cancel" | "config" | "pull" | "push" | "merge" | "archive" | "delete" | "continue" | "fix" | "savePlan" | "message" | "pin"
   >(null);
   const [messageApi, contextHolder] = message.useMessage();
   const selectedChatActionRef = useRef(false);
@@ -425,6 +425,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canCancel = canEditTask && (isQueued || isActive);
   const canPull = canEditTask && isImplementationTask && (task?.status === "review" || task?.status === "failed");
   const canPush = canPull;
+  const canMerge =
+    canEditTask &&
+    isImplementationTask &&
+    !isArchived &&
+    task?.branchStrategy === "feature_branch" &&
+    !!task?.branchName &&
+    (task.status === "review" || task.status === "accepted") &&
+    task.branchName !== task.repoDefaultBranch;
   const pullCount = task?.pullCount ?? 0;
   const pushCount = task?.pushCount ?? 0;
   const hasCompletedNonImplementationResult = task?.status === "review" || task?.status === "answered";
@@ -882,6 +890,30 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       messageApi.success("Changes pushed");
     } catch (error) {
       messageApi.error(error instanceof Error ? error.message : "Failed to push changes");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+  const handleMergeTask = async () => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("merge");
+    try {
+      const updatedTask = await api.mergeTask(task.id);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success("Merged into default branch");
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to merge task branch");
     } finally {
       setSubmitting(null);
     }
@@ -1562,6 +1594,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 {canPush ? (
                   <Button onClick={handlePushTask} loading={submitting === "push"}>
                     {`Push (${pushCount})`}
+                  </Button>
+                ) : null}
+
+                {canMerge ? (
+                  <Button type="primary" onClick={handleMergeTask} loading={submitting === "merge"}>
+                    {`Merge to ${task?.repoDefaultBranch ?? "default branch"}`}
                   </Button>
                 ) : null}
 
