@@ -1149,6 +1149,61 @@ esac
     return (await this.taskStore.getTask(task.id)) ?? task;
   }
 
+  async mergeTaskBranch(task: Task): Promise<Task> {
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const branchName = task.branchName;
+    const defaultBranch = task.repoDefaultBranch;
+    if (!branchName) {
+      throw new Error("No task branch recorded for merging");
+    }
+
+    if (!defaultBranch) {
+      throw new Error("Task has no configured default branch");
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const exists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      throw new Error("Workspace is unavailable; run the task before merging.");
+    }
+
+    await this.gitCommand(["-C", workspacePath, "fetch", "origin", defaultBranch, branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+
+    const defaultRef = `origin/${defaultBranch}`;
+    if (!(await this.refExists(workspacePath, defaultRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
+      throw new Error(`Default branch ${defaultBranch} does not exist on origin`);
+    }
+
+    const remoteBranchRef = `origin/${branchName}`;
+    if (!(await this.refExists(workspacePath, remoteBranchRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
+      throw new Error(`Task branch ${branchName} is not available on origin`);
+    }
+
+    if (!(await this.localBranchExists(workspacePath, defaultBranch, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
+      await this.gitCommand(["-C", workspacePath, "checkout", "-B", defaultBranch, defaultRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    } else {
+      await this.gitCommand(["-C", workspacePath, "checkout", defaultBranch], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.gitCommand(["-C", workspacePath, "reset", "--hard", defaultRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    }
+
+    try {
+      await this.gitCommand(
+        ["-C", workspacePath, "merge", "--no-ff", "--no-edit", remoteBranchRef],
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername
+      );
+    } catch (error) {
+      await this.gitCommand(["-C", workspacePath, "merge", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(() => undefined);
+      throw error;
+    }
+
+    await this.gitCommand(["-C", workspacePath, "push", "origin", defaultBranch], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    await this.taskStore.appendLog(task.id, `Spawner: merged ${branchName} into ${defaultBranch}.`);
+    return (await this.taskStore.getTask(task.id)) ?? task;
+  }
+
   async publishAcceptedTask(task: Task): Promise<Task> {
     await this.pushTaskBranch(task);
     const accepted = await this.taskStore.setStatus(task.id, "accepted", {
