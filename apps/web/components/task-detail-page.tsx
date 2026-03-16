@@ -400,7 +400,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [planDraft, setPlanDraft] = useState("");
   const [planPreview, setPlanPreview] = useState(false);
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>(null);
-  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "diff">("chat");
   const [expandedRunKeys, setExpandedRunKeys] = useState<string[]>([]);
   const [buildingFromRunId, setBuildingFromRunId] = useState<string | null>(null);
@@ -554,7 +553,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
-    setIsConfigModalOpen(false);
     setIsEditingPlan(false);
     setPlanPreview(false);
     setFollowUpMode(null);
@@ -794,8 +792,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
-  const handleSaveConfig = async () => {
-    if (!task) {
+  const handleSaveConfig = async ({ notify = true }: { notify?: boolean } = {}) => {
+    if (!task || !canEditTask || isArchived || !configDirty) {
       return;
     }
 
@@ -816,8 +814,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             }
           : updatedTask
       );
-      setIsConfigModalOpen(false);
-      messageApi.success(isActive ? "Execution config updated. It will apply to the next run." : "Execution config updated");
+      if (notify) {
+        messageApi.success(isActive ? "Execution config updated. It will apply to the next run." : "Execution config updated");
+      }
     } finally {
       setSubmitting(null);
     }
@@ -861,7 +860,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             }
           : updatedTask
       );
-      setIsConfigModalOpen(false);
       setIsEditingPlan(false);
       setPlanPreview(false);
       setFollowUpMode(null);
@@ -923,7 +921,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const moreActionItems = task && !isArchived
     ? [
         canEditTask ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
-        canEditTask ? { key: "config", label: "Config" } : null,
         canContinueOnBranch ? { key: "continue", label: "Continue On Branch" } : null,
         canCreateFixTask ? { key: "fix", label: "Create Fix Task" } : null,
         canDelete ? { key: "delete", label: "Delete Task", danger: true } : null
@@ -1127,64 +1124,129 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         placeholder={chatPlaceholder}
         disabled={chatDisabled}
       />
-      <Flex justify="space-between" align="center" gap={12} wrap="wrap">
-        <Typography.Text type="secondary">Next run: {chatActionLabel}</Typography.Text>
-        <Space.Compact size="middle">
-          <Select
-            value={selectedChatAction}
-            options={allowedChatActions.map((action) => ({
-              label: taskActionLabel[action],
-              value: action
-            }))}
-                      disabled={chatClosed}
-            onChange={(value) => {
-              selectedChatActionRef.current = true;
-              setSelectedChatAction(value);
-            }}
-            style={{ minWidth: 140 }}
-          />
-          <Button
-            type="primary"
-            loading={submitting === "message"}
-            disabled={chatDisabled || chatInput.trim().length === 0}
-            onClick={async () => {
-              if (!task || chatInput.trim().length === 0) {
-                return;
-              }
-
-              setSubmitting("message");
-              try {
-                const updatedTask = await api.createTaskMessage(task.id, {
-                  content: chatInput.trim(),
-                  action: selectedChatAction
-                });
-                setTask((current) =>
-                  current
-                    ? {
-                        ...current,
-                        ...updatedTask,
-                        logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
-                      }
-                    : updatedTask
-                );
-                setChatInput("");
-                messageApi.success(
-                  selectedChatAction === "comment"
-                    ? "Comment added to history"
-                    : `${taskActionLabel[selectedChatAction]} queued from history`
-                );
-              } catch (error) {
-                const nextMessage = error instanceof Error ? error.message : "Task execution could not be started";
-                messageApi.error(nextMessage);
-              } finally {
-                setSubmitting(null);
-              }
+      <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
+        <Flex align="flex-end" gap={12} wrap="wrap" style={{ flex: "1 1 0", minWidth: 0 }}>
+          <div
+            style={{
+              minWidth: 160,
+              maxWidth: 240,
+              display: "flex",
+              flexDirection: "column"
             }}
           >
-            Send
-          </Button>
-        </Space.Compact>
+            <Typography.Text type="secondary">Provider</Typography.Text>
+            <Select
+              value={providerInput}
+              options={providerOptions}
+              onChange={(value) => {
+                setProviderInput(value);
+                setModelInput(getDefaultModelForProvider(value));
+              }}
+              style={{ width: "100%", marginTop: 6 }}
+              disabled={!canEditTask || isArchived}
+            />
+          </div>
+          <div
+            style={{
+              minWidth: 160,
+              maxWidth: 240,
+              display: "flex",
+              flexDirection: "column"
+            }}
+          >
+            <Typography.Text type="secondary">Model</Typography.Text>
+            <Select
+              value={modelInput}
+              options={providerModels}
+              loading={providerModelsLoading}
+              showSearch
+              optionFilterProp="label"
+              onChange={(value) => setModelInput(value)}
+              style={{ width: "100%", marginTop: 6 }}
+              disabled={!canEditTask || isArchived}
+            />
+          </div>
+          <div
+            style={{
+              minWidth: 160,
+              maxWidth: 220,
+              display: "flex",
+              flexDirection: "column"
+            }}
+          >
+            <Typography.Text type="secondary">Effort</Typography.Text>
+            <Select
+              value={providerProfileInput}
+              options={getEffortOptionsForProvider(providerInput)}
+              onChange={(value) => setProviderProfileInput(value)}
+              style={{ width: "100%", marginTop: 6 }}
+              disabled={!canEditTask || isArchived}
+            />
+          </div>
+        </Flex>
+        <Flex align="center" gap={12} wrap="wrap" style={{ flexShrink: 0 }}>
+          <Typography.Text type="secondary">Next run: {chatActionLabel}</Typography.Text>
+          <Space.Compact size="middle">
+            <Select
+              value={selectedChatAction}
+              options={allowedChatActions.map((action) => ({
+                label: taskActionLabel[action],
+                value: action
+              }))}
+              disabled={chatClosed}
+              onChange={(value) => {
+                selectedChatActionRef.current = true;
+                setSelectedChatAction(value);
+              }}
+              style={{ minWidth: 140 }}
+            />
+            <Button
+              type="primary"
+              loading={submitting === "message"}
+              disabled={chatDisabled || chatInput.trim().length === 0}
+              onClick={async () => {
+                if (!task || chatInput.trim().length === 0) {
+                  return;
+                }
+
+                if (configDirty && canEditTask && !isArchived) {
+                  await handleSaveConfig({ notify: false });
+                }
+                setSubmitting("message");
+                try {
+                  const updatedTask = await api.createTaskMessage(task.id, {
+                    content: chatInput.trim(),
+                    action: selectedChatAction
+                  });
+                  setTask((current) =>
+                    current
+                      ? {
+                          ...current,
+                          ...updatedTask,
+                          logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+                        }
+                      : updatedTask
+                  );
+                  setChatInput("");
+                  messageApi.success(
+                    selectedChatAction === "comment"
+                      ? "Comment added to history"
+                      : `${taskActionLabel[selectedChatAction]} queued from history`
+                  );
+                } catch (error) {
+                  const nextMessage = error instanceof Error ? error.message : "Task execution could not be started";
+                  messageApi.error(nextMessage);
+                } finally {
+                  setSubmitting(null);
+                }
+              }}
+            >
+              Send
+            </Button>
+          </Space.Compact>
+        </Flex>
       </Flex>
+      {isActive ? <Typography.Text type="secondary">Changes apply to the next run.</Typography.Text> : null}
     </Flex>
   );
 
@@ -1574,11 +1636,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                           return;
                         }
 
-                        if (key === "config") {
-                          setIsConfigModalOpen(true);
-                          return;
-                        }
-
                         if (key === "pin") {
                           void handleTogglePin();
                           return;
@@ -1635,71 +1692,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </Flex>
         ) : null}
       </Flex>
-
-      <Modal
-        open={isConfigModalOpen}
-        title="Execution Config"
-        onCancel={() => setIsConfigModalOpen(false)}
-        onOk={handleSaveConfig}
-        okText="Save Config"
-        okButtonProps={{ loading: submitting === "config", disabled: !canEditTask || !configDirty || isArchived }}
-        destroyOnClose={false}
-      >
-        <Space direction="vertical" size={16} style={{ width: "100%" }}>
-          <div>
-            <Typography.Text type="secondary">Provider</Typography.Text>
-            <Select
-              value={providerInput}
-              options={providerOptions}
-              onChange={(value) => {
-                setProviderInput(value);
-                setModelInput(getDefaultModelForProvider(value));
-              }}
-              style={{ width: "100%", marginTop: 6 }}
-              disabled={!canEditTask || isArchived}
-            />
-          </div>
-          <div>
-            <Typography.Text type="secondary">Model</Typography.Text>
-            <Select
-              value={modelInput}
-              options={providerModels}
-              loading={providerModelsLoading}
-              showSearch
-              optionFilterProp="label"
-              onChange={(value) => setModelInput(value)}
-              style={{ width: "100%", marginTop: 6 }}
-              disabled={!canEditTask || isArchived}
-            />
-          </div>
-          <div>
-            <Typography.Text type="secondary">Effort</Typography.Text>
-            <Select
-              value={providerProfileInput}
-              options={getEffortOptionsForProvider(providerInput)}
-              onChange={(value) => setProviderProfileInput(value)}
-              style={{ width: "100%", marginTop: 6 }}
-              disabled={!canEditTask || isArchived}
-            />
-          </div>
-          {isImplementationTask ? (
-            <div>
-              <Typography.Text type="secondary">Branch Strategy</Typography.Text>
-              <Select
-                value={branchStrategyInput}
-                options={[
-                  { label: "Create feature branch", value: "feature_branch" },
-                  { label: "Work on existing branch", value: "work_on_branch" }
-                ]}
-                onChange={(value) => setBranchStrategyInput(value)}
-                style={{ width: "100%", marginTop: 6 }}
-                disabled={!canEditTask || isArchived}
-              />
-            </div>
-          ) : null}
-          {isActive ? <Typography.Text type="secondary">Changes apply to the next run.</Typography.Text> : null}
-        </Space>
-      </Modal>
 
       <Modal
         open={followUpMode !== null && canCreateFollowUp}
