@@ -79,12 +79,6 @@ const getInitialAction = (task: Pick<Task, "taskType" | "planningMode" | "planMa
   return task.planMarkdown || task.planningMode === "direct-build" ? "build" : "plan";
 };
 
-const allowedActionsByTaskType: Record<TaskType, TaskAction[]> = {
-  plan: ["plan", "build", "iterate", "review", "ask"],
-  build: ["plan", "build", "review", "ask"],
-  review: ["review", "ask"],
-  ask: ["ask", "review"]
-};
 
 const getChatActionForTask = (task: Task): TaskAction => {
   if (task.taskType === "review") {
@@ -191,9 +185,7 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    if (!allowedActionsByTaskType[task.taskType].includes(parsed.data.action)) {
-      return reply.status(409).send({ message: `Action ${parsed.data.action} is not supported for ${task.taskType} tasks` });
-    }
+    // all valid actions are allowed regardless of the task type
 
     if (parsed.data.action === "iterate" && !(parsed.data.iterateInput ?? "").trim()) {
       return reply.status(400).send({ message: "iterateInput is required for iterate action" });
@@ -351,13 +343,11 @@ export const registerTaskRoutes = (
 
     const action = parsed.data.action ?? getChatActionForTask(task);
 
+    // comments are treated as read-only messages; other actions can always run
     if (action !== "comment" && isActiveTaskStatus(task.status)) {
       return reply.status(409).send({ message: "Task is already running" });
     }
 
-    if (action !== "comment" && !allowedActionsByTaskType[task.taskType].includes(action)) {
-      return reply.status(409).send({ message: `Action ${action} is not supported for ${task.taskType} tasks` });
-    }
     await deps.taskStore.appendMessage(task.id, {
       role: "user",
       action,

@@ -90,16 +90,8 @@ const taskActionLabel: Record<TaskMessageAction | TaskAction, string> = {
 
 type ComposerAction = TaskMessageAction;
 
-function getAllowedComposerActions(taskType: Task["taskType"]): ComposerAction[] {
-  if (taskType === "review") {
-    return ["review", "ask", "comment"];
-  }
-
-  if (taskType === "ask") {
-    return ["ask", "review", "comment"];
-  }
-
-  return ["plan", "build", "review", "ask", "comment"];
+function getAllowedComposerActions(): ComposerAction[] {
+  return ["plan", "build", "iterate", "review", "ask", "comment"];
 }
 
 function getDefaultComposerAction(task: Task | null): ComposerAction {
@@ -497,7 +489,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const hasLiveDiff = liveDiff?.live ?? false;
   const renderedDiff = hasLiveDiff ? liveDiff?.diff ?? "" : task?.branchDiff ?? "";
   const hasDiffTab = hasStoredDiff || canRequestLiveDiff;
-  const allowedChatActions = useMemo(() => getAllowedComposerActions(taskType), [taskType]);
+  const allowedChatActions = useMemo(() => getAllowedComposerActions(), []);
 
   useEffect(() => {
     const defaultAction = getDefaultComposerAction(task ?? null);
