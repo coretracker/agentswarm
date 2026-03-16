@@ -90,6 +90,11 @@ export type PermissionScope =
   | "task:read"
   | "task:edit"
   | "task:delete"
+  | "preset:list"
+  | "preset:create"
+  | "preset:read"
+  | "preset:edit"
+  | "preset:delete"
   | "repo:list"
   | "repo:read"
   | "repo:create"
@@ -109,6 +114,11 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "task:read",
   "task:edit",
   "task:delete",
+  "preset:list",
+  "preset:create",
+  "preset:read",
+  "preset:edit",
+  "preset:delete",
   "repo:list",
   "repo:read",
   "repo:create",
@@ -130,6 +140,7 @@ export interface PermissionScopeGroup {
 
 export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
   { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:delete"] },
+  { label: "Presets", scopes: ["preset:list", "preset:create", "preset:read", "preset:edit", "preset:delete"] },
   { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
   { label: "Settings", scopes: ["settings:read", "settings:edit"] },
   { label: "Users", scopes: ["user:list", "user:create", "user:read", "user:edit", "user:delete"] }
@@ -379,6 +390,59 @@ export interface CreateTaskInput {
 
 export type TaskSourceType = "blank" | "issue" | "pull_request";
 
+export interface BlankTaskDefinitionInput {
+  sourceType: "blank";
+  title: string;
+  repoId: string;
+  requirements: string;
+  taskType: TaskType;
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+  queueMode: TaskQueueMode;
+}
+
+export interface IssueTaskDefinitionInput {
+  sourceType: "issue";
+  title?: string;
+  repoId: string;
+  issueNumber: number;
+  includeComments: boolean;
+  taskType: Extract<TaskType, "plan" | "build" | "ask">;
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+  queueMode: TaskQueueMode;
+}
+
+export interface PullRequestTaskDefinitionInput {
+  sourceType: "pull_request";
+  title?: string;
+  repoId: string;
+  pullRequestNumber: number;
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  queueMode: TaskQueueMode;
+}
+
+export type TaskDefinitionInput = BlankTaskDefinitionInput | IssueTaskDefinitionInput | PullRequestTaskDefinitionInput;
+
+export interface Preset {
+  id: string;
+  name: string;
+  repoId: string;
+  repoName: string;
+  sourceType: TaskSourceType;
+  definition: TaskDefinitionInput;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CreateTaskFromIssueInput {
   repoId: string;
   issueNumber: number;
@@ -586,4 +650,17 @@ export interface RepositoryEvent {
   payload: Repository | { id: string };
 }
 
-export type RealtimeEvent = TaskEvent | TaskDeletedEvent | TaskLogEvent | TaskMessageEvent | TaskRunEvent | SettingsEvent | RepositoryEvent;
+export interface PresetEvent {
+  type: "preset:created" | "preset:updated" | "preset:deleted";
+  payload: Preset | { id: string };
+}
+
+export type RealtimeEvent =
+  | TaskEvent
+  | TaskDeletedEvent
+  | TaskLogEvent
+  | TaskMessageEvent
+  | TaskRunEvent
+  | SettingsEvent
+  | RepositoryEvent
+  | PresetEvent;
