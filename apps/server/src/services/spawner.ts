@@ -1162,11 +1162,35 @@ esac
     }
 
     const workspacePath = this.resolveWorkspacePath(task.id);
-    const exists = await access(workspacePath)
+    const workspaceExists = await access(workspacePath)
       .then(() => true)
       .catch(() => false);
-    if (!exists) {
-      throw new Error("Workspace is unavailable; run the task before merging.");
+    if (!workspaceExists) {
+      const repoCachePath = this.resolveRepoCachePath(task);
+      await this.withRepoLock(repoCachePath, async () => {
+        let ensuredRepoCachePath = await this.ensureRepoMirror(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+
+        try {
+          await mkdir(path.dirname(workspacePath), { recursive: true });
+          await this.gitCommand(["clone", "--no-local", ensuredRepoCachePath, workspacePath], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+        } catch (error) {
+          if (!this.shouldRebuildMirror(error)) {
+            throw error;
+          }
+
+          await rm(ensuredRepoCachePath, { recursive: true, force: true });
+          ensuredRepoCachePath = await this.ensureRepoMirror(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+          await mkdir(path.dirname(workspacePath), { recursive: true });
+          await this.gitCommand(["clone", "--no-local", ensuredRepoCachePath, workspacePath], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+        }
+      });
+    }
+
+    await this.gitCommand(["-C", workspacePath, "remote", "set-url", "origin", task.repoUrl], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+
+    if (await this.localBranchExists(workspacePath, branchName, runtimeCredentials.githubToken, runtimeCredentials.gitUsername)) {
+      await this.gitCommand(["-C", workspacePath, "checkout", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.pushTaskBranch(task);
     }
 
     await this.gitCommand(["-C", workspacePath, "fetch", "origin", defaultBranch, branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
