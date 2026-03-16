@@ -4,6 +4,7 @@ import type {
   AgentProvider,
   AuthSession,
   CreateRoleInput,
+  Preset,
   CreateTaskFromIssueInput,
   CreateTaskFromPullRequestInput,
   CreateTaskMessageInput,
@@ -18,6 +19,7 @@ import type {
   Repository,
   Role,
   SystemSettings,
+  TaskDefinitionInput,
   Task,
   TaskLiveDiff,
   TaskMessage,
@@ -126,6 +128,26 @@ export const api = {
   deleteRole: (id: string) =>
     request<void>(`/roles/${id}`, {
       method: "DELETE"
+    }),
+  listPresets: () => request<Preset[]>("/presets"),
+  getPreset: (id: string) => request<Preset>(`/presets/${id}`),
+  createPreset: (input: TaskDefinitionInput) =>
+    request<Preset>("/presets", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updatePreset: (id: string, input: TaskDefinitionInput) =>
+    request<Preset>(`/presets/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deletePreset: (id: string) =>
+    request<void>(`/presets/${id}`, {
+      method: "DELETE"
+    }),
+  spawnPreset: (id: string) =>
+    request<Task>(`/presets/${id}/spawn`, {
+      method: "POST"
     }),
   listTasks: () => request<Task[]>("/tasks"),
   getTask: (id: string) => request<Task>(`/tasks/${id}`),

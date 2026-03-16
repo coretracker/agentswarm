@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { App, Button, Flex, Layout, Menu, Result, Spin, Typography, theme as antTheme } from "antd";
-import { DatabaseOutlined, LogoutOutlined, SettingOutlined, TeamOutlined, UnorderedListOutlined } from "@ant-design/icons";
+import { CopyOutlined, DatabaseOutlined, LogoutOutlined, SettingOutlined, TeamOutlined, UnorderedListOutlined } from "@ant-design/icons";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "./auth-provider";
 import {
@@ -15,6 +15,7 @@ import {
 
 const menuIconByPath: Record<string, ReactNode> = {
   "/tasks": <UnorderedListOutlined />,
+  "/presets": <CopyOutlined />,
   "/repositories": <DatabaseOutlined />,
   "/settings": <SettingOutlined />,
   "/users": <TeamOutlined />
@@ -97,7 +98,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               items={menuItems}
               onClick={({ key }) => router.push(key)}
               selectable
-              style={{ minWidth: 360, justifyContent: "flex-end", borderBottom: 0, flex: 1, background: "transparent" }}
+              style={{ minWidth: 480, justifyContent: "flex-end", borderBottom: 0, flex: 1, background: "transparent" }}
             />
             <Flex align="center" gap={12}>
               <Flex vertical gap={0} style={{ minWidth: 0 }}>
