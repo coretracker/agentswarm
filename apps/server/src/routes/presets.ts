@@ -19,8 +19,7 @@ const presetSchema = z.discriminatedUnion("sourceType", [
     model: z.string().trim().min(1),
     providerProfile: z.enum(["low", "medium", "high", "max"]),
     baseBranch: z.string().trim().min(1),
-    branchStrategy: z.enum(["feature_branch", "work_on_branch"]),
-    queueMode: z.enum(["manual", "auto"])
+    branchStrategy: z.enum(["feature_branch", "work_on_branch"])
   }),
   z.object({
     sourceType: z.literal("issue"),
@@ -33,8 +32,7 @@ const presetSchema = z.discriminatedUnion("sourceType", [
     model: z.string().trim().min(1),
     providerProfile: z.enum(["low", "medium", "high", "max"]),
     baseBranch: z.string().trim().min(1),
-    branchStrategy: z.enum(["feature_branch", "work_on_branch"]),
-    queueMode: z.enum(["manual", "auto"])
+    branchStrategy: z.enum(["feature_branch", "work_on_branch"])
   }),
   z.object({
     sourceType: z.literal("pull_request"),
@@ -43,8 +41,7 @@ const presetSchema = z.discriminatedUnion("sourceType", [
     pullRequestNumber: z.coerce.number().int().positive(),
     provider: z.enum(["codex", "claude"]),
     model: z.string().trim().min(1),
-    providerProfile: z.enum(["low", "medium", "high", "max"]),
-    queueMode: z.enum(["manual", "auto"])
+    providerProfile: z.enum(["low", "medium", "high", "max"])
   })
 ]);
 
@@ -141,8 +138,7 @@ export const registerPresetRoutes = (
                   providerProfile: preset.definition.providerProfile,
                   model: preset.definition.model,
                   baseBranch: preset.definition.baseBranch,
-                  branchStrategy: preset.definition.branchStrategy,
-                  queueMode: preset.definition.queueMode
+                  branchStrategy: preset.definition.branchStrategy
                 }),
                 repository
               )
@@ -154,8 +150,7 @@ export const registerPresetRoutes = (
                     title: preset.definition.title,
                     provider: preset.definition.provider,
                     providerProfile: preset.definition.providerProfile,
-                    model: preset.definition.model,
-                    queueMode: preset.definition.queueMode
+                    model: preset.definition.model
                   }),
                   repository
                 )
@@ -169,8 +164,7 @@ export const registerPresetRoutes = (
                     providerProfile: preset.definition.providerProfile,
                     model: preset.definition.model,
                     baseBranch: preset.definition.baseBranch,
-                    branchStrategy: preset.definition.branchStrategy,
-                    queueMode: preset.definition.queueMode
+                    branchStrategy: preset.definition.branchStrategy
                   },
                   repository
                 );

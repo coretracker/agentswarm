@@ -12,9 +12,6 @@ It is designed for local development, branch-based task execution, live logs, an
   - `plan`
   - `review`
   - `ask`
-- Support queue modes per task:
-  - `manual`
-  - `auto`
 - Run provider-specific agent containers for:
   - Codex
   - Claude Code
@@ -61,11 +58,6 @@ Each task execution runs in a short-lived Docker container. The server prepares 
 - `iterate`
 - `review`
 - `ask`
-
-### Queue modes
-
-- `manual`: wait for an explicit user trigger
-- `auto`: let the scheduler pick the task up automatically; `plan` tasks can continue from plan into build
 
 ## Security model
 

@@ -1,29 +1,7 @@
-import {
-  isActiveTaskStatus,
-  isQueuedTaskStatus,
-  type TaskAction,
-  type TaskPlanningMode,
-  type TaskType
-} from "@agentswarm/shared-types";
+import { isActiveTaskStatus, isQueuedTaskStatus, type TaskAction } from "@agentswarm/shared-types";
 import { TaskStore, type QueueEntry } from "./task-store.js";
 import { SettingsStore } from "./settings-store.js";
 import { CancelledTaskError, SpawnerService } from "./spawner.js";
-
-const defaultActionForTask = (task: { taskType: TaskType; planMarkdown: string | null; planningMode: TaskPlanningMode }): TaskAction => {
-  if (task.taskType === "review") {
-    return "review";
-  }
-
-  if (task.taskType === "ask") {
-    return "ask";
-  }
-
-  if (task.taskType === "build") {
-    return "build";
-  }
-
-  return task.planMarkdown || task.planningMode === "direct-build" ? "build" : "plan";
-};
 
 export class SchedulerService {
   private activeTaskIds = new Set<string>();
@@ -37,7 +15,6 @@ export class SchedulerService {
   ) {}
 
   async bootstrap(): Promise<void> {
-    await this.enqueueEligibleAutoTasks();
     this.interval = setInterval(() => {
       void this.drainQueue();
     }, 1000);
@@ -52,21 +29,11 @@ export class SchedulerService {
   }
 
   async onTaskCreated(taskId: string): Promise<void> {
-    const task = await this.taskStore.getTask(taskId);
-    if (!task) {
-      return;
-    }
-
-    if (task.queueMode === "auto" && isQueuedTaskStatus(task.status)) {
-      const action = defaultActionForTask(task);
-      await this.taskStore.markQueuedForAction(task.id, action);
-      await this.taskStore.enqueueTask(task.id, "auto", action);
-      await this.drainQueue();
-    }
+    // Queue mode has been removed; new tasks are enqueued explicitly via triggerAction.
+    await this.drainQueue();
   }
 
   async onSettingsChanged(): Promise<void> {
-    await this.enqueueEligibleAutoTasks();
     await this.drainQueue();
   }
 
@@ -114,17 +81,6 @@ export class SchedulerService {
     await this.taskStore.appendLog(taskId, "Scheduler: cancellation requested by user.");
     await this.spawner.cancelTask(taskId);
     return true;
-  }
-
-  private async enqueueEligibleAutoTasks(): Promise<void> {
-    const tasks = await this.taskStore.listTasks();
-    for (const task of tasks) {
-      if (task.queueMode === "auto" && isQueuedTaskStatus(task.status) && !task.enqueued) {
-        const action = defaultActionForTask(task);
-        await this.taskStore.markQueuedForAction(task.id, action);
-        await this.taskStore.enqueueTask(task.id, "auto", action);
-      }
-    }
   }
 
   private async drainQueue(): Promise<void> {
@@ -180,7 +136,6 @@ export class SchedulerService {
       }
 
       await this.spawner.runTask(task, queueEntry.action, queueEntry.iterateInput);
-      await this.maybeContinueAutoFlow(taskId, queueEntry.action);
     } catch (error) {
       const task = await this.taskStore.getTask(taskId);
       if (error instanceof CancelledTaskError || task?.status === "cancelled") {
@@ -204,24 +159,5 @@ export class SchedulerService {
       this.activeTaskIds.delete(taskId);
       await this.drainQueue();
     }
-  }
-
-  private async maybeContinueAutoFlow(taskId: string, action: TaskAction): Promise<void> {
-    if (action !== "plan") {
-      return;
-    }
-
-    const task = await this.taskStore.getTask(taskId);
-    if (!task) {
-      return;
-    }
-
-    if (task.taskType !== "plan" || task.queueMode !== "auto" || task.status !== "planned") {
-      return;
-    }
-
-    await this.taskStore.appendLog(task.id, "Scheduler: auto queue mode enabled, continuing from plan into build.");
-    await this.taskStore.markQueuedForAction(task.id, "build");
-    await this.taskStore.enqueueTask(task.id, "auto", "build");
   }
 }

@@ -17,7 +17,6 @@ const issueImportSchema = z.object({
   modelOverride: z.string().trim().min(1).optional(),
   baseBranch: z.string().trim().min(1).optional(),
   branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-  queueMode: z.enum(["manual", "auto"]).optional(),
   model: z.string().trim().min(1).optional(),
   reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
 });
@@ -29,7 +28,6 @@ const pullRequestImportSchema = z.object({
   provider: z.enum(["codex", "claude"]).optional(),
   providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
   modelOverride: z.string().trim().min(1).optional(),
-  queueMode: z.enum(["manual", "auto"]).optional(),
   model: z.string().trim().min(1).optional(),
   reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
 });

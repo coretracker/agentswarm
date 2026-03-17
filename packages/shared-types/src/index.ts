@@ -1,5 +1,3 @@
-export type TaskQueueMode = "manual" | "auto";
-export type TaskMode = TaskQueueMode;
 export type TaskType = "plan" | "build" | "review" | "ask";
 export type TaskReviewVerdict = "approved" | "changes_requested";
 export type AgentProvider = "codex" | "claude";
@@ -258,7 +256,6 @@ export interface Task {
   pushCount?: number;
   latestIterationInput: string | null;
   lastAction: TaskAction | null;
-  queueMode: TaskQueueMode;
   status: TaskStatus;
   logs: string[];
   enqueued: boolean;
@@ -382,8 +379,6 @@ export interface CreateTaskInput {
   modelOverride?: string;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
-  queueMode?: TaskQueueMode;
-  mode?: TaskMode;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
 }
@@ -401,7 +396,6 @@ export interface BlankTaskDefinitionInput {
   providerProfile: ProviderProfile;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
-  queueMode: TaskQueueMode;
 }
 
 export interface IssueTaskDefinitionInput {
@@ -416,7 +410,6 @@ export interface IssueTaskDefinitionInput {
   providerProfile: ProviderProfile;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
-  queueMode: TaskQueueMode;
 }
 
 export interface PullRequestTaskDefinitionInput {
@@ -427,7 +420,6 @@ export interface PullRequestTaskDefinitionInput {
   provider: AgentProvider;
   model: string;
   providerProfile: ProviderProfile;
-  queueMode: TaskQueueMode;
 }
 
 export type TaskDefinitionInput = BlankTaskDefinitionInput | IssueTaskDefinitionInput | PullRequestTaskDefinitionInput;
@@ -454,7 +446,6 @@ export interface CreateTaskFromIssueInput {
   modelOverride?: string;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
-  queueMode?: TaskQueueMode;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
 }
@@ -466,7 +457,6 @@ export interface CreateTaskFromPullRequestInput {
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
-  queueMode?: TaskQueueMode;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
 }

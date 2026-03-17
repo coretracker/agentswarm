@@ -21,8 +21,6 @@ const createTaskSchema = z.object({
   modelOverride: z.string().trim().min(1).optional(),
   baseBranch: z.string().min(1).optional(),
   branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-  queueMode: z.enum(["manual", "auto"]).optional(),
-  mode: z.enum(["manual", "auto"]).optional(),
   model: z.string().min(1).optional(),
   reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
 });

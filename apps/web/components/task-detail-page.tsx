@@ -951,13 +951,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       ].filter(Boolean)
     : [];
   const hasMoreActions = moreActionItems.length > 0;
-  const contextContent = (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+const contextContent = (
+  <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Card size="small">
         <Descriptions column={2} size="small">
           <Descriptions.Item label="Repository">{task?.repoName}</Descriptions.Item>
           <Descriptions.Item label="Task Type">{task ? getTaskTypeLabel(task.taskType) : ""}</Descriptions.Item>
-          <Descriptions.Item label="Queue Mode">{task?.queueMode}</Descriptions.Item>
           <Descriptions.Item label={baseBranchLabel}>{task?.baseBranch}</Descriptions.Item>
           <Descriptions.Item label="Repository Default Branch">{task?.repoDefaultBranch}</Descriptions.Item>
           {isImplementationTask ? <Descriptions.Item label="Branch Strategy">{task ? getTaskBranchStrategyLabel(task.branchStrategy) : ""}</Descriptions.Item> : null}
@@ -1766,8 +1765,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   branchStrategy: "work_on_branch",
                   provider: task.provider,
                   providerProfile: task.providerProfile,
-                  modelOverride: task.modelOverride ?? undefined,
-                  queueMode: task.queueMode
+                  modelOverride: task.modelOverride ?? undefined
                 });
                 followUpForm.resetFields();
                 setFollowUpMode(null);

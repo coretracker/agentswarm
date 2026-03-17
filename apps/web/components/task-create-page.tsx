@@ -49,8 +49,7 @@ export function TaskCreatePage() {
         providerProfile: definition.providerProfile,
         modelOverride: definition.model || undefined,
         baseBranch: definition.baseBranch,
-        branchStrategy: definition.branchStrategy,
-        queueMode: definition.queueMode
+        branchStrategy: definition.branchStrategy
       });
     }
 
@@ -62,7 +61,7 @@ export function TaskCreatePage() {
         provider: definition.provider,
         providerProfile: definition.providerProfile,
         modelOverride: definition.model || undefined,
-        queueMode: definition.queueMode
+        // queue mode has been removed; tasks start with the initial action only
       });
     }
 
@@ -75,8 +74,7 @@ export function TaskCreatePage() {
       providerProfile: definition.providerProfile,
       modelOverride: definition.model || undefined,
       baseBranch: definition.baseBranch,
-      branchStrategy: definition.branchStrategy,
-      queueMode: definition.queueMode
+      branchStrategy: definition.branchStrategy
     });
   };
 

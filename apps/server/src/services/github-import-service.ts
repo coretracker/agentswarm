@@ -252,8 +252,7 @@ export class GitHubImportService {
       baseBranch: input.baseBranch?.trim() || repository.defaultBranch,
       branchStrategy: taskType === "plan" || taskType === "build" ? input.branchStrategy ?? "feature_branch" : "feature_branch",
       model: input.model,
-      reasoningEffort: input.reasoningEffort,
-      queueMode: input.queueMode
+      reasoningEffort: input.reasoningEffort
     };
   }
 
@@ -357,8 +356,7 @@ export class GitHubImportService {
       baseBranch: pullRequest.head.ref,
       branchStrategy: "work_on_branch",
       model: input.model,
-      reasoningEffort: input.reasoningEffort,
-      queueMode: input.queueMode
+      reasoningEffort: input.reasoningEffort
     };
   }
 }

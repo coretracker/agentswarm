@@ -12,7 +12,6 @@ import type {
   SystemSettings,
   TaskBranchStrategy,
   TaskDefinitionInput,
-  TaskQueueMode,
   TaskSourceType,
   TaskType
 } from "@agentswarm/shared-types";
@@ -35,7 +34,6 @@ export type TaskDefinitionFormValues = {
   providerProfile?: ProviderProfile;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
-  queueMode?: TaskQueueMode;
   issueNumber?: number;
   includeComments?: boolean;
   pullRequestNumber?: number;
@@ -72,7 +70,6 @@ export const getTaskDefinitionInitialValues = (settings?: SystemSettings | null)
     provider,
     model: getProviderDefaultModel(provider, settings),
     providerProfile: getProviderDefaultProfile(provider, settings),
-    queueMode: "manual",
     branchStrategy: "feature_branch",
     includeComments: true
   };
@@ -90,8 +87,7 @@ export const stripSaveAsPreset = (values: TaskDefinitionFormValues): TaskDefinit
       model: values.model?.trim() ?? "",
       providerProfile: values.providerProfile ?? "high",
       baseBranch: values.baseBranch?.trim() ?? "",
-      branchStrategy: values.branchStrategy ?? "feature_branch",
-      queueMode: values.queueMode ?? "manual"
+      branchStrategy: values.branchStrategy ?? "feature_branch"
     };
   }
 
@@ -107,8 +103,7 @@ export const stripSaveAsPreset = (values: TaskDefinitionFormValues): TaskDefinit
       model: values.model?.trim() ?? "",
       providerProfile: values.providerProfile ?? "high",
       baseBranch: values.baseBranch?.trim() ?? "",
-      branchStrategy: values.branchStrategy ?? "feature_branch",
-      queueMode: values.queueMode ?? "manual"
+      branchStrategy: values.branchStrategy ?? "feature_branch"
     };
   }
 
@@ -119,8 +114,7 @@ export const stripSaveAsPreset = (values: TaskDefinitionFormValues): TaskDefinit
     pullRequestNumber: values.pullRequestNumber ?? 0,
     provider: values.provider ?? "codex",
     model: values.model?.trim() ?? "",
-    providerProfile: values.providerProfile ?? "high",
-    queueMode: values.queueMode ?? "manual"
+    providerProfile: values.providerProfile ?? "high"
   };
 };
 
@@ -154,10 +148,6 @@ export function TaskDefinitionFields({
   const effectiveTaskType = isPullRequestSource ? "plan" : selectedTaskType;
   const isImplementationTask = effectiveTaskType === "plan" || effectiveTaskType === "build";
   const baseBranchLabel = isBlankSource || isIssueSource ? "Base Branch" : undefined;
-  const queueModeHelp =
-    effectiveTaskType === "plan"
-      ? "Manual stops after the current stage. Auto continues automatically from plan into build."
-      : "Manual waits for a user trigger. Auto lets the scheduler pick up this task as soon as capacity is available.";
   const providerMissingCredentials =
     selectedProvider === "codex" ? !settings?.openaiApiKeyConfigured : !settings?.anthropicApiKeyConfigured;
   const sourceOptions: Array<{ label: string; value: TaskSourceType }> = [
@@ -487,15 +477,6 @@ export function TaskDefinitionFields({
               />
             </Form.Item>
           ) : null}
-
-          <Form.Item name="queueMode" label="Queue Mode" rules={[{ required: true }]} extra={queueModeHelp} style={{ marginBottom: showSaveAsPreset ? 12 : 0 }}>
-            <Select
-              options={[
-                { label: "manual", value: "manual" },
-                { label: "auto", value: "auto" }
-              ]}
-            />
-          </Form.Item>
 
           {showSaveAsPreset ? (
             <Form.Item name="saveAsPreset" valuePropName="checked" style={{ marginBottom: 0 }}>

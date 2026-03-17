@@ -11,7 +11,6 @@ import {
   type Task,
   type TaskAction,
   type TaskMessage,
-  type TaskQueueMode,
   type TaskReasoningEffort,
   type TaskRun,
   type TaskStatus
@@ -74,8 +73,6 @@ export class TaskStore {
 
   private normalizeTask(task: Task): Task {
     const legacyTask = task as Task & {
-      mode?: TaskQueueMode;
-      queueMode?: TaskQueueMode;
       taskType?: Task["taskType"];
       repoDefaultBranch?: string;
       resultMarkdown?: string | null;
@@ -92,7 +89,6 @@ export class TaskStore {
     const normalizedTask: Task = {
       ...legacyTask,
       pinned: legacyTask.pinned ?? false,
-      queueMode: legacyTask.queueMode ?? legacyTask.mode ?? "manual",
       taskType: legacyTask.taskType ?? "plan",
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
@@ -231,7 +227,6 @@ export class TaskStore {
     const taskType = input.taskType ?? "plan";
     const complexity = classifyTaskComplexity(input.title, input.requirements);
     const planningMode = taskType === "build" ? "direct-build" : "plan-first";
-    const queueMode = input.queueMode ?? input.mode ?? "manual";
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
     const provider = normalizeProvider(input.provider);
@@ -277,7 +272,6 @@ export class TaskStore {
       branchDiff: null,
       latestIterationInput: null,
       lastAction: initialAction,
-      queueMode,
       status: getQueuedStatusForAction(initialAction),
       logs: [],
       enqueued: false,
