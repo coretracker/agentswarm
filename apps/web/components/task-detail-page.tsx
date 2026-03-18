@@ -763,6 +763,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const handlePresetSelection = (presetId: string | null) => {
     if (!presetId) {
       setSelectedPresetId(null);
+      setChatInput("");
+
+      if (task) {
+        const nextProvider = currentTaskProvider;
+        setProviderInput(nextProvider);
+        setModelInput(currentTaskModelOverride || getDefaultModelForProvider(nextProvider));
+        setProviderProfileInput(currentTaskProviderProfile);
+      }
+
       return;
     }
 
@@ -798,6 +807,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     if (!task || !canSpawnPresetFromTask) {
+      return;
+    }
+  };
+  const handleStartPresetFromTask = () => {
+    if (!selectedPresetId || !task || !canSpawnPresetFromTask) {
+      return;
+    }
+
+    const preset = taskPresets.find((item) => item.id === selectedPresetId);
+    if (!preset) {
+      messageApi.error("Selected preset is no longer available.");
       return;
     }
 
@@ -1331,21 +1351,41 @@ const contextContent = (
             }}
           >
             <Typography.Text type="secondary">Preset</Typography.Text>
-            <Select
-              showSearch
-              allowClear
-              style={{ width: "100%", marginTop: 6 }}
-              placeholder={presetsLoading ? "Loading presets..." : "Select preset"}
-              value={selectedPresetId}
-              onChange={(value) => handlePresetSelection(value)}
-              optionFilterProp="label"
-              loading={presetsLoading}
-              disabled={presetsLoading || taskPresets.length === 0 || !canSpawnPresetFromTask || !canEditTask || isArchived}
-              options={taskPresets.map((preset) => ({
-                label: `${preset.name} · ${preset.repoName}`,
-                value: preset.id
-              }))}
-            />
+            <Space.Compact style={{ width: "100%", marginTop: 6 }}>
+              <Select
+                showSearch
+                style={{ minWidth: 0 }}
+                placeholder={presetsLoading ? "Loading presets..." : "Select preset"}
+                value={selectedPresetId}
+                onChange={(value) => handlePresetSelection(value)}
+                optionFilterProp="label"
+                loading={presetsLoading}
+                disabled={presetsLoading || taskPresets.length === 0 || !canSpawnPresetFromTask || !canEditTask || isArchived}
+                options={taskPresets.map((preset) => ({
+                  label: `${preset.name} · ${preset.repoName}`,
+                  value: preset.id
+                }))}
+              />
+              <Button
+                onClick={handleStartPresetFromTask}
+                disabled={
+                  !selectedPresetId ||
+                  presetsLoading ||
+                  taskPresets.length === 0 ||
+                  !canSpawnPresetFromTask ||
+                  !canEditTask ||
+                  isArchived
+                }
+              >
+                Start
+              </Button>
+              <Button
+                onClick={() => handlePresetSelection(null)}
+                disabled={!selectedPresetId && !chatInput.trim() && providerInput === currentTaskProvider && providerProfileInput === currentTaskProviderProfile && modelInput === (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider))}
+              >
+                Clear
+              </Button>
+            </Space.Compact>
           </div>
         </Flex>
         <Flex align="center" gap={12} wrap="wrap" style={{ flexShrink: 0 }}>
