@@ -17,7 +17,9 @@ import {
   type TaskRun,
   type AgentProvider,
   type TaskBranchStrategy,
-  type ProviderProfile
+  type ProviderProfile,
+  type Preset,
+  type GitHubBranchReference
 } from "@agentswarm/shared-types";
 import {
   Alert,
@@ -46,6 +48,7 @@ import ReactMarkdown from "react-markdown";
 import { Diff, Hunk } from "react-diff-view";
 import remarkGfm from "remark-gfm";
 import { api } from "../src/api/client";
+import { usePresets } from "../src/hooks/usePresets";
 import { useTask } from "../src/hooks/useTask";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useTaskMessages } from "../src/hooks/useTaskMessages";
@@ -373,6 +376,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { task, setTask, loading } = useTask(taskId);
   const { messages: taskMessages, loading: messagesLoading } = useTaskMessages(taskId);
   const { runs: taskRuns, loading: runsLoading } = useTaskRuns(taskId);
+  const { presets, loading: presetsLoading } = usePresets();
   const taskTokenTotals = useMemo(() => {
     return getTaskTokenTotals(taskRuns);
   }, [taskRuns]);
@@ -401,6 +405,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   >(null);
   const [messageApi, contextHolder] = message.useMessage();
   const selectedChatActionRef = useRef(false);
+  const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
+  const [spawnPresetFromTask, setSpawnPresetFromTask] = useState<Preset | null>(null);
+  const [spawnBranches, setSpawnBranches] = useState<GitHubBranchReference[]>([]);
+  const [spawnBranchesLoading, setSpawnBranchesLoading] = useState(false);
+  const [spawnBaseBranch, setSpawnBaseBranch] = useState<string | undefined>();
+  const [spawnModalOpen, setSpawnModalOpen] = useState(false);
+  const [spawningId, setSpawningId] = useState<string | null>(null);
 
   const taskType = task?.taskType ?? "plan";
   const isPlanTask = taskType === "plan";
@@ -433,6 +444,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     !!task?.branchName &&
     (task.status === "review" || task.status === "accepted") &&
     task.branchName !== task.repoDefaultBranch;
+  const canSpawnPresetFromTask = canAll(["preset:read", "task:create"]) && !!task;
   const pullCount = task?.pullCount ?? 0;
   const pushCount = task?.pushCount ?? 0;
   const hasCompletedNonImplementationResult = task?.status === "review" || task?.status === "answered";
@@ -498,6 +510,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const renderedDiff = hasLiveDiff ? liveDiff?.diff ?? "" : task?.branchDiff ?? "";
   const hasDiffTab = hasStoredDiff || canRequestLiveDiff;
   const allowedChatActions = useMemo(() => getAllowedComposerActions(), []);
+  const taskPresets = useMemo(
+    () => (task ? presets.filter((preset) => preset.repoId === task.repoId) : []),
+    [presets, task]
+  );
 
   useEffect(() => {
     const defaultAction = getDefaultComposerAction(task ?? null);
@@ -746,6 +762,79 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const openFollowUp = (mode: FollowUpMode) => {
     followUpForm.setFieldsValue({ title: "", requirements: "", taskType: "build" });
     setFollowUpMode(mode);
+  };
+  const handleOpenPresetSpawnFromTask = () => {
+    if (!task || !canSpawnPresetFromTask || !selectedPresetId) {
+      return;
+    }
+
+    const preset = taskPresets.find((item) => item.id === selectedPresetId);
+    if (!preset) {
+      messageApi.error("Selected preset is no longer available.");
+      return;
+    }
+
+    setSpawnPresetFromTask(preset);
+    setSpawnModalOpen(true);
+    setSpawnBranches([]);
+    setSpawnBaseBranch(undefined);
+
+    if (preset.sourceType === "pull_request") {
+      return;
+    }
+
+    setSpawnBranchesLoading(true);
+    void api
+      .listGitHubBranches(preset.repoId)
+      .then((branches) => {
+        setSpawnBranches(branches);
+        const defaultBranch = branches.find((branch) => branch.isDefault)?.name ?? branches[0]?.name;
+        const currentTaskBranch = task.branchName ?? task.baseBranch;
+        const definitionBaseBranch = "baseBranch" in preset.definition ? preset.definition.baseBranch : undefined;
+        const candidateBranches = [currentTaskBranch, definitionBaseBranch, defaultBranch].filter(
+          (value): value is string => Boolean(value)
+        );
+        const branchNames = new Set(branches.map((branch) => branch.name));
+        const initialBranch = candidateBranches.find((value) => branchNames.has(value)) ?? branches[0]?.name;
+        setSpawnBaseBranch(initialBranch);
+      })
+      .catch((error) => {
+        messageApi.error(error instanceof Error ? error.message : "Failed to load branches");
+      })
+      .finally(() => {
+        setSpawnBranchesLoading(false);
+      });
+  };
+  const handleCloseSpawnModalFromTask = () => {
+    setSpawnModalOpen(false);
+    setSpawnPresetFromTask(null);
+    setSpawnBranches([]);
+    setSpawnBaseBranch(undefined);
+  };
+  const handleConfirmSpawnFromTask = async () => {
+    if (!spawnPresetFromTask) {
+      return;
+    }
+
+    if (spawnPresetFromTask.sourceType !== "pull_request" && !spawnBaseBranch) {
+      messageApi.error("Select a target branch before starting this preset.");
+      return;
+    }
+
+    setSpawningId(spawnPresetFromTask.id);
+    try {
+      const spawnedTask =
+        spawnPresetFromTask.sourceType === "pull_request"
+          ? await api.spawnPreset(spawnPresetFromTask.id)
+          : await api.spawnPreset(spawnPresetFromTask.id, { baseBranch: spawnBaseBranch });
+      messageApi.success("Task created from preset");
+      handleCloseSpawnModalFromTask();
+      router.push(`/tasks/${spawnedTask.id}`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to spawn preset");
+    } finally {
+      setSpawningId(null);
+    }
   };
   const handleDeleteTask = async () => {
     if (!task) {
@@ -1270,6 +1359,34 @@ const contextContent = (
         </Flex>
       </Flex>
       {isActive ? <Typography.Text type="secondary">Changes apply to the next run.</Typography.Text> : null}
+      {canSpawnPresetFromTask ? (
+        <Flex justify="space-between" align="center" gap={12} wrap="wrap">
+          <Space size={8} wrap>
+            <Typography.Text type="secondary">Run a preset from this task context</Typography.Text>
+            <Select
+              showSearch
+              style={{ minWidth: 220 }}
+              placeholder={presetsLoading ? "Loading presets..." : "Select preset"}
+              value={selectedPresetId}
+              onChange={(value) => setSelectedPresetId(value)}
+              optionFilterProp="label"
+              loading={presetsLoading}
+              disabled={presetsLoading || taskPresets.length === 0}
+              options={taskPresets.map((preset) => ({
+                label: preset.name,
+                value: preset.id
+              }))}
+            />
+          </Space>
+          <Button
+            onClick={handleOpenPresetSpawnFromTask}
+            disabled={!selectedPresetId || taskPresets.length === 0}
+            loading={spawnPresetFromTask ? spawningId === spawnPresetFromTask.id : false}
+          >
+            Start Preset
+          </Button>
+        </Flex>
+      ) : null}
     </Flex>
   );
 
@@ -1721,6 +1838,54 @@ const contextContent = (
           </Flex>
         ) : null}
       </Flex>
+
+      <Modal
+        open={spawnModalOpen && !!spawnPresetFromTask}
+        title="Confirm Target Branch"
+        onCancel={handleCloseSpawnModalFromTask}
+        destroyOnClose
+        footer={
+          <Flex justify="flex-end" gap={12}>
+            <Button onClick={handleCloseSpawnModalFromTask}>Cancel</Button>
+            <Button
+              type="primary"
+              onClick={handleConfirmSpawnFromTask}
+              loading={spawningId === spawnPresetFromTask?.id}
+              disabled={spawnPresetFromTask?.sourceType !== "pull_request" && !spawnBaseBranch}
+            >
+              Start Preset
+            </Button>
+          </Flex>
+        }
+      >
+        {spawnPresetFromTask ? (
+          <Space direction="vertical" style={{ width: "100%" }}>
+            <Typography.Paragraph>
+              {spawnPresetFromTask.sourceType === "pull_request"
+                ? "This preset will run on the pull request's branch. Confirm before starting."
+                : "Select the branch this preset should work on. This will be used as the base branch for the new task."}
+            </Typography.Paragraph>
+            {spawnPresetFromTask.sourceType !== "pull_request" ? (
+              <Form layout="vertical">
+                <Form.Item label="Target Branch" required>
+                  <Select
+                    showSearch
+                    placeholder="Select target branch"
+                    loading={spawnBranchesLoading}
+                    value={spawnBaseBranch}
+                    onChange={(value) => setSpawnBaseBranch(value)}
+                    optionFilterProp="label"
+                    options={spawnBranches.map((branch) => ({
+                      label: branch.isDefault ? `${branch.name} (default)` : branch.name,
+                      value: branch.name
+                    }))}
+                  />
+                </Form.Item>
+              </Form>
+            ) : null}
+          </Space>
+        ) : null}
+      </Modal>
 
       <Modal
         open={followUpMode !== null && canCreateFollowUp}
