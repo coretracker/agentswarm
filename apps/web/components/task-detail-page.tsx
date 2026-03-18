@@ -1949,10 +1949,11 @@ const contextContent = (
                 <Form.Item label="Target Branch" required>
                   <Select
                     showSearch
+                    allowClear
                     placeholder="Select target branch"
                     loading={spawnBranchesLoading}
                     value={spawnBaseBranch}
-                    onChange={(value) => setSpawnBaseBranch(value)}
+                    onChange={(value) => setSpawnBaseBranch(value ?? undefined)}
                     optionFilterProp="label"
                     options={spawnBranches.map((branch) => ({
                       label: branch.isDefault ? `${branch.name} (default)` : branch.name,
