@@ -3,7 +3,13 @@
 import { useState } from "react";
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
-import type { GitHubBranchReference, Preset } from "@agentswarm/shared-types";
+import type {
+  BlankTaskDefinitionInput,
+  GitHubBranchReference,
+  IssueTaskDefinitionInput,
+  Preset,
+  TaskDefinitionInput
+} from "@agentswarm/shared-types";
 import { Button, Card, Flex, Form, Modal, Popconfirm, Select, Space, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { usePresets } from "../src/hooks/usePresets";
@@ -14,6 +20,10 @@ import {
   getTaskDefinitionInitialValues,
   stripSaveAsPreset
 } from "./task-definition-fields";
+
+const hasBaseBranch = (
+  definition: TaskDefinitionInput
+): definition is BlankTaskDefinitionInput | IssueTaskDefinitionInput => "baseBranch" in definition;
 
 const sourceTypeLabel: Record<Preset["sourceType"], string> = {
   blank: "Blank",
@@ -75,7 +85,8 @@ export function PresetsPage() {
       .then((branches) => {
         setSpawnBranches(branches);
         const defaultBranch = branches.find((branch) => branch.isDefault)?.name ?? branches[0]?.name;
-        const initialBranch = preset.definition.baseBranch ?? defaultBranch;
+        const definition = preset.definition;
+        const initialBranch = hasBaseBranch(definition) ? definition.baseBranch ?? defaultBranch : defaultBranch;
         setSpawnBaseBranch(initialBranch);
       })
       .catch((error) => {
