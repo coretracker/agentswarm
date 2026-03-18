@@ -760,14 +760,44 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     followUpForm.setFieldsValue({ title: "", requirements: "", taskType: "build" });
     setFollowUpMode(mode);
   };
-  const handleOpenPresetSpawnFromTask = () => {
-    if (!task || !canSpawnPresetFromTask || !selectedPresetId) {
+  const handlePresetSelection = (presetId: string | null) => {
+    if (!presetId) {
+      setSelectedPresetId(null);
       return;
     }
 
-    const preset = taskPresets.find((item) => item.id === selectedPresetId);
+    setSelectedPresetId(presetId);
+
+    const preset = taskPresets.find((item) => item.id === presetId);
     if (!preset) {
       messageApi.error("Selected preset is no longer available.");
+      return;
+    }
+
+    const definition = preset.definition;
+
+    setProviderInput(definition.provider);
+    setModelInput(definition.model);
+    setProviderProfileInput(definition.providerProfile);
+
+    if ("taskType" in definition) {
+      const nextAction: ComposerAction =
+        definition.taskType === "plan"
+          ? "plan"
+          : definition.taskType === "build"
+            ? "build"
+            : definition.taskType === "review"
+              ? "review"
+              : "ask";
+      selectedChatActionRef.current = true;
+      setSelectedChatAction(nextAction);
+    }
+
+    if ("requirements" in definition && definition.requirements) {
+      setChatInput(definition.requirements);
+    }
+
+    if (!task || !canSpawnPresetFromTask) {
       return;
     }
 
@@ -1292,6 +1322,31 @@ const contextContent = (
               disabled={!canEditTask || isArchived}
             />
           </div>
+          <div
+            style={{
+              minWidth: 180,
+              maxWidth: 260,
+              display: "flex",
+              flexDirection: "column"
+            }}
+          >
+            <Typography.Text type="secondary">Preset</Typography.Text>
+            <Select
+              showSearch
+              allowClear
+              style={{ width: "100%", marginTop: 6 }}
+              placeholder={presetsLoading ? "Loading presets..." : "Select preset"}
+              value={selectedPresetId}
+              onChange={(value) => handlePresetSelection(value)}
+              optionFilterProp="label"
+              loading={presetsLoading}
+              disabled={presetsLoading || taskPresets.length === 0 || !canSpawnPresetFromTask || !canEditTask || isArchived}
+              options={taskPresets.map((preset) => ({
+                label: `${preset.name} · ${preset.repoName}`,
+                value: preset.id
+              }))}
+            />
+          </div>
         </Flex>
         <Flex align="center" gap={12} wrap="wrap" style={{ flexShrink: 0 }}>
           <Typography.Text type="secondary">Next run: {chatActionLabel}</Typography.Text>
@@ -1356,34 +1411,6 @@ const contextContent = (
         </Flex>
       </Flex>
       {isActive ? <Typography.Text type="secondary">Changes apply to the next run.</Typography.Text> : null}
-      {canSpawnPresetFromTask ? (
-        <Flex justify="space-between" align="center" gap={12} wrap="wrap">
-          <Space size={8} wrap>
-            <Typography.Text type="secondary">Run a preset from anywhere</Typography.Text>
-            <Select
-              showSearch
-              style={{ minWidth: 220 }}
-              placeholder={presetsLoading ? "Loading presets..." : "Select preset and repository"}
-              value={selectedPresetId}
-              onChange={(value) => setSelectedPresetId(value)}
-              optionFilterProp="label"
-              loading={presetsLoading}
-              disabled={presetsLoading || taskPresets.length === 0}
-              options={taskPresets.map((preset) => ({
-                label: `${preset.name} · ${preset.repoName}`,
-                value: preset.id
-              }))}
-            />
-          </Space>
-          <Button
-            onClick={handleOpenPresetSpawnFromTask}
-            disabled={!selectedPresetId || taskPresets.length === 0}
-            loading={spawnPresetFromTask ? spawningId === spawnPresetFromTask.id : false}
-          >
-            Start Preset
-          </Button>
-        </Flex>
-      ) : null}
     </Flex>
   );
 
@@ -1850,7 +1877,7 @@ const contextContent = (
               loading={spawningId === spawnPresetFromTask?.id}
               disabled={spawnPresetFromTask?.sourceType !== "pull_request" && !spawnBaseBranch}
             >
-              Start Preset
+              Create Task
             </Button>
           </Flex>
         }
