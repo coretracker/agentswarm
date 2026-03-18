@@ -486,6 +486,10 @@ export interface CreateTaskMessageInput {
   action?: TaskMessageAction;
 }
 
+export interface SpawnPresetInput {
+  baseBranch?: string;
+}
+
 export const getTaskBranchStrategyLabel = (strategy: TaskBranchStrategy): string =>
   ({
     feature_branch: "Create Feature Branch",

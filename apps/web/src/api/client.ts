@@ -33,6 +33,7 @@ import type {
   UpdateRepositoryInput,
   UpdateSettingsInput,
   UpdateUserInput,
+  SpawnPresetInput,
   User
 } from "@agentswarm/shared-types";
 
@@ -145,9 +146,10 @@ export const api = {
     request<void>(`/presets/${id}`, {
       method: "DELETE"
     }),
-  spawnPreset: (id: string) =>
+  spawnPreset: (id: string, input?: SpawnPresetInput) =>
     request<Task>(`/presets/${id}/spawn`, {
-      method: "POST"
+      method: "POST",
+      ...(input ? { body: JSON.stringify(input) } : {})
     }),
   listTasks: () => request<Task[]>("/tasks"),
   getTask: (id: string) => request<Task>(`/tasks/${id}`),

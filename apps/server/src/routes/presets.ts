@@ -1,5 +1,5 @@
-import { z } from "zod";
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import type { AuthService } from "../lib/auth.js";
 import type { GitHubImportService } from "../services/github-import-service.js";
 import { GitHubImportError } from "../services/github-import-service.js";
@@ -44,6 +44,10 @@ const presetSchema = z.discriminatedUnion("sourceType", [
     providerProfile: z.enum(["low", "medium", "high", "max"])
   })
 ]);
+
+const spawnPresetInputSchema = z.object({
+  baseBranch: z.string().trim().min(1).optional()
+});
 
 export const registerPresetRoutes = (
   app: FastifyInstance,
@@ -114,6 +118,11 @@ export const registerPresetRoutes = (
     "/presets/:id/spawn",
     { preHandler: deps.auth.requireAllScopes(["preset:read", "task:create"]) },
     async (request, reply) => {
+      const parsedSpawnInput = spawnPresetInputSchema.safeParse(request.body ?? {});
+      if (!parsedSpawnInput.success) {
+        return reply.status(400).send({ message: parsedSpawnInput.error.message });
+      }
+
       const preset = await deps.presetStore.getPreset(request.params.id);
       if (!preset) {
         return reply.status(404).send({ message: "Preset not found" });
@@ -123,6 +132,8 @@ export const registerPresetRoutes = (
       if (!repository) {
         return reply.status(404).send({ message: "Repository not found" });
       }
+
+      const overrideBaseBranch = parsedSpawnInput.data.baseBranch;
 
       try {
         const task =
@@ -137,7 +148,7 @@ export const registerPresetRoutes = (
                   provider: preset.definition.provider,
                   providerProfile: preset.definition.providerProfile,
                   model: preset.definition.model,
-                  baseBranch: preset.definition.baseBranch,
+                  baseBranch: overrideBaseBranch ?? preset.definition.baseBranch,
                   branchStrategy: preset.definition.branchStrategy
                 }),
                 repository
@@ -157,17 +168,17 @@ export const registerPresetRoutes = (
               : await deps.taskStore.createTask(
                   {
                     title: preset.definition.title,
-                    repoId: preset.definition.repoId,
-                    requirements: preset.definition.requirements,
-                    taskType: preset.definition.taskType,
-                    provider: preset.definition.provider,
-                    providerProfile: preset.definition.providerProfile,
-                    model: preset.definition.model,
-                    baseBranch: preset.definition.baseBranch,
-                    branchStrategy: preset.definition.branchStrategy
-                  },
-                  repository
-                );
+                  repoId: preset.definition.repoId,
+                  requirements: preset.definition.requirements,
+                  taskType: preset.definition.taskType,
+                  provider: preset.definition.provider,
+                  providerProfile: preset.definition.providerProfile,
+                  model: preset.definition.model,
+                  baseBranch: overrideBaseBranch ?? preset.definition.baseBranch,
+                  branchStrategy: preset.definition.branchStrategy
+                },
+                repository
+              );
 
         const accepted = await deps.scheduler.triggerAction(task.id, task.lastAction ?? "plan");
         if (!accepted) {

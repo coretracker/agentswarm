@@ -3,8 +3,8 @@
 import { useState } from "react";
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
-import type { Preset } from "@agentswarm/shared-types";
-import { Button, Card, Flex, Form, Modal, Popconfirm, Space, Table, Typography, message } from "antd";
+import type { GitHubBranchReference, Preset } from "@agentswarm/shared-types";
+import { Button, Card, Flex, Form, Modal, Popconfirm, Select, Space, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { usePresets } from "../src/hooks/usePresets";
 import { useAuth } from "./auth-provider";
@@ -32,6 +32,11 @@ export function PresetsPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [form] = Form.useForm<TaskDefinitionFormValues>();
   const [messageApi, contextHolder] = message.useMessage();
+  const [spawnModalOpen, setSpawnModalOpen] = useState(false);
+  const [spawnPreset, setSpawnPreset] = useState<Preset | null>(null);
+  const [spawnBranches, setSpawnBranches] = useState<GitHubBranchReference[]>([]);
+  const [spawnBranchesLoading, setSpawnBranchesLoading] = useState(false);
+  const [spawnBaseBranch, setSpawnBaseBranch] = useState<string | undefined>();
   const canCreatePreset = can("preset:create") && can("repo:list") && can("repo:read");
   const canEditPreset = can("preset:edit") && can("repo:list") && can("repo:read");
   const canDeletePreset = can("preset:delete");
@@ -52,6 +57,66 @@ export function PresetsPage() {
     setEditing(preset);
     form.setFieldsValue(preset.definition);
     setOpen(true);
+  };
+
+  const openSpawnModal = (preset: Preset) => {
+    setSpawnPreset(preset);
+    setSpawnModalOpen(true);
+    setSpawnBranches([]);
+    setSpawnBaseBranch(undefined);
+
+    if (preset.sourceType === "pull_request") {
+      return;
+    }
+
+    setSpawnBranchesLoading(true);
+    void api
+      .listGitHubBranches(preset.repoId)
+      .then((branches) => {
+        setSpawnBranches(branches);
+        const defaultBranch = branches.find((branch) => branch.isDefault)?.name ?? branches[0]?.name;
+        const initialBranch = preset.definition.baseBranch ?? defaultBranch;
+        setSpawnBaseBranch(initialBranch);
+      })
+      .catch((error) => {
+        messageApi.error(error instanceof Error ? error.message : "Failed to load branches");
+      })
+      .finally(() => {
+        setSpawnBranchesLoading(false);
+      });
+  };
+
+  const closeSpawnModal = () => {
+    setSpawnModalOpen(false);
+    setSpawnPreset(null);
+    setSpawnBranches([]);
+    setSpawnBaseBranch(undefined);
+  };
+
+  const handleConfirmSpawn = async () => {
+    if (!spawnPreset) {
+      return;
+    }
+
+    if (spawnPreset.sourceType !== "pull_request" && !spawnBaseBranch) {
+      messageApi.error("Select a target branch before starting this preset.");
+      return;
+    }
+
+    setSpawningId(spawnPreset.id);
+    try {
+      const task =
+        spawnPreset.sourceType === "pull_request"
+          ? await api.spawnPreset(spawnPreset.id)
+          : await api.spawnPreset(spawnPreset.id, { baseBranch: spawnBaseBranch });
+      messageApi.success("Task created from preset");
+      closeSpawnModal();
+      router.push(`/tasks/${task.id}`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to spawn preset");
+    } finally {
+      setSpawningId(null);
+    }
   };
 
   return (
@@ -112,18 +177,7 @@ export function PresetsPage() {
                         type="primary"
                         size="small"
                         loading={spawningId === preset.id}
-                        onClick={async () => {
-                          setSpawningId(preset.id);
-                          try {
-                            const task = await api.spawnPreset(preset.id);
-                            messageApi.success("Task created from preset");
-                            router.push(`/tasks/${task.id}`);
-                          } catch (error) {
-                            messageApi.error(error instanceof Error ? error.message : "Failed to spawn preset");
-                          } finally {
-                            setSpawningId(null);
-                          }
-                        }}
+                        onClick={() => openSpawnModal(preset)}
                       >
                         Spawn
                       </Button>
@@ -163,6 +217,54 @@ export function PresetsPage() {
           />
         </Card>
       </Space>
+
+      <Modal
+        open={spawnModalOpen}
+        title="Confirm Target Branch"
+        onCancel={closeSpawnModal}
+        destroyOnClose
+        footer={
+          <Flex justify="flex-end" gap={12}>
+            <Button onClick={closeSpawnModal}>Cancel</Button>
+            <Button
+              type="primary"
+              onClick={handleConfirmSpawn}
+              loading={spawningId === spawnPreset?.id}
+              disabled={spawnPreset?.sourceType !== "pull_request" && !spawnBaseBranch}
+            >
+              Start Preset
+            </Button>
+          </Flex>
+        }
+      >
+        {spawnPreset ? (
+          <Space direction="vertical" style={{ width: "100%" }}>
+            <Typography.Paragraph>
+              {spawnPreset.sourceType === "pull_request"
+                ? "This preset will run on the pull request's branch. Confirm before starting."
+                : "Select the branch this preset should work on. This will be used as the base branch for the new task."}
+            </Typography.Paragraph>
+            {spawnPreset.sourceType !== "pull_request" ? (
+              <Form layout="vertical">
+                <Form.Item label="Target Branch" required>
+                  <Select
+                    showSearch
+                    placeholder="Select target branch"
+                    loading={spawnBranchesLoading}
+                    value={spawnBaseBranch}
+                    onChange={(value) => setSpawnBaseBranch(value)}
+                    optionFilterProp="label"
+                    options={spawnBranches.map((branch) => ({
+                      label: branch.isDefault ? `${branch.name} (default)` : branch.name,
+                      value: branch.name
+                    }))}
+                  />
+                </Form.Item>
+              </Form>
+            ) : null}
+          </Space>
+        ) : null}
+      </Modal>
 
       <Modal
         open={open}
