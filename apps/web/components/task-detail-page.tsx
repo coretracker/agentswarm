@@ -510,10 +510,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const renderedDiff = hasLiveDiff ? liveDiff?.diff ?? "" : task?.branchDiff ?? "";
   const hasDiffTab = hasStoredDiff || canRequestLiveDiff;
   const allowedChatActions = useMemo(() => getAllowedComposerActions(), []);
-  const taskPresets = useMemo(
-    () => (task ? presets.filter((preset) => preset.repoId === task.repoId) : []),
-    [presets, task]
-  );
+  const taskPresets = useMemo(() => presets, [presets]);
 
   useEffect(() => {
     const defaultAction = getDefaultComposerAction(task ?? null);
@@ -1362,18 +1359,18 @@ const contextContent = (
       {canSpawnPresetFromTask ? (
         <Flex justify="space-between" align="center" gap={12} wrap="wrap">
           <Space size={8} wrap>
-            <Typography.Text type="secondary">Run a preset from this task context</Typography.Text>
+            <Typography.Text type="secondary">Run a preset from anywhere</Typography.Text>
             <Select
               showSearch
               style={{ minWidth: 220 }}
-              placeholder={presetsLoading ? "Loading presets..." : "Select preset"}
+              placeholder={presetsLoading ? "Loading presets..." : "Select preset and repository"}
               value={selectedPresetId}
               onChange={(value) => setSelectedPresetId(value)}
               optionFilterProp="label"
               loading={presetsLoading}
               disabled={presetsLoading || taskPresets.length === 0}
               options={taskPresets.map((preset) => ({
-                label: preset.name,
+                label: `${preset.name} · ${preset.repoName}`,
                 value: preset.id
               }))}
             />
