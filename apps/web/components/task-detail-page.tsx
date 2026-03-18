@@ -810,6 +810,30 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
   };
+  const handleClearComposer = () => {
+    const hasChangesToClear =
+      !!selectedPresetId ||
+      !!chatInput.trim() ||
+      providerInput !== currentTaskProvider ||
+      providerProfileInput !== currentTaskProviderProfile ||
+      modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider));
+
+    if (!hasChangesToClear) {
+      return;
+    }
+
+    Modal.confirm({
+      title: "Clear preset and composer?",
+      content:
+        "This will deselect the preset, clear the message input, and reset provider and model settings to this task's defaults.",
+      okText: "Clear",
+      cancelText: "Cancel",
+      okButtonProps: { danger: true },
+      onOk: () => {
+        handlePresetSelection(null);
+      }
+    });
+  };
   const handleStartPresetFromTask = () => {
     if (!selectedPresetId || !task || !canSpawnPresetFromTask) {
       return;
@@ -1351,41 +1375,20 @@ const contextContent = (
             }}
           >
             <Typography.Text type="secondary">Preset</Typography.Text>
-            <Space.Compact style={{ width: "100%", marginTop: 6 }}>
-              <Select
-                showSearch
-                style={{ minWidth: 0 }}
-                placeholder={presetsLoading ? "Loading presets..." : "Select preset"}
-                value={selectedPresetId}
-                onChange={(value) => handlePresetSelection(value)}
-                optionFilterProp="label"
-                loading={presetsLoading}
-                disabled={presetsLoading || taskPresets.length === 0 || !canSpawnPresetFromTask || !canEditTask || isArchived}
-                options={taskPresets.map((preset) => ({
-                  label: `${preset.name} · ${preset.repoName}`,
-                  value: preset.id
-                }))}
-              />
-              <Button
-                onClick={handleStartPresetFromTask}
-                disabled={
-                  !selectedPresetId ||
-                  presetsLoading ||
-                  taskPresets.length === 0 ||
-                  !canSpawnPresetFromTask ||
-                  !canEditTask ||
-                  isArchived
-                }
-              >
-                Start
-              </Button>
-              <Button
-                onClick={() => handlePresetSelection(null)}
-                disabled={!selectedPresetId && !chatInput.trim() && providerInput === currentTaskProvider && providerProfileInput === currentTaskProviderProfile && modelInput === (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider))}
-              >
-                Clear
-              </Button>
-            </Space.Compact>
+            <Select
+              showSearch
+              style={{ width: "100%", marginTop: 6 }}
+              placeholder={presetsLoading ? "Loading presets..." : "Select preset"}
+              value={selectedPresetId}
+              onChange={(value) => handlePresetSelection(value)}
+              optionFilterProp="label"
+              loading={presetsLoading}
+              disabled={presetsLoading || taskPresets.length === 0 || !canSpawnPresetFromTask || !canEditTask || isArchived}
+              options={taskPresets.map((preset) => ({
+                label: `${preset.name} · ${preset.repoName}`,
+                value: preset.id
+              }))}
+            />
           </div>
         </Flex>
         <Flex align="center" gap={12} wrap="wrap" style={{ flexShrink: 0 }}>
@@ -1446,6 +1449,18 @@ const contextContent = (
               }}
             >
               Send
+            </Button>
+            <Button
+              onClick={handleClearComposer}
+              disabled={
+                !selectedPresetId &&
+                !chatInput.trim() &&
+                providerInput === currentTaskProvider &&
+                providerProfileInput === currentTaskProviderProfile &&
+                modelInput === (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider))
+              }
+            >
+              Clear
             </Button>
           </Space.Compact>
         </Flex>
