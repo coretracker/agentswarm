@@ -13,8 +13,8 @@ const presetSchema = z.discriminatedUnion("sourceType", [
     sourceType: z.literal("blank"),
     title: z.string().trim().min(1),
     repoId: z.string().min(1),
-    requirements: z.string().trim().min(1),
-    taskType: z.enum(["plan", "build", "review", "ask"]),
+    prompt: z.string().trim().min(1),
+    taskType: z.enum(["build", "ask"]),
     provider: z.enum(["codex", "claude"]),
     model: z.string().trim().min(1),
     providerProfile: z.enum(["low", "medium", "high", "max"]),
@@ -27,7 +27,7 @@ const presetSchema = z.discriminatedUnion("sourceType", [
     repoId: z.string().min(1),
     issueNumber: z.coerce.number().int().positive(),
     includeComments: z.boolean(),
-    taskType: z.enum(["plan", "build", "ask"]),
+    taskType: z.enum(["build", "ask"]),
     provider: z.enum(["codex", "claude"]),
     model: z.string().trim().min(1),
     providerProfile: z.enum(["low", "medium", "high", "max"]),
@@ -168,14 +168,14 @@ export const registerPresetRoutes = (
               : await deps.taskStore.createTask(
                   {
                     title: preset.definition.title,
-                  repoId: preset.definition.repoId,
-                  requirements: preset.definition.requirements,
-                  taskType: preset.definition.taskType,
-                  provider: preset.definition.provider,
-                  providerProfile: preset.definition.providerProfile,
-                  model: preset.definition.model,
-                  baseBranch: overrideBaseBranch ?? preset.definition.baseBranch,
-                  branchStrategy: preset.definition.branchStrategy
+                    repoId: preset.definition.repoId,
+                    prompt: preset.definition.prompt,
+                    taskType: preset.definition.taskType,
+                    provider: preset.definition.provider,
+                    providerProfile: preset.definition.providerProfile,
+                    model: preset.definition.model,
+                    baseBranch: overrideBaseBranch ?? preset.definition.baseBranch,
+                    branchStrategy: preset.definition.branchStrategy
                 },
                 repository
               );

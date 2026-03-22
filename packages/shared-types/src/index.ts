@@ -245,7 +245,7 @@ export interface Task {
   currentPlanRunId: string | null;
   builtPlanRunIds: string[];
   workspaceBaseRef: string | null;
-  requirements: string;
+  prompt: string;
   planPath: string | null;
   planMarkdown: string | null;
   resultMarkdown: string | null;
@@ -271,6 +271,14 @@ export interface TaskLiveDiff {
   live: boolean;
   fetchedAt: string;
   message: string | null;
+  /** Current workspace HEAD branch (or "HEAD" when detached). */
+  headBranch: string | null;
+  /** Short SHA for HEAD. */
+  headShaShort: string | null;
+  /** Ref used as the compare base for this diff (e.g. origin/main). */
+  baseRef: string | null;
+  /** Auto-resolved base when no override was requested; mirrors baseRef when using default. */
+  defaultBaseRef: string | null;
 }
 
 export interface TaskMessage {
@@ -372,7 +380,7 @@ export interface UpdateRepositoryInput {
 export interface CreateTaskInput {
   title: string;
   repoId: string;
-  requirements: string;
+  prompt: string;
   taskType?: TaskType;
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
@@ -389,7 +397,7 @@ export interface BlankTaskDefinitionInput {
   sourceType: "blank";
   title: string;
   repoId: string;
-  requirements: string;
+  prompt: string;
   taskType: TaskType;
   provider: AgentProvider;
   model: string;

@@ -167,7 +167,7 @@ export function TasksPage() {
               <Typography.Text type="secondary">
                 {archivedView
                   ? "Archived tasks are read-only and kept out of the active work queue."
-                  : "Track plan, review, and ask tasks across their execution lifecycle."}
+                  : "Track build and ask tasks across their execution lifecycle."}
               </Typography.Text>
               <Typography.Link onClick={() => router.push(archivedView ? "/tasks" : "/tasks?view=archived")}>
                 {archivedView ? "Active Tasks" : "Archived"}

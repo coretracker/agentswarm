@@ -41,7 +41,7 @@ import {
   Typography,
   message
 } from "antd";
-import { MoreOutlined, PushpinOutlined } from "@ant-design/icons";
+import { ArrowRightOutlined, MoreOutlined, PushpinOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -94,31 +94,23 @@ const taskActionLabel: Record<TaskMessageAction | TaskAction, string> = {
 type ComposerAction = TaskMessageAction;
 
 function getAllowedComposerActions(): ComposerAction[] {
-  return ["plan", "build", "iterate", "review", "ask", "comment"];
+  return ["build", "ask", "comment"];
 }
 
 function getDefaultComposerAction(task: Task | null): ComposerAction {
   if (!task) {
-    return "plan";
+    return "build";
   }
 
   if (task.taskType === "review") {
     return "review";
   }
 
-  if (task.taskType === "ask") {
-    return "ask";
+  if (task.lastAction === "build" || task.lastAction === "ask") {
+    return task.lastAction;
   }
 
-  if (task.taskType === "build") {
-    return "build";
-  }
-
-  if (task.branchDiff?.trim() || task.status === "review" || task.lastAction === "build") {
-    return "build";
-  }
-
-  return "plan";
+  return "build";
 }
 
 function formatRunDuration(startedAt: string, finishedAt: string | null): string {
@@ -184,6 +176,17 @@ const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: "Codex (OpenAI)", value: "codex" },
   { label: "Claude Code (Anthropic)", value: "claude" }
 ];
+
+function formatDiffRefDisplay(ref: string | null | undefined): string {
+  if (!ref?.trim()) {
+    return "—";
+  }
+  const trimmed = ref.trim();
+  if (trimmed.startsWith("origin/")) {
+    return trimmed.slice("origin/".length);
+  }
+  return trimmed;
+}
 
 function renderParsedDiff(diffText: string, emptyMessage: string, options?: { collapseFiles?: boolean }): ReactNode {
   if (!diffText.trim()) {
@@ -288,7 +291,7 @@ function getGitHubDiffTarget(task: Task): { href: string; label: string } | null
 
     return {
       href: `${repoBaseUrl}/compare/${encodeURIComponent(task.repoDefaultBranch)}...${encodeURIComponent(task.baseBranch)}`,
-      label: "Open Compare In GitHub"
+      label: "Create PR"
     };
   }
 
@@ -307,7 +310,7 @@ function getGitHubDiffTarget(task: Task): { href: string; label: string } | null
 
     return {
       href: `${repoBaseUrl}/compare/${encodeURIComponent(task.repoDefaultBranch)}...${encodeURIComponent(targetBranch)}`,
-      label: "Open Compare In GitHub"
+      label: "Create PR"
     };
   }
 
@@ -384,8 +387,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [liveDiffLoading, setLiveDiffLoading] = useState(false);
   const [liveDiffError, setLiveDiffError] = useState<string | null>(null);
   const [liveDiffRefreshKey, setLiveDiffRefreshKey] = useState(0);
+  const [diffCompareBaseRef, setDiffCompareBaseRef] = useState<string | null>(null);
+  const [diffBranches, setDiffBranches] = useState<GitHubBranchReference[]>([]);
+  const [diffBranchesLoading, setDiffBranchesLoading] = useState(false);
   const [followUpForm] = Form.useForm();
-  const [iterateInput, setIterateInput] = useState("");
   const [chatInput, setChatInput] = useState("");
   const [providerInput, setProviderInput] = useState<AgentProvider>("codex");
   const [providerProfileInput, setProviderProfileInput] = useState<ProviderProfile>("high");
@@ -399,12 +404,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "diff">("chat");
   const [expandedRunKeys, setExpandedRunKeys] = useState<string[]>([]);
   const [buildingFromRunId, setBuildingFromRunId] = useState<string | null>(null);
-  const [selectedChatAction, setSelectedChatAction] = useState<ComposerAction>("plan");
+  const [selectedChatAction, setSelectedChatAction] = useState<ComposerAction>("build");
   const [submitting, setSubmitting] = useState<
-    null | "plan" | "build" | "iterate" | "review" | "ask" | "cancel" | "config" | "pull" | "push" | "merge" | "archive" | "delete" | "continue" | "fix" | "savePlan" | "message" | "pin"
+    null | "plan" | "build" | "review" | "ask" | "cancel" | "config" | "pull" | "push" | "merge" | "archive" | "delete" | "continue" | "fix" | "savePlan" | "message" | "pin"
   >(null);
   const [messageApi, contextHolder] = message.useMessage();
   const selectedChatActionRef = useRef(false);
+  const diffCompareBaseSyncedTaskIdRef = useRef<string | null>(null);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
   const [spawnPresetFromTask, setSpawnPresetFromTask] = useState<Preset | null>(null);
   const [spawnBranches, setSpawnBranches] = useState<GitHubBranchReference[]>([]);
@@ -413,7 +419,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [spawnModalOpen, setSpawnModalOpen] = useState(false);
   const [spawningId, setSpawningId] = useState<string | null>(null);
 
-  const taskType = task?.taskType ?? "plan";
+  const taskType = task?.taskType ?? "build";
   const isPlanTask = taskType === "plan";
   const isBuildTask = taskType === "build";
   const isImplementationTask = isPlanTask || isBuildTask;
@@ -434,15 +440,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     task?.status === "reviewing" ||
     task?.status === "asking";
   const canCancel = canEditTask && (isQueued || isActive);
-  const canPull = canEditTask && isImplementationTask && (task?.status === "review" || task?.status === "failed");
+  const hasBranchForSync = isPlanTask || isBuildTask || isAskTask;
+  const canPull = canEditTask && hasBranchForSync && !!task?.branchName && !isArchived && (task?.status === "review" || task?.status === "failed" || task?.status === "accepted" || task?.status === "answered" || task?.status === "cancelled");
   const canPush = canPull;
   const canMerge =
     canEditTask &&
-    isImplementationTask &&
+    hasBranchForSync &&
     !isArchived &&
     task?.branchStrategy === "feature_branch" &&
     !!task?.branchName &&
-    (task.status === "review" || task.status === "accepted") &&
     task.branchName !== task.repoDefaultBranch;
   const canSpawnPresetFromTask = canAll(["preset:read", "task:create"]) && !!task;
   const pullCount = task?.pullCount ?? 0;
@@ -477,13 +483,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     (isImplementationTask && branchStrategyInput !== currentTaskBranchStrategy);
 
   const resultStatusText = isPlanTask
-    ? task?.lastAction === "iterate"
-      ? task.status === "plan_queued"
-        ? "Plan revision queued"
-        : "Revising plan"
-      : task?.status === "plan_queued"
-        ? "Plan queued"
-        : "Planning in progress"
+    ? task?.status === "plan_queued"
+      ? "Plan queued"
+      : "Planning in progress"
     : isBuildTask
       ? task?.status === "build_queued"
         ? "Build queued"
@@ -501,14 +503,34 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     whiteSpace: "pre-wrap",
     fontFamily: "\"SFMono-Regular\", Consolas, monospace"
   };
-  const hasOutputTab = isPlanTask
-    ? (task?.planMarkdown?.trim().length ?? 0) > 0
-    : (task?.resultMarkdown?.trim().length ?? 0) > 0;
+  const hasOutputTab =
+    (task?.planMarkdown?.trim().length ?? 0) > 0 || (task?.resultMarkdown?.trim().length ?? 0) > 0;
   const hasStoredDiff = (task?.branchDiff?.trim().length ?? 0) > 0;
-  const canRequestLiveDiff = !!task && (isReviewTask || isBuildTask || (isPlanTask && task.lastAction === "build"));
+  const canRequestLiveDiff = !!task;
   const hasLiveDiff = liveDiff?.live ?? false;
-  const renderedDiff = hasLiveDiff ? liveDiff?.diff ?? "" : task?.branchDiff ?? "";
+  const compareRefError = Boolean(liveDiff && !liveDiff.live && liveDiff.message?.includes("Compare ref not found"));
+  const renderedDiff = hasLiveDiff ? liveDiff?.diff ?? "" : compareRefError ? "" : task?.branchDiff ?? "";
   const hasDiffTab = hasStoredDiff || canRequestLiveDiff;
+  const diffBaseBranchOptions = useMemo(() => {
+    const options: Array<{ value: string; label: string }> = [];
+    const seen = new Set<string>();
+    const repoDefault = task?.repoDefaultBranch;
+    if (repoDefault?.trim()) {
+      seen.add(repoDefault);
+      options.push({ value: repoDefault, label: `${repoDefault} (repo default)` });
+    }
+    for (const branch of diffBranches) {
+      if (seen.has(branch.name)) {
+        continue;
+      }
+      seen.add(branch.name);
+      options.push({
+        value: branch.name,
+        label: branch.isDefault ? `${branch.name} (repo default)` : branch.name
+      });
+    }
+    return options;
+  }, [task?.repoDefaultBranch, diffBranches]);
   const allowedChatActions = useMemo(() => getAllowedComposerActions(), []);
   const taskPresets = useMemo(() => presets, [presets]);
 
@@ -522,7 +544,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setLiveDiff(null);
     setLiveDiffError(null);
     setLiveDiffLoading(false);
+    diffCompareBaseSyncedTaskIdRef.current = null;
   }, [taskId]);
+
+  useEffect(() => {
+    if (!task?.id) {
+      return;
+    }
+    if (diffCompareBaseSyncedTaskIdRef.current !== task.id) {
+      diffCompareBaseSyncedTaskIdRef.current = task.id;
+      setDiffCompareBaseRef(task.repoDefaultBranch?.trim() ? task.repoDefaultBranch : null);
+    }
+  }, [task?.id, task?.repoDefaultBranch]);
 
   useEffect(() => {
     if (!allowedChatActions.includes(selectedChatAction)) {
@@ -572,6 +605,36 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   }, [isArchived]);
 
   useEffect(() => {
+    if (activeMainTab !== "diff" || !task?.repoId) {
+      return;
+    }
+
+    let cancelled = false;
+    setDiffBranchesLoading(true);
+    void api
+      .listGitHubBranches(task.repoId)
+      .then((branches) => {
+        if (!cancelled) {
+          setDiffBranches(branches);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDiffBranches([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setDiffBranchesLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMainTab, task?.repoId]);
+
+  useEffect(() => {
     if (activeMainTab !== "diff" || !task || !canRequestLiveDiff) {
       return;
     }
@@ -580,7 +643,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     const loadLiveDiff = async () => {
       setLiveDiffLoading(true);
       try {
-        const snapshot = await api.getTaskLiveDiff(task.id);
+        const snapshot = await api.getTaskLiveDiff(task.id, {
+          baseRef: diffCompareBaseRef ?? task.repoDefaultBranch ?? undefined
+        });
         if (!cancelled) {
           setLiveDiff(snapshot);
           setLiveDiffError(null);
@@ -603,7 +668,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeMainTab, canRequestLiveDiff, liveDiffRefreshKey, task?.id, task?.updatedAt, task?.workspaceBaseRef]);
+  }, [
+    activeMainTab,
+    canRequestLiveDiff,
+    diffCompareBaseRef,
+    liveDiffRefreshKey,
+    task?.id,
+    task?.updatedAt,
+    task?.workspaceBaseRef
+  ]);
 
   useEffect(() => {
     if (!task) {
@@ -694,17 +767,27 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   }
 
-  const outputTitle = isPlanTask ? "Plan" : isBuildTask ? "Summary" : isReviewTask ? "Review" : "Answer";
-  const baseBranchLabel = isReviewTask ? "Branch To Review" : isAskTask ? "Context Branch" : "Base Branch";
-  const requirementsLabel = isAskTask ? "Question" : "Requirements";
+  const outputTitle =
+    (task?.planMarkdown?.trim().length ?? 0) > 0
+      ? "Plan"
+      : task?.lastAction === "ask"
+        ? "Answer"
+        : task?.lastAction === "build"
+          ? "Summary"
+          : task?.lastAction === "review"
+            ? "Review"
+            : "Output";
+  const baseBranchLabel = isReviewTask ? "Branch To Review" : "Base Branch";
+  const promptLabel = "Prompt";
   const followUpBranch = task ? (isReviewTask ? task.baseBranch : task.branchName ?? task.baseBranch) : "";
   const followUpTitle = followUpMode === "fix" ? "Create Fix Task" : "New Task On Existing Branch";
   const providerLabel = task ? getAgentProviderLabel(task.provider) : "Agent";
-  const runtimeBranchLabel = task ? (isImplementationTask ? task.branchName ?? task.baseBranch : task.baseBranch) : "";
+  const hasBranch = isPlanTask || isBuildTask || isAskTask;
+  const runtimeBranchLabel = task ? (hasBranch ? task.branchName ?? task.baseBranch : task.baseBranch) : "";
   const githubDiffTarget = task ? getGitHubDiffTarget(task) : null;
   const chatActionLabel = taskActionLabel[selectedChatAction];
   const hasReadOnlyTaskAccess = !canEditTask;
-  const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "accepted" || task.status === "archived" || task.status === "cancelled";
+  const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "accepted" || task.status === "archived";
   const chatDisabled = chatClosed || (selectedChatAction !== "comment" && (isQueued || isActive));
   const chatPlaceholder = chatDisabled
     ? hasReadOnlyTaskAccess
@@ -757,7 +840,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     return left.timestamp.localeCompare(right.timestamp);
   });
   const openFollowUp = (mode: FollowUpMode) => {
-    followUpForm.setFieldsValue({ title: "", requirements: "", taskType: "build" });
+    followUpForm.setFieldsValue({ title: "", prompt: "", taskType: "build" });
     setFollowUpMode(mode);
   };
   const handlePresetSelection = (presetId: string | null) => {
@@ -792,7 +875,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if ("taskType" in definition) {
       const nextAction: ComposerAction =
         definition.taskType === "plan"
-          ? "plan"
+          ? "build"
           : definition.taskType === "build"
             ? "build"
             : definition.taskType === "review"
@@ -802,8 +885,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSelectedChatAction(nextAction);
     }
 
-    if ("requirements" in definition && definition.requirements) {
-      setChatInput(definition.requirements);
+    if (definition.sourceType === "blank") {
+      setChatInput(definition.prompt ?? "");
+    } else {
+      setChatInput("");
     }
 
     if (!task || !canSpawnPresetFromTask) {
@@ -1104,6 +1189,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   };
   const moreActionItems = task && !isArchived
     ? [
+        canMerge ? { key: "merge", label: `Merge to ${task?.repoDefaultBranch ?? "default branch"}` } : null,
+        canRequestLiveDiff ? { key: "refreshDiff", label: "Refresh Diff" } : null,
         canEditTask ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
         canContinueOnBranch ? { key: "continue", label: "Continue On Branch" } : null,
         canCreateFixTask ? { key: "fix", label: "Create Fix Task" } : null,
@@ -1119,8 +1206,8 @@ const contextContent = (
           <Descriptions.Item label="Task Type">{task ? getTaskTypeLabel(task.taskType) : ""}</Descriptions.Item>
           <Descriptions.Item label={baseBranchLabel}>{task?.baseBranch}</Descriptions.Item>
           <Descriptions.Item label="Repository Default Branch">{task?.repoDefaultBranch}</Descriptions.Item>
-          {isImplementationTask ? <Descriptions.Item label="Branch Strategy">{task ? getTaskBranchStrategyLabel(task.branchStrategy) : ""}</Descriptions.Item> : null}
-          {isImplementationTask ? <Descriptions.Item label="Target Branch">{task?.branchName ?? "(pending)"}</Descriptions.Item> : null}
+          {hasBranch ? <Descriptions.Item label="Branch Strategy">{task ? getTaskBranchStrategyLabel(task.branchStrategy) : ""}</Descriptions.Item> : null}
+          {hasBranch ? <Descriptions.Item label="Target Branch">{task?.branchName ?? "(pending)"}</Descriptions.Item> : null}
           {isReviewTask ? (
             <Descriptions.Item label="Review Verdict">
               {task?.reviewVerdict ? (
@@ -1147,11 +1234,11 @@ const contextContent = (
           {isPlanTask ? <Descriptions.Item label="Plan File">{task?.planPath ?? "(pending)"}</Descriptions.Item> : null}
         </Descriptions>
 
-        <Divider orientation="left">{requirementsLabel}</Divider>
-        <Typography.Paragraph style={codeTextStyle}>{task?.requirements}</Typography.Paragraph>
+        <Divider orientation="left">{promptLabel}</Divider>
+        <Typography.Paragraph style={codeTextStyle}>{task?.prompt}</Typography.Paragraph>
       </Card>
 
-      {!isPlanTask && hasOutputTab ? (
+      {hasOutputTab ? (
         <Collapse
           size="small"
           defaultActiveKey={["plan-panel"]}
@@ -1170,8 +1257,8 @@ const contextContent = (
                         isPlanTask
                           ? `${providerLabel} is currently updating the markdown plan only. Watch the logs tab; this section will refresh when the new plan is stored.`
                           : isReviewTask
-                            ? `${providerLabel} is reviewing the selected branch against the repository default branch and your requirements.`
-                            : `${providerLabel} is answering the repository question using the selected branch as context.`
+                            ? `${providerLabel} is reviewing the selected branch against the repository default branch and your prompt.`
+                            : `${providerLabel} is running. Watch the logs tab; this section will refresh when the run completes.`
                       }
                     />
                   ) : null}
@@ -1216,39 +1303,8 @@ const contextContent = (
                     </ReactMarkdown>
                   ) : null}
 
-                  {canEditTask && isPlanTask && !isEditingPlan ? (
-                    <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                      <Input.TextArea
-                        rows={4}
-                        placeholder="Iterate the plan with another instruction"
-                        value={iterateInput}
-                        onChange={(event) => setIterateInput(event.target.value)}
-                        disabled={isArchived}
-                      />
-                      <Space wrap>
-                        <Button
-                          onClick={async () => {
-                            if (!task) {
-                              return;
-                            }
-
-                            setSubmitting("iterate");
-                            try {
-                              await api.triggerTaskAction(task.id, "iterate", iterateInput.trim());
-                              setIterateInput("");
-                              messageApi.success("Plan iteration started");
-                            } finally {
-                              setSubmitting(null);
-                            }
-                          }}
-                          disabled={!hasExecutionContext || iterateInput.trim().length === 0 || task?.status === "accepted" || task?.status === "archived"}
-                          loading={submitting === "iterate"}
-                        >
-                          Iterate Plan
-                        </Button>
-                        <Typography.Text type="secondary">Latest plan iteration: {task?.latestIterationInput ?? "none"}</Typography.Text>
-                      </Space>
-                    </Space>
+                  {canEditTask && isPlanTask && !isEditingPlan && task?.latestIterationInput ? (
+                    <Typography.Text type="secondary">Latest plan iteration: {task.latestIterationInput}</Typography.Text>
                   ) : null}
                 </Space>
               )
@@ -1260,39 +1316,82 @@ const contextContent = (
     </Space>
   );
 
+  const diffHeadLabel = liveDiffLoading && !liveDiff
+    ? "Loading…"
+    : liveDiff?.headBranch
+      ? `${liveDiff.headBranch}${liveDiff.headShaShort ? ` @ ${liveDiff.headShaShort}` : ""}`
+      : task?.branchName ?? "—";
+
   const diffContent = hasDiffTab ? (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
-      <Flex justify="space-between" align="center" wrap="wrap" gap={12}>
-        <Typography.Text type="secondary">
-          {hasLiveDiff
-            ? `Live workspace diff · updated ${dayjs(liveDiff?.fetchedAt).format("HH:mm:ss")}`
-            : hasStoredDiff
-              ? "Showing last captured diff from task state because no live workspace diff is available."
-              : liveDiff?.message ?? "Live diff will appear once the task workspace exists."}
-        </Typography.Text>
-        <Button
-          onClick={() => setLiveDiffRefreshKey((current) => current + 1)}
-          loading={liveDiffLoading}
-          disabled={!canRequestLiveDiff}
-        >
-          Refresh
-        </Button>
-      </Flex>
+      {task ? (
+        <Card size="small" styles={{ body: { paddingBottom: 12 } }}>
+          <Flex align="flex-end" wrap="wrap" gap={16}>
+            <div style={{ minWidth: 200, flex: "1 1 220px" }}>
+              <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
+                Base branch
+              </Typography.Text>
+              <Select
+                placeholder={task.repoDefaultBranch ?? "Branch"}
+                value={diffCompareBaseRef ?? task.repoDefaultBranch}
+                options={diffBaseBranchOptions}
+                loading={diffBranchesLoading}
+                disabled={!canRequestLiveDiff}
+                style={{ width: "100%" }}
+                onChange={(value) => {
+                  setDiffCompareBaseRef(typeof value === "string" && value.length > 0 ? value : task.repoDefaultBranch ?? null);
+                }}
+              />
+            </div>
+            <ArrowRightOutlined style={{ color: "rgba(0,0,0,0.45)", marginBottom: 10 }} />
+            <div style={{ minWidth: 200, flex: "1 1 220px" }}>
+              <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
+                Compare (HEAD)
+              </Typography.Text>
+              <Typography.Text code style={{ fontSize: 14 }}>
+                {diffHeadLabel}
+              </Typography.Text>
+            </div>
+          </Flex>
+          {compareRefError ? null : (
+            <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
+              {hasLiveDiff
+                ? `Live diff · updated ${dayjs(liveDiff?.fetchedAt).format("HH:mm:ss")}`
+                : hasStoredDiff
+                  ? "Showing last captured diff from task state because no live workspace diff is available."
+                  : liveDiff?.message ?? "Live diff will appear once the task workspace exists."}
+            </Typography.Paragraph>
+          )}
+        </Card>
+      ) : null}
       {liveDiffError ? <Alert type="warning" showIcon message="Live diff refresh failed" description={liveDiffError} /> : null}
-      {githubDiffTarget ? (
-        <Flex justify="flex-end">
-          <Button href={githubDiffTarget.href} target="_blank" rel="noreferrer">
-            {githubDiffTarget.label}
-          </Button>
-        </Flex>
+      {compareRefError && liveDiff ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={liveDiff.message ?? "Invalid compare base."}
+          description={
+            liveDiff.defaultBaseRef
+              ? `Try ${formatDiffRefDisplay(liveDiff.defaultBaseRef)} (repo default) or another branch that exists in this workspace.`
+              : undefined
+          }
+        />
       ) : null}
       {isReviewTask
-        ? renderParsedDiff(renderedDiff, `No diff captured for ${task?.baseBranch} against ${task?.repoDefaultBranch}.`, {
-            collapseFiles: true
-          })
+        ? renderParsedDiff(
+            renderedDiff,
+            compareRefError
+              ? "Choose another base branch or the repository default."
+              : `No diff captured for ${task?.baseBranch} against ${task?.repoDefaultBranch}.`,
+            { collapseFiles: true }
+          )
         : renderParsedDiff(
             renderedDiff,
-            hasLiveDiff ? "No current workspace changes detected." : "No diff captured yet. Run Build to generate one.",
+            compareRefError
+              ? "Choose another base branch or the repository default."
+              : hasLiveDiff
+                ? "No current workspace changes detected."
+                : "No diff captured yet. Run Build to generate one.",
             { collapseFiles: true }
           )}
     </Space>
@@ -1616,8 +1715,7 @@ const contextContent = (
                         isQueued ||
                         isActive ||
                         task.status === "accepted" ||
-                        task.status === "archived" ||
-                        task.status === "cancelled"
+                        task.status === "archived"
                       }
                       loading={submitting === "build" && buildingFromRunId === run.id}
                     >
@@ -1792,9 +1890,9 @@ const contextContent = (
                   </Button>
                 ) : null}
 
-                {canMerge ? (
-                  <Button type="primary" onClick={handleMergeTask} loading={submitting === "merge"}>
-                    {`Merge to ${task?.repoDefaultBranch ?? "default branch"}`}
+                {githubDiffTarget ? (
+                  <Button href={githubDiffTarget.href} target="_blank" rel="noreferrer">
+                    {githubDiffTarget.label}
                   </Button>
                 ) : null}
 
@@ -1813,24 +1911,6 @@ const contextContent = (
                     loading={submitting === "review"}
                   >
                     Run Review
-                  </Button>
-                ) : null}
-
-                {!canCancel && !hasCompletedNonImplementationResult && canEditTask && isAskTask && task.status !== "accepted" && task.status !== "archived" ? (
-                  <Button
-                    type="primary"
-                    onClick={async () => {
-                      setSubmitting("ask");
-                      try {
-                        await api.triggerTaskAction(task.id, "ask");
-                        messageApi.success("Question submitted");
-                      } finally {
-                        setSubmitting(null);
-                      }
-                    }}
-                    loading={submitting === "ask"}
-                  >
-                    Ask Again
                   </Button>
                 ) : null}
 
@@ -1856,6 +1936,16 @@ const contextContent = (
                     menu={{
                       items: moreActionItems,
                       onClick: ({ key }) => {
+                        if (key === "merge") {
+                          void handleMergeTask();
+                          return;
+                        }
+
+                        if (key === "refreshDiff") {
+                          setLiveDiffRefreshKey((k) => k + 1);
+                          return;
+                        }
+
                         if (key === "continue") {
                           openFollowUp("continue");
                           return;
@@ -1884,7 +1974,7 @@ const contextContent = (
                     }}
                     trigger={["click"]}
                   >
-                    <Button icon={<MoreOutlined />}>Manage</Button>
+                    <Button icon={<MoreOutlined />}>More</Button>
                   </Dropdown>
                 ) : null}
               </Space>
@@ -1982,29 +2072,29 @@ const contextContent = (
             form={followUpForm}
             layout="vertical"
             initialValues={{ taskType: "build" }}
-            onFinish={async (values: { title: string; requirements: string; taskType: "plan" | "build" }) => {
+            onFinish={async (values: { title: string; prompt: string; taskType: "build" }) => {
               const followUpAction = followUpMode === "fix" ? "fix" : "continue";
               setSubmitting(followUpAction);
               try {
-                const normalizedRequirements = values.requirements.trim();
+                const normalizedPrompt = values.prompt.trim();
                 const nextTask = await api.createTask({
                   title: values.title.trim(),
-                  requirements:
+                  prompt:
                     followUpMode === "fix"
                       ? [
                           `Implement the changes requested by the review on branch ${task.baseBranch}.`,
                           "",
-                          `Original review requirements:`,
-                          task.requirements,
+                          `Original review prompt:`,
+                          task.prompt,
                           "",
                           `Review result:`,
                           task.resultMarkdown ?? "(no review markdown captured)",
                           "",
                           `Additional implementation instructions:`,
-                          normalizedRequirements || "- None provided."
+                          normalizedPrompt || "- None provided."
                         ].join("\n")
-                      : normalizedRequirements,
-                  taskType: values.taskType,
+                      : normalizedPrompt,
+                  taskType: "build",
                   repoId: task.repoId,
                   baseBranch: followUpBranch,
                   branchStrategy: "work_on_branch",
@@ -2014,11 +2104,7 @@ const contextContent = (
                 });
                 followUpForm.resetFields();
                 setFollowUpMode(null);
-                messageApi.success(
-                  nextTask.taskType === "build"
-                    ? "Follow-up build task created and started on branch"
-                    : "Follow-up plan task created and planning started on branch"
-                );
+                messageApi.success("Follow-up build task created and started on branch");
                 router.push(`/tasks/${nextTask.id}`);
               } finally {
                 setSubmitting(null);
@@ -2045,8 +2131,8 @@ const contextContent = (
                 <Input placeholder={followUpMode === "fix" ? "Apply review findings on this branch" : "Follow-up task on this branch"} />
               </Form.Item>
               <Form.Item
-                name="requirements"
-                label={followUpMode === "fix" ? "Additional Instructions" : "Requirements"}
+                name="prompt"
+                label={followUpMode === "fix" ? "Additional Instructions" : "Prompt"}
                 rules={followUpMode === "fix" ? [] : [{ required: true }]}
               >
                 <Input.TextArea
@@ -2056,14 +2142,6 @@ const contextContent = (
                       ? "Optional extra instructions for applying the review findings."
                       : "Describe the new problem to solve on this branch."
                   }
-                />
-              </Form.Item>
-              <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
-                <Select
-                  options={[
-                    { label: "Plan", value: "plan" },
-                    { label: "Build", value: "build" }
-                  ]}
                 />
               </Form.Item>
               <Button type="primary" htmlType="submit" loading={submitting === "continue" || submitting === "fix"}>

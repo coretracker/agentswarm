@@ -57,55 +57,26 @@ const extractReviewVerdict = (markdown) => {
 };
 
 
-// Relative path (inside the workspace) where the spawner writes the plan file.
-const WORKSPACE_PLAN_FILE = ".agentswarm/PLAN.md";
-
 const buildPrompt = () => {
-  const rulesSection = manifest.agentRules?.trim()
-    ? `\nGlobal Agent Rules:\n${manifest.agentRules}\n\nThese rules apply to every action unless they directly conflict with the explicit task requirements.\n`
-    : "";
-  const hasPlanFile = !!manifest.planMarkdown?.trim();
-  const followUpInstructionSection = manifest.iterationInput?.trim()
-    ? `\nAdditional user instruction:\n${manifest.iterationInput}\n`
-    : "";
+  const rawInput = typeof manifest.iterationInput === "string" && manifest.iterationInput.length > 0
+    ? manifest.iterationInput
+    : (manifest.prompt ?? "");
 
-  switch (manifest.action) {
-    case "plan":
-      return `You are planning work for the repository at ${manifest.workspacePath}.\n\nTask title:\n${manifest.title}\n\nRequirements:\n${manifest.requirements}\n\nRepository profile:\n${manifest.repoProfile}${followUpInstructionSection}${rulesSection}\nInspect the repository and create an implementation plan in markdown with sections:\n- Overview\n- Repo Findings\n- Files To Change\n- Implementation Steps\n- Validation\n- Risks\n\nImportant:\n- Return only markdown content for the plan.\n- Do not ask for additional input.\n- Be concrete. The plan must describe the likely code changes, not just process steps.\n- In \"Overview\", summarize the problem and intended outcome without repeating the full requirements.\n- In \"Repo Findings\", list the concrete files, modules, or code paths you inspected and why they matter.\n- In \"Repo Findings\", include short code snippets only when they clarify a key implementation constraint.\n- In \"Files To Change\", organize the plan file-by-file, explain why each file matters, and include the proposed edits directly under that file entry.\n- Do not create a separate \"Suggested Code Changes\" section.\n- When proposing file edits, prefer fenced markdown code blocks whose language is set to diff.\n- For diff blocks, prefer full git-style unified diffs with diff --git, ---, +++, and valid @@ -old,+new @@ hunk headers so the UI can render them reliably.\n- In \"Validation\", list only the concrete checks or commands needed to verify the planned change.\n- Omit \"Risks\" if there are no meaningful risks.\n- Do not actually modify files during planning.`;
-    case "build": {
-      const planSection = hasPlanFile
-        ? `\nAn approved implementation plan is available at ${WORKSPACE_PLAN_FILE}.\nRead it before making any changes and use it as the primary implementation guide.\nFocus on the "Files To Change" and "Implementation Steps" sections.\n`
-        : `\nNo approved plan is available.\nFallback execution summary:\n${manifest.executionSummary}\n`;
-      return `You are implementing a task in the repository at ${manifest.workspacePath}.\n\nTask title:\n${manifest.title}\n\nRequirements:\n${manifest.requirements}\n\nRepository profile:\n${manifest.repoProfile}${planSection}${followUpInstructionSection}${rulesSection}\nImplement the required code changes directly in this repository, then stop.\nStay close to the planned files and implementation steps.\nDo not do broad repository exploration unless the plan is clearly blocked by the actual code.\nDo not run git commit, git push, or create your own local commits.\nDo not summarize hypothetical commits. The server will handle commit and push after the run.\nLeave file modifications in the working tree and return a markdown summary of the completed code changes and validation results.`;
-    }
-    case "iterate": {
-      const planSection = hasPlanFile
-        ? `The current plan is at ${WORKSPACE_PLAN_FILE}. Read it, then rewrite the file in place with the updated plan incorporating the iteration request below.\nReturn only the complete updated markdown plan as your response as well.`
-        : `No plan exists yet. Use the following execution summary as a starting point:\n${manifest.executionSummary}\n\nReturn only the complete new markdown plan.`;
-      return `You are revising an implementation plan for the repository at ${manifest.workspacePath}.\n\nTask title:\n${manifest.title}\n\nRequirements:\n${manifest.requirements}\n\nRepository profile:\n${manifest.repoProfile}\n\n${planSection}\n\nIteration request:\n${manifest.iterationInput}${rulesSection}\nKeep the same plan structure and sections as the initial planning step.\nDo not modify any source files — only update the plan.`;
-    }
-    case "review":
-      return `You are reviewing the implementation on branch ${manifest.baseBranch} in the repository at ${manifest.workspacePath}.\n\nCompare it against the repository default branch:\n${manifest.repoDefaultBranch}\n\nRequirements:\n${manifest.requirements}\n\nRepository profile:\n${manifest.repoProfile}${followUpInstructionSection}${rulesSection}\nInspect the branch diff against ${manifest.repoDefaultBranch} and the relevant changed files, then return a markdown review with sections:\n- Verdict\n- Summary\n- Findings\n- Recommended Changes\n- Validation\n\nImportant:\n- Return only markdown.\n- In \"Verdict\", output exactly one of: approved, changes_requested.\n- If the implementation is acceptable, say approved and keep findings concise.\n- If changes are needed, explain the concrete issues and how to fix them.\n- Do not modify files.`;
-    case "ask":
-      return `You are answering a repository question for the branch ${manifest.baseBranch} at ${manifest.workspacePath}.\n\nTask title:\n${manifest.title}\n\nQuestion:\n${manifest.requirements}\n\nRepository profile:\n${manifest.repoProfile}${followUpInstructionSection}${rulesSection}\nAnswer the question in markdown only.\nIf code snippets help, use fenced code blocks.\nDo not modify files.`;
-    default:
-      throw new Error(`Unsupported action: ${manifest.action}`);
+  if (rawInput.length === 0) {
+    throw new Error("Task prompt is empty");
   }
+
+  return rawInput;
 };
 
-const allowedTools = [
-  "Bash",
-  "Read",
-  "Edit",
-  "Write",
-  "MultiEdit",
-  "LS",
-  "Grep",
-  "Glob",
-  "TodoWrite",
-  "Task",
-  ...(providerConfigPath ? Object.keys((JSON.parse(await readFile(providerConfigPath, "utf8").catch(() => "{}"))?.mcpServers ?? {})).map((name) => `mcp__${name}`) : [])
-].join(",");
+const mcpTools = providerConfigPath
+  ? Object.keys((JSON.parse(await readFile(providerConfigPath, "utf8").catch(() => "{}"))?.mcpServers ?? {})).map((name) => `mcp__${name}`)
+  : [];
+const isAsk = manifest.action === "ask";
+const allowedTools = (isAsk
+  ? ["Read", "LS", "Grep", "Glob", "TodoWrite", "Task", ...mcpTools]
+  : ["Bash", "Read", "Edit", "Write", "MultiEdit", "LS", "Grep", "Glob", "TodoWrite", "Task", ...mcpTools]
+).join(",");
 
 const args = [
   "-p",
@@ -132,7 +103,7 @@ const runtimeIdentity = workspaceStats.uid > 0 && workspaceStats.gid > 0 ? `${wo
 const runtimeHome = path.join("/runtime", `claude-home-${runtimeIdentity.replace(/[:/]/g, "-")}`);
 await mkdir(runtimeHome, { recursive: true });
 
-console.log(`[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}`);
+console.log(`[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only tools)" : ""}`);
 console.log(`[runtime] claude max_turns=${manifest.resolvedMaxTurns ?? "default"}`);
 await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(manifest.resultJsonPath)]);
 console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);

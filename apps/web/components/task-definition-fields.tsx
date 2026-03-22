@@ -27,7 +27,7 @@ export type TaskDefinitionFormValues = {
   sourceType?: TaskSourceType;
   title?: string;
   repoId?: string;
-  requirements?: string;
+  prompt?: string;
   taskType?: TaskType;
   provider?: AgentProvider;
   model?: string;
@@ -66,7 +66,7 @@ export const getTaskDefinitionInitialValues = (settings?: SystemSettings | null)
   const provider = settings?.defaultProvider ?? "codex";
   return {
     sourceType: "blank",
-    taskType: "plan",
+    taskType: "build",
     provider,
     model: getProviderDefaultModel(provider, settings),
     providerProfile: getProviderDefaultProfile(provider, settings),
@@ -75,14 +75,28 @@ export const getTaskDefinitionInitialValues = (settings?: SystemSettings | null)
   };
 };
 
+/** Suggested title for blank tasks: "Build · org/repo · branch · Model" — updates until the title field is edited. */
+export function buildBlankAutoTaskTitle(params: {
+  taskType: TaskType;
+  repoName: string | undefined;
+  branchName: string | undefined;
+  modelLabel: string;
+}): string {
+  const kind = params.taskType === "ask" ? "Ask" : "Build";
+  const repo = params.repoName?.trim() || "Repository";
+  const branch = params.branchName?.trim() || "—";
+  const model = params.modelLabel.trim() || "—";
+  return `${kind} · ${repo} · ${branch} · ${model}`;
+}
+
 export const stripSaveAsPreset = (values: TaskDefinitionFormValues): TaskDefinitionInput => {
   if (values.sourceType === "blank") {
     return {
       sourceType: "blank",
       title: values.title?.trim() ?? "",
       repoId: values.repoId ?? "",
-      requirements: values.requirements?.trim() ?? "",
-      taskType: values.taskType ?? "plan",
+      prompt: values.prompt?.trim() ?? "",
+      taskType: values.taskType ?? "build",
       provider: values.provider ?? "codex",
       model: values.model?.trim() ?? "",
       providerProfile: values.providerProfile ?? "high",
@@ -98,7 +112,7 @@ export const stripSaveAsPreset = (values: TaskDefinitionFormValues): TaskDefinit
       repoId: values.repoId ?? "",
       issueNumber: values.issueNumber ?? 0,
       includeComments: values.includeComments ?? true,
-      taskType: values.taskType === "build" || values.taskType === "ask" ? values.taskType : "plan",
+      taskType: values.taskType === "build" || values.taskType === "ask" ? values.taskType : "build",
       provider: values.provider ?? "codex",
       model: values.model?.trim() ?? "",
       providerProfile: values.providerProfile ?? "high",
@@ -133,8 +147,10 @@ export function TaskDefinitionFields({
   const canReadRepositoryMetadata = can("repo:read");
 
   const selectedRepoId = Form.useWatch("repoId", form);
+  const selectedModel = Form.useWatch("model", form);
+  const selectedBaseBranch = Form.useWatch("baseBranch", form);
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
-  const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "plan";
+  const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
   const selectedIssueNumber = Form.useWatch("issueNumber", form);
   const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
@@ -196,6 +212,35 @@ export function TaskDefinitionFields({
   }, [form, settings, syncSettingsDefaults]);
 
   useEffect(() => {
+    if (selectedSourceType !== "blank") {
+      return;
+    }
+    if (form.isFieldTouched("title")) {
+      return;
+    }
+    const modelLabel =
+      providerModels.find((option) => option.value === selectedModel)?.label ??
+      (typeof selectedModel === "string" ? selectedModel : "");
+    form.setFieldValue(
+      "title",
+      buildBlankAutoTaskTitle({
+        taskType: selectedTaskType,
+        repoName: selectedRepository?.name,
+        branchName: typeof selectedBaseBranch === "string" ? selectedBaseBranch : undefined,
+        modelLabel
+      })
+    );
+  }, [
+    form,
+    providerModels,
+    selectedBaseBranch,
+    selectedModel,
+    selectedRepository?.name,
+    selectedSourceType,
+    selectedTaskType
+  ]);
+
+  useEffect(() => {
     if (!selectedRepoId || !canReadRepositoryMetadata) {
       setGitHubIssues([]);
       setGitHubPullRequests([]);
@@ -226,9 +271,9 @@ export function TaskDefinitionFields({
     };
   }, [canReadRepositoryMetadata, selectedRepoId]);
 
-  const requirementsTitle = isBlankSource ? (effectiveTaskType === "ask" ? "Question" : "Requirements") : "Imported Context";
+  const promptPanelTitle = isBlankSource ? (effectiveTaskType === "ask" ? "Question" : "Prompt") : "Imported Context";
 
-  const renderRequirementsPanel = (repository: Repository | null) => {
+  const renderPromptPanel = (repository: Repository | null) => {
     if (isBlankSource) {
       return (
         <>
@@ -237,13 +282,18 @@ export function TaskDefinitionFields({
             label="Title"
             rules={[{ required: true, message: "Enter a task title" }]}
             style={{ marginBottom: 16 }}
+            extra={
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Suggested from task type, repository, base branch, and model until you edit this field.
+              </Typography.Text>
+            }
           >
-            <Input placeholder="Refresh README and docs structure" size="large" />
+            <Input placeholder="Build · my-org/my-repo · main · GPT-5.4" size="large" />
           </Form.Item>
           <Form.Item
-            name="requirements"
-            label={requirementsTitle}
-            rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter requirements" }]}
+            name="prompt"
+            label={promptPanelTitle}
+            rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]}
             style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
           >
             <Input.TextArea
@@ -252,7 +302,7 @@ export function TaskDefinitionFields({
               placeholder={
                 effectiveTaskType === "ask"
                   ? "Ask a repository question."
-                  : "Describe the requirements, constraints, and expected outcome."
+                  : "Describe the goal, constraints, and expected outcome in your prompt."
               }
             />
           </Form.Item>
@@ -267,7 +317,7 @@ export function TaskDefinitionFields({
             type="info"
             showIcon
             message="Issue content is imported from GitHub"
-            description="The issue title, body, and optional comments become the task requirements. Use the left-side configuration to select the issue and task behavior."
+            description="The issue title, body, and optional comments become the task prompt. Use the left-side configuration to select the issue and task behavior."
           />
           <Form.Item name="title" label="Task Title Override" style={{ marginBottom: 0 }}>
             <Input placeholder="Optional. Leave blank to use the issue title." size="large" />
@@ -335,16 +385,17 @@ export function TaskDefinitionFields({
               options={sourceOptions}
               onChange={(value: TaskSourceType) => {
                 if (value === "pull_request") {
-                  form.setFieldValue("taskType", "plan");
+                  form.setFieldValue("taskType", "build");
                   form.setFieldValue("branchStrategy", "work_on_branch");
                 }
 
-                if (value === "issue" && form.getFieldValue("taskType") === "review") {
-                  form.setFieldValue("taskType", "plan");
+                if (value !== "blank") {
+                  form.setFieldValue("prompt", undefined);
                 }
 
-                if (value !== "blank") {
-                  form.setFieldValue("requirements", undefined);
+                if (value === "issue" || value === "pull_request") {
+                  form.setFieldValue("title", undefined);
+                  form.setFields([{ name: "title", touched: false }]);
                 }
               }}
             />
@@ -365,9 +416,7 @@ export function TaskDefinitionFields({
             <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
               <Select
                 options={[
-                  { label: "Plan", value: "plan" },
                   { label: "Build", value: "build" },
-                  { label: "Review", value: "review" },
                   { label: "Ask", value: "ask" }
                 ]}
               />
@@ -419,7 +468,6 @@ export function TaskDefinitionFields({
               <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
                 <Select
                   options={[
-                    { label: "Plan", value: "plan" },
                     { label: "Build", value: "build" },
                     { label: "Ask", value: "ask" }
                   ]}
@@ -489,7 +537,7 @@ export function TaskDefinitionFields({
       <Col xs={24} xl={16}>
         <Card
           bordered={false}
-          title={requirementsTitle}
+          title={promptPanelTitle}
           styles={{
             body: {
               display: "flex",
@@ -498,7 +546,7 @@ export function TaskDefinitionFields({
             }
           }}
         >
-          {renderRequirementsPanel(selectedRepository)}
+          {renderPromptPanel(selectedRepository)}
         </Card>
       </Col>
     </Row>

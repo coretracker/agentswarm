@@ -20,7 +20,7 @@ export function TaskCreatePage() {
   const [submitting, setSubmitting] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
-  const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "plan";
+  const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
   const isIssueSource = selectedSourceType === "issue";
   const isPullRequestSource = selectedSourceType === "pull_request";
 
@@ -29,13 +29,9 @@ export function TaskCreatePage() {
       ? "New Task From Issue"
       : selectedSourceType === "pull_request"
         ? "New Task From Pull Request"
-        : selectedTaskType === "review"
-          ? "New Review Task"
-          : selectedTaskType === "build"
-            ? "New Build Task"
-          : selectedTaskType === "ask"
-            ? "New Ask Task"
-            : "New Plan Task";
+        : selectedTaskType === "ask"
+          ? "New Ask Task"
+          : "New Build Task";
 
   const createTaskFromDefinition = (definition: TaskDefinitionInput) => {
     if (definition.sourceType === "issue") {
@@ -68,7 +64,7 @@ export function TaskCreatePage() {
     return api.createTask({
       title: definition.title,
       repoId: definition.repoId,
-      requirements: definition.requirements,
+      prompt: definition.prompt,
       taskType: definition.taskType,
       provider: definition.provider,
       providerProfile: definition.providerProfile,
@@ -85,13 +81,7 @@ export function TaskCreatePage() {
       const task = await createTaskFromDefinition(definition);
 
       messageApi.success(
-        task.taskType === "review"
-          ? "Review task created and started"
-          : task.taskType === "ask"
-            ? "Ask task created and started"
-            : task.taskType === "build"
-              ? "Build task created and build started"
-              : "Plan task created and planning started"
+        task.taskType === "ask" ? "Ask task created and started" : "Build task created and build started"
       );
       if (values.saveAsPreset) {
         try {
@@ -125,7 +115,7 @@ export function TaskCreatePage() {
                 {pageTitle}
               </Typography.Title>
               <Typography.Text type="secondary">
-                Configure the task on the left and define the work context on the right.
+                Configure the task on the left and write the prompt on the right.
               </Typography.Text>
             </Flex>
             <Space>

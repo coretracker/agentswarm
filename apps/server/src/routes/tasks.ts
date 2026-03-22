@@ -14,8 +14,8 @@ import type { TaskStore } from "../services/task-store.js";
 const createTaskSchema = z.object({
   title: z.string().min(1),
   repoId: z.string().min(1),
-  requirements: z.string().min(1),
-  taskType: z.enum(["plan", "build", "review", "ask"]).optional(),
+  prompt: z.string().min(1),
+  taskType: z.enum(["build", "ask"]).optional(),
   provider: z.enum(["codex", "claude"]).optional(),
   providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
   modelOverride: z.string().trim().min(1).optional(),
@@ -26,7 +26,7 @@ const createTaskSchema = z.object({
 });
 
 const triggerTaskActionSchema = z.object({
-  action: z.enum(["plan", "build", "iterate", "review", "ask"]),
+  action: z.enum(["build", "ask"]),
   iterateInput: z.string().optional()
 });
 
@@ -47,7 +47,7 @@ const updateTaskPlanSchema = z.object({
 
 const createTaskMessageSchema = z.object({
   content: z.string().trim().min(1),
-  action: z.enum(["plan", "build", "review", "ask", "comment"]).optional()
+  action: z.enum(["build", "ask", "comment"]).optional()
 });
 
 const archivedTaskReadOnlyMessage = "Archived tasks are read-only";
@@ -70,13 +70,12 @@ const getInitialAction = (task: Pick<Task, "taskType" | "planningMode" | "planMa
     return "ask";
   }
 
-  if (task.taskType === "build") {
+  if (task.taskType === "build" || task.taskType === "plan") {
     return "build";
   }
 
-  return task.planMarkdown || task.planningMode === "direct-build" ? "build" : "plan";
+  return task.planMarkdown || task.planningMode === "direct-build" ? "build" : "build";
 };
-
 
 const getChatActionForTask = (task: Task): TaskAction => {
   if (task.taskType === "review") {
@@ -87,7 +86,7 @@ const getChatActionForTask = (task: Task): TaskAction => {
     return "ask";
   }
 
-  if (task.taskType === "build") {
+  if (task.taskType === "build" || task.taskType === "plan") {
     return "build";
   }
 
@@ -95,7 +94,7 @@ const getChatActionForTask = (task: Task): TaskAction => {
     return "build";
   }
 
-  return "plan";
+  return "build";
 };
 
 export const registerTaskRoutes = (
@@ -137,14 +136,21 @@ export const registerTaskRoutes = (
     return deps.taskStore.listRuns(task.id);
   });
 
-  app.get<{ Params: { id: string } }>("/tasks/:id/live-diff", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
-    const task = await deps.taskStore.getTask(request.params.id);
-    if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
-    }
+  app.get<{ Params: { id: string }; Querystring: { base?: string } }>(
+    "/tasks/:id/live-diff",
+    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
+    async (request, reply) => {
+      const task = await deps.taskStore.getTask(request.params.id);
+      if (!task) {
+        return reply.status(404).send({ message: "Task not found" });
+      }
 
-    return deps.spawner.getLiveTaskDiff(task);
-  });
+      const rawBase = request.query.base;
+      const base = typeof rawBase === "string" ? rawBase.trim() : "";
+
+      return deps.spawner.getLiveTaskDiff(task, base ? { compareBaseRef: base } : undefined);
+    }
+  );
 
   app.post("/tasks", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:list"]) }, async (request, reply) => {
     const parsed = createTaskSchema.safeParse(request.body);
@@ -183,10 +189,11 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    // all valid actions are allowed regardless of the task type
-
-    if (parsed.data.action === "iterate" && !(parsed.data.iterateInput ?? "").trim()) {
-      return reply.status(400).send({ message: "iterateInput is required for iterate action" });
+    if (parsed.data.action === "review") {
+      return reply.status(409).send({ message: "Review mode has been removed." });
+    }
+    if (parsed.data.action === "plan") {
+      return reply.status(409).send({ message: "Plan mode has been removed." });
     }
 
     const accepted = await deps.scheduler.triggerAction(
@@ -426,14 +433,6 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    if (task.taskType !== "plan" && task.taskType !== "build") {
-      return reply.status(409).send({ message: "Only implementation tasks can be pushed" });
-    }
-
-    if (task.status !== "review" && task.status !== "failed") {
-      return reply.status(409).send({ message: "Only completed implementation tasks can be pushed" });
-    }
-
     const pushed = await deps.spawner.pushTaskBranch(task);
     return reply.send(await withBranchSyncCounts(deps.spawner, pushed));
   });
@@ -446,14 +445,6 @@ export const registerTaskRoutes = (
 
     if (task.status === "archived") {
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
-    }
-
-    if (task.taskType !== "plan" && task.taskType !== "build") {
-      return reply.status(409).send({ message: "Only implementation tasks can be pulled" });
-    }
-
-    if (task.status !== "review" && task.status !== "failed") {
-      return reply.status(409).send({ message: "Only completed implementation tasks can be pulled" });
     }
 
     const pulled = await deps.spawner.pullTaskBranch(task);
@@ -470,16 +461,8 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    if (task.taskType !== "plan" && task.taskType !== "build") {
-      return reply.status(409).send({ message: "Only implementation tasks can be merged" });
-    }
-
     if (task.branchStrategy !== "feature_branch") {
       return reply.status(409).send({ message: "Only feature-branch tasks have a mergeable branch" });
-    }
-
-    if (task.status !== "review" && task.status !== "accepted") {
-      return reply.status(409).send({ message: "Only completed tasks can be merged" });
     }
 
     if (!task.branchName) {
@@ -495,7 +478,10 @@ export const registerTaskRoutes = (
     }
 
     const merged = await deps.spawner.mergeTaskBranch(task);
-    return reply.send(await withBranchSyncCounts(deps.spawner, merged));
+    await deps.taskStore.archiveTask(merged.id);
+    await deps.taskStore.appendLog(merged.id, "Task archived after merge.");
+    const refreshed = await deps.taskStore.getTask(merged.id);
+    return reply.send(await withBranchSyncCounts(deps.spawner, refreshed ?? merged));
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/accept", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {

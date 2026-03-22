@@ -21,12 +21,7 @@ import {
   normalizeProvider,
   normalizeProviderProfile
 } from "../lib/provider-config.js";
-import {
-  buildExecutionSummaryFromPlan,
-  buildExecutionSummaryFromRequirements,
-  classifyTaskComplexity,
-  extractReviewVerdict
-} from "../lib/task-intelligence.js";
+import { buildExecutionSummaryFromPlan, buildExecutionSummaryFromPrompt, classifyTaskComplexity, extractReviewVerdict } from "../lib/task-intelligence.js";
 
 const TASK_KEY_PREFIX = "agentswarm:task:";
 const TASK_LOG_KEY_PREFIX = "agentswarm:task_logs:";
@@ -51,11 +46,11 @@ const getInitialAction = (task: { taskType: Task["taskType"]; planningMode: Task
     return "ask";
   }
 
-  if (task.taskType === "build") {
+  if (task.taskType === "build" || task.taskType === "plan") {
     return "build";
   }
 
-  return task.planMarkdown || task.planningMode === "direct-build" ? "build" : "plan";
+  return "build";
 };
 
 export interface QueueEntry {
@@ -84,12 +79,15 @@ export class TaskStore {
       reasoningEffort?: TaskReasoningEffort | null;
       builtPlanRunIds?: string[];
       currentPlanRunId?: string | null;
+      // Legacy field kept for migration of stored tasks created before the prompt refactor.
+      requirements?: string;
+      prompt?: string;
     };
     const status = legacyTask.status as string;
     const normalizedTask: Task = {
       ...legacyTask,
       pinned: legacyTask.pinned ?? false,
-      taskType: legacyTask.taskType ?? "plan",
+      taskType: legacyTask.taskType ?? "build",
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
@@ -99,7 +97,9 @@ export class TaskStore {
       builtPlanRunIds: Array.isArray(legacyTask.builtPlanRunIds) ? legacyTask.builtPlanRunIds : [],
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
       resultMarkdown: legacyTask.resultMarkdown ?? null,
-      reviewVerdict: legacyTask.reviewVerdict ?? null
+      reviewVerdict: legacyTask.reviewVerdict ?? null,
+      // Prefer the new prompt field; fall back to legacy requirements for older tasks.
+      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim()
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
 
@@ -225,7 +225,7 @@ export class TaskStore {
   async createTask(input: CreateTaskInput, repository: Repository): Promise<Task> {
     const timestamp = nowIso();
     const taskType = input.taskType ?? "plan";
-    const complexity = classifyTaskComplexity(input.title, input.requirements);
+    const complexity = classifyTaskComplexity(input.title, input.prompt);
     const planningMode = taskType === "build" ? "direct-build" : "plan-first";
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
@@ -263,12 +263,12 @@ export class TaskStore {
       currentPlanRunId: null,
       builtPlanRunIds: [],
       workspaceBaseRef: null,
-      requirements: input.requirements,
+      prompt: input.prompt,
       planPath: null,
       planMarkdown: null,
       resultMarkdown: null,
       reviewVerdict: null,
-      executionSummary: buildExecutionSummaryFromRequirements(input.title, input.requirements),
+      executionSummary: buildExecutionSummaryFromPrompt(input.title, input.prompt),
       branchDiff: null,
       latestIterationInput: null,
       lastAction: initialAction,
@@ -287,7 +287,7 @@ export class TaskStore {
     await this.appendMessage(task.id, {
       role: "user",
       action: initialAction,
-      content: input.requirements
+      content: input.prompt
     });
 
     return task;

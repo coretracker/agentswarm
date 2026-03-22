@@ -13,10 +13,10 @@ const collectBulletLines = (text: string, maxItems: number): string[] =>
     .filter(Boolean)
     .slice(0, maxItems);
 
-export function classifyTaskComplexity(title: string, requirements: string): TaskComplexity {
-  const normalized = `${title}\n${requirements}`.trim();
+export function classifyTaskComplexity(title: string, prompt: string): TaskComplexity {
+  const normalized = `${title}\n${prompt}`.trim();
   const length = normalized.length;
-  const bulletCount = collectBulletLines(requirements, 50).length;
+  const bulletCount = collectBulletLines(prompt, 50).length;
   const pathMatches = normalized.match(pathPattern)?.length ?? 0;
   const areaMentions = [
     /frontend/i.test(normalized),
@@ -71,9 +71,9 @@ export function classifyTaskComplexity(title: string, requirements: string): Tas
   return "normal";
 }
 
-export function buildExecutionSummaryFromRequirements(title: string, requirements: string): string {
-  const lines = collectBulletLines(requirements, 8);
-  const pathMatches = Array.from(new Set(requirements.match(pathPattern) ?? [])).slice(0, 6);
+export function buildExecutionSummaryFromPrompt(title: string, prompt: string): string {
+  const lines = collectBulletLines(prompt, 8);
+  const pathMatches = Array.from(new Set(prompt.match(pathPattern) ?? [])).slice(0, 6);
 
   const sections = [
     `# Execution Summary`,
@@ -81,8 +81,8 @@ export function buildExecutionSummaryFromRequirements(title: string, requirement
     `## Goal`,
     `- ${title.trim()}`,
     ``,
-    `## Requirements`,
-    ...(lines.length > 0 ? lines.map((line) => `- ${line.replace(/^[-*]\s*/, "")}`) : ["- No additional requirements provided."])
+    `## Prompt`,
+    ...(lines.length > 0 ? lines.map((line) => `- ${line.replace(/^[-*]\s*/, "")}`) : ["- No additional prompt details provided."])
   ];
 
   if (pathMatches.length > 0) {

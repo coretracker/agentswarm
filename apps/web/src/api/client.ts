@@ -153,7 +153,11 @@ export const api = {
     }),
   listTasks: () => request<Task[]>("/tasks"),
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
-  getTaskLiveDiff: (id: string) => request<TaskLiveDiff>(`/tasks/${id}/live-diff`),
+  getTaskLiveDiff: (id: string, options?: { baseRef?: string | null }) => {
+    const base = options?.baseRef?.trim();
+    const query = base ? `?base=${encodeURIComponent(base)}` : "";
+    return request<TaskLiveDiff>(`/tasks/${id}/live-diff${query}`);
+  },
   listTaskMessages: (id: string) => request<TaskMessage[]>(`/tasks/${id}/messages`),
   listTaskRuns: (id: string) => request<TaskRun[]>(`/tasks/${id}/runs`),
   createTask: (input: CreateTaskInput) =>
