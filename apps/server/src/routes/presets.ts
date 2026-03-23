@@ -1,3 +1,4 @@
+import type { TaskStartMode } from "@agentswarm/shared-types";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AuthService } from "../lib/auth.js";
@@ -6,7 +7,10 @@ import { GitHubImportError } from "../services/github-import-service.js";
 import type { PresetStore } from "../services/preset-store.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SchedulerService } from "../services/scheduler.js";
+import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
+import { applyTaskStartMode } from "../lib/task-start-mode.js";
+import { withBranchSyncCounts } from "./tasks.js";
 
 const presetSchema = z.discriminatedUnion("sourceType", [
   z.object({
@@ -19,7 +23,8 @@ const presetSchema = z.discriminatedUnion("sourceType", [
     model: z.string().trim().min(1),
     providerProfile: z.enum(["low", "medium", "high", "max"]),
     baseBranch: z.string().trim().min(1),
-    branchStrategy: z.enum(["feature_branch", "work_on_branch"])
+    branchStrategy: z.enum(["feature_branch", "work_on_branch"]),
+    startMode: z.enum(["run_now", "prepare_workspace", "idle"]).optional()
   }),
   z.object({
     sourceType: z.literal("issue"),
@@ -32,7 +37,8 @@ const presetSchema = z.discriminatedUnion("sourceType", [
     model: z.string().trim().min(1),
     providerProfile: z.enum(["low", "medium", "high", "max"]),
     baseBranch: z.string().trim().min(1),
-    branchStrategy: z.enum(["feature_branch", "work_on_branch"])
+    branchStrategy: z.enum(["feature_branch", "work_on_branch"]),
+    startMode: z.enum(["run_now", "prepare_workspace", "idle"]).optional()
   }),
   z.object({
     sourceType: z.literal("pull_request"),
@@ -56,6 +62,7 @@ export const registerPresetRoutes = (
     repositoryStore: RepositoryStore;
     taskStore: TaskStore;
     scheduler: SchedulerService;
+    spawner: SpawnerService;
     githubImportService: GitHubImportService;
     auth: AuthService;
   }
@@ -136,57 +143,81 @@ export const registerPresetRoutes = (
       const overrideBaseBranch = parsedSpawnInput.data.baseBranch;
 
       try {
-        const task =
-          preset.definition.sourceType === "issue"
-            ? await deps.taskStore.createTask(
-                await deps.githubImportService.buildTaskInputFromIssue(repository, {
-                  repoId: preset.definition.repoId,
-                  issueNumber: preset.definition.issueNumber,
-                  includeComments: preset.definition.includeComments,
-                  taskType: preset.definition.taskType,
-                  title: preset.definition.title,
-                  provider: preset.definition.provider,
-                  providerProfile: preset.definition.providerProfile,
-                  model: preset.definition.model,
-                  baseBranch: overrideBaseBranch ?? preset.definition.baseBranch,
-                  branchStrategy: preset.definition.branchStrategy
-                }),
-                repository
-              )
-            : preset.definition.sourceType === "pull_request"
-              ? await deps.taskStore.createTask(
-                  await deps.githubImportService.buildTaskInputFromPullRequest(repository, {
-                    repoId: preset.definition.repoId,
-                    pullRequestNumber: preset.definition.pullRequestNumber,
-                    title: preset.definition.title,
-                    provider: preset.definition.provider,
-                    providerProfile: preset.definition.providerProfile,
-                    model: preset.definition.model
-                  }),
-                  repository
-                )
-              : await deps.taskStore.createTask(
-                  {
-                    title: preset.definition.title,
-                    repoId: preset.definition.repoId,
-                    prompt: preset.definition.prompt,
-                    taskType: preset.definition.taskType,
-                    provider: preset.definition.provider,
-                    providerProfile: preset.definition.providerProfile,
-                    model: preset.definition.model,
-                    baseBranch: overrideBaseBranch ?? preset.definition.baseBranch,
-                    branchStrategy: preset.definition.branchStrategy
-                },
-                repository
-              );
+        let task;
+        let startMode: TaskStartMode = "run_now";
 
-        const accepted = await deps.scheduler.triggerAction(task.id, task.lastAction ?? "plan");
-        if (!accepted) {
-          return reply.status(409).send({ message: "Task execution could not be started" });
+        if (preset.definition.sourceType === "issue") {
+          const rawInput = await deps.githubImportService.buildTaskInputFromIssue(repository, {
+            repoId: preset.definition.repoId,
+            issueNumber: preset.definition.issueNumber,
+            includeComments: preset.definition.includeComments,
+            taskType: preset.definition.taskType,
+            title: preset.definition.title,
+            provider: preset.definition.provider,
+            providerProfile: preset.definition.providerProfile,
+            model: preset.definition.model,
+            baseBranch: overrideBaseBranch ?? preset.definition.baseBranch,
+            branchStrategy: preset.definition.branchStrategy,
+            startMode: preset.definition.startMode
+          });
+          const { startMode: sm, ...createFields } = rawInput;
+          startMode = sm ?? "run_now";
+          task = await deps.taskStore.createTask({ ...createFields, startMode }, repository);
+        } else if (preset.definition.sourceType === "pull_request") {
+          task = await deps.taskStore.createTask(
+            await deps.githubImportService.buildTaskInputFromPullRequest(repository, {
+              repoId: preset.definition.repoId,
+              pullRequestNumber: preset.definition.pullRequestNumber,
+              title: preset.definition.title,
+              provider: preset.definition.provider,
+              providerProfile: preset.definition.providerProfile,
+              model: preset.definition.model
+            }),
+            repository
+          );
+          startMode = "run_now";
+        } else {
+          startMode = preset.definition.startMode ?? "run_now";
+          task = await deps.taskStore.createTask(
+            {
+              title: preset.definition.title,
+              repoId: preset.definition.repoId,
+              prompt: preset.definition.prompt,
+              taskType: preset.definition.taskType,
+              provider: preset.definition.provider,
+              providerProfile: preset.definition.providerProfile,
+              model: preset.definition.model,
+              baseBranch: overrideBaseBranch ?? preset.definition.baseBranch,
+              branchStrategy: preset.definition.branchStrategy,
+              startMode: preset.definition.startMode ?? "run_now"
+            },
+            repository
+          );
         }
 
-        const refreshed = await deps.taskStore.getTask(task.id);
-        return reply.status(201).send(refreshed);
+        try {
+          const result = await applyTaskStartMode(task, startMode, {
+            taskStore: deps.taskStore,
+            scheduler: deps.scheduler,
+            spawner: deps.spawner
+          });
+          return reply.status(201).send(await withBranchSyncCounts(deps.spawner, result));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Preset spawn follow-up failed";
+          if (startMode === "prepare_workspace") {
+            await deps.taskStore.patchTask(task.id, {
+              status: "failed",
+              enqueued: false,
+              errorMessage: message,
+              finishedAt: new Date().toISOString()
+            });
+            await deps.taskStore.appendLog(task.id, `Workspace preparation failed: ${message}`);
+          }
+          if (startMode === "run_now") {
+            return reply.status(409).send({ message });
+          }
+          return reply.status(500).send({ message });
+        }
       } catch (error) {
         if (error instanceof GitHubImportError) {
           return reply.status(error.statusCode).send({ message: error.message });

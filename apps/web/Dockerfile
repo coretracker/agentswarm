@@ -1,5 +1,7 @@
 FROM node:20-alpine
 
+RUN apk add --no-cache python3 make g++
+
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_OPTIONS=--max-old-space-size=1024
 

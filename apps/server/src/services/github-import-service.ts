@@ -246,6 +246,7 @@ export class GitHubImportService {
       repoId: repository.id,
       prompt,
       taskType,
+      startMode: input.startMode,
       provider: input.provider,
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,

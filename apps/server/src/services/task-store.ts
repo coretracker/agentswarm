@@ -13,6 +13,7 @@ import {
   type TaskMessage,
   type TaskReasoningEffort,
   type TaskRun,
+  type TaskStartMode,
   type TaskStatus
 } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
@@ -22,6 +23,22 @@ import {
   normalizeProviderProfile
 } from "../lib/provider-config.js";
 import { buildExecutionSummaryFromPlan, buildExecutionSummaryFromPrompt, classifyTaskComplexity, extractReviewVerdict } from "../lib/task-intelligence.js";
+
+/** When creating with Interactive prep, make the task title identifiable without duplicating markers. */
+function resolveTaskTitleForCreate(input: CreateTaskInput): string {
+  const raw = (input.title ?? "").trim();
+  const startMode = input.startMode ?? "run_now";
+  if (startMode !== "prepare_workspace" || !raw) {
+    return raw;
+  }
+  if (/\(interactive\)\s*$/i.test(raw)) {
+    return raw;
+  }
+  if (/^interactive(\s|·)/i.test(raw)) {
+    return raw;
+  }
+  return `${raw} (Interactive)`;
+}
 
 const TASK_KEY_PREFIX = "agentswarm:task:";
 const TASK_LOG_KEY_PREFIX = "agentswarm:task_logs:";
@@ -120,6 +137,7 @@ export class TaskStore {
       status === "planning" ||
       status === "planned" ||
       status === "build_queued" ||
+      status === "preparing_workspace" ||
       status === "building" ||
       status === "review_queued" ||
       status === "reviewing" ||
@@ -224,8 +242,11 @@ export class TaskStore {
 
   async createTask(input: CreateTaskInput, repository: Repository): Promise<Task> {
     const timestamp = nowIso();
+    const title = resolveTaskTitleForCreate(input);
     const taskType = input.taskType ?? "plan";
-    const complexity = classifyTaskComplexity(input.title, input.prompt);
+    const promptRaw = (input.prompt ?? "").trim();
+    const prompt = promptRaw.length > 0 ? promptRaw : "(No prompt provided.)";
+    const complexity = classifyTaskComplexity(title, prompt);
     const planningMode = taskType === "build" ? "direct-build" : "plan-first";
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
@@ -240,9 +261,12 @@ export class TaskStore {
           : taskType === "build" || planningMode === "direct-build"
             ? "build"
             : "plan";
+    const startMode: TaskStartMode = input.startMode ?? "run_now";
+    const initialStatus: TaskStatus =
+      startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
     const task: Task = {
       id: nanoid(),
-      title: input.title,
+      title,
       pinned: false,
       repoId: repository.id,
       repoName: repository.name,
@@ -263,21 +287,21 @@ export class TaskStore {
       currentPlanRunId: null,
       builtPlanRunIds: [],
       workspaceBaseRef: null,
-      prompt: input.prompt,
+      prompt,
       planPath: null,
       planMarkdown: null,
       resultMarkdown: null,
       reviewVerdict: null,
-      executionSummary: buildExecutionSummaryFromPrompt(input.title, input.prompt),
+      executionSummary: buildExecutionSummaryFromPrompt(title, prompt),
       branchDiff: null,
       latestIterationInput: null,
       lastAction: initialAction,
-      status: getQueuedStatusForAction(initialAction),
+      status: initialStatus,
       logs: [],
       enqueued: false,
       createdAt: timestamp,
       updatedAt: timestamp,
-      startedAt: null,
+      startedAt: startMode === "prepare_workspace" ? timestamp : null,
       finishedAt: null,
       errorMessage: null
     };
@@ -287,7 +311,7 @@ export class TaskStore {
     await this.appendMessage(task.id, {
       role: "user",
       action: initialAction,
-      content: input.prompt
+      content: prompt
     });
 
     return task;

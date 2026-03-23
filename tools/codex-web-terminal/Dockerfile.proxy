@@ -1,0 +1,23 @@
+# Docker CLI binary only (connects to host daemon via mounted /var/run/docker.sock).
+FROM docker:27-cli AS dockercli
+
+FROM node:20-bookworm-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY server.mjs ./
+COPY public ./public/
+
+ENV NODE_ENV=production
+EXPOSE 8765
+
+CMD ["node", "server.mjs"]

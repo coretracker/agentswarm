@@ -21,6 +21,8 @@ import type {
   SystemSettings,
   TaskDefinitionInput,
   Task,
+  OpenAiDiffAssistInput,
+  OpenAiDiffAssistResult,
   TaskLiveDiff,
   TaskMessage,
   TaskRun,
@@ -40,6 +42,11 @@ import type {
 export interface ProviderModelsResponse {
   models: ProviderModelOption[];
   source: "api" | "static";
+}
+
+export interface TaskInteractiveTerminalStatus {
+  available: boolean;
+  reason?: string;
 }
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
@@ -153,11 +160,25 @@ export const api = {
     }),
   listTasks: () => request<Task[]>("/tasks"),
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
-  getTaskLiveDiff: (id: string, options?: { baseRef?: string | null }) => {
+  getTaskInteractiveTerminalStatus: (id: string) =>
+    request<TaskInteractiveTerminalStatus>(`/tasks/${id}/interactive-terminal/status`),
+  getTaskLiveDiff: (id: string, options?: { baseRef?: string | null; diffKind?: "compare" | "working" }) => {
+    const params = new URLSearchParams();
     const base = options?.baseRef?.trim();
-    const query = base ? `?base=${encodeURIComponent(base)}` : "";
-    return request<TaskLiveDiff>(`/tasks/${id}/live-diff${query}`);
+    if (base) {
+      params.set("base", base);
+    }
+    if (options?.diffKind === "working") {
+      params.set("kind", "working");
+    }
+    const query = params.toString();
+    return request<TaskLiveDiff>(`/tasks/${id}/live-diff${query ? `?${query}` : ""}`);
   },
+  openAiDiffAssist: (taskId: string, input: OpenAiDiffAssistInput) =>
+    request<OpenAiDiffAssistResult>(`/tasks/${taskId}/openai/diff-assist`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
   listTaskMessages: (id: string) => request<TaskMessage[]>(`/tasks/${id}/messages`),
   listTaskRuns: (id: string) => request<TaskRun[]>(`/tasks/${id}/runs`),
   createTask: (input: CreateTaskInput) =>

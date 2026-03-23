@@ -26,6 +26,7 @@ import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerImportRoutes } from "./routes/imports.js";
 import { registerPresetRoutes } from "./routes/presets.js";
+import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
 
 const bootstrap = async (): Promise<void> => {
   const app = Fastify({ logger: true });
@@ -66,13 +67,20 @@ const bootstrap = async (): Promise<void> => {
   registerAuthRoutes(app, { auth, userStore, sessionStore });
   registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
   registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
-  registerTaskRoutes(app, { taskStore, repositoryStore, scheduler, spawner, auth });
-  registerPresetRoutes(app, { presetStore, repositoryStore, taskStore, scheduler, githubImportService, auth });
+  registerTaskRoutes(app, { taskStore, repositoryStore, scheduler, spawner, settingsStore, auth });
+  registerPresetRoutes(app, { presetStore, repositoryStore, taskStore, scheduler, spawner, githubImportService, auth });
   registerRepositoryRoutes(app, { repositoryStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
-  registerImportRoutes(app, { githubImportService, repositoryStore, taskStore, scheduler, auth });
+  registerImportRoutes(app, { githubImportService, repositoryStore, taskStore, scheduler, spawner, auth });
 
   app.get("/health", async () => ({ ok: true }));
+
+  await app.ready();
+  attachTaskInteractiveTerminalUpgrade(app.server, {
+    auth,
+    taskStore,
+    settingsStore
+  });
 
   const io = new SocketIOServer(app.server, {
     cors: {

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import type { TaskDefinitionInput, TaskSourceType, TaskType } from "@agentswarm/shared-types";
+import type { TaskDefinitionInput, TaskSourceType, TaskStartMode, TaskType } from "@agentswarm/shared-types";
 import { Button, Flex, Form, Space, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { useAuth } from "./auth-provider";
@@ -21,17 +21,41 @@ export function TaskCreatePage() {
   const [messageApi, contextHolder] = message.useMessage();
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
+  const selectedStartMode = (Form.useWatch("startMode", form) as TaskStartMode | undefined) ?? "run_now";
   const isIssueSource = selectedSourceType === "issue";
   const isPullRequestSource = selectedSourceType === "pull_request";
+  const isBlankOrIssueInteractivePrep =
+    (selectedSourceType === "blank" || selectedSourceType === "issue") && selectedStartMode === "prepare_workspace";
 
   const pageTitle =
     selectedSourceType === "issue"
-      ? "New Task From Issue"
+      ? isBlankOrIssueInteractivePrep
+        ? "New Interactive Task From Issue"
+        : "New Task From Issue"
       : selectedSourceType === "pull_request"
         ? "New Task From Pull Request"
-        : selectedTaskType === "ask"
-          ? "New Ask Task"
-          : "New Build Task";
+        : isBlankOrIssueInteractivePrep
+          ? "New Interactive Task"
+          : selectedTaskType === "ask"
+            ? "New Ask Task"
+            : "New Build Task";
+
+  const startMessageForDefinition = (definition: TaskDefinitionInput): string => {
+    if (definition.sourceType === "pull_request") {
+      return "Pull request task created and started";
+    }
+    const mode: TaskStartMode = definition.startMode ?? "run_now";
+    if (mode === "prepare_workspace") {
+      return "Task created; preparing workspace in the background";
+    }
+    if (mode === "idle") {
+      return "Task created; start a run from the task when you are ready";
+    }
+    if (definition.sourceType === "issue") {
+      return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
+    }
+    return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
+  };
 
   const createTaskFromDefinition = (definition: TaskDefinitionInput) => {
     if (definition.sourceType === "issue") {
@@ -45,7 +69,8 @@ export function TaskCreatePage() {
         providerProfile: definition.providerProfile,
         modelOverride: definition.model || undefined,
         baseBranch: definition.baseBranch,
-        branchStrategy: definition.branchStrategy
+        branchStrategy: definition.branchStrategy,
+        startMode: definition.startMode ?? "run_now"
       });
     }
 
@@ -66,6 +91,7 @@ export function TaskCreatePage() {
       repoId: definition.repoId,
       prompt: definition.prompt,
       taskType: definition.taskType,
+      startMode: definition.startMode ?? "run_now",
       provider: definition.provider,
       providerProfile: definition.providerProfile,
       modelOverride: definition.model || undefined,
@@ -80,9 +106,7 @@ export function TaskCreatePage() {
       const definition = stripSaveAsPreset(values);
       const task = await createTaskFromDefinition(definition);
 
-      messageApi.success(
-        task.taskType === "ask" ? "Ask task created and started" : "Build task created and build started"
-      );
+      messageApi.success(startMessageForDefinition(definition));
       if (values.saveAsPreset) {
         try {
           await api.createPreset(definition);

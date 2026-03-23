@@ -9,6 +9,7 @@ import {
   getTaskBranchStrategyLabel,
   getTaskStatusLabel,
   getTaskTypeLabel,
+  isActiveTaskStatus,
   type Task,
   type TaskAction,
   type TaskMessageAction,
@@ -34,10 +35,12 @@ import {
   Form,
   Input,
   Modal,
+  Segmented,
   Select,
   Space,
   Tag,
   Tabs,
+  Tooltip,
   Typography,
   message
 } from "antd";
@@ -47,7 +50,7 @@ import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import { Diff, Hunk } from "react-diff-view";
 import remarkGfm from "remark-gfm";
-import { api } from "../src/api/client";
+import { api, type TaskInteractiveTerminalStatus } from "../src/api/client";
 import { usePresets } from "../src/hooks/usePresets";
 import { useTask } from "../src/hooks/useTask";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -56,24 +59,7 @@ import { useTaskRuns } from "../src/hooks/useTaskRuns";
 import { normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
 import { estimateCost, formatCost } from "../src/utils/pricing";
 import { useAuth } from "./auth-provider";
-
-const statusColor: Record<Task["status"], string> = {
-  plan_queued: "gold",
-  planning: "processing",
-  planned: "purple",
-  build_queued: "cyan",
-  building: "blue",
-  review_queued: "geekblue",
-  reviewing: "geekblue",
-  ask_queued: "magenta",
-  asking: "magenta",
-  review: "orange",
-  answered: "lime",
-  accepted: "green",
-  archived: "default",
-  cancelled: "default",
-  failed: "red"
-};
+import { TaskDiffOpenAiPanel } from "./task-diff-openai-panel";
 
 const runStatusColor: Record<TaskRun["status"], string> = {
   running: "processing",
@@ -387,6 +373,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [liveDiffLoading, setLiveDiffLoading] = useState(false);
   const [liveDiffError, setLiveDiffError] = useState<string | null>(null);
   const [liveDiffRefreshKey, setLiveDiffRefreshKey] = useState(0);
+  const [diffLiveKind, setDiffLiveKind] = useState<"compare" | "working">("compare");
   const [diffCompareBaseRef, setDiffCompareBaseRef] = useState<string | null>(null);
   const [diffBranches, setDiffBranches] = useState<GitHubBranchReference[]>([]);
   const [diffBranchesLoading, setDiffBranchesLoading] = useState(false);
@@ -406,7 +393,23 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [buildingFromRunId, setBuildingFromRunId] = useState<string | null>(null);
   const [selectedChatAction, setSelectedChatAction] = useState<ComposerAction>("build");
   const [submitting, setSubmitting] = useState<
-    null | "plan" | "build" | "review" | "ask" | "cancel" | "config" | "pull" | "push" | "merge" | "archive" | "delete" | "continue" | "fix" | "savePlan" | "message" | "pin"
+    | null
+    | "plan"
+    | "build"
+    | "review"
+    | "ask"
+    | "cancel"
+    | "config"
+    | "pull"
+    | "push"
+    | "merge"
+    | "archive"
+    | "delete"
+    | "continue"
+    | "fix"
+    | "savePlan"
+    | "message"
+    | "pin"
   >(null);
   const [messageApi, contextHolder] = message.useMessage();
   const selectedChatActionRef = useRef(false);
@@ -418,6 +421,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [spawnBaseBranch, setSpawnBaseBranch] = useState<string | undefined>();
   const [spawnModalOpen, setSpawnModalOpen] = useState(false);
   const [spawningId, setSpawningId] = useState<string | null>(null);
+  const [interactiveTerminalStatus, setInteractiveTerminalStatus] = useState<TaskInteractiveTerminalStatus | null>(null);
 
   const taskType = task?.taskType ?? "build";
   const isPlanTask = taskType === "plan";
@@ -434,14 +438,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     task?.status === "build_queued" ||
     task?.status === "review_queued" ||
     task?.status === "ask_queued";
-  const isActive =
-    task?.status === "planning" ||
-    task?.status === "building" ||
-    task?.status === "reviewing" ||
-    task?.status === "asking";
+  const isActive = task ? isActiveTaskStatus(task.status) : false;
   const canCancel = canEditTask && (isQueued || isActive);
   const hasBranchForSync = isPlanTask || isBuildTask || isAskTask;
-  const canPull = canEditTask && hasBranchForSync && !!task?.branchName && !isArchived && (task?.status === "review" || task?.status === "failed" || task?.status === "accepted" || task?.status === "answered" || task?.status === "cancelled");
+  const canPull = canEditTask && hasBranchForSync && !!task?.branchName && !isArchived && !isActive;
   const canPush = canPull;
   const canMerge =
     canEditTask &&
@@ -482,21 +482,24 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)) ||
     (isImplementationTask && branchStrategyInput !== currentTaskBranchStrategy);
 
-  const resultStatusText = isPlanTask
-    ? task?.status === "plan_queued"
-      ? "Plan queued"
-      : "Planning in progress"
-    : isBuildTask
-      ? task?.status === "build_queued"
-        ? "Build queued"
-        : "Build in progress"
-    : isReviewTask
-      ? task?.status === "review_queued"
-        ? "Review queued"
-        : "Review in progress"
-      : task?.status === "ask_queued"
-        ? "Question queued"
-        : "Answer in progress";
+  const resultStatusText =
+    task?.status === "preparing_workspace"
+      ? "Preparing workspace"
+      : isPlanTask
+        ? task?.status === "plan_queued"
+          ? "Plan queued"
+          : "Planning in progress"
+        : isBuildTask
+          ? task?.status === "build_queued"
+            ? "Build queued"
+            : "Build in progress"
+        : isReviewTask
+          ? task?.status === "review_queued"
+            ? "Review queued"
+            : "Review in progress"
+          : task?.status === "ask_queued"
+            ? "Question queued"
+            : "Answer in progress";
 
   const codeTextStyle: CSSProperties = {
     marginBottom: 0,
@@ -508,7 +511,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const hasStoredDiff = (task?.branchDiff?.trim().length ?? 0) > 0;
   const canRequestLiveDiff = !!task;
   const hasLiveDiff = liveDiff?.live ?? false;
-  const compareRefError = Boolean(liveDiff && !liveDiff.live && liveDiff.message?.includes("Compare ref not found"));
+  const compareRefError =
+    diffLiveKind === "compare" &&
+    Boolean(liveDiff && !liveDiff.live && liveDiff.message?.includes("Compare ref not found"));
   const renderedDiff = hasLiveDiff ? liveDiff?.diff ?? "" : compareRefError ? "" : task?.branchDiff ?? "";
   const hasDiffTab = hasStoredDiff || canRequestLiveDiff;
   const diffBaseBranchOptions = useMemo(() => {
@@ -605,6 +610,34 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   }, [isArchived]);
 
   useEffect(() => {
+    if (!task?.id || !canEditTask || isArchived) {
+      setInteractiveTerminalStatus(null);
+      return;
+    }
+
+    let cancelled = false;
+    void api
+      .getTaskInteractiveTerminalStatus(task.id)
+      .then((status) => {
+        if (!cancelled) {
+          setInteractiveTerminalStatus(status);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setInteractiveTerminalStatus({
+            available: false,
+            reason: "Could not load interactive terminal status."
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [task?.id, canEditTask, isArchived]);
+
+  useEffect(() => {
     if (activeMainTab !== "diff" || !task?.repoId) {
       return;
     }
@@ -635,6 +668,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   }, [activeMainTab, task?.repoId]);
 
   useEffect(() => {
+    setLiveDiff(null);
+  }, [diffLiveKind]);
+
+  useEffect(() => {
     if (activeMainTab !== "diff" || !task || !canRequestLiveDiff) {
       return;
     }
@@ -644,7 +681,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setLiveDiffLoading(true);
       try {
         const snapshot = await api.getTaskLiveDiff(task.id, {
-          baseRef: diffCompareBaseRef ?? task.repoDefaultBranch ?? undefined
+          baseRef: diffCompareBaseRef ?? task.repoDefaultBranch ?? undefined,
+          diffKind: diffLiveKind
         });
         if (!cancelled) {
           setLiveDiff(snapshot);
@@ -672,6 +710,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     activeMainTab,
     canRequestLiveDiff,
     diffCompareBaseRef,
+    diffLiveKind,
     liveDiffRefreshKey,
     task?.id,
     task?.updatedAt,
@@ -1198,8 +1237,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       ].filter(Boolean)
     : [];
   const hasMoreActions = moreActionItems.length > 0;
+  const canOpenInteractive = canEditTask && !isArchived && !!task;
+  const canRunReviewAction =
+    !canCancel && !hasCompletedNonImplementationResult && canEditTask && isReviewTask && task?.status !== "accepted" && task?.status !== "archived";
+  const hasSyncButtons = canOpenInteractive || canPull || canPush;
+  const hasExecutionButtons = canCancel || canRunReviewAction;
+  const hasManagementButtons = Boolean(githubDiffTarget) || canArchive || hasMoreActions;
 const contextContent = (
   <Space direction="vertical" size={16} style={{ width: "100%" }}>
+      {taskTokenTotals ? (
+        <Alert
+          type="info"
+          showIcon
+          message={[
+            `${taskTokenTotals.totalTokens.toLocaleString()} tokens`,
+            `(${taskTokenTotals.inputTokens.toLocaleString()} in / ${taskTokenTotals.outputTokens.toLocaleString()} out)`,
+            `across ${taskTokenTotals.runCount} run${taskTokenTotals.runCount === 1 ? "" : "s"}`,
+            taskTokenTotals.cost ? `· est. ${formatCost(taskTokenTotals.cost.totalCost)}` : null
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        />
+      ) : null}
       <Card size="small">
         <Descriptions column={2} size="small">
           <Descriptions.Item label="Repository">{task?.repoName}</Descriptions.Item>
@@ -1326,6 +1385,15 @@ const contextContent = (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       {task ? (
         <Card size="small" styles={{ body: { paddingBottom: 12 } }}>
+          <Segmented
+            value={diffLiveKind}
+            onChange={(value) => setDiffLiveKind(value as "compare" | "working")}
+            options={[
+              { label: "Compare to branch", value: "compare" },
+              { label: "Local changes", value: "working" }
+            ]}
+            style={{ marginBottom: 14 }}
+          />
           <Flex align="flex-end" wrap="wrap" gap={16}>
             <div style={{ minWidth: 200, flex: "1 1 220px" }}>
               <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
@@ -1336,17 +1404,23 @@ const contextContent = (
                 value={diffCompareBaseRef ?? task.repoDefaultBranch}
                 options={diffBaseBranchOptions}
                 loading={diffBranchesLoading}
-                disabled={!canRequestLiveDiff}
+                disabled={!canRequestLiveDiff || diffLiveKind === "working"}
                 style={{ width: "100%" }}
                 onChange={(value) => {
                   setDiffCompareBaseRef(typeof value === "string" && value.length > 0 ? value : task.repoDefaultBranch ?? null);
                 }}
               />
+              {diffLiveKind === "working" ? (
+                <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
+                  Local changes shows uncommitted edits vs HEAD plus untracked files. The base branch is only used in
+                  Compare to branch mode.
+                </Typography.Paragraph>
+              ) : null}
             </div>
             <ArrowRightOutlined style={{ color: "rgba(0,0,0,0.45)", marginBottom: 10 }} />
             <div style={{ minWidth: 200, flex: "1 1 220px" }}>
               <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
-                Compare (HEAD)
+                {diffLiveKind === "working" ? "Workspace (HEAD)" : "Compare (HEAD)"}
               </Typography.Text>
               <Typography.Text code style={{ fontSize: 14 }}>
                 {diffHeadLabel}
@@ -1356,7 +1430,7 @@ const contextContent = (
           {compareRefError ? null : (
             <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
               {hasLiveDiff
-                ? `Live diff · updated ${dayjs(liveDiff?.fetchedAt).format("HH:mm:ss")}`
+                ? `${diffLiveKind === "working" ? "Local changes" : "Compare"} · updated ${dayjs(liveDiff?.fetchedAt).format("HH:mm:ss")}`
                 : hasStoredDiff
                   ? "Showing last captured diff from task state because no live workspace diff is available."
                   : liveDiff?.message ?? "Live diff will appear once the task workspace exists."}
@@ -1377,23 +1451,30 @@ const contextContent = (
           }
         />
       ) : null}
-      {isReviewTask
-        ? renderParsedDiff(
-            renderedDiff,
+      {task ? (
+        <TaskDiffOpenAiPanel
+          diffText={renderedDiff}
+          emptyMessage={
             compareRefError
               ? "Choose another base branch or the repository default."
-              : `No diff captured for ${task?.baseBranch} against ${task?.repoDefaultBranch}.`,
-            { collapseFiles: true }
-          )
-        : renderParsedDiff(
-            renderedDiff,
-            compareRefError
-              ? "Choose another base branch or the repository default."
-              : hasLiveDiff
-                ? "No current workspace changes detected."
-                : "No diff captured yet. Run Build to generate one.",
-            { collapseFiles: true }
-          )}
+              : isReviewTask
+                ? `No diff captured for ${task.baseBranch} against ${task.repoDefaultBranch}.`
+                : hasLiveDiff
+                  ? diffLiveKind === "working"
+                    ? "No uncommitted changes vs HEAD (no staged/unstaged diff and no untracked files shown)."
+                    : "No diff between the selected base and HEAD."
+                  : "No diff captured yet. Run Build to generate one."
+          }
+          collapseFiles
+          taskId={task.id}
+          taskStatus={task.status}
+          liveDiff={liveDiff}
+          isArchived={isArchived}
+          canEditTask={canEditTask}
+          selectionResetToken={`${task.id}-${diffLiveKind}`}
+          onLiveDiffRefresh={() => setLiveDiffRefreshKey((k) => k + 1)}
+        />
+      ) : null}
     </Space>
   ) : null;
 
@@ -1856,126 +1937,176 @@ const contextContent = (
           ) : null}
           {task ? (
             <Flex justify="space-between" align="center" gap={12} wrap="wrap">
-              <Space wrap size={8}>
-                <Tag color={statusColor[task.status]}>{getTaskStatusLabel(task.status)}</Tag>
-              </Space>
               <Space wrap size={8} style={{ justifyContent: "flex-end" }}>
-                {canCancel ? (
-                <Button
-                  danger
-                  onClick={async () => {
-                    setSubmitting("cancel");
-                    try {
-                      await api.cancelTask(task.id);
-                      messageApi.success(isQueued ? "Task cancelled" : "Cancellation requested");
-                    } finally {
-                      setSubmitting(null);
-                    }
-                  }}
-                  loading={submitting === "cancel"}
-                >
-                  Cancel
-                </Button>
-                ) : null}
-
-                {canPull ? (
-                  <Button onClick={handlePullTask} loading={submitting === "pull"}>
-                    {`Pull (${pullCount})`}
-                  </Button>
-                ) : null}
-
-                {canPush ? (
-                  <Button onClick={handlePushTask} loading={submitting === "push"}>
-                    {`Push (${pushCount})`}
-                  </Button>
-                ) : null}
-
-                {githubDiffTarget ? (
-                  <Button href={githubDiffTarget.href} target="_blank" rel="noreferrer">
-                    {githubDiffTarget.label}
-                  </Button>
-                ) : null}
-
-                {!canCancel && !hasCompletedNonImplementationResult && canEditTask && isReviewTask && task.status !== "accepted" && task.status !== "archived" ? (
-                  <Button
-                    type="primary"
-                    onClick={async () => {
-                      setSubmitting("review");
-                      try {
-                        await api.triggerTaskAction(task.id, "review");
-                        messageApi.success("Review started");
-                      } finally {
-                        setSubmitting(null);
-                      }
-                    }}
-                    loading={submitting === "review"}
-                  >
-                    Run Review
-                  </Button>
-                ) : null}
-
-                {canArchive ? (
-                  <Button
-                    danger
-                    loading={submitting === "archive"}
-                    onClick={() =>
-                      Modal.confirm({
-                        title: "Archive task?",
-                        content: "Archived tasks become read-only and cannot be restarted.",
-                        okText: "Archive",
-                        onOk: handleArchiveTask
-                      })
-                    }
-                  >
-                    Archive
-                  </Button>
-                ) : null}
-
-                {hasMoreActions ? (
-                  <Dropdown
-                    menu={{
-                      items: moreActionItems,
-                      onClick: ({ key }) => {
-                        if (key === "merge") {
-                          void handleMergeTask();
-                          return;
+                {hasSyncButtons ? (
+                  <Space wrap size={8}>
+                    {canOpenInteractive ? (
+                      <Tooltip
+                        title={
+                          interactiveTerminalStatus && !interactiveTerminalStatus.available
+                            ? interactiveTerminalStatus.reason ?? "Unavailable"
+                            : "Opens a new browser window with Codex in a shell; workspace is mounted at /workspace. Click again for another session."
                         }
+                      >
+                        <Button
+                          type="default"
+                          onClick={() => {
+                            const path = `/tasks/${task.id}/interactive`;
+                            const url = `${window.location.origin}${path}`;
+                            const w = Math.min(1280, window.screen.availWidth - 48);
+                            const h = Math.min(840, window.screen.availHeight - 48);
+                            const features = [
+                              "popup=yes",
+                              `width=${w}`,
+                              `height=${h}`,
+                              "menubar=no",
+                              "toolbar=no",
+                              "location=yes",
+                              "status=no",
+                              "resizable=yes",
+                              "scrollbars=yes"
+                            ].join(",");
+                            window.open(url, "_blank", `${features},noopener,noreferrer`);
+                          }}
+                          disabled={!interactiveTerminalStatus?.available}
+                        >
+                          Interactive
+                        </Button>
+                      </Tooltip>
+                    ) : null}
 
-                        if (key === "refreshDiff") {
-                          setLiveDiffRefreshKey((k) => k + 1);
-                          return;
-                        }
+                    {canPull ? (
+                      <Button onClick={handlePullTask} loading={submitting === "pull"}>
+                        {`Pull (${pullCount})`}
+                      </Button>
+                    ) : null}
 
-                        if (key === "continue") {
-                          openFollowUp("continue");
-                          return;
-                        }
+                    {canPush ? (
+                      <Button onClick={handlePushTask} loading={submitting === "push"}>
+                        {`Push (${pushCount})`}
+                      </Button>
+                    ) : null}
+                  </Space>
+                ) : null}
 
-                        if (key === "pin") {
-                          void handleTogglePin();
-                          return;
-                        }
+                {hasSyncButtons && (hasExecutionButtons || hasManagementButtons) ? (
+                  <Divider type="vertical" style={{ marginInline: 2 }} />
+                ) : null}
 
-                        if (key === "fix") {
-                          openFollowUp("fix");
-                          return;
-                        }
+                {hasExecutionButtons ? (
+                  <Space wrap size={8}>
+                    {canCancel ? (
+                      <Button
+                        danger
+                        onClick={async () => {
+                          setSubmitting("cancel");
+                          try {
+                            await api.cancelTask(task.id);
+                            messageApi.success(isQueued ? "Task cancelled" : "Cancellation requested");
+                          } finally {
+                            setSubmitting(null);
+                          }
+                        }}
+                        loading={submitting === "cancel"}
+                      >
+                        Cancel
+                      </Button>
+                    ) : null}
 
-                        if (key === "delete") {
+                    {canRunReviewAction ? (
+                      <Button
+                        type="primary"
+                        onClick={async () => {
+                          setSubmitting("review");
+                          try {
+                            await api.triggerTaskAction(task.id, "review");
+                            messageApi.success("Review started");
+                          } finally {
+                            setSubmitting(null);
+                          }
+                        }}
+                        loading={submitting === "review"}
+                      >
+                        Run Review
+                      </Button>
+                    ) : null}
+                  </Space>
+                ) : null}
+
+                {hasExecutionButtons && hasManagementButtons ? <Divider type="vertical" style={{ marginInline: 2 }} /> : null}
+
+                {hasManagementButtons ? (
+                  <Space wrap size={8}>
+                    {githubDiffTarget ? (
+                      <Button href={githubDiffTarget.href} target="_blank" rel="noreferrer">
+                        {githubDiffTarget.label}
+                      </Button>
+                    ) : null}
+
+                    {canArchive ? (
+                      <Button
+                        danger
+                        loading={submitting === "archive"}
+                        onClick={() =>
                           Modal.confirm({
-                            title: "Delete task?",
-                            content: "This removes the task and its stored logs.",
-                            okText: "Delete",
-                            okButtonProps: { danger: true, loading: submitting === "delete" },
-                            onOk: handleDeleteTask
-                          });
+                            title: "Archive task?",
+                            content: "Archived tasks become read-only and cannot be restarted.",
+                            okText: "Archive",
+                            onOk: handleArchiveTask
+                          })
                         }
-                      }
-                    }}
-                    trigger={["click"]}
-                  >
-                    <Button icon={<MoreOutlined />}>More</Button>
-                  </Dropdown>
+                      >
+                        Archive
+                      </Button>
+                    ) : null}
+
+                    {hasMoreActions ? (
+                      <Dropdown
+                        menu={{
+                          items: moreActionItems,
+                          onClick: ({ key }) => {
+                            if (key === "merge") {
+                              void handleMergeTask();
+                              return;
+                            }
+
+                            if (key === "refreshDiff") {
+                              setLiveDiffRefreshKey((k) => k + 1);
+                              return;
+                            }
+
+                            if (key === "continue") {
+                              openFollowUp("continue");
+                              return;
+                            }
+
+                            if (key === "pin") {
+                              void handleTogglePin();
+                              return;
+                            }
+
+                            if (key === "fix") {
+                              openFollowUp("fix");
+                              return;
+                            }
+
+                            if (key === "delete") {
+                              Modal.confirm({
+                                title: "Delete task?",
+                                content: "This removes the task and its stored logs.",
+                                okText: "Delete",
+                                okButtonProps: { danger: true, loading: submitting === "delete" },
+                                onOk: handleDeleteTask
+                              });
+                            }
+                          }
+                        }}
+                        trigger={["click"]}
+                      >
+                        <Button icon={<MoreOutlined />}>More</Button>
+                      </Dropdown>
+                    ) : null}
+                  </Space>
                 ) : null}
               </Space>
             </Flex>
@@ -1987,21 +2118,6 @@ const contextContent = (
         ) : task ? (
           <Flex vertical gap={16}>
             <Card bordered={false}>
-              {taskTokenTotals ? (
-                <Alert
-                  type="info"
-                  showIcon
-                  message={[
-                    `${taskTokenTotals.totalTokens.toLocaleString()} tokens`,
-                    `(${taskTokenTotals.inputTokens.toLocaleString()} in / ${taskTokenTotals.outputTokens.toLocaleString()} out)`,
-                    `across ${taskTokenTotals.runCount} run${taskTokenTotals.runCount === 1 ? "" : "s"}`,
-                    taskTokenTotals.cost
-                      ? `· est. ${formatCost(taskTokenTotals.cost.totalCost)}`
-                      : null
-                  ].filter(Boolean).join(" ")}
-                  style={{ marginBottom: 16 }}
-                />
-              ) : null}
               <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff")} items={mainTabItems} />
             </Card>
           </Flex>

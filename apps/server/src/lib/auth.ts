@@ -1,3 +1,4 @@
+import type { IncomingHttpHeaders } from "node:http";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AuthSession, PermissionScope, RealtimeEvent } from "@agentswarm/shared-types";
 import type { Server as SocketIOServer, Socket } from "socket.io";
@@ -50,6 +51,8 @@ export interface RequestAuthContext {
 export interface AuthService {
   requireAuth: () => AuthPreHandler;
   requireAllScopes: (scopes: PermissionScope[]) => AuthPreHandler;
+  /** Cookie-based auth for raw Node HTTP upgrades (e.g. interactive terminal WebSocket). */
+  authenticateCookieHeader: (headers: IncomingHttpHeaders) => Promise<RequestAuthContext | null>;
   setSessionCookie: (reply: FastifyReply, token: string, expiresAt: string) => void;
   clearSessionCookie: (reply: FastifyReply) => void;
   clearSessionFromRequest: (request: FastifyRequest) => Promise<void>;
@@ -150,6 +153,13 @@ export const createAuthService = ({
   return {
     requireAuth,
     requireAllScopes,
+    async authenticateCookieHeader(headers) {
+      const raw = headers.cookie;
+      const cookieHeader = Array.isArray(raw) ? raw.join("; ") : raw;
+      const cookies = parseCookieHeader(cookieHeader);
+      const token = cookies[cookieName]?.trim() ? cookies[cookieName].trim() : null;
+      return buildAuthContext(token);
+    },
     setSessionCookie(reply, token, expiresAt) {
       reply.setCookie(cookieName, token, {
         httpOnly: true,

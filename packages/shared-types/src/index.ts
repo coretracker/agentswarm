@@ -1,4 +1,7 @@
 export type TaskType = "plan" | "build" | "review" | "ask";
+
+/** What happens immediately after a task row is created. */
+export type TaskStartMode = "run_now" | "prepare_workspace" | "idle";
 export type TaskReviewVerdict = "approved" | "changes_requested";
 export type AgentProvider = "codex" | "claude";
 
@@ -62,6 +65,7 @@ export type TaskStatus =
   | "planning"
   | "planned"
   | "build_queued"
+  | "preparing_workspace"
   | "building"
   | "review_queued"
   | "reviewing"
@@ -266,6 +270,22 @@ export interface Task {
   errorMessage: string | null;
 }
 
+export type OpenAiDiffAssistMode = "read" | "readwrite";
+
+export interface OpenAiDiffAssistInput {
+  mode: OpenAiDiffAssistMode;
+  model: string;
+  providerProfile: ProviderProfile;
+  userPrompt: string;
+  /** Repository-relative path (optional `a/` or `b/` prefixes are stripped server-side). */
+  filePath: string;
+  selectedSnippet: string;
+}
+
+export type OpenAiDiffAssistResult =
+  | { mode: "read"; text: string }
+  | { mode: "readwrite"; explanation: string; appliedRelativePath: string };
+
 export interface TaskLiveDiff {
   diff: string | null;
   live: boolean;
@@ -382,6 +402,8 @@ export interface CreateTaskInput {
   repoId: string;
   prompt: string;
   taskType?: TaskType;
+  /** Default `run_now`. `prepare_workspace` clones/checks out only (for Interactive). `idle` creates the task without enqueueing a run. */
+  startMode?: TaskStartMode;
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
@@ -399,6 +421,7 @@ export interface BlankTaskDefinitionInput {
   repoId: string;
   prompt: string;
   taskType: TaskType;
+  startMode?: TaskStartMode;
   provider: AgentProvider;
   model: string;
   providerProfile: ProviderProfile;
@@ -413,6 +436,7 @@ export interface IssueTaskDefinitionInput {
   issueNumber: number;
   includeComments: boolean;
   taskType: Extract<TaskType, "plan" | "build" | "ask">;
+  startMode?: TaskStartMode;
   provider: AgentProvider;
   model: string;
   providerProfile: ProviderProfile;
@@ -448,6 +472,7 @@ export interface CreateTaskFromIssueInput {
   issueNumber: number;
   includeComments?: boolean;
   taskType?: Extract<TaskType, "plan" | "build" | "ask">;
+  startMode?: TaskStartMode;
   title?: string;
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
@@ -562,6 +587,7 @@ export const isQueuedTaskStatus = (status: TaskStatus): boolean =>
 
 export const isActiveTaskStatus = (status: TaskStatus): boolean =>
   status === "planning" ||
+  status === "preparing_workspace" ||
   status === "building" ||
   status === "reviewing" ||
   status === "asking";
@@ -574,12 +600,13 @@ export const getTaskStatusLabel = (status: TaskStatus): string =>
     planning: "Planning",
     planned: "Planned",
     build_queued: "Build Queued",
+    preparing_workspace: "Preparing Workspace",
     building: "Building",
     review_queued: "Review Queued",
     reviewing: "Reviewing",
     ask_queued: "Ask Queued",
     asking: "Answering",
-    review: "In Review",
+    review: "Ready",
     answered: "Answered",
     accepted: "Accepted",
     archived: "Archived",

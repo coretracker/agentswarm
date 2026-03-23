@@ -3,8 +3,11 @@ import type { FastifyInstance } from "fastify";
 import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
+import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
+import { applyTaskStartMode } from "../lib/task-start-mode.js";
+import { withBranchSyncCounts } from "./tasks.js";
 
 const issueImportSchema = z.object({
   repoId: z.string().min(1),
@@ -18,7 +21,8 @@ const issueImportSchema = z.object({
   baseBranch: z.string().trim().min(1).optional(),
   branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
   model: z.string().trim().min(1).optional(),
-  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
+  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
+  startMode: z.enum(["run_now", "prepare_workspace", "idle"]).optional().default("run_now")
 });
 
 const pullRequestImportSchema = z.object({
@@ -39,6 +43,7 @@ export const registerImportRoutes = (
     repositoryStore: RepositoryStore;
     taskStore: TaskStore;
     scheduler: SchedulerService;
+    spawner: SpawnerService;
     auth: AuthService;
   }
 ): void => {
@@ -123,16 +128,32 @@ export const registerImportRoutes = (
         return reply.status(404).send({ message: "Repository not found" });
       }
 
-      const taskInput = await deps.githubImportService.buildTaskInputFromIssue(repository, parsed.data);
+      const { startMode, ...issueRest } = parsed.data;
+      const taskInput = await deps.githubImportService.buildTaskInputFromIssue(repository, { ...issueRest, startMode });
       const task = await deps.taskStore.createTask(taskInput, repository);
-      const initialAction = task.lastAction ?? "plan";
-      const accepted = await deps.scheduler.triggerAction(task.id, initialAction);
-      if (!accepted) {
-        return reply.status(409).send({ message: "Imported task execution could not be started" });
+      try {
+        const result = await applyTaskStartMode(task, startMode, {
+          taskStore: deps.taskStore,
+          scheduler: deps.scheduler,
+          spawner: deps.spawner
+        });
+        return reply.status(201).send(await withBranchSyncCounts(deps.spawner, result));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Imported task follow-up failed";
+        if (startMode === "prepare_workspace") {
+          await deps.taskStore.patchTask(task.id, {
+            status: "failed",
+            enqueued: false,
+            errorMessage: message,
+            finishedAt: new Date().toISOString()
+          });
+          await deps.taskStore.appendLog(task.id, `Workspace preparation failed: ${message}`);
+        }
+        if (startMode === "run_now") {
+          return reply.status(409).send({ message });
+        }
+        return reply.status(500).send({ message });
       }
-
-      const refreshed = await deps.taskStore.getTask(task.id);
-      return reply.status(201).send(refreshed);
     } catch (error) {
       if (error instanceof GitHubImportError) {
         return reply.status(error.statusCode).send({ message: error.message });

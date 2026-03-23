@@ -27,6 +27,7 @@ It is designed for local development, branch-based task execution, live logs, an
 - Next.js
 - Ant Design
 - Socket.IO client for live task updates
+- Task detail **Interactive** opens one or more modal terminals (WebSocket + xterm); each session runs Codex in Docker with that task’s workspace mounted at `/workspace` (requires server `CODEX_INTERACTIVE_IMAGE` and Docker socket; see `tools/codex-web-terminal/Dockerfile.codex`)
 
 ### Server
 
@@ -34,6 +35,7 @@ It is designed for local development, branch-based task execution, live logs, an
 - TypeScript
 - Fastify
 - Socket.IO
+- Optional raw WebSocket upgrades for per-task interactive Codex (`/tasks/:id/interactive-terminal`)
 - Redis-backed task store and queue
 
 ### Agent runtimes

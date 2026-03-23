@@ -13,6 +13,7 @@ import type {
   TaskBranchStrategy,
   TaskDefinitionInput,
   TaskSourceType,
+  TaskStartMode,
   TaskType
 } from "@agentswarm/shared-types";
 import { getDefaultModelForProvider, getEffortOptionsForProvider } from "@agentswarm/shared-types";
@@ -28,6 +29,7 @@ export type TaskDefinitionFormValues = {
   title?: string;
   repoId?: string;
   prompt?: string;
+  startMode?: TaskStartMode;
   taskType?: TaskType;
   provider?: AgentProvider;
   model?: string;
@@ -71,18 +73,25 @@ export const getTaskDefinitionInitialValues = (settings?: SystemSettings | null)
     model: getProviderDefaultModel(provider, settings),
     providerProfile: getProviderDefaultProfile(provider, settings),
     branchStrategy: "feature_branch",
-    includeComments: true
+    includeComments: true,
+    startMode: "run_now"
   };
 };
 
-/** Suggested title for blank tasks: "Build · org/repo · branch · Model" — updates until the title field is edited. */
+/** Suggested title for blank tasks: "Build · …" or "Interactive · …" — updates until the title field is edited. */
 export function buildBlankAutoTaskTitle(params: {
   taskType: TaskType;
+  startMode?: TaskStartMode;
   repoName: string | undefined;
   branchName: string | undefined;
   modelLabel: string;
 }): string {
-  const kind = params.taskType === "ask" ? "Ask" : "Build";
+  const kind =
+    params.startMode === "prepare_workspace"
+      ? "Interactive"
+      : params.taskType === "ask"
+        ? "Ask"
+        : "Build";
   const repo = params.repoName?.trim() || "Repository";
   const branch = params.branchName?.trim() || "—";
   const model = params.modelLabel.trim() || "—";
@@ -96,6 +105,7 @@ export const stripSaveAsPreset = (values: TaskDefinitionFormValues): TaskDefinit
       title: values.title?.trim() ?? "",
       repoId: values.repoId ?? "",
       prompt: values.prompt?.trim() ?? "",
+      startMode: values.startMode ?? "run_now",
       taskType: values.taskType ?? "build",
       provider: values.provider ?? "codex",
       model: values.model?.trim() ?? "",
@@ -112,6 +122,7 @@ export const stripSaveAsPreset = (values: TaskDefinitionFormValues): TaskDefinit
       repoId: values.repoId ?? "",
       issueNumber: values.issueNumber ?? 0,
       includeComments: values.includeComments ?? true,
+      startMode: values.startMode ?? "run_now",
       taskType: values.taskType === "build" || values.taskType === "ask" ? values.taskType : "build",
       provider: values.provider ?? "codex",
       model: values.model?.trim() ?? "",
@@ -151,6 +162,7 @@ export function TaskDefinitionFields({
   const selectedBaseBranch = Form.useWatch("baseBranch", form);
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
+  const selectedStartMode = (Form.useWatch("startMode", form) as TaskStartMode | undefined) ?? "run_now";
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
   const selectedIssueNumber = Form.useWatch("issueNumber", form);
   const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
@@ -225,6 +237,7 @@ export function TaskDefinitionFields({
       "title",
       buildBlankAutoTaskTitle({
         taskType: selectedTaskType,
+        startMode: selectedStartMode,
         repoName: selectedRepository?.name,
         branchName: typeof selectedBaseBranch === "string" ? selectedBaseBranch : undefined,
         modelLabel
@@ -237,8 +250,15 @@ export function TaskDefinitionFields({
     selectedModel,
     selectedRepository?.name,
     selectedSourceType,
+    selectedStartMode,
     selectedTaskType
   ]);
+
+  useEffect(() => {
+    if ((isBlankSource || isIssueSource) && selectedStartMode === "prepare_workspace" && selectedTaskType !== "build") {
+      form.setFieldValue("taskType", "build");
+    }
+  }, [form, isBlankSource, isIssueSource, selectedStartMode, selectedTaskType]);
 
   useEffect(() => {
     if (!selectedRepoId || !canReadRepositoryMetadata) {
@@ -272,6 +292,7 @@ export function TaskDefinitionFields({
   }, [canReadRepositoryMetadata, selectedRepoId]);
 
   const promptPanelTitle = isBlankSource ? (effectiveTaskType === "ask" ? "Question" : "Prompt") : "Imported Context";
+  const requirePromptForBlank = selectedStartMode === "run_now";
 
   const renderPromptPanel = (repository: Repository | null) => {
     if (isBlankSource) {
@@ -293,7 +314,18 @@ export function TaskDefinitionFields({
           <Form.Item
             name="prompt"
             label={promptPanelTitle}
-            rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]}
+            rules={
+              requirePromptForBlank
+                ? [{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]
+                : []
+            }
+            extra={
+              !requirePromptForBlank ? (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  Optional for this start mode — you can describe intent later or work only in Interactive.
+                </Typography.Text>
+              ) : undefined
+            }
             style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
           >
             <Input.TextArea
@@ -301,8 +333,12 @@ export function TaskDefinitionFields({
               style={{ flex: 1, resize: "none" }}
               placeholder={
                 effectiveTaskType === "ask"
-                  ? "Ask a repository question."
-                  : "Describe the goal, constraints, and expected outcome in your prompt."
+                  ? requirePromptForBlank
+                    ? "Ask a repository question."
+                    : "Optional question for the agent when you start a run."
+                  : requirePromptForBlank
+                    ? "Describe the goal, constraints, and expected outcome in your prompt."
+                    : "Optional — add a goal now or open Interactive after the workspace is prepared."
               }
             />
           </Form.Item>
@@ -387,6 +423,7 @@ export function TaskDefinitionFields({
                 if (value === "pull_request") {
                   form.setFieldValue("taskType", "build");
                   form.setFieldValue("branchStrategy", "work_on_branch");
+                  form.setFieldValue("startMode", "run_now");
                 }
 
                 if (value !== "blank") {
@@ -412,7 +449,19 @@ export function TaskDefinitionFields({
             />
           </Form.Item>
 
-          {isBlankSource ? (
+          {isBlankSource || isIssueSource ? (
+            <Form.Item name="startMode" label="Start mode" rules={[{ required: true }]}>
+              <Select
+                options={[
+                  { label: "Run automated agent now", value: "run_now" },
+                  { label: "Prepare workspace for Interactive", value: "prepare_workspace" },
+                  { label: "Create task only (start later)", value: "idle" }
+                ]}
+              />
+            </Form.Item>
+          ) : null}
+
+          {isBlankSource && selectedStartMode !== "prepare_workspace" ? (
             <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
               <Select
                 options={[
@@ -465,14 +514,16 @@ export function TaskDefinitionFields({
                   }))}
                 />
               </Form.Item>
-              <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
-                <Select
-                  options={[
-                    { label: "Build", value: "build" },
-                    { label: "Ask", value: "ask" }
-                  ]}
-                />
-              </Form.Item>
+              {selectedStartMode !== "prepare_workspace" ? (
+                <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
+                  <Select
+                    options={[
+                      { label: "Build", value: "build" },
+                      { label: "Ask", value: "ask" }
+                    ]}
+                  />
+                </Form.Item>
+              ) : null}
               <Form.Item name="includeComments" valuePropName="checked">
                 <Checkbox>Include issue comments</Checkbox>
               </Form.Item>
