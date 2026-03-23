@@ -2,136 +2,111 @@
   <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
 </p>
 
-# AgentSwarm
+<h1 align="center">AgentSwarm</h1>
 
-AgentSwarm is a local-first platform for planning, reviewing, asking, and implementing repository tasks with provider-specific coding agents running in Docker.
+<p align="center"><strong>Turn repositories into managed agent work—plans, builds, reviews, and Q&amp;A—with a UI your team can actually use.</strong></p>
 
-It targets local development, branch-based execution, live logs, and provider choice between **Codex (OpenAI)** and **Claude Code (Anthropic)**. Claude Code is marked **experimental** in the app.
+<p align="center">
+  <a href="#try-it-locally">Try it locally</a> ·
+  <a href="#what-you-can-do">What you can do</a> ·
+  <a href="#why-agentswarm">Why AgentSwarm</a>
+</p>
 
-## What it does
+---
 
-- Manage repositories from a web UI
-- Create tasks from blank input, GitHub issues, or GitHub pull requests; save definitions as **presets**
-- **Start modes** when creating a task:
-  - **Run automated agent now** — start a Codex or Claude run for the selected action
-  - **Prepare workspace only** — clone/checkout in the **background** (no agent); status goes from *Preparing workspace* to *Ready*
-- Task types: **plan**, **build**, **ask**, and **review**
-- **Interactive** sessions: in-browser terminal with Codex in Docker, workspace at `/workspace` (needs `CODEX_INTERACTIVE_IMAGE` + Docker socket; see `tools/codex-web-terminal/`)
-- Live task logs; Socket.IO updates
-- Redis-backed task store and scheduling
-- Local plan storage (not committed into the target repo)
-- Server-owned **commit** and **push** after successful **build** runs
+Stop stitching together scripts, terminals, and ad-hoc prompts. **AgentSwarm** is a **local-first** control plane: connect your GitHub repos, spin up **Codex** or **Claude Code** runs in **Docker**, watch **live logs**, and keep work on **real branches** with the server handling **commit and push** when a build succeeds. When you want to steer the agent yourself, open an **Interactive** terminal in the browser—workspace mounted, same task context.
 
-## Architecture
+**Claude Code** support is available and marked **experimental** in the app; **Codex (OpenAI)** is the primary path for production-style runs today.
 
-### Web (`apps/web`)
+## Why AgentSwarm?
 
-- Next.js, Ant Design
-- Socket.IO client
-- Branding: [`apps/web/public/logo.svg`](apps/web/public/logo.svg) (login + shell header)
+| You want… | AgentSwarm helps by… |
+|-----------|----------------------|
+| **Visibility** | One place for task status, history, diffs, and streamed run logs—not lost scrollback. |
+| **Control** | Scoped roles, encrypted credentials in Settings, and **you** own when code lands on the remote (server-side git after builds). |
+| **Flexibility** | Start from a blank task, a **GitHub issue**, or a **PR**; save flows as **presets**; run the agent now **or** only **prepare the workspace** for interactive work. |
+| **Local & yours** | Runs on your machine (or infra you trust); data stays in **Redis**, **local plans**, and **task workspaces** you control. |
 
-### Server (`apps/server`)
+## What you can do
 
-- Node.js, TypeScript, Fastify
-- Socket.IO; WebSocket upgrades for interactive Codex (`/tasks/:id/interactive-terminal`)
-- Redis for tasks, sessions, and events
+- **Onboard repos** and invite teammates with permissions that match how you work (who creates tasks, who edits, who’s read-only).
+- **Plan, build, ask, and review** in one thread: markdown plans, implementation on a branch, repo Q&amp;A, and branch-vs-default reviews—without juggling five tools.
+- **Choose how each task starts**: kick off an **automated agent run** immediately, or **prepare the workspace only** so checkout finishes in the background and you land in **Ready** when you’re set to work (or open Interactive).
+- **Drive Codex from the browser** with **Interactive** sessions when you want a shell in the task workspace (`/workspace`); wire-up details live in `tools/codex-web-terminal/` and `CODEX_INTERACTIVE_IMAGE`.
+- **See progress as it happens** with live log streaming and real-time UI updates over Socket.IO.
 
-### Shared types (`packages/shared-types`)
+Under the hood: disposable **agent-runtime** containers per run, **Redis** for tasks and sessions, and **Next.js + Fastify** for the web and API.
 
-- Shared TypeScript types and helpers for web and server
+## Try it locally
 
-### Agent runtimes
-
-- `agent-runtime-codex/`
-- `agent-runtime-claude/`
-
-Runs are short-lived containers. The server prepares workspaces, streams logs, and finalizes git for successful builds.
-
-## Task model (overview)
-
-- **Task types:** `plan`, `build`, `ask`, `review`
-- **Actions:** `plan`, `build`, `iterate`, `review`, `ask`, plus `comment` in the timeline
-- **Statuses** include queued/active states, **Preparing workspace**, **Ready**, and terminal outcomes (`failed`, `cancelled`, `accepted`, …)
-
-## Security model
-
-- Credentials and GitHub token are set in **Settings**
-- httpOnly cookies + Redis sessions; scope-based **roles** and **users**
-- Credentials encrypted at rest; **never** returned by the API
-- Agent containers do not push; the server commits and pushes after builds
-- `./local-plans` and `./task-workspaces` are local runtime data
-
-## Local development
-
-### Prerequisites
-
-- Docker and Docker Compose (recommended)
-- Optional: Node.js 20+ and npm for apps on the host
-
-### Start the stack
+**Prerequisites:** Docker and Docker Compose (Node 20+ optional for dev on the host).
 
 ```bash
+cd agentswarm   # your clone of this repository
 docker compose up --build
 ```
 
-### URLs
+Then open **[http://localhost:3217/login](http://localhost:3217/login)**.
 
-- Web: `http://localhost:3217/login`
 - API health: `http://localhost:4000/health`
+- Hot dev (after `npm install`): `npm run dev`
+- CI-style build: `npm run build`
 
-### Develop on the host (with Redis / Docker as needed)
+## First-time setup (2 minutes)
 
-```bash
-npm install
-npm run dev
-```
+1. Sign in with the seeded admin (**`admin@agentswarm.local`** / **`admin123!`** — same defaults as `docker-compose.yml` / `.env.example`).
+2. **Change that password** and add real users and roles.
+3. Open **Settings** and add **Git username**, **GitHub token**, and **OpenAI** (Codex). Add **Anthropic** if you want to try **Claude Code (experimental)**.
+4. **Add a repository** and create your first task—from scratch, from an issue, or from a PR—or spawn one from a **preset**.
 
-### Production-style build
+The bootstrap password is only applied the **first** time the admin user is created.
 
-```bash
-npm run build
-```
+## How it’s built
 
-## First-time setup
+| Layer | Stack |
+|-------|--------|
+| **Web** (`apps/web`) | Next.js, Ant Design, Socket.IO client · branding: [`apps/web/public/logo.svg`](apps/web/public/logo.svg) |
+| **API** (`apps/server`) | Node.js, TypeScript, Fastify, Socket.IO, optional WebSocket for interactive Codex |
+| **Shared** (`packages/shared-types`) | Types and helpers shared by web and server |
+| **Runtimes** | `agent-runtime-codex/`, `agent-runtime-claude/` — short-lived containers; server prepares workspaces and finalizes git on successful **build** tasks |
 
-1. Sign in with the seeded admin (defaults match `docker-compose.yml` / `.env.example`):
-   - `admin@agentswarm.local` / `admin123!`
-2. Rotate the password and configure users and roles.
-3. In **Settings**, add **Git username**, **GitHub token**, **OpenAI** (Codex), and optionally **Anthropic** (Claude Code, experimental).
-4. Add repositories and create tasks (blank, issue, PR) or spawn from presets.
+## Security & data (trust, briefly)
 
-The bootstrap password applies only when the admin user is first created.
+- API keys and tokens live in **Settings**, encrypted at rest, and are **never** returned by the API.
+- Sessions use **httpOnly cookies** backed by **Redis**; access is **scope-based** (roles and users in the UI).
+- Agent containers **don’t push**; successful **build** flows are **committed and pushed by the server** so you keep a clear gate.
+- **`./local-plans`** and **`./task-workspaces`** are local runtime state on the host.
 
-## Runtime behavior
+## Runtime behavior (quick reference)
 
-- Plans are local markdown only
-- **Build** tasks edit the workspace; on success the server diffs, commits, and pushes
-- No diff → build fails (no empty commit)
-- **Prepare workspace only** runs checkout asynchronously
+- **Plans** are local markdown (not auto-committed into the target repo).
+- **Builds** that produce **no diff** fail (no empty commits).
+- **Prepare workspace only** clones/checks out **asynchronously**; the UI reflects **Preparing workspace** → **Ready**.
+
+### Task model (overview)
+
+- **Types:** `plan`, `build`, `ask`, `review`
+- **Actions:** `plan`, `build`, `iterate`, `review`, `ask`, plus `comment` on the timeline
+- **Statuses:** queued / in-progress, **Preparing workspace**, **Ready**, and outcomes like `failed`, `cancelled`, `accepted`, …
 
 ## Repository layout
 
 ```text
 agentswarm/
-  apps/
-    server/
-    web/
-      public/
-        logo.svg          # branding (README + UI)
-  packages/
-    shared-types/
-  agent-runtime-codex/
-  agent-runtime-claude/
-  tools/
-    codex-web-terminal/
-  local-plans/
-  task-workspaces/
+  apps/server/          apps/web/public/logo.svg
+  packages/shared-types/
+  agent-runtime-codex/  agent-runtime-claude/
+  tools/codex-web-terminal/
+  local-plans/          task-workspaces/
   docker-compose.yml
 ```
 
-## Notes for contributors
+## Contributing & hygiene
 
-- Do not commit `.env`
-- Commit `.env.example` as a safe template (bootstrap vars only — no API keys)
-- Do not commit `local-plans/`, `task-workspaces/`, `.next/`, `dist/`
-- Keep secrets in Settings, not in source
+- Don’t commit **`.env`** or runtime dirs (`local-plans/`, `task-workspaces/`, `.next/`, `dist/`).
+- **`.env.example`** is safe to commit (bootstrap vars only—no API keys).
+- Keep secrets in **Settings**, not in the repo.
+
+---
+
+<p align="center"><strong>If you want agent-assisted development with a real UI, real Git, and real logs—run AgentSwarm locally and point it at a repo you care about.</strong></p>
