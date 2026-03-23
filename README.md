@@ -1,87 +1,72 @@
+<p align="center">
+  <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
+</p>
+
 # AgentSwarm
 
-AgentSwarm is a local-first platform for planning, reviewing, asking, and implementing repository tasks with provider-specific coding agents running inside Docker.
+AgentSwarm is a local-first platform for planning, reviewing, asking, and implementing repository tasks with provider-specific coding agents running in Docker.
 
-It is designed for local development, branch-based task execution, live logs, and provider flexibility across Codex and Claude Code.
+It targets local development, branch-based execution, live logs, and provider choice between **Codex (OpenAI)** and **Claude Code (Anthropic)**. Claude Code is marked **experimental** in the app.
 
 ## What it does
 
 - Manage repositories from a web UI
-- Create tasks from blank input, GitHub issues, or GitHub pull requests
-- Support task types:
-  - `plan`
-  - `review`
-  - `ask`
-- Run provider-specific agent containers for:
-  - Codex
-  - Claude Code
-- Stream live task logs to the UI
-- Persist task state and queue data in Redis
-- Store plans locally without committing them into the target repository
-- Let the server own git commit and push side effects after a successful `build`
+- Create tasks from blank input, GitHub issues, or GitHub pull requests; save definitions as **presets**
+- **Start modes** when creating a task:
+  - **Run automated agent now** — start a Codex or Claude run for the selected action
+  - **Prepare workspace only** — clone/checkout in the **background** (no agent); status goes from *Preparing workspace* to *Ready*
+- Task types: **plan**, **build**, **ask**, and **review**
+- **Interactive** sessions: in-browser terminal with Codex in Docker, workspace at `/workspace` (needs `CODEX_INTERACTIVE_IMAGE` + Docker socket; see `tools/codex-web-terminal/`)
+- Live task logs; Socket.IO updates
+- Redis-backed task store and scheduling
+- Local plan storage (not committed into the target repo)
+- Server-owned **commit** and **push** after successful **build** runs
 
 ## Architecture
 
-### Web
+### Web (`apps/web`)
 
-- Next.js
-- Ant Design
-- Socket.IO client for live task updates
+- Next.js, Ant Design
+- Socket.IO client
+- Branding: [`apps/web/public/logo.svg`](apps/web/public/logo.svg) (login + shell header)
 
-### Server
+### Server (`apps/server`)
 
-- Node.js
-- TypeScript
-- Fastify
-- Socket.IO
-- Redis-backed task store and queue
+- Node.js, TypeScript, Fastify
+- Socket.IO; WebSocket upgrades for interactive Codex (`/tasks/:id/interactive-terminal`)
+- Redis for tasks, sessions, and events
+
+### Shared types (`packages/shared-types`)
+
+- Shared TypeScript types and helpers for web and server
 
 ### Agent runtimes
 
 - `agent-runtime-codex/`
 - `agent-runtime-claude/`
 
-Each task execution runs in a short-lived Docker container. The server prepares a managed workspace, passes task context to the runtime, streams logs back to the UI, and finalizes git operations for successful build tasks.
+Runs are short-lived containers. The server prepares workspaces, streams logs, and finalizes git for successful builds.
 
-## Task model
+## Task model (overview)
 
-### Task types
-
-- `plan`: create or revise a markdown plan only
-- `review`: review a branch against the repository default branch and requirements
-- `ask`: answer a repository question in markdown only
-
-### Task actions
-
-- `plan`
-- `build`
-- `iterate`
-- `review`
-- `ask`
+- **Task types:** `plan`, `build`, `ask`, `review`
+- **Actions:** `plan`, `build`, `iterate`, `review`, `ask`, plus `comment` in the timeline
+- **Statuses** include queued/active states, **Preparing workspace**, **Ready**, and terminal outcomes (`failed`, `cancelled`, `accepted`, …)
 
 ## Security model
 
-- Provider API credentials and GitHub token are configured through the Settings UI
-- Authentication uses httpOnly session cookies backed by Redis
-- Roles are scope-based and managed from the Settings UI
-- Users are managed from the Users screen after signing in
-- Credentials are stored encrypted on the server with a local key volume
-- Credentials are never returned by the API
-- Provider containers do not own git push credentials; the server performs commit and push after successful build execution
-- Local plans are stored under `./local-plans`
-- Managed task workspaces are stored under `./task-workspaces`
+- Credentials and GitHub token are set in **Settings**
+- httpOnly cookies + Redis sessions; scope-based **roles** and **users**
+- Credentials encrypted at rest; **never** returned by the API
+- Agent containers do not push; the server commits and pushes after builds
+- `./local-plans` and `./task-workspaces` are local runtime data
 
 ## Local development
 
 ### Prerequisites
 
-- Docker
-- Docker Compose
-
-Optional for local non-Docker development:
-
-- Node.js 20+
-- npm
+- Docker and Docker Compose (recommended)
+- Optional: Node.js 20+ and npm for apps on the host
 
 ### Start the stack
 
@@ -89,42 +74,40 @@ Optional for local non-Docker development:
 docker compose up --build
 ```
 
-### Open the app
+### URLs
 
-- Web UI: `http://localhost:3217/login`
-- Server health: `http://localhost:4000/health`
+- Web: `http://localhost:3217/login`
+- API health: `http://localhost:4000/health`
+
+### Develop on the host (with Redis / Docker as needed)
+
+```bash
+npm install
+npm run dev
+```
+
+### Production-style build
+
+```bash
+npm run build
+```
 
 ## First-time setup
 
-After the stack is running:
+1. Sign in with the seeded admin (defaults match `docker-compose.yml` / `.env.example`):
+   - `admin@agentswarm.local` / `admin123!`
+2. Rotate the password and configure users and roles.
+3. In **Settings**, add **Git username**, **GitHub token**, **OpenAI** (Codex), and optionally **Anthropic** (Claude Code, experimental).
+4. Add repositories and create tasks (blank, issue, PR) or spawn from presets.
 
-1. Sign in with the seeded admin account from `.env.example` or your local `.env`:
-   - email: `admin@agentswarm.local`
-   - password: `admin123!`
-2. Rotate the seeded admin password immediately and create the real users and roles you want to use.
-3. Open `Settings` and configure the provider credentials you actually want to use:
-   - `Git Username`
-   - `GitHub Token`
-   - `OpenAI API Key`
-   - `Anthropic API Key`
-   - optional `OpenAI Base URL`
-4. Add one or more repositories
-5. Create a task from:
-   - blank input
-   - GitHub issue
-   - GitHub pull request
-
-The seeded admin password is only applied when the bootstrap user is first created. Restarting the stack does not reset that password.
+The bootstrap password applies only when the admin user is first created.
 
 ## Runtime behavior
 
-- Plans are local markdown artifacts only
-- Review and ask tasks do not modify code
-- Build tasks edit the managed workspace and, if successful, the server:
-  - computes the diff
-  - commits
-  - pushes the target branch
-- If a build produces no diff, the task fails instead of creating an empty commit
+- Plans are local markdown only
+- **Build** tasks edit the workspace; on success the server diffs, commits, and pushes
+- No diff → build fails (no empty commit)
+- **Prepare workspace only** runs checkout asynchronously
 
 ## Repository layout
 
@@ -133,19 +116,22 @@ agentswarm/
   apps/
     server/
     web/
+      public/
+        logo.svg          # branding (README + UI)
   packages/
     shared-types/
   agent-runtime-codex/
   agent-runtime-claude/
+  tools/
+    codex-web-terminal/
   local-plans/
   task-workspaces/
   docker-compose.yml
 ```
 
-## Notes for pushing this repository
+## Notes for contributors
 
-- `.env` is ignored and should not be committed
-- `.env.example` is intentionally blank and safe to commit
-- `local-plans/` and `task-workspaces/` are local runtime state and should not be committed
-- build output like `.next/` and `dist/` should not be committed
-- credentials belong in the Settings UI, not in tracked source files
+- Do not commit `.env`
+- Commit `.env.example` as a safe template (bootstrap vars only — no API keys)
+- Do not commit `local-plans/`, `task-workspaces/`, `.next/`, `dist/`
+- Keep secrets in Settings, not in source

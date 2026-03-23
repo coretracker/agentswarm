@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from "react";
 import type { AgentProvider, McpServerTransport, PermissionScope, ProviderProfile, Role, SystemSettings, TaskRun } from "@agentswarm/shared-types";
-import { PERMISSION_SCOPE_GROUPS, getDefaultModelForProvider, getEffortOptionsForProvider } from "@agentswarm/shared-types";
+import {
+  PERMISSION_SCOPE_GROUPS,
+  getAgentProviderLabel,
+  getDefaultModelForProvider,
+  getEffortOptionsForProvider
+} from "@agentswarm/shared-types";
 import { DeleteOutlined, LockOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   Alert,
@@ -75,8 +80,8 @@ const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
 ];
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
-  { label: "Codex", value: "codex" },
-  { label: "Claude Code", value: "claude" }
+  { label: getAgentProviderLabel("codex"), value: "codex" },
+  { label: getAgentProviderLabel("claude"), value: "claude" }
 ];
 
 const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
@@ -439,6 +444,13 @@ export function SettingsPage() {
 
                 <div>
                   <Typography.Text strong>Claude Code (Anthropic)</Typography.Text>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    style={{ marginTop: 8 }}
+                    message="Experimental"
+                    description="Claude Code in AgentSwarm is experimental; behavior and defaults may change."
+                  />
                   <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
                     <Form.Item name="claudeDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
                       <Select options={claudeModels} loading={claudeModelsLoading} showSearch optionFilterProp="label" />
@@ -585,7 +597,7 @@ export function SettingsPage() {
                   OpenAI API Key {settings.openaiApiKeyConfigured ? "Configured" : "Missing"}
                 </Tag>
                 <Tag color={settings.anthropicApiKeyConfigured ? "green" : "default"}>
-                  Anthropic API Key {settings.anthropicApiKeyConfigured ? "Configured" : "Missing"}
+                  Anthropic API Key (Claude, experimental) {settings.anthropicApiKeyConfigured ? "Configured" : "Missing"}
                 </Tag>
               </Space>
             ) : null
@@ -626,7 +638,11 @@ export function SettingsPage() {
             <Form.Item name="openaiApiKey" label="OpenAI API Key">
               <Input.Password placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."} />
             </Form.Item>
-            <Form.Item name="anthropicApiKey" label="Anthropic API Key">
+            <Form.Item
+              name="anthropicApiKey"
+              label="Anthropic API Key"
+              extra="Used for Claude Code (experimental) runs only."
+            >
               <Input.Password placeholder={settings?.anthropicApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-ant-..."} />
             </Form.Item>
             <Space wrap>

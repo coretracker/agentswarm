@@ -55,7 +55,7 @@ interface RuntimeManifest {
   taskType: Task["taskType"];
   action: TaskAction;
   title: string;
-  requirements: string;
+  prompt: string;
   planMarkdown: string;
   executionSummary: string;
   repoProfile: string;
@@ -617,10 +617,6 @@ esac
   }
 
   async getTaskBranchSyncCounts(task: Task): Promise<{ pullCount: number; pushCount: number }> {
-    if ((task.taskType !== "plan" && task.taskType !== "build") || (task.status !== "review" && task.status !== "failed" && task.status !== "accepted")) {
-      return { pullCount: 0, pushCount: 0 };
-    }
-
     const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
     const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
     if (!branchName) {
@@ -707,12 +703,17 @@ esac
       return task.workspaceBaseRef;
     }
 
+    const remoteBaseRef = `origin/${task.baseBranch}`;
+    const isFeatureBranch = task.branchName && task.branchName !== task.baseBranch;
+    if (isFeatureBranch && (await this.refExists(workspacePath, remoteBaseRef, githubToken, gitUsername))) {
+      return remoteBaseRef;
+    }
+
     const remoteBranchRef = task.branchName ? `origin/${task.branchName}` : null;
     if (remoteBranchRef && (await this.refExists(workspacePath, remoteBranchRef, githubToken, gitUsername))) {
       return remoteBranchRef;
     }
 
-    const remoteBaseRef = `origin/${task.baseBranch}`;
     if (await this.refExists(workspacePath, remoteBaseRef, githubToken, gitUsername)) {
       return remoteBaseRef;
     }
@@ -755,20 +756,80 @@ esac
     return patches.join("\n");
   }
 
-  private async collectLiveDiff(
+  private async collectCompareDiff(
     workspacePath: string,
     baseRef: string,
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<string> {
-    const trackedDiff = await this.gitCommandCapture(["-C", workspacePath, "diff", baseRef], githubToken, gitUsername);
-    const untrackedDiff = await this.collectUntrackedFileDiff(workspacePath, githubToken, gitUsername);
-
-    return [trackedDiff, untrackedDiff].filter((chunk) => chunk.trim().length > 0).join("\n").trim();
+    return (await this.gitCommandCapture(["-C", workspacePath, "diff", `${baseRef}...HEAD`], githubToken, gitUsername)).trim();
   }
 
-  async getLiveTaskDiff(task: Task): Promise<TaskLiveDiff> {
+  private async collectWorkingTreeDiff(
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string> {
+    const workingDiff = await this.gitCommandCapture(["-C", workspacePath, "diff", "HEAD"], githubToken, gitUsername);
+    const untrackedDiff = await this.collectUntrackedFileDiff(workspacePath, githubToken, gitUsername);
+    return [workingDiff, untrackedDiff].filter((chunk) => chunk.trim().length > 0).join("\n").trim();
+  }
+
+  private async normalizeUserCompareBaseRef(
+    workspacePath: string,
+    input: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string | null> {
+    const trimmed = input.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    if (await this.refExists(workspacePath, trimmed, githubToken, gitUsername)) {
+      return trimmed;
+    }
+
+    if (!trimmed.includes("/") && trimmed.toUpperCase() !== "HEAD") {
+      const originRef = `origin/${trimmed}`;
+      if (await this.refExists(workspacePath, originRef, githubToken, gitUsername)) {
+        return originRef;
+      }
+    }
+
+    return null;
+  }
+
+  private async getWorkspaceHeadInfo(
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<{ branch: string; shaShort: string } | null> {
+    try {
+      const branch = (await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "--abbrev-ref", "HEAD"], githubToken, gitUsername)).trim();
+      const shaShort = (await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "--short", "HEAD"], githubToken, gitUsername)).trim();
+      return { branch, shaShort };
+    } catch {
+      return null;
+    }
+  }
+
+  async getLiveTaskDiff(
+    task: Task,
+    options?: { compareBaseRef?: string; diffKind?: "compare" | "working" }
+  ): Promise<TaskLiveDiff> {
     const fetchedAt = new Date().toISOString();
+    const emptyHead = (): TaskLiveDiff => ({
+      diff: null,
+      live: false,
+      fetchedAt,
+      message: null,
+      headBranch: null,
+      headShaShort: null,
+      baseRef: null,
+      defaultBaseRef: null
+    });
+
     const workspacePath = this.resolveWorkspacePath(task.id);
     const workspaceExists = await access(workspacePath)
       .then(() => true)
@@ -776,40 +837,69 @@ esac
 
     if (!workspaceExists) {
       return {
-        diff: null,
-        live: false,
-        fetchedAt,
+        ...emptyHead(),
         message: "Local workspace is unavailable for this task."
       };
     }
 
     const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
-    const baseRef = await this.resolveLiveDiffBaseRef(
-      task,
-      workspacePath,
-      runtimeCredentials.githubToken,
-      runtimeCredentials.gitUsername
-    );
-    if (!baseRef) {
+    const token = runtimeCredentials.githubToken;
+    const gitUsername = runtimeCredentials.gitUsername;
+
+    const headInfo = await this.getWorkspaceHeadInfo(workspacePath, token, gitUsername);
+    const diffKind = options?.diffKind === "working" ? "working" : "compare";
+
+    if (diffKind === "working") {
+      const defaultBaseRef = await this.resolveLiveDiffBaseRef(task, workspacePath, token, gitUsername);
+      const diff = await this.collectWorkingTreeDiff(workspacePath, token, gitUsername);
       return {
-        diff: null,
-        live: false,
+        diff: diff || null,
+        live: true,
         fetchedAt,
+        message: null,
+        headBranch: headInfo?.branch ?? null,
+        headShaShort: headInfo?.shaShort ?? null,
+        baseRef: null,
+        defaultBaseRef
+      };
+    }
+
+    const defaultBaseRef = await this.resolveLiveDiffBaseRef(task, workspacePath, token, gitUsername);
+    if (!defaultBaseRef) {
+      return {
+        ...emptyHead(),
         message: "No compare base is available yet."
       };
     }
 
-    const diff = await this.collectLiveDiff(
-      workspacePath,
-      baseRef,
-      runtimeCredentials.githubToken,
-      runtimeCredentials.gitUsername
-    );
+    let baseRef = defaultBaseRef;
+
+    if (options?.compareBaseRef?.trim()) {
+      const resolved = await this.normalizeUserCompareBaseRef(workspacePath, options.compareBaseRef, token, gitUsername);
+      if (!resolved) {
+        return {
+          diff: null,
+          live: false,
+          fetchedAt,
+          message: `Compare ref not found in workspace: ${options.compareBaseRef.trim()}`,
+          headBranch: headInfo?.branch ?? null,
+          headShaShort: headInfo?.shaShort ?? null,
+          baseRef: null,
+          defaultBaseRef
+        };
+      }
+      baseRef = resolved;
+    }
+    const diff = await this.collectCompareDiff(workspacePath, baseRef, token, gitUsername);
     return {
       diff: diff || null,
       live: true,
       fetchedAt,
-      message: null
+      message: null,
+      headBranch: headInfo?.branch ?? null,
+      headShaShort: headInfo?.shaShort ?? null,
+      baseRef,
+      defaultBaseRef
     };
   }
 
@@ -829,6 +919,11 @@ esac
     if (!workspaceExists) {
       await mkdir(path.dirname(workspacePath), { recursive: true });
       await this.gitCommand(["clone", "--no-local", repoCachePath, workspacePath], githubToken, gitUsername);
+    } else {
+      const indexLock = path.join(workspacePath, ".git", "index.lock");
+      const headLock = path.join(workspacePath, ".git", "HEAD.lock");
+      await rm(indexLock, { force: true }).catch(() => undefined);
+      await rm(headLock, { force: true }).catch(() => undefined);
     }
 
     await this.gitCommand(["-C", workspacePath, "remote", "set-url", "origin", task.repoUrl], githubToken, gitUsername);
@@ -838,7 +933,7 @@ esac
       await this.gitCommand(["-C", workspacePath, "fetch", "origin", task.repoDefaultBranch], githubToken, gitUsername);
     }
 
-    if (action === "build") {
+    if (action === "build" || action === "ask") {
       if (task.branchStrategy === "work_on_branch") {
         if (await this.localBranchExists(workspacePath, task.baseBranch, githubToken, gitUsername)) {
           await this.gitCommand(["-C", workspacePath, "checkout", task.baseBranch], githubToken, gitUsername);
@@ -853,7 +948,7 @@ esac
       } else {
         await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, `origin/${task.baseBranch}`], githubToken, gitUsername);
       }
-    } else if (action === "review" || action === "ask" || !workspaceExists) {
+    } else if (action === "review" || !workspaceExists) {
       await this.gitCommand(["-C", workspacePath, "checkout", "-B", task.baseBranch, `origin/${task.baseBranch}`], githubToken, gitUsername);
     }
 
@@ -927,6 +1022,88 @@ esac
     return output.split("\n").map((line) => line.trim()).filter(Boolean);
   }
 
+  private toCommitSubject(input: string): string {
+    const cleaned = input.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+    return cleaned.length > 72 ? `${cleaned.slice(0, 69).trimEnd()}...` : cleaned;
+  }
+
+  private inferCommitType(taskTitle: string, files: string[]): "fix" | "feat" | "refactor" | "docs" | "test" | "chore" {
+    const title = taskTitle.toLowerCase();
+    if (/\bfix\b|\bbug\b|\bregress/.test(title)) return "fix";
+
+    const loweredFiles = files.map((file) => file.toLowerCase());
+    if (loweredFiles.length > 0 && loweredFiles.every((file) => file.endsWith(".md") || file.includes("/docs/"))) return "docs";
+    if (loweredFiles.length > 0 && loweredFiles.every((file) => file.includes(".test.") || file.includes(".spec.") || file.includes("/test/"))) return "test";
+    if (/\brefactor\b|\bcleanup\b/.test(title)) return "refactor";
+    if (/\badd\b|\bimplement\b|\bfeature\b|\binteractive\b/.test(title)) return "feat";
+    return "chore";
+  }
+
+  private summarizeChangedPaths(files: string[]): string {
+    const unique = [...new Set(files.filter(Boolean))];
+    if (unique.length === 0) {
+      return "update workspace changes";
+    }
+    if (unique.length === 1) {
+      return `update ${path.basename(unique[0])}`;
+    }
+    if (unique.length === 2) {
+      return `update ${path.basename(unique[0])} and ${path.basename(unique[1])}`;
+    }
+    return `update ${unique.length} files`;
+  }
+
+  private async getStagedFiles(
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string[]> {
+    const raw = await this.gitCommandCapture(
+      ["-C", workspacePath, "diff", "--cached", "--name-only"],
+      githubToken,
+      gitUsername
+    );
+    return raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
+  private async buildGeneratedCommitSubject(
+    task: Task,
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string> {
+    const stagedFiles = await this.getStagedFiles(workspacePath, githubToken, gitUsername);
+    const type = this.inferCommitType(task.title, stagedFiles);
+    const subject = this.summarizeChangedPaths(stagedFiles);
+    return this.toCommitSubject(`${type}(agentswarm): ${subject}`);
+  }
+
+  private async getUnpushedCommitSubjects(
+    workspacePath: string,
+    branchName: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string[]> {
+    const remoteRef = `origin/${branchName}`;
+    const exists = await this.refExists(workspacePath, remoteRef, githubToken, gitUsername);
+    if (!exists) {
+      return [];
+    }
+    const raw = await this.gitCommandCaptureAllowExitCodes(
+      ["-C", workspacePath, "log", "--pretty=format:%s", `${remoteRef}..HEAD`],
+      [0],
+      githubToken,
+      gitUsername
+    );
+    return raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
   private async finalizeBuild(
     task: Task,
     workspacePath: string,
@@ -959,7 +1136,8 @@ esac
 
     await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], githubToken, gitUsername);
     await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], githubToken, gitUsername);
-    await this.gitCommand(["-C", workspacePath, "commit", "-m", `feat(agentswarm): ${task.title}`], githubToken, gitUsername);
+    const generatedSubject = await this.buildGeneratedCommitSubject(task, workspacePath, githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", generatedSubject], githubToken, gitUsername);
 
     const branchDiff = await this.gitCommandCapture(["-C", workspacePath, "diff", `${diffBaseRef}..HEAD`], githubToken, gitUsername);
     const changedFiles = await this.collectChangedFiles(workspacePath, diffBaseRef, githubToken, gitUsername);
@@ -990,7 +1168,13 @@ esac
       return true;
     }
 
-    await this.taskStore.appendLog(taskId, `Spawner: stopping container ${execution.containerName}.`);
+    await this.taskStore.appendLog(taskId, `Spawner: stopping container ${execution.containerName} (graceful shutdown).`);
+
+    try {
+      await this.runCommand("docker", ["stop", "-t", "15", execution.containerName]);
+    } catch {
+      // Container may already be gone or stop may fail; force remove below.
+    }
 
     try {
       await this.runCommand("docker", ["rm", "-f", execution.containerName]);
@@ -1060,7 +1244,8 @@ esac
 
       await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      await this.gitCommand(["-C", workspacePath, "commit", "-m", `feat(agentswarm): ${task.title}`], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      const generatedSubject = await this.buildGeneratedCommitSubject(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", generatedSubject], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       createdLocalCommit = true;
     }
 
@@ -1111,16 +1296,32 @@ esac
 
       await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      await this.gitCommand(["-C", workspacePath, "commit", "-m", `feat(agentswarm): ${task.title}`], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      const generatedSubject = await this.buildGeneratedCommitSubject(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", generatedSubject], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       createdLocalCommit = true;
     }
 
     if (createdLocalCommit) {
       await this.taskStore.appendLog(task.id, "Spawner: created a local commit from workspace changes before pushing.");
+    } else {
+      const unpushedSubjects = await this.getUnpushedCommitSubjects(
+        workspacePath,
+        branchName,
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername
+      );
+      if (unpushedSubjects.length > 0) {
+        const preview = unpushedSubjects.slice(0, 3).map((subject) => `"${subject}"`).join(", ");
+        const extra = unpushedSubjects.length > 3 ? ` (+${unpushedSubjects.length - 3} more)` : "";
+        await this.taskStore.appendLog(
+          task.id,
+          `Spawner: no new uncommitted changes; pushing ${unpushedSubjects.length} unpushed commit(s): ${preview}${extra}.`
+        );
+      }
     }
 
     try {
-      await this.gitCommand(["-C", workspacePath, "push", "-u", "origin", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.gitCommand(["-C", workspacePath, "push", "--no-verify", "-u", "origin", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     } catch {
       await this.gitCommand(["-C", workspacePath, "fetch", "origin", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
         () => undefined
@@ -1142,7 +1343,7 @@ esac
       } catch {
         // origin/<branch> may not exist yet; ignore.
       }
-      await this.gitCommand(["-C", workspacePath, "push", "-u", "origin", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.gitCommand(["-C", workspacePath, "push", "--no-verify", "-u", "origin", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     }
 
     await this.taskStore.appendLog(task.id, `Spawner: pushed local branch ${branchName} to origin.`);
@@ -1223,7 +1424,7 @@ esac
       throw error;
     }
 
-    await this.gitCommand(["-C", workspacePath, "push", "origin", defaultBranch], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    await this.gitCommand(["-C", workspacePath, "push", "--no-verify", "origin", defaultBranch], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     await this.taskStore.appendLog(task.id, `Spawner: merged ${branchName} into ${defaultBranch}.`);
     return (await this.taskStore.getTask(task.id)) ?? task;
   }
@@ -1241,7 +1442,139 @@ esac
     return accepted;
   }
 
+  /**
+   * Clone/fetch and check out the task workspace only (no agent container). Used for Interactive-first flows.
+   */
+  async prepareTaskWorkspaceOnly(task: Task): Promise<Task> {
+    const [settings, runtimeCredentials] = await Promise.all([
+      this.settingsStore.getSettings(),
+      this.settingsStore.getRuntimeCredentials()
+    ]);
+    const providerDefinition = getProviderRuntimeDefinition(task.provider);
+    const missingCredentialMessage = providerDefinition.getMissingCredentialMessage(runtimeCredentials);
+    if (missingCredentialMessage) {
+      throw new Error(missingCredentialMessage);
+    }
+
+    const branchName =
+      task.branchStrategy === "work_on_branch"
+        ? task.baseBranch
+        : task.branchName ?? makeBranchName(task.title, task.id, settings.branchPrefix);
+
+    let workingTask = task;
+    if (task.branchStrategy !== "work_on_branch" && !task.branchName) {
+      const patched = await this.taskStore.patchTask(task.id, { branchName });
+      if (patched) {
+        workingTask = patched;
+      }
+    }
+
+    const action: TaskAction = workingTask.taskType === "ask" ? "ask" : "build";
+    const repoCachePath = this.resolveRepoCachePath(workingTask);
+
+    await this.taskStore.appendLog(workingTask.id, "Spawner: preparing workspace for Interactive (clone/checkout only).");
+
+    const { workspace } = await this.withRepoLock(repoCachePath, async () => {
+      const ensuredRepoCachePath = await this.ensureRepoMirror(
+        workingTask,
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername
+      );
+      try {
+        const prepared = await this.prepareWorkspace(
+          workingTask,
+          action,
+          branchName,
+          ensuredRepoCachePath,
+          runtimeCredentials.githubToken,
+          runtimeCredentials.gitUsername
+        );
+        return { workspace: prepared };
+      } catch (error) {
+        if (!this.shouldRebuildMirror(error)) {
+          throw error;
+        }
+        await rm(ensuredRepoCachePath, { recursive: true, force: true });
+        const rebuiltRepoCachePath = await this.ensureRepoMirror(
+          workingTask,
+          runtimeCredentials.githubToken,
+          runtimeCredentials.gitUsername
+        );
+        const prepared = await this.prepareWorkspace(
+          workingTask,
+          action,
+          branchName,
+          rebuiltRepoCachePath,
+          runtimeCredentials.githubToken,
+          runtimeCredentials.gitUsername
+        );
+        return { workspace: prepared };
+      }
+    });
+
+    let nextTask = (await this.taskStore.getTask(workingTask.id)) ?? workingTask;
+    if (action === "build" && !nextTask.workspaceBaseRef) {
+      const patched = await this.taskStore.patchTask(workingTask.id, { workspaceBaseRef: workspace.workspaceBaseRef });
+      if (patched) {
+        nextTask = patched;
+      }
+    }
+
+    if (action === "build") {
+      const workspacePath = workspace.workspacePath;
+      const gitDir = path.join(workspacePath, ".git");
+      const hooksDir = path.join(gitDir, "hooks");
+      await mkdir(hooksDir, { recursive: true });
+      await writeFile(
+        path.join(hooksDir, "pre-commit"),
+        "#!/bin/sh\n# AgentSwarm: only the spawner may create commits.\nexit 1\n",
+        "utf8"
+      );
+      await writeFile(
+        path.join(hooksDir, "pre-push"),
+        "#!/bin/sh\n# AgentSwarm: only the spawner may push.\nexit 1\n",
+        "utf8"
+      );
+      await chmod(path.join(hooksDir, "pre-commit"), 0o755);
+      await chmod(path.join(hooksDir, "pre-push"), 0o755);
+      await this.runCommand("chmod", ["-R", "o-w", gitDir]);
+      await this.taskStore.appendLog(workingTask.id, "Spawner: installed git hooks (same as automated build).");
+    }
+
+    const doneAction: TaskAction =
+      workingTask.taskType === "review"
+        ? "review"
+        : workingTask.taskType === "ask"
+          ? "ask"
+          : workingTask.taskType === "plan"
+            ? "plan"
+            : "build";
+    const readyStatus = getSuccessfulStatusForAction(doneAction);
+    await this.taskStore.patchTask(workingTask.id, {
+      status: readyStatus,
+      enqueued: false,
+      errorMessage: null,
+      finishedAt: new Date().toISOString()
+    });
+    await this.taskStore.appendMessage(workingTask.id, {
+      role: "system",
+      content: "Workspace prepared and ready for changes."
+    });
+    await this.taskStore.appendLog(workingTask.id, `Spawner: workspace ready at ${workspace.workspacePath}.`);
+    return (await this.taskStore.getTask(workingTask.id)) ?? nextTask;
+  }
+
   async runTask(task: Task, action: TaskAction, iterateInput?: string): Promise<void> {
+    if (action === "review") {
+      throw new Error("Review mode has been removed");
+    }
+    if (action === "iterate") {
+      throw new Error("Iterate mode has been removed");
+    }
+    if (action === "plan") {
+      throw new Error("Plan mode has been removed");
+    }
+
     this.cancelRequestedTaskIds.delete(task.id);
     const [settings, runtimeCredentials, repository] = await Promise.all([
       this.settingsStore.getSettings(),
@@ -1256,15 +1589,11 @@ esac
 
     const mergedAgentRules = this.buildMergedAgentRules(settings.agentRules, repository?.rules ?? "");
     const branchName =
-      action === "build"
-        ? task.branchStrategy === "work_on_branch"
-          ? task.baseBranch
-          : task.branchName ?? makeBranchName(task.title, task.id, settings.branchPrefix)
-        : task.taskType === "review" || task.taskType === "ask"
-          ? task.baseBranch
-          : task.branchName ?? makeBranchName(task.title, task.id, settings.branchPrefix);
+      task.branchStrategy === "work_on_branch"
+        ? task.baseBranch
+        : task.branchName ?? makeBranchName(task.title, task.id, settings.branchPrefix);
     const startedAt = new Date().toISOString();
-    const planPath = action === "plan" || action === "iterate" ? this.resolvePlanRevisionPath(task, action, startedAt) : this.resolveLocalPlanPath(task);
+    const planPath = this.resolveLocalPlanPath(task);
     const payloadDir = this.resolveRuntimePayloadDir(task.id);
     let runId: string | null = null;
 
@@ -1276,7 +1605,7 @@ esac
         errorMessage: null,
         enqueued: false,
         lastAction: action,
-        latestIterationInput: action === "iterate" ? iterateInput ?? task.latestIterationInput : task.latestIterationInput,
+        latestIterationInput: task.latestIterationInput,
         planPath
       });
       const run = await this.taskStore.createRun(task.id, {
@@ -1352,7 +1681,7 @@ esac
         taskType: task.taskType,
         action,
         title: task.title,
-        requirements: task.requirements,
+        prompt: task.prompt,
         planMarkdown: task.planMarkdown ?? "",
         executionSummary: task.executionSummary,
         repoProfile,
@@ -1385,11 +1714,32 @@ esac
       // Write the plan as a file inside the workspace so the build/iterate agent
       // can read it on demand rather than receiving it as a large prompt string.
       const workspacePlanPath = path.join(workspace.workspacePath, ".agentswarm", "PLAN.md");
-      if ((action === "build" || action === "iterate") && task.planMarkdown?.trim()) {
+      if (action === "build" && task.planMarkdown?.trim()) {
         await mkdir(path.dirname(workspacePlanPath), { recursive: true });
         await writeFile(workspacePlanPath, `${task.planMarkdown.trim()}\n`, "utf8");
         await appendRunLog("Spawner: wrote plan file to workspace at .agentswarm/PLAN.md.");
       }
+
+      if (action === "build") {
+        const gitDir = path.join(workspace.workspacePath, ".git");
+        const hooksDir = path.join(gitDir, "hooks");
+        await mkdir(hooksDir, { recursive: true });
+        await writeFile(
+          path.join(hooksDir, "pre-commit"),
+          "#!/bin/sh\n# AgentSwarm: only the spawner may create commits.\nexit 1\n",
+          "utf8"
+        );
+        await writeFile(
+          path.join(hooksDir, "pre-push"),
+          "#!/bin/sh\n# AgentSwarm: only the spawner may push.\nexit 1\n",
+          "utf8"
+        );
+        await chmod(path.join(hooksDir, "pre-commit"), 0o755);
+        await chmod(path.join(hooksDir, "pre-push"), 0o755);
+        await this.runCommand("chmod", ["-R", "o-w", gitDir]);
+        await appendRunLog("Spawner: installed git hooks and restricted .git so only the spawner can add/commit/push.");
+      }
+
       await appendRunLog(
         `Spawner: runtime config includes provider=${task.provider}, profile=${task.providerProfile}, ${settings.mcpServers.length} MCP server${settings.mcpServers.length === 1 ? "" : "s"}, ${settings.agentRules.trim() ? "global rules" : "no global rules"}, and ${repository?.rules?.trim() ? "repository rules" : "no repository rules"}.`
       );
@@ -1399,6 +1749,10 @@ esac
       }
 
       const containerName = `agentswarm-task-${task.id}`;
+      const workspaceMountMode = action === "ask" ? "ro" : "rw";
+      if (workspaceMountMode === "ro") {
+        await appendRunLog("Spawner: mounting workspace read-only (ask mode).");
+      }
       const args = [
         "run",
         "--rm",
@@ -1407,7 +1761,7 @@ esac
         "-v",
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         "-v",
-        `${env.TASK_WORKSPACE_HOST_ROOT}:${env.TASK_WORKSPACE_ROOT}:rw`,
+        `${env.TASK_WORKSPACE_HOST_ROOT}:${env.TASK_WORKSPACE_ROOT}:${workspaceMountMode}`,
         "-e",
         `TASK_MANIFEST_FILE=${payloadPaths.manifestPath}`,
         "-e",
@@ -1498,45 +1852,13 @@ esac
       const runtimeResult = await this.readRuntimeResult(payloadPaths.resultMarkdownPath, payloadPaths.resultJsonPath);
       const finishedAt = new Date().toISOString();
 
-      if (action === "plan" || action === "iterate") {
+      if (action === "ask") {
         const finalMarkdown = runtimeResult.summaryMarkdown.trim();
         if (finalMarkdown.length === 0) {
           throw new Error(`${action} action returned empty markdown output`);
         }
 
-        await mkdir(path.dirname(planPath), { recursive: true });
-        await writeFile(planPath, `${finalMarkdown}\n`, "utf8");
-        await appendRunLog(`Spawner: stored local plan file at ${planPath}`);
-        await this.taskStore.updatePlanArtifacts(task.id, planPath, finalMarkdown);
-        await this.taskStore.setStatus(task.id, getSuccessfulStatusForAction(action), {
-          finishedAt,
-          enqueued: false,
-          branchDiff: null,
-          lastAction: action
-        });
-        await this.taskStore.appendMessage(task.id, {
-          role: "assistant",
-          action,
-          content: finalMarkdown
-        });
-        if (runId) {
-          await this.taskStore.updateRun(runId, {
-            status: "succeeded",
-            finishedAt,
-            summary: finalMarkdown,
-            tokenUsage: normalizeTokenUsage(runtimeResult.metadata?.tokenUsage)
-          });
-          await this.taskStore.patchTask(task.id, { currentPlanRunId: runId });
-        }
-      } else if (action === "review" || action === "ask") {
-        const finalMarkdown = runtimeResult.summaryMarkdown.trim();
-        if (finalMarkdown.length === 0) {
-          throw new Error(`${action} action returned empty markdown output`);
-        }
-
-        const branchDiff = action === "review"
-          ? await this.collectReviewDiff(task, workspace.workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername)
-          : null;
+        const branchDiff = null;
         await this.taskStore.updateResultArtifacts(task.id, finalMarkdown, runtimeResult.reviewVerdict ?? null);
         await this.taskStore.setStatus(task.id, getSuccessfulStatusForAction(action), {
           finishedAt,

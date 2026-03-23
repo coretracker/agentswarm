@@ -1,0 +1,16 @@
+services:
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    image: codex-web-terminal-proxy:latest
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      CODEX_IMAGE: ${CODEX_IMAGE:-local/codex-interactive:latest}
+      CODEX_MODEL: ${CODEX_MODEL:-}
+      CODEX_TRUST_WORKSPACE: ${CODEX_TRUST_WORKSPACE:-}

@@ -12,7 +12,7 @@ BRANCH_NAME="${BRANCH_NAME:-agentswarm/task}"
 TASK_TITLE="${TASK_TITLE:-AgentSwarm task}"
 TASK_PLAN_PATH="${TASK_PLAN_PATH:-local-plans/plan.md}"
 TASK_BRANCH_STRATEGY="${TASK_BRANCH_STRATEGY:-feature_branch}"
-TASK_REQUIREMENTS_FILE="${TASK_REQUIREMENTS_FILE:-}"
+TASK_PROMPT_FILE="${TASK_PROMPT_FILE:-}"
 TASK_PLAN_MARKDOWN_FILE="${TASK_PLAN_MARKDOWN_FILE:-}"
 TASK_EXECUTION_SUMMARY_FILE="${TASK_EXECUTION_SUMMARY_FILE:-}"
 TASK_REPO_PROFILE_FILE="${TASK_REPO_PROFILE_FILE:-}"
@@ -39,7 +39,7 @@ read_context_file() {
   cat "$file_path"
 }
 
-TASK_REQUIREMENTS="$(read_context_file "$TASK_REQUIREMENTS_FILE")"
+TASK_PROMPT="$(read_context_file "$TASK_PROMPT_FILE")"
 TASK_PLAN_MARKDOWN="$(read_context_file "$TASK_PLAN_MARKDOWN_FILE")"
 TASK_EXECUTION_SUMMARY="$(read_context_file "$TASK_EXECUTION_SUMMARY_FILE")"
 TASK_REPO_PROFILE="$(read_context_file "$TASK_REPO_PROFILE_FILE")"
@@ -47,8 +47,8 @@ TASK_ITERATION_INPUT="$(read_context_file "$TASK_ITERATION_INPUT_FILE")"
 TASK_AGENT_RULES="$(read_context_file "$TASK_AGENT_RULES_FILE")"
 CODEX_CONFIG_CONTENT="$(read_context_file "$CODEX_CONFIG_FILE")"
 
-if [[ -z "$TASK_REQUIREMENTS" ]]; then
-  echo "TASK_REQUIREMENTS is required"
+if [[ -z "$TASK_PROMPT" ]]; then
+  echo "TASK_PROMPT is required"
   exit 1
 fi
 
@@ -160,7 +160,7 @@ if [[ -n "$TASK_AGENT_RULES" ]]; then
 Global Agent Rules:
 $TASK_AGENT_RULES
 
-These rules apply to every action unless they directly conflict with the explicit task requirements.
+These rules apply to every action unless they directly conflict with the explicit task instructions.
 PROMPT
 )
 fi
@@ -169,52 +169,21 @@ ACTION_PROMPT=""
 case "$EXECUTION_ACTION" in
   plan)
     ACTION_PROMPT=$(cat <<PROMPT
-You are planning work for the repository at $(pwd).
-
-Task title:
-$TASK_TITLE
-
-Requirements:
-$TASK_REQUIREMENTS
+$TASK_PROMPT
 
 Repository profile:
 $TASK_REPO_PROFILE
 $GLOBAL_RULES_PROMPT
 
-Inspect the repository and create an implementation plan in markdown with sections:
-- Overview
-- Repo Findings
-- Files To Change
-- Implementation Steps
-- Validation
-- Risks
-
 Important:
-- Return only markdown content for the plan.
-- Do not ask for additional input.
-- Be concrete. The plan must describe the likely code changes, not just process steps.
-- In "Overview", summarize the problem and intended outcome without repeating the full requirements.
-- In "Repo Findings", list the concrete files, modules, or code paths you inspected and why they matter.
-- In "Repo Findings", include short code snippets only when they clarify a key implementation constraint.
-- In "Files To Change", organize the plan file-by-file, explain why each file matters, and include the proposed edits directly under that file entry.
-- Do not create a separate "Suggested Code Changes" section.
-- When proposing file edits, prefer fenced markdown code blocks whose language is set to diff.
-- For diff blocks, prefer full git-style unified diffs with diff --git, ---, +++, and valid @@ -old,+new @@ hunk headers so the UI can render them reliably.
-- In "Validation", list only the concrete checks or commands needed to verify the planned change.
-- Omit "Risks" if there are no meaningful risks.
-- Do not actually modify files during planning.
+- Only read files; do not modify them.
+- Answer with markdown.
 PROMPT
 )
     ;;
   build)
     ACTION_PROMPT=$(cat <<PROMPT
-You are implementing a task in the repository at $(pwd).
-
-Task title:
-$TASK_TITLE
-
-Requirements:
-$TASK_REQUIREMENTS
+$TASK_PROMPT
 
 Repository profile:
 $TASK_REPO_PROFILE
@@ -223,8 +192,10 @@ Execution summary:
 $TASK_EXECUTION_SUMMARY
 $GLOBAL_RULES_PROMPT
 
-Implement the required code changes directly in this repository, then stop.
-Do not restate the entire plan. Use the execution summary as the authoritative compact context.
+Important:
+- Edit files in the working tree to apply the requested changes.
+- Do not run git commit or git push.
+- Return a short markdown summary of what you changed and how you validated it.
 PROMPT
 )
     ;;

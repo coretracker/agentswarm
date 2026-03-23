@@ -29,6 +29,8 @@ services:
       - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-admin123!}
       - AUTH_COOKIE_NAME=${AUTH_COOKIE_NAME:-agentswarm_session}
       - AUTH_SESSION_TTL_DAYS=${AUTH_SESSION_TTL_DAYS:-7}
+      # In-browser Codex terminal: build with tools/codex-web-terminal/Dockerfile.codex
+      - CODEX_INTERACTIVE_IMAGE=${CODEX_INTERACTIVE_IMAGE:-local/codex-interactive:latest}
     ports:
       - "4000:4000"
     volumes:

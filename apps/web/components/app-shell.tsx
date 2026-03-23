@@ -9,6 +9,7 @@ import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
   isPublicPathname,
+  isTaskInteractiveFullscreenPath,
   navigationRoutes,
   resolveDefaultPath
 } from "../src/auth/access";
@@ -56,6 +57,29 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   if (loading || !session) {
     return <Spin fullscreen tip="Loading session" />;
+  }
+
+  if (isTaskInteractiveFullscreenPath(pathname)) {
+    return (
+      <App>
+        {hasRouteAccess ? (
+          <div style={{ height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>{children}</div>
+        ) : (
+          <Result
+            status="403"
+            title="403"
+            subTitle="This account does not have access to the requested page."
+            extra={
+              defaultPath ? (
+                <Button type="primary" onClick={() => router.push(defaultPath)}>
+                  Go To An Allowed Page
+                </Button>
+              ) : null
+            }
+          />
+        )}
+      </App>
+    );
   }
 
   return (

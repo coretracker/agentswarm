@@ -231,7 +231,7 @@ export class GitHubImportService {
     const labels = (issue.labels ?? []).map((label) => label.name).filter(Boolean);
     const taskType = input.taskType ?? "plan";
     const title = input.title?.trim() || `Issue #${issue.number}: ${issue.title}`;
-    const requirements = [
+    const prompt = [
       `Imported from GitHub issue #${issue.number}: ${issue.title}`,
       `Issue URL: ${issue.html_url}`,
       labels.length > 0 ? `Labels: ${labels.join(", ")}` : null,
@@ -244,8 +244,9 @@ export class GitHubImportService {
     return {
       title,
       repoId: repository.id,
-      requirements,
+      prompt,
       taskType,
+      startMode: input.startMode,
       provider: input.provider,
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,
@@ -334,7 +335,7 @@ export class GitHubImportService {
 
     const pullRequestBody = cleanMarkdownBlock(pullRequest.body, 4000);
     const title = input.title?.trim() || `PR #${pullRequest.number}: ${pullRequest.title}`;
-    const requirements = [
+    const prompt = [
       `Implement the unresolved review feedback from GitHub pull request #${pullRequest.number}: ${pullRequest.title}.`,
       `PR URL: ${pullRequest.html_url}`,
       `Default branch: ${pullRequest.base.ref}`,
@@ -348,7 +349,7 @@ export class GitHubImportService {
     return {
       title,
       repoId: repository.id,
-      requirements,
+      prompt,
       taskType: "plan",
       provider: input.provider,
       providerProfile: input.providerProfile,

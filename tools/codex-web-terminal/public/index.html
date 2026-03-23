@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex web terminal</title>
+    <link rel="stylesheet" href="/assets/xterm/css/xterm.css" />
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: #1e1e1e;
+      }
+      #app {
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        min-height: 0;
+        padding: 8px;
+      }
+      #terminal {
+        flex: 1 1 auto;
+        min-height: 0;
+        min-width: 0;
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="terminal"></div>
+    </div>
+    <script type="module" src="/client.mjs"></script>
+  </body>
+</html>

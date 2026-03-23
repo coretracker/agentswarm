@@ -13,6 +13,7 @@ import {
   type TaskMessage,
   type TaskReasoningEffort,
   type TaskRun,
+  type TaskStartMode,
   type TaskStatus
 } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
@@ -21,12 +22,23 @@ import {
   normalizeProvider,
   normalizeProviderProfile
 } from "../lib/provider-config.js";
-import {
-  buildExecutionSummaryFromPlan,
-  buildExecutionSummaryFromRequirements,
-  classifyTaskComplexity,
-  extractReviewVerdict
-} from "../lib/task-intelligence.js";
+import { buildExecutionSummaryFromPlan, buildExecutionSummaryFromPrompt, classifyTaskComplexity, extractReviewVerdict } from "../lib/task-intelligence.js";
+
+/** When creating with Interactive prep, make the task title identifiable without duplicating markers. */
+function resolveTaskTitleForCreate(input: CreateTaskInput): string {
+  const raw = (input.title ?? "").trim();
+  const startMode = input.startMode ?? "run_now";
+  if (startMode !== "prepare_workspace" || !raw) {
+    return raw;
+  }
+  if (/\(interactive\)\s*$/i.test(raw)) {
+    return raw;
+  }
+  if (/^interactive(\s|·)/i.test(raw)) {
+    return raw;
+  }
+  return `${raw} (Interactive)`;
+}
 
 const TASK_KEY_PREFIX = "agentswarm:task:";
 const TASK_LOG_KEY_PREFIX = "agentswarm:task_logs:";
@@ -51,11 +63,11 @@ const getInitialAction = (task: { taskType: Task["taskType"]; planningMode: Task
     return "ask";
   }
 
-  if (task.taskType === "build") {
+  if (task.taskType === "build" || task.taskType === "plan") {
     return "build";
   }
 
-  return task.planMarkdown || task.planningMode === "direct-build" ? "build" : "plan";
+  return "build";
 };
 
 export interface QueueEntry {
@@ -84,12 +96,15 @@ export class TaskStore {
       reasoningEffort?: TaskReasoningEffort | null;
       builtPlanRunIds?: string[];
       currentPlanRunId?: string | null;
+      // Legacy field kept for migration of stored tasks created before the prompt refactor.
+      requirements?: string;
+      prompt?: string;
     };
     const status = legacyTask.status as string;
     const normalizedTask: Task = {
       ...legacyTask,
       pinned: legacyTask.pinned ?? false,
-      taskType: legacyTask.taskType ?? "plan",
+      taskType: legacyTask.taskType ?? "build",
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
@@ -99,7 +114,9 @@ export class TaskStore {
       builtPlanRunIds: Array.isArray(legacyTask.builtPlanRunIds) ? legacyTask.builtPlanRunIds : [],
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
       resultMarkdown: legacyTask.resultMarkdown ?? null,
-      reviewVerdict: legacyTask.reviewVerdict ?? null
+      reviewVerdict: legacyTask.reviewVerdict ?? null,
+      // Prefer the new prompt field; fall back to legacy requirements for older tasks.
+      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim()
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
 
@@ -120,6 +137,7 @@ export class TaskStore {
       status === "planning" ||
       status === "planned" ||
       status === "build_queued" ||
+      status === "preparing_workspace" ||
       status === "building" ||
       status === "review_queued" ||
       status === "reviewing" ||
@@ -224,8 +242,13 @@ export class TaskStore {
 
   async createTask(input: CreateTaskInput, repository: Repository): Promise<Task> {
     const timestamp = nowIso();
+    const title = resolveTaskTitleForCreate(input);
     const taskType = input.taskType ?? "plan";
-    const complexity = classifyTaskComplexity(input.title, input.requirements);
+    const promptRaw = (input.prompt ?? "").trim();
+    const startMode: TaskStartMode = input.startMode ?? "run_now";
+    const prompt =
+      promptRaw.length > 0 ? promptRaw : startMode === "prepare_workspace" ? "" : "(No prompt provided.)";
+    const complexity = classifyTaskComplexity(title, prompt);
     const planningMode = taskType === "build" ? "direct-build" : "plan-first";
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
@@ -240,9 +263,11 @@ export class TaskStore {
           : taskType === "build" || planningMode === "direct-build"
             ? "build"
             : "plan";
+    const initialStatus: TaskStatus =
+      startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
     const task: Task = {
       id: nanoid(),
-      title: input.title,
+      title,
       pinned: false,
       repoId: repository.id,
       repoName: repository.name,
@@ -263,32 +288,34 @@ export class TaskStore {
       currentPlanRunId: null,
       builtPlanRunIds: [],
       workspaceBaseRef: null,
-      requirements: input.requirements,
+      prompt,
       planPath: null,
       planMarkdown: null,
       resultMarkdown: null,
       reviewVerdict: null,
-      executionSummary: buildExecutionSummaryFromRequirements(input.title, input.requirements),
+      executionSummary: buildExecutionSummaryFromPrompt(title, prompt),
       branchDiff: null,
       latestIterationInput: null,
       lastAction: initialAction,
-      status: getQueuedStatusForAction(initialAction),
+      status: initialStatus,
       logs: [],
       enqueued: false,
       createdAt: timestamp,
       updatedAt: timestamp,
-      startedAt: null,
+      startedAt: startMode === "prepare_workspace" ? timestamp : null,
       finishedAt: null,
       errorMessage: null
     };
 
     await this.redis.multi().set(this.taskKey(task.id), JSON.stringify(task)).sadd(TASK_IDS_KEY, task.id).exec();
     await this.eventBus.publish({ type: "task:created", payload: task });
-    await this.appendMessage(task.id, {
-      role: "user",
-      action: initialAction,
-      content: input.requirements
-    });
+    if (startMode !== "prepare_workspace" || prompt.trim().length > 0) {
+      await this.appendMessage(task.id, {
+        role: "user",
+        action: initialAction,
+        content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
+      });
+    }
 
     return task;
   }

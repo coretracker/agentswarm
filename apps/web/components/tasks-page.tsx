@@ -24,12 +24,13 @@ const statusOptions: Array<{ label: string; value: TaskStatus }> = [
   { label: "Planning", value: "planning" },
   { label: "Planned", value: "planned" },
   { label: "Build Queued", value: "build_queued" },
+  { label: "Preparing Workspace", value: "preparing_workspace" },
   { label: "Building", value: "building" },
   { label: "Review Queued", value: "review_queued" },
   { label: "Reviewing", value: "reviewing" },
   { label: "Ask Queued", value: "ask_queued" },
   { label: "Answering", value: "asking" },
-  { label: "In Review", value: "review" },
+  { label: "Ready", value: "review" },
   { label: "Answered", value: "answered" },
   { label: "Accepted", value: "accepted" },
   { label: "Archived", value: "archived" },
@@ -42,6 +43,7 @@ const statusColor: Record<TaskStatus, string> = {
   planning: "processing",
   planned: "purple",
   build_queued: "cyan",
+  preparing_workspace: "processing",
   building: "blue",
   review_queued: "geekblue",
   reviewing: "geekblue",
@@ -167,7 +169,7 @@ export function TasksPage() {
               <Typography.Text type="secondary">
                 {archivedView
                   ? "Archived tasks are read-only and kept out of the active work queue."
-                  : "Track plan, review, and ask tasks across their execution lifecycle."}
+                  : "Track build and ask tasks across their execution lifecycle."}
               </Typography.Text>
               <Typography.Link onClick={() => router.push(archivedView ? "/tasks" : "/tasks?view=archived")}>
                 {archivedView ? "Active Tasks" : "Archived"}
