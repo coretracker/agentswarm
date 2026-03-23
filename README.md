@@ -4,7 +4,7 @@
 
 <h1 align="center">AgentSwarm</h1>
 
-<p align="center"><strong>Turn repositories into managed agent work—plans, builds, reviews, and Q&amp;A—with a UI your team can actually use.</strong></p>
+<p align="center"><strong>Turn repositories into managed agent work with a UI your team can actually use.</strong></p>
 
 <p align="center">
   <a href="#try-it-locally">Try it locally</a> ·
@@ -30,9 +30,9 @@ Stop stitching together scripts, terminals, and ad-hoc prompts. **AgentSwarm** i
 ## What you can do
 
 - **Onboard repos** and invite teammates with permissions that match how you work (who creates tasks, who edits, who’s read-only).
-- **Plan, build, ask, and review** in one thread: markdown plans, implementation on a branch, repo Q&amp;A, and branch-vs-default reviews—without juggling five tools.
+- **Run Build and Ask in automated mode** from one thread: implementation on a branch and repo Q&amp;A without juggling five tools.
 - **Choose how each task starts**: kick off an **automated agent run** immediately, or **prepare the workspace only** so checkout finishes in the background and you land in **Ready** when you’re set to work (or open Interactive).
-- **Drive Codex from the browser** with **Interactive** sessions when you want a shell in the task workspace (`/workspace`); wire-up details live in `tools/codex-web-terminal/` and `CODEX_INTERACTIVE_IMAGE`.
+- **Use full agent functionality in Interactive terminal** when you want direct control: open a browser shell in the task workspace (`/workspace`) with the complete agent experience; wire-up details live in `tools/codex-web-terminal/` and `CODEX_INTERACTIVE_IMAGE`.
 - **See progress as it happens** with live log streaming and real-time UI updates over Socket.IO.
 
 Under the hood: disposable **agent-runtime** containers per run, **Redis** for tasks and sessions, and **Next.js + Fastify** for the web and API.
@@ -85,8 +85,9 @@ The bootstrap password is only applied the **first** time the admin user is crea
 
 ### Task model (overview)
 
-- **Types:** `plan`, `build`, `ask`, `review`
-- **Actions:** `plan`, `build`, `iterate`, `review`, `ask`, plus `comment` on the timeline
+- **Automated agent modes:** `build`, `ask`
+- **Interactive terminal:** full agent functionality directly in the terminal
+- **Actions in timeline/API:** automated mode centers on `build` and `ask` plus `comment` history entries
 - **Statuses:** queued / in-progress, **Preparing workspace**, **Ready**, and outcomes like `failed`, `cancelled`, `accepted`, …
 
 ## Repository layout
