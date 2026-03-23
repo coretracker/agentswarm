@@ -301,6 +301,21 @@ export interface TaskLiveDiff {
   defaultBaseRef: string | null;
 }
 
+/** Snapshot for the Push UI before staging/commit (working tree + index vs HEAD). */
+export interface TaskPushPreview {
+  branchName: string;
+  changedFiles: string[];
+  /** Unified diff vs HEAD; may be truncated for large workspaces. */
+  diff: string;
+  diffTruncated: boolean;
+  /** `git diff HEAD --stat` output (may be truncated). */
+  diffStat: string;
+  hasUncommittedChanges: boolean;
+  unpushedCommitSubjects: string[];
+  /** Suggested first line if a new commit is created from current changes. */
+  suggestedCommitMessage: string;
+}
+
 export interface TaskMessage {
   id: string;
   taskId: string;
@@ -508,6 +523,10 @@ export interface UpdateTaskConfigInput {
 
 export interface UpdateTaskPinInput {
   pinned: boolean;
+}
+
+export interface UpdateTaskTitleInput {
+  title: string;
 }
 
 export interface UpdateTaskPlanInput {

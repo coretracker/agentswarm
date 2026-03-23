@@ -24,12 +24,14 @@ import type {
   OpenAiDiffAssistInput,
   OpenAiDiffAssistResult,
   TaskLiveDiff,
+  TaskPushPreview,
   TaskMessage,
   TaskRun,
   TaskAction,
   UpdateRoleInput,
   UpdateTaskPlanInput,
   UpdateTaskPinInput,
+  UpdateTaskTitleInput,
   UpdateCredentialSettingsInput,
   UpdateTaskConfigInput,
   UpdateRepositoryInput,
@@ -224,9 +226,11 @@ export const api = {
     request<Task>(`/tasks/${id}/pull`, {
       method: "POST"
     }),
-  pushTask: (id: string) =>
+  getTaskPushPreview: (id: string) => request<TaskPushPreview>(`/tasks/${id}/push-preview`),
+  pushTask: (id: string, input?: { commitMessage?: string }) =>
     request<Task>(`/tasks/${id}/push`, {
-      method: "POST"
+      method: "POST",
+      body: JSON.stringify(input ?? {})
     }),
   mergeTask: (id: string) =>
     request<Task>(`/tasks/${id}/merge`, {
@@ -252,6 +256,11 @@ export const api = {
     }),
   updateTaskPin: (id: string, input: UpdateTaskPinInput) =>
     request<Task>(`/tasks/${id}/pin`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskTitle: (id: string, input: UpdateTaskTitleInput) =>
+    request<Task>(`/tasks/${id}/title`, {
       method: "PATCH",
       body: JSON.stringify(input)
     }),

@@ -10,6 +10,7 @@ import {
   type TaskLiveDiff,
   type TaskAction,
   type TaskRun,
+  type TaskPushPreview,
   type TaskReviewVerdict
 } from "@agentswarm/shared-types";
 import { makeBranchName } from "../lib/branch.js";
@@ -1069,6 +1070,12 @@ esac
       .filter(Boolean);
   }
 
+  private buildGeneratedCommitSubjectFromFiles(task: Task, files: string[]): string {
+    const type = this.inferCommitType(task.title, files);
+    const subject = this.summarizeChangedPaths(files);
+    return this.toCommitSubject(`${type}(agentswarm): ${subject}`);
+  }
+
   private async buildGeneratedCommitSubject(
     task: Task,
     workspacePath: string,
@@ -1076,9 +1083,67 @@ esac
     gitUsername = "x-access-token"
   ): Promise<string> {
     const stagedFiles = await this.getStagedFiles(workspacePath, githubToken, gitUsername);
-    const type = this.inferCommitType(task.title, stagedFiles);
-    const subject = this.summarizeChangedPaths(stagedFiles);
-    return this.toCommitSubject(`${type}(agentswarm): ${subject}`);
+    return this.buildGeneratedCommitSubjectFromFiles(task, stagedFiles);
+  }
+
+  private async getWorkingTreePathsVersusHead(
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string[]> {
+    const raw = await this.gitCommandCapture(["-C", workspacePath, "diff", "HEAD", "--name-only"], githubToken, gitUsername);
+    return raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
+  private static readonly PUSH_PREVIEW_DIFF_MAX_CHARS = 120_000;
+  private static readonly PUSH_PREVIEW_STAT_MAX_CHARS = 24_000;
+
+  async getTaskPushPreview(task: Task): Promise<TaskPushPreview> {
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
+    if (!branchName) {
+      throw new Error("No target branch available for publishing");
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const exists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      throw new Error("No local workspace exists for this task. Build it again before pushing.");
+    }
+
+    const { githubToken, gitUsername } = runtimeCredentials;
+    const changedFiles = await this.getWorkingTreePathsVersusHead(workspacePath, githubToken, gitUsername);
+    const suggestedCommitMessage = this.buildGeneratedCommitSubjectFromFiles(task, changedFiles);
+
+    let fullDiff = await this.gitCommandCapture(["-C", workspacePath, "diff", "HEAD"], githubToken, gitUsername);
+    let diffTruncated = false;
+    if (fullDiff.length > SpawnerService.PUSH_PREVIEW_DIFF_MAX_CHARS) {
+      fullDiff = `${fullDiff.slice(0, SpawnerService.PUSH_PREVIEW_DIFF_MAX_CHARS)}\n\n… (diff truncated for preview)`;
+      diffTruncated = true;
+    }
+
+    let diffStat = await this.gitCommandCapture(["-C", workspacePath, "diff", "HEAD", "--stat"], githubToken, gitUsername);
+    if (diffStat.length > SpawnerService.PUSH_PREVIEW_STAT_MAX_CHARS) {
+      diffStat = `${diffStat.slice(0, SpawnerService.PUSH_PREVIEW_STAT_MAX_CHARS)}\n… (stat truncated)`;
+    }
+
+    const unpushedCommitSubjects = await this.getUnpushedCommitSubjects(workspacePath, branchName, githubToken, gitUsername);
+
+    return {
+      branchName,
+      changedFiles,
+      diff: fullDiff.trim() || "(no local changes vs HEAD)",
+      diffTruncated,
+      diffStat: diffStat.trim() || "—",
+      hasUncommittedChanges: changedFiles.length > 0,
+      unpushedCommitSubjects,
+      suggestedCommitMessage
+    };
   }
 
   private async getUnpushedCommitSubjects(
@@ -1267,7 +1332,7 @@ esac
     return (await this.taskStore.getTask(task.id)) ?? task;
   }
 
-  async pushTaskBranch(task: Task): Promise<Task> {
+  async pushTaskBranch(task: Task, options?: { commitMessage?: string | null }): Promise<Task> {
     const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
     const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
     if (!branchName) {
@@ -1296,8 +1361,12 @@ esac
 
       await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      const generatedSubject = await this.buildGeneratedCommitSubject(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", generatedSubject], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      const custom = options?.commitMessage?.trim();
+      const subject =
+        custom && custom.length > 0
+          ? this.toCommitSubject(custom)
+          : await this.buildGeneratedCommitSubject(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", subject], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       createdLocalCommit = true;
     }
 

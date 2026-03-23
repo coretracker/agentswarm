@@ -14,6 +14,7 @@ import { executeOpenAiDiffAssist } from "../services/openai-diff-assist-service.
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
+import { buildExecutionSummaryFromPrompt, classifyTaskComplexity } from "../lib/task-intelligence.js";
 
 const taskStartModeSchema = z.enum(["run_now", "prepare_workspace", "idle"]);
 
@@ -58,6 +59,10 @@ const updateTaskPinSchema = z.object({
   pinned: z.boolean()
 });
 
+const updateTaskTitleSchema = z.object({
+  title: z.string().trim().min(1).max(500)
+});
+
 const updateTaskPlanSchema = z.object({
   planMarkdown: z.string().trim().min(1)
 });
@@ -65,6 +70,10 @@ const updateTaskPlanSchema = z.object({
 const createTaskMessageSchema = z.object({
   content: z.string().trim().min(1),
   action: z.enum(["build", "ask", "comment"]).optional()
+});
+
+const pushTaskBodySchema = z.object({
+  commitMessage: z.string().max(8000).optional()
 });
 
 const openAiDiffAssistSchema = z.object({
@@ -398,6 +407,34 @@ export const registerTaskRoutes = (
     return reply.send(updated);
   });
 
+  app.patch<{ Params: { id: string } }>("/tasks/:id/title", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateTaskTitleSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const task = await deps.taskStore.getTask(request.params.id);
+    if (!task) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    const title = parsed.data.title;
+    const complexity = classifyTaskComplexity(title, task.prompt);
+    const executionSummary = buildExecutionSummaryFromPrompt(title, task.prompt);
+
+    const updated = await deps.taskStore.patchTask(task.id, {
+      title,
+      complexity,
+      executionSummary
+    });
+
+    return reply.send(updated);
+  });
+
   app.patch<{ Params: { id: string } }>("/tasks/:id/plan", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const parsed = updateTaskPlanSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -540,6 +577,25 @@ export const registerTaskRoutes = (
     return reply.send(await deps.taskStore.getTask(task.id));
   });
 
+  app.get<{ Params: { id: string } }>("/tasks/:id/push-preview", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const task = await deps.taskStore.getTask(request.params.id);
+    if (!task) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    try {
+      const preview = await deps.spawner.getTaskPushPreview(task);
+      return reply.send(preview);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Push preview failed";
+      return reply.status(400).send({ message });
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/tasks/:id/push", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const task = await deps.taskStore.getTask(request.params.id);
     if (!task) {
@@ -550,7 +606,14 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    const pushed = await deps.spawner.pushTaskBranch(task);
+    const parsed = pushTaskBodySchema.safeParse((request.body as unknown) ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const pushed = await deps.spawner.pushTaskBranch(task, {
+      commitMessage: parsed.data.commitMessage
+    });
     return reply.send(await withBranchSyncCounts(deps.spawner, pushed));
   });
 

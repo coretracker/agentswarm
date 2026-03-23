@@ -20,7 +20,8 @@ import {
   type TaskBranchStrategy,
   type ProviderProfile,
   type Preset,
-  type GitHubBranchReference
+  type GitHubBranchReference,
+  type TaskPushPreview
 } from "@agentswarm/shared-types";
 import {
   Alert,
@@ -44,7 +45,7 @@ import {
   Typography,
   message
 } from "antd";
-import { ArrowRightOutlined, LoadingOutlined, MoreOutlined, PushpinOutlined } from "@ant-design/icons";
+import { ArrowRightOutlined, EditOutlined, LoadingOutlined, MoreOutlined, PushpinOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -373,7 +374,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [liveDiffLoading, setLiveDiffLoading] = useState(false);
   const [liveDiffError, setLiveDiffError] = useState<string | null>(null);
   const [liveDiffRefreshKey, setLiveDiffRefreshKey] = useState(0);
-  const [diffLiveKind, setDiffLiveKind] = useState<"compare" | "working">("compare");
+  const [diffLiveKind, setDiffLiveKind] = useState<"compare" | "working">("working");
   const [diffCompareBaseRef, setDiffCompareBaseRef] = useState<string | null>(null);
   const [diffBranches, setDiffBranches] = useState<GitHubBranchReference[]>([]);
   const [diffBranchesLoading, setDiffBranchesLoading] = useState(false);
@@ -410,11 +411,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "savePlan"
     | "message"
     | "pin"
+    | "renameTitle"
   >(null);
   const [messageApi, contextHolder] = message.useMessage();
   const selectedChatActionRef = useRef(false);
   const diffCompareBaseSyncedTaskIdRef = useRef<string | null>(null);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
+  const [pushPreview, setPushPreview] = useState<TaskPushPreview | null>(null);
+  const [pushPreviewLoading, setPushPreviewLoading] = useState(false);
+  const [pushPreviewError, setPushPreviewError] = useState<string | null>(null);
+  const [pushCommitMessage, setPushCommitMessage] = useState("");
+  const [renameModalOpen, setRenameModalOpen] = useState(false);
+  const [renameTitleDraft, setRenameTitleDraft] = useState("");
   const [spawnPresetFromTask, setSpawnPresetFromTask] = useState<Preset | null>(null);
   const [spawnBranches, setSpawnBranches] = useState<GitHubBranchReference[]>([]);
   const [spawnBranchesLoading, setSpawnBranchesLoading] = useState(false);
@@ -1154,14 +1162,67 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
-  const handlePushTask = async () => {
+  const loadPushPreview = async () => {
+    if (!task) {
+      return;
+    }
+    setPushPreviewError(null);
+    setPushPreviewLoading(true);
+    try {
+      const preview = await api.getTaskPushPreview(task.id);
+      setPushPreview(preview);
+      setPushCommitMessage((current) => (current.trim().length > 0 ? current : preview.suggestedCommitMessage));
+    } catch (error) {
+      setPushPreviewError(error instanceof Error ? error.message : "Could not load push preview");
+    } finally {
+      setPushPreviewLoading(false);
+    }
+  };
+
+  const confirmRenameTask = async () => {
+    if (!task) {
+      return;
+    }
+    const next = renameTitleDraft.trim();
+    if (!next) {
+      messageApi.warning("Title cannot be empty");
+      return;
+    }
+    if (next === task.title) {
+      setRenameModalOpen(false);
+      return;
+    }
+    setSubmitting("renameTitle");
+    try {
+      const updatedTask = await api.updateTaskTitle(task.id, { title: next });
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success("Task renamed");
+      setRenameModalOpen(false);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to rename task");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+
+  const confirmPushTask = async () => {
     if (!task) {
       return;
     }
 
     setSubmitting("push");
     try {
-      const updatedTask = await api.pushTask(task.id);
+      const updatedTask = await api.pushTask(task.id, {
+        commitMessage: pushCommitMessage.trim() || undefined
+      });
       setTask((current) =>
         current
           ? {
@@ -1172,6 +1233,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : updatedTask
       );
       messageApi.success("Changes pushed");
+      await loadPushPreview();
+      setLiveDiffRefreshKey((k) => k + 1);
     } catch (error) {
       messageApi.error(error instanceof Error ? error.message : "Failed to push changes");
     } finally {
@@ -1226,6 +1289,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
+  useEffect(() => {
+    if (activeMainTab !== "diff" || !task || !canPush) {
+      return;
+    }
+    void loadPushPreview();
+  }, [activeMainTab, canPush, task?.id, task?.updatedAt]);
+
   const moreActionItems = task && !isArchived
     ? [
         canMerge ? { key: "merge", label: `Merge to ${task?.repoDefaultBranch ?? "default branch"}` } : null,
@@ -1240,7 +1310,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canOpenInteractive = canEditTask && !isArchived && !!task;
   const canRunReviewAction =
     !canCancel && !hasCompletedNonImplementationResult && canEditTask && isReviewTask && task?.status !== "accepted" && task?.status !== "archived";
-  const hasSyncButtons = canOpenInteractive || canPull || canPush;
+  const hasSyncButtons = canOpenInteractive;
   const hasExecutionButtons = canCancel || canRunReviewAction;
   const hasManagementButtons = Boolean(githubDiffTarget) || canArchive || hasMoreActions;
 const contextContent = (
@@ -1393,8 +1463,8 @@ const contextContent = (
             value={diffLiveKind}
             onChange={(value) => setDiffLiveKind(value as "compare" | "working")}
             options={[
-              { label: "Compare to branch", value: "compare" },
-              { label: "Local changes", value: "working" }
+              { label: "Local changes", value: "working" },
+              { label: "Compare to branch", value: "compare" }
             ]}
             style={{ marginBottom: 14 }}
           />
@@ -1440,6 +1510,59 @@ const contextContent = (
                   : liveDiff?.message ?? "Live diff will appear once the task workspace exists."}
             </Typography.Paragraph>
           )}
+        </Card>
+      ) : null}
+      {diffLiveKind === "working" && (canPull || canPush) && task ? (
+        <Card size="small" title="Git operations">
+          <Space direction="vertical" size={12} style={{ width: "100%" }}>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+              Pull updates from origin and push your local branch. Pushing stages all local changes, creates a commit when needed,
+              and publishes the branch.
+            </Typography.Paragraph>
+            <Flex gap={8} wrap="wrap">
+              {canPull ? (
+                <Button onClick={handlePullTask} loading={submitting === "pull"}>
+                  {`Pull (${pullCount})`}
+                </Button>
+              ) : null}
+              {canPush ? (
+                <Button type="primary" onClick={() => void confirmPushTask()} loading={submitting === "push"} disabled={pushPreviewLoading}>
+                  {`Push (${pushCount})`}
+                </Button>
+              ) : null}
+              {canPush ? (
+                <Button onClick={() => void loadPushPreview()} loading={pushPreviewLoading} disabled={submitting === "push"}>
+                  Refresh preview
+                </Button>
+              ) : null}
+            </Flex>
+            {pushPreviewError ? <Alert type="error" showIcon message="Push preview unavailable" description={pushPreviewError} /> : null}
+            {canPush && pushPreview ? (
+              <>
+                <Typography.Text type="secondary">
+                  Branch <Typography.Text code>{pushPreview.branchName}</Typography.Text>
+                  {pushPreview.hasUncommittedChanges
+                    ? " — uncommitted changes will be committed before push."
+                    : pushPreview.unpushedCommitSubjects.length > 0
+                      ? " — pushing existing local commits."
+                      : " — nothing to push."}
+                </Typography.Text>
+                <Input.TextArea
+                  rows={2}
+                  value={pushCommitMessage}
+                  onChange={(e) => setPushCommitMessage(e.target.value)}
+                  placeholder="Commit message (used when creating a new commit)"
+                  disabled={submitting === "push"}
+                />
+                {pushPreview.unpushedCommitSubjects.length > 0 ? (
+                  <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                    Existing local commits: {pushPreview.unpushedCommitSubjects.slice(0, 3).join(" · ")}
+                    {pushPreview.unpushedCommitSubjects.length > 3 ? ` (+${pushPreview.unpushedCommitSubjects.length - 3} more)` : ""}
+                  </Typography.Paragraph>
+                ) : null}
+              </>
+            ) : null}
+          </Space>
         </Card>
       ) : null}
       {liveDiffError ? <Alert type="warning" showIcon message="Live diff refresh failed" description={liveDiffError} /> : null}
@@ -1945,7 +2068,7 @@ const contextContent = (
       ? [
           {
             key: "diff",
-            label: "Diff",
+            label: "Git",
             children: diffContent
           }
         ]
@@ -1960,28 +2083,53 @@ const contextContent = (
   return (
     <>
       {contextHolder}
+      <Modal
+        title="Rename task"
+        open={renameModalOpen}
+        onCancel={() => {
+          if (submitting === "renameTitle") {
+            return;
+          }
+          setRenameModalOpen(false);
+        }}
+        destroyOnClose
+        onOk={() => void confirmRenameTask()}
+        okText="Save"
+        confirmLoading={submitting === "renameTitle"}
+        okButtonProps={{ disabled: !renameTitleDraft.trim() }}
+      >
+        <Input
+          value={renameTitleDraft}
+          onChange={(e) => setRenameTitleDraft(e.target.value)}
+          onPressEnter={() => void confirmRenameTask()}
+          placeholder="Task title"
+          maxLength={500}
+          showCount
+          disabled={submitting === "renameTitle"}
+        />
+      </Modal>
       <Flex vertical gap={16} style={{ width: "100%", paddingBottom: 16 }}>
         <Flex vertical gap={12}>
-          <Typography.Title level={2} style={{ margin: 0 }}>
-            {task?.title ?? "Task Detail"}
-          </Typography.Title>
-          {isArchived ? (
-            <Alert
-              type="info"
-              showIcon
-              message="Archived task"
-              description="Archived tasks are read-only. You can review history, plans, output, and diffs, but you cannot restart or change the task."
-            />
-          ) : !canEditTask ? (
-            <Alert
-              type="info"
-              showIcon
-              message="Read-only task access"
-              description="This account can review task state and history, but it cannot change the task."
-            />
-          ) : null}
-          {task ? (
-            <Flex justify="space-between" align="center" gap={12} wrap="wrap">
+          <Flex justify="space-between" align="center" gap={12} wrap="wrap">
+            <Space align="center" size={8} wrap>
+              <Typography.Title level={2} style={{ margin: 0 }}>
+                {task?.title ?? "Task Detail"}
+              </Typography.Title>
+              {canEditTask && !isArchived && task ? (
+                <Tooltip title="Rename task">
+                  <Button
+                    type="text"
+                    icon={<EditOutlined />}
+                    aria-label="Rename task"
+                    onClick={() => {
+                      setRenameTitleDraft(task.title);
+                      setRenameModalOpen(true);
+                    }}
+                  />
+                </Tooltip>
+              ) : null}
+            </Space>
+            {task ? (
               <Space wrap size={8} style={{ justifyContent: "flex-end" }}>
                 {hasSyncButtons ? (
                   <Space wrap size={8}>
@@ -2015,22 +2163,11 @@ const contextContent = (
                           }}
                           disabled={!interactiveTerminalStatus?.available}
                         >
-                          Interactive
+                          Open terminal
                         </Button>
                       </Tooltip>
                     ) : null}
 
-                    {canPull ? (
-                      <Button onClick={handlePullTask} loading={submitting === "pull"}>
-                        {`Pull (${pullCount})`}
-                      </Button>
-                    ) : null}
-
-                    {canPush ? (
-                      <Button onClick={handlePushTask} loading={submitting === "push"}>
-                        {`Push (${pushCount})`}
-                      </Button>
-                    ) : null}
                   </Space>
                 ) : null}
 
@@ -2154,7 +2291,22 @@ const contextContent = (
                   </Space>
                 ) : null}
               </Space>
-            </Flex>
+            ) : null}
+          </Flex>
+          {isArchived ? (
+            <Alert
+              type="info"
+              showIcon
+              message="Archived task"
+              description="Archived tasks are read-only. You can review history, plans, output, and diffs, but you cannot restart or change the task."
+            />
+          ) : !canEditTask ? (
+            <Alert
+              type="info"
+              showIcon
+              message="Read-only task access"
+              description="This account can review task state and history, but it cannot change the task."
+            />
           ) : null}
         </Flex>
 
