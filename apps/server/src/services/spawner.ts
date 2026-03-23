@@ -1556,6 +1556,10 @@ esac
       errorMessage: null,
       finishedAt: new Date().toISOString()
     });
+    await this.taskStore.appendMessage(workingTask.id, {
+      role: "system",
+      content: "Workspace prepared and ready for changes."
+    });
     await this.taskStore.appendLog(workingTask.id, `Spawner: workspace ready at ${workspace.workspacePath}.`);
     return (await this.taskStore.getTask(workingTask.id)) ?? nextTask;
   }

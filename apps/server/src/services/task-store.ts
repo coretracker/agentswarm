@@ -245,7 +245,9 @@ export class TaskStore {
     const title = resolveTaskTitleForCreate(input);
     const taskType = input.taskType ?? "plan";
     const promptRaw = (input.prompt ?? "").trim();
-    const prompt = promptRaw.length > 0 ? promptRaw : "(No prompt provided.)";
+    const startMode: TaskStartMode = input.startMode ?? "run_now";
+    const prompt =
+      promptRaw.length > 0 ? promptRaw : startMode === "prepare_workspace" ? "" : "(No prompt provided.)";
     const complexity = classifyTaskComplexity(title, prompt);
     const planningMode = taskType === "build" ? "direct-build" : "plan-first";
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
@@ -261,7 +263,6 @@ export class TaskStore {
           : taskType === "build" || planningMode === "direct-build"
             ? "build"
             : "plan";
-    const startMode: TaskStartMode = input.startMode ?? "run_now";
     const initialStatus: TaskStatus =
       startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
     const task: Task = {
@@ -308,11 +309,13 @@ export class TaskStore {
 
     await this.redis.multi().set(this.taskKey(task.id), JSON.stringify(task)).sadd(TASK_IDS_KEY, task.id).exec();
     await this.eventBus.publish({ type: "task:created", payload: task });
-    await this.appendMessage(task.id, {
-      role: "user",
-      action: initialAction,
-      content: prompt
-    });
+    if (startMode !== "prepare_workspace" || prompt.trim().length > 0) {
+      await this.appendMessage(task.id, {
+        role: "user",
+        action: initialAction,
+        content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
+      });
+    }
 
     return task;
   }

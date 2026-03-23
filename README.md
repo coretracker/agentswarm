@@ -1,89 +1,73 @@
+<p align="center">
+  <img src="apps/web/public/logo.svg" width="96" height="96" alt="AgentSwarm logo"/>
+</p>
+
 # AgentSwarm
 
-AgentSwarm is a local-first platform for planning, reviewing, asking, and implementing repository tasks with provider-specific coding agents running inside Docker.
+AgentSwarm is a local-first platform for planning, reviewing, asking, and implementing repository tasks with provider-specific coding agents running in Docker.
 
-It is designed for local development, branch-based task execution, live logs, and provider flexibility across Codex and Claude Code.
+It targets local development, branch-based execution, live logs, and provider choice between **Codex (OpenAI)** and **Claude Code (Anthropic)** — the latter is currently **experimental** in the UI.
 
 ## What it does
 
 - Manage repositories from a web UI
-- Create tasks from blank input, GitHub issues, or GitHub pull requests
-- Support task types:
-  - `plan`
-  - `review`
-  - `ask`
-- Run provider-specific agent containers for:
-  - Codex
-  - Claude Code
-- Stream live task logs to the UI
-- Persist task state and queue data in Redis
+- Create tasks from blank input, GitHub issues, or GitHub pull requests; save definitions as **presets**
+- **Start modes** when creating a task:
+  - **Run automated agent now** — enqueue Codex or Claude for the selected action
+  - **Prepare workspace only** — clone/checkout in the **background** (no agent run); status moves from *Preparing workspace* to *Ready* for interactive work
+- Task types: **plan**, **build**, **ask**, and **review**
+- **Interactive** task sessions: browser terminal with Codex in Docker, workspace mounted at `/workspace` (requires `CODEX_INTERACTIVE_IMAGE` and Docker socket on the server; see `tools/codex-web-terminal/`)
+- Stream live task logs; Socket.IO for live task updates
+- Redis-backed task store and scheduling
 - Store plans locally without committing them into the target repository
-- Let the server own git commit and push side effects after a successful `build`
+- Server-owned git **commit** and **push** after successful **build** runs
 
 ## Architecture
 
-### Web
+### Web (`apps/web`)
 
-- Next.js
-- Ant Design
-- Socket.IO client for live task updates
-- Task detail **Interactive** opens one or more modal terminals (WebSocket + xterm); each session runs Codex in Docker with that task’s workspace mounted at `/workspace` (requires server `CODEX_INTERACTIVE_IMAGE` and Docker socket; see `tools/codex-web-terminal/Dockerfile.codex`)
+- Next.js, Ant Design
+- Socket.IO client for live updates
+- Logo: `apps/web/public/logo.svg` (login + shell header)
 
-### Server
+### Server (`apps/server`)
 
-- Node.js
-- TypeScript
-- Fastify
-- Socket.IO
-- Optional raw WebSocket upgrades for per-task interactive Codex (`/tasks/:id/interactive-terminal`)
-- Redis-backed task store and queue
+- Node.js, TypeScript, Fastify
+- Socket.IO; optional WebSocket upgrades for interactive Codex (`/tasks/:id/interactive-terminal`)
+- Redis for tasks, sessions, and events
+
+### Shared types (`packages/shared-types`)
+
+- Shared TypeScript types and provider/task helpers used by web and server
 
 ### Agent runtimes
 
 - `agent-runtime-codex/`
 - `agent-runtime-claude/`
 
-Each task execution runs in a short-lived Docker container. The server prepares a managed workspace, passes task context to the runtime, streams logs back to the UI, and finalizes git operations for successful build tasks.
+Each run uses a short-lived container. The server prepares a managed workspace, streams logs to the UI, and finalizes git for successful builds.
 
-## Task model
+## Task model (overview)
 
-### Task types
-
-- `plan`: create or revise a markdown plan only
-- `review`: review a branch against the repository default branch and requirements
-- `ask`: answer a repository question in markdown only
-
-### Task actions
-
-- `plan`
-- `build`
-- `iterate`
-- `review`
-- `ask`
+- **Task types:** `plan`, `build`, `ask`, `review`
+- **Actions** (API / history): `plan`, `build`, `iterate`, `review`, `ask`, plus `comment` for timeline messages
+- **Statuses** include queued and in-progress states, **Preparing workspace** (async checkout), **Ready** (completed build / workspace-ready), and terminal outcomes (`failed`, `cancelled`, `accepted`, …)
 
 ## Security model
 
-- Provider API credentials and GitHub token are configured through the Settings UI
-- Authentication uses httpOnly session cookies backed by Redis
-- Roles are scope-based and managed from the Settings UI
-- Users are managed from the Users screen after signing in
-- Credentials are stored encrypted on the server with a local key volume
-- Credentials are never returned by the API
-- Provider containers do not own git push credentials; the server performs commit and push after successful build execution
-- Local plans are stored under `./local-plans`
-- Managed task workspaces are stored under `./task-workspaces`
+- Provider API credentials and GitHub token are configured in **Settings**
+- httpOnly session cookies backed by Redis; scope-based **roles** and **users** managed in the UI
+- Credentials encrypted on disk; **never** returned by the API
+- Provider containers do not perform git push; the server commits and pushes after successful builds
+- Local plans: `./local-plans`
+- Managed workspaces: `./task-workspaces`
 
 ## Local development
 
 ### Prerequisites
 
-- Docker
-- Docker Compose
-
-Optional for local non-Docker development:
-
-- Node.js 20+
-- npm
+- Docker and Docker Compose (recommended full stack)
+- Optional: Node.js 20+ and npm for running apps on the host
 
 ### Start the stack
 
@@ -94,39 +78,41 @@ docker compose up --build
 ### Open the app
 
 - Web UI: `http://localhost:3217/login`
-- Server health: `http://localhost:4000/health`
+- API health: `http://localhost:4000/health`
+
+### Develop without rebuilding images
+
+From the repo root (install dependencies once with `npm install`):
+
+```bash
+npm run dev
+```
+
+Runs the server and web app with hot reload; you still need Redis (and Docker for agent runs) according to your setup.
+
+### Build (CI-style)
+
+```bash
+npm run build
+```
 
 ## First-time setup
 
-After the stack is running:
+1. Sign in with the seeded admin from environment variables (defaults match `docker-compose.yml` / `.env.example`):
+   - Email: `admin@agentswarm.local`
+   - Password: `admin123!`
+2. Rotate the admin password and create real users and roles.
+3. In **Settings**, configure **Git username**, **GitHub token**, **OpenAI** (Codex), and optionally **Anthropic** (Claude Code, experimental).
+4. Add repositories, then create tasks from blank/issue/PR or spawn from presets.
 
-1. Sign in with the seeded admin account from `.env.example` or your local `.env`:
-   - email: `admin@agentswarm.local`
-   - password: `admin123!`
-2. Rotate the seeded admin password immediately and create the real users and roles you want to use.
-3. Open `Settings` and configure the provider credentials you actually want to use:
-   - `Git Username`
-   - `GitHub Token`
-   - `OpenAI API Key`
-   - `Anthropic API Key`
-   - optional `OpenAI Base URL`
-4. Add one or more repositories
-5. Create a task from:
-   - blank input
-   - GitHub issue
-   - GitHub pull request
+The seeded password applies only when the bootstrap user is first created.
 
-The seeded admin password is only applied when the bootstrap user is first created. Restarting the stack does not reset that password.
+## Runtime behavior (summary)
 
-## Runtime behavior
-
-- Plans are local markdown artifacts only
-- Review and ask tasks do not modify code
-- Build tasks edit the managed workspace and, if successful, the server:
-  - computes the diff
-  - commits
-  - pushes the target branch
-- If a build produces no diff, the task fails instead of creating an empty commit
+- Plans are local markdown artifacts
+- **Build** tasks edit the managed workspace; on success the server computes diff, commits, and pushes
+- Builds that produce no diff fail (no empty commit)
+- **Prepare workspace only** prepares the checkout asynchronously; the UI shows a preparing state until the workspace is ready
 
 ## Repository layout
 
@@ -135,19 +121,22 @@ agentswarm/
   apps/
     server/
     web/
+      public/
+        logo.svg          # app + README branding
   packages/
     shared-types/
   agent-runtime-codex/
   agent-runtime-claude/
+  tools/
+    codex-web-terminal/   # reference Dockerfiles for interactive Codex
   local-plans/
   task-workspaces/
   docker-compose.yml
 ```
 
-## Notes for pushing this repository
+## Notes for contributors
 
-- `.env` is ignored and should not be committed
-- `.env.example` is intentionally blank and safe to commit
-- `local-plans/` and `task-workspaces/` are local runtime state and should not be committed
-- build output like `.next/` and `dist/` should not be committed
-- credentials belong in the Settings UI, not in tracked source files
+- Do not commit `.env` (secrets)
+- Commit `.env.example` as a template (bootstrap defaults only — no API keys)
+- Do not commit `local-plans/`, `task-workspaces/`, `.next/`, or `dist/`
+- Keep credentials in Settings, not in source

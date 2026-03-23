@@ -402,7 +402,7 @@ export interface CreateTaskInput {
   repoId: string;
   prompt: string;
   taskType?: TaskType;
-  /** Default `run_now`. `prepare_workspace` clones/checks out only (for Interactive). `idle` creates the task without enqueueing a run. */
+  /** Default `run_now`. `prepare_workspace` clones/checks out only (no agent run). `idle` is accepted for API compatibility but not offered in the UI. */
   startMode?: TaskStartMode;
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
@@ -532,7 +532,7 @@ export const getTaskBranchStrategyLabel = (strategy: TaskBranchStrategy): string
 export const getAgentProviderLabel = (provider: AgentProvider): string =>
   ({
     codex: "Codex",
-    claude: "Claude Code"
+    claude: "Claude Code (experimental)"
   })[provider];
 
 export const getProviderProfileLabel = (profile: ProviderProfile): string =>

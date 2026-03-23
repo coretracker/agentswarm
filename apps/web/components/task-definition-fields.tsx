@@ -16,7 +16,7 @@ import type {
   TaskStartMode,
   TaskType
 } from "@agentswarm/shared-types";
-import { getDefaultModelForProvider, getEffortOptionsForProvider } from "@agentswarm/shared-types";
+import { getAgentProviderLabel, getDefaultModelForProvider, getEffortOptionsForProvider } from "@agentswarm/shared-types";
 import { Alert, Card, Checkbox, Col, Flex, Form, Input, Row, Select, Space, Typography } from "antd";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -53,7 +53,7 @@ const providerOptions = (
   hasAnthropic: boolean
 ): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
   { label: "Codex (OpenAI)", value: "codex", disabled: !hasOpenAi },
-  { label: "Claude Code (Anthropic)", value: "claude", disabled: !hasAnthropic }
+  { label: getAgentProviderLabel("claude"), value: "claude", disabled: !hasAnthropic }
 ];
 
 const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSettings | null): string =>
@@ -261,6 +261,12 @@ export function TaskDefinitionFields({
   }, [form, isBlankSource, isIssueSource, selectedStartMode, selectedTaskType]);
 
   useEffect(() => {
+    if ((isBlankSource || isIssueSource) && selectedStartMode === "idle") {
+      form.setFieldValue("startMode", "run_now");
+    }
+  }, [form, isBlankSource, isIssueSource, selectedStartMode]);
+
+  useEffect(() => {
     if (!selectedRepoId || !canReadRepositoryMetadata) {
       setGitHubIssues([]);
       setGitHubPullRequests([]);
@@ -454,8 +460,7 @@ export function TaskDefinitionFields({
               <Select
                 options={[
                   { label: "Run automated agent now", value: "run_now" },
-                  { label: "Prepare workspace for Interactive", value: "prepare_workspace" },
-                  { label: "Create task only (start later)", value: "idle" }
+                  { label: "Prepare workspace only", value: "prepare_workspace" }
                 ]}
               />
             </Form.Item>

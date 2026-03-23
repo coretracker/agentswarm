@@ -44,7 +44,7 @@ import {
   Typography,
   message
 } from "antd";
-import { ArrowRightOutlined, MoreOutlined, PushpinOutlined } from "@ant-design/icons";
+import { ArrowRightOutlined, LoadingOutlined, MoreOutlined, PushpinOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -160,7 +160,7 @@ function getTaskTokenTotals(runs: TaskRun[]) {
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: "Codex (OpenAI)", value: "codex" },
-  { label: "Claude Code (Anthropic)", value: "claude" }
+  { label: getAgentProviderLabel("claude"), value: "claude" }
 ];
 
 function formatDiffRefDisplay(ref: string | null | undefined): string {
@@ -439,6 +439,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     task?.status === "review_queued" ||
     task?.status === "ask_queued";
   const isActive = task ? isActiveTaskStatus(task.status) : false;
+  const isPreparingWorkspace = task?.status === "preparing_workspace";
   const canCancel = canEditTask && (isQueued || isActive);
   const hasBranchForSync = isPlanTask || isBuildTask || isAskTask;
   const canPull = canEditTask && hasBranchForSync && !!task?.branchName && !isArchived && !isActive;
@@ -856,7 +857,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     ...taskMessages
       .filter(
         (entry) =>
-          entry.role !== "system" &&
           !(entry.role === "assistant" && entry.action && duplicatedRunSummaries.has(`${entry.action}:${entry.content.trim()}`))
       )
       .map((entry) => ({
@@ -1293,8 +1293,12 @@ const contextContent = (
           {isPlanTask ? <Descriptions.Item label="Plan File">{task?.planPath ?? "(pending)"}</Descriptions.Item> : null}
         </Descriptions>
 
-        <Divider orientation="left">{promptLabel}</Divider>
-        <Typography.Paragraph style={codeTextStyle}>{task?.prompt}</Typography.Paragraph>
+        {task?.prompt?.trim() ? (
+          <>
+            <Divider orientation="left">{promptLabel}</Divider>
+            <Typography.Paragraph style={codeTextStyle}>{task.prompt}</Typography.Paragraph>
+          </>
+        ) : null}
       </Card>
 
       {hasOutputTab ? (
@@ -1649,11 +1653,45 @@ const contextContent = (
     </Flex>
   );
 
-  const chatHistory = chatTimeline.length > 0 ? (
+  const chatPreparingNotice = isPreparingWorkspace ? (
+    <Alert
+      type="info"
+      showIcon
+      icon={<LoadingOutlined spin />}
+      message="Preparing workspace"
+      description="Cloning the repository and checking out your branch. Chat history and the composer will appear when the workspace is ready."
+    />
+  ) : null;
+
+  const chatTimelineBlock = chatTimeline.length > 0 ? (
     <Flex vertical gap={12} style={{ width: "100%" }}>
       {chatTimeline.map((entry) => {
         if (entry.kind === "message") {
           const entryMessage = entry.message;
+          if (entryMessage.role === "system") {
+            return (
+              <Flex key={entry.key}>
+                <Card
+                  size="small"
+                  bodyStyle={{
+                    background: "rgba(107,143,163,0.12)",
+                    padding: "10px 12px"
+                  }}
+                  style={{ width: "100%" }}
+                >
+                  <Flex vertical gap={4}>
+                    <Flex align="baseline" gap={8} wrap="wrap">
+                      <Tag color="default" style={{ marginInlineEnd: 0 }}>
+                        system
+                      </Tag>
+                      <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
+                    </Flex>
+                    <Typography.Text style={{ whiteSpace: "pre-wrap" }}>{entryMessage.content}</Typography.Text>
+                  </Flex>
+                </Card>
+              </Flex>
+            );
+          }
           const messageColor =
             entryMessage.role === "user"
               ? "rgba(28,128,87,0.08)"
@@ -1883,7 +1921,12 @@ const contextContent = (
         );
       })}
     </Flex>
-  ) : <Empty description={messagesLoading || runsLoading ? "Loading history..." : "No history yet."} image={Empty.PRESENTED_IMAGE_SIMPLE} />;
+  ) : null;
+
+  const chatHistoryEmptyState =
+    !isPreparingWorkspace && chatTimeline.length === 0 ? (
+      <Empty description={messagesLoading || runsLoading ? "Loading history..." : "No history yet."} image={Empty.PRESENTED_IMAGE_SIMPLE} />
+    ) : null;
 
   const mainTabItems = [
     {
@@ -1891,8 +1934,10 @@ const contextContent = (
       label: "History",
       children: (
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
-          {chatHistory}
-          {chatComposer}
+          {chatPreparingNotice}
+          {chatTimelineBlock}
+          {chatHistoryEmptyState}
+          {!isPreparingWorkspace ? chatComposer : null}
         </Space>
       )
     },
