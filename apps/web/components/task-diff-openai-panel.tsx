@@ -78,6 +78,8 @@ function DiffFileOpenAiCard({
   collapseFiles,
   workspaceReady,
   canApply,
+  assistBlocked,
+  assistBlockedReason,
   selectionResetToken,
   onOpenConfig
 }: {
@@ -85,6 +87,8 @@ function DiffFileOpenAiCard({
   collapseFiles: boolean;
   workspaceReady: boolean;
   canApply: boolean;
+  assistBlocked: boolean;
+  assistBlockedReason?: string;
   selectionResetToken: string;
   onOpenConfig: (mode: OpenAiDiffAssistMode, filePath: string, snippet: string) => void;
 }) {
@@ -119,7 +123,8 @@ function DiffFileOpenAiCard({
     <Space wrap size="small" onClick={(e) => e.stopPropagation()}>
       <Button
         size="small"
-        disabled={!workspaceReady || selectedChanges.length === 0}
+        disabled={assistBlocked || !workspaceReady || selectedChanges.length === 0}
+        title={assistBlocked ? assistBlockedReason : undefined}
         onClick={(e) => openConfig("read", e)}
       >
         Ask (read-only)…
@@ -127,7 +132,8 @@ function DiffFileOpenAiCard({
       <Button
         size="small"
         type="primary"
-        disabled={!workspaceReady || !canApply || selectedChanges.length === 0}
+        disabled={assistBlocked || !workspaceReady || !canApply || selectedChanges.length === 0}
+        title={assistBlocked ? assistBlockedReason : undefined}
         onClick={(e) => openConfig("readwrite", e)}
       >
         Apply (read-write)…
@@ -183,6 +189,9 @@ export interface TaskDiffOpenAiPanelProps {
   onLiveDiffRefresh: () => void;
   /** Clears line selection when this value changes (e.g. compare vs working toggle). */
   selectionResetToken: string;
+  /** When set, line-level Ask/Apply actions are disabled (e.g. pending checkpoint must be resolved first). */
+  diffAssistBlocked?: boolean;
+  diffAssistBlockedReason?: string;
 }
 
 export function TaskDiffOpenAiPanel({
@@ -195,7 +204,9 @@ export function TaskDiffOpenAiPanel({
   isArchived,
   canEditTask,
   onLiveDiffRefresh,
-  selectionResetToken
+  selectionResetToken,
+  diffAssistBlocked = false,
+  diffAssistBlockedReason = "Apply or reject the pending checkpoint before using diff assist."
 }: TaskDiffOpenAiPanelProps): ReactNode {
   const [openAiModel, setOpenAiModel] = useState<string>("gpt-5.4");
   const [openAiEffort, setOpenAiEffort] = useState<ProviderProfile>("high");
@@ -311,7 +322,15 @@ export function TaskDiffOpenAiPanel({
 
   return (
     <>
-      {!workspaceReady ? (
+      {diffAssistBlocked ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="Diff assist paused"
+          description={diffAssistBlockedReason}
+        />
+      ) : !workspaceReady ? (
         <Alert
           type="info"
           showIcon
@@ -329,6 +348,8 @@ export function TaskDiffOpenAiPanel({
             collapseFiles={collapseFiles}
             workspaceReady={workspaceReady}
             canApply={canApply}
+            assistBlocked={diffAssistBlocked}
+            assistBlockedReason={diffAssistBlockedReason}
             selectionResetToken={selectionResetToken}
             onOpenConfig={openConfigModal}
           />

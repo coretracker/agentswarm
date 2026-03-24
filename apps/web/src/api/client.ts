@@ -24,9 +24,11 @@ import type {
   OpenAiDiffAssistInput,
   OpenAiDiffAssistResult,
   TaskLiveDiff,
+  TaskWorkspaceCommitLog,
   TaskPushPreview,
   TaskMessage,
   TaskRun,
+  TaskChangeProposal,
   TaskAction,
   UpdateRoleInput,
   UpdateTaskPlanInput,
@@ -49,6 +51,8 @@ export interface ProviderModelsResponse {
 export interface TaskInteractiveTerminalStatus {
   available: boolean;
   reason?: string;
+  /** Server sets this when a terminal WebSocket session is active for the task. */
+  activeInteractiveSession?: boolean;
 }
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
@@ -164,7 +168,10 @@ export const api = {
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
   getTaskInteractiveTerminalStatus: (id: string) =>
     request<TaskInteractiveTerminalStatus>(`/tasks/${id}/interactive-terminal/status`),
-  getTaskLiveDiff: (id: string, options?: { baseRef?: string | null; diffKind?: "compare" | "working" }) => {
+  getTaskLiveDiff: (
+    id: string,
+    options?: { baseRef?: string | null; diffKind?: "compare" | "working" | "commits"; commitSha?: string | null }
+  ) => {
     const params = new URLSearchParams();
     const base = options?.baseRef?.trim();
     if (base) {
@@ -172,9 +179,23 @@ export const api = {
     }
     if (options?.diffKind === "working") {
       params.set("kind", "working");
+    } else if (options?.diffKind === "commits") {
+      params.set("kind", "commits");
+    }
+    const commit = options?.commitSha?.trim();
+    if (commit) {
+      params.set("commit", commit);
     }
     const query = params.toString();
     return request<TaskLiveDiff>(`/tasks/${id}/live-diff${query ? `?${query}` : ""}`);
+  },
+  getTaskWorkspaceCommitLog: (id: string, options?: { limit?: number }) => {
+    const params = new URLSearchParams();
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<TaskWorkspaceCommitLog>(`/tasks/${id}/workspace-commit-log${query ? `?${query}` : ""}`);
   },
   openAiDiffAssist: (taskId: string, input: OpenAiDiffAssistInput) =>
     request<OpenAiDiffAssistResult>(`/tasks/${taskId}/openai/diff-assist`, {
@@ -183,6 +204,16 @@ export const api = {
     }),
   listTaskMessages: (id: string) => request<TaskMessage[]>(`/tasks/${id}/messages`),
   listTaskRuns: (id: string) => request<TaskRun[]>(`/tasks/${id}/runs`),
+  listTaskChangeProposals: (id: string) => request<TaskChangeProposal[]>(`/tasks/${id}/change-proposals`),
+  applyTaskChangeProposal: (taskId: string, proposalId: string) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/apply`, { method: "POST" }),
+  /** @deprecated Prefer applyTaskChangeProposal */
+  acceptTaskChangeProposal: (taskId: string, proposalId: string) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/accept`, { method: "POST" }),
+  revertTaskChangeProposal: (taskId: string, proposalId: string) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/revert`, { method: "POST" }),
+  rejectTaskChangeProposal: (taskId: string, proposalId: string) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/reject`, { method: "POST" }),
   createTask: (input: CreateTaskInput) =>
     request<Task>("/tasks", {
       method: "POST",

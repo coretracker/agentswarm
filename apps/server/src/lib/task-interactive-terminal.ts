@@ -9,9 +9,12 @@ import { URL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import pty from "node-pty";
 
+import { getTaskStatusLabel, isActiveTaskStatus, isQueuedTaskStatus } from "@agentswarm/shared-types";
+
 import { env } from "../config/env.js";
 import type { AuthService } from "./auth.js";
 import type { SettingsStore } from "../services/settings-store.js";
+import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
@@ -69,13 +72,21 @@ export interface TaskInteractiveTerminalDeps {
   auth: AuthService;
   taskStore: TaskStore;
   settingsStore: SettingsStore;
+  spawner: SpawnerService;
 }
+
+export type TaskInteractiveTerminalStatusPayload = {
+  available: boolean;
+  reason?: string;
+  /** When true, a browser session is already connected; block duplicate terminals and task composer sends. */
+  activeInteractiveSession?: boolean;
+};
 
 export async function getTaskInteractiveTerminalStatus(
   taskStore: TaskStore,
   settingsStore: SettingsStore,
   taskId: string,
-): Promise<{ available: boolean; reason?: string }> {
+): Promise<TaskInteractiveTerminalStatusPayload> {
   if (!env.CODEX_INTERACTIVE_IMAGE?.trim()) {
     return { available: false, reason: "Interactive Codex is not configured (set CODEX_INTERACTIVE_IMAGE on the server)." };
   }
@@ -87,6 +98,25 @@ export async function getTaskInteractiveTerminalStatus(
 
   if (task.status === "archived") {
     return { available: false, reason: "Archived tasks are read-only." };
+  }
+
+  if (isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {
+    return {
+      available: false,
+      reason: `Terminal unavailable while the task is “${getTaskStatusLabel(task.status)}”. Finish or cancel that run first (one action at a time).`
+    };
+  }
+
+  if (await taskStore.hasPendingChangeProposal(taskId)) {
+    return { available: false, reason: "Apply or reject the pending checkpoint before opening a terminal." };
+  }
+
+  if (await taskStore.getActiveInteractiveSession(taskId)) {
+    return {
+      available: false,
+      reason: "An interactive terminal session is already active for this task.",
+      activeInteractiveSession: true
+    };
   }
 
   const credentials = await settingsStore.getRuntimeCredentials();
@@ -157,6 +187,16 @@ export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, dep
       const startScript = buildStartScript(configB64);
       const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
 
+      let interactiveSessionId: string;
+      try {
+        const started = await deps.spawner.beginInteractiveTerminalSession(taskId);
+        interactiveSessionId = started.sessionId;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not start interactive session";
+        denySocket(socket, 503, message);
+        return;
+      }
+
       const dockerEnv = [
         "-e",
         `OPENAI_API_KEY=${openaiKey}`,
@@ -197,12 +237,17 @@ export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, dep
           env: { ...process.env, TERM: "xterm-256color" },
         });
       } catch {
+        await deps.taskStore.clearActiveInteractiveSession(taskId);
         denySocket(socket, 503, "Failed to spawn docker session");
         return;
       }
 
       wss.handleUpgrade(request, socket, head, (ws) => {
-        wireTerminalWebSocket(ws, child, sessionName);
+        wireTerminalWebSocket(ws, child, sessionName, {
+          taskId,
+          sessionId: interactiveSessionId,
+          spawner: deps.spawner
+        });
       });
     })().catch(() => {
       try {
@@ -214,7 +259,12 @@ export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, dep
   });
 }
 
-function wireTerminalWebSocket(ws: WebSocket, child: pty.IPty, sessionContainerName: string): void {
+function wireTerminalWebSocket(
+  ws: WebSocket,
+  child: pty.IPty,
+  sessionContainerName: string,
+  proposalCtx: { taskId: string; sessionId: string; spawner: SpawnerService }
+): void {
   let cleanedUp = false;
   const cleanupSession = (): void => {
     if (cleanedUp) {
@@ -227,6 +277,7 @@ function wireTerminalWebSocket(ws: WebSocket, child: pty.IPty, sessionContainerN
       /* ignore */
     }
     forceRemoveDockerSession(sessionContainerName);
+    void proposalCtx.spawner.endInteractiveTerminalSession(proposalCtx.taskId, proposalCtx.sessionId).catch(() => undefined);
   };
 
   child.onData((data) => {

@@ -47,6 +47,14 @@ export class SchedulerService {
       return false;
     }
 
+    if (await this.taskStore.hasPendingChangeProposal(taskId)) {
+      return false;
+    }
+
+    if (await this.taskStore.getActiveInteractiveSession(taskId)) {
+      return false;
+    }
+
     await this.taskStore.markQueuedForAction(taskId, action, iterateInput);
     await this.taskStore.enqueueTask(taskId, "manual", action, iterateInput);
     await this.drainQueue();

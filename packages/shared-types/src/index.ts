@@ -301,6 +301,22 @@ export interface TaskLiveDiff {
   defaultBaseRef: string | null;
 }
 
+/** One commit on the task workspace’s current branch (from `git log`). */
+export interface TaskWorkspaceCommit {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  /** ISO 8601 timestamp from `git log` (%cI). */
+  committedAt: string;
+  authorName: string;
+}
+
+export interface TaskWorkspaceCommitLog {
+  commits: TaskWorkspaceCommit[];
+  fetchedAt: string;
+  message: string | null;
+}
+
 /** Snapshot for the Push UI before staging/commit (working tree + index vs HEAD). */
 export interface TaskPushPreview {
   branchName: string;
@@ -347,7 +363,38 @@ export interface TaskRun {
   summary: string | null;
   errorMessage: string | null;
   tokenUsage: TaskRunTokenUsage | null;
+  /** Git HEAD ref captured before the agent container runs; used for change proposals. */
+  changeProposalCheckpointRef?: string | null;
+  /** Untracked paths (repo-relative) at checkpoint; used so reject does not wipe pre-existing untracked files. */
+  changeProposalUntrackedPaths?: string[] | null;
   logs: string[];
+}
+
+export type TaskChangeProposalSourceType = "build_run" | "interactive_session";
+
+export type TaskChangeProposalStatus = "pending" | "applied" | "rejected" | "reverted";
+
+export interface TaskChangeProposal {
+  id: string;
+  taskId: string;
+  sourceType: TaskChangeProposalSourceType;
+  /** `TaskRun.id` for build_run; session id for interactive_session */
+  sourceId: string;
+  status: TaskChangeProposalStatus;
+  fromRef: string;
+  toRef: string;
+  /** Persisted unified diff for preview and revert (when not truncated). */
+  diff: string;
+  diffStat: string;
+  changedFiles: string[];
+  diffTruncated: boolean;
+  /** Untracked paths at proposal start; on reject only *new* untracked files (not in this list) are removed. */
+  untrackedPathsAtCheckpoint: string[];
+  createdAt: string;
+  /** Set when leaving pending (apply or reject). */
+  resolvedAt: string | null;
+  /** Set when an applied checkpoint is reverted via stored diff. */
+  revertedAt: string | null;
 }
 
 export interface McpServerConfig {
@@ -611,6 +658,14 @@ export const isActiveTaskStatus = (status: TaskStatus): boolean =>
   status === "reviewing" ||
   status === "asking";
 
+/** When set, checkpoint apply / reject / revert must be refused (agent run queued or in progress). */
+export function getCheckpointMutationBlockedReason(status: TaskStatus): string | null {
+  if (isQueuedTaskStatus(status) || isActiveTaskStatus(status)) {
+    return `Checkpoint actions are unavailable while the task is “${getTaskStatusLabel(status)}”.`;
+  }
+  return null;
+}
+
 export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
   status === "accepted" || status === "archived" || status === "cancelled" || status === "failed";
 export const getTaskStatusLabel = (status: TaskStatus): string =>
@@ -688,6 +743,11 @@ export interface TaskRunEvent {
   payload: TaskRun;
 }
 
+export interface TaskChangeProposalEvent {
+  type: "task:change_proposal";
+  payload: TaskChangeProposal;
+}
+
 export interface SettingsEvent {
   type: "settings:updated";
   payload: SystemSettings;
@@ -709,6 +769,7 @@ export type RealtimeEvent =
   | TaskLogEvent
   | TaskMessageEvent
   | TaskRunEvent
+  | TaskChangeProposalEvent
   | SettingsEvent
   | RepositoryEvent
   | PresetEvent;

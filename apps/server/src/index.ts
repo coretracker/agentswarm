@@ -79,7 +79,8 @@ const bootstrap = async (): Promise<void> => {
   attachTaskInteractiveTerminalUpgrade(app.server, {
     auth,
     taskStore,
-    settingsStore
+    settingsStore,
+    spawner
   });
 
   const io = new SocketIOServer(app.server, {

@@ -12,6 +12,7 @@ const realtimeScopesByEventType: Record<RealtimeEvent["type"], PermissionScope[]
   "task:log": ["task:read"],
   "task:message": ["task:read"],
   "task:run_updated": ["task:read"],
+  "task:change_proposal": ["task:read"],
   "preset:created": ["preset:list"],
   "preset:updated": ["preset:list"],
   "preset:deleted": ["preset:list"],

@@ -15,6 +15,7 @@ import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import { buildExecutionSummaryFromPrompt, classifyTaskComplexity } from "../lib/task-intelligence.js";
+import { getMutationBlockedReason } from "../lib/task-mutation-guards.js";
 
 const taskStartModeSchema = z.enum(["run_now", "prepare_workspace", "idle"]);
 
@@ -169,7 +170,7 @@ export const registerTaskRoutes = (
     return deps.taskStore.listRuns(task.id);
   });
 
-  app.get<{ Params: { id: string }; Querystring: { base?: string; kind?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { base?: string; kind?: string; commit?: string } }>(
     "/tasks/:id/live-diff",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
     async (request, reply) => {
@@ -181,12 +182,135 @@ export const registerTaskRoutes = (
       const rawBase = request.query.base;
       const base = typeof rawBase === "string" ? rawBase.trim() : "";
       const rawKind = request.query.kind;
-      const diffKind = rawKind === "working" ? "working" : "compare";
+      const diffKind =
+        rawKind === "working" ? "working" : rawKind === "commits" ? "commits" : "compare";
+      const rawCommit = request.query.commit;
+      const commit = typeof rawCommit === "string" ? rawCommit.trim() : "";
 
       return deps.spawner.getLiveTaskDiff(task, {
         ...(base ? { compareBaseRef: base } : {}),
-        diffKind
+        diffKind,
+        ...(commit ? { commitSha: commit } : {})
       });
+    }
+  );
+
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>(
+    "/tasks/:id/workspace-commit-log",
+    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
+    async (request, reply) => {
+      const task = await deps.taskStore.getTask(request.params.id);
+      if (!task) {
+        return reply.status(404).send({ message: "Task not found" });
+      }
+
+      const rawLimit = request.query.limit;
+      const limitParsed = typeof rawLimit === "string" ? Number.parseInt(rawLimit, 10) : Number.NaN;
+      const limit = Number.isFinite(limitParsed) ? limitParsed : undefined;
+
+      return reply.send(await deps.spawner.getWorkspaceCommitLog(task, { limit }));
+    }
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/tasks/:id/change-proposals",
+    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
+    async (request, reply) => {
+      const task = await deps.taskStore.getTask(request.params.id);
+      if (!task) {
+        return reply.status(404).send({ message: "Task not found" });
+      }
+
+      return reply.send(await deps.taskStore.listChangeProposals(task.id));
+    }
+  );
+
+  app.post<{ Params: { id: string; proposalId: string } }>(
+    "/tasks/:id/change-proposals/:proposalId/apply",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await deps.taskStore.getTask(request.params.id);
+      if (!task) {
+        return reply.status(404).send({ message: "Task not found" });
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const result = await deps.spawner.applyChangeProposal(task, request.params.proposalId);
+      if (!result.ok) {
+        return reply.status(409).send({ message: result.message });
+      }
+
+      return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
+    }
+  );
+
+  /** @deprecated Prefer POST .../apply */
+  app.post<{ Params: { id: string; proposalId: string } }>(
+    "/tasks/:id/change-proposals/:proposalId/accept",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await deps.taskStore.getTask(request.params.id);
+      if (!task) {
+        return reply.status(404).send({ message: "Task not found" });
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const result = await deps.spawner.applyChangeProposal(task, request.params.proposalId);
+      if (!result.ok) {
+        return reply.status(409).send({ message: result.message });
+      }
+
+      return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
+    }
+  );
+
+  app.post<{ Params: { id: string; proposalId: string } }>(
+    "/tasks/:id/change-proposals/:proposalId/revert",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await deps.taskStore.getTask(request.params.id);
+      if (!task) {
+        return reply.status(404).send({ message: "Task not found" });
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const result = await deps.spawner.revertChangeProposal(task, request.params.proposalId);
+      if (!result.ok) {
+        return reply.status(409).send({ message: result.message });
+      }
+
+      return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
+    }
+  );
+
+  app.post<{ Params: { id: string; proposalId: string } }>(
+    "/tasks/:id/change-proposals/:proposalId/reject",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await deps.taskStore.getTask(request.params.id);
+      if (!task) {
+        return reply.status(404).send({ message: "Task not found" });
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const result = await deps.spawner.rejectChangeProposal(task, request.params.proposalId);
+      if (!result.ok) {
+        return reply.status(409).send({ message: result.message });
+      }
+
+      return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
     }
   );
 
@@ -219,6 +343,15 @@ export const registerTaskRoutes = (
 
       if (parsed.data.mode === "readwrite" && isActiveTaskStatus(task.status)) {
         return reply.status(409).send({ message: "Cannot apply OpenAI edits while the task is running." });
+      }
+
+      if (parsed.data.mode === "readwrite") {
+        const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
+        if (blocked) {
+          return reply.status(409).send({ message: blocked });
+        }
+      } else if (await deps.taskStore.hasPendingChangeProposal(task.id)) {
+        return reply.status(409).send({ message: "Apply or reject the pending checkpoint before continuing." });
       }
 
       const credentials = await deps.settingsStore.getRuntimeCredentials();
@@ -320,6 +453,11 @@ export const registerTaskRoutes = (
 
     if (task.status === "archived") {
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
+    if (blocked) {
+      return reply.status(409).send({ message: blocked });
     }
 
     const accepted = await deps.scheduler.triggerAction(
@@ -507,6 +645,13 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: "Task is already running" });
     }
 
+    if (action !== "comment") {
+      const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
+      if (blocked) {
+        return reply.status(409).send({ message: blocked });
+      }
+    }
+
     await deps.taskStore.appendMessage(task.id, {
       role: "user",
       action,
@@ -543,6 +688,11 @@ export const registerTaskRoutes = (
 
     if (isActiveTaskStatus(task.status)) {
       return reply.status(409).send({ message: "Task is already running" });
+    }
+
+    const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
+    if (blocked) {
+      return reply.status(409).send({ message: blocked });
     }
 
     if (task.builtPlanRunIds.includes(request.params.runId)) {
@@ -587,6 +737,11 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
+    const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
+    if (blocked) {
+      return reply.status(409).send({ message: blocked });
+    }
+
     try {
       const preview = await deps.spawner.getTaskPushPreview(task);
       return reply.send(preview);
@@ -604,6 +759,11 @@ export const registerTaskRoutes = (
 
     if (task.status === "archived") {
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    const blockedPush = await getMutationBlockedReason(deps.taskStore, task.id);
+    if (blockedPush) {
+      return reply.status(409).send({ message: blockedPush });
     }
 
     const parsed = pushTaskBodySchema.safeParse((request.body as unknown) ?? {});
@@ -625,6 +785,11 @@ export const registerTaskRoutes = (
 
     if (task.status === "archived") {
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    const blockedPull = await getMutationBlockedReason(deps.taskStore, task.id);
+    if (blockedPull) {
+      return reply.status(409).send({ message: blockedPull });
     }
 
     const pulled = await deps.spawner.pullTaskBranch(task);

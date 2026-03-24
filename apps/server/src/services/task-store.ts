@@ -14,7 +14,9 @@ import {
   type TaskReasoningEffort,
   type TaskRun,
   type TaskStartMode,
-  type TaskStatus
+  type TaskStatus,
+  type TaskChangeProposal,
+  type TaskChangeProposalStatus
 } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
 import {
@@ -46,6 +48,10 @@ const TASK_MESSAGE_KEY_PREFIX = "agentswarm:task_messages:";
 const TASK_RUN_KEY_PREFIX = "agentswarm:task_run:";
 const TASK_RUN_LOG_KEY_PREFIX = "agentswarm:task_run_logs:";
 const TASK_RUN_IDS_KEY_PREFIX = "agentswarm:task_run_ids:";
+const TASK_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_change_proposal:";
+const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "agentswarm:task_change_proposal_ids:";
+const TASK_PENDING_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_pending_change_proposal:";
+const TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX = "agentswarm:task_active_interactive_session:";
 const TASK_IDS_KEY = "agentswarm:task_ids";
 const TASK_QUEUE_KEY = "agentswarm:queue";
 const MAX_LOG_LINES = 400;
@@ -198,6 +204,22 @@ export class TaskStore {
     return `${TASK_RUN_IDS_KEY_PREFIX}${taskId}`;
   }
 
+  private taskChangeProposalKey(proposalId: string): string {
+    return `${TASK_CHANGE_PROPOSAL_KEY_PREFIX}${proposalId}`;
+  }
+
+  private taskChangeProposalIdsKey(taskId: string): string {
+    return `${TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX}${taskId}`;
+  }
+
+  private taskPendingChangeProposalKey(taskId: string): string {
+    return `${TASK_PENDING_CHANGE_PROPOSAL_KEY_PREFIX}${taskId}`;
+  }
+
+  private taskActiveInteractiveSessionKey(taskId: string): string {
+    return `${TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX}${taskId}`;
+  }
+
   private async getStoredTask(taskId: string): Promise<Task | null> {
     const raw = await this.redis.get(this.taskKey(taskId));
     if (!raw) {
@@ -219,7 +241,9 @@ export class TaskStore {
   private normalizeRun(run: TaskRun): TaskRun {
     return {
       ...run,
-      tokenUsage: run.tokenUsage ?? null
+      tokenUsage: run.tokenUsage ?? null,
+      changeProposalCheckpointRef: run.changeProposalCheckpointRef ?? null,
+      changeProposalUntrackedPaths: Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : null
     };
   }
 
@@ -554,6 +578,8 @@ export class TaskStore {
       summary: null,
       errorMessage: null,
       tokenUsage: null,
+      changeProposalCheckpointRef: null,
+      changeProposalUntrackedPaths: null,
       logs: []
     };
 
@@ -568,7 +594,19 @@ export class TaskStore {
 
   async updateRun(
     runId: string,
-    patch: Partial<Pick<TaskRun, "status" | "finishedAt" | "summary" | "errorMessage" | "branchName" | "tokenUsage">>
+    patch: Partial<
+      Pick<
+        TaskRun,
+        | "status"
+        | "finishedAt"
+        | "summary"
+        | "errorMessage"
+        | "branchName"
+        | "tokenUsage"
+        | "changeProposalCheckpointRef"
+        | "changeProposalUntrackedPaths"
+      >
+    >
   ): Promise<TaskRun | null> {
     const run = await this.getStoredRun(runId);
     if (!run) {
@@ -774,18 +812,207 @@ export class TaskStore {
 
     await this.rewriteQueueWithoutTask(taskId);
     const runIds = await this.redis.lrange(this.taskRunIdsKey(taskId), 0, -1);
+    const proposalIds = await this.redis.lrange(this.taskChangeProposalIdsKey(taskId), 0, -1);
     const pipeline = this.redis
       .multi()
       .del(this.taskKey(taskId))
       .del(this.taskLogKey(taskId))
       .del(this.taskMessageKey(taskId))
       .del(this.taskRunIdsKey(taskId))
+      .del(this.taskChangeProposalIdsKey(taskId))
+      .del(this.taskPendingChangeProposalKey(taskId))
+      .del(this.taskActiveInteractiveSessionKey(taskId))
       .srem(TASK_IDS_KEY, taskId);
     for (const runId of runIds) {
       pipeline.del(this.taskRunKey(runId)).del(this.taskRunLogKey(runId));
     }
+    for (const proposalId of proposalIds) {
+      pipeline.del(this.taskChangeProposalKey(proposalId));
+    }
     await pipeline.exec();
     await this.eventBus.publish({ type: "task:deleted", payload: { id: taskId } });
     return true;
+  }
+
+  async hasPendingChangeProposal(taskId: string): Promise<boolean> {
+    const proposals = await this.listChangeProposals(taskId);
+    return proposals.some((p) => p.status === "pending");
+  }
+
+  private normalizeStoredProposal(parsed: TaskChangeProposal): TaskChangeProposal {
+    const rawStatus = parsed.status as string;
+    const status: TaskChangeProposalStatus =
+      rawStatus === "accepted"
+        ? "applied"
+        : rawStatus === "pending" || rawStatus === "applied" || rawStatus === "rejected" || rawStatus === "reverted"
+          ? rawStatus
+          : "pending";
+
+    return {
+      ...parsed,
+      status,
+      untrackedPathsAtCheckpoint: Array.isArray(parsed.untrackedPathsAtCheckpoint) ? parsed.untrackedPathsAtCheckpoint : [],
+      resolvedAt: parsed.resolvedAt ?? null,
+      revertedAt: parsed.revertedAt ?? null
+    };
+  }
+
+  async getActiveInteractiveSession(
+    taskId: string
+  ): Promise<{ sessionId: string; checkpointRef: string; startedAt: string; untrackedPathsAtCheckpoint: string[] } | null> {
+    const raw = await this.redis.get(this.taskActiveInteractiveSessionKey(taskId));
+    if (!raw) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as {
+        sessionId?: string;
+        checkpointRef?: string;
+        startedAt?: string;
+        untrackedPathsAtCheckpoint?: string[];
+      };
+      if (typeof parsed.sessionId === "string" && typeof parsed.checkpointRef === "string" && typeof parsed.startedAt === "string") {
+        return {
+          sessionId: parsed.sessionId,
+          checkpointRef: parsed.checkpointRef,
+          startedAt: parsed.startedAt,
+          untrackedPathsAtCheckpoint: Array.isArray(parsed.untrackedPathsAtCheckpoint) ? parsed.untrackedPathsAtCheckpoint : []
+        };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  async setActiveInteractiveSession(
+    taskId: string,
+    session: { sessionId: string; checkpointRef: string; startedAt: string; untrackedPathsAtCheckpoint: string[] }
+  ): Promise<void> {
+    await this.redis.set(this.taskActiveInteractiveSessionKey(taskId), JSON.stringify(session));
+  }
+
+  async clearActiveInteractiveSession(taskId: string): Promise<void> {
+    await this.redis.del(this.taskActiveInteractiveSessionKey(taskId));
+  }
+
+  async listChangeProposals(taskId: string): Promise<TaskChangeProposal[]> {
+    const ids = await this.redis.lrange(this.taskChangeProposalIdsKey(taskId), 0, -1);
+    if (ids.length === 0) {
+      return [];
+    }
+    const proposals: TaskChangeProposal[] = [];
+    for (const id of ids) {
+      const raw = await this.redis.get(this.taskChangeProposalKey(id));
+      if (!raw) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(raw) as TaskChangeProposal;
+        proposals.push(this.normalizeStoredProposal(parsed));
+      } catch {
+        /* skip */
+      }
+    }
+    return proposals.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async getChangeProposal(proposalId: string): Promise<TaskChangeProposal | null> {
+    const raw = await this.redis.get(this.taskChangeProposalKey(proposalId));
+    if (!raw) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as TaskChangeProposal;
+      return this.normalizeStoredProposal(parsed);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Among applied checkpoints, the one that was applied most recently (revert must unwind this one first). */
+  async getLatestAppliedChangeProposalId(taskId: string): Promise<string | null> {
+    const proposals = await this.listChangeProposals(taskId);
+    const applied = proposals.filter((p) => p.status === "applied");
+    if (applied.length === 0) {
+      return null;
+    }
+    const rank = (p: TaskChangeProposal): string => `${p.resolvedAt ?? p.createdAt}\0${p.id}`;
+    let best = applied[0]!;
+    for (let i = 1; i < applied.length; i++) {
+      const p = applied[i]!;
+      if (rank(p) > rank(best)) {
+        best = p;
+      }
+    }
+    return best.id;
+  }
+
+  /**
+   * Creates a pending checkpoint. Fails if the task already has another pending checkpoint.
+   * Diff and metadata are persisted for later apply/reject/revert.
+   */
+  async createChangeProposal(input: Omit<TaskChangeProposal, "resolvedAt" | "revertedAt"> & { resolvedAt?: null; revertedAt?: null }): Promise<TaskChangeProposal | null> {
+    const existingList = await this.listChangeProposals(input.taskId);
+    if (existingList.some((p) => p.status === "pending")) {
+      return null;
+    }
+
+    const proposal: TaskChangeProposal = {
+      ...input,
+      untrackedPathsAtCheckpoint: Array.isArray(input.untrackedPathsAtCheckpoint) ? input.untrackedPathsAtCheckpoint : [],
+      resolvedAt: null,
+      revertedAt: null
+    };
+
+    await this.redis
+      .multi()
+      .set(this.taskChangeProposalKey(proposal.id), JSON.stringify(proposal))
+      .rpush(this.taskChangeProposalIdsKey(input.taskId), proposal.id)
+      .exec();
+
+    await this.eventBus.publish({ type: "task:change_proposal", payload: proposal });
+    return proposal;
+  }
+
+  async updateChangeProposalStatus(
+    proposalId: string,
+    status: TaskChangeProposalStatus,
+    taskId: string
+  ): Promise<TaskChangeProposal | null> {
+    const existing = await this.getChangeProposal(proposalId);
+    if (!existing || existing.taskId !== taskId) {
+      return null;
+    }
+
+    const next: TaskChangeProposal = {
+      ...existing,
+      status,
+      resolvedAt: status === "pending" ? null : nowIso(),
+      /** Re-applying after revert clears this so the row is "applied" again. */
+      revertedAt: status === "applied" ? null : (existing.revertedAt ?? null)
+    };
+
+    await this.redis.set(this.taskChangeProposalKey(proposalId), JSON.stringify(next));
+
+    await this.eventBus.publish({ type: "task:change_proposal", payload: next });
+    return next;
+  }
+
+  async markCheckpointReverted(proposalId: string, taskId: string): Promise<TaskChangeProposal | null> {
+    const existing = await this.getChangeProposal(proposalId);
+    if (!existing || existing.taskId !== taskId || existing.status !== "applied") {
+      return null;
+    }
+
+    const next: TaskChangeProposal = {
+      ...existing,
+      status: "reverted",
+      revertedAt: nowIso()
+    };
+
+    await this.redis.set(this.taskChangeProposalKey(proposalId), JSON.stringify(next));
+    await this.eventBus.publish({ type: "task:change_proposal", payload: next });
+    return next;
   }
 }

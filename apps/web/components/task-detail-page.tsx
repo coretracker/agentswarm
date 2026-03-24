@@ -6,6 +6,7 @@ import {
   getDefaultModelForProvider,
   getEffortOptionsForProvider,
   getProviderProfileLabel,
+  getCheckpointMutationBlockedReason,
   getTaskBranchStrategyLabel,
   getTaskStatusLabel,
   getTaskTypeLabel,
@@ -21,7 +22,9 @@ import {
   type ProviderProfile,
   type Preset,
   type GitHubBranchReference,
-  type TaskPushPreview
+  type TaskPushPreview,
+  type TaskChangeProposal,
+  type TaskWorkspaceCommit
 } from "@agentswarm/shared-types";
 import {
   Alert,
@@ -35,8 +38,10 @@ import {
   Flex,
   Form,
   Input,
+  List,
   Modal,
   Segmented,
+  Spin,
   Select,
   Space,
   Tag,
@@ -57,6 +62,7 @@ import { useTask } from "../src/hooks/useTask";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useTaskMessages } from "../src/hooks/useTaskMessages";
 import { useTaskRuns } from "../src/hooks/useTaskRuns";
+import { useTaskChangeProposals } from "../src/hooks/useTaskChangeProposals";
 import { normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
 import { estimateCost, formatCost } from "../src/utils/pricing";
 import { useAuth } from "./auth-provider";
@@ -163,6 +169,25 @@ const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: "Codex (OpenAI)", value: "codex" },
   { label: getAgentProviderLabel("claude"), value: "claude" }
 ];
+
+function checkpointStatusLabel(status: TaskChangeProposal["status"]): string {
+  switch (status) {
+    case "pending":
+      return "Pending";
+    case "applied":
+      return "Applied";
+    case "rejected":
+      return "Rejected";
+    case "reverted":
+      return "Reverted";
+    default:
+      return status;
+  }
+}
+
+function changeProposalSourceLabel(sourceType: TaskChangeProposal["sourceType"]): string {
+  return sourceType === "build_run" ? "Build run" : "Terminal session";
+}
 
 function formatDiffRefDisplay(ref: string | null | undefined): string {
   if (!ref?.trim()) {
@@ -366,6 +391,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { task, setTask, loading } = useTask(taskId);
   const { messages: taskMessages, loading: messagesLoading } = useTaskMessages(taskId);
   const { runs: taskRuns, loading: runsLoading } = useTaskRuns(taskId);
+  const { proposals: changeProposals, refetch: refetchChangeProposals } = useTaskChangeProposals(taskId);
   const { presets, loading: presetsLoading } = usePresets();
   const taskTokenTotals = useMemo(() => {
     return getTaskTokenTotals(taskRuns);
@@ -374,8 +400,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [liveDiffLoading, setLiveDiffLoading] = useState(false);
   const [liveDiffError, setLiveDiffError] = useState<string | null>(null);
   const [liveDiffRefreshKey, setLiveDiffRefreshKey] = useState(0);
-  const [diffLiveKind, setDiffLiveKind] = useState<"compare" | "working">("working");
+  const [diffLiveKind, setDiffLiveKind] = useState<"compare" | "commits">("commits");
   const [diffCompareBaseRef, setDiffCompareBaseRef] = useState<string | null>(null);
+  const [commitLog, setCommitLog] = useState<TaskWorkspaceCommit[]>([]);
+  const [commitLogLoading, setCommitLogLoading] = useState(false);
+  const [commitLogError, setCommitLogError] = useState<string | null>(null);
+  const [selectedCommitSha, setSelectedCommitSha] = useState<string | null>(null);
   const [diffBranches, setDiffBranches] = useState<GitHubBranchReference[]>([]);
   const [diffBranchesLoading, setDiffBranchesLoading] = useState(false);
   const [followUpForm] = Form.useForm();
@@ -413,13 +443,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "pin"
     | "renameTitle"
   >(null);
+  const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" } | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
   const selectedChatActionRef = useRef(false);
   const diffCompareBaseSyncedTaskIdRef = useRef<string | null>(null);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
   const [pushPreview, setPushPreview] = useState<TaskPushPreview | null>(null);
   const [pushPreviewLoading, setPushPreviewLoading] = useState(false);
-  const [pushPreviewError, setPushPreviewError] = useState<string | null>(null);
   const [pushCommitMessage, setPushCommitMessage] = useState("");
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
@@ -447,6 +477,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     task?.status === "review_queued" ||
     task?.status === "ask_queued";
   const isActive = task ? isActiveTaskStatus(task.status) : false;
+  const checkpointDiffActionsBlockedReason = task ? getCheckpointMutationBlockedReason(task.status) : null;
+  const checkpointDiffActionsBlocked = checkpointDiffActionsBlockedReason !== null;
   const isPreparingWorkspace = task?.status === "preparing_workspace";
   const canCancel = canEditTask && (isQueued || isActive);
   const hasBranchForSync = isPlanTask || isBuildTask || isAskTask;
@@ -523,7 +555,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const compareRefError =
     diffLiveKind === "compare" &&
     Boolean(liveDiff && !liveDiff.live && liveDiff.message?.includes("Compare ref not found"));
-  const renderedDiff = hasLiveDiff ? liveDiff?.diff ?? "" : compareRefError ? "" : task?.branchDiff ?? "";
+  const renderedDiff =
+    diffLiveKind === "compare" && compareRefError
+      ? ""
+      : diffLiveKind === "commits"
+        ? liveDiff?.diff ?? ""
+        : hasLiveDiff
+          ? liveDiff?.diff ?? ""
+          : task?.branchDiff ?? "";
   const hasDiffTab = hasStoredDiff || canRequestLiveDiff;
   const diffBaseBranchOptions = useMemo(() => {
     const options: Array<{ value: string; label: string }> = [];
@@ -625,24 +664,35 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     let cancelled = false;
-    void api
-      .getTaskInteractiveTerminalStatus(task.id)
-      .then((status) => {
-        if (!cancelled) {
-          setInteractiveTerminalStatus(status);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setInteractiveTerminalStatus({
-            available: false,
-            reason: "Could not load interactive terminal status."
-          });
-        }
-      });
+    const loadInteractiveTerminalStatus = () => {
+      void api
+        .getTaskInteractiveTerminalStatus(task.id)
+        .then((status) => {
+          if (!cancelled) {
+            setInteractiveTerminalStatus(status);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setInteractiveTerminalStatus({
+              available: false,
+              reason: "Could not load interactive terminal status."
+            });
+          }
+        });
+    };
+
+    loadInteractiveTerminalStatus();
+    const intervalId = window.setInterval(loadInteractiveTerminalStatus, 4000);
+    const onFocus = () => {
+      loadInteractiveTerminalStatus();
+    };
+    window.addEventListener("focus", onFocus);
 
     return () => {
       cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", onFocus);
     };
   }, [task?.id, canEditTask, isArchived]);
 
@@ -677,12 +727,103 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   }, [activeMainTab, task?.repoId]);
 
   useEffect(() => {
+    setSelectedCommitSha(null);
+    setCommitLog([]);
+    setCommitLogError(null);
+  }, [task?.id]);
+
+  useEffect(() => {
     setLiveDiff(null);
   }, [diffLiveKind]);
 
   useEffect(() => {
+    if (activeMainTab !== "diff" || !task || !canRequestLiveDiff || diffLiveKind !== "commits") {
+      return;
+    }
+
+    let cancelled = false;
+    const loadCommitLog = async () => {
+      setCommitLogLoading(true);
+      setCommitLogError(null);
+      try {
+        const res = await api.getTaskWorkspaceCommitLog(task.id);
+        if (!cancelled) {
+          setCommitLog(res.commits);
+          setCommitLogError(res.message);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setCommitLog([]);
+          setCommitLogError(error instanceof Error ? error.message : "Failed to load commits");
+        }
+      } finally {
+        if (!cancelled) {
+          setCommitLogLoading(false);
+        }
+      }
+    };
+
+    void loadCommitLog();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMainTab, canRequestLiveDiff, diffLiveKind, liveDiffRefreshKey, task?.id, task?.updatedAt]);
+
+  useEffect(() => {
+    if (diffLiveKind !== "commits" || commitLog.length === 0) {
+      return;
+    }
+    if (!selectedCommitSha || !commitLog.some((c) => c.sha === selectedCommitSha)) {
+      setSelectedCommitSha(commitLog[0].sha);
+    }
+  }, [commitLog, diffLiveKind, selectedCommitSha]);
+
+  useEffect(() => {
     if (activeMainTab !== "diff" || !task || !canRequestLiveDiff) {
       return;
+    }
+
+    if (diffLiveKind === "commits") {
+      if (!selectedCommitSha) {
+        setLiveDiff(null);
+        setLiveDiffLoading(false);
+        setLiveDiffError(null);
+        return;
+      }
+
+      let cancelled = false;
+      const loadCommitDiff = async () => {
+        setLiveDiffLoading(true);
+        setLiveDiffError(null);
+        try {
+          const snapshot = await api.getTaskLiveDiff(task.id, {
+            diffKind: "commits",
+            commitSha: selectedCommitSha
+          });
+          if (!cancelled) {
+            setLiveDiff(snapshot);
+            if (!snapshot.live && snapshot.message) {
+              setLiveDiffError(snapshot.message);
+            } else {
+              setLiveDiffError(null);
+            }
+          }
+        } catch (error) {
+          if (!cancelled) {
+            setLiveDiffError(error instanceof Error ? error.message : "Failed to load commit diff");
+            setLiveDiff(null);
+          }
+        } finally {
+          if (!cancelled) {
+            setLiveDiffLoading(false);
+          }
+        }
+      };
+
+      void loadCommitDiff();
+      return () => {
+        cancelled = true;
+      };
     }
 
     let cancelled = false;
@@ -691,7 +832,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       try {
         const snapshot = await api.getTaskLiveDiff(task.id, {
           baseRef: diffCompareBaseRef ?? task.repoDefaultBranch ?? undefined,
-          diffKind: diffLiveKind
+          diffKind: "compare"
         });
         if (!cancelled) {
           setLiveDiff(snapshot);
@@ -721,6 +862,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     diffCompareBaseRef,
     diffLiveKind,
     liveDiffRefreshKey,
+    selectedCommitSha,
     task?.id,
     task?.updatedAt,
     task?.workspaceBaseRef
@@ -835,27 +977,65 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const githubDiffTarget = task ? getGitHubDiffTarget(task) : null;
   const chatActionLabel = taskActionLabel[selectedChatAction];
   const hasReadOnlyTaskAccess = !canEditTask;
+  const pendingChangeProposal = useMemo(
+    () => changeProposals.find((p) => p.status === "pending") ?? null,
+    [changeProposals]
+  );
+  const latestAppliedChangeProposalId = useMemo(() => {
+    const applied = changeProposals.filter((p) => p.status === "applied");
+    if (applied.length === 0) {
+      return null;
+    }
+    const rank = (p: (typeof applied)[number]) => `${p.resolvedAt ?? p.createdAt}\0${p.id}`;
+    let best = applied[0]!;
+    for (let i = 1; i < applied.length; i++) {
+      const p = applied[i]!;
+      if (rank(p) > rank(best)) {
+        best = p;
+      }
+    }
+    return best.id;
+  }, [changeProposals]);
+  const interactiveTerminalRunning = interactiveTerminalStatus?.activeInteractiveSession === true;
   const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "accepted" || task.status === "archived";
-  const chatDisabled = chatClosed || (selectedChatAction !== "comment" && (isQueued || isActive));
-  const chatPlaceholder = chatDisabled
-    ? hasReadOnlyTaskAccess
-      ? "You have read-only access to this task."
-      : chatClosed
-      ? task?.status === "archived"
+  const chatDisabled =
+    chatClosed ||
+    interactiveTerminalRunning ||
+    (selectedChatAction !== "comment" && (isQueued || isActive || !!pendingChangeProposal));
+  const chatPlaceholder = (() => {
+    if (interactiveTerminalRunning) {
+      return "An interactive terminal session is already running for this task. Close or end it before sending from here.";
+    }
+    if (!chatDisabled) {
+      if (selectedChatAction === "comment") {
+        return "Add a comment to the task history";
+      }
+      if (selectedChatAction === "ask") {
+        return "Ask a repository question or refine the last answer";
+      }
+      if (selectedChatAction === "review") {
+        return "Add review instructions for the next pass";
+      }
+      if (selectedChatAction === "build") {
+        return "Describe the next implementation change for this branch";
+      }
+      return hasExecutionContext
+        ? "Describe how the current plan should change before the next run"
+        : "Add instructions for the first planning pass";
+    }
+    if (hasReadOnlyTaskAccess) {
+      return "You have read-only access to this task.";
+    }
+    if (chatClosed) {
+      return task?.status === "archived"
         ? "This task is archived and read-only."
-        : "This task is closed. Create a follow-up task to continue."
-      : "Wait for the current run to finish before sending another instruction."
-    : selectedChatAction === "comment"
-      ? "Add a comment to the task history"
-    : selectedChatAction === "ask"
-      ? "Ask a repository question or refine the last answer"
-      : selectedChatAction === "review"
-        ? "Add review instructions for the next pass"
-        : selectedChatAction === "build"
-          ? "Describe the next implementation change for this branch"
-          : hasExecutionContext
-            ? "Describe how the current plan should change before the next run"
-            : "Add instructions for the first planning pass";
+        : "This task is closed. Create a follow-up task to continue.";
+    }
+    if (pendingChangeProposal && selectedChatAction !== "comment") {
+      return "Apply or reject the pending checkpoint before sending build or ask instructions.";
+    }
+    return "Wait for the current run to finish before sending another instruction.";
+  })();
   const duplicatedRunSummaries = new Set(
     taskRuns
       .filter((entry) => entry.summary?.trim())
@@ -878,6 +1058,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       kind: "run" as const,
       timestamp: entry.startedAt,
       run: entry
+    })),
+    ...changeProposals.map((entry) => ({
+      key: `proposal-${entry.id}`,
+      kind: "proposal" as const,
+      timestamp: entry.createdAt,
+      proposal: entry
     }))
   ].sort((left, right) => {
     if (left.timestamp === right.timestamp) {
@@ -1166,14 +1352,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (!task) {
       return;
     }
-    setPushPreviewError(null);
     setPushPreviewLoading(true);
     try {
       const preview = await api.getTaskPushPreview(task.id);
       setPushPreview(preview);
       setPushCommitMessage((current) => (current.trim().length > 0 ? current : preview.suggestedCommitMessage));
     } catch (error) {
-      setPushPreviewError(error instanceof Error ? error.message : "Could not load push preview");
+      setPushPreview(null);
+      messageApi.error(error instanceof Error ? error.message : "Could not load push preview");
     } finally {
       setPushPreviewLoading(false);
     }
@@ -1283,6 +1469,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : updatedTask
       );
       messageApi.success("Changes pulled");
+      setLiveDiffRefreshKey((k) => k + 1);
+      void loadPushPreview();
     } catch (error) {
       messageApi.error(error instanceof Error ? error.message : "Failed to pull changes");
     } finally {
@@ -1290,11 +1478,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
   };
   useEffect(() => {
-    if (activeMainTab !== "diff" || !task || !canPush) {
+    if (!task || !canPush) {
       return;
     }
     void loadPushPreview();
-  }, [activeMainTab, canPush, task?.id, task?.updatedAt]);
+  }, [canPush, task?.id, task?.updatedAt]);
 
   const moreActionItems = task && !isArchived
     ? [
@@ -1303,16 +1491,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         canEditTask ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
         canContinueOnBranch ? { key: "continue", label: "Continue On Branch" } : null,
         canCreateFixTask ? { key: "fix", label: "Create Fix Task" } : null,
+        canArchive ? { key: "archive", label: "Archive Task", danger: true } : null,
         canDelete ? { key: "delete", label: "Delete Task", danger: true } : null
       ].filter(Boolean)
     : [];
   const hasMoreActions = moreActionItems.length > 0;
   const canOpenInteractive = canEditTask && !isArchived && !!task;
-  const canRunReviewAction =
+  const canRunReviewActionEligible =
     !canCancel && !hasCompletedNonImplementationResult && canEditTask && isReviewTask && task?.status !== "accepted" && task?.status !== "archived";
   const hasSyncButtons = canOpenInteractive;
-  const hasExecutionButtons = canCancel || canRunReviewAction;
-  const hasManagementButtons = Boolean(githubDiffTarget) || canArchive || hasMoreActions;
+  const hasExecutionButtons = canCancel || canRunReviewActionEligible;
+  const hasManagementButtons = Boolean(githubDiffTarget) || hasMoreActions || canPull || canPush;
 const contextContent = (
   <Space direction="vertical" size={16} style={{ width: "100%" }}>
       {taskTokenTotals ? (
@@ -1455,15 +1644,23 @@ const contextContent = (
       ? `${liveDiff.headBranch}${liveDiff.headShaShort ? ` @ ${liveDiff.headShaShort}` : ""}`
       : task?.branchName ?? "—";
 
+  const pushNothingToPush =
+    Boolean(
+      pushPreview &&
+        !pushPreview.hasUncommittedChanges &&
+        pushPreview.unpushedCommitSubjects.length === 0
+    );
+  const pushPrimaryDisabled = submitting === "push" || pushPreviewLoading || pushNothingToPush;
+
   const diffContent = hasDiffTab ? (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       {task ? (
         <Card size="small" styles={{ body: { paddingBottom: 12 } }}>
           <Segmented
             value={diffLiveKind}
-            onChange={(value) => setDiffLiveKind(value as "compare" | "working")}
+            onChange={(value) => setDiffLiveKind(value as "compare" | "commits")}
             options={[
-              { label: "Local changes", value: "working" },
+              { label: "Branch commits", value: "commits" },
               { label: "Compare to branch", value: "compare" }
             ]}
             style={{ marginBottom: 14 }}
@@ -1478,15 +1675,15 @@ const contextContent = (
                 value={diffCompareBaseRef ?? task.repoDefaultBranch}
                 options={diffBaseBranchOptions}
                 loading={diffBranchesLoading}
-                disabled={!canRequestLiveDiff || diffLiveKind === "working"}
+                disabled={!canRequestLiveDiff || diffLiveKind === "commits"}
                 style={{ width: "100%" }}
                 onChange={(value) => {
                   setDiffCompareBaseRef(typeof value === "string" && value.length > 0 ? value : task.repoDefaultBranch ?? null);
                 }}
               />
-              {diffLiveKind === "working" ? (
+              {diffLiveKind === "commits" ? (
                 <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
-                  Local changes shows uncommitted edits vs HEAD plus untracked files. The base branch is only used in
+                  Recent commits on the current workspace branch. Choose one to view its patch. The base branch is only used in
                   Compare to branch mode.
                 </Typography.Paragraph>
               ) : null}
@@ -1494,7 +1691,7 @@ const contextContent = (
             <ArrowRightOutlined style={{ color: "rgba(0,0,0,0.45)", marginBottom: 10 }} />
             <div style={{ minWidth: 200, flex: "1 1 220px" }}>
               <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
-                {diffLiveKind === "working" ? "Workspace (HEAD)" : "Compare (HEAD)"}
+                {diffLiveKind === "commits" ? "Workspace (HEAD)" : "Compare (HEAD)"}
               </Typography.Text>
               <Typography.Text code style={{ fontSize: 14 }}>
                 {diffHeadLabel}
@@ -1503,66 +1700,29 @@ const contextContent = (
           </Flex>
           {compareRefError ? null : (
             <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
-              {hasLiveDiff
-                ? `${diffLiveKind === "working" ? "Local changes" : "Compare"} · updated ${dayjs(liveDiff?.fetchedAt).format("HH:mm:ss")}`
-                : hasStoredDiff
-                  ? "Showing last captured diff from task state because no live workspace diff is available."
-                  : liveDiff?.message ?? "Live diff will appear once the task workspace exists."}
+              {diffLiveKind === "commits" ? (
+                commitLogLoading ? (
+                  "Loading commit list…"
+                ) : commitLogError ? (
+                  commitLogError
+                ) : hasLiveDiff && liveDiff ? (
+                  `Selected commit · diff updated ${dayjs(liveDiff.fetchedAt).format("HH:mm:ss")}`
+                ) : selectedCommitSha && liveDiffLoading ? (
+                  "Loading commit diff…"
+                ) : !commitLog.length && !commitLogLoading ? (
+                  "No commits on this branch in the workspace yet."
+                ) : (
+                  liveDiff?.message ?? "Select a commit to view its changes."
+                )
+              ) : hasLiveDiff ? (
+                `Compare · updated ${dayjs(liveDiff?.fetchedAt).format("HH:mm:ss")}`
+              ) : hasStoredDiff ? (
+                "Showing last captured diff from task state because no live workspace diff is available."
+              ) : (
+                liveDiff?.message ?? "Live diff will appear once the task workspace exists."
+              )}
             </Typography.Paragraph>
           )}
-        </Card>
-      ) : null}
-      {diffLiveKind === "working" && (canPull || canPush) && task ? (
-        <Card size="small" title="Git operations">
-          <Space direction="vertical" size={12} style={{ width: "100%" }}>
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              Pull updates from origin and push your local branch. Pushing stages all local changes, creates a commit when needed,
-              and publishes the branch.
-            </Typography.Paragraph>
-            <Flex gap={8} wrap="wrap">
-              {canPull ? (
-                <Button onClick={handlePullTask} loading={submitting === "pull"}>
-                  {`Pull (${pullCount})`}
-                </Button>
-              ) : null}
-              {canPush ? (
-                <Button type="primary" onClick={() => void confirmPushTask()} loading={submitting === "push"} disabled={pushPreviewLoading}>
-                  {`Push (${pushCount})`}
-                </Button>
-              ) : null}
-              {canPush ? (
-                <Button onClick={() => void loadPushPreview()} loading={pushPreviewLoading} disabled={submitting === "push"}>
-                  Refresh preview
-                </Button>
-              ) : null}
-            </Flex>
-            {pushPreviewError ? <Alert type="error" showIcon message="Push preview unavailable" description={pushPreviewError} /> : null}
-            {canPush && pushPreview ? (
-              <>
-                <Typography.Text type="secondary">
-                  Branch <Typography.Text code>{pushPreview.branchName}</Typography.Text>
-                  {pushPreview.hasUncommittedChanges
-                    ? " — uncommitted changes will be committed before push."
-                    : pushPreview.unpushedCommitSubjects.length > 0
-                      ? " — pushing existing local commits."
-                      : " — nothing to push."}
-                </Typography.Text>
-                <Input.TextArea
-                  rows={2}
-                  value={pushCommitMessage}
-                  onChange={(e) => setPushCommitMessage(e.target.value)}
-                  placeholder="Commit message (used when creating a new commit)"
-                  disabled={submitting === "push"}
-                />
-                {pushPreview.unpushedCommitSubjects.length > 0 ? (
-                  <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                    Existing local commits: {pushPreview.unpushedCommitSubjects.slice(0, 3).join(" · ")}
-                    {pushPreview.unpushedCommitSubjects.length > 3 ? ` (+${pushPreview.unpushedCommitSubjects.length - 3} more)` : ""}
-                  </Typography.Paragraph>
-                ) : null}
-              </>
-            ) : null}
-          </Space>
         </Card>
       ) : null}
       {liveDiffError ? <Alert type="warning" showIcon message="Live diff refresh failed" description={liveDiffError} /> : null}
@@ -1579,28 +1739,94 @@ const contextContent = (
         />
       ) : null}
       {task ? (
-        <TaskDiffOpenAiPanel
-          diffText={renderedDiff}
-          emptyMessage={
-            compareRefError
-              ? "Choose another base branch or the repository default."
-              : isReviewTask
-                ? `No diff captured for ${task.baseBranch} against ${task.repoDefaultBranch}.`
-                : hasLiveDiff
-                  ? diffLiveKind === "working"
-                    ? "No uncommitted changes vs HEAD (no staged/unstaged diff and no untracked files shown)."
-                    : "No diff between the selected base and HEAD."
-                  : "No diff captured yet. Run Build to generate one."
-          }
-          collapseFiles
-          taskId={task.id}
-          taskStatus={task.status}
-          liveDiff={liveDiff}
-          isArchived={isArchived}
-          canEditTask={canEditTask}
-          selectionResetToken={`${task.id}-${diffLiveKind}`}
-          onLiveDiffRefresh={() => setLiveDiffRefreshKey((k) => k + 1)}
-        />
+        <Flex gap={16} align="flex-start" style={{ width: "100%" }} wrap="wrap">
+          {diffLiveKind === "commits" ? (
+            <Card
+              size="small"
+              title="Commits"
+              extra={
+                <Button type="link" size="small" onClick={() => setLiveDiffRefreshKey((k) => k + 1)} style={{ padding: 0 }}>
+                  Refresh
+                </Button>
+              }
+              style={{ width: "100%", maxWidth: 360, flex: "0 1 320px" }}
+              styles={{ body: { padding: 0, maxHeight: 480, overflow: "auto" } }}
+            >
+              {commitLogLoading ? (
+                <div style={{ padding: 24, textAlign: "center" }}>
+                  <Spin size="small" />
+                </div>
+              ) : (
+                <List
+                  size="small"
+                  dataSource={commitLog}
+                  locale={{ emptyText: "No commits yet." }}
+                  renderItem={(c) => (
+                    <List.Item
+                      style={{
+                        cursor: "pointer",
+                        background: selectedCommitSha === c.sha ? "rgba(0,0,0,0.06)" : undefined,
+                        padding: "10px 12px"
+                      }}
+                      onClick={() => setSelectedCommitSha(c.sha)}
+                    >
+                      <List.Item.Meta
+                        title={
+                          <Typography.Text code style={{ fontSize: 12 }}>
+                            {c.shortSha}
+                          </Typography.Text>
+                        }
+                        description={
+                          <div>
+                            <Typography.Paragraph style={{ marginBottom: 4, fontSize: 13 }} ellipsis={{ rows: 2 }}>
+                              {c.subject}
+                            </Typography.Paragraph>
+                            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                              {dayjs(c.committedAt).format("MMM D, YYYY HH:mm")} · {c.authorName}
+                            </Typography.Text>
+                          </div>
+                        }
+                      />
+                    </List.Item>
+                  )}
+                />
+              )}
+            </Card>
+          ) : null}
+          <div style={{ flex: "1 1 400px", minWidth: 0 }}>
+            <TaskDiffOpenAiPanel
+              diffAssistBlocked={!!pendingChangeProposal}
+              diffText={renderedDiff}
+              emptyMessage={
+                compareRefError
+                  ? "Choose another base branch or the repository default."
+                  : diffLiveKind === "commits"
+                    ? commitLogLoading
+                      ? "Loading commits…"
+                      : !commitLog.length
+                        ? "No commits on this branch yet."
+                        : liveDiffLoading && selectedCommitSha
+                          ? "Loading commit diff…"
+                          : hasLiveDiff
+                            ? "This commit has no file changes in its patch."
+                            : liveDiff?.message ?? "Could not load this commit’s diff."
+                    : isReviewTask
+                      ? `No diff captured for ${task.baseBranch} against ${task.repoDefaultBranch}.`
+                      : hasLiveDiff
+                        ? "No diff between the selected base and HEAD."
+                        : "No diff captured yet. Run Build to generate one."
+              }
+              collapseFiles
+              taskId={task.id}
+              taskStatus={task.status}
+              liveDiff={liveDiff}
+              isArchived={isArchived}
+              canEditTask={canEditTask}
+              selectionResetToken={`${task.id}-${diffLiveKind}-${selectedCommitSha ?? ""}`}
+              onLiveDiffRefresh={() => setLiveDiffRefreshKey((k) => k + 1)}
+            />
+          </div>
+        </Flex>
       ) : null}
     </Space>
   ) : null;
@@ -1633,7 +1859,7 @@ const contextContent = (
                 setModelInput(getDefaultModelForProvider(value));
               }}
               style={{ width: "100%", marginTop: 6 }}
-              disabled={!canEditTask || isArchived}
+              disabled={!canEditTask || isArchived || interactiveTerminalRunning}
             />
           </div>
           <div
@@ -1653,7 +1879,7 @@ const contextContent = (
               optionFilterProp="label"
               onChange={(value) => setModelInput(value)}
               style={{ width: "100%", marginTop: 6 }}
-              disabled={!canEditTask || isArchived}
+              disabled={!canEditTask || isArchived || interactiveTerminalRunning}
             />
           </div>
           <div
@@ -1670,7 +1896,7 @@ const contextContent = (
               options={getEffortOptionsForProvider(providerInput)}
               onChange={(value) => setProviderProfileInput(value)}
               style={{ width: "100%", marginTop: 6 }}
-              disabled={!canEditTask || isArchived}
+              disabled={!canEditTask || isArchived || interactiveTerminalRunning}
             />
           </div>
           <div
@@ -1690,7 +1916,14 @@ const contextContent = (
               onChange={(value) => handlePresetSelection(value)}
               optionFilterProp="label"
               loading={presetsLoading}
-              disabled={presetsLoading || taskPresets.length === 0 || !canSpawnPresetFromTask || !canEditTask || isArchived}
+              disabled={
+                presetsLoading ||
+                taskPresets.length === 0 ||
+                !canSpawnPresetFromTask ||
+                !canEditTask ||
+                isArchived ||
+                interactiveTerminalRunning
+              }
               options={taskPresets.map((preset) => ({
                 label: `${preset.name} · ${preset.repoName}`,
                 value: preset.id
@@ -1707,7 +1940,7 @@ const contextContent = (
                 label: taskActionLabel[action],
                 value: action
               }))}
-              disabled={chatClosed}
+              disabled={chatClosed || interactiveTerminalRunning}
               onChange={(value) => {
                 selectedChatActionRef.current = true;
                 setSelectedChatAction(value);
@@ -1760,11 +1993,12 @@ const contextContent = (
             <Button
               onClick={handleClearComposer}
               disabled={
-                !selectedPresetId &&
-                !chatInput.trim() &&
-                providerInput === currentTaskProvider &&
-                providerProfileInput === currentTaskProviderProfile &&
-                modelInput === (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider))
+                interactiveTerminalRunning ||
+                (!selectedPresetId &&
+                  !chatInput.trim() &&
+                  providerInput === currentTaskProvider &&
+                  providerProfileInput === currentTaskProviderProfile &&
+                  modelInput === (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)))
               }
             >
               Clear
@@ -1867,6 +2101,235 @@ const contextContent = (
           );
         }
 
+        if (entry.kind === "proposal") {
+          const p = entry.proposal;
+          const statusColor =
+            p.status === "pending"
+              ? "orange"
+              : p.status === "applied"
+                ? "green"
+                : p.status === "reverted"
+                  ? "blue"
+                  : p.status === "rejected"
+                    ? "red"
+                    : "default";
+          const canRevertApplied = p.status === "applied" && !p.diffTruncated;
+          const canRevertThisCheckpointNow = canRevertApplied && p.id === latestAppliedChangeProposalId;
+          const diffTrimmed = p.diff.trim();
+          const canReapplyReverted =
+            p.status === "reverted" &&
+            !p.diffTruncated &&
+            diffTrimmed.length > 0 &&
+            diffTrimmed !== "(no changes)";
+          const showCheckpointApply =
+            (p.status === "pending" || canReapplyReverted) && canEditTask && task && !isArchived;
+          const blockOlderCheckpointWhilePending =
+            !!pendingChangeProposal && p.id !== pendingChangeProposal.id;
+          const olderCheckpointPendingTooltip = "Apply or reject the current pending checkpoint first.";
+          return (
+            <Flex key={entry.key}>
+              <Card size="small" style={{ width: "100%", borderColor: p.status === "pending" ? "rgba(250,173,20,0.45)" : undefined }}>
+                <Flex justify="space-between" align="flex-start" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
+                  <Space wrap size={8}>
+                    <Typography.Text strong>Checkpoint</Typography.Text>
+                    <Tag>{changeProposalSourceLabel(p.sourceType)}</Tag>
+                    <Tag color={statusColor}>{checkpointStatusLabel(p.status)}</Tag>
+                    {p.diffTruncated ? <Tag>Truncated preview</Tag> : null}
+                  </Space>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {dayjs(p.createdAt).format("YYYY-MM-DD HH:mm:ss")}
+                  </Typography.Text>
+                </Flex>
+                <Collapse
+                  size="small"
+                  defaultActiveKey={[]}
+                  items={[
+                    {
+                      key: "diff",
+                      label: "diff",
+                      collapsible: blockOlderCheckpointWhilePending ? "disabled" : undefined,
+                      extra:
+                        canEditTask && task && !isArchived && (showCheckpointApply || canRevertApplied) ? (
+                          <span onClick={(e) => e.stopPropagation()}>
+                          <Space
+                            size={4}
+                            wrap
+                            align="center"
+                            style={{ justifyContent: "flex-end", maxWidth: "min(100%, 520px)" }}
+                          >
+                            {showCheckpointApply ? (
+                              <>
+                                <Tooltip
+                                  title={
+                                    blockOlderCheckpointWhilePending
+                                      ? olderCheckpointPendingTooltip
+                                      : checkpointDiffActionsBlocked
+                                        ? checkpointDiffActionsBlockedReason
+                                        : undefined
+                                  }
+                                >
+                                  <span style={{ display: "inline-block" }}>
+                                <Button
+                                  type="primary"
+                                  size="small"
+                                  disabled={checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending}
+                                  loading={proposalBusy?.id === p.id && proposalBusy.kind === "apply"}
+                                  onClick={async () => {
+                                    setProposalBusy({ id: p.id, kind: "apply" });
+                                    try {
+                                      const updated = await api.applyTaskChangeProposal(task.id, p.id);
+                                      setTask((current) =>
+                                        current
+                                          ? {
+                                              ...updated,
+                                              logs: updated.logs.length > 0 ? updated.logs : current.logs
+                                            }
+                                          : updated
+                                      );
+                                      messageApi.success(canReapplyReverted ? "Checkpoint re-applied" : "Checkpoint applied");
+                                      setLiveDiffRefreshKey((k) => k + 1);
+                                      refetchChangeProposals();
+                                    } catch (error) {
+                                      messageApi.error(error instanceof Error ? error.message : "Could not apply checkpoint");
+                                    } finally {
+                                      setProposalBusy(null);
+                                    }
+                                  }}
+                                >
+                                  {canReapplyReverted ? "Apply again" : "Apply"}
+                                </Button>
+                                  </span>
+                                </Tooltip>
+                                {p.status === "pending" ? (
+                                  <Tooltip
+                                    title={
+                                      blockOlderCheckpointWhilePending
+                                        ? olderCheckpointPendingTooltip
+                                        : checkpointDiffActionsBlocked
+                                          ? checkpointDiffActionsBlockedReason
+                                          : undefined
+                                    }
+                                  >
+                                    <span style={{ display: "inline-block" }}>
+                                  <Button
+                                    danger
+                                    size="small"
+                                    disabled={checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending}
+                                    loading={proposalBusy?.id === p.id && proposalBusy.kind === "reject"}
+                                    onClick={() => {
+                                      Modal.confirm({
+                                        title: "Reject this checkpoint?",
+                                        content:
+                                          "Tracked files are reset to the checkpoint commit (git reset --hard). New untracked files added since that checkpoint are removed; untracked files you already had are kept.",
+                                        okText: "Reject and reset",
+                                        okButtonProps: { danger: true },
+                                        onOk: async () => {
+                                          setProposalBusy({ id: p.id, kind: "reject" });
+                                          try {
+                                            const updated = await api.rejectTaskChangeProposal(task.id, p.id);
+                                            setTask((current) =>
+                                              current
+                                                ? {
+                                                    ...updated,
+                                                    logs: updated.logs.length > 0 ? updated.logs : current.logs
+                                                  }
+                                                : updated
+                                            );
+                                            messageApi.success("Checkpoint rejected; workspace reset.");
+                                            setLiveDiffRefreshKey((k) => k + 1);
+                                            refetchChangeProposals();
+                                          } catch (error) {
+                                            messageApi.error(error instanceof Error ? error.message : "Could not reject checkpoint");
+                                          } finally {
+                                            setProposalBusy(null);
+                                          }
+                                        }
+                                      });
+                                    }}
+                                  >
+                                    Reject
+                                  </Button>
+                                    </span>
+                                  </Tooltip>
+                                ) : null}
+                              </>
+                            ) : null}
+                            {canRevertApplied ? (
+                              <Tooltip
+                                title={
+                                  blockOlderCheckpointWhilePending
+                                    ? olderCheckpointPendingTooltip
+                                    : checkpointDiffActionsBlocked
+                                      ? checkpointDiffActionsBlockedReason ?? undefined
+                                      : canRevertThisCheckpointNow
+                                        ? undefined
+                                        : "A newer applied checkpoint must be reverted first. Undo in reverse apply order."
+                                }
+                              >
+                                <span style={{ display: "inline-block" }}>
+                                  <Button
+                                    size="small"
+                                    disabled={
+                                      checkpointDiffActionsBlocked ||
+                                      !canRevertThisCheckpointNow ||
+                                      blockOlderCheckpointWhilePending
+                                    }
+                                    loading={proposalBusy?.id === p.id && proposalBusy.kind === "revert"}
+                                    onClick={() => {
+                                      if (
+                                        checkpointDiffActionsBlocked ||
+                                        !canRevertThisCheckpointNow ||
+                                        blockOlderCheckpointWhilePending
+                                      ) {
+                                        return;
+                                      }
+                                      Modal.confirm({
+                                        title: "Revert this applied checkpoint?",
+                                        content:
+                                          "Undoes the checkpoint (patch reverse or restore from base), then stages and creates a local commit so the branch stays clean with no unstaged revert changes. If that no longer applies because you committed or edited files, paths are restored from the checkpoint base instead. Revert newer checkpoints first.",
+                                        okText: "Revert",
+                                        okButtonProps: { danger: true },
+                                        onOk: async () => {
+                                          setProposalBusy({ id: p.id, kind: "revert" });
+                                          try {
+                                            const updated = await api.revertTaskChangeProposal(task.id, p.id);
+                                            setTask((current) =>
+                                              current
+                                                ? {
+                                                    ...updated,
+                                                    logs: updated.logs.length > 0 ? updated.logs : current.logs
+                                                  }
+                                                : updated
+                                            );
+                                            messageApi.success("Checkpoint reverted");
+                                            setLiveDiffRefreshKey((k) => k + 1);
+                                            refetchChangeProposals();
+                                          } catch (error) {
+                                            messageApi.error(error instanceof Error ? error.message : "Could not revert checkpoint");
+                                          } finally {
+                                            setProposalBusy(null);
+                                          }
+                                        }
+                                      });
+                                    }}
+                                  >
+                                    Revert
+                                  </Button>
+                                </span>
+                              </Tooltip>
+                            ) : null}
+                          </Space>
+                          </span>
+                        ) : null,
+                      children: renderParsedDiff(p.diff, "No diff text.", { collapseFiles: true })
+                    }
+                  ]}
+                />
+              </Card>
+            </Flex>
+          );
+        }
+
         const run = entry.run;
         const collapseItems = [
           {
@@ -1956,6 +2419,7 @@ const contextContent = (
                         task.builtPlanRunIds.includes(run.id) ||
                         isQueued ||
                         isActive ||
+                        !!pendingChangeProposal ||
                         task.status === "accepted" ||
                         task.status === "archived"
                       }
@@ -2058,6 +2522,22 @@ const contextContent = (
       children: (
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
           {chatPreparingNotice}
+          {interactiveTerminalRunning && canEditTask && task && !isArchived ? (
+            <Alert
+              type="info"
+              showIcon
+              message="Interactive terminal is running"
+              description="This task already has an active terminal session (another window or tab). Close or end that session before sending instructions here or opening another terminal."
+            />
+          ) : null}
+          {pendingChangeProposal && canEditTask && task && !isArchived ? (
+            <Alert
+              type="warning"
+              showIcon
+              message="Pending checkpoint"
+              description="Apply or reject the workspace changes from this run before starting a new build, opening a terminal, or using Git push/pull. Use the Git tab to commit and push after you apply."
+            />
+          ) : null}
           {chatTimelineBlock}
           {chatHistoryEmptyState}
           {!isPreparingWorkspace ? chatComposer : null}
@@ -2136,9 +2616,11 @@ const contextContent = (
                     {canOpenInteractive ? (
                       <Tooltip
                         title={
-                          interactiveTerminalStatus && !interactiveTerminalStatus.available
-                            ? interactiveTerminalStatus.reason ?? "Unavailable"
-                            : "Opens a new browser window with Codex in a shell; workspace is mounted at /workspace. Click again for another session."
+                          pendingChangeProposal
+                            ? "Apply or reject the pending checkpoint before opening a terminal."
+                            : interactiveTerminalStatus && !interactiveTerminalStatus.available
+                              ? interactiveTerminalStatus.reason ?? "Unavailable"
+                              : "Opens a new browser window with Codex in a shell; workspace is mounted at /workspace. Click again for another session."
                         }
                       >
                         <Button
@@ -2161,7 +2643,7 @@ const contextContent = (
                             ].join(",");
                             window.open(url, "_blank", `${features},noopener,noreferrer`);
                           }}
-                          disabled={!interactiveTerminalStatus?.available}
+                          disabled={!interactiveTerminalStatus?.available || !!pendingChangeProposal}
                         >
                           Open terminal
                         </Button>
@@ -2195,22 +2677,33 @@ const contextContent = (
                       </Button>
                     ) : null}
 
-                    {canRunReviewAction ? (
-                      <Button
-                        type="primary"
-                        onClick={async () => {
-                          setSubmitting("review");
-                          try {
-                            await api.triggerTaskAction(task.id, "review");
-                            messageApi.success("Review started");
-                          } finally {
-                            setSubmitting(null);
-                          }
-                        }}
-                        loading={submitting === "review"}
+                    {canRunReviewActionEligible ? (
+                      <Tooltip
+                        title={
+                          pendingChangeProposal
+                            ? "Apply or reject the pending checkpoint before running review."
+                            : undefined
+                        }
                       >
-                        Run Review
-                      </Button>
+                        <span style={{ display: "inline-block" }}>
+                          <Button
+                            type="primary"
+                            disabled={!!pendingChangeProposal}
+                            onClick={async () => {
+                              setSubmitting("review");
+                              try {
+                                await api.triggerTaskAction(task.id, "review");
+                                messageApi.success("Review started");
+                              } finally {
+                                setSubmitting(null);
+                              }
+                            }}
+                            loading={submitting === "review"}
+                          >
+                            Run Review
+                          </Button>
+                        </span>
+                      </Tooltip>
                     ) : null}
                   </Space>
                 ) : null}
@@ -2224,22 +2717,50 @@ const contextContent = (
                         {githubDiffTarget.label}
                       </Button>
                     ) : null}
-
-                    {canArchive ? (
-                      <Button
-                        danger
-                        loading={submitting === "archive"}
-                        onClick={() =>
-                          Modal.confirm({
-                            title: "Archive task?",
-                            content: "Archived tasks become read-only and cannot be restarted.",
-                            okText: "Archive",
-                            onOk: handleArchiveTask
-                          })
+                    {canPull ? (
+                      <Tooltip
+                        title={
+                          pendingChangeProposal
+                            ? "Apply or reject the pending checkpoint before pulling."
+                            : undefined
                         }
                       >
-                        Archive
-                      </Button>
+                        <span style={{ display: "inline-block" }}>
+                          <Button
+                            onClick={handlePullTask}
+                            loading={submitting === "pull"}
+                            disabled={!!pendingChangeProposal || submitting === "push"}
+                          >
+                            {`Pull (${pullCount})`}
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    ) : null}
+                    {canPush ? (
+                      <Tooltip
+                        title={
+                          pendingChangeProposal
+                            ? "Apply or reject the pending checkpoint before pushing."
+                            : pushNothingToPush
+                              ? "Nothing to push — commit local changes or wait for the status refresh."
+                              : undefined
+                        }
+                      >
+                        <span style={{ display: "inline-block" }}>
+                          <Button
+                            type="primary"
+                            onClick={() => void confirmPushTask()}
+                            loading={submitting === "push"}
+                            disabled={!!pendingChangeProposal || pushPrimaryDisabled}
+                          >
+                            {`Push (${pushCount})`}
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    ) : null}
+
+                    {hasMoreActions && (Boolean(githubDiffTarget) || canPull || canPush) ? (
+                      <Divider type="vertical" style={{ marginInline: 2 }} />
                     ) : null}
 
                     {hasMoreActions ? (
@@ -2272,6 +2793,16 @@ const contextContent = (
                               return;
                             }
 
+                            if (key === "archive") {
+                              Modal.confirm({
+                                title: "Archive task?",
+                                content: "Archived tasks become read-only and cannot be restarted.",
+                                okText: "Archive",
+                                onOk: handleArchiveTask
+                              });
+                              return;
+                            }
+
                             if (key === "delete") {
                               Modal.confirm({
                                 title: "Delete task?",
@@ -2285,7 +2816,9 @@ const contextContent = (
                         }}
                         trigger={["click"]}
                       >
-                        <Button icon={<MoreOutlined />}>More</Button>
+                        <Button icon={<MoreOutlined />} loading={submitting === "archive"}>
+                          More
+                        </Button>
                       </Dropdown>
                     ) : null}
                   </Space>

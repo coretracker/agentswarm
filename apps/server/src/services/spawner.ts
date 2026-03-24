@@ -1,19 +1,29 @@
 import { spawn } from "node:child_process";
-import { access, chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { nanoid } from "nanoid";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   getActiveStatusForAction,
+  getCheckpointMutationBlockedReason,
   getSuccessfulStatusForAction,
+  getTaskStatusLabel,
+  isActiveTaskStatus,
+  isQueuedTaskStatus,
   type AgentProvider,
   type McpServerConfig,
   type Task,
+  type TaskChangeProposal,
   type TaskLiveDiff,
   type TaskAction,
   type TaskRun,
   type TaskPushPreview,
-  type TaskReviewVerdict
+  type TaskReviewVerdict,
+  type TaskWorkspaceCommit,
+  type TaskWorkspaceCommitLog
 } from "@agentswarm/shared-types";
 import { makeBranchName } from "../lib/branch.js";
+import { resolveSafeWorkspaceFilePath } from "../lib/safe-workspace-file.js";
 import { resolveLocalPlanDirectory, resolveLocalPlanPath, resolveLocalPlanRevisionPath } from "../lib/plan-path.js";
 import { env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
@@ -722,17 +732,25 @@ esac
     return (await this.refExists(workspacePath, "HEAD", githubToken, gitUsername)) ? "HEAD" : null;
   }
 
-  private async collectUntrackedFileDiff(
+  private async listUntrackedRelativePaths(
     workspacePath: string,
     githubToken?: string | null,
     gitUsername = "x-access-token"
-  ): Promise<string> {
+  ): Promise<string[]> {
     const output = await this.gitCommandCaptureRaw(
       ["-C", workspacePath, "ls-files", "--others", "--exclude-standard", "-z"],
       githubToken,
       gitUsername
     );
-    const untrackedFiles = output.split("\0").filter((line) => line.length > 0);
+    return output.split("\0").filter((line) => line.length > 0);
+  }
+
+  private async collectUntrackedFileDiff(
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string> {
+    const untrackedFiles = await this.listUntrackedRelativePaths(workspacePath, githubToken, gitUsername);
     if (untrackedFiles.length === 0) {
       return "";
     }
@@ -776,6 +794,83 @@ esac
     return [workingDiff, untrackedDiff].filter((chunk) => chunk.trim().length > 0).join("\n").trim();
   }
 
+  private async collectCommitPatch(
+    workspacePath: string,
+    commitSha: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string> {
+    let patch = await this.gitCommandCapture(
+      ["-C", workspacePath, "show", "--no-color", "--pretty=format:", "-p", "--no-textconv", commitSha],
+      githubToken,
+      gitUsername
+    );
+    if (patch.length > SpawnerService.CHANGE_PROPOSAL_DIFF_MAX_CHARS) {
+      patch = `${patch.slice(0, SpawnerService.CHANGE_PROPOSAL_DIFF_MAX_CHARS)}\n\n… (diff truncated for preview)`;
+    }
+    return patch.trim();
+  }
+
+  private static readonly WORKSPACE_LOG_MAX_COMMITS = 200;
+
+  async getWorkspaceCommitLog(task: Task, options?: { limit?: number }): Promise<TaskWorkspaceCommitLog> {
+    const fetchedAt = new Date().toISOString();
+    const empty = (message: string | null): TaskWorkspaceCommitLog => ({
+      commits: [],
+      fetchedAt,
+      message
+    });
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const workspaceExists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+
+    if (!workspaceExists) {
+      return empty("Local workspace is unavailable for this task.");
+    }
+
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const token = runtimeCredentials.githubToken;
+    const gitUsername = runtimeCredentials.gitUsername;
+
+    const requested = options?.limit ?? 50;
+    const limit = Math.min(
+      Math.max(1, Number.isFinite(requested) ? Math.floor(requested) : 50),
+      SpawnerService.WORKSPACE_LOG_MAX_COMMITS
+    );
+
+    const fieldSep = "\x1e";
+    const format = `%H${fieldSep}%s${fieldSep}%cI${fieldSep}%an`;
+    let raw: string;
+    try {
+      raw = await this.gitCommandCapture(["-C", workspacePath, "log", `-${limit}`, `--format=${format}`], token, gitUsername);
+    } catch {
+      return empty("Could not read commit history in this workspace.");
+    }
+
+    const commits: TaskWorkspaceCommit[] = [];
+    for (const line of raw.trim().split("\n")) {
+      if (!line) {
+        continue;
+      }
+      const parts = line.split(fieldSep);
+      if (parts.length < 4 || !parts[0]) {
+        continue;
+      }
+      const [sha, subject, committedAt, authorName] = parts;
+      commits.push({
+        sha,
+        shortSha: sha.slice(0, 7),
+        subject,
+        committedAt,
+        authorName
+      });
+    }
+
+    return { commits, fetchedAt, message: null };
+  }
+
   private async normalizeUserCompareBaseRef(
     workspacePath: string,
     input: string,
@@ -817,7 +912,7 @@ esac
 
   async getLiveTaskDiff(
     task: Task,
-    options?: { compareBaseRef?: string; diffKind?: "compare" | "working" }
+    options?: { compareBaseRef?: string; diffKind?: "compare" | "working" | "commits"; commitSha?: string | null }
   ): Promise<TaskLiveDiff> {
     const fetchedAt = new Date().toISOString();
     const emptyHead = (): TaskLiveDiff => ({
@@ -848,7 +943,62 @@ esac
     const gitUsername = runtimeCredentials.gitUsername;
 
     const headInfo = await this.getWorkspaceHeadInfo(workspacePath, token, gitUsername);
-    const diffKind = options?.diffKind === "working" ? "working" : "compare";
+    const diffKind: "compare" | "working" | "commits" =
+      options?.diffKind === "working" ? "working" : options?.diffKind === "commits" ? "commits" : "compare";
+
+    if (diffKind === "commits") {
+      const defaultBaseRef = await this.resolveLiveDiffBaseRef(task, workspacePath, token, gitUsername);
+      const shaRaw = options?.commitSha?.trim() ?? "";
+      if (!shaRaw) {
+        return {
+          diff: null,
+          live: true,
+          fetchedAt,
+          message: null,
+          headBranch: headInfo?.branch ?? null,
+          headShaShort: headInfo?.shaShort ?? null,
+          baseRef: null,
+          defaultBaseRef
+        };
+      }
+      if (!/^[0-9a-f]{7,40}$/i.test(shaRaw)) {
+        return {
+          diff: null,
+          live: false,
+          fetchedAt,
+          message: "Invalid commit id.",
+          headBranch: headInfo?.branch ?? null,
+          headShaShort: headInfo?.shaShort ?? null,
+          baseRef: null,
+          defaultBaseRef
+        };
+      }
+      try {
+        await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "--verify", `${shaRaw}^{commit}`], token, gitUsername);
+      } catch {
+        return {
+          diff: null,
+          live: false,
+          fetchedAt,
+          message: "Commit not found in this workspace.",
+          headBranch: headInfo?.branch ?? null,
+          headShaShort: headInfo?.shaShort ?? null,
+          baseRef: null,
+          defaultBaseRef
+        };
+      }
+      const diff = await this.collectCommitPatch(workspacePath, shaRaw, token, gitUsername);
+      return {
+        diff: diff || null,
+        live: true,
+        fetchedAt,
+        message: null,
+        headBranch: headInfo?.branch ?? null,
+        headShaShort: headInfo?.shaShort ?? null,
+        baseRef: null,
+        defaultBaseRef
+      };
+    }
 
     if (diffKind === "working") {
       const defaultBaseRef = await this.resolveLiveDiffBaseRef(task, workspacePath, token, gitUsername);
@@ -1100,6 +1250,8 @@ esac
 
   private static readonly PUSH_PREVIEW_DIFF_MAX_CHARS = 120_000;
   private static readonly PUSH_PREVIEW_STAT_MAX_CHARS = 24_000;
+  private static readonly CHANGE_PROPOSAL_DIFF_MAX_CHARS = 120_000;
+  private static readonly CHANGE_PROPOSAL_STAT_MAX_CHARS = 24_000;
 
   async getTaskPushPreview(task: Task): Promise<TaskPushPreview> {
     const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
@@ -1223,6 +1375,779 @@ esac
 
   private isCancellationRequested(taskId: string): boolean {
     return this.cancelRequestedTaskIds.has(taskId);
+  }
+
+  private async collectDiffRangeVersusHead(
+    workspacePath: string,
+    fromRef: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<{ diff: string; diffStat: string; changedFiles: string[]; diffTruncated: boolean; toRef: string }> {
+    const toRef = (await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername)).trim();
+    let diff = await this.gitCommandCapture(["-C", workspacePath, "diff", `${fromRef}..${toRef}`], githubToken, gitUsername);
+    let diffStat = await this.gitCommandCapture(["-C", workspacePath, "diff", `${fromRef}..${toRef}`, "--stat"], githubToken, gitUsername);
+    const namesRaw = await this.gitCommandCapture(["-C", workspacePath, "diff", `${fromRef}..${toRef}`, "--name-only"], githubToken, gitUsername);
+    const changedFiles = namesRaw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    let diffTruncated = false;
+    if (diff.length > SpawnerService.CHANGE_PROPOSAL_DIFF_MAX_CHARS) {
+      diff = `${diff.slice(0, SpawnerService.CHANGE_PROPOSAL_DIFF_MAX_CHARS)}\n\n… (diff truncated for preview)`;
+      diffTruncated = true;
+    }
+    if (diffStat.length > SpawnerService.CHANGE_PROPOSAL_STAT_MAX_CHARS) {
+      diffStat = `${diffStat.slice(0, SpawnerService.CHANGE_PROPOSAL_STAT_MAX_CHARS)}\n… (stat truncated)`;
+    }
+    return {
+      diff: diff.trim() || "(no changes)",
+      diffStat: diffStat.trim() || "—",
+      changedFiles,
+      diffTruncated,
+      toRef
+    };
+  }
+
+  private async collectWorkingTreeDiffSinceRef(
+    workspacePath: string,
+    fromRef: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<{ diff: string; diffStat: string; changedFiles: string[]; diffTruncated: boolean; toRef: string }> {
+    const toRef = (await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername)).trim();
+    let workingDiff = await this.gitCommandCapture(["-C", workspacePath, "diff", fromRef], githubToken, gitUsername);
+    const untrackedDiff = await this.collectUntrackedFileDiff(workspacePath, githubToken, gitUsername);
+    let diff = [workingDiff, untrackedDiff].filter((chunk) => chunk.trim().length > 0).join("\n").trim();
+    let diffStat = await this.gitCommandCapture(["-C", workspacePath, "diff", fromRef, "--stat"], githubToken, gitUsername);
+    if (untrackedDiff.trim().length > 0) {
+      diffStat = [diffStat.trim(), "(untracked files included in diff)"].filter(Boolean).join("\n");
+    }
+    const namesFromDiff = await this.gitCommandCapture(["-C", workspacePath, "diff", fromRef, "--name-only"], githubToken, gitUsername);
+    const untrackedNames = await this.gitCommandCaptureRaw(
+      ["-C", workspacePath, "ls-files", "--others", "--exclude-standard", "-z"],
+      githubToken,
+      gitUsername
+    );
+    const untrackedList = untrackedNames.split("\0").filter((line) => line.length > 0);
+    const changedFiles = [...new Set([...namesFromDiff.split("\n").map((l) => l.trim()).filter(Boolean), ...untrackedList])];
+    let diffTruncated = false;
+    if (diff.length > SpawnerService.CHANGE_PROPOSAL_DIFF_MAX_CHARS) {
+      diff = `${diff.slice(0, SpawnerService.CHANGE_PROPOSAL_DIFF_MAX_CHARS)}\n\n… (diff truncated for preview)`;
+      diffTruncated = true;
+    }
+    if (diffStat.length > SpawnerService.CHANGE_PROPOSAL_STAT_MAX_CHARS) {
+      diffStat = `${diffStat.slice(0, SpawnerService.CHANGE_PROPOSAL_STAT_MAX_CHARS)}\n… (stat truncated)`;
+    }
+    return {
+      diff: diff.trim() || "(no changes)",
+      diffStat: diffStat.trim() || "—",
+      changedFiles,
+      diffTruncated,
+      toRef
+    };
+  }
+
+  async createBuildRunChangeProposal(task: Task, runId: string, workspacePath: string): Promise<void> {
+    const run = await this.taskStore.getRun(runId);
+    if (!run || run.taskId !== task.id) {
+      return;
+    }
+    const fromRef = run.changeProposalCheckpointRef?.trim();
+    if (!fromRef) {
+      return;
+    }
+
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const { githubToken, gitUsername } = runtimeCredentials;
+    const exists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      return;
+    }
+
+    const { diff, diffStat, changedFiles, diffTruncated, toRef } = await this.collectDiffRangeVersusHead(
+      workspacePath,
+      fromRef,
+      githubToken,
+      gitUsername
+    );
+
+    if (changedFiles.length === 0) {
+      await this.taskStore.appendLog(task.id, `Build run ${runId}: no changes since checkpoint; checkpoint not created.`);
+      return;
+    }
+
+    const createdAt = new Date().toISOString();
+    const untrackedPathsAtCheckpoint = Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : [];
+
+    const proposal = await this.taskStore.createChangeProposal({
+      id: nanoid(),
+      taskId: task.id,
+      sourceType: "build_run",
+      sourceId: runId,
+      status: "pending",
+      fromRef,
+      toRef,
+      diff,
+      diffStat,
+      changedFiles,
+      diffTruncated,
+      untrackedPathsAtCheckpoint,
+      createdAt
+    });
+
+    if (!proposal) {
+      await this.taskStore.appendLog(
+        task.id,
+        "Checkpoint for this build could not be created because another pending checkpoint already exists."
+      );
+    }
+  }
+
+  async beginInteractiveTerminalSession(taskId: string): Promise<{ sessionId: string }> {
+    const task = await this.taskStore.getTask(taskId);
+    if (!task) {
+      throw new Error("Task not found.");
+    }
+    if (task.status === "archived") {
+      throw new Error("Archived tasks are read-only.");
+    }
+    if (isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {
+      throw new Error(
+        `Terminal unavailable while the task is “${getTaskStatusLabel(task.status)}”. Finish or cancel that run first (one action at a time).`
+      );
+    }
+    if (await this.taskStore.hasPendingChangeProposal(taskId)) {
+      throw new Error("Apply or reject the pending checkpoint before opening a terminal.");
+    }
+    if (await this.taskStore.getActiveInteractiveSession(taskId)) {
+      throw new Error("An interactive terminal session is already active for this task.");
+    }
+
+    const workspacePath = this.resolveWorkspacePath(taskId);
+    const workspaceExists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!workspaceExists) {
+      throw new Error("No workspace folder on disk for this task yet.");
+    }
+
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const checkpointRef = (
+      await this.gitCommandCapture(
+        ["-C", workspacePath, "rev-parse", "HEAD"],
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername
+      )
+    ).trim();
+
+    const untrackedPathsAtCheckpoint = await this.listUntrackedRelativePaths(
+      workspacePath,
+      runtimeCredentials.githubToken,
+      runtimeCredentials.gitUsername
+    );
+
+    const sessionId = nanoid();
+    const startedAt = new Date().toISOString();
+    await this.taskStore.setActiveInteractiveSession(taskId, {
+      sessionId,
+      checkpointRef,
+      startedAt,
+      untrackedPathsAtCheckpoint
+    });
+    await this.taskStore.appendMessage(taskId, {
+      role: "system",
+      content: "Interactive terminal session started."
+    });
+    return { sessionId };
+  }
+
+  async endInteractiveTerminalSession(taskId: string, sessionId: string): Promise<void> {
+    const active = await this.taskStore.getActiveInteractiveSession(taskId);
+    if (!active || active.sessionId !== sessionId) {
+      return;
+    }
+
+    await this.taskStore.clearActiveInteractiveSession(taskId);
+
+    const task = await this.taskStore.getTask(taskId);
+    if (!task) {
+      return;
+    }
+
+    const workspacePath = this.resolveWorkspacePath(taskId);
+    const exists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      await this.taskStore.appendMessage(taskId, {
+        role: "system",
+        content: "Interactive terminal session ended."
+      });
+      return;
+    }
+
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const { githubToken, gitUsername } = runtimeCredentials;
+    const { diff, diffStat, changedFiles, diffTruncated, toRef } = await this.collectWorkingTreeDiffSinceRef(
+      workspacePath,
+      active.checkpointRef,
+      githubToken,
+      gitUsername
+    );
+
+    if (changedFiles.length === 0) {
+      await this.taskStore.appendMessage(taskId, {
+        role: "system",
+        content: "Interactive terminal session ended. No workspace changes were detected."
+      });
+      await this.taskStore.appendLog(taskId, "Terminal session ended with no workspace changes; checkpoint not created.");
+      return;
+    }
+
+    await this.taskStore.appendMessage(taskId, {
+      role: "system",
+      content: "Interactive terminal session ended. Review proposed changes below."
+    });
+
+    const proposal = await this.taskStore.createChangeProposal({
+      id: nanoid(),
+      taskId,
+      sourceType: "interactive_session",
+      sourceId: sessionId,
+      status: "pending",
+      fromRef: active.checkpointRef,
+      toRef,
+      diff,
+      diffStat,
+      changedFiles,
+      diffTruncated,
+      untrackedPathsAtCheckpoint: active.untrackedPathsAtCheckpoint,
+      createdAt: new Date().toISOString()
+    });
+
+    if (!proposal) {
+      await this.taskStore.appendLog(
+        taskId,
+        "Checkpoint for this terminal session could not be created because another pending checkpoint already exists."
+      );
+    }
+  }
+
+  /**
+   * After an interactive terminal session, changes are only in the working tree.
+   * On apply, mirror {@link finalizeBuild}: strip `.agentswarm`, stage all, and commit when needed.
+   */
+  private async commitWorkspaceAfterInteractiveCheckpointApply(
+    task: Task,
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<{ didCommit: boolean }> {
+    await rm(path.join(workspacePath, ".agentswarm"), { recursive: true, force: true }).catch(() => undefined);
+    await this.gitCommand(["-C", workspacePath, "add", "-A"], githubToken, gitUsername);
+
+    try {
+      await this.gitCommand(["-C", workspacePath, "diff", "--cached", "--quiet"], githubToken, gitUsername);
+      return { didCommit: false };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (!message.includes("exited with code 1")) {
+        throw error;
+      }
+    }
+
+    await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], githubToken, gitUsername);
+    const generatedSubject = await this.buildGeneratedCommitSubject(task, workspacePath, githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", generatedSubject], githubToken, gitUsername);
+    return { didCommit: true };
+  }
+
+  /**
+   * After a checkpoint revert (patch or ref restore), stage the repo and create a commit so HEAD matches the
+   * reverted tree — avoids leaving unstaged changes on the branch.
+   */
+  private async commitWorkspaceAfterCheckpointRevert(
+    task: Task,
+    workspacePath: string,
+    proposalId: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<{ didCommit: boolean }> {
+    await rm(path.join(workspacePath, ".agentswarm"), { recursive: true, force: true }).catch(() => undefined);
+    await this.gitCommand(["-C", workspacePath, "add", "-A"], githubToken, gitUsername);
+
+    try {
+      await this.gitCommand(["-C", workspacePath, "diff", "--cached", "--quiet"], githubToken, gitUsername);
+      return { didCommit: false };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (!message.includes("exited with code 1")) {
+        throw error;
+      }
+    }
+
+    await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], githubToken, gitUsername);
+    const shortId = proposalId.slice(0, 8);
+    const subject = this.toCommitSubject(`revert(agentswarm): undo checkpoint ${shortId}`);
+    await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", subject], githubToken, gitUsername);
+    return { didCommit: true };
+  }
+
+  /** After re-applying a reverted checkpoint, stage and commit so the branch stays clean (same pattern as revert). */
+  private async commitWorkspaceAfterCheckpointReapply(
+    workspacePath: string,
+    proposalId: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<{ didCommit: boolean }> {
+    await rm(path.join(workspacePath, ".agentswarm"), { recursive: true, force: true }).catch(() => undefined);
+    await this.gitCommand(["-C", workspacePath, "add", "-A"], githubToken, gitUsername);
+
+    try {
+      await this.gitCommand(["-C", workspacePath, "diff", "--cached", "--quiet"], githubToken, gitUsername);
+      return { didCommit: false };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (!message.includes("exited with code 1")) {
+        throw error;
+      }
+    }
+
+    await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], githubToken, gitUsername);
+    const shortId = proposalId.slice(0, 8);
+    const subject = this.toCommitSubject(`reapply(agentswarm): checkpoint ${shortId}`);
+    await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", subject], githubToken, gitUsername);
+    return { didCommit: true };
+  }
+
+  /**
+   * After re-apply, either we created a commit or the tree already matched HEAD. If there is still a diff vs HEAD,
+   * refuse to mark applied (avoids silent dirty workspaces).
+   */
+  private async assertReapplyWorkspaceCleanOrCommitted(
+    workspacePath: string,
+    didCommit: boolean,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    if (didCommit) {
+      return { ok: true };
+    }
+    try {
+      await this.gitCommand(["-C", workspacePath, "diff", "HEAD", "--quiet"], githubToken, gitUsername);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (!message.includes("exited with code 1")) {
+        throw error;
+      }
+      return {
+        ok: false,
+        message:
+          "Re-apply left the branch dirty (uncommitted changes vs HEAD). Checkpoint not marked applied; fix git state or try again."
+      };
+    }
+  }
+
+  async applyChangeProposal(task: Task, proposalId: string): Promise<{ ok: true } | { ok: false; message: string }> {
+    const proposal = await this.taskStore.getChangeProposal(proposalId);
+    if (!proposal || proposal.taskId !== task.id) {
+      return { ok: false, message: "Proposal not found." };
+    }
+    const checkpointBlocked = getCheckpointMutationBlockedReason(task.status);
+    if (checkpointBlocked) {
+      return { ok: false, message: checkpointBlocked };
+    }
+    if (proposal.status !== "pending" && proposal.status !== "reverted") {
+      return { ok: false, message: "Checkpoint must be pending or reverted to apply." };
+    }
+
+    const isReapply = proposal.status === "reverted";
+    if (isReapply) {
+      if (proposal.diffTruncated) {
+        return { ok: false, message: "Cannot re-apply: diff was truncated when the checkpoint was saved." };
+      }
+      const diffBody = proposal.diff.trim();
+      if (!diffBody || diffBody === "(no changes)") {
+        return { ok: false, message: "Cannot re-apply: no stored diff." };
+      }
+      const workspacePath = this.resolveWorkspacePath(task.id);
+      const workspaceExists = await access(workspacePath)
+        .then(() => true)
+        .catch(() => false);
+      if (!workspaceExists) {
+        return { ok: false, message: "No local workspace exists for this task." };
+      }
+      const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+      const { githubToken, gitUsername } = runtimeCredentials;
+      try {
+        await this.reapplyRevertedCheckpointToWorkspace(proposal, workspacePath, githubToken, gitUsername);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        return { ok: false, message: `Could not re-apply checkpoint: ${detail}` };
+      }
+    }
+
+    if (proposal.sourceType === "interactive_session") {
+      const workspacePath = this.resolveWorkspacePath(task.id);
+      const workspaceExists = await access(workspacePath)
+        .then(() => true)
+        .catch(() => false);
+      if (!workspaceExists) {
+        return { ok: false, message: "No local workspace exists for this task." };
+      }
+      const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+      const { githubToken, gitUsername } = runtimeCredentials;
+      try {
+        const { didCommit } = isReapply
+          ? await this.commitWorkspaceAfterCheckpointReapply(workspacePath, proposalId, githubToken, gitUsername)
+          : await this.commitWorkspaceAfterInteractiveCheckpointApply(
+              task,
+              workspacePath,
+              githubToken,
+              gitUsername
+            );
+        if (isReapply) {
+          const clean = await this.assertReapplyWorkspaceCleanOrCommitted(
+            workspacePath,
+            didCommit,
+            githubToken,
+            gitUsername
+          );
+          if (!clean.ok) {
+            return { ok: false, message: clean.message };
+          }
+        }
+        await this.taskStore.updateChangeProposalStatus(proposalId, "applied", task.id);
+        await this.taskStore.appendLog(
+          task.id,
+          isReapply
+            ? didCommit
+              ? `Checkpoint ${proposalId} re-applied; committed for a clean branch.`
+              : `Checkpoint ${proposalId} re-applied; tree already matched HEAD after staging.`
+            : didCommit
+              ? `Checkpoint ${proposalId} applied; created local commit (same flow as after a build).`
+              : `Checkpoint ${proposalId} applied; nothing new to commit (tree already matched HEAD after staging).`
+        );
+        return { ok: true };
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        return {
+          ok: false,
+          message: `Could not commit workspace when applying checkpoint: ${detail}${isReapply ? " Checkpoint not marked applied." : ""}`
+        };
+      }
+    }
+
+    if (isReapply && proposal.sourceType === "build_run") {
+      const workspacePath = this.resolveWorkspacePath(task.id);
+      const workspaceExists = await access(workspacePath)
+        .then(() => true)
+        .catch(() => false);
+      if (!workspaceExists) {
+        return { ok: false, message: "No local workspace exists for this task." };
+      }
+      const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+      const { githubToken, gitUsername } = runtimeCredentials;
+      try {
+        const { didCommit } = await this.commitWorkspaceAfterCheckpointReapply(
+          workspacePath,
+          proposalId,
+          githubToken,
+          gitUsername
+        );
+        const clean = await this.assertReapplyWorkspaceCleanOrCommitted(
+          workspacePath,
+          didCommit,
+          githubToken,
+          gitUsername
+        );
+        if (!clean.ok) {
+          return { ok: false, message: clean.message };
+        }
+        await this.taskStore.updateChangeProposalStatus(proposalId, "applied", task.id);
+        await this.taskStore.appendLog(
+          task.id,
+          didCommit
+            ? `Checkpoint ${proposalId} re-applied; committed for a clean branch.`
+            : `Checkpoint ${proposalId} re-applied; tree already matched HEAD after staging.`
+        );
+        return { ok: true };
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        return {
+          ok: false,
+          message: `Re-applied changes but committing failed: ${detail}. Checkpoint not marked applied.`
+        };
+      }
+    }
+
+    await this.taskStore.updateChangeProposalStatus(proposalId, "applied", task.id);
+    await this.taskStore.appendLog(
+      task.id,
+      isReapply
+        ? `Checkpoint ${proposalId} re-applied (changes kept in workspace).`
+        : `Checkpoint ${proposalId} applied (changes kept in workspace).`
+    );
+    return { ok: true };
+  }
+
+  /** Alias for `applyChangeProposal` (same HTTP route kept for compatibility). */
+  async acceptChangeProposal(task: Task, proposalId: string): Promise<{ ok: true } | { ok: false; message: string }> {
+    return this.applyChangeProposal(task, proposalId);
+  }
+
+  private safeSortedCheckpointPaths(changedFiles: string[]): string[] {
+    const unique = [
+      ...new Set(
+        changedFiles
+          .map((p) => p.replace(/\\/g, "/").trim())
+          .filter((rel) => rel.length > 0 && !path.isAbsolute(rel) && !rel.split("/").some((s) => s === ".."))
+      )
+    ];
+    unique.sort((a, b) => b.length - a.length);
+    return unique;
+  }
+
+  /**
+   * When `git apply -R` fails (tree moved on since the patch was saved), restore each path from `fromRef`.
+   * Matches reject semantics for “new” paths: removes files that did not exist at `fromRef`.
+   */
+  private async revertCheckpointPathsFromRef(
+    workspacePath: string,
+    fromRef: string,
+    changedFiles: string[],
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<void> {
+    await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "--verify", fromRef], githubToken, gitUsername);
+
+    const unique = this.safeSortedCheckpointPaths(changedFiles);
+    if (unique.length === 0) {
+      throw new Error("Checkpoint has no safe paths to restore from the base ref.");
+    }
+
+    try {
+      await this.gitCommand(
+        ["-C", workspacePath, "restore", `--source=${fromRef}`, "--worktree", "--", ...unique],
+        githubToken,
+        gitUsername
+      );
+    } catch {
+      await this.gitCommand(["-C", workspacePath, "checkout", fromRef, "--", ...unique], githubToken, gitUsername);
+      await this.gitCommand(["-C", workspacePath, "reset", "HEAD", "--", ...unique], githubToken, gitUsername);
+    }
+  }
+
+  /** Opposite of {@link revertCheckpointPathsFromRef}: bring paths back to `toRef` (checkpoint “after” state). */
+  private async reapplyCheckpointPathsFromToRef(
+    workspacePath: string,
+    toRef: string,
+    changedFiles: string[],
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<void> {
+    await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "--verify", toRef], githubToken, gitUsername);
+
+    const unique = this.safeSortedCheckpointPaths(changedFiles);
+    if (unique.length === 0) {
+      throw new Error("Checkpoint has no safe paths to restore from the end ref.");
+    }
+
+    try {
+      await this.gitCommand(
+        ["-C", workspacePath, "restore", `--source=${toRef}`, "--worktree", "--", ...unique],
+        githubToken,
+        gitUsername
+      );
+    } catch {
+      await this.gitCommand(["-C", workspacePath, "checkout", toRef, "--", ...unique], githubToken, gitUsername);
+      await this.gitCommand(["-C", workspacePath, "reset", "HEAD", "--", ...unique], githubToken, gitUsername);
+    }
+  }
+
+  /**
+   * Re-apply a reverted checkpoint: try forward `git apply` of the saved diff, else restore paths from `toRef`.
+   */
+  private async reapplyRevertedCheckpointToWorkspace(
+    proposal: TaskChangeProposal,
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<void> {
+    const diffBody = proposal.diff.trim();
+    let patchDir: string | null = null;
+    try {
+      patchDir = await mkdtemp(path.join(tmpdir(), "agentswarm-reapply-"));
+      const patchPath = path.join(patchDir, "checkpoint.patch");
+      await writeFile(patchPath, `${diffBody}\n`, "utf8");
+      await this.gitCommand(["-C", workspacePath, "apply", "--check", patchPath], githubToken, gitUsername);
+      await this.gitCommand(["-C", workspacePath, "apply", patchPath], githubToken, gitUsername);
+    } catch {
+      await this.reapplyCheckpointPathsFromToRef(
+        workspacePath,
+        proposal.toRef,
+        proposal.changedFiles,
+        githubToken,
+        gitUsername
+      );
+    } finally {
+      if (patchDir) {
+        await rm(patchDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
+  }
+
+  async revertChangeProposal(task: Task, proposalId: string): Promise<{ ok: true } | { ok: false; message: string }> {
+    const proposal = await this.taskStore.getChangeProposal(proposalId);
+    if (!proposal || proposal.taskId !== task.id) {
+      return { ok: false, message: "Proposal not found." };
+    }
+    const checkpointBlocked = getCheckpointMutationBlockedReason(task.status);
+    if (checkpointBlocked) {
+      return { ok: false, message: checkpointBlocked };
+    }
+    if (proposal.status !== "applied") {
+      return { ok: false, message: "Only an applied checkpoint can be reverted." };
+    }
+    const latestAppliedId = await this.taskStore.getLatestAppliedChangeProposalId(task.id);
+    if (latestAppliedId !== proposalId) {
+      return {
+        ok: false,
+        message: "Revert checkpoints in order: undo the most recently applied checkpoint first."
+      };
+    }
+    if (proposal.diffTruncated) {
+      return { ok: false, message: "Cannot revert: diff was truncated when the checkpoint was saved." };
+    }
+    const diffBody = proposal.diff.trim();
+    if (!diffBody || diffBody === "(no changes)") {
+      return { ok: false, message: "Cannot revert: no patch was stored for this checkpoint." };
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const workspaceExists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!workspaceExists) {
+      return { ok: false, message: "No local workspace exists for this task." };
+    }
+
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const { githubToken, gitUsername } = runtimeCredentials;
+
+    let usedPatchReverse = false;
+    let patchError: string | null = null;
+    let patchDir: string | null = null;
+    try {
+      patchDir = await mkdtemp(path.join(tmpdir(), "agentswarm-revert-"));
+      const patchPath = path.join(patchDir, "checkpoint.patch");
+      await writeFile(patchPath, `${diffBody}\n`, "utf8");
+      await this.gitCommand(["-C", workspacePath, "apply", "--check", patchPath], githubToken, gitUsername);
+      await this.gitCommand(["-C", workspacePath, "apply", "-R", patchPath], githubToken, gitUsername);
+      usedPatchReverse = true;
+    } catch (err) {
+      patchError = err instanceof Error ? err.message : String(err);
+      try {
+        await this.revertCheckpointPathsFromRef(
+          workspacePath,
+          proposal.fromRef,
+          proposal.changedFiles,
+          githubToken,
+          gitUsername
+        );
+      } catch (fallbackErr) {
+        const fb = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+        return {
+          ok: false,
+          message: `Revert failed: ${patchError}. Restoring files from checkpoint base also failed: ${fb}`
+        };
+      }
+    } finally {
+      if (patchDir) {
+        await rm(patchDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
+
+    try {
+      const { didCommit } = await this.commitWorkspaceAfterCheckpointRevert(
+        task,
+        workspacePath,
+        proposalId,
+        githubToken,
+        gitUsername
+      );
+      const updated = await this.taskStore.markCheckpointReverted(proposalId, task.id);
+      if (!updated) {
+        return { ok: false, message: "Could not record revert in store." };
+      }
+      const how = usedPatchReverse
+        ? "stored diff"
+        : `restored ${proposal.changedFiles.length} path(s) from checkpoint base`;
+      await this.taskStore.appendLog(
+        task.id,
+        didCommit
+          ? `Checkpoint ${proposalId} reverted (${how}); committed so the branch has no unstaged revert changes.`
+          : `Checkpoint ${proposalId} reverted (${how}); index already matched HEAD after staging (no new commit).`
+      );
+      return { ok: true };
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        message: `Revert updated the working tree but committing a clean snapshot failed: ${detail}. Checkpoint was not marked reverted; fix git state or retry.`
+      };
+    }
+  }
+
+  async rejectChangeProposal(task: Task, proposalId: string): Promise<{ ok: true } | { ok: false; message: string }> {
+    const proposal = await this.taskStore.getChangeProposal(proposalId);
+    if (!proposal || proposal.taskId !== task.id) {
+      return { ok: false, message: "Proposal not found." };
+    }
+    if (proposal.status !== "pending") {
+      return { ok: false, message: "Proposal is not pending." };
+    }
+    const checkpointBlocked = getCheckpointMutationBlockedReason(task.status);
+    if (checkpointBlocked) {
+      return { ok: false, message: checkpointBlocked };
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const workspaceExists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!workspaceExists) {
+      return { ok: false, message: "No local workspace exists for this task." };
+    }
+
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const { githubToken, gitUsername } = runtimeCredentials;
+
+    await this.gitCommand(["-C", workspacePath, "reset", "--hard", proposal.fromRef], githubToken, gitUsername);
+
+    const beforeUntracked = new Set(proposal.untrackedPathsAtCheckpoint ?? []);
+    const currentUntracked = await this.listUntrackedRelativePaths(workspacePath, githubToken, gitUsername);
+    const toRemove = currentUntracked.filter((rel) => !beforeUntracked.has(rel));
+    toRemove.sort((a, b) => b.length - a.length);
+    for (const rel of toRemove) {
+      const fullPath = resolveSafeWorkspaceFilePath(workspacePath, rel);
+      if (fullPath) {
+        await rm(fullPath, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
+
+    await this.taskStore.updateChangeProposalStatus(proposalId, "rejected", task.id);
+    await this.taskStore.appendLog(
+      task.id,
+      `Checkpoint ${proposalId} rejected; reset to ${proposal.fromRef.slice(0, 7)}… and removed ${toRemove.length} new untracked path(s).`
+    );
+    return { ok: true };
   }
 
   async cancelTask(taskId: string): Promise<boolean> {
@@ -1817,6 +2742,25 @@ esac
         throw new CancelledTaskError();
       }
 
+      if (runId && action === "build") {
+        const checkpointRef = (
+          await this.gitCommandCapture(
+            ["-C", workspace.workspacePath, "rev-parse", "HEAD"],
+            runtimeCredentials.githubToken,
+            runtimeCredentials.gitUsername
+          )
+        ).trim();
+        const changeProposalUntrackedPaths = await this.listUntrackedRelativePaths(
+          workspace.workspacePath,
+          runtimeCredentials.githubToken,
+          runtimeCredentials.gitUsername
+        );
+        await this.taskStore.updateRun(runId, {
+          changeProposalCheckpointRef: checkpointRef,
+          changeProposalUntrackedPaths
+        });
+      }
+
       const containerName = `agentswarm-task-${task.id}`;
       const workspaceMountMode = action === "ask" ? "ro" : "rw";
       if (workspaceMountMode === "ro") {
@@ -1988,6 +2932,9 @@ esac
             summary: runtimeResult.summaryMarkdown.trim() || "Build completed locally. Review the diff and push when ready.",
             tokenUsage: normalizeTokenUsage(runtimeResult.metadata?.tokenUsage)
           });
+        }
+        if (runId && action === "build") {
+          await this.createBuildRunChangeProposal(task, runId, workspace.workspacePath);
         }
       }
 
