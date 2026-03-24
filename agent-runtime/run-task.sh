@@ -53,6 +53,7 @@ if [[ -z "$TASK_PROMPT" ]]; then
 fi
 
 export HOME=/root
+export GIT_OPTIONAL_LOCKS=0
 mkdir -p "${HOME}/.codex"
 if [[ -n "$CODEX_CONFIG_CONTENT" ]]; then
   printf '%s\n' "$CODEX_CONFIG_CONTENT" > "${HOME}/.codex/config.toml"

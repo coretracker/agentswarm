@@ -65,6 +65,7 @@ import { useTaskRuns } from "../src/hooks/useTaskRuns";
 import { useTaskChangeProposals } from "../src/hooks/useTaskChangeProposals";
 import { normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
 import { estimateCost, formatCost } from "../src/utils/pricing";
+import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { useAuth } from "./auth-provider";
 import { TaskDiffOpenAiPanel } from "./task-diff-openai-panel";
 
@@ -182,6 +183,21 @@ function checkpointStatusLabel(status: TaskChangeProposal["status"]): string {
       return "Reverted";
     default:
       return status;
+  }
+}
+
+function checkpointStatusColor(status: TaskChangeProposal["status"]): string {
+  switch (status) {
+    case "pending":
+      return "orange";
+    case "applied":
+      return "green";
+    case "reverted":
+      return "blue";
+    case "rejected":
+      return "red";
+    default:
+      return "default";
   }
 }
 
@@ -389,6 +405,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const router = useRouter();
   const { can, canAll } = useAuth();
   const { task, setTask, loading } = useTask(taskId);
+  const hadLoadedTaskRef = useRef(false);
   const { messages: taskMessages, loading: messagesLoading } = useTaskMessages(taskId);
   const { runs: taskRuns, loading: runsLoading } = useTaskRuns(taskId);
   const { proposals: changeProposals, refetch: refetchChangeProposals } = useTaskChangeProposals(taskId);
@@ -460,6 +477,23 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [spawnModalOpen, setSpawnModalOpen] = useState(false);
   const [spawningId, setSpawningId] = useState<string | null>(null);
   const [interactiveTerminalStatus, setInteractiveTerminalStatus] = useState<TaskInteractiveTerminalStatus | null>(null);
+  const [redirectingToTaskList, setRedirectingToTaskList] = useState(false);
+
+  useEffect(() => {
+    if (task) {
+      hadLoadedTaskRef.current = true;
+      if (redirectingToTaskList) {
+        setRedirectingToTaskList(false);
+      }
+    }
+  }, [task, redirectingToTaskList]);
+
+  useEffect(() => {
+    if (!loading && !task && hadLoadedTaskRef.current) {
+      setRedirectingToTaskList(true);
+      router.replace("/tasks");
+    }
+  }, [loading, task, router]);
 
   const taskType = task?.taskType ?? "build";
   const isPlanTask = taskType === "plan";
@@ -947,6 +981,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
   };
 
+  if (redirectingToTaskList) {
+    return (
+      <Flex justify="center" align="center" style={{ minHeight: 240 }}>
+        <Spin size="large" tip="Returning to tasks..." />
+      </Flex>
+    );
+  }
+
   if (!loading && !task) {
     return (
       <Alert
@@ -1036,42 +1078,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
     return "Wait for the current run to finish before sending another instruction.";
   })();
-  const duplicatedRunSummaries = new Set(
-    taskRuns
-      .filter((entry) => entry.summary?.trim())
-      .map((entry) => `${entry.action}:${entry.summary?.trim()}`)
+  const chatTimeline = useMemo(
+    () =>
+      buildTaskHistoryEntries({
+        messages: taskMessages,
+        runs: taskRuns,
+        proposals: changeProposals,
+        interactiveTerminalRunning
+      }),
+    [changeProposals, interactiveTerminalRunning, taskMessages, taskRuns]
   );
-  const chatTimeline = [
-    ...taskMessages
-      .filter(
-        (entry) =>
-          !(entry.role === "assistant" && entry.action && duplicatedRunSummaries.has(`${entry.action}:${entry.content.trim()}`))
-      )
-      .map((entry) => ({
-        key: `message-${entry.id}`,
-        kind: "message" as const,
-        timestamp: entry.createdAt,
-        message: entry
-      })),
-    ...taskRuns.map((entry) => ({
-      key: `run-${entry.id}`,
-      kind: "run" as const,
-      timestamp: entry.startedAt,
-      run: entry
-    })),
-    ...changeProposals.map((entry) => ({
-      key: `proposal-${entry.id}`,
-      kind: "proposal" as const,
-      timestamp: entry.createdAt,
-      proposal: entry
-    }))
-  ].sort((left, right) => {
-    if (left.timestamp === right.timestamp) {
-      return left.key.localeCompare(right.key);
-    }
-
-    return left.timestamp.localeCompare(right.timestamp);
-  });
   const openFollowUp = (mode: FollowUpMode) => {
     followUpForm.setFieldsValue({ title: "", prompt: "", taskType: "build" });
     setFollowUpMode(mode);
@@ -1233,8 +1249,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setSubmitting("delete");
     try {
       await api.deleteTask(task.id);
+      setRedirectingToTaskList(true);
       messageApi.success("Task deleted");
-      router.push("/tasks");
+      router.replace("/tasks");
     } finally {
       setSubmitting(null);
     }
@@ -2020,492 +2037,618 @@ const contextContent = (
     />
   ) : null;
 
+  const syncTaskAfterCheckpointMutation = (updatedTask: Task) => {
+    setTask((current) =>
+      current
+        ? {
+            ...updatedTask,
+            logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+          }
+        : updatedTask
+    );
+  };
+
+  const handleApplyCheckpoint = async (proposal: TaskChangeProposal, canReapplyReverted: boolean) => {
+    if (!task) {
+      return;
+    }
+
+    setProposalBusy({ id: proposal.id, kind: "apply" });
+    try {
+      const updated = await api.applyTaskChangeProposal(task.id, proposal.id);
+      syncTaskAfterCheckpointMutation(updated);
+      messageApi.success(canReapplyReverted ? "Checkpoint re-applied" : "Checkpoint applied");
+      setLiveDiffRefreshKey((k) => k + 1);
+      refetchChangeProposals();
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Could not apply checkpoint");
+    } finally {
+      setProposalBusy(null);
+    }
+  };
+
+  const handleRejectCheckpoint = (proposal: TaskChangeProposal) => {
+    if (!task) {
+      return;
+    }
+
+    Modal.confirm({
+      title: "Reject this checkpoint?",
+      content:
+        "Tracked files are reset to the checkpoint commit (git reset --hard). New untracked files added since that checkpoint are removed; untracked files you already had are kept.",
+      okText: "Reject and reset",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setProposalBusy({ id: proposal.id, kind: "reject" });
+        try {
+          const updated = await api.rejectTaskChangeProposal(task.id, proposal.id);
+          syncTaskAfterCheckpointMutation(updated);
+          messageApi.success("Checkpoint rejected; workspace reset.");
+          setLiveDiffRefreshKey((k) => k + 1);
+          refetchChangeProposals();
+        } catch (error) {
+          messageApi.error(error instanceof Error ? error.message : "Could not reject checkpoint");
+        } finally {
+          setProposalBusy(null);
+        }
+      }
+    });
+  };
+
+  const handleRevertCheckpoint = (proposal: TaskChangeProposal) => {
+    if (!task) {
+      return;
+    }
+
+    Modal.confirm({
+      title: "Revert this applied checkpoint?",
+      content:
+        "Undoes the checkpoint (patch reverse or restore from base), then stages and creates a local commit so the branch stays clean with no unstaged revert changes. If that no longer applies because you committed or edited files, paths are restored from the checkpoint base instead. Revert newer checkpoints first.",
+      okText: "Revert",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setProposalBusy({ id: proposal.id, kind: "revert" });
+        try {
+          const updated = await api.revertTaskChangeProposal(task.id, proposal.id);
+          syncTaskAfterCheckpointMutation(updated);
+          messageApi.success("Checkpoint reverted");
+          setLiveDiffRefreshKey((k) => k + 1);
+          refetchChangeProposals();
+        } catch (error) {
+          messageApi.error(error instanceof Error ? error.message : "Could not revert checkpoint");
+        } finally {
+          setProposalBusy(null);
+        }
+      }
+    });
+  };
+
+  const getNormalizedRunSummary = (run: TaskRun): string | null =>
+    run.status === "failed" && run.errorMessage
+      ? (() => {
+          const summary = run.summary?.trim();
+          const errorMessage = run.errorMessage.trim();
+          if (!summary) {
+            return null;
+          }
+          if (summary === errorMessage || summary === `Task failed: ${errorMessage}`) {
+            return null;
+          }
+          return summary;
+        })()
+      : run.summary?.trim() || null;
+
+  const renderRunLogsPanel = (run: TaskRun) => (
+    <div
+      style={{
+        padding: "14px 16px",
+        background: "#0b0f14",
+        borderRadius: 8
+      }}
+    >
+      <pre
+        style={{
+          margin: 0,
+          color: "#d8e1ee",
+          fontFamily: "\"SFMono-Regular\", Consolas, monospace",
+          fontSize: 12,
+          lineHeight: 1.65,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word"
+        }}
+      >
+        {run.logs.join("\n") || "No logs captured for this run."}
+      </pre>
+    </div>
+  );
+
+  const renderRunLogsCollapse = (run: TaskRun) => (
+    <Collapse
+      size="small"
+      activeKey={expandedRunKeys.includes(run.id) ? [run.id] : []}
+      onChange={(keys) =>
+        setExpandedRunKeys((current) => {
+          const isOpen = Array.isArray(keys) ? keys.length > 0 : Boolean(keys);
+          return isOpen ? (current.includes(run.id) ? current : [...current, run.id]) : current.filter((key) => key !== run.id);
+        })
+      }
+      items={[
+        {
+          key: run.id,
+          label: `Logs${run.logs.length > 0 ? ` (${run.logs.length})` : ""}`,
+          children: renderRunLogsPanel(run)
+        }
+      ]}
+    />
+  );
+
+  const renderRunErrorNotice = (run: TaskRun) =>
+    run.errorMessage ? (
+      <div
+        style={{
+          marginBottom: 12,
+          padding: "10px 12px",
+          borderRadius: 8,
+          background: "rgba(201,92,92,0.08)",
+          border: "1px solid rgba(201,92,92,0.18)"
+        }}
+      >
+        <Typography.Text strong type="danger">
+          Run failed
+        </Typography.Text>
+        <Typography.Paragraph type="danger" style={{ margin: "4px 0 0", whiteSpace: "pre-wrap" }}>
+          {run.errorMessage}
+        </Typography.Paragraph>
+      </div>
+    ) : null;
+
+  const renderCheckpointDiffSection = (proposal: TaskChangeProposal, keyPrefix: string) => {
+    const canRevertApplied = proposal.status === "applied" && !proposal.diffTruncated;
+    const canRevertThisCheckpointNow = canRevertApplied && proposal.id === latestAppliedChangeProposalId;
+    const diffTrimmed = proposal.diff.trim();
+    const canReapplyReverted =
+      proposal.status === "reverted" &&
+      !proposal.diffTruncated &&
+      diffTrimmed.length > 0 &&
+      diffTrimmed !== "(no changes)";
+    const showCheckpointApply = (proposal.status === "pending" || canReapplyReverted) && canEditTask && task && !isArchived;
+    const blockOlderCheckpointWhilePending = !!pendingChangeProposal && proposal.id !== pendingChangeProposal.id;
+    const olderCheckpointPendingTooltip = "Apply or reject the current pending checkpoint first.";
+
+    return (
+      <Collapse
+        size="small"
+        defaultActiveKey={[]}
+        items={[
+          {
+            key: `${keyPrefix}-diff`,
+            label: `Diff${proposal.changedFiles.length > 0 ? ` (${proposal.changedFiles.length})` : ""}`,
+            collapsible: blockOlderCheckpointWhilePending ? "disabled" : undefined,
+            extra:
+              canEditTask && task && !isArchived && (showCheckpointApply || canRevertApplied) ? (
+                <span onClick={(event) => event.stopPropagation()}>
+                  <Space size={4} wrap>
+                    {showCheckpointApply ? (
+                      <>
+                        <Tooltip
+                          title={
+                            blockOlderCheckpointWhilePending
+                              ? olderCheckpointPendingTooltip
+                              : checkpointDiffActionsBlocked
+                                ? checkpointDiffActionsBlockedReason
+                                : undefined
+                          }
+                        >
+                          <span>
+                            <Button
+                              type="primary"
+                              size="small"
+                              disabled={checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending}
+                              loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "apply"}
+                              onClick={() => void handleApplyCheckpoint(proposal, canReapplyReverted)}
+                            >
+                              {canReapplyReverted ? "Apply again" : "Apply"}
+                            </Button>
+                          </span>
+                        </Tooltip>
+                        {proposal.status === "pending" ? (
+                          <Tooltip
+                            title={
+                              blockOlderCheckpointWhilePending
+                                ? olderCheckpointPendingTooltip
+                                : checkpointDiffActionsBlocked
+                                  ? checkpointDiffActionsBlockedReason
+                                  : undefined
+                            }
+                          >
+                            <span>
+                              <Button
+                                danger
+                                size="small"
+                                disabled={checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending}
+                                loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "reject"}
+                                onClick={() => handleRejectCheckpoint(proposal)}
+                              >
+                                Reject
+                              </Button>
+                            </span>
+                          </Tooltip>
+                        ) : null}
+                      </>
+                    ) : null}
+                    {canRevertApplied ? (
+                      <Tooltip
+                        title={
+                          blockOlderCheckpointWhilePending
+                            ? olderCheckpointPendingTooltip
+                            : checkpointDiffActionsBlocked
+                              ? checkpointDiffActionsBlockedReason ?? undefined
+                              : canRevertThisCheckpointNow
+                                ? undefined
+                                : "A newer applied checkpoint must be reverted first. Undo in reverse apply order."
+                        }
+                      >
+                        <span>
+                          <Button
+                            size="small"
+                            disabled={checkpointDiffActionsBlocked || !canRevertThisCheckpointNow || blockOlderCheckpointWhilePending}
+                            loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "revert"}
+                            onClick={() => {
+                              if (checkpointDiffActionsBlocked || !canRevertThisCheckpointNow || blockOlderCheckpointWhilePending) {
+                                return;
+                              }
+                              handleRevertCheckpoint(proposal);
+                            }}
+                          >
+                            Revert
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    ) : null}
+                  </Space>
+                </span>
+              ) : null,
+            children: renderParsedDiff(proposal.diff, "No diff text.", { collapseFiles: true })
+          }
+        ]}
+      />
+    );
+  };
+
+  const renderRawMessageEntry = (entryKey: string, entryMessage: TaskMessage) => {
+    if (entryMessage.role === "system") {
+      return (
+        <Flex key={entryKey}>
+          <Card
+            size="small"
+            bodyStyle={{
+              background: "rgba(107,143,163,0.12)",
+              padding: "10px 12px"
+            }}
+            style={{ width: "100%" }}
+          >
+            <Flex vertical gap={4}>
+              <Flex align="baseline" gap={8} wrap="wrap">
+                <Tag color="default" style={{ marginInlineEnd: 0 }}>
+                  system
+                </Tag>
+                <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
+              </Flex>
+              <Typography.Text style={{ whiteSpace: "pre-wrap" }}>{entryMessage.content}</Typography.Text>
+            </Flex>
+          </Card>
+        </Flex>
+      );
+    }
+
+    const messageColor =
+      entryMessage.role === "user"
+        ? "rgba(28,128,87,0.08)"
+        : entryMessage.role === "assistant"
+          ? "#ffffff"
+          : "rgba(107,143,163,0.08)";
+    const isCompactMessage = entryMessage.role === "user";
+
+    return (
+      <Flex key={entryKey}>
+        <Card
+          size="small"
+          bodyStyle={{
+            background: messageColor,
+            padding: isCompactMessage ? "10px 12px" : undefined
+          }}
+          style={{ width: "100%" }}
+        >
+          {isCompactMessage ? (
+            <Flex vertical gap={4}>
+              <Flex align="baseline" gap={8} wrap="wrap">
+                <Tag color="green" style={{ marginInlineEnd: 0 }}>
+                  {entryMessage.role}
+                </Tag>
+                {entryMessage.action ? <Tag style={{ marginInlineEnd: 0 }}>{taskActionLabel[entryMessage.action]}</Tag> : null}
+                <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
+              </Flex>
+              <div>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                  {entryMessage.content}
+                </ReactMarkdown>
+              </div>
+            </Flex>
+          ) : (
+            <>
+              <Flex justify="space-between" align="center" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
+                <Space wrap size={8}>
+                  <Tag color="blue">assistant</Tag>
+                  {entryMessage.action ? <Tag>{taskActionLabel[entryMessage.action]}</Tag> : null}
+                </Space>
+                <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
+              </Flex>
+              <ExpandableMessageContent fadeColor={messageColor}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                  {entryMessage.content}
+                </ReactMarkdown>
+              </ExpandableMessageContent>
+            </>
+          )}
+        </Card>
+      </Flex>
+    );
+  };
+
+  const renderRawProposalEntry = (entryKey: string, proposal: TaskChangeProposal) => {
+    return (
+      <Flex key={entryKey}>
+        <Card size="small" style={{ width: "100%", borderColor: proposal.status === "pending" ? "rgba(250,173,20,0.45)" : undefined }}>
+          <Flex justify="space-between" align="flex-start" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
+            <Space wrap size={8}>
+              <Typography.Text strong>Checkpoint</Typography.Text>
+              <Tag>{changeProposalSourceLabel(proposal.sourceType)}</Tag>
+              <Tag color={checkpointStatusColor(proposal.status)}>{checkpointStatusLabel(proposal.status)}</Tag>
+              {proposal.diffTruncated ? <Tag>Truncated preview</Tag> : null}
+            </Space>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {dayjs(proposal.createdAt).format("YYYY-MM-DD HH:mm:ss")}
+            </Typography.Text>
+          </Flex>
+          {renderCheckpointDiffSection(proposal, entryKey)}
+        </Card>
+      </Flex>
+    );
+  };
+
+  const renderRawRunEntry = (entryKey: string, run: TaskRun) => {
+    const normalizedRunSummary = getNormalizedRunSummary(run);
+    const isCollapsibleSummaryRun = run.action === "plan" || run.action === "iterate" || run.action === "build";
+    const summaryCollapseItems = normalizedRunSummary
+      ? [
+          {
+            key: `${run.id}-summary`,
+            label: run.action === "build" ? "Implementation Summary" : run.action === "plan" || run.action === "iterate" ? "Plan" : "Summary",
+            extra:
+              isPlanTask && (run.action === "plan" || run.action === "iterate") ? (
+                <Button
+                  size="small"
+                  type="link"
+                  onClick={async (event) => {
+                    event.stopPropagation();
+                    if (!task || task.builtPlanRunIds.includes(run.id)) {
+                      return;
+                    }
+
+                    setSubmitting("build");
+                    setBuildingFromRunId(run.id);
+                    try {
+                      const updatedTask = await api.buildTaskFromRun(task.id, run.id);
+                      setTask((current) =>
+                        current
+                          ? {
+                              ...current,
+                              ...updatedTask,
+                              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+                            }
+                          : updatedTask
+                      );
+                      messageApi.success("Build started from selected plan");
+                    } catch (error) {
+                      const nextMessage = error instanceof Error ? error.message : "Build could not be started";
+                      messageApi.error(nextMessage);
+                    } finally {
+                      setBuildingFromRunId(null);
+                      setSubmitting(null);
+                    }
+                  }}
+                  disabled={
+                    !canEditTask ||
+                    !task ||
+                    task.builtPlanRunIds.includes(run.id) ||
+                    isQueued ||
+                    isActive ||
+                    !!pendingChangeProposal ||
+                    task.status === "accepted" ||
+                    task.status === "archived"
+                  }
+                  loading={submitting === "build" && buildingFromRunId === run.id}
+                >
+                  {task?.builtPlanRunIds.includes(run.id) ? "Built" : "Build"}
+                </Button>
+              ) : null,
+            children: (
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                {normalizedRunSummary}
+              </ReactMarkdown>
+            )
+          }
+        ]
+      : [];
+
+    return (
+      <Flex key={entryKey}>
+        <Card size="small" style={{ width: "100%" }}>
+          <Flex justify="space-between" align="center" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
+            <Space wrap size={8}>
+              <Tag color={runStatusColor[run.status]}>{run.status}</Tag>
+              <Tag>{taskActionLabel[run.action]}</Tag>
+              <Tag>{getAgentProviderLabel(run.provider)}</Tag>
+            </Space>
+            <Typography.Text type="secondary">
+              {dayjs(run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(run.startedAt, run.finishedAt)}
+            </Typography.Text>
+          </Flex>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+            Branch: <Typography.Text code>{run.branchName ?? "(pending)"}</Typography.Text>
+          </Typography.Paragraph>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+            {(() => {
+              const tokenStr = formatTokenUsage(run.tokenUsage);
+              if (run.tokenUsage?.status !== "available" || !run.tokenUsage.inputTokens || !run.tokenUsage.outputTokens) {
+                return `Tokens: ${tokenStr}`;
+              }
+              const cost = estimateCost(getRunModel(run), run.tokenUsage.inputTokens, run.tokenUsage.outputTokens);
+              return `Tokens: ${tokenStr}${cost ? ` · est. ${formatCost(cost.totalCost)}` : ""}`;
+            })()}
+          </Typography.Paragraph>
+          {normalizedRunSummary ? (
+            isCollapsibleSummaryRun ? (
+              <Collapse size="small" defaultActiveKey={[]} items={summaryCollapseItems} style={{ marginBottom: 12 }} />
+            ) : (
+              <div style={{ marginBottom: 12 }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                  {normalizedRunSummary}
+                </ReactMarkdown>
+              </div>
+            )
+          ) : null}
+          {renderRunErrorNotice(run)}
+          {renderRunLogsCollapse(run)}
+        </Card>
+      </Flex>
+    );
+  };
+
+  const renderGroupedAutoRunEntry = (entryKey: string, entry: Extract<(typeof chatTimeline)[number], { kind: "grouped_auto_run" }>) => {
+    const normalizedRunSummary = getNormalizedRunSummary(entry.run);
+    const summaryTitle = entry.run.action === "build" ? "Implementation Summary" : "Summary";
+    const promptText = entry.promptMessage?.content ?? "No matched user prompt was found for this run.";
+    const tokenLine = (() => {
+      const tokenStr = formatTokenUsage(entry.run.tokenUsage);
+      if (entry.run.tokenUsage?.status !== "available" || !entry.run.tokenUsage.inputTokens || !entry.run.tokenUsage.outputTokens) {
+        return `Tokens: ${tokenStr}`;
+      }
+      const cost = estimateCost(getRunModel(entry.run), entry.run.tokenUsage.inputTokens, entry.run.tokenUsage.outputTokens);
+      return `Tokens: ${tokenStr}${cost ? ` · est. ${formatCost(cost.totalCost)}` : ""}`;
+    })();
+
+    return (
+      <Card
+        key={entryKey}
+        size="small"
+        title={
+          <Space wrap>
+            <Tag color={runStatusColor[entry.run.status]}>{entry.run.status}</Tag>
+            <Tag>{taskActionLabel[entry.run.action]}</Tag>
+            <Tag>{getAgentProviderLabel(entry.run.provider)}</Tag>
+            {entry.proposal ? <Tag color={checkpointStatusColor(entry.proposal.status)}>{checkpointStatusLabel(entry.proposal.status)}</Tag> : null}
+            {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
+          </Space>
+        }
+        extra={
+          <Typography.Text type="secondary">
+            {dayjs(entry.run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(entry.run.startedAt, entry.run.finishedAt)}
+          </Typography.Text>
+        }
+      >
+        <Flex vertical gap="middle">
+          <Typography.Text type="secondary">{tokenLine}</Typography.Text>
+          <div>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {promptText}
+            </ReactMarkdown>
+          </div>
+          <Collapse
+            size="small"
+            items={[
+              {
+                key: `${entryKey}-summary`,
+                label: summaryTitle,
+                children: normalizedRunSummary ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    {normalizedRunSummary}
+                  </ReactMarkdown>
+                ) : (
+                  <Typography.Text type="secondary">
+                    {entry.run.status === "running"
+                      ? "Summary will appear when the run finishes."
+                      : "No summary was captured for this run."}
+                  </Typography.Text>
+                )
+              }
+            ]}
+          />
+          {renderRunErrorNotice(entry.run)}
+          {renderRunLogsCollapse(entry.run)}
+          {entry.proposal ? renderCheckpointDiffSection(entry.proposal, entryKey) : null}
+        </Flex>
+      </Card>
+    );
+  };
+
+  const renderGroupedTerminalEntry = (
+    entryKey: string,
+    entry: Extract<(typeof chatTimeline)[number], { kind: "grouped_terminal_session" }>
+  ) => {
+    const terminalStatusTag = entry.active
+      ? { color: "processing", label: "Active" }
+      : entry.proposal
+        ? { color: checkpointStatusColor(entry.proposal.status), label: checkpointStatusLabel(entry.proposal.status) }
+        : null;
+    return (
+      <Card
+        key={entryKey}
+        size="small"
+        title={
+          <Space wrap>
+            <Tag color="green">Terminal</Tag>
+            {terminalStatusTag ? <Tag color={terminalStatusTag.color}>{terminalStatusTag.label}</Tag> : null}
+            {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
+          </Space>
+        }
+        extra={<Typography.Text type="secondary">{dayjs(entry.startMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>}
+      >
+        <Flex vertical gap="small">
+          <Typography.Text type="secondary">
+            {`${dayjs(entry.startMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")} - ${entry.startMessage.content}`}
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            {entry.endMessage
+              ? `${dayjs(entry.endMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")} - ${entry.endMessage.content}`
+              : "Running - Interactive terminal session is still running."}
+          </Typography.Text>
+          {entry.proposal ? renderCheckpointDiffSection(entry.proposal, entryKey) : null}
+        </Flex>
+      </Card>
+    );
+  };
+
   const chatTimelineBlock = chatTimeline.length > 0 ? (
     <Flex vertical gap={12} style={{ width: "100%" }}>
       {chatTimeline.map((entry) => {
         if (entry.kind === "message") {
-          const entryMessage = entry.message;
-          if (entryMessage.role === "system") {
-            return (
-              <Flex key={entry.key}>
-                <Card
-                  size="small"
-                  bodyStyle={{
-                    background: "rgba(107,143,163,0.12)",
-                    padding: "10px 12px"
-                  }}
-                  style={{ width: "100%" }}
-                >
-                  <Flex vertical gap={4}>
-                    <Flex align="baseline" gap={8} wrap="wrap">
-                      <Tag color="default" style={{ marginInlineEnd: 0 }}>
-                        system
-                      </Tag>
-                      <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
-                    </Flex>
-                    <Typography.Text style={{ whiteSpace: "pre-wrap" }}>{entryMessage.content}</Typography.Text>
-                  </Flex>
-                </Card>
-              </Flex>
-            );
-          }
-          const messageColor =
-            entryMessage.role === "user"
-              ? "rgba(28,128,87,0.08)"
-              : entryMessage.role === "assistant"
-                ? "#ffffff"
-                : "rgba(107,143,163,0.08)";
-          const isCompactMessage = entryMessage.role === "user";
-
-          return (
-            <Flex key={entry.key}>
-              <Card
-                size="small"
-                bodyStyle={{
-                  background: messageColor,
-                  padding: isCompactMessage ? "10px 12px" : undefined
-                }}
-                style={{ width: "100%" }}
-              >
-                {isCompactMessage ? (
-                  <Flex vertical gap={4}>
-                    <Flex align="baseline" gap={8} wrap="wrap">
-                      <Tag color="green" style={{ marginInlineEnd: 0 }}>
-                        {entryMessage.role}
-                      </Tag>
-                      {entryMessage.action ? (
-                        <Tag style={{ marginInlineEnd: 0 }}>{taskActionLabel[entryMessage.action]}</Tag>
-                      ) : null}
-                      <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
-                    </Flex>
-                    <Typography.Text style={{ whiteSpace: "pre-wrap" }}>{entryMessage.content}</Typography.Text>
-                  </Flex>
-                ) : (
-                  <>
-                    <Flex justify="space-between" align="center" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
-                      <Space wrap size={8}>
-                        <Tag color="blue">assistant</Tag>
-                        {entryMessage.action ? <Tag>{taskActionLabel[entryMessage.action]}</Tag> : null}
-                      </Space>
-                      <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
-                    </Flex>
-                    <ExpandableMessageContent fadeColor={messageColor}>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                        {entryMessage.content}
-                      </ReactMarkdown>
-                    </ExpandableMessageContent>
-                  </>
-                )}
-              </Card>
-            </Flex>
-          );
+          return renderRawMessageEntry(entry.key, entry.message);
         }
 
         if (entry.kind === "proposal") {
-          const p = entry.proposal;
-          const statusColor =
-            p.status === "pending"
-              ? "orange"
-              : p.status === "applied"
-                ? "green"
-                : p.status === "reverted"
-                  ? "blue"
-                  : p.status === "rejected"
-                    ? "red"
-                    : "default";
-          const canRevertApplied = p.status === "applied" && !p.diffTruncated;
-          const canRevertThisCheckpointNow = canRevertApplied && p.id === latestAppliedChangeProposalId;
-          const diffTrimmed = p.diff.trim();
-          const canReapplyReverted =
-            p.status === "reverted" &&
-            !p.diffTruncated &&
-            diffTrimmed.length > 0 &&
-            diffTrimmed !== "(no changes)";
-          const showCheckpointApply =
-            (p.status === "pending" || canReapplyReverted) && canEditTask && task && !isArchived;
-          const blockOlderCheckpointWhilePending =
-            !!pendingChangeProposal && p.id !== pendingChangeProposal.id;
-          const olderCheckpointPendingTooltip = "Apply or reject the current pending checkpoint first.";
-          return (
-            <Flex key={entry.key}>
-              <Card size="small" style={{ width: "100%", borderColor: p.status === "pending" ? "rgba(250,173,20,0.45)" : undefined }}>
-                <Flex justify="space-between" align="flex-start" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
-                  <Space wrap size={8}>
-                    <Typography.Text strong>Checkpoint</Typography.Text>
-                    <Tag>{changeProposalSourceLabel(p.sourceType)}</Tag>
-                    <Tag color={statusColor}>{checkpointStatusLabel(p.status)}</Tag>
-                    {p.diffTruncated ? <Tag>Truncated preview</Tag> : null}
-                  </Space>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {dayjs(p.createdAt).format("YYYY-MM-DD HH:mm:ss")}
-                  </Typography.Text>
-                </Flex>
-                <Collapse
-                  size="small"
-                  defaultActiveKey={[]}
-                  items={[
-                    {
-                      key: "diff",
-                      label: "diff",
-                      collapsible: blockOlderCheckpointWhilePending ? "disabled" : undefined,
-                      extra:
-                        canEditTask && task && !isArchived && (showCheckpointApply || canRevertApplied) ? (
-                          <span onClick={(e) => e.stopPropagation()}>
-                          <Space
-                            size={4}
-                            wrap
-                            align="center"
-                            style={{ justifyContent: "flex-end", maxWidth: "min(100%, 520px)" }}
-                          >
-                            {showCheckpointApply ? (
-                              <>
-                                <Tooltip
-                                  title={
-                                    blockOlderCheckpointWhilePending
-                                      ? olderCheckpointPendingTooltip
-                                      : checkpointDiffActionsBlocked
-                                        ? checkpointDiffActionsBlockedReason
-                                        : undefined
-                                  }
-                                >
-                                  <span style={{ display: "inline-block" }}>
-                                <Button
-                                  type="primary"
-                                  size="small"
-                                  disabled={checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending}
-                                  loading={proposalBusy?.id === p.id && proposalBusy.kind === "apply"}
-                                  onClick={async () => {
-                                    setProposalBusy({ id: p.id, kind: "apply" });
-                                    try {
-                                      const updated = await api.applyTaskChangeProposal(task.id, p.id);
-                                      setTask((current) =>
-                                        current
-                                          ? {
-                                              ...updated,
-                                              logs: updated.logs.length > 0 ? updated.logs : current.logs
-                                            }
-                                          : updated
-                                      );
-                                      messageApi.success(canReapplyReverted ? "Checkpoint re-applied" : "Checkpoint applied");
-                                      setLiveDiffRefreshKey((k) => k + 1);
-                                      refetchChangeProposals();
-                                    } catch (error) {
-                                      messageApi.error(error instanceof Error ? error.message : "Could not apply checkpoint");
-                                    } finally {
-                                      setProposalBusy(null);
-                                    }
-                                  }}
-                                >
-                                  {canReapplyReverted ? "Apply again" : "Apply"}
-                                </Button>
-                                  </span>
-                                </Tooltip>
-                                {p.status === "pending" ? (
-                                  <Tooltip
-                                    title={
-                                      blockOlderCheckpointWhilePending
-                                        ? olderCheckpointPendingTooltip
-                                        : checkpointDiffActionsBlocked
-                                          ? checkpointDiffActionsBlockedReason
-                                          : undefined
-                                    }
-                                  >
-                                    <span style={{ display: "inline-block" }}>
-                                  <Button
-                                    danger
-                                    size="small"
-                                    disabled={checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending}
-                                    loading={proposalBusy?.id === p.id && proposalBusy.kind === "reject"}
-                                    onClick={() => {
-                                      Modal.confirm({
-                                        title: "Reject this checkpoint?",
-                                        content:
-                                          "Tracked files are reset to the checkpoint commit (git reset --hard). New untracked files added since that checkpoint are removed; untracked files you already had are kept.",
-                                        okText: "Reject and reset",
-                                        okButtonProps: { danger: true },
-                                        onOk: async () => {
-                                          setProposalBusy({ id: p.id, kind: "reject" });
-                                          try {
-                                            const updated = await api.rejectTaskChangeProposal(task.id, p.id);
-                                            setTask((current) =>
-                                              current
-                                                ? {
-                                                    ...updated,
-                                                    logs: updated.logs.length > 0 ? updated.logs : current.logs
-                                                  }
-                                                : updated
-                                            );
-                                            messageApi.success("Checkpoint rejected; workspace reset.");
-                                            setLiveDiffRefreshKey((k) => k + 1);
-                                            refetchChangeProposals();
-                                          } catch (error) {
-                                            messageApi.error(error instanceof Error ? error.message : "Could not reject checkpoint");
-                                          } finally {
-                                            setProposalBusy(null);
-                                          }
-                                        }
-                                      });
-                                    }}
-                                  >
-                                    Reject
-                                  </Button>
-                                    </span>
-                                  </Tooltip>
-                                ) : null}
-                              </>
-                            ) : null}
-                            {canRevertApplied ? (
-                              <Tooltip
-                                title={
-                                  blockOlderCheckpointWhilePending
-                                    ? olderCheckpointPendingTooltip
-                                    : checkpointDiffActionsBlocked
-                                      ? checkpointDiffActionsBlockedReason ?? undefined
-                                      : canRevertThisCheckpointNow
-                                        ? undefined
-                                        : "A newer applied checkpoint must be reverted first. Undo in reverse apply order."
-                                }
-                              >
-                                <span style={{ display: "inline-block" }}>
-                                  <Button
-                                    size="small"
-                                    disabled={
-                                      checkpointDiffActionsBlocked ||
-                                      !canRevertThisCheckpointNow ||
-                                      blockOlderCheckpointWhilePending
-                                    }
-                                    loading={proposalBusy?.id === p.id && proposalBusy.kind === "revert"}
-                                    onClick={() => {
-                                      if (
-                                        checkpointDiffActionsBlocked ||
-                                        !canRevertThisCheckpointNow ||
-                                        blockOlderCheckpointWhilePending
-                                      ) {
-                                        return;
-                                      }
-                                      Modal.confirm({
-                                        title: "Revert this applied checkpoint?",
-                                        content:
-                                          "Undoes the checkpoint (patch reverse or restore from base), then stages and creates a local commit so the branch stays clean with no unstaged revert changes. If that no longer applies because you committed or edited files, paths are restored from the checkpoint base instead. Revert newer checkpoints first.",
-                                        okText: "Revert",
-                                        okButtonProps: { danger: true },
-                                        onOk: async () => {
-                                          setProposalBusy({ id: p.id, kind: "revert" });
-                                          try {
-                                            const updated = await api.revertTaskChangeProposal(task.id, p.id);
-                                            setTask((current) =>
-                                              current
-                                                ? {
-                                                    ...updated,
-                                                    logs: updated.logs.length > 0 ? updated.logs : current.logs
-                                                  }
-                                                : updated
-                                            );
-                                            messageApi.success("Checkpoint reverted");
-                                            setLiveDiffRefreshKey((k) => k + 1);
-                                            refetchChangeProposals();
-                                          } catch (error) {
-                                            messageApi.error(error instanceof Error ? error.message : "Could not revert checkpoint");
-                                          } finally {
-                                            setProposalBusy(null);
-                                          }
-                                        }
-                                      });
-                                    }}
-                                  >
-                                    Revert
-                                  </Button>
-                                </span>
-                              </Tooltip>
-                            ) : null}
-                          </Space>
-                          </span>
-                        ) : null,
-                      children: renderParsedDiff(p.diff, "No diff text.", { collapseFiles: true })
-                    }
-                  ]}
-                />
-              </Card>
-            </Flex>
-          );
+          return renderRawProposalEntry(entry.key, entry.proposal);
         }
 
-        const run = entry.run;
-        const collapseItems = [
-          {
-            key: run.id,
-            label: `Logs${run.logs.length > 0 ? ` (${run.logs.length})` : ""}`,
-            children: (
-              <div
-                style={{
-                  padding: "14px 16px",
-                  background: "#0b0f14",
-                  borderRadius: 8
-                }}
-              >
-                <pre
-                  style={{
-                    margin: 0,
-                    color: "#d8e1ee",
-                    fontFamily: "\"SFMono-Regular\", Consolas, monospace",
-                    fontSize: 12,
-                    lineHeight: 1.65,
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word"
-                  }}
-                >
-                  {run.logs.join("\n") || "No logs captured for this run."}
-                </pre>
-              </div>
-            )
-          }
-        ];
-        const isCollapsibleSummaryRun = run.action === "plan" || run.action === "iterate" || run.action === "build";
-        const normalizedRunSummary =
-          run.status === "failed" && run.errorMessage
-            ? (() => {
-                const summary = run.summary?.trim();
-                const errorMessage = run.errorMessage.trim();
-                if (!summary) {
-                  return null;
-                }
-                if (summary === errorMessage || summary === `Task failed: ${errorMessage}`) {
-                  return null;
-                }
-                return summary;
-              })()
-            : run.summary?.trim() || null;
-        const summaryCollapseItems = normalizedRunSummary
-          ? [
-              {
-                key: `${run.id}-summary`,
-                label: run.action === "build" ? "Implementation Summary" : run.action === "plan" || run.action === "iterate" ? "Plan" : "Summary",
-                extra:
-                  isPlanTask && (run.action === "plan" || run.action === "iterate") ? (
-                    <Button
-                      size="small"
-                      type="link"
-                      onClick={async (event) => {
-                        event.stopPropagation();
-                        if (!task || task.builtPlanRunIds.includes(run.id)) {
-                          return;
-                        }
+        if (entry.kind === "grouped_auto_run") {
+          return renderGroupedAutoRunEntry(entry.key, entry);
+        }
 
-                        setSubmitting("build");
-                        setBuildingFromRunId(run.id);
-                        try {
-                          const updatedTask = await api.buildTaskFromRun(task.id, run.id);
-                          setTask((current) =>
-                            current
-                              ? {
-                                  ...current,
-                                  ...updatedTask,
-                                  logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
-                                }
-                              : updatedTask
-                          );
-                          messageApi.success("Build started from selected plan");
-                        } catch (error) {
-                          const nextMessage = error instanceof Error ? error.message : "Build could not be started";
-                          messageApi.error(nextMessage);
-                        } finally {
-                          setBuildingFromRunId(null);
-                          setSubmitting(null);
-                        }
-                      }}
-                      disabled={
-                        !canEditTask ||
-                        !task ||
-                        task.builtPlanRunIds.includes(run.id) ||
-                        isQueued ||
-                        isActive ||
-                        !!pendingChangeProposal ||
-                        task.status === "accepted" ||
-                        task.status === "archived"
-                      }
-                      loading={submitting === "build" && buildingFromRunId === run.id}
-                    >
-                      {task?.builtPlanRunIds.includes(run.id) ? "Built" : "Build"}
-                    </Button>
-                  ) : null,
-                children: (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                    {normalizedRunSummary}
-                  </ReactMarkdown>
-                )
-              }
-            ]
-          : [];
+        if (entry.kind === "grouped_terminal_session") {
+          return renderGroupedTerminalEntry(entry.key, entry);
+        }
 
-        return (
-          <Flex key={entry.key}>
-            <Card size="small" style={{ width: "100%" }}>
-              <Flex justify="space-between" align="center" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
-                <Space wrap size={8}>
-                  <Tag color={runStatusColor[run.status]}>{run.status}</Tag>
-                  <Tag>{taskActionLabel[run.action]}</Tag>
-                  <Tag>{getAgentProviderLabel(run.provider)}</Tag>
-                </Space>
-                <Typography.Text type="secondary">
-                  {dayjs(run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(run.startedAt, run.finishedAt)}
-                </Typography.Text>
-              </Flex>
-              <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                Branch: <Typography.Text code>{run.branchName ?? "(pending)"}</Typography.Text>
-              </Typography.Paragraph>
-              <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
-                {(() => {
-                  const tokenStr = formatTokenUsage(run.tokenUsage);
-                  if (run.tokenUsage?.status !== "available" || !run.tokenUsage.inputTokens || !run.tokenUsage.outputTokens) {
-                    return `Tokens: ${tokenStr}`;
-                  }
-                  const cost = estimateCost(getRunModel(run), run.tokenUsage.inputTokens, run.tokenUsage.outputTokens);
-                  return `Tokens: ${tokenStr}${cost ? ` · est. ${formatCost(cost.totalCost)}` : ""}`;
-                })()}
-              </Typography.Paragraph>
-              {normalizedRunSummary ? (
-                isCollapsibleSummaryRun ? (
-                  <Collapse size="small" defaultActiveKey={[]} items={summaryCollapseItems} style={{ marginBottom: 12 }} />
-                ) : (
-                  <div style={{ marginBottom: 12 }}>
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                      {normalizedRunSummary}
-                    </ReactMarkdown>
-                  </div>
-                )
-              ) : null}
-              {run.errorMessage ? (
-                <div
-                  style={{
-                    marginBottom: 12,
-                    padding: "10px 12px",
-                    borderRadius: 8,
-                    background: "rgba(201,92,92,0.08)",
-                    border: "1px solid rgba(201,92,92,0.18)"
-                  }}
-                >
-                  <Typography.Text strong type="danger">
-                    Run failed
-                  </Typography.Text>
-                  <Typography.Paragraph type="danger" style={{ margin: "4px 0 0", whiteSpace: "pre-wrap" }}>
-                    {run.errorMessage}
-                  </Typography.Paragraph>
-                </div>
-              ) : null}
-              <Collapse
-                size="small"
-                activeKey={expandedRunKeys.includes(run.id) ? [run.id] : []}
-                onChange={(keys) =>
-                  setExpandedRunKeys((current) => {
-                    const isOpen = Array.isArray(keys) ? keys.length > 0 : Boolean(keys);
-                    return isOpen ? (current.includes(run.id) ? current : [...current, run.id]) : current.filter((key) => key !== run.id);
-                  })
-                }
-                items={collapseItems}
-              />
-            </Card>
-          </Flex>
-        );
+        return renderRawRunEntry(entry.key, entry.run);
       })}
     </Flex>
   ) : null;

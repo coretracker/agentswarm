@@ -22,6 +22,7 @@ if (!anthropicApiKey) {
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
 process.env.ANTHROPIC_API_KEY = anthropicApiKey;
+process.env.GIT_OPTIONAL_LOCKS = "0";
 
 const runCommand = (command, args, options = {}) =>
   new Promise((resolve, reject) => {

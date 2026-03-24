@@ -37,6 +37,7 @@ if (openAiBaseUrl) {
   process.env.OPENAI_BASE_URL = openAiBaseUrl;
 }
 process.env.OPENAI_API_KEY = openAiApiKey;
+process.env.GIT_OPTIONAL_LOCKS = "0";
 process.env.HOME = homeDir;
 
 const extractReviewVerdict = (markdown) => {

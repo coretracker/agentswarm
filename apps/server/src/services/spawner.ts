@@ -23,6 +23,7 @@ import {
   type TaskWorkspaceCommitLog
 } from "@agentswarm/shared-types";
 import { makeBranchName } from "../lib/branch.js";
+import { extractGitLockPathFromErrorMessage, isPathInside, resolveGitTargetLockKey } from "../lib/git-locks.js";
 import { resolveSafeWorkspaceFilePath } from "../lib/safe-workspace-file.js";
 import { resolveLocalPlanDirectory, resolveLocalPlanPath, resolveLocalPlanRevisionPath } from "../lib/plan-path.js";
 import { env } from "../config/env.js";
@@ -123,6 +124,7 @@ export class SpawnerService {
   private cancelRequestedTaskIds = new Set<string>();
   private gitAskPassPath: string | null = null;
   private repoLocks = new Map<string, Promise<void>>();
+  private gitTargetLocks = new Map<string, Promise<void>>();
 
   constructor(
     private readonly taskStore: TaskStore,
@@ -273,15 +275,16 @@ esac
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<NodeJS.ProcessEnv> {
+    const gitEnv: NodeJS.ProcessEnv = {
+      GIT_OPTIONAL_LOCKS: "0"
+    };
     const askPassPath = githubToken ? await this.ensureGitAskPassScript() : null;
-    const gitEnv: NodeJS.ProcessEnv = askPassPath
-      ? {
-          GIT_TERMINAL_PROMPT: "0",
-          GIT_ASKPASS: askPassPath,
-          GIT_USERNAME: gitUsername,
-          GIT_TOKEN: githubToken ?? ""
-        }
-      : {};
+    if (askPassPath) {
+      gitEnv.GIT_TERMINAL_PROMPT = "0";
+      gitEnv.GIT_ASKPASS = askPassPath;
+      gitEnv.GIT_USERNAME = gitUsername;
+      gitEnv.GIT_TOKEN = githubToken ?? "";
+    }
 
     if (args[0] === "-C" && typeof args[1] === "string" && args[1].startsWith("/")) {
       gitEnv.GIT_CONFIG_COUNT = "1";
@@ -292,16 +295,92 @@ esac
     return gitEnv;
   }
 
+  private async cleanupWorkspaceGitLocks(workspacePath: string): Promise<void> {
+    const gitDir = path.join(workspacePath, ".git");
+    await Promise.all(
+      ["index.lock", "HEAD.lock", "config.lock", "packed-refs.lock", "shallow.lock"].map((lockFile) =>
+        rm(path.join(gitDir, lockFile), { force: true }).catch(() => undefined)
+      )
+    );
+  }
+
+  private async cleanupRecoveredGitLockPath(lockPath: string): Promise<boolean> {
+    if (!path.isAbsolute(lockPath)) {
+      return false;
+    }
+
+    if (!isPathInside(env.TASK_WORKSPACE_ROOT, lockPath) && !isPathInside(env.REPO_CACHE_ROOT, lockPath)) {
+      return false;
+    }
+
+    await rm(lockPath, { force: true }).catch(() => undefined);
+    return true;
+  }
+
+  private async withNamedLock<T>(locks: Map<string, Promise<void>>, key: string, fn: () => Promise<T>): Promise<T> {
+    const current = locks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    locks.set(key, current.then(() => next));
+    await current;
+
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (locks.get(key) === next) {
+        locks.delete(key);
+      }
+    }
+  }
+
+  private async runGitWithRecovery<T>(args: string[], execute: () => Promise<T>): Promise<T> {
+    const lockKey = resolveGitTargetLockKey(args);
+    const run = async (): Promise<T> => {
+      try {
+        return await execute();
+      } catch (error) {
+        if (!(error instanceof Error)) {
+          throw error;
+        }
+
+        const lockPath = extractGitLockPathFromErrorMessage(error.message);
+        if (!lockPath) {
+          throw error;
+        }
+
+        const removed = await this.cleanupRecoveredGitLockPath(lockPath);
+        if (!removed) {
+          throw error;
+        }
+
+        return execute();
+      }
+    };
+
+    if (!lockKey) {
+      return run();
+    }
+
+    return this.withNamedLock(this.gitTargetLocks, lockKey, run);
+  }
+
   private async gitCommand(args: string[], githubToken?: string | null, gitUsername = "x-access-token"): Promise<void> {
-    await this.runCommand("git", args, await this.buildGitEnv(args, githubToken, gitUsername));
+    const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
+    await this.runGitWithRecovery(args, () => this.runCommand("git", args, gitEnv));
   }
 
   private async gitCommandCapture(args: string[], githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
-    return this.runCommandCapture("git", args, await this.buildGitEnv(args, githubToken, gitUsername));
+    const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
+    return this.runGitWithRecovery(args, () => this.runCommandCapture("git", args, gitEnv));
   }
 
   private async gitCommandCaptureRaw(args: string[], githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
-    return this.runCommandCaptureRaw("git", args, await this.buildGitEnv(args, githubToken, gitUsername));
+    const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
+    return this.runGitWithRecovery(args, () => this.runCommandCaptureRaw("git", args, gitEnv));
   }
 
   private async gitCommandCaptureAllowExitCodes(
@@ -310,32 +389,19 @@ esac
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<string> {
-    return this.runCommandCaptureAllowExitCodes(
-      "git",
-      args,
-      allowedExitCodes,
-      await this.buildGitEnv(args, githubToken, gitUsername)
+    const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
+    return this.runGitWithRecovery(args, () =>
+      this.runCommandCaptureAllowExitCodes(
+        "git",
+        args,
+        allowedExitCodes,
+        gitEnv
+      )
     );
   }
 
   private async withRepoLock<T>(repoKey: string, fn: () => Promise<T>): Promise<T> {
-    const current = this.repoLocks.get(repoKey) ?? Promise.resolve();
-    let release!: () => void;
-    const next = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-
-    this.repoLocks.set(repoKey, current.then(() => next));
-    await current;
-
-    try {
-      return await fn();
-    } finally {
-      release();
-      if (this.repoLocks.get(repoKey) === next) {
-        this.repoLocks.delete(repoKey);
-      }
-    }
+    return this.withNamedLock(this.repoLocks, repoKey, fn);
   }
 
   private shouldRebuildMirror(error: unknown): boolean {
@@ -1071,10 +1137,7 @@ esac
       await mkdir(path.dirname(workspacePath), { recursive: true });
       await this.gitCommand(["clone", "--no-local", repoCachePath, workspacePath], githubToken, gitUsername);
     } else {
-      const indexLock = path.join(workspacePath, ".git", "index.lock");
-      const headLock = path.join(workspacePath, ".git", "HEAD.lock");
-      await rm(indexLock, { force: true }).catch(() => undefined);
-      await rm(headLock, { force: true }).catch(() => undefined);
+      await this.cleanupWorkspaceGitLocks(workspacePath);
     }
 
     await this.gitCommand(["-C", workspacePath, "remote", "set-url", "origin", task.repoUrl], githubToken, gitUsername);
@@ -2590,6 +2653,7 @@ esac
     const planPath = this.resolveLocalPlanPath(task);
     const payloadDir = this.resolveRuntimePayloadDir(task.id);
     let runId: string | null = null;
+    let workspacePath: string | null = null;
 
     try {
       await this.taskStore.setStatus(task.id, getActiveStatusForAction(action), {
@@ -2661,6 +2725,7 @@ esac
           workspace: preparedWorkspace
         };
       });
+      workspacePath = workspace.workspacePath;
       if (action === "build" && !task.workspaceBaseRef) {
         await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
       }
@@ -2954,6 +3019,9 @@ esac
     } finally {
       this.activeExecutions.delete(task.id);
       this.cancelRequestedTaskIds.delete(task.id);
+      if (workspacePath) {
+        await this.cleanupWorkspaceGitLocks(workspacePath).catch(() => undefined);
+      }
       await rm(payloadDir, { recursive: true, force: true });
     }
   }
