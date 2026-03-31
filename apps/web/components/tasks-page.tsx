@@ -3,13 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   getAgentProviderLabel,
-  getTaskStatusLabel,
   getTaskTypeLabel,
   isActiveTaskStatus,
-  type Task,
-  type TaskStatus
+  type Task
 } from "@agentswarm/shared-types";
-import { Button, Card, DatePicker, Divider, Flex, Input, Popconfirm, Select, Space, Table, Tag, Tooltip, Typography, message } from "antd";
+import { Button, Card, DatePicker, Divider, Flex, Input, Popconfirm, Select, Space, Table, Typography, message } from "antd";
 import { PushpinFilled } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -19,34 +17,6 @@ import { useTasks } from "../src/hooks/useTasks";
 import { getSeenTaskVersions, isTaskSeen, markTaskSeen, migrateSeenTaskVersions, subscribeToSeenTasks, type SeenTaskVersions } from "../src/utils/seen-tasks";
 import { useAuth } from "./auth-provider";
 
-const statusOptions: Array<{ label: string; value: TaskStatus }> = [
-  { label: "Build Queued", value: "build_queued" },
-  { label: "Preparing Workspace", value: "preparing_workspace" },
-  { label: "Building", value: "building" },
-  { label: "Ask Queued", value: "ask_queued" },
-  { label: "Answering", value: "asking" },
-  { label: "Completed", value: "completed" },
-  { label: "Answered", value: "answered" },
-  { label: "Accepted", value: "accepted" },
-  { label: "Archived", value: "archived" },
-  { label: "Cancelled", value: "cancelled" },
-  { label: "Failed", value: "failed" }
-];
-
-const statusColor: Record<TaskStatus, string> = {
-  build_queued: "cyan",
-  preparing_workspace: "processing",
-  building: "blue",
-  ask_queued: "magenta",
-  asking: "magenta",
-  completed: "orange",
-  answered: "lime",
-  accepted: "green",
-  archived: "default",
-  cancelled: "default",
-  failed: "red"
-};
-
 export function TasksPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -55,7 +25,6 @@ export function TasksPage() {
   const { repositories } = useRepositories();
   const [seenTaskVersions, setSeenTaskVersions] = useState<SeenTaskVersions>({});
   const [titleFilter, setTitleFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState<TaskStatus | undefined>();
   const [repoFilter, setRepoFilter] = useState<string | undefined>();
   const [createdAtFilter, setCreatedAtFilter] = useState<string | null>(null);
   const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
@@ -64,17 +33,6 @@ export function TasksPage() {
   const canEditTask = can("task:edit");
   const canDeleteTask = can("task:delete");
   const archivedView = searchParams.get("view") === "archived";
-  const visibleStatusOptions = useMemo(
-    () => (archivedView ? statusOptions.filter((option) => option.value === "archived") : statusOptions.filter((option) => option.value !== "archived")),
-    [archivedView]
-  );
-
-  useEffect(() => {
-    if (statusFilter && !visibleStatusOptions.some((option) => option.value === statusFilter)) {
-      setStatusFilter(undefined);
-    }
-  }, [statusFilter, visibleStatusOptions]);
-
   useEffect(() => {
     const syncSeenTaskVersions = () => {
       setSeenTaskVersions(getSeenTaskVersions());
@@ -99,9 +57,6 @@ export function TasksPage() {
       if (titleFilter && !task.title.toLowerCase().includes(titleFilter.toLowerCase())) {
         return false;
       }
-      if (statusFilter && task.status !== statusFilter) {
-        return false;
-      }
       if (repoFilter && task.repoId !== repoFilter) {
         return false;
       }
@@ -110,7 +65,7 @@ export function TasksPage() {
       }
       return true;
     });
-  }, [archivedView, createdAtFilter, repoFilter, statusFilter, tasks, titleFilter]);
+  }, [archivedView, createdAtFilter, repoFilter, tasks, titleFilter]);
 
   const handleDeleteTask = async (task: Task) => {
     setDeletingTaskId(task.id);
@@ -176,14 +131,6 @@ export function TasksPage() {
         <Card bordered={false}>
           <Space size={12} wrap>
             <Input placeholder="Filter by title" value={titleFilter} onChange={(event) => setTitleFilter(event.target.value)} />
-            <Select
-              allowClear
-              placeholder="Filter by status"
-              style={{ minWidth: 180 }}
-              value={statusFilter}
-              options={visibleStatusOptions}
-              onChange={(value) => setStatusFilter(value)}
-            />
             <Select
               allowClear
               placeholder="Filter by repository"
@@ -258,18 +205,6 @@ export function TasksPage() {
                 title: "Provider",
                 dataIndex: "provider",
                 render: (value: Task["provider"]) => getAgentProviderLabel(value)
-              },
-              {
-                title: "Status",
-                dataIndex: "status",
-                render: (value: TaskStatus, task) => {
-                  const tag = <Tag color={statusColor[value]}>{getTaskStatusLabel(value)}</Tag>;
-                  if (value !== "failed" || !task.errorMessage?.trim()) {
-                    return tag;
-                  }
-
-                  return <Tooltip title={task.errorMessage}>{tag}</Tooltip>;
-                }
               },
               {
                 title: "Action",
