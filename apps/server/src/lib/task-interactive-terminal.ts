@@ -1,6 +1,6 @@
 import { spawn as spawnChild } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, chmod, chown, constants, mkdir } from "node:fs/promises";
+import { access, constants } from "node:fs/promises";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import path from "node:path";
 import type { Duplex } from "node:stream";
@@ -18,6 +18,7 @@ import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import { canUserAccessTask } from "./task-ownership.js";
 import { claudeMaxTurnsForProfile, codexReasoningEffortForProfile, defaultModelForProvider } from "./provider-config.js";
+import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
 
@@ -208,33 +209,6 @@ function forceRemoveDockerSession(containerName: string): void {
 function interactiveImageBuildHint(provider: Task["provider"], image: string): string {
   const dockerfile = provider === "claude" ? "Dockerfile.claude" : "Dockerfile.codex";
   return `docker build -f tools/codex-web-terminal/${dockerfile} -t ${image} tools/codex-web-terminal`;
-}
-
-function sanitizeInteractiveHomeSegment(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]+/g, "-");
-}
-
-function resolveInteractiveStateHostPath(task: Task, provider: Task["provider"]): string {
-  const taskSegment = sanitizeInteractiveHomeSegment(task.id?.trim() || "unknown-task");
-  return path.join(env.TASK_WORKSPACE_HOST_ROOT, ".interactive-homes", provider, taskSegment);
-}
-
-async function ensureInteractiveStateHostPath(task: Task, runtime: Extract<InteractiveTerminalRuntimeConfig, { ok: true }>): Promise<string | null> {
-  if (!runtime.persistentState) {
-    return null;
-  }
-
-  const stateHostPath = resolveInteractiveStateHostPath(task, runtime.provider);
-  await mkdir(stateHostPath, { recursive: true });
-
-  try {
-    await chown(stateHostPath, runtime.persistentState.uid, runtime.persistentState.gid);
-    await chmod(stateHostPath, 0o700);
-  } catch {
-    await chmod(stateHostPath, 0o777).catch(() => undefined);
-  }
-
-  return stateHostPath;
 }
 
 async function dockerImageExists(image: string): Promise<boolean> {
@@ -459,7 +433,12 @@ async function initializeTaskInteractiveTerminalWebSocket(
 
     const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
     const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
-    const stateBindSource = await ensureInteractiveStateHostPath(task, runtime);
+    const statePaths = runtime.persistentState
+      ? await ensureTaskProviderStatePaths(task.id, runtime.provider, {
+          uid: runtime.persistentState.uid,
+          gid: runtime.persistentState.gid
+        })
+      : null;
     const dockerEnv: string[] = [];
     for (const [name, value] of runtime.envEntries) {
       dockerEnv.push("-e", `${name}=${value}`);
@@ -475,8 +454,8 @@ async function initializeTaskInteractiveTerminalWebSocket(
       sessionName,
       "-v",
       `${dockerBindSource}:/workspace:rw`,
-      ...(stateBindSource && runtime.persistentState
-        ? ["-v", `${stateBindSource}:${runtime.persistentState.containerPath}:rw`]
+      ...(statePaths && runtime.persistentState
+        ? ["-v", `${statePaths.hostPath}:${runtime.persistentState.containerPath}:rw`]
         : []),
       ...dockerEnv,
       runtime.image,

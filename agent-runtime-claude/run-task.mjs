@@ -23,6 +23,8 @@ const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
 process.env.ANTHROPIC_API_KEY = anthropicApiKey;
 process.env.GIT_OPTIONAL_LOCKS = "0";
+const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
+const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
 
 const runCommand = (command, args, options = {}) =>
   new Promise((resolve, reject) => {
@@ -88,8 +90,14 @@ if (manifest.resolvedMaxTurns) {
 
 const workspaceStats = await stat(manifest.workspacePath);
 const runtimeIdentity = workspaceStats.uid > 0 && workspaceStats.gid > 0 ? `${workspaceStats.uid}:${workspaceStats.gid}` : "agent:agent";
-const runtimeHome = path.join("/runtime", `claude-home-${runtimeIdentity.replace(/[:/]/g, "-")}`);
+const runtimeHome = configuredHomeDir && configuredHomeDir.length > 0
+  ? configuredHomeDir
+  : path.join("/runtime", `claude-home-${runtimeIdentity.replace(/[:/]/g, "-")}`);
+const providerStatePath = configuredStatePath && configuredStatePath.length > 0
+  ? configuredStatePath
+  : path.join(runtimeHome, ".claude");
 await mkdir(runtimeHome, { recursive: true });
+await mkdir(providerStatePath, { recursive: true });
 
 console.log(`[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only tools)" : ""}`);
 console.log(`[runtime] claude max_turns=${manifest.resolvedMaxTurns ?? "default"}`);

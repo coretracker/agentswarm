@@ -22,16 +22,17 @@ if (!openAiApiKey) {
 
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 const providerConfig = await readFile(providerConfigPath, "utf8").catch(() => "");
-const homeDir = "/root";
-const codexDir = path.join(homeDir, ".codex");
+const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
+const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
+const codexDir = configuredStatePath && configuredStatePath.length > 0 ? configuredStatePath : path.join("/root", ".codex");
+const homeDir = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : path.dirname(codexDir);
 const lastMessageFile = path.join(path.dirname(manifest.resultJsonPath), "codex-last-message.txt");
 
+await mkdir(homeDir, { recursive: true });
 await mkdir(codexDir, { recursive: true });
 await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
-if (providerConfig.trim()) {
-  await writeFile(path.join(codexDir, "config.toml"), providerConfig, "utf8");
-  console.log("[runtime] wrote Codex config");
-}
+await writeFile(path.join(codexDir, "config.toml"), providerConfig, "utf8");
+console.log("[runtime] wrote Codex config");
 
 if (openAiBaseUrl) {
   process.env.OPENAI_BASE_URL = openAiBaseUrl;

@@ -25,6 +25,7 @@ import {
 import { makeBranchName } from "../lib/branch.js";
 import { extractGitLockPathFromErrorMessage, isPathInside, resolveGitTargetLockKey } from "../lib/git-locks.js";
 import { resolveSafeWorkspaceFilePath } from "../lib/safe-workspace-file.js";
+import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
 import { env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
 import { TaskStore } from "./task-store.js";
@@ -407,6 +408,10 @@ esac
 
   private resolveWorkspaceHostPath(taskId: string): string {
     return path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
+  }
+
+  private resolveProviderStateContainerPath(provider: AgentProvider): string {
+    return provider === "claude" ? "/runtime/home/.claude" : "/root/.codex";
   }
 
   private resolveRepoCachePath(task: Task): string {
@@ -2203,8 +2208,14 @@ esac
   async cleanupTaskArtifacts(task: Task): Promise<void> {
     const payloadDir = this.resolveRuntimePayloadDir(task.id);
     const workspacePath = this.resolveWorkspacePath(task.id);
+    const taskStateRootPath = resolveTaskStateRootPaths(task.id).serverPath;
+    const legacyCodexStatePath = resolveTaskProviderStatePaths(task.id, "codex").legacyServerPath;
+    const legacyClaudeStatePath = resolveTaskProviderStatePaths(task.id, "claude").legacyServerPath;
     await rm(payloadDir, { recursive: true, force: true });
     await rm(workspacePath, { recursive: true, force: true });
+    await rm(taskStateRootPath, { recursive: true, force: true });
+    await rm(legacyCodexStatePath, { recursive: true, force: true });
+    await rm(legacyClaudeStatePath, { recursive: true, force: true });
   }
 
   async pullTaskBranch(task: Task): Promise<Task> {
@@ -2858,6 +2869,8 @@ esac
       const containerName = `agentswarm-task-${task.id}`;
       const workspaceMountMode = action === "ask" ? "ro" : "rw";
       const hostWorkspacePath = this.resolveWorkspaceHostPath(task.id);
+      const providerStateContainerPath = this.resolveProviderStateContainerPath(task.provider);
+      const providerStatePaths = await ensureTaskProviderStatePaths(task.id, task.provider);
       if (workspaceMountMode === "ro") {
         await appendRunLog("Spawner: mounting workspace read-only (ask mode).");
       }
@@ -2870,6 +2883,8 @@ esac
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         "-v",
         `${env.TASK_WORKSPACE_HOST_ROOT}:${env.TASK_WORKSPACE_ROOT}:${workspaceMountMode}`,
+        "-v",
+        `${providerStatePaths.hostPath}:${providerStateContainerPath}:rw`,
         "-e",
         `TASK_MANIFEST_FILE=${payloadPaths.manifestPath}`,
         "-e",
@@ -2878,6 +2893,10 @@ esac
         `TASK_WORKSPACE_PATH=${hostWorkspacePath}`,
         "-e",
         `TASK_WORSPACE_PATH=${hostWorkspacePath}`,
+        "-e",
+        `TASK_PROVIDER_STATE_PATH=${providerStateContainerPath}`,
+        "-e",
+        `TASK_PROVIDER_HOME=${path.dirname(providerStateContainerPath)}`,
         providerDefinition.image
       ];
 
