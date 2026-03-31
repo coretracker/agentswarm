@@ -766,8 +766,54 @@ export class TaskStore {
       pipeline.del(this.taskChangeProposalKey(proposalId));
     }
     await pipeline.exec();
-    await this.eventBus.publish({ type: "task:deleted", payload: { id: taskId, ownerUserId: task.ownerUserId } });
+    await this.eventBus.publish({ type: "task:deleted", payload: { id: taskId, repoId: task.repoId, ownerUserId: task.ownerUserId } });
     return true;
+  }
+
+  async publishTaskPushedEvent(input: {
+    taskId: string;
+    branchName: string;
+    commitMessage: string | null;
+  }): Promise<void> {
+    const task = await this.getStoredTask(input.taskId);
+    if (!task) {
+      return;
+    }
+
+    await this.eventBus.publish({
+      type: "task:pushed",
+      payload: {
+        taskId: task.id,
+        repoId: task.repoId,
+        branchName: input.branchName,
+        commitMessage: input.commitMessage,
+        triggeredAt: nowIso()
+      }
+    });
+  }
+
+  async publishTaskMergedEvent(input: {
+    taskId: string;
+    sourceBranch: string;
+    targetBranch: string;
+    commitMessage: string | null;
+  }): Promise<void> {
+    const task = await this.getStoredTask(input.taskId);
+    if (!task) {
+      return;
+    }
+
+    await this.eventBus.publish({
+      type: "task:merged",
+      payload: {
+        taskId: task.id,
+        repoId: task.repoId,
+        sourceBranch: input.sourceBranch,
+        targetBranch: input.targetBranch,
+        commitMessage: input.commitMessage,
+        triggeredAt: nowIso()
+      }
+    });
   }
 
   async hasPendingChangeProposal(taskId: string): Promise<boolean> {

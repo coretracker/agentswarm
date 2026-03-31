@@ -796,6 +796,15 @@ export const registerTaskRoutes = (
     const pushed = await deps.spawner.pushTaskBranch(task, {
       commitMessage: parsed.data.commitMessage
     });
+    const pushedBranchName =
+      pushed.branchStrategy === "work_on_branch" ? pushed.baseBranch : pushed.branchName ?? task.branchName ?? task.baseBranch;
+    if (pushedBranchName) {
+      await deps.taskStore.publishTaskPushedEvent({
+        taskId: pushed.id,
+        branchName: pushedBranchName,
+        commitMessage: parsed.data.commitMessage?.trim() || null
+      });
+    }
     return reply.send(await withBranchSyncCounts(deps.spawner, pushed));
   });
 
@@ -882,6 +891,12 @@ export const registerTaskRoutes = (
 
     const merged = await deps.spawner.mergeTaskBranch(task, parsed.data.targetBranch, {
       commitMessage: parsed.data.commitMessage
+    });
+    await deps.taskStore.publishTaskMergedEvent({
+      taskId: merged.id,
+      sourceBranch: task.branchName,
+      targetBranch: parsed.data.targetBranch.trim(),
+      commitMessage: parsed.data.commitMessage?.trim() || null
     });
     await deps.taskStore.archiveTask(merged.id);
     await deps.taskStore.appendLog(merged.id, "Task archived after merge.");

@@ -257,6 +257,12 @@ export interface Repository {
   name: string;
   url: string;
   defaultBranch: string;
+  webhookUrl: string | null;
+  webhookEnabled: boolean;
+  webhookSecretConfigured: boolean;
+  webhookLastAttemptAt: string | null;
+  webhookLastStatus: "success" | "failed" | null;
+  webhookLastError: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -468,12 +474,19 @@ export interface CreateRepositoryInput {
   name: string;
   url: string;
   defaultBranch?: string;
+  webhookUrl?: string | null;
+  webhookEnabled?: boolean;
+  webhookSecret?: string;
 }
 
 export interface UpdateRepositoryInput {
   name?: string;
   url?: string;
   defaultBranch?: string;
+  webhookUrl?: string | null;
+  webhookEnabled?: boolean;
+  webhookSecret?: string;
+  clearWebhookSecret?: boolean;
 }
 
 export interface CreateTaskInput {
@@ -720,6 +733,7 @@ export interface TaskDeletedEvent {
   type: "task:deleted";
   payload: {
     id: string;
+    repoId: string;
     ownerUserId: string | null;
   };
 }
@@ -754,6 +768,29 @@ export interface TaskChangeProposalEvent {
   payload: TaskChangeProposal;
 }
 
+export interface TaskPushedEvent {
+  type: "task:pushed";
+  payload: {
+    taskId: string;
+    repoId: string;
+    branchName: string;
+    commitMessage: string | null;
+    triggeredAt: string;
+  };
+}
+
+export interface TaskMergedEvent {
+  type: "task:merged";
+  payload: {
+    taskId: string;
+    repoId: string;
+    sourceBranch: string;
+    targetBranch: string;
+    commitMessage: string | null;
+    triggeredAt: string;
+  };
+}
+
 export interface SettingsEvent {
   type: "settings:updated";
   payload: SystemSettings;
@@ -777,6 +814,8 @@ export type RealtimeEvent =
   | TaskMessageUpdatedEvent
   | TaskRunEvent
   | TaskChangeProposalEvent
+  | TaskPushedEvent
+  | TaskMergedEvent
   | SettingsEvent
   | RepositoryEvent
   | PresetEvent;

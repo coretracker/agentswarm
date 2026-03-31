@@ -19,6 +19,7 @@ import { registerAuthRoutes } from "./routes/auth.js";
 import { SpawnerService } from "./services/spawner.js";
 import { SchedulerService } from "./services/scheduler.js";
 import { GitHubImportService } from "./services/github-import-service.js";
+import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
 import { registerRoleRoutes } from "./routes/roles.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerUserRoutes } from "./routes/users.js";
@@ -57,6 +58,7 @@ const bootstrap = async (): Promise<void> => {
   const spawner = new SpawnerService(taskStore, settingsStore);
   const scheduler = new SchedulerService(taskStore, settingsStore, spawner);
   const githubImportService = new GitHubImportService(settingsStore);
+  const webhookDeliveryService = new WebhookDeliveryService(redisClients.command, repositoryStore);
 
   await roleStore.ensureDefaultAdminRole();
   await userStore.ensureDefaultAdminUser({
@@ -101,16 +103,19 @@ const bootstrap = async (): Promise<void> => {
   redisClients.sub.on("message", (_channel, message) => {
     try {
       const event = JSON.parse(message) as RealtimeEvent;
+      void webhookDeliveryService.handleRealtimeEvent(event);
       void auth.emitScopedRealtimeEvent(io, event);
     } catch (error) {
       app.log.error({ error }, "Failed to parse event message");
     }
   });
 
+  webhookDeliveryService.start();
   await scheduler.bootstrap();
 
   const close = async (): Promise<void> => {
     scheduler.stop();
+    webhookDeliveryService.stop();
     io.close();
     await Promise.all([
       redisClients.command.quit(),

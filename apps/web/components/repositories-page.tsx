@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { Repository } from "@agentswarm/shared-types";
-import { Button, Card, Flex, Form, Input, Modal, Popconfirm, Space, Table, Typography, message } from "antd";
+import { Button, Card, Checkbox, Flex, Form, Input, Modal, Popconfirm, Space, Switch, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useAuth } from "./auth-provider";
@@ -11,6 +11,10 @@ type RepositoryFormValues = {
   name: string;
   url: string;
   defaultBranch: string;
+  webhookEnabled: boolean;
+  webhookUrl: string;
+  webhookSecret: string;
+  clearWebhookSecret: boolean;
 };
 
 export function RepositoriesPage() {
@@ -30,7 +34,11 @@ export function RepositoriesPage() {
     form.setFieldsValue({
       name: "",
       url: "",
-      defaultBranch: "develop"
+      defaultBranch: "develop",
+      webhookEnabled: false,
+      webhookUrl: "",
+      webhookSecret: "",
+      clearWebhookSecret: false
     });
     setOpen(true);
   };
@@ -40,7 +48,11 @@ export function RepositoriesPage() {
     form.setFieldsValue({
       name: repository.name,
       url: repository.url,
-      defaultBranch: repository.defaultBranch
+      defaultBranch: repository.defaultBranch,
+      webhookEnabled: repository.webhookEnabled,
+      webhookUrl: repository.webhookUrl ?? "",
+      webhookSecret: "",
+      clearWebhookSecret: false
     });
     setOpen(true);
   };
@@ -73,6 +85,29 @@ export function RepositoriesPage() {
               { title: "URL", dataIndex: "url" },
               { title: "Default Branch", dataIndex: "defaultBranch" },
               {
+                title: "Webhook",
+                render: (_, repository) => {
+                  if (!repository.webhookEnabled || !repository.webhookUrl) {
+                    return <Typography.Text type="secondary">Disabled</Typography.Text>;
+                  }
+
+                  const lastState =
+                    repository.webhookLastStatus === "success"
+                      ? "Last delivery: success"
+                      : repository.webhookLastStatus === "failed"
+                        ? `Last delivery failed${repository.webhookLastError ? ` (${repository.webhookLastError})` : ""}`
+                        : "No deliveries yet";
+                  return (
+                    <Flex vertical gap={0}>
+                      <Typography.Text>{repository.webhookUrl}</Typography.Text>
+                      <Typography.Text type={repository.webhookLastStatus === "failed" ? "danger" : "secondary"}>
+                        {lastState}
+                      </Typography.Text>
+                    </Flex>
+                  );
+                }
+              },
+              {
                 title: "Actions",
                 render: (_, repository) => (
                   <Space>
@@ -104,11 +139,20 @@ export function RepositoriesPage() {
           onFinish={async (values) => {
             setSubmitting(true);
             try {
+              const payload = {
+                name: values.name,
+                url: values.url,
+                defaultBranch: values.defaultBranch,
+                webhookEnabled: values.webhookEnabled,
+                webhookUrl: values.webhookUrl.trim().length > 0 ? values.webhookUrl.trim() : null,
+                ...(values.webhookSecret.trim().length > 0 ? { webhookSecret: values.webhookSecret.trim() } : {}),
+                ...(editing && values.clearWebhookSecret ? { clearWebhookSecret: true } : {})
+              };
               if (editing) {
-                await api.updateRepository(editing.id, values);
+                await api.updateRepository(editing.id, payload);
                 messageApi.success("Repository updated");
               } else {
-                await api.createRepository(values);
+                await api.createRepository(payload);
                 messageApi.success("Repository created");
               }
               setOpen(false);
@@ -126,6 +170,64 @@ export function RepositoriesPage() {
           <Form.Item name="defaultBranch" label="Default Branch" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
+          <Form.Item name="webhookEnabled" label="Enable Webhooks" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item
+            name="webhookUrl"
+            label="Webhook URL"
+            dependencies={["webhookEnabled"]}
+            rules={[
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!getFieldValue("webhookEnabled")) {
+                    return Promise.resolve();
+                  }
+                  if (typeof value === "string" && value.trim().length > 0) {
+                    try {
+                      new URL(value.trim());
+                      return Promise.resolve();
+                    } catch {
+                      return Promise.reject(new Error("Webhook URL must be a valid absolute URL."));
+                    }
+                  }
+                  return Promise.reject(new Error("Webhook URL is required when webhooks are enabled."));
+                }
+              })
+            ]}
+          >
+            <Input placeholder="https://example.com/webhooks/agentswarm" />
+          </Form.Item>
+          <Form.Item
+            name="webhookSecret"
+            label={editing?.webhookSecretConfigured ? "Webhook Secret (leave blank to keep existing)" : "Webhook Secret"}
+            dependencies={["webhookEnabled", "clearWebhookSecret"]}
+            rules={[
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!getFieldValue("webhookEnabled")) {
+                    return Promise.resolve();
+                  }
+                  const normalized = typeof value === "string" ? value.trim() : "";
+                  const clearSecret = getFieldValue("clearWebhookSecret") === true;
+                  if (normalized.length > 0) {
+                    return Promise.resolve();
+                  }
+                  if (editing?.webhookSecretConfigured && !clearSecret) {
+                    return Promise.resolve();
+                  }
+                  return Promise.reject(new Error("Webhook secret is required when webhooks are enabled."));
+                }
+              })
+            ]}
+          >
+            <Input.Password />
+          </Form.Item>
+          {editing?.webhookSecretConfigured ? (
+            <Form.Item name="clearWebhookSecret" valuePropName="checked">
+              <Checkbox>Clear stored webhook secret</Checkbox>
+            </Form.Item>
+          ) : null}
           <Button type="primary" htmlType="submit" loading={submitting}>
             {editing ? "Save Changes" : "Create Repository"}
           </Button>
