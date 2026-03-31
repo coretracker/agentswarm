@@ -3,8 +3,8 @@ FROM node:20-alpine
 RUN apk add --no-cache git bash openssh-client ripgrep curl \
   && npm install -g @anthropic-ai/claude-code
 
-RUN addgroup -g 1000 claude \
-  && adduser -D -u 1000 -G claude -h /home/claude claude \
+RUN addgroup claude \
+  && adduser -D -G claude -h /home/claude claude \
   && mkdir -p /workspace \
   && chown -R claude:claude /home/claude /workspace
 
