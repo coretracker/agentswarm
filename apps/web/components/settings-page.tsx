@@ -5,7 +5,8 @@ import type { AgentProvider, McpServerTransport, PermissionScope, ProviderProfil
 import {
   PERMISSION_SCOPE_GROUPS,
   getAgentProviderLabel,
-  getEffortOptionsForProvider
+  getEffortOptionsForProvider,
+  getModelsForProvider
 } from "@agentswarm/shared-types";
 import { DeleteOutlined, LockOutlined, PlusOutlined } from "@ant-design/icons";
 import {
@@ -66,6 +67,9 @@ interface RoleFormValues {
   name: string;
   description: string;
   scopes: PermissionScope[];
+  allowedProviders: AgentProvider[];
+  allowedModels: string[];
+  allowedEfforts: ProviderProfile[];
 }
 
 const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
@@ -77,6 +81,8 @@ const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: getAgentProviderLabel("codex"), value: "codex" },
   { label: getAgentProviderLabel("claude"), value: "claude" }
 ];
+
+const summarizeAllowlist = (label: string, values: string[]): string => `${label}: ${values.length === 0 ? "All" : values.join(", ")}`;
 
 const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   defaultProvider: settings.defaultProvider,
@@ -116,6 +122,16 @@ export function SettingsPage() {
   const canEditSettings = can("settings:edit");
   const { models: codexModels, loading: codexModelsLoading } = useProviderModels("codex");
   const { models: claudeModels, loading: claudeModelsLoading } = useProviderModels("claude");
+  const allModelOptions = Array.from(
+    new Map(
+      [...codexModels, ...claudeModels, ...getModelsForProvider("codex"), ...getModelsForProvider("claude")].map((option) => [option.value, option])
+    ).values()
+  ).sort((left, right) => left.label.localeCompare(right.label));
+  const allEffortOptions = Array.from(
+    new Map(
+      [...getEffortOptionsForProvider("codex"), ...getEffortOptionsForProvider("claude")].map((option) => [option.value, option])
+    ).values()
+  );
 
   const loadRoles = async () => {
     setRolesLoading(true);
@@ -519,7 +535,14 @@ export function SettingsPage() {
               disabled={!canEditSettings}
               onClick={() => {
                 setEditingRole(null);
-                roleForm.setFieldsValue({ name: "", description: "", scopes: [] });
+                roleForm.setFieldsValue({
+                  name: "",
+                  description: "",
+                  scopes: [],
+                  allowedProviders: [],
+                  allowedModels: [],
+                  allowedEfforts: []
+                });
                 setRoleModalOpen(true);
               }}
             >
@@ -558,6 +581,16 @@ export function SettingsPage() {
                 )
               },
               {
+                title: "Allowlists",
+                render: (_, role) => (
+                  <Space direction="vertical" size={4}>
+                    <Typography.Text type="secondary">{summarizeAllowlist("Providers", role.allowedProviders)}</Typography.Text>
+                    <Typography.Text type="secondary">{summarizeAllowlist("Models", role.allowedModels)}</Typography.Text>
+                    <Typography.Text type="secondary">{summarizeAllowlist("Efforts", role.allowedEfforts)}</Typography.Text>
+                  </Space>
+                )
+              },
+              {
                 title: "Actions",
                 render: (_, role) => (
                   <Space>
@@ -568,7 +601,10 @@ export function SettingsPage() {
                         roleForm.setFieldsValue({
                           name: role.name,
                           description: role.description,
-                          scopes: role.scopes
+                          scopes: role.scopes,
+                          allowedProviders: role.allowedProviders,
+                          allowedModels: role.allowedModels,
+                          allowedEfforts: role.allowedEfforts
                         });
                         setRoleModalOpen(true);
                       }}
@@ -664,6 +700,42 @@ export function SettingsPage() {
                 </Space>
               );
             }}
+          </Form.Item>
+          <Form.Item
+            name="allowedProviders"
+            label="Allowed Providers"
+            extra="Leave empty to allow all providers."
+          >
+            <Select
+              mode="multiple"
+              options={providerOptions}
+              disabled={!canEditSettings || editingRole?.isSystem}
+            />
+          </Form.Item>
+          <Form.Item
+            name="allowedModels"
+            label="Allowed Models"
+            extra="Leave empty to allow all models."
+          >
+            <Select
+              mode="multiple"
+              options={allModelOptions}
+              loading={codexModelsLoading || claudeModelsLoading}
+              optionFilterProp="label"
+              showSearch
+              disabled={!canEditSettings || editingRole?.isSystem}
+            />
+          </Form.Item>
+          <Form.Item
+            name="allowedEfforts"
+            label="Allowed Efforts"
+            extra="Leave empty to allow all efforts."
+          >
+            <Select
+              mode="multiple"
+              options={allEffortOptions}
+              disabled={!canEditSettings || editingRole?.isSystem}
+            />
           </Form.Item>
           <Button
             type="primary"

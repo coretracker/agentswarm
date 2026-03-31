@@ -7,7 +7,7 @@ import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
 import { applyTaskStartMode } from "../lib/task-start-mode.js";
-import { requireTaskCapabilityAccess } from "../lib/task-capability-access.js";
+import { requireTaskCapabilityAccess, requireTaskExecutionConfigAccess } from "../lib/task-capability-access.js";
 import { withBranchSyncCounts } from "./tasks.js";
 
 const issueImportSchema = z.object({
@@ -138,6 +138,9 @@ export const registerImportRoutes = (
       ) {
         return;
       }
+      if (!requireTaskExecutionConfigAccess(request, reply, issueRest)) {
+        return;
+      }
 
       const taskInput = await deps.githubImportService.buildTaskInputFromIssue(repository, { ...issueRest, startMode });
       const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
@@ -186,6 +189,9 @@ export const registerImportRoutes = (
       }
 
       if (!requireTaskCapabilityAccess(request, reply, { taskType: "build", startMode: "run_now" })) {
+        return;
+      }
+      if (!requireTaskExecutionConfigAccess(request, reply, parsed.data)) {
         return;
       }
 

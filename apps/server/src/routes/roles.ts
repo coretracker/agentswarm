@@ -14,13 +14,19 @@ const permissionScopeSchema = z.custom<PermissionScope>((value) => typeof value 
 const createRoleSchema = z.object({
   name: z.string().trim().min(1),
   description: z.string().optional(),
-  scopes: z.array(permissionScopeSchema).min(1)
+  scopes: z.array(permissionScopeSchema).min(1),
+  allowedProviders: z.array(z.enum(["codex", "claude"])).optional(),
+  allowedModels: z.array(z.string().trim().min(1)).optional(),
+  allowedEfforts: z.array(z.enum(["low", "medium", "high", "max"])).optional()
 });
 
 const updateRoleSchema = z.object({
   name: z.string().trim().min(1).optional(),
   description: z.string().optional(),
-  scopes: z.array(permissionScopeSchema).min(1).optional()
+  scopes: z.array(permissionScopeSchema).min(1).optional(),
+  allowedProviders: z.array(z.enum(["codex", "claude"])).optional(),
+  allowedModels: z.array(z.string().trim().min(1)).optional(),
+  allowedEfforts: z.array(z.enum(["low", "medium", "high", "max"])).optional()
 });
 
 export const registerRoleRoutes = (

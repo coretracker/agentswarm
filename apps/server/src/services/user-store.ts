@@ -4,9 +4,11 @@ import { nanoid } from "nanoid";
 import type Redis from "ioredis";
 import {
   ALL_PERMISSION_SCOPES,
+  type AgentProvider,
   type AuthSessionUser,
   type CreateUserInput,
   type PermissionScope,
+  type ProviderProfile,
   type Role,
   type User,
   type UserRoleRef,
@@ -48,6 +50,13 @@ const normalizeUserEmail = (value: string | undefined): string => (value ?? "").
 
 const sortScopes = (scopes: PermissionScope[]): PermissionScope[] =>
   Array.from(new Set(scopes)).sort((left, right) => (scopeOrder.get(left) ?? 0) - (scopeOrder.get(right) ?? 0));
+
+const mergeRoleAllowlist = <T extends string>(roles: Role[], selector: (role: Role) => T[]): T[] => {
+  if (roles.every((role) => selector(role).length === 0)) {
+    return [];
+  }
+  return Array.from(new Set(roles.flatMap((role) => selector(role)))).sort((left, right) => left.localeCompare(right));
+};
 
 const hashPassword = async (
   password: string
@@ -285,9 +294,15 @@ export class UserStore {
 
     const roles = await this.roleStore.getRolesByIds(user.roleIds);
     const scopes = sortScopes(roles.flatMap((role) => role.scopes));
+    const allowedProviders = mergeRoleAllowlist<AgentProvider>(roles, (role) => role.allowedProviders);
+    const allowedModels = mergeRoleAllowlist<string>(roles, (role) => role.allowedModels);
+    const allowedEfforts = mergeRoleAllowlist<ProviderProfile>(roles, (role) => role.allowedEfforts);
     return {
       ...(await this.sanitizeUser(user)),
-      scopes
+      scopes,
+      allowedProviders,
+      allowedModels,
+      allowedEfforts
     };
   }
 

@@ -11,6 +11,7 @@ import {
   getTaskBranchStrategyLabel,
   getTaskStatusLabel,
   getTaskTypeLabel,
+  getModelsForProvider,
   isActiveTaskStatus,
   type Task,
   type TaskAction,
@@ -524,6 +525,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const pushCount = task?.pushCount ?? 0;
   const canDelete = canDeleteTask && !!task && !isActive;
   const canArchive = canEditTask && !!task && !isActive && !isArchived;
+  const roleAllowedProviders = session?.user.allowedProviders ?? [];
+  const roleAllowedModels = session?.user.allowedModels ?? [];
+  const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
+  const providerInputOptions = providerOptions.filter(
+    (option) => roleAllowedProviders.length === 0 || roleAllowedProviders.includes(option.value)
+  );
+  const allowedProviderModels = providerModels.filter(
+    (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
+  );
+  const allowedEffortOptions = getEffortOptionsForProvider(providerInput).filter(
+    (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
+  );
   const canContinueOnBranch =
     canCreateFollowUp &&
     !isArchived &&
@@ -755,6 +768,37 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setDiffCompareBaseRef(task.repoDefaultBranch?.trim() ? task.repoDefaultBranch : null);
     }
   }, [task?.id, task?.repoDefaultBranch]);
+
+  useEffect(() => {
+    if (providerInputOptions.some((option) => option.value === providerInput)) {
+      return;
+    }
+    const fallback = providerInputOptions[0]?.value;
+    if (!fallback) {
+      return;
+    }
+    setProviderInput(fallback);
+  }, [providerInput, providerInputOptions]);
+
+  useEffect(() => {
+    if (allowedProviderModels.some((option) => option.value === modelInput)) {
+      return;
+    }
+    const fallback = allowedProviderModels[0]?.value;
+    if (fallback) {
+      setModelInput(fallback);
+    }
+  }, [allowedProviderModels, modelInput]);
+
+  useEffect(() => {
+    if (allowedEffortOptions.some((option) => option.value === providerProfileInput)) {
+      return;
+    }
+    const fallback = allowedEffortOptions[0]?.value;
+    if (fallback) {
+      setProviderProfileInput(fallback);
+    }
+  }, [allowedEffortOptions, providerProfileInput]);
 
   useEffect(() => {
     if (!allowedChatActions.includes(selectedChatAction)) {
@@ -2187,10 +2231,19 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Typography.Text type="secondary">Provider</Typography.Text>
             <Select
               value={providerInput}
-              options={providerOptions}
+              options={providerInputOptions}
               onChange={(value) => {
                 setProviderInput(value);
-                setModelInput(getDefaultModelForProvider(value));
+                const nextModels = getModelsForProvider(value).filter(
+                  (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
+                );
+                const nextEfforts = getEffortOptionsForProvider(value).filter(
+                  (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
+                );
+                setModelInput(nextModels[0]?.value ?? getDefaultModelForProvider(value));
+                if (!nextEfforts.some((option) => option.value === providerProfileInput)) {
+                  setProviderProfileInput(nextEfforts[0]?.value ?? "high");
+                }
               }}
               style={{ width: "100%", marginTop: 6 }}
               disabled={!canEditTask || isArchived || interactiveTerminalRunning}
@@ -2207,7 +2260,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Typography.Text type="secondary">Model</Typography.Text>
             <Select
               value={modelInput}
-              options={providerModels}
+              options={allowedProviderModels}
               loading={providerModelsLoading}
               showSearch
               optionFilterProp="label"
@@ -2227,7 +2280,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Typography.Text type="secondary">Effort</Typography.Text>
             <Select
               value={providerProfileInput}
-              options={getEffortOptionsForProvider(providerInput)}
+              options={allowedEffortOptions}
               onChange={(value) => setProviderProfileInput(value)}
               style={{ width: "100%", marginTop: 6 }}
               disabled={!canEditTask || isArchived || interactiveTerminalRunning}

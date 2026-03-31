@@ -18,7 +18,8 @@ import { getMutationBlockedReason } from "../lib/task-mutation-guards.js";
 import {
   requireInteractiveTerminalAccess,
   requireTaskActionCapabilityAccess,
-  requireTaskCapabilityAccess
+  requireTaskCapabilityAccess,
+  requireTaskExecutionConfigAccess
 } from "../lib/task-capability-access.js";
 import { canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
 
@@ -490,6 +491,9 @@ export const registerTaskRoutes = (
     ) {
       return;
     }
+    if (!requireTaskExecutionConfigAccess(request, reply, createPayload)) {
+      return;
+    }
 
     const task = await deps.taskStore.createTask(
       {
@@ -593,6 +597,9 @@ export const registerTaskRoutes = (
 
     if (task.status === "archived") {
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+    if (!requireTaskExecutionConfigAccess(request, reply, parsed.data)) {
+      return;
     }
 
     const updated = await deps.taskStore.patchTask(task.id, {

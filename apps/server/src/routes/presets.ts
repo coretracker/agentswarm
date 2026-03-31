@@ -10,7 +10,7 @@ import type { SchedulerService } from "../services/scheduler.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import { applyTaskStartMode } from "../lib/task-start-mode.js";
-import { requireTaskCapabilityAccess } from "../lib/task-capability-access.js";
+import { requireTaskCapabilityAccess, requireTaskExecutionConfigAccess } from "../lib/task-capability-access.js";
 import { withBranchSyncCounts } from "./tasks.js";
 
 const presetSchema = z.discriminatedUnion("sourceType", [
@@ -93,6 +93,15 @@ export const registerPresetRoutes = (
     ) {
       return;
     }
+    if (
+      !requireTaskExecutionConfigAccess(request, reply, {
+        provider: parsed.data.provider,
+        providerProfile: parsed.data.providerProfile,
+        model: parsed.data.model
+      })
+    ) {
+      return;
+    }
 
     const repository = await deps.repositoryStore.getRepository(parsed.data.repoId);
     if (!repository) {
@@ -113,6 +122,15 @@ export const registerPresetRoutes = (
       !requireTaskCapabilityAccess(request, reply, {
         taskType: parsed.data.sourceType === "pull_request" ? "build" : parsed.data.taskType,
         startMode: parsed.data.sourceType === "pull_request" ? "run_now" : parsed.data.startMode
+      })
+    ) {
+      return;
+    }
+    if (
+      !requireTaskExecutionConfigAccess(request, reply, {
+        provider: parsed.data.provider,
+        providerProfile: parsed.data.providerProfile,
+        model: parsed.data.model
       })
     ) {
       return;
@@ -165,6 +183,15 @@ export const registerPresetRoutes = (
           ? { taskType: "build" as const, startMode: "run_now" as const }
           : { taskType: preset.definition.taskType, startMode: preset.definition.startMode };
       if (!requireTaskCapabilityAccess(request, reply, capabilityInput)) {
+        return;
+      }
+      if (
+        !requireTaskExecutionConfigAccess(request, reply, {
+          provider: preset.definition.provider,
+          providerProfile: preset.definition.providerProfile,
+          model: preset.definition.model
+        })
+      ) {
         return;
       }
 

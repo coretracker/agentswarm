@@ -16,7 +16,7 @@ import type {
   TaskStartMode,
   TaskType
 } from "@agentswarm/shared-types";
-import { getAgentProviderLabel, getDefaultModelForProvider, getEffortOptionsForProvider } from "@agentswarm/shared-types";
+import { getAgentProviderLabel, getDefaultModelForProvider, getEffortOptionsForProvider, getModelsForProvider } from "@agentswarm/shared-types";
 import { Alert, Card, Checkbox, Col, Flex, Form, Input, Row, Select, Space, Typography } from "antd";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -148,7 +148,7 @@ export function TaskDefinitionFields({
   showSaveAsPreset = false,
   syncSettingsDefaults = true
 }: TaskDefinitionFieldsProps) {
-  const { can } = useAuth();
+  const { can, session } = useAuth();
   const { repositories } = useRepositories();
   const { settings } = useSettings();
   const [githubIssues, setGitHubIssues] = useState<GitHubIssueReference[]>([]);
@@ -182,6 +182,21 @@ export function TaskDefinitionFields({
   const baseBranchLabel = isBlankSource || isIssueSource ? "Base Branch" : undefined;
   const providerMissingCredentials =
     selectedProvider === "codex" ? !settings?.openaiApiKeyConfigured : !settings?.anthropicApiKeyConfigured;
+  const roleAllowedProviders = session?.user.allowedProviders ?? [];
+  const roleAllowedModels = session?.user.allowedModels ?? [];
+  const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
+  const providerSelectOptions = providerOptions(Boolean(settings?.openaiApiKeyConfigured), Boolean(settings?.anthropicApiKeyConfigured)).map(
+    (option) => ({
+      ...option,
+      disabled: Boolean(option.disabled || (roleAllowedProviders.length > 0 && !roleAllowedProviders.includes(option.value)))
+    })
+  );
+  const allowedModelOptions = providerModels.filter(
+    (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
+  );
+  const allowedEffortOptions = getEffortOptionsForProvider(selectedProvider).filter(
+    (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
+  );
   const sourceOptions: Array<{ label: string; value: TaskSourceType }> = [
     { label: "Blank", value: "blank" },
     ...(canReadRepositoryMetadata
@@ -240,6 +255,41 @@ export function TaskDefinitionFields({
       form.setFieldValue("providerProfile", getProviderDefaultProfile(nextProvider, settings));
     }
   }, [form, settings, syncSettingsDefaults]);
+
+  useEffect(() => {
+    const selected = providerSelectOptions.find((option) => option.value === selectedProvider && !option.disabled);
+    if (selected) {
+      return;
+    }
+
+    const fallback = providerSelectOptions.find((option) => !option.disabled);
+    if (!fallback) {
+      return;
+    }
+
+    form.setFieldValue("provider", fallback.value);
+  }, [form, providerSelectOptions, selectedProvider]);
+
+  useEffect(() => {
+    if (allowedModelOptions.length === 0) {
+      return;
+    }
+    if (allowedModelOptions.some((option) => option.value === selectedModel)) {
+      return;
+    }
+    form.setFieldValue("model", allowedModelOptions[0]?.value);
+  }, [allowedModelOptions, form, selectedModel]);
+
+  useEffect(() => {
+    if (allowedEffortOptions.length === 0) {
+      return;
+    }
+    const currentProfile = form.getFieldValue("providerProfile") as ProviderProfile | undefined;
+    if (currentProfile && allowedEffortOptions.some((option) => option.value === currentProfile)) {
+      return;
+    }
+    form.setFieldValue("providerProfile", allowedEffortOptions[0]?.value);
+  }, [allowedEffortOptions, form]);
 
   useEffect(() => {
     if (selectedSourceType !== "blank") {
@@ -523,20 +573,26 @@ export function TaskDefinitionFields({
 
           <Form.Item name="provider" label="Provider" rules={[{ required: true }]}>
             <Select
-              options={providerOptions(Boolean(settings?.openaiApiKeyConfigured), Boolean(settings?.anthropicApiKeyConfigured))}
+              options={providerSelectOptions}
               onChange={(value: AgentProvider) => {
-                form.setFieldValue("model", getProviderDefaultModel(value, settings));
-                form.setFieldValue("providerProfile", getProviderDefaultProfile(value, settings));
+                const nextModels = getModelsForProvider(value).filter(
+                  (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
+                );
+                const nextEfforts = getEffortOptionsForProvider(value).filter(
+                  (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
+                );
+                form.setFieldValue("model", nextModels[0]?.value ?? getProviderDefaultModel(value, settings));
+                form.setFieldValue("providerProfile", nextEfforts[0]?.value ?? getProviderDefaultProfile(value, settings));
               }}
             />
           </Form.Item>
 
           <Form.Item name="model" label="Model" rules={[{ required: true }]}>
-            <Select options={providerModels} loading={providerModelsLoading} showSearch optionFilterProp="label" />
+            <Select options={allowedModelOptions} loading={providerModelsLoading} showSearch optionFilterProp="label" />
           </Form.Item>
 
           <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
-            <Select options={getEffortOptionsForProvider(selectedProvider)} />
+            <Select options={allowedEffortOptions} />
           </Form.Item>
 
           {providerMissingCredentials ? (

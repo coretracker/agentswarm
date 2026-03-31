@@ -2,8 +2,10 @@ import { nanoid } from "nanoid";
 import type Redis from "ioredis";
 import {
   ALL_PERMISSION_SCOPES,
+  type AgentProvider,
   type CreateRoleInput,
   type PermissionScope,
+  type ProviderProfile,
   type Role,
   type UpdateRoleInput
 } from "@agentswarm/shared-types";
@@ -16,7 +18,7 @@ const ROLE_NAME_KEY_PREFIX = "agentswarm:role_name:";
 export const SYSTEM_ADMIN_ROLE_ID = "admin";
 const SYSTEM_ADMIN_ROLE_NAME = "Admin";
 const SYSTEM_ADMIN_ROLE_DESCRIPTION = "Built-in superuser role with every available permission.";
-const ROLE_SCOPE_VERSION = 2;
+const ROLE_SCOPE_VERSION = 3;
 
 const nowIso = (): string => new Date().toISOString();
 const scopeOrder = new Map(ALL_PERMISSION_SCOPES.map((scope, index) => [scope, index]));
@@ -25,6 +27,34 @@ const normalizeRoleName = (value: string | undefined): string => (value ?? "").t
 const normalizeRoleNameKey = (value: string | undefined): string => normalizeRoleName(value).toLowerCase();
 
 const normalizeRoleDescription = (value: string | undefined): string => (value ?? "").trim();
+const providerOrder: AgentProvider[] = ["codex", "claude"];
+const effortOrder: ProviderProfile[] = ["low", "medium", "high", "max"];
+
+const normalizeAllowedProviders = (providers: AgentProvider[] | string[] | undefined): AgentProvider[] => {
+  const unique = Array.from(new Set((providers ?? []).map((provider) => String(provider).trim()).filter(Boolean)));
+  const invalid = unique.find((provider) => !providerOrder.includes(provider as AgentProvider));
+  if (invalid) {
+    throw new HttpError(400, `Unknown provider: ${invalid}`);
+  }
+  return unique
+    .map((provider) => provider as AgentProvider)
+    .sort((left, right) => providerOrder.indexOf(left) - providerOrder.indexOf(right));
+};
+
+const normalizeAllowedEfforts = (efforts: ProviderProfile[] | string[] | undefined): ProviderProfile[] => {
+  const unique = Array.from(new Set((efforts ?? []).map((effort) => String(effort).trim()).filter(Boolean)));
+  const invalid = unique.find((effort) => !effortOrder.includes(effort as ProviderProfile));
+  if (invalid) {
+    throw new HttpError(400, `Unknown effort: ${invalid}`);
+  }
+  return unique
+    .map((effort) => effort as ProviderProfile)
+    .sort((left, right) => effortOrder.indexOf(left) - effortOrder.indexOf(right));
+};
+
+const normalizeAllowedModels = (models: string[] | undefined): string[] =>
+  Array.from(new Set((models ?? []).map((model) => model.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right));
+
 const expandLegacyTaskModeScopes = (scopes: string[]): string[] => {
   const expanded = new Set(scopes);
   if (expanded.has("task:create") || expanded.has("task:edit")) {
@@ -67,11 +97,19 @@ export class RoleStore {
   }
 
   private normalizeRole(role: Role): Role {
+    const legacyRole = role as Role & {
+      allowedProviders?: AgentProvider[] | string[];
+      allowedModels?: string[];
+      allowedEfforts?: ProviderProfile[] | string[];
+    };
     return {
       ...role,
       name: normalizeRoleName(role.name),
       description: normalizeRoleDescription(role.description),
       scopes: normalizeScopes(role.scopes, { legacyTaskModes: role.scopeVersion !== ROLE_SCOPE_VERSION }),
+      allowedProviders: normalizeAllowedProviders(legacyRole.allowedProviders),
+      allowedModels: normalizeAllowedModels(legacyRole.allowedModels),
+      allowedEfforts: normalizeAllowedEfforts(legacyRole.allowedEfforts),
       scopeVersion: ROLE_SCOPE_VERSION
     };
   }
@@ -100,6 +138,9 @@ export class RoleStore {
       name: SYSTEM_ADMIN_ROLE_NAME,
       description: SYSTEM_ADMIN_ROLE_DESCRIPTION,
       scopes: [...ALL_PERMISSION_SCOPES],
+      allowedProviders: [],
+      allowedModels: [],
+      allowedEfforts: [],
       scopeVersion: ROLE_SCOPE_VERSION,
       isSystem: true,
       createdAt: current?.createdAt ?? timestamp,
@@ -210,6 +251,9 @@ export class RoleStore {
       name,
       description: normalizeRoleDescription(input.description),
       scopes: normalizeScopes(input.scopes),
+      allowedProviders: normalizeAllowedProviders(input.allowedProviders),
+      allowedModels: normalizeAllowedModels(input.allowedModels),
+      allowedEfforts: normalizeAllowedEfforts(input.allowedEfforts),
       scopeVersion: ROLE_SCOPE_VERSION,
       isSystem: false,
       createdAt: timestamp,
@@ -247,6 +291,10 @@ export class RoleStore {
       name: nextName,
       description: input.description === undefined ? current.description : normalizeRoleDescription(input.description),
       scopes: input.scopes === undefined ? current.scopes : normalizeScopes(input.scopes),
+      allowedProviders:
+        input.allowedProviders === undefined ? current.allowedProviders : normalizeAllowedProviders(input.allowedProviders),
+      allowedModels: input.allowedModels === undefined ? current.allowedModels : normalizeAllowedModels(input.allowedModels),
+      allowedEfforts: input.allowedEfforts === undefined ? current.allowedEfforts : normalizeAllowedEfforts(input.allowedEfforts),
       scopeVersion: ROLE_SCOPE_VERSION,
       updatedAt: nowIso()
     };

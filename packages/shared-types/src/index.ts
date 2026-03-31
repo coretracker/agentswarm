@@ -187,6 +187,9 @@ export interface Role {
   name: string;
   description: string;
   scopes: PermissionScope[];
+  allowedProviders: AgentProvider[];
+  allowedModels: string[];
+  allowedEfforts: ProviderProfile[];
   scopeVersion?: number;
   isSystem: boolean;
   createdAt: string;
@@ -212,6 +215,9 @@ export interface User {
 
 export interface AuthSessionUser extends User {
   scopes: PermissionScope[];
+  allowedProviders: AgentProvider[];
+  allowedModels: string[];
+  allowedEfforts: ProviderProfile[];
 }
 
 export interface AuthSession {
@@ -228,12 +234,18 @@ export interface CreateRoleInput {
   name: string;
   description?: string;
   scopes: PermissionScope[];
+  allowedProviders?: AgentProvider[];
+  allowedModels?: string[];
+  allowedEfforts?: ProviderProfile[];
 }
 
 export interface UpdateRoleInput {
   name?: string;
   description?: string;
   scopes?: PermissionScope[];
+  allowedProviders?: AgentProvider[];
+  allowedModels?: string[];
+  allowedEfforts?: ProviderProfile[];
 }
 
 export interface CreateUserInput {
