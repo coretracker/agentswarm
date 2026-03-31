@@ -20,17 +20,12 @@ import { getSeenTaskVersions, isTaskSeen, markTaskSeen, migrateSeenTaskVersions,
 import { useAuth } from "./auth-provider";
 
 const statusOptions: Array<{ label: string; value: TaskStatus }> = [
-  { label: "Plan Queued", value: "plan_queued" },
-  { label: "Planning", value: "planning" },
-  { label: "Planned", value: "planned" },
   { label: "Build Queued", value: "build_queued" },
   { label: "Preparing Workspace", value: "preparing_workspace" },
   { label: "Building", value: "building" },
-  { label: "Review Queued", value: "review_queued" },
-  { label: "Reviewing", value: "reviewing" },
   { label: "Ask Queued", value: "ask_queued" },
   { label: "Answering", value: "asking" },
-  { label: "Ready", value: "review" },
+  { label: "Completed", value: "completed" },
   { label: "Answered", value: "answered" },
   { label: "Accepted", value: "accepted" },
   { label: "Archived", value: "archived" },
@@ -39,17 +34,12 @@ const statusOptions: Array<{ label: string; value: TaskStatus }> = [
 ];
 
 const statusColor: Record<TaskStatus, string> = {
-  plan_queued: "gold",
-  planning: "processing",
-  planned: "purple",
   build_queued: "cyan",
   preparing_workspace: "processing",
   building: "blue",
-  review_queued: "geekblue",
-  reviewing: "geekblue",
   ask_queued: "magenta",
   asking: "magenta",
-  review: "orange",
+  completed: "orange",
   answered: "lime",
   accepted: "green",
   archived: "default",
@@ -70,7 +60,7 @@ export function TasksPage() {
   const [createdAtFilter, setCreatedAtFilter] = useState<string | null>(null);
   const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
-  const canCreateTask = can("task:create");
+  const canCreateTask = can("task:create") && (can("task:build") || can("task:ask") || can("task:interactive"));
   const canEditTask = can("task:edit");
   const canDeleteTask = can("task:delete");
   const archivedView = searchParams.get("view") === "archived";
@@ -168,7 +158,7 @@ export function TasksPage() {
             <Space size={8} wrap>
               <Typography.Text type="secondary">
                 {archivedView
-                  ? "Archived tasks are read-only and kept out of the active work queue."
+                  ? "Archived tasks are kept out of the active work queue. They stay read-only, but you can still delete them."
                   : "Track build and ask tasks across their execution lifecycle."}
               </Typography.Text>
               <Typography.Link onClick={() => router.push(archivedView ? "/tasks" : "/tasks?view=archived")}>

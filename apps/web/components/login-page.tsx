@@ -6,12 +6,15 @@ import { Alert, App, Button, Card, Flex, Form, Input, Typography } from "antd";
 import type { LoginInput } from "@agentswarm/shared-types";
 import { ApiError } from "../src/api/client";
 import { resolveDefaultPath } from "../src/auth/access";
+import { AppLogo } from "./app-logo";
 import { useAuth } from "./auth-provider";
+import { useThemeMode } from "./theme-provider";
 
 export function LoginPage() {
   const router = useRouter();
   const { message } = App.useApp();
   const { loading, login, session } = useAuth();
+  const { mode } = useThemeMode();
   const [form] = Form.useForm<LoginInput>();
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -28,12 +31,26 @@ export function LoginPage() {
     <Flex
       align="center"
       justify="center"
-      style={{ minHeight: "100vh", padding: 24, background: "linear-gradient(180deg, #f6f7fb 0%, #e8edf5 100%)" }}
+      style={{
+        minHeight: "100vh",
+        padding: 24,
+        background:
+          mode === "dark"
+            ? "linear-gradient(180deg, #0f1613 0%, #19231e 100%)"
+            : "linear-gradient(180deg, #f6f7fb 0%, #e8edf5 100%)"
+      }}
     >
-      <Card bordered={false} style={{ width: "100%", maxWidth: 440, boxShadow: "0 24px 60px rgba(15, 23, 42, 0.12)" }}>
+      <Card
+        bordered={false}
+        style={{
+          width: "100%",
+          maxWidth: 440,
+          boxShadow: mode === "dark" ? "0 24px 60px rgba(0, 0, 0, 0.38)" : "0 24px 60px rgba(15, 23, 42, 0.12)"
+        }}
+      >
         <Flex vertical gap={8} style={{ marginBottom: 24 }}>
           <Flex align="center" gap={12} style={{ marginBottom: 8 }}>
-            <img src="/logo.svg" alt="AgentSwarm logo" style={{ width: 22, height: 32, display: "block" }} />
+            <AppLogo width={22} height={32} />
             <Typography.Title level={3} style={{ margin: 0 }}>
               AgentSwarm
             </Typography.Title>

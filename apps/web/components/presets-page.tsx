@@ -10,6 +10,7 @@ import type {
   Preset,
   TaskDefinitionInput
 } from "@agentswarm/shared-types";
+import { hasRequiredTaskCapabilitiesForDefinition as canUsePresetDefinition } from "@agentswarm/shared-types";
 import { Button, Card, Flex, Form, Modal, Popconfirm, Select, Space, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { usePresets } from "../src/hooks/usePresets";
@@ -34,7 +35,7 @@ const sourceTypeLabel: Record<Preset["sourceType"], string> = {
 export function PresetsPage() {
   const router = useRouter();
   const { presets, loading } = usePresets();
-  const { can } = useAuth();
+  const { can, session } = useAuth();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Preset | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -47,10 +48,12 @@ export function PresetsPage() {
   const [spawnBranches, setSpawnBranches] = useState<GitHubBranchReference[]>([]);
   const [spawnBranchesLoading, setSpawnBranchesLoading] = useState(false);
   const [spawnBaseBranch, setSpawnBaseBranch] = useState<string | undefined>();
-  const canCreatePreset = can("preset:create") && can("repo:list") && can("repo:read");
-  const canEditPreset = can("preset:edit") && can("repo:list") && can("repo:read");
+  const canUseAnyTaskMode = can("task:build") || can("task:ask") || can("task:interactive");
+  const canCreatePreset = can("preset:create") && can("repo:list") && can("repo:read") && canUseAnyTaskMode;
+  const canEditPreset = can("preset:edit") && can("repo:list") && can("repo:read") && canUseAnyTaskMode;
   const canDeletePreset = can("preset:delete");
   const canSpawnPreset = can("preset:read") && can("task:create");
+  const grantedScopes = session?.user.scopes ?? [];
 
   const closeModal = () => {
     setOpen(false);
@@ -183,7 +186,7 @@ export function PresetsPage() {
                 width: 220,
                 render: (_value, preset) => (
                   <Space>
-                    {canSpawnPreset ? (
+                    {canSpawnPreset && canUsePresetDefinition(grantedScopes, preset.definition) ? (
                       <Button
                         type="primary"
                         size="small"

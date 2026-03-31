@@ -17,20 +17,18 @@ import {
   type TaskLiveDiff,
   type TaskAction,
   type TaskRun,
+  type TaskMergePreview,
   type TaskPushPreview,
-  type TaskReviewVerdict,
   type TaskWorkspaceCommit,
   type TaskWorkspaceCommitLog
 } from "@agentswarm/shared-types";
 import { makeBranchName } from "../lib/branch.js";
 import { extractGitLockPathFromErrorMessage, isPathInside, resolveGitTargetLockKey } from "../lib/git-locks.js";
 import { resolveSafeWorkspaceFilePath } from "../lib/safe-workspace-file.js";
-import { resolveLocalPlanDirectory, resolveLocalPlanPath, resolveLocalPlanRevisionPath } from "../lib/plan-path.js";
 import { env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
 import { TaskStore } from "./task-store.js";
 import { SettingsStore } from "./settings-store.js";
-import { RepositoryStore } from "./repository-store.js";
 
 const ansiPattern = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\))/g;
 
@@ -68,11 +66,9 @@ interface RuntimeManifest {
   action: TaskAction;
   title: string;
   prompt: string;
-  planMarkdown: string;
   executionSummary: string;
   repoProfile: string;
-  iterationInput: string;
-  agentRules: string;
+  input: string;
   baseBranch: string;
   repoDefaultBranch: string;
   branchStrategy: Task["branchStrategy"];
@@ -92,25 +88,9 @@ interface RuntimeResultPayload {
   taskType: Task["taskType"];
   status: "success" | "failed";
   summaryMarkdown: string;
-  reviewVerdict?: TaskReviewVerdict | null;
   changedFiles?: string[];
   metadata?: Record<string, unknown>;
 }
-
-const normalizeTokenUsage = (value: unknown): TaskRun["tokenUsage"] => {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const candidate = value as Record<string, unknown>;
-  return {
-    status: candidate.status === "available" ? "available" : "unavailable",
-    inputTokens: typeof candidate.inputTokens === "number" ? candidate.inputTokens : null,
-    outputTokens: typeof candidate.outputTokens === "number" ? candidate.outputTokens : null,
-    totalTokens: typeof candidate.totalTokens === "number" ? candidate.totalTokens : null,
-    note: typeof candidate.note === "string" ? candidate.note : null
-  };
-};
 
 interface WorkspacePreparation {
   workspacePath: string;
@@ -128,18 +108,8 @@ export class SpawnerService {
 
   constructor(
     private readonly taskStore: TaskStore,
-    private readonly settingsStore: SettingsStore,
-    private readonly repositoryStore: RepositoryStore
+    private readonly settingsStore: SettingsStore
   ) {}
-
-  private buildMergedAgentRules(globalRules: string, repositoryRules: string): string {
-    const sections = [
-      globalRules.trim() ? `Global Rules:\n${globalRules.trim()}` : "",
-      repositoryRules.trim() ? `Repository Rules:\n${repositoryRules.trim()}` : ""
-    ].filter(Boolean);
-
-    return sections.join("\n\n");
-  }
 
   private runCommand(command: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -427,25 +397,16 @@ esac
     this.runtimeReady.add(provider);
   }
 
-  private resolveLocalPlanPath(task: Task): string {
-    return resolveLocalPlanPath(task, env.LOCAL_PLANS_ROOT);
-  }
-
-  private resolveLocalPlanDirectory(task: Task): string {
-    return resolveLocalPlanDirectory(task, env.LOCAL_PLANS_ROOT);
-  }
-
-  private resolvePlanRevisionPath(task: Task, action: "plan" | "iterate" | "manual", timestamp: string): string {
-    const revisionTimestamp = timestamp.replace(/[:.]/g, "-");
-    return resolveLocalPlanRevisionPath(task, env.LOCAL_PLANS_ROOT, `${action}-${revisionTimestamp}`);
-  }
-
   private resolveRuntimePayloadDir(taskId: string): string {
     return path.join(env.RUNTIME_PAYLOAD_ROOT, taskId);
   }
 
   private resolveWorkspacePath(taskId: string): string {
     return path.join(env.TASK_WORKSPACE_ROOT, taskId);
+  }
+
+  private resolveWorkspaceHostPath(taskId: string): string {
+    return path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
   }
 
   private resolveRepoCachePath(task: Task): string {
@@ -763,19 +724,6 @@ esac
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<string | null> {
-    if (task.taskType === "review") {
-      const defaultRef = `origin/${task.repoDefaultBranch}`;
-      if (!(await this.refExists(workspacePath, defaultRef, githubToken, gitUsername))) {
-        return null;
-      }
-
-      try {
-        return await this.gitCommandCapture(["-C", workspacePath, "merge-base", defaultRef, "HEAD"], githubToken, gitUsername);
-      } catch {
-        return null;
-      }
-    }
-
     if (task.workspaceBaseRef && (await this.refExists(workspacePath, task.workspaceBaseRef, githubToken, gitUsername))) {
       return task.workspaceBaseRef;
     }
@@ -1143,27 +1091,19 @@ esac
     await this.gitCommand(["-C", workspacePath, "remote", "set-url", "origin", task.repoUrl], githubToken, gitUsername);
     await this.gitCommand(["-C", workspacePath, "fetch", "origin", task.baseBranch], githubToken, gitUsername);
 
-    if (action === "review" && task.repoDefaultBranch !== task.baseBranch) {
-      await this.gitCommand(["-C", workspacePath, "fetch", "origin", task.repoDefaultBranch], githubToken, gitUsername);
-    }
-
-    if (action === "build" || action === "ask") {
-      if (task.branchStrategy === "work_on_branch") {
-        if (await this.localBranchExists(workspacePath, task.baseBranch, githubToken, gitUsername)) {
-          await this.gitCommand(["-C", workspacePath, "checkout", task.baseBranch], githubToken, gitUsername);
-        } else {
-          await this.gitCommand(["-C", workspacePath, "checkout", "-B", task.baseBranch, `origin/${task.baseBranch}`], githubToken, gitUsername);
-        }
-      } else if (await this.localBranchExists(workspacePath, branchName, githubToken, gitUsername)) {
-        await this.gitCommand(["-C", workspacePath, "checkout", branchName], githubToken, gitUsername);
-      } else if (await this.remoteBranchExists(task.repoUrl, branchName, githubToken, gitUsername)) {
-        await this.gitCommand(["-C", workspacePath, "fetch", "origin", branchName], githubToken, gitUsername);
-        await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, `origin/${branchName}`], githubToken, gitUsername);
+    if (task.branchStrategy === "work_on_branch") {
+      if (await this.localBranchExists(workspacePath, task.baseBranch, githubToken, gitUsername)) {
+        await this.gitCommand(["-C", workspacePath, "checkout", task.baseBranch], githubToken, gitUsername);
       } else {
-        await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, `origin/${task.baseBranch}`], githubToken, gitUsername);
+        await this.gitCommand(["-C", workspacePath, "checkout", "-B", task.baseBranch, `origin/${task.baseBranch}`], githubToken, gitUsername);
       }
-    } else if (action === "review" || !workspaceExists) {
-      await this.gitCommand(["-C", workspacePath, "checkout", "-B", task.baseBranch, `origin/${task.baseBranch}`], githubToken, gitUsername);
+    } else if (await this.localBranchExists(workspacePath, branchName, githubToken, gitUsername)) {
+      await this.gitCommand(["-C", workspacePath, "checkout", branchName], githubToken, gitUsername);
+    } else if (await this.remoteBranchExists(task.repoUrl, branchName, githubToken, gitUsername)) {
+      await this.gitCommand(["-C", workspacePath, "fetch", "origin", branchName], githubToken, gitUsername);
+      await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, `origin/${branchName}`], githubToken, gitUsername);
+    } else {
+      await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, `origin/${task.baseBranch}`], githubToken, gitUsername);
     }
 
     const startRef = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
@@ -1347,7 +1287,13 @@ esac
       diffStat = `${diffStat.slice(0, SpawnerService.PUSH_PREVIEW_STAT_MAX_CHARS)}\n… (stat truncated)`;
     }
 
-    const unpushedCommitSubjects = await this.getUnpushedCommitSubjects(workspacePath, branchName, githubToken, gitUsername);
+    const unpushedCommitSubjects = await this.getUnpushedCommitSubjects(
+      workspacePath,
+      branchName,
+      task.baseBranch,
+      githubToken,
+      gitUsername
+    );
 
     return {
       branchName,
@@ -1364,16 +1310,28 @@ esac
   private async getUnpushedCommitSubjects(
     workspacePath: string,
     branchName: string,
+    fallbackBaseBranch?: string | null,
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<string[]> {
     const remoteRef = `origin/${branchName}`;
-    const exists = await this.refExists(workspacePath, remoteRef, githubToken, gitUsername);
-    if (!exists) {
+    let logRange: string | null = null;
+
+    if (await this.refExists(workspacePath, remoteRef, githubToken, gitUsername)) {
+      logRange = `${remoteRef}..HEAD`;
+    } else if (fallbackBaseBranch && fallbackBaseBranch !== branchName) {
+      const fallbackRemoteRef = `origin/${fallbackBaseBranch}`;
+      if (await this.refExists(workspacePath, fallbackRemoteRef, githubToken, gitUsername)) {
+        logRange = `${fallbackRemoteRef}..${branchName}`;
+      }
+    }
+
+    if (!logRange) {
       return [];
     }
+
     const raw = await this.gitCommandCaptureAllowExitCodes(
-      ["-C", workspacePath, "log", "--pretty=format:%s", `${remoteRef}..HEAD`],
+      ["-C", workspacePath, "log", "--pretty=format:%s", logRange],
       [0],
       githubToken,
       gitUsername
@@ -2242,15 +2200,11 @@ esac
     return true;
   }
 
-  async cleanupTaskArtifacts(task: Task, options?: { preservePlanFile?: boolean }): Promise<void> {
+  async cleanupTaskArtifacts(task: Task): Promise<void> {
     const payloadDir = this.resolveRuntimePayloadDir(task.id);
     const workspacePath = this.resolveWorkspacePath(task.id);
     await rm(payloadDir, { recursive: true, force: true });
     await rm(workspacePath, { recursive: true, force: true });
-    if (!options?.preservePlanFile && task.planPath?.startsWith(env.LOCAL_PLANS_ROOT)) {
-      await rm(task.planPath, { force: true }).catch(() => undefined);
-      await rm(this.resolveLocalPlanDirectory(task), { recursive: true, force: true }).catch(() => undefined);
-    }
   }
 
   async pullTaskBranch(task: Task): Promise<Task> {
@@ -2364,6 +2318,7 @@ esac
       const unpushedSubjects = await this.getUnpushedCommitSubjects(
         workspacePath,
         branchName,
+        task.baseBranch,
         runtimeCredentials.githubToken,
         runtimeCredentials.gitUsername
       );
@@ -2407,16 +2362,114 @@ esac
     return (await this.taskStore.getTask(task.id)) ?? task;
   }
 
-  async mergeTaskBranch(task: Task): Promise<Task> {
+  async getTaskMergePreview(task: Task, targetBranch: string): Promise<TaskMergePreview> {
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const sourceBranch = task.branchName;
+    const normalizedTargetBranch = targetBranch.trim();
+
+    if (task.branchStrategy !== "feature_branch") {
+      throw new Error("Only feature-branch tasks have a mergeable branch");
+    }
+
+    if (!sourceBranch) {
+      throw new Error("Task branch is not available for merging");
+    }
+
+    if (!normalizedTargetBranch) {
+      throw new Error("Target branch is required");
+    }
+
+    if (normalizedTargetBranch === sourceBranch) {
+      const suggestedCommitMessage = this.buildGeneratedCommitSubjectFromFiles(task, []);
+      return {
+        sourceBranch,
+        targetBranch: normalizedTargetBranch,
+        mergeable: false,
+        message: "Select a target branch other than the task branch.",
+        suggestedCommitMessage
+      };
+    }
+
+    const repoCachePath = this.resolveRepoCachePath(task);
+    return this.withRepoLock(repoCachePath, async () => {
+      const mirrorPath = await this.ensureRepoMirror(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      const sourceRef = `refs/heads/${sourceBranch}`;
+      const targetRef = `refs/heads/${normalizedTargetBranch}`;
+
+      try {
+        await this.gitCommandCapture(["--git-dir", mirrorPath, "rev-parse", "--verify", sourceRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      } catch {
+        throw new Error(`Task branch ${sourceBranch} is not available on origin`);
+      }
+
+      try {
+        await this.gitCommandCapture(["--git-dir", mirrorPath, "rev-parse", "--verify", targetRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      } catch {
+        throw new Error(`Target branch ${normalizedTargetBranch} does not exist on origin`);
+      }
+
+      const changedFilesRaw = await this.gitCommandCapture(
+        ["--git-dir", mirrorPath, "diff", "--name-only", `${targetRef}...${sourceRef}`],
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername
+      );
+      const changedFiles = changedFilesRaw
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const suggestedCommitMessage = this.buildGeneratedCommitSubjectFromFiles(task, changedFiles);
+
+      try {
+        await this.gitCommandCapture(
+          ["--git-dir", mirrorPath, "merge-base", "--is-ancestor", sourceRef, targetRef],
+          runtimeCredentials.githubToken,
+          runtimeCredentials.gitUsername
+        );
+        return {
+          sourceBranch,
+          targetBranch: normalizedTargetBranch,
+          mergeable: false,
+          message: `${sourceBranch} is already merged into ${normalizedTargetBranch}.`,
+          suggestedCommitMessage
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (!message.includes("exited with code 1")) {
+          throw error;
+        }
+      }
+
+      const mergeTreeOutput = await this.gitCommandCaptureAllowExitCodes(
+        ["--git-dir", mirrorPath, "merge-tree", "--write-tree", "--messages", targetRef, sourceRef],
+        [0, 1],
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername
+      );
+      const conflictLine = mergeTreeOutput
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => /^CONFLICT\b/i.test(line));
+
+      return {
+        sourceBranch,
+        targetBranch: normalizedTargetBranch,
+        mergeable: !conflictLine,
+        message: conflictLine ?? `Can squash merge ${sourceBranch} into ${normalizedTargetBranch}.`,
+        suggestedCommitMessage
+      };
+    });
+  }
+
+  async mergeTaskBranch(task: Task, targetBranch: string, options?: { commitMessage?: string | null }): Promise<Task> {
     const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
     const branchName = task.branchName;
-    const defaultBranch = task.repoDefaultBranch;
+    const targetBranchName = targetBranch.trim();
     if (!branchName) {
       throw new Error("No task branch recorded for merging");
     }
 
-    if (!defaultBranch) {
-      throw new Error("Task has no configured default branch");
+    if (!targetBranchName) {
+      throw new Error("No target branch was provided for merging");
     }
 
     const workspacePath = this.resolveWorkspacePath(task.id);
@@ -2451,11 +2504,11 @@ esac
       await this.pushTaskBranch(task);
     }
 
-    await this.gitCommand(["-C", workspacePath, "fetch", "origin", defaultBranch, branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    await this.gitCommand(["-C", workspacePath, "fetch", "origin", targetBranchName, branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
 
-    const defaultRef = `origin/${defaultBranch}`;
+    const defaultRef = `origin/${targetBranchName}`;
     if (!(await this.refExists(workspacePath, defaultRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
-      throw new Error(`Default branch ${defaultBranch} does not exist on origin`);
+      throw new Error(`Target branch ${targetBranchName} does not exist on origin`);
     }
 
     const remoteBranchRef = `origin/${branchName}`;
@@ -2463,26 +2516,36 @@ esac
       throw new Error(`Task branch ${branchName} is not available on origin`);
     }
 
-    if (!(await this.localBranchExists(workspacePath, defaultBranch, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
-      await this.gitCommand(["-C", workspacePath, "checkout", "-B", defaultBranch, defaultRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    if (!(await this.localBranchExists(workspacePath, targetBranchName, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
+      await this.gitCommand(["-C", workspacePath, "checkout", "-B", targetBranchName, defaultRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     } else {
-      await this.gitCommand(["-C", workspacePath, "checkout", defaultBranch], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.gitCommand(["-C", workspacePath, "checkout", targetBranchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       await this.gitCommand(["-C", workspacePath, "reset", "--hard", defaultRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     }
 
     try {
       await this.gitCommand(
-        ["-C", workspacePath, "merge", "--no-ff", "--no-edit", remoteBranchRef],
+        ["-C", workspacePath, "merge", "--squash", "--no-commit", remoteBranchRef],
         runtimeCredentials.githubToken,
         runtimeCredentials.gitUsername
       );
+
+      await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      const custom = options?.commitMessage?.trim();
+      const subject =
+        custom && custom.length > 0
+          ? this.toCommitSubject(custom)
+          : await this.buildGeneratedCommitSubject(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", subject], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     } catch (error) {
       await this.gitCommand(["-C", workspacePath, "merge", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(() => undefined);
+      await this.gitCommand(["-C", workspacePath, "reset", "--hard", defaultRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(() => undefined);
       throw error;
     }
 
-    await this.gitCommand(["-C", workspacePath, "push", "--no-verify", "origin", defaultBranch], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-    await this.taskStore.appendLog(task.id, `Spawner: merged ${branchName} into ${defaultBranch}.`);
+    await this.gitCommand(["-C", workspacePath, "push", "--no-verify", "origin", targetBranchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    await this.taskStore.appendLog(task.id, `Spawner: squash merged ${branchName} into ${targetBranchName}.`);
     return (await this.taskStore.getTask(task.id)) ?? task;
   }
 
@@ -2492,7 +2555,7 @@ esac
       errorMessage: null,
       enqueued: false
     });
-    await this.cleanupTaskArtifacts(task, { preservePlanFile: true });
+    await this.cleanupTaskArtifacts(task);
     if (!accepted) {
       throw new Error("Failed to update task after publishing");
     }
@@ -2598,15 +2661,7 @@ esac
       await this.taskStore.appendLog(workingTask.id, "Spawner: installed git hooks (same as automated build).");
     }
 
-    const doneAction: TaskAction =
-      workingTask.taskType === "review"
-        ? "review"
-        : workingTask.taskType === "ask"
-          ? "ask"
-          : workingTask.taskType === "plan"
-            ? "plan"
-            : "build";
-    const readyStatus = getSuccessfulStatusForAction(doneAction);
+    const readyStatus = getSuccessfulStatusForAction(action);
     await this.taskStore.patchTask(workingTask.id, {
       status: readyStatus,
       enqueued: false,
@@ -2621,22 +2676,11 @@ esac
     return (await this.taskStore.getTask(workingTask.id)) ?? nextTask;
   }
 
-  async runTask(task: Task, action: TaskAction, iterateInput?: string): Promise<void> {
-    if (action === "review") {
-      throw new Error("Review mode has been removed");
-    }
-    if (action === "iterate") {
-      throw new Error("Iterate mode has been removed");
-    }
-    if (action === "plan") {
-      throw new Error("Plan mode has been removed");
-    }
-
+  async runTask(task: Task, action: TaskAction, input?: string): Promise<void> {
     this.cancelRequestedTaskIds.delete(task.id);
-    const [settings, runtimeCredentials, repository] = await Promise.all([
+    const [settings, runtimeCredentials] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials(),
-      this.repositoryStore.getRepository(task.repoId)
+      this.settingsStore.getRuntimeCredentials()
     ]);
     const providerDefinition = getProviderRuntimeDefinition(task.provider);
     const missingCredentialMessage = providerDefinition.getMissingCredentialMessage(runtimeCredentials);
@@ -2644,13 +2688,11 @@ esac
       throw new Error(missingCredentialMessage);
     }
 
-    const mergedAgentRules = this.buildMergedAgentRules(settings.agentRules, repository?.rules ?? "");
     const branchName =
       task.branchStrategy === "work_on_branch"
         ? task.baseBranch
         : task.branchName ?? makeBranchName(task.title, task.id, settings.branchPrefix);
     const startedAt = new Date().toISOString();
-    const planPath = this.resolveLocalPlanPath(task);
     const payloadDir = this.resolveRuntimePayloadDir(task.id);
     let runId: string | null = null;
     let workspacePath: string | null = null;
@@ -2662,9 +2704,7 @@ esac
         finishedAt: null,
         errorMessage: null,
         enqueued: false,
-        lastAction: action,
-        latestIterationInput: task.latestIterationInput,
-        planPath
+        lastAction: action
       });
       const run = await this.taskStore.createRun(task.id, {
         action,
@@ -2741,11 +2781,9 @@ esac
         action,
         title: task.title,
         prompt: task.prompt,
-        planMarkdown: task.planMarkdown ?? "",
         executionSummary: task.executionSummary,
         repoProfile,
-        iterationInput: iterateInput ?? "",
-        agentRules: mergedAgentRules,
+        input: input ?? "",
         baseBranch: task.baseBranch,
         repoDefaultBranch: task.repoDefaultBranch,
         branchStrategy: task.branchStrategy,
@@ -2770,15 +2808,6 @@ esac
       const payloadPaths = await this.writeRuntimePayloadFiles(manifest, providerDefinition.getProviderConfig(settings.mcpServers));
       await appendRunLog(`Spawner: runtime payload files ready at ${payloadDir}.`);
 
-      // Write the plan as a file inside the workspace so the build/iterate agent
-      // can read it on demand rather than receiving it as a large prompt string.
-      const workspacePlanPath = path.join(workspace.workspacePath, ".agentswarm", "PLAN.md");
-      if (action === "build" && task.planMarkdown?.trim()) {
-        await mkdir(path.dirname(workspacePlanPath), { recursive: true });
-        await writeFile(workspacePlanPath, `${task.planMarkdown.trim()}\n`, "utf8");
-        await appendRunLog("Spawner: wrote plan file to workspace at .agentswarm/PLAN.md.");
-      }
-
       if (action === "build") {
         const gitDir = path.join(workspace.workspacePath, ".git");
         const hooksDir = path.join(gitDir, "hooks");
@@ -2800,7 +2829,7 @@ esac
       }
 
       await appendRunLog(
-        `Spawner: runtime config includes provider=${task.provider}, profile=${task.providerProfile}, ${settings.mcpServers.length} MCP server${settings.mcpServers.length === 1 ? "" : "s"}, ${settings.agentRules.trim() ? "global rules" : "no global rules"}, and ${repository?.rules?.trim() ? "repository rules" : "no repository rules"}.`
+        `Spawner: runtime config includes provider=${task.provider}, profile=${task.providerProfile}, and ${settings.mcpServers.length} MCP server${settings.mcpServers.length === 1 ? "" : "s"}.`
       );
 
       if (this.isCancellationRequested(task.id)) {
@@ -2828,6 +2857,7 @@ esac
 
       const containerName = `agentswarm-task-${task.id}`;
       const workspaceMountMode = action === "ask" ? "ro" : "rw";
+      const hostWorkspacePath = this.resolveWorkspaceHostPath(task.id);
       if (workspaceMountMode === "ro") {
         await appendRunLog("Spawner: mounting workspace read-only (ask mode).");
       }
@@ -2844,6 +2874,10 @@ esac
         `TASK_MANIFEST_FILE=${payloadPaths.manifestPath}`,
         "-e",
         `PROVIDER_CONFIG_FILE=${payloadPaths.providerConfigPath}`,
+        "-e",
+        `TASK_WORKSPACE_PATH=${hostWorkspacePath}`,
+        "-e",
+        `TASK_WORSPACE_PATH=${hostWorkspacePath}`,
         providerDefinition.image
       ];
 
@@ -2937,7 +2971,7 @@ esac
         }
 
         const branchDiff = null;
-        await this.taskStore.updateResultArtifacts(task.id, finalMarkdown, runtimeResult.reviewVerdict ?? null);
+        await this.taskStore.updateResultArtifacts(task.id, finalMarkdown);
         await this.taskStore.setStatus(task.id, getSuccessfulStatusForAction(action), {
           finishedAt,
           enqueued: false,
@@ -2953,8 +2987,7 @@ esac
           await this.taskStore.updateRun(runId, {
             status: "succeeded",
             finishedAt,
-            summary: finalMarkdown,
-            tokenUsage: normalizeTokenUsage(runtimeResult.metadata?.tokenUsage)
+            summary: finalMarkdown
           });
         }
       } else {
@@ -2971,7 +3004,7 @@ esac
           await appendRunLog("Spawner: detected provider-created local commit; reusing it instead of creating a new commit.");
         }
         if (runtimeResult.summaryMarkdown.trim()) {
-          await this.taskStore.updateResultArtifacts(task.id, runtimeResult.summaryMarkdown.trim(), null);
+          await this.taskStore.updateResultArtifacts(task.id, runtimeResult.summaryMarkdown.trim());
         }
         await this.taskStore.setStatus(task.id, getSuccessfulStatusForAction(action), {
           finishedAt,
@@ -2980,9 +3013,6 @@ esac
           lastAction: action,
           branchName
         });
-        if (task.currentPlanRunId) {
-          await this.taskStore.addBuiltPlanRunId(task.id, task.currentPlanRunId);
-        }
         await this.taskStore.appendMessage(task.id, {
           role: "assistant",
           action,
@@ -2994,8 +3024,7 @@ esac
           await this.taskStore.updateRun(runId, {
             status: "succeeded",
             finishedAt,
-            summary: runtimeResult.summaryMarkdown.trim() || "Build completed locally. Review the diff and push when ready.",
-            tokenUsage: normalizeTokenUsage(runtimeResult.metadata?.tokenUsage)
+            summary: runtimeResult.summaryMarkdown.trim() || "Build completed locally. Review the diff and push when ready."
           });
         }
         if (runId && action === "build") {

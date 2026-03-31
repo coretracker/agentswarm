@@ -7,13 +7,14 @@ import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
 import { applyTaskStartMode } from "../lib/task-start-mode.js";
+import { requireTaskCapabilityAccess } from "../lib/task-capability-access.js";
 import { withBranchSyncCounts } from "./tasks.js";
 
 const issueImportSchema = z.object({
   repoId: z.string().min(1),
   issueNumber: z.coerce.number().int().positive(),
   includeComments: z.boolean().optional(),
-  taskType: z.enum(["plan", "build", "ask"]).optional(),
+  taskType: z.enum(["build", "ask"]).optional(),
   title: z.string().trim().optional(),
   provider: z.enum(["codex", "claude"]).optional(),
   providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
@@ -129,8 +130,17 @@ export const registerImportRoutes = (
       }
 
       const { startMode, ...issueRest } = parsed.data;
+      if (
+        !requireTaskCapabilityAccess(request, reply, {
+          taskType: issueRest.taskType ?? "build",
+          startMode
+        })
+      ) {
+        return;
+      }
+
       const taskInput = await deps.githubImportService.buildTaskInputFromIssue(repository, { ...issueRest, startMode });
-      const task = await deps.taskStore.createTask(taskInput, repository);
+      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
       try {
         const result = await applyTaskStartMode(task, startMode, {
           taskStore: deps.taskStore,
@@ -175,16 +185,23 @@ export const registerImportRoutes = (
         return reply.status(404).send({ message: "Repository not found" });
       }
 
-      const taskInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, parsed.data);
-      const task = await deps.taskStore.createTask(taskInput, repository);
-      const initialAction = task.lastAction ?? "plan";
-      const accepted = await deps.scheduler.triggerAction(task.id, initialAction);
-      if (!accepted) {
-        return reply.status(409).send({ message: "Imported task execution could not be started" });
+      if (!requireTaskCapabilityAccess(request, reply, { taskType: "build", startMode: "run_now" })) {
+        return;
       }
 
-      const refreshed = await deps.taskStore.getTask(task.id);
-      return reply.status(201).send(refreshed);
+      const taskInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, parsed.data);
+      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
+      try {
+        const started = await applyTaskStartMode(task, "run_now", {
+          taskStore: deps.taskStore,
+          scheduler: deps.scheduler,
+          spawner: deps.spawner
+        });
+        return reply.status(201).send(await withBranchSyncCounts(deps.spawner, started));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Imported task execution could not be started";
+        return reply.status(409).send({ message });
+      }
     } catch (error) {
       if (error instanceof GitHubImportError) {
         return reply.status(error.statusCode).send({ message: error.message });

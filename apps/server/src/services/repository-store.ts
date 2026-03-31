@@ -7,6 +7,7 @@ const REPO_KEY_PREFIX = "agentswarm:repo:";
 const REPO_IDS_KEY = "agentswarm:repo_ids";
 
 const nowIso = (): string => new Date().toISOString();
+type StoredRepository = Repository & Record<string, unknown>;
 
 export class RepositoryStore {
   constructor(
@@ -18,29 +19,26 @@ export class RepositoryStore {
     return `${REPO_KEY_PREFIX}${repoId}`;
   }
 
-  private normalizeRules(value: string | undefined): string {
-    return (value ?? "").trim();
-  }
-
-  private normalizeRepository(repository: Repository): Repository {
+  private normalizeRepository(repository: StoredRepository): Repository {
     return {
-      ...repository,
-      rules: this.normalizeRules(repository.rules)
+      id: repository.id,
+      name: repository.name,
+      url: repository.url,
+      defaultBranch: repository.defaultBranch,
+      createdAt: repository.createdAt,
+      updatedAt: repository.updatedAt
     };
   }
 
   async createRepository(input: CreateRepositoryInput): Promise<Repository> {
     const timestamp = nowIso();
     const name = input.name.trim();
-    const plansDir = (input.plansDir?.trim() || "plans").replace(/^\/+|\/+$/g, "");
 
     const repository: Repository = {
       id: nanoid(),
       name,
       url: input.url.trim(),
       defaultBranch: input.defaultBranch?.trim() || "develop",
-      plansDir: plansDir.length > 0 ? plansDir : "plans",
-      rules: this.normalizeRules(input.rules),
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -71,7 +69,7 @@ export class RepositoryStore {
     for (const row of result ?? []) {
       const raw = row[1];
       if (typeof raw === "string") {
-        repositories.push(this.normalizeRepository(JSON.parse(raw) as Repository));
+        repositories.push(this.normalizeRepository(JSON.parse(raw) as StoredRepository));
       }
     }
 
@@ -84,7 +82,7 @@ export class RepositoryStore {
       return null;
     }
 
-    return this.normalizeRepository(JSON.parse(raw) as Repository);
+    return this.normalizeRepository(JSON.parse(raw) as StoredRepository);
   }
 
   async updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null> {
@@ -93,17 +91,11 @@ export class RepositoryStore {
       return null;
     }
 
-    const plansDir = input.plansDir
-      ? input.plansDir.trim().replace(/^\/+|\/+$/g, "") || "plans"
-      : current.plansDir;
-
     const next: Repository = {
       ...current,
       name: input.name?.trim() || current.name,
       url: input.url?.trim() || current.url,
       defaultBranch: input.defaultBranch?.trim() || current.defaultBranch,
-      plansDir,
-      rules: input.rules === undefined ? current.rules : this.normalizeRules(input.rules),
       updatedAt: nowIso()
     };
 

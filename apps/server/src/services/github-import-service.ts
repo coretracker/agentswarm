@@ -229,7 +229,7 @@ export class GitHubImportService {
 
     const issueBody = cleanMarkdownBlock(issue.body, 6000);
     const labels = (issue.labels ?? []).map((label) => label.name).filter(Boolean);
-    const taskType = input.taskType ?? "plan";
+    const taskType = input.taskType ?? "build";
     const title = input.title?.trim() || `Issue #${issue.number}: ${issue.title}`;
     const prompt = [
       `Imported from GitHub issue #${issue.number}: ${issue.title}`,
@@ -251,7 +251,7 @@ export class GitHubImportService {
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,
       baseBranch: input.baseBranch?.trim() || repository.defaultBranch,
-      branchStrategy: taskType === "plan" || taskType === "build" ? input.branchStrategy ?? "feature_branch" : "feature_branch",
+      branchStrategy: taskType === "build" ? input.branchStrategy ?? "feature_branch" : "feature_branch",
       model: input.model,
       reasoningEffort: input.reasoningEffort
     };
@@ -350,7 +350,7 @@ export class GitHubImportService {
       title,
       repoId: repository.id,
       prompt,
-      taskType: "plan",
+      taskType: "build",
       provider: input.provider,
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,

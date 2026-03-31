@@ -1,15 +1,14 @@
 import type { Metadata } from "next";
 import { AntdRegistry } from "@ant-design/nextjs-registry";
-import { ConfigProvider } from "antd";
 import { AppShell } from "../components/app-shell";
 import { AuthProvider } from "../components/auth-provider";
-import { appAntdTheme } from "../src/theme/antd-theme";
+import { ThemeProvider } from "../components/theme-provider";
 import "./globals.css";
 import "react-diff-view/style/index.css";
 
 export const metadata: Metadata = {
   title: "AgentSwarm",
-  description: "Plan, build, and iterate autonomous coding tasks"
+  description: "Build, ask, and manage autonomous coding tasks"
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -17,11 +16,11 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="en">
       <body>
         <AntdRegistry>
-          <ConfigProvider theme={appAntdTheme}>
+          <ThemeProvider>
             <AuthProvider>
               <AppShell>{children}</AppShell>
             </AuthProvider>
-          </ConfigProvider>
+          </ThemeProvider>
         </AntdRegistry>
       </body>
     </html>

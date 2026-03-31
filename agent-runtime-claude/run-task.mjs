@@ -45,22 +45,9 @@ const runCommand = (command, args, options = {}) =>
     });
   });
 
-const extractReviewVerdict = (markdown) => {
-  const match = markdown.match(/(?:^|\n)#{1,6}\s+Verdict\s*\n([\s\S]*?)(?=\n#{1,6}\s+|$)/i);
-  const candidate = match?.[1]?.toLowerCase().replace(/[`*_]/g, "").trim() ?? "";
-  if (candidate.includes("changes_requested") || candidate.includes("changes requested")) {
-    return "changes_requested";
-  }
-  if (candidate.includes("approved") || candidate.includes("all good")) {
-    return "approved";
-  }
-  return null;
-};
-
-
 const buildPrompt = () => {
-  const rawInput = typeof manifest.iterationInput === "string" && manifest.iterationInput.length > 0
-    ? manifest.iterationInput
+  const rawInput = typeof manifest.input === "string" && manifest.input.length > 0
+    ? manifest.input
     : (manifest.prompt ?? "");
 
   if (rawInput.length === 0) {
@@ -110,7 +97,6 @@ await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(mani
 console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);
 
 let finalMarkdown = "";
-let latestTokenUsage = null;
 let resultSubtype = null;
 let resultDetails = null;
 const assistantLines = [];
@@ -136,18 +122,6 @@ const truncateForLog = (value, maxLength = 320) => {
   }
 
   return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value;
-};
-
-const toTokenUsage = (usage) => {
-  const inputTokens = Number.isFinite(usage?.input_tokens) ? usage.input_tokens : null;
-  const outputTokens = Number.isFinite(usage?.output_tokens) ? usage.output_tokens : null;
-  return {
-    status: inputTokens !== null || outputTokens !== null ? "available" : "unavailable",
-    inputTokens,
-    outputTokens,
-    totalTokens: inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null,
-    note: null
-  };
 };
 
 const flushPartialTextBuffer = () => {
@@ -319,13 +293,7 @@ const handleRawStreamEvent = (rawEvent) => {
     case "message_delta": {
       flushPartialTextBuffer();
       const stopReason = rawEvent.delta?.stop_reason ?? rawEvent.stop_reason ?? "streaming";
-      const usage = rawEvent.usage
-        ? ` input=${rawEvent.usage.input_tokens ?? "?"} output=${rawEvent.usage.output_tokens ?? "?"}`
-        : "";
-      if (rawEvent.usage) {
-        latestTokenUsage = toTokenUsage(rawEvent.usage);
-      }
-      console.log(`[runtime] claude message_delta stop_reason=${stopReason}${usage}`);
+      console.log(`[runtime] claude message_delta stop_reason=${stopReason}`);
       return;
     }
     case "message_stop": {
@@ -402,18 +370,10 @@ await writeFile(
       taskType: manifest.taskType,
       status: "success",
       summaryMarkdown: finalMarkdown,
-      reviewVerdict: manifest.action === "review" ? extractReviewVerdict(finalMarkdown) : null,
       changedFiles: [],
       metadata: {
         provider: manifest.provider,
-        action: manifest.action,
-        tokenUsage: latestTokenUsage ?? {
-          status: "unavailable",
-          inputTokens: null,
-          outputTokens: null,
-          totalTokens: null,
-          note: "No usage returned by Claude runtime."
-        }
+        action: manifest.action
       }
     },
     null,

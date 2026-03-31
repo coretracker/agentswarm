@@ -156,6 +156,10 @@ export function TaskDefinitionFields({
   const [githubBranches, setGitHubBranches] = useState<GitHubBranchReference[]>([]);
   const [githubOptionsLoading, setGitHubOptionsLoading] = useState(false);
   const canReadRepositoryMetadata = can("repo:read");
+  const canBuildTasks = can("task:build");
+  const canAskTasks = can("task:ask");
+  const canUseInteractiveTerminal = can("task:interactive");
+  const canRunAutomatedTask = canBuildTasks || canAskTasks;
 
   const selectedRepoId = Form.useWatch("repoId", form);
   const selectedModel = Form.useWatch("model", form);
@@ -173,8 +177,8 @@ export function TaskDefinitionFields({
   const isBlankSource = selectedSourceType === "blank";
   const isIssueSource = selectedSourceType === "issue";
   const isPullRequestSource = selectedSourceType === "pull_request";
-  const effectiveTaskType = isPullRequestSource ? "plan" : selectedTaskType;
-  const isImplementationTask = effectiveTaskType === "plan" || effectiveTaskType === "build";
+  const effectiveTaskType = isPullRequestSource ? "build" : selectedTaskType;
+  const isImplementationTask = effectiveTaskType === "build";
   const baseBranchLabel = isBlankSource || isIssueSource ? "Base Branch" : undefined;
   const providerMissingCredentials =
     selectedProvider === "codex" ? !settings?.openaiApiKeyConfigured : !settings?.anthropicApiKeyConfigured;
@@ -183,9 +187,17 @@ export function TaskDefinitionFields({
     ...(canReadRepositoryMetadata
       ? [
           { label: "From Issue", value: "issue" as const },
-          { label: "From Pull Request", value: "pull_request" as const }
+          ...(canBuildTasks ? [{ label: "From Pull Request", value: "pull_request" as const }] : [])
         ]
       : [])
+  ];
+  const startModeOptions: Array<{ label: string; value: TaskStartMode }> = [
+    ...(canRunAutomatedTask ? [{ label: "Run automated agent now", value: "run_now" as const }] : []),
+    ...(canUseInteractiveTerminal ? [{ label: "Prepare workspace only", value: "prepare_workspace" as const }] : [])
+  ];
+  const taskTypeOptions: Array<{ label: string; value: TaskType }> = [
+    ...(canBuildTasks ? [{ label: "Build", value: "build" as const }] : []),
+    ...(canAskTasks ? [{ label: "Ask", value: "ask" as const }] : [])
   ];
 
   useEffect(() => {
@@ -195,6 +207,12 @@ export function TaskDefinitionFields({
 
     form.setFieldValue("sourceType", "blank");
   }, [canReadRepositoryMetadata, form, selectedSourceType]);
+
+  useEffect(() => {
+    if (selectedSourceType === "pull_request" && !canBuildTasks) {
+      form.setFieldValue("sourceType", canReadRepositoryMetadata ? "issue" : "blank");
+    }
+  }, [canBuildTasks, canReadRepositoryMetadata, form, selectedSourceType]);
 
   useEffect(() => {
     if (!settings || !syncSettingsDefaults) {
@@ -259,6 +277,32 @@ export function TaskDefinitionFields({
       form.setFieldValue("taskType", "build");
     }
   }, [form, isBlankSource, isIssueSource, selectedStartMode, selectedTaskType]);
+
+  useEffect(() => {
+    if (selectedTaskType === "build" && !canBuildTasks && canAskTasks) {
+      form.setFieldValue("taskType", "ask");
+      return;
+    }
+
+    if (selectedTaskType === "ask" && !canAskTasks && canBuildTasks) {
+      form.setFieldValue("taskType", "build");
+    }
+  }, [canAskTasks, canBuildTasks, form, selectedTaskType]);
+
+  useEffect(() => {
+    if (!(isBlankSource || isIssueSource)) {
+      return;
+    }
+
+    if (selectedStartMode === "prepare_workspace" && !canUseInteractiveTerminal) {
+      form.setFieldValue("startMode", "run_now");
+      return;
+    }
+
+    if (selectedStartMode !== "prepare_workspace" && !canRunAutomatedTask && canUseInteractiveTerminal) {
+      form.setFieldValue("startMode", "prepare_workspace");
+    }
+  }, [canRunAutomatedTask, canUseInteractiveTerminal, form, isBlankSource, isIssueSource, selectedStartMode]);
 
   useEffect(() => {
     if ((isBlankSource || isIssueSource) && selectedStartMode === "idle") {
@@ -389,7 +433,7 @@ export function TaskDefinitionFields({
           type="info"
           showIcon
           message="Pull request review threads are imported from GitHub"
-          description="AgentSwarm will create a plan task from unresolved pull request review threads and continue work on the pull request branch."
+          description="AgentSwarm will create a build task from unresolved pull request review threads and continue work on the pull request branch."
         />
         <Form.Item name="title" label="Task Title Override" style={{ marginBottom: 0 }}>
           <Input placeholder="Optional. Leave blank to use the pull request title." size="large" />
@@ -457,24 +501,24 @@ export function TaskDefinitionFields({
 
           {isBlankSource || isIssueSource ? (
             <Form.Item name="startMode" label="Start mode" rules={[{ required: true }]}>
-              <Select
-                options={[
-                  { label: "Run automated agent now", value: "run_now" },
-                  { label: "Prepare workspace only", value: "prepare_workspace" }
-                ]}
-              />
+              <Select options={startModeOptions} />
             </Form.Item>
           ) : null}
 
           {isBlankSource && selectedStartMode !== "prepare_workspace" ? (
             <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
-              <Select
-                options={[
-                  { label: "Build", value: "build" },
-                  { label: "Ask", value: "ask" }
-                ]}
-              />
+              <Select options={taskTypeOptions} />
             </Form.Item>
+          ) : null}
+
+          {!canRunAutomatedTask && !canUseInteractiveTerminal ? (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="This role cannot create build, ask, or interactive tasks."
+              description="Ask an administrator to grant task mode permissions in Settings."
+            />
           ) : null}
 
           <Form.Item name="provider" label="Provider" rules={[{ required: true }]}>
@@ -521,12 +565,7 @@ export function TaskDefinitionFields({
               </Form.Item>
               {selectedStartMode !== "prepare_workspace" ? (
                 <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
-                  <Select
-                    options={[
-                      { label: "Build", value: "build" },
-                      { label: "Ask", value: "ask" }
-                    ]}
-                  />
+                  <Select options={taskTypeOptions} />
                 </Form.Item>
               ) : null}
               <Form.Item name="includeComments" valuePropName="checked">
@@ -571,7 +610,7 @@ export function TaskDefinitionFields({
             </Form.Item>
           ) : null}
 
-          {(isBlankSource && isImplementationTask) || (isIssueSource && (selectedTaskType === "plan" || selectedTaskType === "build")) ? (
+          {(isBlankSource && isImplementationTask) || (isIssueSource && selectedTaskType === "build") ? (
             <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]}>
               <Select
                 options={[

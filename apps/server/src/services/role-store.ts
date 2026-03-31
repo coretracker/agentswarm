@@ -16,6 +16,7 @@ const ROLE_NAME_KEY_PREFIX = "agentswarm:role_name:";
 export const SYSTEM_ADMIN_ROLE_ID = "admin";
 const SYSTEM_ADMIN_ROLE_NAME = "Admin";
 const SYSTEM_ADMIN_ROLE_DESCRIPTION = "Built-in superuser role with every available permission.";
+const ROLE_SCOPE_VERSION = 2;
 
 const nowIso = (): string => new Date().toISOString();
 const scopeOrder = new Map(ALL_PERMISSION_SCOPES.map((scope, index) => [scope, index]));
@@ -24,9 +25,22 @@ const normalizeRoleName = (value: string | undefined): string => (value ?? "").t
 const normalizeRoleNameKey = (value: string | undefined): string => normalizeRoleName(value).toLowerCase();
 
 const normalizeRoleDescription = (value: string | undefined): string => (value ?? "").trim();
+const expandLegacyTaskModeScopes = (scopes: string[]): string[] => {
+  const expanded = new Set(scopes);
+  if (expanded.has("task:create") || expanded.has("task:edit")) {
+    expanded.add("task:build");
+    expanded.add("task:ask");
+    expanded.add("task:interactive");
+  }
+  return Array.from(expanded);
+};
 
-const normalizeScopes = (scopes: PermissionScope[] | string[] | undefined): PermissionScope[] => {
-  const uniqueScopes = Array.from(new Set((scopes ?? []).map((scope) => String(scope).trim())));
+const normalizeScopes = (
+  scopes: PermissionScope[] | string[] | undefined,
+  options?: { legacyTaskModes?: boolean }
+): PermissionScope[] => {
+  const uniqueScopesRaw = Array.from(new Set((scopes ?? []).map((scope) => String(scope).trim())));
+  const uniqueScopes = options?.legacyTaskModes ? expandLegacyTaskModeScopes(uniqueScopesRaw) : uniqueScopesRaw;
   if (uniqueScopes.length === 0) {
     throw new HttpError(400, "At least one permission scope is required");
   }
@@ -57,7 +71,8 @@ export class RoleStore {
       ...role,
       name: normalizeRoleName(role.name),
       description: normalizeRoleDescription(role.description),
-      scopes: normalizeScopes(role.scopes)
+      scopes: normalizeScopes(role.scopes, { legacyTaskModes: role.scopeVersion !== ROLE_SCOPE_VERSION }),
+      scopeVersion: ROLE_SCOPE_VERSION
     };
   }
 
@@ -85,6 +100,7 @@ export class RoleStore {
       name: SYSTEM_ADMIN_ROLE_NAME,
       description: SYSTEM_ADMIN_ROLE_DESCRIPTION,
       scopes: [...ALL_PERMISSION_SCOPES],
+      scopeVersion: ROLE_SCOPE_VERSION,
       isSystem: true,
       createdAt: current?.createdAt ?? timestamp,
       updatedAt: current?.updatedAt ?? timestamp
@@ -194,6 +210,7 @@ export class RoleStore {
       name,
       description: normalizeRoleDescription(input.description),
       scopes: normalizeScopes(input.scopes),
+      scopeVersion: ROLE_SCOPE_VERSION,
       isSystem: false,
       createdAt: timestamp,
       updatedAt: timestamp
@@ -230,6 +247,7 @@ export class RoleStore {
       name: nextName,
       description: input.description === undefined ? current.description : normalizeRoleDescription(input.description),
       scopes: input.scopes === undefined ? current.scopes : normalizeScopes(input.scopes),
+      scopeVersion: ROLE_SCOPE_VERSION,
       updatedAt: nowIso()
     };
 

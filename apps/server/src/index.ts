@@ -51,9 +51,10 @@ const bootstrap = async (): Promise<void> => {
   const auth = createAuthService({
     userStore,
     sessionStore,
-    cookieName: env.AUTH_COOKIE_NAME
+    cookieName: env.AUTH_COOKIE_NAME,
+    taskStore
   });
-  const spawner = new SpawnerService(taskStore, settingsStore, repositoryStore);
+  const spawner = new SpawnerService(taskStore, settingsStore);
   const scheduler = new SchedulerService(taskStore, settingsStore, spawner);
   const githubImportService = new GitHubImportService(settingsStore);
 
@@ -100,7 +101,7 @@ const bootstrap = async (): Promise<void> => {
   redisClients.sub.on("message", (_channel, message) => {
     try {
       const event = JSON.parse(message) as RealtimeEvent;
-      auth.emitScopedRealtimeEvent(io, event);
+      void auth.emitScopedRealtimeEvent(io, event);
     } catch (error) {
       app.log.error({ error }, "Failed to parse event message");
     }

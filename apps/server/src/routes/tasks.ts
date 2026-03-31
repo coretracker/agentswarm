@@ -1,14 +1,13 @@
 import { z } from "zod";
-import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { isActiveTaskStatus, type Task, type TaskAction } from "@agentswarm/shared-types";
 import { env } from "../config/env.js";
 import type { AuthService } from "../lib/auth.js";
-import { resolveLocalPlanRevisionPath } from "../lib/plan-path.js";
+import { readSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
-import { getTaskInteractiveTerminalStatus } from "../lib/task-interactive-terminal.js";
+import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
 import { applyTaskStartMode, getTriggerActionForNewTask } from "../lib/task-start-mode.js";
 import { executeOpenAiDiffAssist } from "../services/openai-diff-assist-service.js";
 import type { SettingsStore } from "../services/settings-store.js";
@@ -16,6 +15,12 @@ import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import { buildExecutionSummaryFromPrompt, classifyTaskComplexity } from "../lib/task-intelligence.js";
 import { getMutationBlockedReason } from "../lib/task-mutation-guards.js";
+import {
+  requireInteractiveTerminalAccess,
+  requireTaskActionCapabilityAccess,
+  requireTaskCapabilityAccess
+} from "../lib/task-capability-access.js";
+import { canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
 
 const taskStartModeSchema = z.enum(["run_now", "prepare_workspace", "idle"]);
 
@@ -45,8 +50,7 @@ const createTaskSchema = z
   });
 
 const triggerTaskActionSchema = z.object({
-  action: z.enum(["build", "ask"]),
-  iterateInput: z.string().optional()
+  action: z.enum(["build", "ask"])
 });
 
 const updateTaskConfigSchema = z.object({
@@ -64,26 +68,38 @@ const updateTaskTitleSchema = z.object({
   title: z.string().trim().min(1).max(500)
 });
 
-const updateTaskPlanSchema = z.object({
-  planMarkdown: z.string().trim().min(1)
-});
-
 const createTaskMessageSchema = z.object({
   content: z.string().trim().min(1),
   action: z.enum(["build", "ask", "comment"]).optional()
+});
+
+const updateTaskMessageSchema = z.object({
+  content: z.string().trim().min(1)
 });
 
 const pushTaskBodySchema = z.object({
   commitMessage: z.string().max(8000).optional()
 });
 
+const mergeTaskBodySchema = z.object({
+  targetBranch: z.string().trim().min(1).max(255),
+  commitMessage: z.string().max(8000).optional()
+});
+
+const mergePreviewQuerySchema = z.object({
+  targetBranch: z.string().trim().min(1).max(255)
+});
+
 const openAiDiffAssistSchema = z.object({
-  mode: z.enum(["read", "readwrite"]),
   model: z.string().trim().min(1).max(256),
   providerProfile: z.enum(["low", "medium", "high", "max"]),
   userPrompt: z.string().max(16_000).default(""),
   filePath: z.string().trim().min(1).max(4096),
   selectedSnippet: z.string().max(48_000)
+});
+
+const workspaceFileQuerySchema = z.object({
+  path: z.string().trim().min(1).max(4096)
 });
 
 const archivedTaskReadOnlyMessage = "Archived tasks are read-only";
@@ -98,23 +114,22 @@ export const withBranchSyncCounts = async (spawner: SpawnerService, task: Task):
 };
 
 const getChatActionForTask = (task: Task): TaskAction => {
-  if (task.taskType === "review") {
-    return "review";
+  return task.taskType === "ask" ? "ask" : "build";
+};
+
+const getAccessibleTask = async (
+  request: FastifyRequest,
+  reply: FastifyReply,
+  taskStore: TaskStore,
+  taskId: string
+): Promise<Task | null> => {
+  const task = await taskStore.getTask(taskId);
+  if (!task || !canUserAccessTask(request.auth?.user, task)) {
+    await reply.status(404).send({ message: "Task not found" });
+    return null;
   }
 
-  if (task.taskType === "ask") {
-    return "ask";
-  }
-
-  if (task.taskType === "build" || task.taskType === "plan") {
-    return "build";
-  }
-
-  if (task.branchDiff?.trim() || task.status === "review" || task.lastAction === "build") {
-    return "build";
-  }
-
-  return "build";
+  return task;
 };
 
 export const registerTaskRoutes = (
@@ -128,12 +143,20 @@ export const registerTaskRoutes = (
     auth: AuthService;
   }
 ): void => {
-  app.get("/tasks", { preHandler: deps.auth.requireAllScopes(["task:list"]) }, async () => deps.taskStore.listTasks());
+  app.get("/tasks", { preHandler: deps.auth.requireAllScopes(["task:list"]) }, async (request) => {
+    const tasks = await deps.taskStore.listTasks();
+    if (isAdminUser(request.auth?.user)) {
+      return tasks;
+    }
+
+    const userId = request.auth?.user.id;
+    return tasks.filter((task) => Boolean(userId && task.ownerUserId === userId));
+  });
 
   app.get<{ Params: { id: string } }>("/tasks/:id", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     return withBranchSyncCounts(deps.spawner, task);
@@ -143,28 +166,76 @@ export const registerTaskRoutes = (
     "/tasks/:id/interactive-terminal/status",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
     async (request, reply) => {
+      if (!requireInteractiveTerminalAccess(request, reply)) {
+        return;
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
       const status = await getTaskInteractiveTerminalStatus(
         deps.taskStore,
         deps.settingsStore,
-        request.params.id,
+        task.id,
       );
       return reply.send(status);
     },
   );
 
+  app.post<{ Params: { id: string } }>(
+    "/tasks/:id/interactive-terminal/kill",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      if (!requireInteractiveTerminalAccess(request, reply)) {
+        return;
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const activeSession = await deps.taskStore.getActiveInteractiveSession(task.id);
+      if (!activeSession) {
+        return reply.status(409).send({ message: "No interactive terminal session is active for this task." });
+      }
+
+      const killedLiveSession = await killTaskInteractiveTerminalSession(task.id);
+      if (!killedLiveSession) {
+        await deps.spawner.endInteractiveTerminalSession(task.id, activeSession.sessionId);
+      }
+
+      await deps.taskStore.appendLog(
+        task.id,
+        killedLiveSession
+          ? "Interactive terminal session terminated by user via kill switch."
+          : "Interactive terminal kill requested after the live terminal process was already unreachable; cleaned up the session from server state."
+      );
+
+      const refreshed = await deps.taskStore.getTask(task.id);
+      return reply.send(await withBranchSyncCounts(deps.spawner, refreshed ?? task));
+    },
+  );
+
   app.get<{ Params: { id: string } }>("/tasks/:id/messages", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     return deps.taskStore.listMessages(task.id);
   });
 
   app.get<{ Params: { id: string } }>("/tasks/:id/runs", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     return deps.taskStore.listRuns(task.id);
@@ -174,9 +245,9 @@ export const registerTaskRoutes = (
     "/tasks/:id/live-diff",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
     async (request, reply) => {
-      const task = await deps.taskStore.getTask(request.params.id);
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
       if (!task) {
-        return reply.status(404).send({ message: "Task not found" });
+        return;
       }
 
       const rawBase = request.query.base;
@@ -199,9 +270,9 @@ export const registerTaskRoutes = (
     "/tasks/:id/workspace-commit-log",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
     async (request, reply) => {
-      const task = await deps.taskStore.getTask(request.params.id);
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
       if (!task) {
-        return reply.status(404).send({ message: "Task not found" });
+        return;
       }
 
       const rawLimit = request.query.limit;
@@ -212,13 +283,40 @@ export const registerTaskRoutes = (
     }
   );
 
+  app.get<{ Params: { id: string }; Querystring: { path: string } }>(
+    "/tasks/:id/workspace-file",
+    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
+    async (request, reply) => {
+      const parsed = workspaceFileQuerySchema.safeParse(request.query);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      const workspaceRoot = path.join(env.TASK_WORKSPACE_ROOT, task.id);
+      const content = await readSafeWorkspaceFile(workspaceRoot, parsed.data.path);
+      if (content === null) {
+        return reply.status(404).send({ message: "Workspace file not found or is outside the task workspace." });
+      }
+
+      return reply.send({
+        path: parsed.data.path,
+        content
+      });
+    }
+  );
+
   app.get<{ Params: { id: string } }>(
     "/tasks/:id/change-proposals",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
     async (request, reply) => {
-      const task = await deps.taskStore.getTask(request.params.id);
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
       if (!task) {
-        return reply.status(404).send({ message: "Task not found" });
+        return;
       }
 
       return reply.send(await deps.taskStore.listChangeProposals(task.id));
@@ -229,9 +327,9 @@ export const registerTaskRoutes = (
     "/tasks/:id/change-proposals/:proposalId/apply",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
     async (request, reply) => {
-      const task = await deps.taskStore.getTask(request.params.id);
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
       if (!task) {
-        return reply.status(404).send({ message: "Task not found" });
+        return;
       }
 
       if (task.status === "archived") {
@@ -252,9 +350,9 @@ export const registerTaskRoutes = (
     "/tasks/:id/change-proposals/:proposalId/accept",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
     async (request, reply) => {
-      const task = await deps.taskStore.getTask(request.params.id);
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
       if (!task) {
-        return reply.status(404).send({ message: "Task not found" });
+        return;
       }
 
       if (task.status === "archived") {
@@ -274,9 +372,9 @@ export const registerTaskRoutes = (
     "/tasks/:id/change-proposals/:proposalId/revert",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
     async (request, reply) => {
-      const task = await deps.taskStore.getTask(request.params.id);
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
       if (!task) {
-        return reply.status(404).send({ message: "Task not found" });
+        return;
       }
 
       if (task.status === "archived") {
@@ -296,9 +394,9 @@ export const registerTaskRoutes = (
     "/tasks/:id/change-proposals/:proposalId/reject",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
     async (request, reply) => {
-      const task = await deps.taskStore.getTask(request.params.id);
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
       if (!task) {
-        return reply.status(404).send({ message: "Task not found" });
+        return;
       }
 
       if (task.status === "archived") {
@@ -328,30 +426,13 @@ export const registerTaskRoutes = (
         return reply.status(401).send({ message: "Authentication required" });
       }
 
-      if (parsed.data.mode === "readwrite" && !auth.scopes.has("task:edit")) {
-        return reply.status(403).send({ message: "Forbidden" });
-      }
-
-      const task = await deps.taskStore.getTask(request.params.id);
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
       if (!task) {
-        return reply.status(404).send({ message: "Task not found" });
+        return;
       }
 
       if (task.status === "archived") {
         return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
-      }
-
-      if (parsed.data.mode === "readwrite" && isActiveTaskStatus(task.status)) {
-        return reply.status(409).send({ message: "Cannot apply OpenAI edits while the task is running." });
-      }
-
-      if (parsed.data.mode === "readwrite") {
-        const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
-        if (blocked) {
-          return reply.status(409).send({ message: blocked });
-        }
-      } else if (await deps.taskStore.hasPendingChangeProposal(task.id)) {
-        return reply.status(409).send({ message: "Apply or reject the pending checkpoint before continuing." });
       }
 
       const credentials = await deps.settingsStore.getRuntimeCredentials();
@@ -362,7 +443,6 @@ export const registerTaskRoutes = (
 
       try {
         const result = await executeOpenAiDiffAssist({
-          mode: parsed.data.mode,
           taskId: task.id,
           model: parsed.data.model,
           providerProfile: parsed.data.providerProfile,
@@ -370,13 +450,8 @@ export const registerTaskRoutes = (
           filePath: parsed.data.filePath,
           selectedSnippet: parsed.data.selectedSnippet,
           openaiApiKey: credentials.openaiApiKey,
-          openaiBaseUrl: settings.openaiBaseUrl,
-          agentRules: settings.agentRules
+          openaiBaseUrl: settings.openaiBaseUrl
         });
-
-        if (result.mode === "readwrite") {
-          await deps.taskStore.appendLog(task.id, `OpenAI diff assist wrote file: ${result.appliedRelativePath}`);
-        }
 
         return reply.send(result);
       } catch (error: unknown) {
@@ -407,13 +482,23 @@ export const registerTaskRoutes = (
     }
 
     const { startMode, ...createPayload } = parsed.data;
+    if (
+      !requireTaskCapabilityAccess(request, reply, {
+        taskType: createPayload.taskType ?? "build",
+        startMode
+      })
+    ) {
+      return;
+    }
+
     const task = await deps.taskStore.createTask(
       {
         ...createPayload,
         prompt: createPayload.prompt.trim(),
         startMode
       },
-      repository
+      repository,
+      request.auth!.user.id
     );
     try {
       const result = await applyTaskStartMode(task, startMode, {
@@ -446,13 +531,17 @@ export const registerTaskRoutes = (
       return reply.status(400).send({ message: parsed.error.message });
     }
 
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     if (task.status === "archived") {
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    if (!requireTaskActionCapabilityAccess(request, reply, parsed.data.action)) {
+      return;
     }
 
     const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
@@ -462,8 +551,7 @@ export const registerTaskRoutes = (
 
     const accepted = await deps.scheduler.triggerAction(
       task.id,
-      parsed.data.action,
-      parsed.data.iterateInput?.trim() || undefined
+      parsed.data.action
     );
     if (!accepted) {
       return reply.status(409).send({ message: "Task is already running" });
@@ -474,9 +562,9 @@ export const registerTaskRoutes = (
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/cancel", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     if (task.status === "archived") {
@@ -498,9 +586,9 @@ export const registerTaskRoutes = (
       return reply.status(400).send({ message: parsed.error.message });
     }
 
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     if (task.status === "archived") {
@@ -529,9 +617,9 @@ export const registerTaskRoutes = (
       return reply.status(400).send({ message: parsed.error.message });
     }
 
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     if (task.status === "archived") {
@@ -551,9 +639,9 @@ export const registerTaskRoutes = (
       return reply.status(400).send({ message: parsed.error.message });
     }
 
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     if (task.status === "archived") {
@@ -573,65 +661,15 @@ export const registerTaskRoutes = (
     return reply.send(updated);
   });
 
-  app.patch<{ Params: { id: string } }>("/tasks/:id/plan", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const parsed = updateTaskPlanSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const task = await deps.taskStore.getTask(request.params.id);
-    if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
-    }
-
-    if (task.status === "archived") {
-      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
-    }
-
-    if (task.taskType !== "plan") {
-      return reply.status(409).send({ message: "Only plan tasks support manual plan editing" });
-    }
-
-    if (isActiveTaskStatus(task.status)) {
-      return reply.status(409).send({ message: "Active tasks cannot be edited" });
-    }
-
-    await deps.spawner.cleanupTaskArtifacts(task, { preservePlanFile: true });
-
-    const planPath = resolveLocalPlanRevisionPath(task, env.LOCAL_PLANS_ROOT, `manual-${Date.now()}`);
-    await mkdir(env.LOCAL_PLANS_ROOT, { recursive: true });
-    await mkdir(path.dirname(planPath), { recursive: true });
-    await writeFile(planPath, `${parsed.data.planMarkdown}\n`, "utf8");
-
-    const updated = await deps.taskStore.saveManualPlanEdit(task.id, planPath, parsed.data.planMarkdown);
-    const manualRun = await deps.taskStore.createRun(task.id, {
-      action: "plan",
-      provider: task.provider,
-      providerProfile: task.providerProfile,
-      modelOverride: task.modelOverride,
-      branchName: task.branchName ?? task.baseBranch
-    });
-    if (manualRun) {
-      await deps.taskStore.updateRun(manualRun.id, {
-        status: "succeeded",
-        finishedAt: new Date().toISOString(),
-        summary: parsed.data.planMarkdown
-      });
-      await deps.taskStore.patchTask(task.id, { currentPlanRunId: manualRun.id });
-    }
-    await deps.taskStore.appendLog(task.id, "Plan manually edited by user.");
-    return reply.send((await deps.taskStore.getTask(task.id)) ?? updated);
-  });
-
   app.post<{ Params: { id: string } }>("/tasks/:id/messages", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const parsed = createTaskMessageSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
     }
 
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     if (task.status === "archived") {
@@ -639,6 +677,9 @@ export const registerTaskRoutes = (
     }
 
     const action = parsed.data.action ?? getChatActionForTask(task);
+    if (action !== "comment" && !requireTaskActionCapabilityAccess(request, reply, action)) {
+      return;
+    }
 
     // comments are treated as read-only messages; other actions can always run
     if (action !== "comment" && isActiveTaskStatus(task.status)) {
@@ -672,65 +713,46 @@ export const registerTaskRoutes = (
     return reply.send(refreshed);
   });
 
-  app.post<{ Params: { id: string; runId: string } }>("/tasks/:id/build-from-run/:runId", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const task = await deps.taskStore.getTask(request.params.id);
-    if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+  app.patch<{ Params: { id: string; messageId: string } }>(
+    "/tasks/:id/messages/:messageId",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const parsed = updateTaskMessageSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const existingMessage = (await deps.taskStore.listMessages(task.id)).find((message) => message.id === request.params.messageId);
+      if (!existingMessage) {
+        return reply.status(404).send({ message: "Message not found" });
+      }
+
+      if (existingMessage.role !== "user" || existingMessage.action !== "comment") {
+        return reply.status(409).send({ message: "Only user comments can be edited" });
+      }
+
+      const updatedMessage = await deps.taskStore.updateMessage(task.id, existingMessage.id, parsed.data.content);
+      if (!updatedMessage) {
+        return reply.status(404).send({ message: "Message not found" });
+      }
+
+      return reply.send(updatedMessage);
     }
-
-    if (task.status === "archived") {
-      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
-    }
-
-    if (task.taskType !== "plan") {
-      return reply.status(409).send({ message: "Only plan tasks can build from a specific plan run" });
-    }
-
-    if (isActiveTaskStatus(task.status)) {
-      return reply.status(409).send({ message: "Task is already running" });
-    }
-
-    const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
-    if (blocked) {
-      return reply.status(409).send({ message: blocked });
-    }
-
-    if (task.builtPlanRunIds.includes(request.params.runId)) {
-      return reply.status(409).send({ message: "This plan has already been built" });
-    }
-
-    const run = await deps.taskStore.getRun(request.params.runId);
-    if (!run || run.taskId !== task.id) {
-      return reply.status(404).send({ message: "Plan run not found" });
-    }
-
-    if (run.action !== "plan" && run.action !== "iterate") {
-      return reply.status(409).send({ message: "Only plan history entries can be built" });
-    }
-
-    const planMarkdown = run.summary?.trim();
-    if (!planMarkdown) {
-      return reply.status(409).send({ message: "Selected plan has no markdown summary to build from" });
-    }
-
-    const selectedPlanPath = resolveLocalPlanRevisionPath(task, env.LOCAL_PLANS_ROOT, `${run.action}-${run.startedAt.replace(/[:.]/g, "-")}`);
-    await mkdir(path.dirname(selectedPlanPath), { recursive: true });
-    await writeFile(selectedPlanPath, `${planMarkdown}\n`, "utf8");
-    await deps.taskStore.updatePlanArtifacts(task.id, selectedPlanPath, planMarkdown);
-    await deps.taskStore.patchTask(task.id, { currentPlanRunId: run.id });
-
-    const accepted = await deps.scheduler.triggerAction(task.id, "build");
-    if (!accepted) {
-      return reply.status(409).send({ message: "Task execution could not be started" });
-    }
-
-    return reply.send(await deps.taskStore.getTask(task.id));
-  });
+  );
 
   app.get<{ Params: { id: string } }>("/tasks/:id/push-preview", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     if (task.status === "archived") {
@@ -752,9 +774,9 @@ export const registerTaskRoutes = (
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/push", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     if (task.status === "archived") {
@@ -778,9 +800,9 @@ export const registerTaskRoutes = (
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/pull", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     if (task.status === "archived") {
@@ -796,10 +818,45 @@ export const registerTaskRoutes = (
     return reply.send(await withBranchSyncCounts(deps.spawner, pulled));
   });
 
+  app.get<{ Params: { id: string }; Querystring: { targetBranch: string } }>(
+    "/tasks/:id/merge-preview",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const parsed = mergePreviewQuerySchema.safeParse(request.query);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      if (task.branchStrategy !== "feature_branch") {
+        return reply.status(409).send({ message: "Only feature-branch tasks have a mergeable branch" });
+      }
+
+      if (!task.branchName) {
+        return reply.status(409).send({ message: "Task branch is not available for merging" });
+      }
+
+      try {
+        return reply.send(await deps.spawner.getTaskMergePreview(task, parsed.data.targetBranch));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Merge preview failed";
+        return reply.status(400).send({ message });
+      }
+    }
+  );
+
   app.post<{ Params: { id: string } }>("/tasks/:id/merge", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     if (task.status === "archived") {
@@ -810,19 +867,22 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: "Only feature-branch tasks have a mergeable branch" });
     }
 
+    const parsed = mergeTaskBodySchema.safeParse((request.body as unknown) ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
     if (!task.branchName) {
       return reply.status(409).send({ message: "Task branch is not available for merging" });
     }
 
-    if (!task.repoDefaultBranch) {
-      return reply.status(409).send({ message: "Repository default branch is not configured for this task" });
-    }
-
-    if (task.branchName === task.repoDefaultBranch) {
+    if (task.branchName === parsed.data.targetBranch) {
       return reply.status(409).send({ message: "Task branch cannot merge into itself" });
     }
 
-    const merged = await deps.spawner.mergeTaskBranch(task);
+    const merged = await deps.spawner.mergeTaskBranch(task, parsed.data.targetBranch, {
+      commitMessage: parsed.data.commitMessage
+    });
     await deps.taskStore.archiveTask(merged.id);
     await deps.taskStore.appendLog(merged.id, "Task archived after merge.");
     const refreshed = await deps.taskStore.getTask(merged.id);
@@ -830,21 +890,21 @@ export const registerTaskRoutes = (
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/accept", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     if (task.status === "archived") {
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    const canAcceptImplementationFailure = (task.taskType === "plan" || task.taskType === "build") && task.status === "failed";
-    if (task.status !== "review" && task.status !== "answered" && !canAcceptImplementationFailure) {
+    const canAcceptImplementationFailure = task.taskType === "build" && task.status === "failed";
+    if (task.status !== "completed" && task.status !== "answered" && !canAcceptImplementationFailure) {
       return reply.status(409).send({ message: "Only completed task results can be accepted" });
     }
 
-    if (task.taskType === "plan" || task.taskType === "build") {
+    if (task.taskType === "build") {
       const accepted = await deps.spawner.publishAcceptedTask(task);
       return reply.send(accepted);
     }
@@ -858,9 +918,9 @@ export const registerTaskRoutes = (
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/archive", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     if (task.status === "archived") {
@@ -871,7 +931,7 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: "Active tasks cannot be archived" });
     }
 
-    await deps.spawner.cleanupTaskArtifacts(task, { preservePlanFile: true });
+    await deps.spawner.cleanupTaskArtifacts(task);
     await deps.taskStore.archiveTask(task.id);
     await deps.taskStore.appendLog(task.id, "Task archived by user.");
     const refreshed = await deps.taskStore.getTask(task.id);
@@ -879,13 +939,9 @@ export const registerTaskRoutes = (
   });
 
   app.delete<{ Params: { id: string } }>("/tasks/:id", { preHandler: deps.auth.requireAllScopes(["task:delete"]) }, async (request, reply) => {
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
-    }
-
-    if (task.status === "archived") {
-      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      return;
     }
 
     if (isActiveTaskStatus(task.status)) {
@@ -899,16 +955,21 @@ export const registerTaskRoutes = (
 
   // Backward compatibility: /run maps to build.
   app.post<{ Params: { id: string } }>("/tasks/:id/run", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const task = await deps.taskStore.getTask(request.params.id);
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
-      return reply.status(404).send({ message: "Task not found" });
+      return;
     }
 
     if (task.status === "archived") {
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    const accepted = await deps.scheduler.triggerAction(task.id, getTriggerActionForNewTask(task));
+    const action = getTriggerActionForNewTask(task);
+    if (!requireTaskActionCapabilityAccess(request, reply, action)) {
+      return;
+    }
+
+    const accepted = await deps.scheduler.triggerAction(task.id, action);
     if (!accepted) {
       return reply.status(409).send({ message: "Task is already running" });
     }

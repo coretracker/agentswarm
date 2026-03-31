@@ -4,11 +4,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   getDefaultModelForProvider,
   getEffortOptionsForProvider,
-  isActiveTaskStatus,
-  type OpenAiDiffAssistMode,
   type ProviderProfile,
-  type TaskLiveDiff,
-  type TaskStatus
+  type TaskLiveDiff
 } from "@agentswarm/shared-types";
 import { Alert, Button, Card, Collapse, Flex, Input, Modal, Select, Space, Spin, Typography, message } from "antd";
 import { Diff, Hunk, getChangeKey, type ChangeData, type FileData } from "react-diff-view";
@@ -28,6 +25,17 @@ function buildSnippetFromSelection(file: FileData, selectedKeys: string[]): stri
         const prefix = change.type === "insert" ? "+" : change.type === "delete" ? "-" : " ";
         lines.push(prefix + (change.content ?? ""));
       }
+    }
+  }
+  return lines.join("\n");
+}
+
+function buildSnippetFromFile(file: FileData): string {
+  const lines: string[] = [];
+  for (const hunk of file.hunks) {
+    for (const change of hunk.changes) {
+      const prefix = change.type === "insert" ? "+" : change.type === "delete" ? "-" : " ";
+      lines.push(prefix + (change.content ?? ""));
     }
   }
   return lines.join("\n");
@@ -77,33 +85,24 @@ function DiffFileOpenAiCard({
   file,
   collapseFiles,
   workspaceReady,
-  canApply,
-  assistBlocked,
-  assistBlockedReason,
   selectionResetToken,
   onOpenConfig
 }: {
   file: FileData;
   collapseFiles: boolean;
   workspaceReady: boolean;
-  canApply: boolean;
-  assistBlocked: boolean;
-  assistBlockedReason?: string;
   selectionResetToken: string;
-  onOpenConfig: (mode: OpenAiDiffAssistMode, filePath: string, snippet: string) => void;
+  onOpenConfig: (filePath: string, snippet: string) => void;
 }) {
   const [selectedChanges, toggleSelection] = usePersistentChangeSelect(file, selectionResetToken);
   const filePath = file.newPath || file.oldPath || "";
   const fileLabel = filePath || "Changed file";
 
-  const openConfig = (mode: OpenAiDiffAssistMode, e: React.MouseEvent) => {
+  const openConfig = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (selectedChanges.length === 0) {
-      message.warning("Select one or more lines in the diff first.");
-      return;
-    }
-    const snippet = buildSnippetFromSelection(file, selectedChanges);
-    onOpenConfig(mode, filePath, snippet);
+    const snippet =
+      selectedChanges.length > 0 ? buildSnippetFromSelection(file, selectedChanges) : buildSnippetFromFile(file);
+    onOpenConfig(filePath, snippet);
   };
 
   const diffEl = (
@@ -123,20 +122,11 @@ function DiffFileOpenAiCard({
     <Space wrap size="small" onClick={(e) => e.stopPropagation()}>
       <Button
         size="small"
-        disabled={assistBlocked || !workspaceReady || selectedChanges.length === 0}
-        title={assistBlocked ? assistBlockedReason : undefined}
-        onClick={(e) => openConfig("read", e)}
-      >
-        Ask (read-only)…
-      </Button>
-      <Button
-        size="small"
         type="primary"
-        disabled={assistBlocked || !workspaceReady || !canApply || selectedChanges.length === 0}
-        title={assistBlocked ? assistBlockedReason : undefined}
-        onClick={(e) => openConfig("readwrite", e)}
+        disabled={!workspaceReady}
+        onClick={openConfig}
       >
-        Apply (read-write)…
+        Ask
       </Button>
     </Space>
   );
@@ -182,16 +172,9 @@ export interface TaskDiffOpenAiPanelProps {
   emptyMessage: string;
   collapseFiles: boolean;
   taskId: string;
-  taskStatus: TaskStatus;
   liveDiff: TaskLiveDiff | null;
-  isArchived: boolean;
-  canEditTask: boolean;
-  onLiveDiffRefresh: () => void;
   /** Clears line selection when this value changes (e.g. compare vs working toggle). */
   selectionResetToken: string;
-  /** When set, line-level Ask/Apply actions are disabled (e.g. pending checkpoint must be resolved first). */
-  diffAssistBlocked?: boolean;
-  diffAssistBlockedReason?: string;
 }
 
 export function TaskDiffOpenAiPanel({
@@ -199,14 +182,8 @@ export function TaskDiffOpenAiPanel({
   emptyMessage,
   collapseFiles,
   taskId,
-  taskStatus,
   liveDiff,
-  isArchived,
-  canEditTask,
-  onLiveDiffRefresh,
-  selectionResetToken,
-  diffAssistBlocked = false,
-  diffAssistBlockedReason = "Apply or reject the pending checkpoint before using diff assist."
+  selectionResetToken
 }: TaskDiffOpenAiPanelProps): ReactNode {
   const [openAiModel, setOpenAiModel] = useState<string>("gpt-5.4");
   const [openAiEffort, setOpenAiEffort] = useState<ProviderProfile>("high");
@@ -214,7 +191,6 @@ export function TaskDiffOpenAiPanel({
   const { models: codexModels, loading: codexModelsLoading } = useProviderModels("codex");
 
   const [configOpen, setConfigOpen] = useState(false);
-  const [pendingMode, setPendingMode] = useState<OpenAiDiffAssistMode>("read");
   const [pendingFilePath, setPendingFilePath] = useState("");
   const [pendingSnippet, setPendingSnippet] = useState("");
 
@@ -239,11 +215,8 @@ export function TaskDiffOpenAiPanel({
   }, []);
 
   const workspaceReady = liveDiff?.live === true;
-  const taskRunning = isActiveTaskStatus(taskStatus);
-  const canApply = canEditTask && !isArchived && !taskRunning;
 
-  const openConfigModal = useCallback((mode: OpenAiDiffAssistMode, filePath: string, snippet: string) => {
-    setPendingMode(mode);
+  const openConfigModal = useCallback((filePath: string, snippet: string) => {
     setPendingFilePath(filePath);
     setPendingSnippet(snippet);
     setConfigOpen(true);
@@ -256,22 +229,13 @@ export function TaskDiffOpenAiPanel({
     setResultMarkdown("");
     try {
       const res = await api.openAiDiffAssist(taskId, {
-        mode: pendingMode,
         model: openAiModel,
         providerProfile: openAiEffort,
         userPrompt: instruction,
         filePath: pendingFilePath,
         selectedSnippet: pendingSnippet
       });
-      if (res.mode === "read") {
-        setResultMarkdown(res.text.trim() || "_Empty response._");
-      } else {
-        setResultMarkdown(
-          `**Wrote:** \`${res.appliedRelativePath}\`\n\n${res.explanation.trim() || "_No explanation._"}`
-        );
-        onLiveDiffRefresh();
-        message.success(`Updated ${res.appliedRelativePath}`);
-      }
+      setResultMarkdown(res.text.trim() || "_Empty response._");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Request failed";
       message.error(msg);
@@ -281,13 +245,11 @@ export function TaskDiffOpenAiPanel({
     }
   }, [
     taskId,
-    pendingMode,
     openAiModel,
     openAiEffort,
     instruction,
     pendingFilePath,
-    pendingSnippet,
-    onLiveDiffRefresh
+    pendingSnippet
   ]);
 
   if (!diffText.trim()) {
@@ -322,21 +284,13 @@ export function TaskDiffOpenAiPanel({
 
   return (
     <>
-      {diffAssistBlocked ? (
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="Diff assist paused"
-          description={diffAssistBlockedReason}
-        />
-      ) : !workspaceReady ? (
+      {!workspaceReady ? (
         <Alert
           type="info"
           showIcon
           style={{ marginBottom: 12 }}
           message="OpenAI on diff needs a live workspace"
-          description="Wait until the task workspace is available (live diff), then select lines and run Ask or Apply."
+          description="Wait until the task workspace is available, then ask about selected lines or the whole file."
         />
       ) : null}
 
@@ -347,9 +301,6 @@ export function TaskDiffOpenAiPanel({
             file={file}
             collapseFiles={collapseFiles}
             workspaceReady={workspaceReady}
-            canApply={canApply}
-            assistBlocked={diffAssistBlocked}
-            assistBlockedReason={diffAssistBlockedReason}
             selectionResetToken={selectionResetToken}
             onOpenConfig={openConfigModal}
           />
@@ -361,15 +312,15 @@ export function TaskDiffOpenAiPanel({
         open={configOpen}
         onCancel={() => setConfigOpen(false)}
         onOk={() => void runAssist()}
-        okText={pendingMode === "read" ? "Run read-only" : "Run apply"}
+        okText="Ask"
         okButtonProps={{ disabled: !workspaceReady }}
         width={560}
         destroyOnClose={false}
       >
         <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-          {pendingMode === "read"
-            ? "Sends the selected lines and file context to the model; nothing is written to disk."
-            : "The model returns a full replacement file; the server writes it into the task workspace."}
+          {pendingSnippet.trim().length > 0
+            ? "Sends the selected diff lines or file diff context together with the current workspace file to the model. Nothing is written to disk."
+            : "Asks about the current workspace file. Nothing is written to disk."}
         </Typography.Paragraph>
         <Typography.Text type="secondary" style={{ display: "block", marginBottom: 4 }}>
           File

@@ -10,6 +10,7 @@ import type { SchedulerService } from "../services/scheduler.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import { applyTaskStartMode } from "../lib/task-start-mode.js";
+import { requireTaskCapabilityAccess } from "../lib/task-capability-access.js";
 import { withBranchSyncCounts } from "./tasks.js";
 
 const presetSchema = z.discriminatedUnion("sourceType", [
@@ -84,6 +85,15 @@ export const registerPresetRoutes = (
       return reply.status(400).send({ message: parsed.error.message });
     }
 
+    if (
+      !requireTaskCapabilityAccess(request, reply, {
+        taskType: parsed.data.sourceType === "pull_request" ? "build" : parsed.data.taskType,
+        startMode: parsed.data.sourceType === "pull_request" ? "run_now" : parsed.data.startMode
+      })
+    ) {
+      return;
+    }
+
     const repository = await deps.repositoryStore.getRepository(parsed.data.repoId);
     if (!repository) {
       return reply.status(404).send({ message: "Repository not found" });
@@ -97,6 +107,15 @@ export const registerPresetRoutes = (
     const parsed = presetSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    if (
+      !requireTaskCapabilityAccess(request, reply, {
+        taskType: parsed.data.sourceType === "pull_request" ? "build" : parsed.data.taskType,
+        startMode: parsed.data.sourceType === "pull_request" ? "run_now" : parsed.data.startMode
+      })
+    ) {
+      return;
     }
 
     const repository = await deps.repositoryStore.getRepository(parsed.data.repoId);
@@ -141,6 +160,13 @@ export const registerPresetRoutes = (
       }
 
       const overrideBaseBranch = parsedSpawnInput.data.baseBranch;
+      const capabilityInput =
+        preset.definition.sourceType === "pull_request"
+          ? { taskType: "build" as const, startMode: "run_now" as const }
+          : { taskType: preset.definition.taskType, startMode: preset.definition.startMode };
+      if (!requireTaskCapabilityAccess(request, reply, capabilityInput)) {
+        return;
+      }
 
       try {
         let task;
@@ -162,7 +188,7 @@ export const registerPresetRoutes = (
           });
           const { startMode: sm, ...createFields } = rawInput;
           startMode = sm ?? "run_now";
-          task = await deps.taskStore.createTask({ ...createFields, startMode }, repository);
+          task = await deps.taskStore.createTask({ ...createFields, startMode }, repository, request.auth!.user.id);
         } else if (preset.definition.sourceType === "pull_request") {
           task = await deps.taskStore.createTask(
             await deps.githubImportService.buildTaskInputFromPullRequest(repository, {
@@ -173,7 +199,8 @@ export const registerPresetRoutes = (
               providerProfile: preset.definition.providerProfile,
               model: preset.definition.model
             }),
-            repository
+            repository,
+            request.auth!.user.id
           );
           startMode = "run_now";
         } else {
@@ -191,7 +218,8 @@ export const registerPresetRoutes = (
               branchStrategy: preset.definition.branchStrategy,
               startMode: preset.definition.startMode ?? "run_now"
             },
-            repository
+            repository,
+            request.auth!.user.id
           );
         }
 

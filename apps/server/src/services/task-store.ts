@@ -24,7 +24,7 @@ import {
   normalizeProvider,
   normalizeProviderProfile
 } from "../lib/provider-config.js";
-import { buildExecutionSummaryFromPlan, buildExecutionSummaryFromPrompt, classifyTaskComplexity, extractReviewVerdict } from "../lib/task-intelligence.js";
+import { buildExecutionSummaryFromPrompt, classifyTaskComplexity } from "../lib/task-intelligence.js";
 
 /** When creating with Interactive prep, make the task title identifiable without duplicating markers. */
 function resolveTaskTitleForCreate(input: CreateTaskInput): string {
@@ -60,27 +60,60 @@ const MAX_MESSAGES = 200;
 const nowIso = (): string => new Date().toISOString();
 type QueueReason = "manual" | "auto";
 
-const getInitialAction = (task: { taskType: Task["taskType"]; planningMode: Task["planningMode"]; planMarkdown: string | null }): TaskAction => {
-  if (task.taskType === "review") {
-    return "review";
+const getInitialAction = (task: { taskType: Task["taskType"] }): TaskAction => (task.taskType === "ask" ? "ask" : "build");
+
+const normalizeLegacyTaskType = (taskType: string | null | undefined): Task["taskType"] => (taskType === "ask" ? "ask" : "build");
+const currentTaskStatuses = new Set<TaskStatus>([
+  "build_queued",
+  "preparing_workspace",
+  "building",
+  "ask_queued",
+  "asking",
+  "completed",
+  "answered",
+  "accepted",
+  "archived",
+  "cancelled",
+  "failed"
+]);
+
+const normalizeLegacyTaskAction = (action: string | null | undefined): TaskAction | null => {
+  if (!action) {
+    return null;
   }
 
-  if (task.taskType === "ask") {
-    return "ask";
+  return action === "ask" ? "ask" : "build";
+};
+
+const normalizeLegacyTaskStatus = (status: string, fallbackAction: TaskAction): TaskStatus => {
+  if (currentTaskStatuses.has(status as TaskStatus)) {
+    return status as TaskStatus;
   }
 
-  if (task.taskType === "build" || task.taskType === "plan") {
-    return "build";
+  if (status === "queued" || status.endsWith("_queued")) {
+    return getQueuedStatusForAction(fallbackAction);
   }
 
-  return "build";
+  if (status === "spawning" || status === "running" || status.endsWith("ing")) {
+    return fallbackAction === "ask" ? "asking" : "building";
+  }
+
+  if (status === "succeeded" || status.endsWith("ed")) {
+    return getSuccessfulStatusForAction(fallbackAction);
+  }
+
+  if (!status.includes("_")) {
+    return getSuccessfulStatusForAction(fallbackAction);
+  }
+
+  return "failed";
 };
 
 export interface QueueEntry {
   taskId: string;
   reason: QueueReason;
   action: TaskAction;
-  iterateInput?: string;
+  input?: string;
 }
 
 export class TaskStore {
@@ -91,75 +124,41 @@ export class TaskStore {
 
   private normalizeTask(task: Task): Task {
     const legacyTask = task as Task & {
-      taskType?: Task["taskType"];
+      taskType?: string;
+      ownerUserId?: string | null;
       repoDefaultBranch?: string;
       resultMarkdown?: string | null;
-      reviewVerdict?: Task["reviewVerdict"];
       provider?: Task["provider"];
       providerProfile?: Task["providerProfile"];
       modelOverride?: string | null;
       model?: string | null;
       reasoningEffort?: TaskReasoningEffort | null;
-      builtPlanRunIds?: string[];
-      currentPlanRunId?: string | null;
+      lastAction?: string | null;
       // Legacy field kept for migration of stored tasks created before the prompt refactor.
       requirements?: string;
       prompt?: string;
     };
-    const status = legacyTask.status as string;
     const normalizedTask: Task = {
       ...legacyTask,
       pinned: legacyTask.pinned ?? false,
-      taskType: legacyTask.taskType ?? "build",
+      ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
+      taskType: normalizeLegacyTaskType(legacyTask.taskType),
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
-      currentPlanRunId: legacyTask.currentPlanRunId ?? null,
-      builtPlanRunIds: Array.isArray(legacyTask.builtPlanRunIds) ? legacyTask.builtPlanRunIds : [],
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
       resultMarkdown: legacyTask.resultMarkdown ?? null,
-      reviewVerdict: legacyTask.reviewVerdict ?? null,
+      lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
       // Prefer the new prompt field; fall back to legacy requirements for older tasks.
       prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim()
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
-
-    if (status === "queued") {
-      return { ...normalizedTask, status: getQueuedStatusForAction(fallbackAction) };
-    }
-
-    if (status === "spawning" || status === "running") {
-      return { ...normalizedTask, status: fallbackAction === "build" ? "building" : "planning" };
-    }
-
-    if (status === "succeeded") {
-      return { ...normalizedTask, status: getSuccessfulStatusForAction(fallbackAction) };
-    }
-
-    if (
-      status === "plan_queued" ||
-      status === "planning" ||
-      status === "planned" ||
-      status === "build_queued" ||
-      status === "preparing_workspace" ||
-      status === "building" ||
-      status === "review_queued" ||
-      status === "reviewing" ||
-      status === "ask_queued" ||
-      status === "asking" ||
-      status === "review" ||
-      status === "answered" ||
-      status === "accepted" ||
-      status === "archived" ||
-      status === "cancelled" ||
-      status === "failed"
-    ) {
-      return normalizedTask;
-    }
-
-    return { ...normalizedTask, status: "failed" };
+    return {
+      ...normalizedTask,
+      status: normalizeLegacyTaskStatus(legacyTask.status as string, fallbackAction)
+    };
   }
 
   private async rewriteQueueWithoutTask(taskId: string): Promise<void> {
@@ -241,7 +240,6 @@ export class TaskStore {
   private normalizeRun(run: TaskRun): TaskRun {
     return {
       ...run,
-      tokenUsage: run.tokenUsage ?? null,
       changeProposalCheckpointRef: run.changeProposalCheckpointRef ?? null,
       changeProposalUntrackedPaths: Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : null
     };
@@ -264,39 +262,31 @@ export class TaskStore {
     };
   }
 
-  async createTask(input: CreateTaskInput, repository: Repository): Promise<Task> {
+  async createTask(input: CreateTaskInput, repository: Repository, ownerUserId: string): Promise<Task> {
     const timestamp = nowIso();
     const title = resolveTaskTitleForCreate(input);
-    const taskType = input.taskType ?? "plan";
+    const taskType = input.taskType ?? "build";
     const promptRaw = (input.prompt ?? "").trim();
     const startMode: TaskStartMode = input.startMode ?? "run_now";
     const prompt =
       promptRaw.length > 0 ? promptRaw : startMode === "prepare_workspace" ? "" : "(No prompt provided.)";
     const complexity = classifyTaskComplexity(title, prompt);
-    const planningMode = taskType === "build" ? "direct-build" : "plan-first";
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
     const provider = normalizeProvider(input.provider);
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
-    const initialAction: TaskAction =
-      taskType === "review"
-        ? "review"
-        : taskType === "ask"
-          ? "ask"
-          : taskType === "build" || planningMode === "direct-build"
-            ? "build"
-            : "plan";
+    const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
     const initialStatus: TaskStatus =
       startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
     const task: Task = {
       id: nanoid(),
       title,
       pinned: false,
+      ownerUserId,
       repoId: repository.id,
       repoName: repository.name,
       repoUrl: repository.url,
-      repoPlansDir: repository.plansDir,
       repoDefaultBranch: repository.defaultBranch,
       taskType,
       provider,
@@ -305,21 +295,12 @@ export class TaskStore {
       baseBranch,
       branchStrategy,
       complexity,
-      planningMode,
-      branchName: branchStrategy === "work_on_branch" && (taskType === "plan" || taskType === "build")
-        ? baseBranch
-        : null,
-      currentPlanRunId: null,
-      builtPlanRunIds: [],
+      branchName: branchStrategy === "work_on_branch" ? baseBranch : null,
       workspaceBaseRef: null,
       prompt,
-      planPath: null,
-      planMarkdown: null,
       resultMarkdown: null,
-      reviewVerdict: null,
       executionSummary: buildExecutionSummaryFromPrompt(title, prompt),
       branchDiff: null,
-      latestIterationInput: null,
       lastAction: initialAction,
       status: initialStatus,
       logs: [],
@@ -406,63 +387,9 @@ export class TaskStore {
     return next;
   }
 
-  async updatePlanArtifacts(taskId: string, planPath: string, planMarkdown: string): Promise<Task | null> {
-    const task = await this.getStoredTask(taskId);
-    if (!task) {
-      return null;
-    }
-
-    const next: Task = {
-      ...task,
-      planPath,
-      planMarkdown,
-      resultMarkdown: null,
-      reviewVerdict: null,
-      executionSummary: buildExecutionSummaryFromPlan(planMarkdown),
-      branchDiff: null,
-      updatedAt: nowIso(),
-      logs: []
-    };
-
-    await this.redis.set(this.taskKey(taskId), JSON.stringify(next));
-    await this.eventBus.publish({ type: "task:updated", payload: next });
-    return next;
-  }
-
-  async saveManualPlanEdit(taskId: string, planPath: string, planMarkdown: string): Promise<Task | null> {
-    const task = await this.getStoredTask(taskId);
-    if (!task) {
-      return null;
-    }
-
-    const next: Task = {
-      ...task,
-      planPath,
-      planMarkdown,
-      resultMarkdown: null,
-      reviewVerdict: null,
-      executionSummary: buildExecutionSummaryFromPlan(planMarkdown),
-      branchDiff: null,
-      workspaceBaseRef: null,
-      status: "planned",
-      lastAction: "plan",
-      enqueued: false,
-      errorMessage: null,
-      startedAt: null,
-      finishedAt: null,
-      updatedAt: nowIso(),
-      logs: []
-    };
-
-    await this.redis.set(this.taskKey(taskId), JSON.stringify(next));
-    await this.eventBus.publish({ type: "task:updated", payload: next });
-    return next;
-  }
-
   async updateResultArtifacts(
     taskId: string,
-    resultMarkdown: string,
-    reviewVerdict: Task["reviewVerdict"] | null = null
+    resultMarkdown: string
   ): Promise<Task | null> {
     const task = await this.getStoredTask(taskId);
     if (!task) {
@@ -472,7 +399,6 @@ export class TaskStore {
     const next: Task = {
       ...task,
       resultMarkdown,
-      reviewVerdict: task.taskType === "review" ? reviewVerdict ?? extractReviewVerdict(resultMarkdown) : null,
       updatedAt: nowIso(),
       logs: []
     };
@@ -577,7 +503,6 @@ export class TaskStore {
       finishedAt: null,
       summary: null,
       errorMessage: null,
-      tokenUsage: null,
       changeProposalCheckpointRef: null,
       changeProposalUntrackedPaths: null,
       logs: []
@@ -602,7 +527,6 @@ export class TaskStore {
         | "summary"
         | "errorMessage"
         | "branchName"
-        | "tokenUsage"
         | "changeProposalCheckpointRef"
         | "changeProposalUntrackedPaths"
       >
@@ -622,28 +546,6 @@ export class TaskStore {
     await this.redis.set(this.taskRunKey(runId), JSON.stringify(next));
     await this.eventBus.publish({ type: "task:run_updated", payload: next });
     return next;
-  }
-
-  async addBuiltPlanRunId(taskId: string, runId: string): Promise<Task | null> {
-    const task = await this.getStoredTask(taskId);
-    if (!task) {
-      return null;
-    }
-
-    if (task.builtPlanRunIds.includes(runId)) {
-      return this.hydrateTask(task);
-    }
-
-    const next: Task = {
-      ...task,
-      builtPlanRunIds: [...task.builtPlanRunIds, runId],
-      logs: [],
-      updatedAt: nowIso()
-    };
-
-    await this.redis.set(this.taskKey(taskId), JSON.stringify(next));
-    await this.eventBus.publish({ type: "task:updated", payload: next });
-    return this.hydrateTask(next);
   }
 
   async appendMessage(
@@ -680,7 +582,52 @@ export class TaskStore {
     return message;
   }
 
-  async markQueuedForAction(taskId: string, action: TaskAction, iterateInput?: string): Promise<Task | null> {
+  async updateMessage(taskId: string, messageId: string, content: string): Promise<TaskMessage | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    const rawMessages = await this.redis.lrange(this.taskMessageKey(taskId), 0, -1);
+    if (rawMessages.length === 0) {
+      return null;
+    }
+
+    let updatedMessage: TaskMessage | null = null;
+    const nextRawMessages = rawMessages.map((raw) => {
+      try {
+        const message = JSON.parse(raw) as TaskMessage;
+        if (message.id !== messageId) {
+          return raw;
+        }
+
+        updatedMessage = {
+          ...message,
+          content
+        };
+        return JSON.stringify(updatedMessage);
+      } catch {
+        return raw;
+      }
+    });
+
+    if (!updatedMessage) {
+      return null;
+    }
+
+    const pipeline = this.redis.multi().del(this.taskMessageKey(taskId));
+    if (nextRawMessages.length > 0) {
+      pipeline.rpush(this.taskMessageKey(taskId), ...nextRawMessages);
+    }
+    await pipeline.exec();
+    await this.eventBus.publish({
+      type: "task:message_updated",
+      payload: updatedMessage
+    });
+    return updatedMessage;
+  }
+
+  async markQueuedForAction(taskId: string, action: TaskAction): Promise<Task | null> {
     const task = await this.getStoredTask(taskId);
     if (!task) {
       return null;
@@ -696,13 +643,7 @@ export class TaskStore {
       startedAt: null,
       finishedAt: null,
       lastAction: action,
-      latestIterationInput: typeof iterateInput === "string" ? iterateInput : task.latestIterationInput,
-      branchDiff:
-        action === "build"
-          ? task.branchDiff
-          : action === "review"
-            ? task.branchDiff
-            : null,
+      branchDiff: action === "build" ? task.branchDiff : null,
       logs: [],
       updatedAt: nowIso()
     };
@@ -712,7 +653,7 @@ export class TaskStore {
     return next;
   }
 
-  async enqueueTask(taskId: string, reason: QueueReason, action: TaskAction, iterateInput?: string): Promise<boolean> {
+  async enqueueTask(taskId: string, reason: QueueReason, action: TaskAction, input?: string): Promise<boolean> {
     const task = await this.getStoredTask(taskId);
     if (!task || (isQueuedTaskStatus(task.status) && task.enqueued)) {
       return false;
@@ -722,12 +663,11 @@ export class TaskStore {
       ...task,
       enqueued: true,
       lastAction: action,
-      latestIterationInput: typeof iterateInput === "string" ? iterateInput : task.latestIterationInput,
       logs: [],
       updatedAt: nowIso()
     };
 
-    const queueEntry: QueueEntry = { taskId, reason, action, iterateInput };
+    const queueEntry: QueueEntry = { taskId, reason, action, input };
 
     await this.redis
       .multi()
@@ -750,11 +690,7 @@ export class TaskStore {
       if (
         typeof parsed.taskId === "string" &&
         (parsed.reason === "manual" || parsed.reason === "auto") &&
-        (parsed.action === "plan" ||
-          parsed.action === "build" ||
-          parsed.action === "iterate" ||
-          parsed.action === "review" ||
-          parsed.action === "ask")
+        (parsed.action === "build" || parsed.action === "ask")
       ) {
         return parsed;
       }
@@ -830,7 +766,7 @@ export class TaskStore {
       pipeline.del(this.taskChangeProposalKey(proposalId));
     }
     await pipeline.exec();
-    await this.eventBus.publish({ type: "task:deleted", payload: { id: taskId } });
+    await this.eventBus.publish({ type: "task:deleted", payload: { id: taskId, ownerUserId: task.ownerUserId } });
     return true;
   }
 

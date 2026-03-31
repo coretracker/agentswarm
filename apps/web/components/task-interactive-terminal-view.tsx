@@ -5,6 +5,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
+import { api } from "../src/api/client";
+
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
 const FONT_SIZE_STORAGE_KEY = "agentswarm-interactive-terminal-font-size";
@@ -74,6 +76,8 @@ export function TaskInteractiveTerminalView({
     const wsUrl = `${apiBaseUrl.replace(/^http/, "ws")}/tasks/${encodeURIComponent(taskId)}/interactive-terminal`;
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
+    let wsOpened = false;
+    let connectFailureHandled = false;
 
     const sendResize = (): void => {
       try {
@@ -134,6 +138,7 @@ export function TaskInteractiveTerminalView({
     });
 
     const onOpen = (): void => {
+      wsOpened = true;
       term.reset();
       scheduleLayout();
       term.focus();
@@ -157,10 +162,29 @@ export function TaskInteractiveTerminalView({
     };
 
     const onWsError = (): void => {
-      term.writeln("\r\n\x1b[31mWebSocket error (check login, CODEX_INTERACTIVE_IMAGE, and workspace).\x1b[0m");
+      if (wsOpened || connectFailureHandled) {
+        return;
+      }
+      connectFailureHandled = true;
+      void api
+        .getTaskInteractiveTerminalStatus(taskId)
+        .then((status) => {
+          const message = status.reason?.trim() || "Interactive terminal connection failed.";
+          term.writeln(`\r\n\x1b[31m${message}\x1b[0m`);
+        })
+        .catch((error) => {
+          const message =
+            error instanceof Error && error.message.trim()
+              ? error.message
+              : "WebSocket error (check interactive image config, credentials, and workspace).";
+          term.writeln(`\r\n\x1b[31m${message}\x1b[0m`);
+        });
     };
 
     const onWsClose = (): void => {
+      if (!wsOpened && connectFailureHandled) {
+        return;
+      }
       term.writeln("\r\n\x1b[33m[disconnected]\x1b[0m");
     };
 

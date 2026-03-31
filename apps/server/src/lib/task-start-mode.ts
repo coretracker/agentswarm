@@ -22,9 +22,6 @@ function runPrepareWorkspaceInBackground(
 
 /** Action to enqueue when `startMode` is `run_now` (matches prior /tasks behavior). */
 export const getTriggerActionForNewTask = (task: Pick<Task, "taskType">): TaskAction => {
-  if (task.taskType === "review") {
-    return "review";
-  }
   if (task.taskType === "ask") {
     return "ask";
   }

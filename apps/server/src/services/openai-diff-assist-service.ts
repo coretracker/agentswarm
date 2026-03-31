@@ -3,12 +3,11 @@ import path from "node:path";
 import type { OpenAiDiffAssistResult, ProviderProfile } from "@agentswarm/shared-types";
 import { env } from "../config/env.js";
 import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
-import { readSafeWorkspaceFile, writeSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
+import { readSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
 
 const MAX_SNIPPET = 48_000;
 const MAX_USER_PROMPT = 16_000;
 const MAX_FILE_IN_PROMPT = 120_000;
-const MAX_AGENT_RULES = 8_000;
 
 function openAiChatBase(openaiBaseUrl: string | null): string {
   return (openaiBaseUrl?.replace(/\/$/, "") ?? "https://api.openai.com") + "/v1";
@@ -92,51 +91,7 @@ async function chatReadWithRetries(
   throw Object.assign(new Error(lastError), { status: 502 });
 }
 
-async function chatReadWriteWithRetries(
-  base: string,
-  apiKey: string,
-  model: string,
-  messages: Array<{ role: string; content: string }>,
-  reasoningEffort: string
-): Promise<unknown> {
-  const order: Array<{ reasoning: boolean; jsonObject: boolean }> = [
-    { reasoning: true, jsonObject: true },
-    { reasoning: false, jsonObject: true },
-    { reasoning: false, jsonObject: false }
-  ];
-
-  let lastError = "OpenAI request failed";
-
-  for (const opts of order) {
-    const body: Record<string, unknown> = { model, messages };
-    if (opts.reasoning) {
-      body.reasoning_effort = reasoningEffort;
-    }
-    if (opts.jsonObject) {
-      body.response_format = { type: "json_object" };
-    }
-    const result = await postChatCompletions(base, apiKey, body);
-    if (result.ok) {
-      return result.data;
-    }
-    lastError = result.message;
-    if (result.status !== 400) {
-      break;
-    }
-  }
-
-  throw Object.assign(new Error(lastError), { status: 502 });
-}
-
-function parseJsonFromModel(raw: string): unknown {
-  const trimmed = raw.trim();
-  const fence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/m);
-  const body = fence ? fence[1].trim() : trimmed;
-  return JSON.parse(body) as unknown;
-}
-
 export async function executeOpenAiDiffAssist(input: {
-  mode: "read" | "readwrite";
   taskId: string;
   model: string;
   providerProfile: ProviderProfile;
@@ -145,7 +100,6 @@ export async function executeOpenAiDiffAssist(input: {
   selectedSnippet: string;
   openaiApiKey: string;
   openaiBaseUrl: string | null;
-  agentRules: string;
 }): Promise<OpenAiDiffAssistResult> {
   const relativePath = normalizeDiffFilePath(input.filePath);
   if (!relativePath) {
@@ -165,11 +119,6 @@ export async function executeOpenAiDiffAssist(input: {
   const snippet = input.selectedSnippet.slice(0, MAX_SNIPPET);
   const userPrompt = input.userPrompt.trim().slice(0, MAX_USER_PROMPT);
 
-  const rulesBlock =
-    input.agentRules.trim().length > 0
-      ? `Additional rules from workspace settings (follow when relevant):\n${input.agentRules.trim().slice(0, MAX_AGENT_RULES)}\n\n`
-      : "";
-
   const contextParts = [
     `File path (repository-relative): ${relativePath}`,
     "",
@@ -186,57 +135,17 @@ export async function executeOpenAiDiffAssist(input: {
     userPrompt
   ];
 
-  if (input.mode === "read") {
-    const userContent = contextParts.join("\n");
-    const messages: Array<{ role: string; content: string }> = [
-      {
-        role: "system",
-        content:
-          "You are a careful code assistant. Answer using the provided context. Be concise and accurate."
-      },
-      { role: "user", content: rulesBlock + userContent }
-    ];
-
-    const data = await chatReadWithRetries(base, input.openaiApiKey, input.model, messages, reasoningEffort);
-
-    return { mode: "read", text: extractCompletionText(data) };
-  }
-
-  const userContent = [
-    `You must respond with a single JSON object only (no markdown fences). Keys: "explanation" (string) and "content" (string, the complete new file contents).`,
-    ...contextParts
-  ].join("\n");
-
+  const userContent = contextParts.join("\n");
   const messages: Array<{ role: string; content: string }> = [
     {
       role: "system",
       content:
-        "You are an expert developer. Output only valid JSON with keys explanation and content. The content field must be the entire new file as UTF-8 text."
+        "You are a careful code assistant. Answer using the provided context. Be concise and accurate."
     },
-    { role: "user", content: rulesBlock + userContent }
+    { role: "user", content: userContent }
   ];
 
-  const data = await chatReadWriteWithRetries(base, input.openaiApiKey, input.model, messages, reasoningEffort);
+  const data = await chatReadWithRetries(base, input.openaiApiKey, input.model, messages, reasoningEffort);
 
-  const rawText = extractCompletionText(data);
-  let parsed: { explanation?: unknown; content?: unknown };
-  try {
-    parsed = parseJsonFromModel(rawText) as { explanation?: unknown; content?: unknown };
-  } catch {
-    throw Object.assign(new Error("Model did not return valid JSON."), { status: 502 });
-  }
-
-  const explanation = typeof parsed.explanation === "string" ? parsed.explanation : "";
-  const content = typeof parsed.content === "string" ? parsed.content : "";
-
-  if (!content) {
-    throw Object.assign(new Error("Model JSON missing content."), { status: 502 });
-  }
-
-  const wrote = await writeSafeWorkspaceFile(workspaceRoot, relativePath, content);
-  if (!wrote) {
-    throw Object.assign(new Error("Refused unsafe file path for write."), { status: 400 });
-  }
-
-  return { mode: "readwrite", explanation, appliedRelativePath: relativePath };
+  return { text: extractCompletionText(data) };
 }

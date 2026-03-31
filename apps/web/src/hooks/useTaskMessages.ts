@@ -55,6 +55,14 @@ export const useTaskMessages = (taskId: string) => {
       setMessages((current) => [...current, message]);
     };
 
+    const onTaskMessageUpdated = (message: TaskMessage) => {
+      if (message.taskId !== taskId) {
+        return;
+      }
+
+      setMessages((current) => current.map((entry) => (entry.id === message.id ? message : entry)));
+    };
+
     const onTaskDelete = (payload: TaskDeletedPayload) => {
       if (payload.id !== taskId) {
         return;
@@ -64,10 +72,12 @@ export const useTaskMessages = (taskId: string) => {
     };
 
     socket.on("task:message", onTaskMessage);
+    socket.on("task:message_updated", onTaskMessageUpdated);
     socket.on("task:deleted", onTaskDelete);
 
     return () => {
       socket.off("task:message", onTaskMessage);
+      socket.off("task:message_updated", onTaskMessageUpdated);
       socket.off("task:deleted", onTaskDelete);
     };
   }, [socket, taskId]);

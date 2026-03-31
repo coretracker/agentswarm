@@ -1,10 +1,13 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { App, Button, Flex, Layout, Menu, Result, Spin, Typography, theme as antTheme } from "antd";
-import { CopyOutlined, DatabaseOutlined, LogoutOutlined, SettingOutlined, TeamOutlined, UnorderedListOutlined } from "@ant-design/icons";
+import { App, Button, Flex, Layout, Menu, Result, Segmented, Spin, Typography, theme as antTheme } from "antd";
+import { BulbOutlined, CopyOutlined, DatabaseOutlined, LogoutOutlined, MoonOutlined, SettingOutlined, TeamOutlined, UnorderedListOutlined } from "@ant-design/icons";
 import { usePathname, useRouter } from "next/navigation";
+import { AppLogo } from "./app-logo";
 import { useAuth } from "./auth-provider";
+import { TaskBrowserNotifications } from "./task-browser-notifications";
+import { useThemeMode } from "./theme-provider";
 import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
@@ -26,6 +29,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { canAll, loading, logout, session } = useAuth();
+  const { mode, setMode } = useThemeMode();
   const contentMaxWidth = 1760;
   const { token } = antTheme.useToken();
   const [loggingOut, setLoggingOut] = useState(false);
@@ -102,11 +106,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             style={{ height: "100%", width: "100%", maxWidth: contentMaxWidth, marginInline: "auto", gap: 24 }}
           >
             <Flex align="center" gap={12}>
-              <img
-                src="/logo.svg"
-                alt="AgentSwarm logo"
-                style={{ width: 28, height: 40, display: "block" }}
-              />
+              <AppLogo width={28} height={40} />
               <Flex vertical gap={0}>
                 <Typography.Title level={4} style={{ margin: 0, color: token.colorText }}>
                   AgentSwarm
@@ -125,6 +125,16 @@ export function AppShell({ children }: { children: ReactNode }) {
               style={{ minWidth: 480, justifyContent: "flex-end", borderBottom: 0, flex: 1, background: "transparent" }}
             />
             <Flex align="center" gap={12}>
+              <Segmented
+                size="small"
+                value={mode}
+                onChange={(value) => setMode(value as "light" | "dark")}
+                options={[
+                  { label: "Light", value: "light", icon: <BulbOutlined /> },
+                  { label: "Dark", value: "dark", icon: <MoonOutlined /> }
+                ]}
+              />
+              <TaskBrowserNotifications />
               <Flex vertical gap={0} style={{ minWidth: 0 }}>
                 <Typography.Text strong>{`Hi, ${session.user.name || "Administrator"}`}</Typography.Text>
               </Flex>

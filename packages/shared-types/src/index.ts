@@ -1,8 +1,7 @@
-export type TaskType = "plan" | "build" | "review" | "ask";
+export type TaskType = "build" | "ask";
 
 /** What happens immediately after a task row is created. */
 export type TaskStartMode = "run_now" | "prepare_workspace" | "idle";
-export type TaskReviewVerdict = "approved" | "changes_requested";
 export type AgentProvider = "codex" | "claude";
 
 /** Native effort values from providers. "max" is Claude-only. */
@@ -61,29 +60,23 @@ export type TaskMessageRole = "user" | "assistant" | "system";
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 
 export type TaskStatus =
-  | "plan_queued"
-  | "planning"
-  | "planned"
   | "build_queued"
   | "preparing_workspace"
   | "building"
-  | "review_queued"
-  | "reviewing"
   | "ask_queued"
   | "asking"
-  | "review"
+  | "completed"
   | "answered"
   | "accepted"
   | "archived"
   | "cancelled"
   | "failed";
 
-export type TaskAction = "plan" | "build" | "iterate" | "review" | "ask";
+export type TaskAction = "build" | "ask";
 export type TaskMessageAction = TaskAction | "comment";
 /** @deprecated Use ProviderProfile instead. Kept for Redis migration in task-store. */
 export type TaskReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type TaskComplexity = "trivial" | "normal" | "complex";
-export type TaskPlanningMode = "direct-build" | "plan-first";
 export type TaskBranchStrategy = "feature_branch" | "work_on_branch";
 export type McpServerTransport = "stdio" | "http";
 export type PermissionScope =
@@ -91,6 +84,9 @@ export type PermissionScope =
   | "task:create"
   | "task:read"
   | "task:edit"
+  | "task:build"
+  | "task:ask"
+  | "task:interactive"
   | "task:delete"
   | "preset:list"
   | "preset:create"
@@ -115,6 +111,9 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "task:create",
   "task:read",
   "task:edit",
+  "task:build",
+  "task:ask",
+  "task:interactive",
   "task:delete",
   "preset:list",
   "preset:create",
@@ -141,18 +140,54 @@ export interface PermissionScopeGroup {
 }
 
 export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
-  { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:delete"] },
+  { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:interactive", "task:delete"] },
   { label: "Presets", scopes: ["preset:list", "preset:create", "preset:read", "preset:edit", "preset:delete"] },
   { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
   { label: "Settings", scopes: ["settings:read", "settings:edit"] },
   { label: "Users", scopes: ["user:list", "user:create", "user:read", "user:edit", "user:delete"] }
 ];
 
+export type TaskCapabilityScope = Extract<PermissionScope, "task:build" | "task:ask" | "task:interactive">;
+
+export const getTaskCapabilityScopeForTaskType = (taskType: TaskType): TaskCapabilityScope =>
+  taskType === "ask" ? "task:ask" : "task:build";
+
+export const getTaskCapabilityScopeForTaskAction = (action: TaskAction): TaskCapabilityScope =>
+  action === "ask" ? "task:ask" : "task:build";
+
+export const getRequiredTaskCapabilityScopes = (input: { taskType?: TaskType; startMode?: TaskStartMode }): TaskCapabilityScope[] =>
+  input.startMode === "prepare_workspace" ? ["task:interactive"] : [getTaskCapabilityScopeForTaskType(input.taskType ?? "build")];
+
+export const hasRequiredTaskCapabilities = (
+  grantedScopes: Iterable<PermissionScope>,
+  input: { taskType?: TaskType; startMode?: TaskStartMode }
+): boolean => {
+  const granted = new Set(grantedScopes);
+  return getRequiredTaskCapabilityScopes(input).every((scope) => granted.has(scope));
+};
+
+export const getRequiredTaskCapabilityScopesForDefinition = (definition: TaskDefinitionInput): TaskCapabilityScope[] =>
+  definition.sourceType === "pull_request"
+    ? getRequiredTaskCapabilityScopes({ taskType: "build", startMode: "run_now" })
+    : getRequiredTaskCapabilityScopes({
+        taskType: definition.taskType,
+        startMode: definition.startMode
+      });
+
+export const hasRequiredTaskCapabilitiesForDefinition = (
+  grantedScopes: Iterable<PermissionScope>,
+  definition: TaskDefinitionInput
+): boolean => {
+  const granted = new Set(grantedScopes);
+  return getRequiredTaskCapabilityScopesForDefinition(definition).every((scope) => granted.has(scope));
+};
+
 export interface Role {
   id: string;
   name: string;
   description: string;
   scopes: PermissionScope[];
+  scopeVersion?: number;
   isSystem: boolean;
   createdAt: string;
   updatedAt: string;
@@ -222,8 +257,6 @@ export interface Repository {
   name: string;
   url: string;
   defaultBranch: string;
-  plansDir: string;
-  rules: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -232,10 +265,10 @@ export interface Task {
   id: string;
   title: string;
   pinned: boolean;
+  ownerUserId: string | null;
   repoId: string;
   repoName: string;
   repoUrl: string;
-  repoPlansDir: string;
   repoDefaultBranch: string;
   taskType: TaskType;
   provider: AgentProvider;
@@ -244,21 +277,14 @@ export interface Task {
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
   complexity: TaskComplexity;
-  planningMode: TaskPlanningMode;
   branchName: string | null;
-  currentPlanRunId: string | null;
-  builtPlanRunIds: string[];
   workspaceBaseRef: string | null;
   prompt: string;
-  planPath: string | null;
-  planMarkdown: string | null;
   resultMarkdown: string | null;
-  reviewVerdict: TaskReviewVerdict | null;
   executionSummary: string;
   branchDiff: string | null;
   pullCount?: number;
   pushCount?: number;
-  latestIterationInput: string | null;
   lastAction: TaskAction | null;
   status: TaskStatus;
   logs: string[];
@@ -270,10 +296,7 @@ export interface Task {
   errorMessage: string | null;
 }
 
-export type OpenAiDiffAssistMode = "read" | "readwrite";
-
 export interface OpenAiDiffAssistInput {
-  mode: OpenAiDiffAssistMode;
   model: string;
   providerProfile: ProviderProfile;
   userPrompt: string;
@@ -282,9 +305,9 @@ export interface OpenAiDiffAssistInput {
   selectedSnippet: string;
 }
 
-export type OpenAiDiffAssistResult =
-  | { mode: "read"; text: string }
-  | { mode: "readwrite"; explanation: string; appliedRelativePath: string };
+export interface OpenAiDiffAssistResult {
+  text: string;
+}
 
 export interface TaskLiveDiff {
   diff: string | null;
@@ -332,6 +355,14 @@ export interface TaskPushPreview {
   suggestedCommitMessage: string;
 }
 
+export interface TaskMergePreview {
+  sourceBranch: string;
+  targetBranch: string;
+  mergeable: boolean;
+  message: string;
+  suggestedCommitMessage: string;
+}
+
 export interface TaskMessage {
   id: string;
   taskId: string;
@@ -339,14 +370,6 @@ export interface TaskMessage {
   content: string;
   action: TaskMessageAction | null;
   createdAt: string;
-}
-
-export interface TaskRunTokenUsage {
-  status: "available" | "unavailable";
-  inputTokens: number | null;
-  outputTokens: number | null;
-  totalTokens: number | null;
-  note?: string | null;
 }
 
 export interface TaskRun {
@@ -362,7 +385,6 @@ export interface TaskRun {
   finishedAt: string | null;
   summary: string | null;
   errorMessage: string | null;
-  tokenUsage: TaskRunTokenUsage | null;
   /** Git HEAD ref captured before the agent container runs; used for change proposals. */
   changeProposalCheckpointRef?: string | null;
   /** Untracked paths (repo-relative) at checkpoint; used so reject does not wipe pre-existing untracked files. */
@@ -431,7 +453,6 @@ export interface SystemSettings {
   maxAgents: number;
   branchPrefix: string;
   gitUsername: string;
-  agentRules: string;
   mcpServers: McpServerConfig[];
   openaiBaseUrl: string | null;
   githubTokenConfigured: boolean;
@@ -447,16 +468,12 @@ export interface CreateRepositoryInput {
   name: string;
   url: string;
   defaultBranch?: string;
-  plansDir?: string;
-  rules?: string;
 }
 
 export interface UpdateRepositoryInput {
   name?: string;
   url?: string;
   defaultBranch?: string;
-  plansDir?: string;
-  rules?: string;
 }
 
 export interface CreateTaskInput {
@@ -497,7 +514,7 @@ export interface IssueTaskDefinitionInput {
   repoId: string;
   issueNumber: number;
   includeComments: boolean;
-  taskType: Extract<TaskType, "plan" | "build" | "ask">;
+  taskType: Extract<TaskType, "build" | "ask">;
   startMode?: TaskStartMode;
   provider: AgentProvider;
   model: string;
@@ -533,7 +550,7 @@ export interface CreateTaskFromIssueInput {
   repoId: string;
   issueNumber: number;
   includeComments?: boolean;
-  taskType?: Extract<TaskType, "plan" | "build" | "ask">;
+  taskType?: Extract<TaskType, "build" | "ask">;
   startMode?: TaskStartMode;
   title?: string;
   provider?: AgentProvider;
@@ -558,7 +575,6 @@ export interface CreateTaskFromPullRequestInput {
 
 export interface TriggerTaskActionInput {
   action: TaskAction;
-  iterateInput?: string;
 }
 
 export interface UpdateTaskConfigInput {
@@ -576,13 +592,18 @@ export interface UpdateTaskTitleInput {
   title: string;
 }
 
-export interface UpdateTaskPlanInput {
-  planMarkdown: string;
-}
-
 export interface CreateTaskMessageInput {
   content: string;
   action?: TaskMessageAction;
+}
+
+export interface UpdateTaskMessageInput {
+  content: string;
+}
+
+export interface MergeTaskInput {
+  targetBranch: string;
+  commitMessage?: string;
 }
 
 export interface SpawnPresetInput {
@@ -611,33 +632,22 @@ export const getProviderProfileLabel = (profile: ProviderProfile): string =>
 
 export const getTaskTypeLabel = (taskType: TaskType): string =>
   ({
-    plan: "Plan",
     build: "Build",
-    review: "Review",
     ask: "Ask"
   })[taskType];
 
 const queuedStatusByAction: Record<TaskAction, TaskStatus> = {
-  plan: "plan_queued",
-  iterate: "plan_queued",
   build: "build_queued",
-  review: "review_queued",
   ask: "ask_queued"
 };
 
 const activeStatusByAction: Record<TaskAction, TaskStatus> = {
-  plan: "planning",
-  iterate: "planning",
   build: "building",
-  review: "reviewing",
   ask: "asking"
 };
 
 const successfulStatusByAction: Record<TaskAction, TaskStatus> = {
-  plan: "planned",
-  iterate: "planned",
-  build: "review",
-  review: "review",
+  build: "completed",
   ask: "answered"
 };
 
@@ -646,16 +656,12 @@ export const getActiveStatusForAction = (action: TaskAction): TaskStatus => acti
 export const getSuccessfulStatusForAction = (action: TaskAction): TaskStatus => successfulStatusByAction[action];
 
 export const isQueuedTaskStatus = (status: TaskStatus): boolean =>
-  status === "plan_queued" ||
   status === "build_queued" ||
-  status === "review_queued" ||
   status === "ask_queued";
 
 export const isActiveTaskStatus = (status: TaskStatus): boolean =>
-  status === "planning" ||
   status === "preparing_workspace" ||
   status === "building" ||
-  status === "reviewing" ||
   status === "asking";
 
 /** When set, checkpoint apply / reject / revert must be refused (agent run queued or in progress). */
@@ -670,17 +676,12 @@ export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
   status === "accepted" || status === "archived" || status === "cancelled" || status === "failed";
 export const getTaskStatusLabel = (status: TaskStatus): string =>
   ({
-    plan_queued: "Plan Queued",
-    planning: "Planning",
-    planned: "Planned",
     build_queued: "Build Queued",
     preparing_workspace: "Preparing Workspace",
     building: "Building",
-    review_queued: "Review Queued",
-    reviewing: "Reviewing",
     ask_queued: "Ask Queued",
     asking: "Answering",
-    review: "Ready",
+    completed: "Completed",
     answered: "Answered",
     accepted: "Accepted",
     archived: "Archived",
@@ -693,7 +694,6 @@ export interface UpdateSettingsInput {
   maxAgents?: number;
   branchPrefix?: string;
   gitUsername?: string;
-  agentRules?: string;
   mcpServers?: McpServerConfig[];
   openaiBaseUrl?: string | null;
   codexDefaultModel?: string;
@@ -720,6 +720,7 @@ export interface TaskDeletedEvent {
   type: "task:deleted";
   payload: {
     id: string;
+    ownerUserId: string | null;
   };
 }
 
@@ -735,6 +736,11 @@ export interface TaskLogEvent {
 
 export interface TaskMessageEvent {
   type: "task:message";
+  payload: TaskMessage;
+}
+
+export interface TaskMessageUpdatedEvent {
+  type: "task:message_updated";
   payload: TaskMessage;
 }
 
@@ -768,6 +774,7 @@ export type RealtimeEvent =
   | TaskDeletedEvent
   | TaskLogEvent
   | TaskMessageEvent
+  | TaskMessageUpdatedEvent
   | TaskRunEvent
   | TaskChangeProposalEvent
   | SettingsEvent

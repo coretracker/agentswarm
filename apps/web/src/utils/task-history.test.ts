@@ -25,7 +25,6 @@ function createRun(input: Partial<TaskRun> & Pick<TaskRun, "id" | "action" | "st
     finishedAt: null,
     summary: null,
     errorMessage: null,
-    tokenUsage: null,
     logs: [],
     ...input
   };
@@ -309,31 +308,4 @@ test("shows active auto runs as grouped cards before summary or diff exist", () 
   assert.equal(entries[0].promptMessage?.id, "m1");
   assert.equal(entries[0].summaryMessage, null);
   assert.equal(entries[0].proposal, null);
-});
-
-test("keeps raw plan runs while suppressing duplicated assistant summaries for them", () => {
-  const assistantSummary = createMessage({
-    id: "m1",
-    createdAt: "2026-03-24T17:05:00.000Z",
-    role: "assistant",
-    action: "plan",
-    content: "Plan complete."
-  });
-  const run = createRun({
-    id: "r1",
-    action: "plan",
-    startedAt: "2026-03-24T17:00:00.000Z",
-    finishedAt: "2026-03-24T17:04:00.000Z",
-    status: "succeeded",
-    summary: "Plan complete."
-  });
-
-  const entries = buildTaskHistoryEntries({
-    messages: [assistantSummary],
-    runs: [run],
-    proposals: []
-  });
-
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.kind, "run");
 });

@@ -26,6 +26,7 @@ export function TaskCreatePage() {
   const isPullRequestSource = selectedSourceType === "pull_request";
   const isBlankOrIssueInteractivePrep =
     (selectedSourceType === "blank" || selectedSourceType === "issue") && selectedStartMode === "prepare_workspace";
+  const canCreateAnyTaskMode = can("task:build") || can("task:ask") || can("task:interactive");
 
   const pageTitle =
     selectedSourceType === "issue"
@@ -144,7 +145,7 @@ export function TaskCreatePage() {
             </Flex>
             <Space>
               <Button onClick={() => router.push("/tasks")}>Cancel</Button>
-              <Button type="primary" htmlType="submit" loading={submitting}>
+              <Button type="primary" htmlType="submit" loading={submitting} disabled={!canCreateAnyTaskMode}>
                 {isIssueSource ? "Create Task From Issue" : isPullRequestSource ? "Create Task From Pull Request" : "Create Task"}
               </Button>
             </Space>

@@ -11,8 +11,6 @@ type RepositoryFormValues = {
   name: string;
   url: string;
   defaultBranch: string;
-  plansDir: string;
-  rules: string;
 };
 
 export function RepositoriesPage() {
@@ -32,9 +30,7 @@ export function RepositoriesPage() {
     form.setFieldsValue({
       name: "",
       url: "",
-      defaultBranch: "develop",
-      plansDir: "plans",
-      rules: ""
+      defaultBranch: "develop"
     });
     setOpen(true);
   };
@@ -44,9 +40,7 @@ export function RepositoriesPage() {
     form.setFieldsValue({
       name: repository.name,
       url: repository.url,
-      defaultBranch: repository.defaultBranch,
-      plansDir: repository.plansDir,
-      rules: repository.rules
+      defaultBranch: repository.defaultBranch
     });
     setOpen(true);
   };
@@ -60,7 +54,7 @@ export function RepositoriesPage() {
             <Typography.Title level={2} style={{ margin: 0 }}>
               Repositories
             </Typography.Title>
-            <Typography.Text type="secondary">Manage reusable repository definitions and their local plan folders.</Typography.Text>
+            <Typography.Text type="secondary">Manage reusable repository definitions for task creation.</Typography.Text>
           </Flex>
           {canCreateRepository ? (
             <Button type="primary" onClick={openCreate}>
@@ -70,49 +64,36 @@ export function RepositoriesPage() {
         </Flex>
 
         <Card bordered={false}>
-        <Table<Repository>
-          rowKey="id"
-          loading={loading}
-          dataSource={repositories}
-          columns={[
-            { title: "Name", dataIndex: "name" },
-            { title: "URL", dataIndex: "url" },
-            { title: "Default Branch", dataIndex: "defaultBranch" },
-            { title: "Plans Dir", dataIndex: "plansDir" },
-            {
-              title: "Repository Rules",
-              dataIndex: "rules",
-              render: (value: string) =>
-                value?.trim() ? (
-                  <Typography.Text ellipsis={{ tooltip: value }} style={{ maxWidth: 320 }}>
-                    {value}
-                  </Typography.Text>
-                ) : (
-                  <Typography.Text type="secondary">None</Typography.Text>
+          <Table<Repository>
+            rowKey="id"
+            loading={loading}
+            dataSource={repositories}
+            columns={[
+              { title: "Name", dataIndex: "name" },
+              { title: "URL", dataIndex: "url" },
+              { title: "Default Branch", dataIndex: "defaultBranch" },
+              {
+                title: "Actions",
+                render: (_, repository) => (
+                  <Space>
+                    {canEditRepository ? <Button onClick={() => openEdit(repository)}>Edit</Button> : null}
+                    {canDeleteRepository ? (
+                      <Popconfirm
+                        title="Delete repository?"
+                        description="Tasks keep their stored snapshot, but this repository will be removed from quick selection."
+                        onConfirm={async () => {
+                          await api.deleteRepository(repository.id);
+                          messageApi.success("Repository deleted");
+                        }}
+                      >
+                        <Button danger>Delete</Button>
+                      </Popconfirm>
+                    ) : null}
+                  </Space>
                 )
-            },
-            {
-              title: "Actions",
-              render: (_, repository) => (
-                <Space>
-                  {canEditRepository ? <Button onClick={() => openEdit(repository)}>Edit</Button> : null}
-                  {canDeleteRepository ? (
-                    <Popconfirm
-                      title="Delete repository?"
-                      description="Tasks keep their stored snapshot, but this repository will be removed from quick selection."
-                      onConfirm={async () => {
-                        await api.deleteRepository(repository.id);
-                        messageApi.success("Repository deleted");
-                      }}
-                    >
-                      <Button danger>Delete</Button>
-                    </Popconfirm>
-                  ) : null}
-                </Space>
-              )
-            }
-          ]}
-        />
+              }
+            ]}
+          />
         </Card>
       </Space>
 
@@ -144,15 +125,6 @@ export function RepositoriesPage() {
           </Form.Item>
           <Form.Item name="defaultBranch" label="Default Branch" rules={[{ required: true }]}>
             <Input />
-          </Form.Item>
-          <Form.Item name="plansDir" label="Plans Directory" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="rules" label="Repository Rules">
-            <Input.TextArea
-              rows={8}
-              placeholder="Rules that should always be added for this repository, for example stack conventions or codebase-specific constraints."
-            />
           </Form.Item>
           <Button type="primary" htmlType="submit" loading={submitting}>
             {editing ? "Save Changes" : "Create Repository"}

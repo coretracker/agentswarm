@@ -6,9 +6,7 @@ import type { RepositoryStore } from "../services/repository-store.js";
 const createRepositorySchema = z.object({
   name: z.string().min(1),
   url: z.string().min(1),
-  defaultBranch: z.string().min(1).optional(),
-  plansDir: z.string().min(1).optional(),
-  rules: z.string().max(12000).optional()
+  defaultBranch: z.string().min(1).optional()
 });
 
 const updateRepositorySchema = createRepositorySchema.partial();

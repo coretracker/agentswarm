@@ -32,7 +32,7 @@ Stop stitching together scripts, terminals, and ad-hoc prompts. **AgentSwarm** i
 - **Onboard repos** and invite teammates with permissions that match how you work (who creates tasks, who edits, who’s read-only).
 - **Run Build and Ask in automated mode** from one thread: implementation on a branch and repo Q&amp;A without juggling five tools.
 - **Choose how each task starts**: kick off an **automated agent run** immediately, or **prepare the workspace only** so checkout finishes in the background and you land in **Ready** when you’re set to work (or open Interactive).
-- **Use full agent functionality in Interactive terminal** when you want direct control: open a browser shell in the task workspace (`/workspace`) with the complete agent experience; wire-up details live in `tools/codex-web-terminal/` and `CODEX_INTERACTIVE_IMAGE`.
+- **Use full agent functionality in Interactive terminal** when you want direct control: open a browser shell in the task workspace (`/workspace`) with the complete agent experience; the task’s saved provider/model/effort decide whether AgentSwarm launches **Codex** or **Claude Code**. Wire-up details live in `tools/codex-web-terminal/` and the `CODEX_INTERACTIVE_IMAGE` / `CLAUDE_INTERACTIVE_IMAGE` env vars.
 - **See progress as it happens** with live log streaming and real-time UI updates over Socket.IO.
 
 Under the hood: disposable **agent-runtime** containers per run, **Redis** for tasks and sessions, and **Next.js + Fastify** for the web and API.
@@ -58,6 +58,17 @@ Then open **[http://localhost:3217/login](http://localhost:3217/login)**.
 2. **Change that password** and add real users and roles.
 3. Open **Settings** and add **Git username**, **GitHub token**, and **OpenAI** (Codex). Add **Anthropic** if you want to try **Claude Code (experimental)**.
 4. **Add a repository** and create your first task—from scratch, from an issue, or from a PR—or spawn one from a **preset**.
+
+If you want to use the browser **Interactive terminal**, build the runtime images on the Docker host first:
+
+```bash
+docker build -f tools/codex-web-terminal/Dockerfile.codex -t local/codex-interactive:latest tools/codex-web-terminal
+docker build -f tools/codex-web-terminal/Dockerfile.claude -t local/claude-interactive:latest tools/codex-web-terminal
+```
+
+AgentSwarm does not build those interactive runtime images automatically during `docker compose up`.
+If you already built the Claude image before this change, rebuild it so the container runs as a non-root user required by current Claude Code releases.
+Claude interactive sessions also persist home-directory state under `task-workspaces/.interactive-homes/claude/`, so theme and trust choices can survive across sessions for the same user.
 
 The bootstrap password is only applied the **first** time the admin user is created.
 

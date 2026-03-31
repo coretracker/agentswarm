@@ -1,6 +1,25 @@
-import type { ThemeConfig } from "antd";
+import { theme as antTheme, type ThemeConfig } from "antd";
 
-export const appAntdTheme: ThemeConfig = {
+export type AppThemeMode = "light" | "dark";
+
+const sharedComponents: ThemeConfig["components"] = {
+  Button: {
+    fontWeight: 600,
+    defaultShadow: "none",
+    primaryShadow: "none",
+    dangerShadow: "none"
+  },
+  Card: {
+    bodyPadding: 16,
+    headerPadding: 16
+  },
+  Timeline: {
+    dotBorderWidth: 2
+  }
+};
+
+export const lightAntdTheme: ThemeConfig = {
+  algorithm: antTheme.defaultAlgorithm,
   token: {
     colorPrimary: "#1C8057",
     colorSuccess: "#3A8F63",
@@ -81,11 +100,9 @@ export const appAntdTheme: ThemeConfig = {
     boxShadowSecondary: "0 2px 8px 0 rgba(28, 39, 32, 0.08)"
   },
   components: {
+    ...sharedComponents,
     Button: {
-      fontWeight: 600,
-      defaultShadow: "none",
-      primaryShadow: "none",
-      dangerShadow: "none",
+      ...sharedComponents?.Button,
       defaultBg: "#FFFFFF",
       defaultColor: "#5A675D",
       defaultBorderColor: "#D1DED3",
@@ -97,9 +114,8 @@ export const appAntdTheme: ThemeConfig = {
       defaultActiveBorderColor: "#0F4F35"
     },
     Card: {
+      ...sharedComponents?.Card,
       headerBg: "#FFFFFF",
-      bodyPadding: 16,
-      headerPadding: 16,
       extraColor: "#889C85"
     },
     Input: {
@@ -114,8 +130,8 @@ export const appAntdTheme: ThemeConfig = {
       defaultColor: "#1C8057"
     },
     Timeline: {
+      ...sharedComponents?.Timeline,
       dotBg: "#1C8057",
-      dotBorderWidth: 2,
       tailColor: "#D1DED3"
     },
     Progress: {
@@ -124,3 +140,128 @@ export const appAntdTheme: ThemeConfig = {
     }
   }
 };
+
+export const darkAntdTheme: ThemeConfig = {
+  algorithm: antTheme.darkAlgorithm,
+  token: {
+    colorPrimary: "#67C496",
+    colorSuccess: "#6AC28F",
+    colorWarning: "#E1B458",
+    colorError: "#D46C6C",
+    colorInfo: "#89AEC3",
+    colorTextBase: "#E2ECE3",
+    colorBgBase: "#101613",
+    colorPrimaryBg: "#163A29",
+    colorPrimaryBgHover: "#1C4A34",
+    colorPrimaryBorder: "#27543E",
+    colorPrimaryBorderHover: "#67C496",
+    colorPrimaryHover: "#7AD1A5",
+    colorPrimaryActive: "#4CA87A",
+    colorPrimaryText: "#8BE0AE",
+    colorPrimaryTextHover: "#A0E7BF",
+    colorPrimaryTextActive: "#67C496",
+    colorSuccessBg: "#153523",
+    colorSuccessBgHover: "#1B442E",
+    colorSuccessBorder: "#27543E",
+    colorSuccessBorderHover: "#6AC28F",
+    colorSuccessHover: "#82D3A5",
+    colorSuccessActive: "#58AF7E",
+    colorSuccessText: "#8BE0AE",
+    colorSuccessTextHover: "#A0E7BF",
+    colorSuccessTextActive: "#67C496",
+    colorWarningBg: "#352B17",
+    colorWarningBgHover: "#45371D",
+    colorWarningBorder: "#5B4823",
+    colorWarningBorderHover: "#E1B458",
+    colorWarningHover: "#ECC46F",
+    colorWarningActive: "#C89A3F",
+    colorWarningText: "#F0C97B",
+    colorWarningTextHover: "#F5D591",
+    colorWarningTextActive: "#E1B458",
+    colorErrorBg: "#3A1F1F",
+    colorErrorBgHover: "#482626",
+    colorErrorBorder: "#613131",
+    colorErrorBorderHover: "#D46C6C",
+    colorErrorHover: "#DF8383",
+    colorErrorActive: "#BE5D5D",
+    colorErrorText: "#E79999",
+    colorErrorTextHover: "#F0AEAE",
+    colorErrorTextActive: "#D46C6C",
+    colorInfoBg: "#162730",
+    colorInfoBgHover: "#1C3340",
+    colorInfoBorder: "#244353",
+    colorInfoBorderHover: "#89AEC3",
+    colorInfoHover: "#9ABDD0",
+    colorInfoActive: "#7095AA",
+    colorInfoText: "#A7C6D7",
+    colorInfoTextHover: "#BAD6E4",
+    colorInfoTextActive: "#89AEC3",
+    colorText: "#D8E2D9",
+    colorTextSecondary: "#9AAFA0",
+    colorTextTertiary: "#7E9486",
+    colorTextQuaternary: "#61786A",
+    colorTextDisabled: "#61786A",
+    colorTextPlaceholder: "#8AA092",
+    colorBgContainer: "#171F1B",
+    colorBgElevated: "#1B2520",
+    colorBgLayout: "#0E1411",
+    colorBgSpotlight: "rgba(13, 20, 17, 0.92)",
+    colorBgMask: "rgba(0, 0, 0, 0.55)",
+    colorBorder: "#2A3931",
+    colorBorderSecondary: "#213028",
+    borderRadius: 10,
+    borderRadiusXS: 2,
+    borderRadiusSM: 6,
+    borderRadiusLG: 12,
+    padding: 16,
+    paddingSM: 12,
+    paddingLG: 20,
+    margin: 16,
+    marginSM: 12,
+    marginLG: 20,
+    boxShadow: "none",
+    boxShadowSecondary: "0 8px 24px rgba(0, 0, 0, 0.28)"
+  },
+  components: {
+    ...sharedComponents,
+    Button: {
+      ...sharedComponents?.Button,
+      defaultBg: "#171F1B",
+      defaultColor: "#D8E2D9",
+      defaultBorderColor: "#2A3931",
+      defaultHoverBg: "#1D2722",
+      defaultHoverColor: "#8BE0AE",
+      defaultHoverBorderColor: "#67C496",
+      defaultActiveBg: "#141C18",
+      defaultActiveColor: "#67C496",
+      defaultActiveBorderColor: "#4CA87A"
+    },
+    Card: {
+      ...sharedComponents?.Card,
+      headerBg: "#171F1B",
+      extraColor: "#9AAFA0"
+    },
+    Input: {
+      hoverBorderColor: "#67C496",
+      activeBorderColor: "#67C496",
+      activeShadow: "0 0 0 1px rgba(103, 196, 150, 0.24)",
+      hoverBg: "#101613",
+      activeBg: "#101613"
+    },
+    Tag: {
+      defaultBg: "#173424",
+      defaultColor: "#8BE0AE"
+    },
+    Timeline: {
+      ...sharedComponents?.Timeline,
+      dotBg: "#67C496",
+      tailColor: "#2A3931"
+    },
+    Progress: {
+      defaultColor: "#67C496",
+      remainingColor: "#2A3931"
+    }
+  }
+};
+
+export const getAppAntdTheme = (mode: AppThemeMode): ThemeConfig => (mode === "dark" ? darkAntdTheme : lightAntdTheme);

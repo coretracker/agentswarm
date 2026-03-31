@@ -22,7 +22,6 @@ const defaultSettings: SystemSettings = {
   maxAgents: 2,
   branchPrefix: "agentswarm",
   gitUsername: "x-access-token",
-  agentRules: "",
   mcpServers: [],
   openaiBaseUrl: null,
   githubTokenConfigured: false,
@@ -50,7 +49,6 @@ const normalizeGitUsername = (value: string | undefined): string => {
   return cleaned || defaultSettings.gitUsername;
 };
 
-const normalizeAgentRules = (value: string | undefined): string => (value ?? "").trim();
 const normalizeDefaultProvider = (value: AgentProvider | string | undefined): AgentProvider =>
   normalizeProvider(value ?? defaultSettings.defaultProvider);
 
@@ -131,20 +129,18 @@ export class SettingsStore {
         maxAgents: defaultSettings.maxAgents,
         branchPrefix: defaultSettings.branchPrefix,
         gitUsername: defaultSettings.gitUsername,
-        agentRules: defaultSettings.agentRules,
         mcpServers: defaultSettings.mcpServers,
         openaiBaseUrl: defaultSettings.openaiBaseUrl
       };
       await this.redis.set(SETTINGS_KEY, JSON.stringify(baseSettings));
     }
 
-    const parsed = raw ? (JSON.parse(raw) as Partial<SystemSettings>) : {};
+    const parsed = raw ? (JSON.parse(raw) as Partial<SystemSettings> & { agentRules?: string; autoModeEnabled?: boolean }) : {};
     const normalizedBase = {
       defaultProvider: normalizeDefaultProvider(parsed.defaultProvider),
       maxAgents: parsed.maxAgents ?? defaultSettings.maxAgents,
       branchPrefix: normalizeBranchPrefix(parsed.branchPrefix),
       gitUsername: normalizeGitUsername(parsed.gitUsername),
-      agentRules: normalizeAgentRules(parsed.agentRules),
       mcpServers: normalizeMcpServers(parsed.mcpServers),
       openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null,
       codexDefaultModel: parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel,
@@ -155,11 +151,11 @@ export class SettingsStore {
 
     if (
       Object.prototype.hasOwnProperty.call(parsed, "autoModeEnabled") ||
+      Object.prototype.hasOwnProperty.call(parsed, "agentRules") ||
       parsed.defaultProvider !== normalizedBase.defaultProvider ||
       parsed.maxAgents !== normalizedBase.maxAgents ||
       parsed.branchPrefix !== normalizedBase.branchPrefix ||
       parsed.gitUsername !== normalizedBase.gitUsername ||
-      parsed.agentRules !== normalizedBase.agentRules ||
       JSON.stringify(parsed.mcpServers ?? []) !== JSON.stringify(normalizedBase.mcpServers) ||
       (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl
     ) {
@@ -180,8 +176,6 @@ export class SettingsStore {
       maxAgents: input.maxAgents ?? current.maxAgents,
       branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
       gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
-      agentRules:
-        input.agentRules === undefined ? current.agentRules : normalizeAgentRules(input.agentRules),
       mcpServers:
         input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
       openaiBaseUrl:

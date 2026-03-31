@@ -69,7 +69,6 @@ const updateSettingsSchema = z.object({
   maxAgents: z.coerce.number().int().min(1).max(20).optional(),
   branchPrefix: z.string().trim().min(1).max(80).optional(),
   gitUsername: z.string().trim().min(1).max(120).optional(),
-  agentRules: z.string().max(12000).optional(),
   mcpServers: z.array(mcpServerSchema).max(25).optional(),
   openaiBaseUrl: z.string().trim().url().nullable().optional(),
   codexDefaultModel: z.string().trim().min(1).max(120).optional(),

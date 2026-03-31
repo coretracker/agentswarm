@@ -37,7 +37,7 @@ export class SchedulerService {
     await this.drainQueue();
   }
 
-  async triggerAction(taskId: string, action: TaskAction, iterateInput?: string): Promise<boolean> {
+  async triggerAction(taskId: string, action: TaskAction, input?: string): Promise<boolean> {
     const task = await this.taskStore.getTask(taskId);
     if (!task) {
       return false;
@@ -55,8 +55,8 @@ export class SchedulerService {
       return false;
     }
 
-    await this.taskStore.markQueuedForAction(taskId, action, iterateInput);
-    await this.taskStore.enqueueTask(taskId, "manual", action, iterateInput);
+    await this.taskStore.markQueuedForAction(taskId, action);
+    await this.taskStore.enqueueTask(taskId, "manual", action, input);
     await this.drainQueue();
 
     return true;
@@ -116,8 +116,7 @@ export class SchedulerService {
 
         await this.taskStore.patchTask(task.id, {
           enqueued: false,
-          lastAction: queueEntry.action,
-          latestIterationInput: typeof queueEntry.iterateInput === "string" ? queueEntry.iterateInput : task.latestIterationInput
+          lastAction: queueEntry.action
         });
         this.activeTaskIds.add(task.id);
 
@@ -143,7 +142,7 @@ export class SchedulerService {
         return;
       }
 
-      await this.spawner.runTask(task, queueEntry.action, queueEntry.iterateInput);
+      await this.spawner.runTask(task, queueEntry.action, queueEntry.input);
     } catch (error) {
       const task = await this.taskStore.getTask(taskId);
       if (error instanceof CancelledTaskError || task?.status === "cancelled") {

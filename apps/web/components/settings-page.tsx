@@ -1,14 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { AgentProvider, McpServerTransport, PermissionScope, ProviderProfile, Role, SystemSettings, TaskRun } from "@agentswarm/shared-types";
+import type { AgentProvider, McpServerTransport, PermissionScope, ProviderProfile, Role, SystemSettings } from "@agentswarm/shared-types";
 import {
   PERMISSION_SCOPE_GROUPS,
   getAgentProviderLabel,
-  getDefaultModelForProvider,
   getEffortOptionsForProvider
 } from "@agentswarm/shared-types";
-import { DeleteOutlined, LockOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
+import { DeleteOutlined, LockOutlined, PlusOutlined } from "@ant-design/icons";
 import {
   Alert,
   App,
@@ -23,20 +22,16 @@ import {
   Modal,
   Select,
   Space,
-  Spin,
-  Statistic,
   Switch,
   Table,
   Tag,
   Tooltip,
   Typography
 } from "antd";
-import dayjs from "dayjs";
 import { api } from "../src/api/client";
 import { useSettings } from "../src/hooks/useSettings";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useAuth } from "./auth-provider";
-import { estimateCost, formatCost } from "../src/utils/pricing";
 
 interface McpServerFormItem {
   name: string;
@@ -54,7 +49,6 @@ interface GeneralSettingsForm {
   branchPrefix: string;
   gitUsername: string;
   openaiBaseUrl: string;
-  agentRules: string;
   mcpServers: McpServerFormItem[];
   codexDefaultModel: string;
   codexDefaultEffort: ProviderProfile;
@@ -90,7 +84,6 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   branchPrefix: settings.branchPrefix,
   gitUsername: settings.gitUsername,
   openaiBaseUrl: settings.openaiBaseUrl ?? "",
-  agentRules: settings.agentRules,
   mcpServers: settings.mcpServers.map((server) => ({
     name: server.name,
     enabled: server.enabled,
@@ -105,188 +98,6 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   claudeDefaultModel: settings.claudeDefaultModel,
   claudeDefaultEffort: settings.claudeDefaultEffort
 });
-
-interface ModelCostRow {
-  model: string;
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  estimatedCost: number | null;
-  runCount: number;
-}
-
-function getRunModel(run: TaskRun): string {
-  return run.modelOverride ?? getDefaultModelForProvider(run.provider);
-}
-
-function CostSection() {
-  const [loading, setLoading] = useState(false);
-  const [lastLoaded, setLastLoaded] = useState<Date | null>(null);
-  const [modelRows, setModelRows] = useState<ModelCostRow[]>([]);
-  const [totalRuns, setTotalRuns] = useState(0);
-
-  const currentMonth = dayjs().startOf("month");
-  const monthLabel = dayjs().format("MMMM YYYY");
-
-  const load = async () => {
-    setLoading(true);
-    try {
-      const tasks = await api.listTasks();
-      const allRuns: TaskRun[] = [];
-
-      await Promise.all(
-        tasks.map(async (task) => {
-          const runs = await api.listTaskRuns(task.id);
-          allRuns.push(...runs);
-        })
-      );
-
-      const monthRuns = allRuns.filter((run) => {
-        const startedAt = run.startedAt ? dayjs(run.startedAt) : null;
-        return startedAt !== null && startedAt.isAfter(currentMonth);
-      });
-
-      const byModel = new Map<string, ModelCostRow>();
-
-      for (const run of monthRuns) {
-        if (run.tokenUsage?.status !== "available") continue;
-
-        const model = getRunModel(run);
-        const input = run.tokenUsage.inputTokens ?? 0;
-        const output = run.tokenUsage.outputTokens ?? 0;
-        const costEst = estimateCost(model, input, output);
-
-        const existing = byModel.get(model) ?? {
-          model,
-          inputTokens: 0,
-          outputTokens: 0,
-          totalTokens: 0,
-          estimatedCost: 0,
-          runCount: 0
-        };
-
-        byModel.set(model, {
-          model,
-          inputTokens: existing.inputTokens + input,
-          outputTokens: existing.outputTokens + output,
-          totalTokens: existing.totalTokens + input + output,
-          estimatedCost:
-            existing.estimatedCost !== null && costEst !== null
-              ? existing.estimatedCost + costEst.totalCost
-              : null,
-          runCount: existing.runCount + 1
-        });
-      }
-
-      setModelRows([...byModel.values()].sort((a, b) => (b.estimatedCost ?? 0) - (a.estimatedCost ?? 0)));
-      setTotalRuns(monthRuns.length);
-      setLastLoaded(new Date());
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const totalCost = modelRows.every((r) => r.estimatedCost !== null)
-    ? modelRows.reduce((sum, r) => sum + (r.estimatedCost ?? 0), 0)
-    : null;
-
-  const totalInputTokens = modelRows.reduce((sum, r) => sum + r.inputTokens, 0);
-  const totalOutputTokens = modelRows.reduce((sum, r) => sum + r.outputTokens, 0);
-
-  return (
-    <Card
-      bordered={false}
-      title={`Cost — ${monthLabel}`}
-      extra={
-        <Tooltip title={lastLoaded ? `Last updated ${dayjs(lastLoaded).format("HH:mm:ss")}` : undefined}>
-          <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading} size="small">
-            Refresh
-          </Button>
-        </Tooltip>
-      }
-    >
-      {loading && modelRows.length === 0 ? (
-        <Flex justify="center" style={{ padding: "24px 0" }}>
-          <Spin />
-        </Flex>
-      ) : (
-        <Flex vertical gap={24}>
-          <Flex gap={32} wrap="wrap">
-            <Statistic
-              title="Estimated Cost"
-              value={totalCost !== null ? formatCost(totalCost) : "—"}
-              suffix={totalCost !== null ? <Typography.Text type="secondary" style={{ fontSize: 12 }}>est.</Typography.Text> : undefined}
-            />
-            <Statistic
-              title="Agent Runs"
-              value={totalRuns}
-            />
-            <Statistic
-              title="Input Tokens"
-              value={totalInputTokens.toLocaleString()}
-            />
-            <Statistic
-              title="Output Tokens"
-              value={totalOutputTokens.toLocaleString()}
-            />
-          </Flex>
-
-          {modelRows.length > 0 ? (
-            <Table<ModelCostRow>
-              rowKey="model"
-              dataSource={modelRows}
-              pagination={false}
-              size="small"
-              columns={[
-                {
-                  title: "Model",
-                  dataIndex: "model",
-                  render: (value: string) => <Typography.Text code>{value}</Typography.Text>
-                },
-                {
-                  title: "Runs",
-                  dataIndex: "runCount",
-                  align: "right",
-                  render: (value: number) => value.toLocaleString()
-                },
-                {
-                  title: "Input Tokens",
-                  dataIndex: "inputTokens",
-                  align: "right",
-                  render: (value: number) => value.toLocaleString()
-                },
-                {
-                  title: "Output Tokens",
-                  dataIndex: "outputTokens",
-                  align: "right",
-                  render: (value: number) => value.toLocaleString()
-                },
-                {
-                  title: "Est. Cost",
-                  dataIndex: "estimatedCost",
-                  align: "right",
-                  render: (value: number | null) =>
-                    value !== null ? formatCost(value) : <Typography.Text type="secondary">—</Typography.Text>
-                }
-              ]}
-            />
-          ) : (
-            <Typography.Text type="secondary">No agent runs with token data in {monthLabel}.</Typography.Text>
-          )}
-
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Cost figures are estimates based on published per-token pricing and may not match your actual invoice.
-          </Typography.Text>
-        </Flex>
-      )}
-    </Card>
-  );
-}
 
 export function SettingsPage() {
   const { message } = App.useApp();
@@ -361,7 +172,6 @@ export function SettingsPage() {
                 branchPrefix: values.branchPrefix,
                 gitUsername: values.gitUsername,
                 openaiBaseUrl: values.openaiBaseUrl?.trim() ? values.openaiBaseUrl.trim() : null,
-                agentRules: values.agentRules ?? "",
                 codexDefaultModel: values.codexDefaultModel,
                 codexDefaultEffort: values.codexDefaultEffort,
                 claudeDefaultModel: values.claudeDefaultModel,
@@ -477,20 +287,6 @@ export function SettingsPage() {
                   <Input placeholder="x-access-token" />
                 </Form.Item>
               </Flex>
-            </Card>
-
-            <Card bordered={false} loading={loading} title="Agent Guardrails">
-              <Form.Item
-                name="agentRules"
-                label="Global Agent Rules"
-                extra="Applied to every plan, build, review, ask, and iterate run."
-                style={{ marginBottom: 0 }}
-              >
-                <Input.TextArea
-                  rows={10}
-                  placeholder={"- Prefer pnpm over npm\n- Run unit tests before finalizing\n- Never change generated files by hand"}
-                />
-              </Form.Item>
             </Card>
 
             <Card bordered={false} loading={loading} title="MCP Servers">
@@ -712,8 +508,6 @@ export function SettingsPage() {
             </Space>
           </Form>
         </Card>
-
-        <CostSection />
 
         <Card
           bordered={false}

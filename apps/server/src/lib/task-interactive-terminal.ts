@@ -1,6 +1,6 @@
 import { spawn as spawnChild } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, constants } from "node:fs/promises";
+import { access, chmod, chown, constants, mkdir } from "node:fs/promises";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import path from "node:path";
 import type { Duplex } from "node:stream";
@@ -9,13 +9,15 @@ import { URL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import pty from "node-pty";
 
-import { getTaskStatusLabel, isActiveTaskStatus, isQueuedTaskStatus } from "@agentswarm/shared-types";
+import { getTaskStatusLabel, isActiveTaskStatus, isQueuedTaskStatus, type Task } from "@agentswarm/shared-types";
 
 import { env } from "../config/env.js";
 import type { AuthService } from "./auth.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
+import { canUserAccessTask } from "./task-ownership.js";
+import { claudeMaxTurnsForProfile, codexReasoningEffortForProfile, defaultModelForProvider } from "./provider-config.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
 
@@ -43,13 +45,144 @@ show_tooltips = false
 `;
 }
 
-function buildStartScript(configB64: string): string {
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function buildCodexStartScript(configB64: string, model: string, reasoningEffort: string): string {
+  const codexArgs = [
+    "exec codex",
+    "--full-auto",
+    '-C "$TASK_INTERACTIVE_WORKSPACE"',
+    "-m",
+    shellSingleQuote(model),
+    "-c cli_auth_credentials_store=file",
+    "-c forced_login_method=api",
+    "-c",
+    shellSingleQuote(`model_reasoning_effort="${reasoningEffort}"`)
+  ];
+
   return [
     "mkdir -p ~/.codex",
-    `printf '%s' '${configB64}' | base64 -d > ~/.codex/config.toml`,
+    `printf '%s' ${shellSingleQuote(configB64)} | base64 -d > ~/.codex/config.toml`,
     'printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file',
-    'exec codex --full-auto -C "$CODEX_TRUST_WORKSPACE" -c cli_auth_credentials_store=file -c forced_login_method=api',
+    codexArgs.join(" "),
   ].join(" && ");
+}
+
+function buildClaudeSettingsJson(): string {
+  return JSON.stringify({
+    autoUpdaterStatus: "disabled",
+    disableBypassPermissionsMode: "disable"
+  });
+}
+
+function buildClaudeStartScript(model: string, maxTurns: number | undefined, settingsJson: string): string {
+  const claudeArgs = [
+    "exec claude",
+    "--model",
+    shellSingleQuote(model),
+    "--settings",
+    shellSingleQuote(settingsJson)
+  ];
+  if (typeof maxTurns === "number") {
+    claudeArgs.push("--max-turns", String(maxTurns));
+  }
+
+  return ['mkdir -p "$HOME/.claude"', `cd "$TASK_INTERACTIVE_WORKSPACE"`, "sleep 1", claudeArgs.join(" ")].join(" && ");
+}
+
+type InteractiveTerminalRuntimeConfig =
+  | {
+      ok: true;
+      image: string;
+      providerLabel: string;
+      homePath: string;
+      persistentHome: boolean;
+      envEntries: Array<[string, string]>;
+      startScript: string;
+    }
+  | {
+      ok: false;
+      reason: string;
+    };
+
+type InteractiveRuntimeSettings = Awaited<ReturnType<SettingsStore["getSettings"]>>;
+type InteractiveRuntimeCredentials = Awaited<ReturnType<SettingsStore["getRuntimeCredentials"]>>;
+
+function resolveInteractiveTerminalModel(task: Task): string {
+  const configured = task.modelOverride?.trim();
+  if (configured) {
+    return configured;
+  }
+
+  return defaultModelForProvider(task.provider, task.providerProfile) ?? (task.provider === "claude" ? "claude-sonnet-4-5" : "gpt-5.4");
+}
+
+function resolveInteractiveTerminalRuntimeConfig(
+  task: Task,
+  settings: InteractiveRuntimeSettings,
+  credentials: InteractiveRuntimeCredentials
+): InteractiveTerminalRuntimeConfig {
+  const model = resolveInteractiveTerminalModel(task);
+
+  if (task.provider === "claude") {
+    const image = env.CLAUDE_INTERACTIVE_IMAGE?.trim();
+    if (!image) {
+      return { ok: false, reason: "Interactive Claude Code is not configured (set CLAUDE_INTERACTIVE_IMAGE on the server)." };
+    }
+    if (!credentials.anthropicApiKey) {
+      return { ok: false, reason: "Anthropic API key is not configured in Settings." };
+    }
+
+    return {
+      ok: true,
+      image,
+      providerLabel: "Claude Code",
+      homePath: "/home/claude",
+      persistentHome: true,
+      envEntries: [
+        ["ANTHROPIC_API_KEY", credentials.anthropicApiKey],
+        ["TERM", "xterm-256color"],
+        ["HOME", "/home/claude"],
+        ["TASK_INTERACTIVE_WORKSPACE", "/workspace"]
+      ],
+      startScript: buildClaudeStartScript(model, claudeMaxTurnsForProfile(task.providerProfile), buildClaudeSettingsJson())
+    };
+  }
+
+  const image = env.CODEX_INTERACTIVE_IMAGE?.trim();
+  if (!image) {
+    return { ok: false, reason: "Interactive Codex is not configured (set CODEX_INTERACTIVE_IMAGE on the server)." };
+  }
+  if (!credentials.openaiApiKey) {
+    return { ok: false, reason: "OpenAI API key is not configured in Settings." };
+  }
+
+  const envEntries: Array<[string, string]> = [
+    ["OPENAI_API_KEY", credentials.openaiApiKey],
+    ["TERM", "xterm-256color"],
+    ["HOME", "/root"],
+    ["TASK_INTERACTIVE_WORKSPACE", "/workspace"],
+    ["CODEX_TRUST_WORKSPACE", "/workspace"]
+  ];
+  if (settings.openaiBaseUrl?.trim()) {
+    envEntries.push(["OPENAI_BASE_URL", settings.openaiBaseUrl.trim()]);
+  }
+
+  return {
+    ok: true,
+    image,
+    providerLabel: "Codex",
+    homePath: "/root",
+    persistentHome: false,
+    envEntries,
+    startScript: buildCodexStartScript(
+      Buffer.from(buildCodexUserConfigToml("/workspace", model), "utf8").toString("base64"),
+      model,
+      codexReasoningEffortForProfile(task.providerProfile)
+    )
+  };
 }
 
 function forceRemoveDockerSession(containerName: string): void {
@@ -58,6 +191,45 @@ function forceRemoveDockerSession(containerName: string): void {
     detached: true,
   });
   child.unref();
+}
+
+function interactiveImageBuildHint(provider: Task["provider"], image: string): string {
+  const dockerfile = provider === "claude" ? "Dockerfile.claude" : "Dockerfile.codex";
+  return `docker build -f tools/codex-web-terminal/${dockerfile} -t ${image} tools/codex-web-terminal`;
+}
+
+function sanitizeInteractiveHomeSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, "-");
+}
+
+function resolveClaudeInteractiveHomeHostPath(task: Task): string {
+  const ownerSegment = sanitizeInteractiveHomeSegment(task.ownerUserId?.trim() || `task-${task.id}`);
+  return path.join(env.TASK_WORKSPACE_HOST_ROOT, ".interactive-homes", "claude", ownerSegment);
+}
+
+async function ensureClaudeInteractiveHomeHostPath(task: Task): Promise<string> {
+  const homeHostPath = resolveClaudeInteractiveHomeHostPath(task);
+  await mkdir(homeHostPath, { recursive: true });
+
+  try {
+    await chown(homeHostPath, 1000, 1000);
+    await chmod(homeHostPath, 0o700);
+  } catch {
+    await chmod(homeHostPath, 0o777).catch(() => undefined);
+  }
+
+  return homeHostPath;
+}
+
+async function dockerImageExists(image: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawnChild("docker", ["image", "inspect", image], {
+      stdio: "ignore"
+    });
+
+    child.on("error", () => resolve(false));
+    child.on("close", (code) => resolve(code === 0));
+  });
 }
 
 function denySocket(socket: Duplex, status: number, body: string): void {
@@ -75,6 +247,52 @@ export interface TaskInteractiveTerminalDeps {
   spawner: SpawnerService;
 }
 
+interface ActiveInteractiveTerminalController {
+  sessionId: string;
+  terminate: () => Promise<void>;
+}
+
+const activeInteractiveTerminalControllers = new Map<string, ActiveInteractiveTerminalController>();
+
+function registerActiveInteractiveTerminalController(
+  taskId: string,
+  sessionId: string,
+  terminate: () => Promise<void>
+): void {
+  activeInteractiveTerminalControllers.set(taskId, { sessionId, terminate });
+}
+
+function unregisterActiveInteractiveTerminalController(taskId: string, sessionId: string): void {
+  const active = activeInteractiveTerminalControllers.get(taskId);
+  if (active?.sessionId === sessionId) {
+    activeInteractiveTerminalControllers.delete(taskId);
+  }
+}
+
+function sendInteractiveTerminalError(ws: WebSocket, message: string): void {
+  if (ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  ws.send(JSON.stringify({ type: "error", message }), () => {
+    try {
+      ws.close(1011, "interactive terminal failed");
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
+export async function killTaskInteractiveTerminalSession(taskId: string): Promise<boolean> {
+  const active = activeInteractiveTerminalControllers.get(taskId);
+  if (!active) {
+    return false;
+  }
+
+  await active.terminate();
+  return true;
+}
+
 export type TaskInteractiveTerminalStatusPayload = {
   available: boolean;
   reason?: string;
@@ -87,10 +305,6 @@ export async function getTaskInteractiveTerminalStatus(
   settingsStore: SettingsStore,
   taskId: string,
 ): Promise<TaskInteractiveTerminalStatusPayload> {
-  if (!env.CODEX_INTERACTIVE_IMAGE?.trim()) {
-    return { available: false, reason: "Interactive Codex is not configured (set CODEX_INTERACTIVE_IMAGE on the server)." };
-  }
-
   const task = await taskStore.getTask(taskId);
   if (!task) {
     return { available: false, reason: "Task not found." };
@@ -119,9 +333,19 @@ export async function getTaskInteractiveTerminalStatus(
     };
   }
 
-  const credentials = await settingsStore.getRuntimeCredentials();
-  if (!credentials.openaiApiKey) {
-    return { available: false, reason: "OpenAI API key is not configured in Settings." };
+  const [settings, credentials] = await Promise.all([
+    settingsStore.getSettings(),
+    settingsStore.getRuntimeCredentials()
+  ]);
+  const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
+  if (!runtime.ok) {
+    return { available: false, reason: runtime.reason };
+  }
+  if (!(await dockerImageExists(runtime.image))) {
+    return {
+      available: false,
+      reason: `Interactive ${runtime.providerLabel} image "${runtime.image}" is not available on the Docker host. Build it first: ${interactiveImageBuildHint(task.provider, runtime.image)}`
+    };
   }
 
   const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
@@ -164,89 +388,19 @@ export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, dep
         denySocket(socket, 403, "task:edit scope required");
         return;
       }
-
-      const status = await getTaskInteractiveTerminalStatus(deps.taskStore, deps.settingsStore, taskId);
-      if (!status.available) {
-        denySocket(socket, 503, status.reason ?? "Interactive session unavailable");
+      if (!auth.scopes.has("task:interactive")) {
+        denySocket(socket, 403, "task:interactive scope required");
         return;
       }
 
-      const credentials = await deps.settingsStore.getRuntimeCredentials();
-      const settings = await deps.settingsStore.getSettings();
-      const openaiKey = credentials.openaiApiKey;
-      if (!openaiKey) {
-        denySocket(socket, 503, "OpenAI API key is not configured");
+      const task = await deps.taskStore.getTask(taskId);
+      if (!task || !canUserAccessTask(auth.user, task)) {
+        denySocket(socket, 404, "Task not found");
         return;
       }
-
-      const image = env.CODEX_INTERACTIVE_IMAGE.trim();
-      // Left side of -v is the path on the Docker *host* (same convention as spawner agent mounts).
-      const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
-      const model = settings.codexDefaultModel?.trim() || "gpt-5.4";
-      const configB64 = Buffer.from(buildCodexUserConfigToml("/workspace", model), "utf8").toString("base64");
-      const startScript = buildStartScript(configB64);
-      const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
-
-      let interactiveSessionId: string;
-      try {
-        const started = await deps.spawner.beginInteractiveTerminalSession(taskId);
-        interactiveSessionId = started.sessionId;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not start interactive session";
-        denySocket(socket, 503, message);
-        return;
-      }
-
-      const dockerEnv = [
-        "-e",
-        `OPENAI_API_KEY=${openaiKey}`,
-        "-e",
-        "TERM=xterm-256color",
-        "-e",
-        "HOME=/root",
-        "-e",
-        "CODEX_TRUST_WORKSPACE=/workspace",
-      ];
-      if (settings.openaiBaseUrl?.trim()) {
-        dockerEnv.push("-e", `OPENAI_BASE_URL=${settings.openaiBaseUrl.trim()}`);
-      }
-
-      const dockerArgs = [
-        "run",
-        "-i",
-        "-t",
-        "--rm",
-        "--name",
-        sessionName,
-        "-v",
-        `${dockerBindSource}:/workspace:rw`,
-        ...dockerEnv,
-        image,
-        "sh",
-        "-lc",
-        startScript,
-      ];
-
-      let child: pty.IPty;
-      try {
-        child = pty.spawn("docker", dockerArgs, {
-          name: "xterm-256color",
-          cols: 80,
-          rows: 24,
-          cwd: process.env.HOME || "/",
-          env: { ...process.env, TERM: "xterm-256color" },
-        });
-      } catch {
-        await deps.taskStore.clearActiveInteractiveSession(taskId);
-        denySocket(socket, 503, "Failed to spawn docker session");
-        return;
-      }
-
       wss.handleUpgrade(request, socket, head, (ws) => {
-        wireTerminalWebSocket(ws, child, sessionName, {
-          taskId,
-          sessionId: interactiveSessionId,
-          spawner: deps.spawner
+        void initializeTaskInteractiveTerminalWebSocket(ws, task, deps).catch(() => {
+          sendInteractiveTerminalError(ws, "Interactive terminal initialization failed.");
         });
       });
     })().catch(() => {
@@ -259,34 +413,130 @@ export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, dep
   });
 }
 
+async function initializeTaskInteractiveTerminalWebSocket(
+  ws: WebSocket,
+  task: Task,
+  deps: TaskInteractiveTerminalDeps
+): Promise<void> {
+  const taskId = task.id;
+  const status = await getTaskInteractiveTerminalStatus(deps.taskStore, deps.settingsStore, taskId);
+  if (!status.available) {
+    sendInteractiveTerminalError(ws, status.reason ?? "Interactive session unavailable");
+    return;
+  }
+
+  const [credentials, settings] = await Promise.all([
+    deps.settingsStore.getRuntimeCredentials(),
+    deps.settingsStore.getSettings()
+  ]);
+  const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
+  if (!runtime.ok) {
+    sendInteractiveTerminalError(ws, runtime.reason);
+    return;
+  }
+
+  let interactiveSessionId: string | null = null;
+
+  try {
+    const started = await deps.spawner.beginInteractiveTerminalSession(taskId);
+    interactiveSessionId = started.sessionId;
+
+    const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
+    const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
+    const homeBindSource = runtime.persistentHome ? await ensureClaudeInteractiveHomeHostPath(task) : null;
+    const dockerEnv: string[] = [];
+    for (const [name, value] of runtime.envEntries) {
+      dockerEnv.push("-e", `${name}=${value}`);
+    }
+    dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
+
+    const dockerArgs = [
+      "run",
+      "-i",
+      "-t",
+      "--rm",
+      "--name",
+      sessionName,
+      "-v",
+      `${dockerBindSource}:/workspace:rw`,
+      ...(homeBindSource ? ["-v", `${homeBindSource}:${runtime.homePath}:rw`] : []),
+      ...dockerEnv,
+      runtime.image,
+      "sh",
+      "-lc",
+      runtime.startScript,
+    ];
+
+    const child = pty.spawn("docker", dockerArgs, {
+      name: "xterm-256color",
+      cols: 80,
+      rows: 24,
+      cwd: process.env.HOME || "/",
+      env: { ...process.env, TERM: "xterm-256color" },
+    });
+
+    wireTerminalWebSocket(ws, child, sessionName, {
+      taskId,
+      sessionId: interactiveSessionId,
+      spawner: deps.spawner
+    });
+  } catch (error) {
+    if (interactiveSessionId) {
+      await deps.spawner.endInteractiveTerminalSession(taskId, interactiveSessionId).catch(() => undefined);
+    }
+    const message = error instanceof Error ? error.message : "Could not start interactive session";
+    sendInteractiveTerminalError(ws, message);
+  }
+}
+
 function wireTerminalWebSocket(
   ws: WebSocket,
   child: pty.IPty,
   sessionContainerName: string,
   proposalCtx: { taskId: string; sessionId: string; spawner: SpawnerService }
 ): void {
-  let cleanedUp = false;
-  const cleanupSession = (): void => {
-    if (cleanedUp) {
-      return;
+  let sawTerminalOutput = false;
+  let cleanupPromise: Promise<void> | null = null;
+  const cleanupSession = (): Promise<void> => {
+    if (cleanupPromise) {
+      return cleanupPromise;
     }
-    cleanedUp = true;
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      /* ignore */
-    }
-    forceRemoveDockerSession(sessionContainerName);
-    void proposalCtx.spawner.endInteractiveTerminalSession(proposalCtx.taskId, proposalCtx.sessionId).catch(() => undefined);
+
+    cleanupPromise = (async () => {
+      unregisterActiveInteractiveTerminalController(proposalCtx.taskId, proposalCtx.sessionId);
+      try {
+        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+          ws.close(1012, "interactive terminal terminated");
+        }
+      } catch {
+        /* ignore */
+      }
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+      forceRemoveDockerSession(sessionContainerName);
+      await proposalCtx.spawner.endInteractiveTerminalSession(proposalCtx.taskId, proposalCtx.sessionId).catch(() => undefined);
+    })();
+
+    return cleanupPromise;
   };
 
+  registerActiveInteractiveTerminalController(proposalCtx.taskId, proposalCtx.sessionId, cleanupSession);
+
   child.onData((data) => {
+    sawTerminalOutput = true;
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(Buffer.from(data, "utf8"), { binary: true });
     }
   });
 
   child.onExit(() => {
+    if (!sawTerminalOutput) {
+      sendInteractiveTerminalError(ws, "Interactive process exited before it produced terminal output.");
+      return;
+    }
     try {
       ws.close();
     } catch {
@@ -316,6 +566,10 @@ function wireTerminalWebSocket(
     }
   });
 
-  ws.on("close", cleanupSession);
-  ws.on("error", cleanupSession);
+  ws.on("close", () => {
+    void cleanupSession();
+  });
+  ws.on("error", () => {
+    void cleanupSession();
+  });
 }

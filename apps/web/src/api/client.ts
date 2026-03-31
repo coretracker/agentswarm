@@ -26,12 +26,14 @@ import type {
   TaskLiveDiff,
   TaskWorkspaceCommitLog,
   TaskPushPreview,
+  TaskMergePreview,
   TaskMessage,
+  MergeTaskInput,
+  UpdateTaskMessageInput,
   TaskRun,
   TaskChangeProposal,
   TaskAction,
   UpdateRoleInput,
-  UpdateTaskPlanInput,
   UpdateTaskPinInput,
   UpdateTaskTitleInput,
   UpdateCredentialSettingsInput,
@@ -53,6 +55,11 @@ export interface TaskInteractiveTerminalStatus {
   reason?: string;
   /** Server sets this when a terminal WebSocket session is active for the task. */
   activeInteractiveSession?: boolean;
+}
+
+export interface TaskWorkspaceFilePreview {
+  path: string;
+  content: string;
 }
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
@@ -168,6 +175,10 @@ export const api = {
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
   getTaskInteractiveTerminalStatus: (id: string) =>
     request<TaskInteractiveTerminalStatus>(`/tasks/${id}/interactive-terminal/status`),
+  killTaskInteractiveTerminal: (id: string) =>
+    request<Task>(`/tasks/${id}/interactive-terminal/kill`, {
+      method: "POST"
+    }),
   getTaskLiveDiff: (
     id: string,
     options?: { baseRef?: string | null; diffKind?: "compare" | "working" | "commits"; commitSha?: string | null }
@@ -197,12 +208,19 @@ export const api = {
     const query = params.toString();
     return request<TaskWorkspaceCommitLog>(`/tasks/${id}/workspace-commit-log${query ? `?${query}` : ""}`);
   },
+  getTaskWorkspaceFile: (id: string, filePath: string) =>
+    request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file?path=${encodeURIComponent(filePath)}`),
   openAiDiffAssist: (taskId: string, input: OpenAiDiffAssistInput) =>
     request<OpenAiDiffAssistResult>(`/tasks/${taskId}/openai/diff-assist`, {
       method: "POST",
       body: JSON.stringify(input)
     }),
   listTaskMessages: (id: string) => request<TaskMessage[]>(`/tasks/${id}/messages`),
+  updateTaskMessage: (taskId: string, messageId: string, input: UpdateTaskMessageInput) =>
+    request<TaskMessage>(`/tasks/${taskId}/messages/${messageId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
   listTaskRuns: (id: string) => request<TaskRun[]>(`/tasks/${id}/runs`),
   listTaskChangeProposals: (id: string) => request<TaskChangeProposal[]>(`/tasks/${id}/change-proposals`),
   applyTaskChangeProposal: (taskId: string, proposalId: string) =>
@@ -235,19 +253,15 @@ export const api = {
     request<GitHubPullRequestReference[]>(`/imports/github/pull-requests?repoId=${encodeURIComponent(repoId)}`),
   listGitHubBranches: (repoId: string) =>
     request<GitHubBranchReference[]>(`/imports/github/branches?repoId=${encodeURIComponent(repoId)}`),
-  triggerTaskAction: (id: string, action: TaskAction, iterateInput?: string) =>
+  triggerTaskAction: (id: string, action: TaskAction) =>
     request<Task>(`/tasks/${id}/actions`, {
       method: "POST",
-      body: JSON.stringify({ action, iterateInput })
+      body: JSON.stringify({ action })
     }),
   createTaskMessage: (id: string, input: CreateTaskMessageInput) =>
     request<Task>(`/tasks/${id}/messages`, {
       method: "POST",
       body: JSON.stringify(input)
-    }),
-  buildTaskFromRun: (id: string, runId: string) =>
-    request<Task>(`/tasks/${id}/build-from-run/${runId}`, {
-      method: "POST"
     }),
   cancelTask: (id: string) =>
     request<Task>(`/tasks/${id}/cancel`, {
@@ -257,15 +271,18 @@ export const api = {
     request<Task>(`/tasks/${id}/pull`, {
       method: "POST"
     }),
+  getTaskMergePreview: (id: string, targetBranch: string) =>
+    request<TaskMergePreview>(`/tasks/${id}/merge-preview?targetBranch=${encodeURIComponent(targetBranch)}`),
   getTaskPushPreview: (id: string) => request<TaskPushPreview>(`/tasks/${id}/push-preview`),
   pushTask: (id: string, input?: { commitMessage?: string }) =>
     request<Task>(`/tasks/${id}/push`, {
       method: "POST",
       body: JSON.stringify(input ?? {})
     }),
-  mergeTask: (id: string) =>
+  mergeTask: (id: string, input: MergeTaskInput) =>
     request<Task>(`/tasks/${id}/merge`, {
-      method: "POST"
+      method: "POST",
+      body: JSON.stringify(input)
     }),
   archiveTask: (id: string) =>
     request<Task>(`/tasks/${id}/archive`, {
@@ -277,11 +294,6 @@ export const api = {
     }),
   updateTaskConfig: (id: string, input: UpdateTaskConfigInput) =>
     request<Task>(`/tasks/${id}/config`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskPlan: (id: string, input: UpdateTaskPlanInput) =>
-    request<Task>(`/tasks/${id}/plan`, {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
