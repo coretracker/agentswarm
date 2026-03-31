@@ -95,10 +95,14 @@ function buildClaudeStartScript(model: string, maxTurns: number | undefined, set
 type InteractiveTerminalRuntimeConfig =
   | {
       ok: true;
+      provider: Task["provider"];
       image: string;
       providerLabel: string;
-      homePath: string;
-      persistentHome: boolean;
+      persistentState?: {
+        containerPath: string;
+        uid: number;
+        gid: number;
+      };
       envEntries: Array<[string, string]>;
       startScript: string;
     }
@@ -137,10 +141,14 @@ function resolveInteractiveTerminalRuntimeConfig(
 
     return {
       ok: true,
+      provider: "claude",
       image,
       providerLabel: "Claude Code",
-      homePath: "/home/claude",
-      persistentHome: true,
+      persistentState: {
+        containerPath: "/home/claude/.claude",
+        uid: 1000,
+        gid: 1000
+      },
       envEntries: [
         ["ANTHROPIC_API_KEY", credentials.anthropicApiKey],
         ["TERM", "xterm-256color"],
@@ -172,10 +180,14 @@ function resolveInteractiveTerminalRuntimeConfig(
 
   return {
     ok: true,
+    provider: "codex",
     image,
     providerLabel: "Codex",
-    homePath: "/root",
-    persistentHome: false,
+    persistentState: {
+      containerPath: "/root/.codex",
+      uid: 0,
+      gid: 0
+    },
     envEntries,
     startScript: buildCodexStartScript(
       Buffer.from(buildCodexUserConfigToml("/workspace", model), "utf8").toString("base64"),
@@ -202,23 +214,27 @@ function sanitizeInteractiveHomeSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, "-");
 }
 
-function resolveClaudeInteractiveHomeHostPath(task: Task): string {
-  const ownerSegment = sanitizeInteractiveHomeSegment(task.ownerUserId?.trim() || `task-${task.id}`);
-  return path.join(env.TASK_WORKSPACE_HOST_ROOT, ".interactive-homes", "claude", ownerSegment);
+function resolveInteractiveStateHostPath(task: Task, provider: Task["provider"]): string {
+  const taskSegment = sanitizeInteractiveHomeSegment(task.id?.trim() || "unknown-task");
+  return path.join(env.TASK_WORKSPACE_HOST_ROOT, ".interactive-homes", provider, taskSegment);
 }
 
-async function ensureClaudeInteractiveHomeHostPath(task: Task): Promise<string> {
-  const homeHostPath = resolveClaudeInteractiveHomeHostPath(task);
-  await mkdir(homeHostPath, { recursive: true });
-
-  try {
-    await chown(homeHostPath, 1000, 1000);
-    await chmod(homeHostPath, 0o700);
-  } catch {
-    await chmod(homeHostPath, 0o777).catch(() => undefined);
+async function ensureInteractiveStateHostPath(task: Task, runtime: Extract<InteractiveTerminalRuntimeConfig, { ok: true }>): Promise<string | null> {
+  if (!runtime.persistentState) {
+    return null;
   }
 
-  return homeHostPath;
+  const stateHostPath = resolveInteractiveStateHostPath(task, runtime.provider);
+  await mkdir(stateHostPath, { recursive: true });
+
+  try {
+    await chown(stateHostPath, runtime.persistentState.uid, runtime.persistentState.gid);
+    await chmod(stateHostPath, 0o700);
+  } catch {
+    await chmod(stateHostPath, 0o777).catch(() => undefined);
+  }
+
+  return stateHostPath;
 }
 
 async function dockerImageExists(image: string): Promise<boolean> {
@@ -443,7 +459,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
 
     const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
     const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
-    const homeBindSource = runtime.persistentHome ? await ensureClaudeInteractiveHomeHostPath(task) : null;
+    const stateBindSource = await ensureInteractiveStateHostPath(task, runtime);
     const dockerEnv: string[] = [];
     for (const [name, value] of runtime.envEntries) {
       dockerEnv.push("-e", `${name}=${value}`);
@@ -459,7 +475,9 @@ async function initializeTaskInteractiveTerminalWebSocket(
       sessionName,
       "-v",
       `${dockerBindSource}:/workspace:rw`,
-      ...(homeBindSource ? ["-v", `${homeBindSource}:${runtime.homePath}:rw`] : []),
+      ...(stateBindSource && runtime.persistentState
+        ? ["-v", `${stateBindSource}:${runtime.persistentState.containerPath}:rw`]
+        : []),
       ...dockerEnv,
       runtime.image,
       "sh",
