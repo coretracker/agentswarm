@@ -172,25 +172,30 @@ export function TasksPage() {
               {
                 title: "Title",
                 dataIndex: "title",
-                render: (value: string, task) => (
-                  <Space size={8}>
-                    {task.pinned ? <PushpinFilled style={{ color: "#1C8057" }} /> : null}
-                    {!isTaskSeen(task, seenTaskVersions) ? (
-                      <span
-                        aria-label="Unseen task"
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: "50%",
-                          backgroundColor: "#1C8057",
-                          display: "inline-block",
-                          flex: "0 0 auto"
-                        }}
-                      />
-                    ) : null}
-                    <span>{value}</span>
-                  </Space>
-                )
+                render: (value: string, task) => {
+                  const markerColor = task.hasPendingCheckpoint ? "#FA8C16" : !isTaskSeen(task, seenTaskVersions) ? "#1C8057" : null;
+                  const markerLabel = task.hasPendingCheckpoint ? "Pending checkpoint" : "Unseen task";
+
+                  return (
+                    <Space size={8}>
+                      {task.pinned ? <PushpinFilled style={{ color: "#1C8057" }} /> : null}
+                      {markerColor ? (
+                        <span
+                          aria-label={markerLabel}
+                          style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: "50%",
+                            backgroundColor: markerColor,
+                            display: "inline-block",
+                            flex: "0 0 auto"
+                          }}
+                        />
+                      ) : null}
+                      <span>{value}</span>
+                    </Space>
+                  );
+                }
               },
               {
                 title: "Repository",

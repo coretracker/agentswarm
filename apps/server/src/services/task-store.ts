@@ -141,6 +141,7 @@ export class TaskStore {
     const normalizedTask: Task = {
       ...legacyTask,
       pinned: legacyTask.pinned ?? false,
+      hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
       taskType: normalizeLegacyTaskType(legacyTask.taskType),
       provider: normalizeProvider(legacyTask.provider),
@@ -231,10 +232,24 @@ export class TaskStore {
 
   private async hydrateTask(task: Task): Promise<Task> {
     const logs = await this.redis.lrange(this.taskLogKey(task.id), 0, -1);
-    return {
+    return this.withPendingCheckpointState({
       ...task,
       logs
+    });
+  }
+
+  private async withPendingCheckpointState(task: Task): Promise<Task> {
+    const proposals = await this.listChangeProposals(task.id);
+    return {
+      ...task,
+      hasPendingCheckpoint: proposals.some((proposal) => proposal.status === "pending")
     };
+  }
+
+  private async publishTaskEvent(type: "task:created" | "task:updated", task: Task): Promise<Task> {
+    const payload = await this.withPendingCheckpointState(task);
+    await this.eventBus.publish({ type, payload });
+    return payload;
   }
 
   private normalizeRun(run: TaskRun): TaskRun {
@@ -283,6 +298,7 @@ export class TaskStore {
       id: nanoid(),
       title,
       pinned: false,
+      hasPendingCheckpoint: false,
       ownerUserId,
       repoId: repository.id,
       repoName: repository.name,
@@ -313,7 +329,7 @@ export class TaskStore {
     };
 
     await this.redis.multi().set(this.taskKey(task.id), JSON.stringify(task)).sadd(TASK_IDS_KEY, task.id).exec();
-    await this.eventBus.publish({ type: "task:created", payload: task });
+    await this.publishTaskEvent("task:created", task);
     if (startMode !== "prepare_workspace" || prompt.trim().length > 0) {
       await this.appendMessage(task.id, {
         role: "user",
@@ -322,7 +338,7 @@ export class TaskStore {
       });
     }
 
-    return task;
+    return this.withPendingCheckpointState(task);
   }
 
   async getTask(taskId: string): Promise<Task | null> {
@@ -356,7 +372,9 @@ export class TaskStore {
       }
     }
 
-    return tasks.sort((a, b) => {
+    const hydratedTasks = await Promise.all(tasks.map((task) => this.withPendingCheckpointState(task)));
+
+    return hydratedTasks.sort((a, b) => {
       if (a.pinned !== b.pinned) {
         return a.pinned ? -1 : 1;
       }
@@ -383,8 +401,7 @@ export class TaskStore {
     };
 
     await this.redis.set(this.taskKey(taskId), JSON.stringify(next));
-    await this.eventBus.publish({ type: "task:updated", payload: next });
-    return next;
+    return this.publishTaskEvent("task:updated", next);
   }
 
   async updateResultArtifacts(
@@ -404,8 +421,7 @@ export class TaskStore {
     };
 
     await this.redis.set(this.taskKey(taskId), JSON.stringify(next));
-    await this.eventBus.publish({ type: "task:updated", payload: next });
-    return next;
+    return this.publishTaskEvent("task:updated", next);
   }
 
   async appendLog(taskId: string, line: string): Promise<void> {
@@ -649,8 +665,7 @@ export class TaskStore {
     };
 
     await this.redis.set(this.taskKey(taskId), JSON.stringify(next));
-    await this.eventBus.publish({ type: "task:updated", payload: next });
-    return next;
+    return this.publishTaskEvent("task:updated", next);
   }
 
   async enqueueTask(taskId: string, reason: QueueReason, action: TaskAction, input?: string): Promise<boolean> {
@@ -675,7 +690,7 @@ export class TaskStore {
       .rpush(TASK_QUEUE_KEY, JSON.stringify(queueEntry))
       .exec();
 
-    await this.eventBus.publish({ type: "task:updated", payload: next });
+    await this.publishTaskEvent("task:updated", next);
     return true;
   }
 
@@ -715,8 +730,7 @@ export class TaskStore {
     };
 
     await this.redis.set(this.taskKey(taskId), JSON.stringify(next));
-    await this.eventBus.publish({ type: "task:updated", payload: next });
-    return next;
+    return this.publishTaskEvent("task:updated", next);
   }
 
   async archiveTask(taskId: string): Promise<Task | null> {
@@ -736,8 +750,7 @@ export class TaskStore {
     };
 
     await this.redis.set(this.taskKey(taskId), JSON.stringify(next));
-    await this.eventBus.publish({ type: "task:updated", payload: next });
-    return next;
+    return this.publishTaskEvent("task:updated", next);
   }
 
   async deleteTask(taskId: string): Promise<boolean> {
@@ -954,6 +967,10 @@ export class TaskStore {
       .exec();
 
     await this.eventBus.publish({ type: "task:change_proposal", payload: proposal });
+    const task = await this.getStoredTask(input.taskId);
+    if (task) {
+      await this.publishTaskEvent("task:updated", task);
+    }
     return proposal;
   }
 
@@ -978,6 +995,10 @@ export class TaskStore {
     await this.redis.set(this.taskChangeProposalKey(proposalId), JSON.stringify(next));
 
     await this.eventBus.publish({ type: "task:change_proposal", payload: next });
+    const task = await this.getStoredTask(taskId);
+    if (task) {
+      await this.publishTaskEvent("task:updated", task);
+    }
     return next;
   }
 
@@ -995,6 +1016,10 @@ export class TaskStore {
 
     await this.redis.set(this.taskChangeProposalKey(proposalId), JSON.stringify(next));
     await this.eventBus.publish({ type: "task:change_proposal", payload: next });
+    const task = await this.getStoredTask(taskId);
+    if (task) {
+      await this.publishTaskEvent("task:updated", task);
+    }
     return next;
   }
 }

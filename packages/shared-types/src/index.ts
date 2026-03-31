@@ -283,6 +283,7 @@ export interface Task {
   id: string;
   title: string;
   pinned: boolean;
+  hasPendingCheckpoint: boolean;
   ownerUserId: string | null;
   repoId: string;
   repoName: string;

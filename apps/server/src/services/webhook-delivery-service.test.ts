@@ -97,6 +97,7 @@ const baseTask = (): Task => ({
   id: "task-1",
   title: "Example task",
   pinned: false,
+  hasPendingCheckpoint: false,
   ownerUserId: "user-1",
   repoId: "repo-1",
   repoName: "Repo",
