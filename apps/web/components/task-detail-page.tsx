@@ -13,6 +13,7 @@ import {
   getTaskTypeLabel,
   getModelsForProvider,
   isActiveTaskStatus,
+  isTaskWorking,
   type Task,
   type TaskAction,
   type TaskMessageAction,
@@ -199,6 +200,14 @@ function checkpointStatusColor(status: TaskChangeProposal["status"]): string {
 
 function changeProposalSourceLabel(sourceType: TaskChangeProposal["sourceType"]): string {
   return sourceType === "build_run" ? "Build run" : "Terminal session";
+}
+
+function getTaskWorkingLabel(task: Pick<Task, "status" | "activeInteractiveSession">): string {
+  if (task.activeInteractiveSession) {
+    return "Interactive Terminal Running";
+  }
+
+  return getTaskStatusLabel(task.status);
 }
 
 function formatDiffRefDisplay(ref: string | null | undefined): string {
@@ -504,6 +513,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canCreateFollowUp = canAll(["task:create", "repo:list"]) && canBuildTasks;
   const isQueued = task?.status === "build_queued" || task?.status === "ask_queued";
   const isActive = task ? isActiveTaskStatus(task.status) : false;
+  const hasTaskWorkingState = task ? isTaskWorking(task) : false;
   const checkpointDiffActionsBlockedReason = task ? getCheckpointMutationBlockedReason(task.status) : null;
   const checkpointDiffActionsBlocked = checkpointDiffActionsBlockedReason !== null;
   const isPreparingWorkspace = task?.status === "preparing_workspace";
@@ -1333,6 +1343,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     return best.id;
   }, [changeProposals]);
   const interactiveTerminalRunning = interactiveTerminalStatus?.activeInteractiveSession === true;
+  const showWorkingIndicator = hasTaskWorkingState || interactiveTerminalRunning;
+  const workingIndicatorLabel = task
+    ? getTaskWorkingLabel({
+        ...task,
+        activeInteractiveSession: task.activeInteractiveSession || interactiveTerminalRunning
+      })
+    : "Working";
   const canKillInteractiveTerminal = canEditTask && canUseInteractiveTerminal && !!task && !isArchived && interactiveTerminalRunning;
   const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "accepted" || task.status === "archived";
   const chatDisabled =
@@ -1916,7 +1933,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Descriptions.Item label="Effort">{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
           {isImplementationTask ? <Descriptions.Item label="Complexity">{task?.complexity}</Descriptions.Item> : null}
           <Descriptions.Item label="Created">{task ? dayjs(task.createdAt).format("YYYY-MM-DD HH:mm") : ""}</Descriptions.Item>
-          <Descriptions.Item label="Status">{task ? getTaskStatusLabel(task.status) : ""}</Descriptions.Item>
+          <Descriptions.Item label="Status">
+            {task ? (
+              showWorkingIndicator ? (
+                <Space size={8}>
+                  <Spin size="small" />
+                  <span>{workingIndicatorLabel}</span>
+                </Space>
+              ) : (
+                getTaskStatusLabel(task.status)
+              )
+            ) : (
+              ""
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label="Last Action">{task?.lastAction ?? "draft"}</Descriptions.Item>
         </Descriptions>
 
@@ -3220,6 +3250,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Typography.Title level={2} style={{ margin: 0 }}>
                 {task?.title ?? "Task Detail"}
               </Typography.Title>
+              {task && showWorkingIndicator ? (
+                <Space size={6} align="center" style={{ color: "rgba(0,0,0,0.65)" }}>
+                  <Spin size="small" />
+                  <Typography.Text type="secondary">{workingIndicatorLabel}</Typography.Text>
+                </Space>
+              ) : null}
               {canEditTask && !isArchived && task ? (
                 <Tooltip title="Rename task">
                   <Button

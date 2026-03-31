@@ -3,11 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   getAgentProviderLabel,
+  getTaskStatusLabel,
   getTaskTypeLabel,
   isActiveTaskStatus,
+  isTaskWorking,
   type Task
 } from "@agentswarm/shared-types";
-import { Button, Card, DatePicker, Divider, Flex, Input, Popconfirm, Select, Space, Table, Typography, message } from "antd";
+import { Button, Card, DatePicker, Divider, Flex, Input, Popconfirm, Select, Space, Spin, Table, Typography, message } from "antd";
 import { PushpinFilled } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -16,6 +18,14 @@ import { useRepositories } from "../src/hooks/useRepositories";
 import { useTasks } from "../src/hooks/useTasks";
 import { getSeenTaskVersions, isTaskSeen, markTaskSeen, migrateSeenTaskVersions, subscribeToSeenTasks, type SeenTaskVersions } from "../src/utils/seen-tasks";
 import { useAuth } from "./auth-provider";
+
+function getWorkingIndicatorLabel(task: Task): string {
+  if (task.activeInteractiveSession) {
+    return "Interactive terminal is running";
+  }
+
+  return isActiveTaskStatus(task.status) ? getTaskStatusLabel(task.status) : `${getTaskTypeLabel(task.taskType)} task is working`;
+}
 
 export function TasksPage() {
   const router = useRouter();
@@ -175,10 +185,16 @@ export function TasksPage() {
                 render: (value: string, task) => {
                   const markerColor = task.hasPendingCheckpoint ? "#FA8C16" : !isTaskSeen(task, seenTaskVersions) ? "#1C8057" : null;
                   const markerLabel = task.hasPendingCheckpoint ? "Pending checkpoint" : "Unseen task";
+                  const showWorkingIndicator = isTaskWorking(task);
 
                   return (
                     <Space size={8}>
                       {task.pinned ? <PushpinFilled style={{ color: "#1C8057" }} /> : null}
+                      {showWorkingIndicator ? (
+                        <span aria-label={getWorkingIndicatorLabel(task)} title={getWorkingIndicatorLabel(task)} style={{ display: "inline-flex" }}>
+                          <Spin size="small" />
+                        </span>
+                      ) : null}
                       {markerColor ? (
                         <span
                           aria-label={markerLabel}

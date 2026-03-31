@@ -239,10 +239,14 @@ export class TaskStore {
   }
 
   private async withPendingCheckpointState(task: Task): Promise<Task> {
-    const proposals = await this.listChangeProposals(task.id);
+    const [proposals, activeInteractiveSession] = await Promise.all([
+      this.listChangeProposals(task.id),
+      this.getActiveInteractiveSession(task.id)
+    ]);
     return {
       ...task,
-      hasPendingCheckpoint: proposals.some((proposal) => proposal.status === "pending")
+      hasPendingCheckpoint: proposals.some((proposal) => proposal.status === "pending"),
+      activeInteractiveSession: activeInteractiveSession !== null
     };
   }
 
@@ -885,10 +889,18 @@ export class TaskStore {
     session: { sessionId: string; checkpointRef: string; startedAt: string; untrackedPathsAtCheckpoint: string[] }
   ): Promise<void> {
     await this.redis.set(this.taskActiveInteractiveSessionKey(taskId), JSON.stringify(session));
+    const task = await this.getStoredTask(taskId);
+    if (task) {
+      await this.publishTaskEvent("task:updated", task);
+    }
   }
 
   async clearActiveInteractiveSession(taskId: string): Promise<void> {
     await this.redis.del(this.taskActiveInteractiveSessionKey(taskId));
+    const task = await this.getStoredTask(taskId);
+    if (task) {
+      await this.publishTaskEvent("task:updated", task);
+    }
   }
 
   async listChangeProposals(taskId: string): Promise<TaskChangeProposal[]> {

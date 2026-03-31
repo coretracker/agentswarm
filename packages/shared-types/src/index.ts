@@ -284,6 +284,7 @@ export interface Task {
   title: string;
   pinned: boolean;
   hasPendingCheckpoint: boolean;
+  activeInteractiveSession?: boolean;
   ownerUserId: string | null;
   repoId: string;
   repoName: string;
@@ -689,6 +690,9 @@ export const isActiveTaskStatus = (status: TaskStatus): boolean =>
   status === "preparing_workspace" ||
   status === "building" ||
   status === "asking";
+
+export const isTaskWorking = (task: Pick<Task, "status" | "activeInteractiveSession">): boolean =>
+  isActiveTaskStatus(task.status) || task.activeInteractiveSession === true;
 
 /** When set, checkpoint apply / reject / revert must be refused (agent run queued or in progress). */
 export function getCheckpointMutationBlockedReason(status: TaskStatus): string | null {
