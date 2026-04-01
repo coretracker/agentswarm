@@ -48,7 +48,7 @@ Before login, the proxy drops a **`~/.codex/config.toml`** (base64-decoded in th
 
 - Puts **`model`**, **`sandbox_mode`**, and **`approval_policy`** at the **top of the file** (TOML assigns keys to the most recent `[section]`; previously `model` sat under `[tui]` by mistake and was ignored).
 - Marks **`/workspace`** as **`trust_level = "trusted"`** (override path with **`CODEX_TRUST_WORKSPACE`** if your image uses another `WORKDIR`).
-- Sets **`sandbox_mode = "workspace-write"`** and **`approval_policy = "never"`** for fewer execution prompts in this PoC (still not full host access; see Codex sandbox docs).
+- Sets **`sandbox_mode = "danger-full-access"`** and **`approval_policy = "never"`** because this PoC relies on the Docker container as the isolation boundary instead of nested `bubblewrap`.
 - Sets **`model`** from **`CODEX_MODEL`** (default **`gpt-5.4`**), **`[notice]`** migration/rate-limit nudges off, **`tui.show_tooltips = false`**, and **`[tui.model_availability_nux]`** for the active model slug.
 
 The interactive CLI is started as **`codex --full-auto -C "$CODEX_TRUST_WORKSPACE"`** so the agent root matches the trusted path.

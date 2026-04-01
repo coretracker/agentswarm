@@ -35,7 +35,7 @@ function buildCodexUserConfigToml(workspacePath, model) {
   // TOML: keys after a `[table]` belong to that table until the next header. Put root keys first
   // so `model` is not parsed as `tui.model` (which Codex ignores).
   return `model = "${modelSafe}"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 approval_policy = "never"
 
 [projects."${pathSafe}"]
