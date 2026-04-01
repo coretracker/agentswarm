@@ -51,7 +51,7 @@ Before login, the proxy drops a **`~/.codex/config.toml`** (base64-decoded in th
 - Sets **`sandbox_mode = "danger-full-access"`** and **`approval_policy = "never"`** because this PoC relies on the Docker container as the isolation boundary instead of nested `bubblewrap`.
 - Sets **`model`** from **`CODEX_MODEL`** (default **`gpt-5.4`**), **`[notice]`** migration/rate-limit nudges off, **`tui.show_tooltips = false`**, and **`[tui.model_availability_nux]`** for the active model slug.
 
-The interactive CLI is started as **`codex --full-auto -C "$CODEX_TRUST_WORKSPACE"`** so the agent root matches the trusted path.
+The interactive CLI is started as **`codex --dangerously-bypass-approvals-and-sandbox -C "$CODEX_TRUST_WORKSPACE"`** so Codex does not switch back to `workspace-write` and invoke nested sandboxing inside the Docker container.
 
 ## Run on the host (without Compose)
 

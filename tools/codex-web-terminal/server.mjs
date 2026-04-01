@@ -67,7 +67,7 @@ const CODEX_START_SCRIPT = [
   "mkdir -p ~/.codex",
   `printf '%s' '${CODEX_USER_CONFIG_B64}' | base64 -d > ~/.codex/config.toml`,
   'printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file',
-  'exec codex --full-auto -C "$CODEX_TRUST_WORKSPACE" -c cli_auth_credentials_store=file -c forced_login_method=api',
+  'exec codex --dangerously-bypass-approvals-and-sandbox -C "$CODEX_TRUST_WORKSPACE" -c cli_auth_credentials_store=file -c forced_login_method=api',
 ].join(" && ");
 
 const app = express();

@@ -53,7 +53,7 @@ function shellSingleQuote(value: string): string {
 function buildCodexStartScript(configB64: string, model: string, reasoningEffort: string): string {
   const codexArgs = [
     "exec codex",
-    "--full-auto",
+    "--dangerously-bypass-approvals-and-sandbox",
     '-C "$TASK_INTERACTIVE_WORKSPACE"',
     "-m",
     shellSingleQuote(model),
