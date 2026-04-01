@@ -2456,7 +2456,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       showIcon
       icon={<LoadingOutlined spin />}
       message="Preparing workspace"
-      description="Cloning the repository and checking out your branch. Chat history and the composer will appear when the workspace is ready."
+      description="Cloning the repository and checking out your branch. Live preparation logs appear below, including checkout progress and git status."
     />
   ) : null;
 
@@ -2583,6 +2583,38 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         {run.logs.join("\n") || "No logs captured for this run."}
       </pre>
     </div>
+  );
+
+  const showTaskActivityLogs = isPreparingWorkspace || (!runsLoading && ((task?.logs.length ?? 0) > 0) && taskRuns.length === 0);
+
+  const renderTaskActivityLogsPanel = () => (
+    <Card
+      size="small"
+      title={isPreparingWorkspace ? "Workspace Preparation Logs" : "Task Activity Logs"}
+      extra={<Typography.Text type="secondary">Live</Typography.Text>}
+    >
+      <div
+        style={{
+          padding: "14px 16px",
+          background: "#0b0f14",
+          borderRadius: 8
+        }}
+      >
+        <pre
+          style={{
+            margin: 0,
+            color: "#d8e1ee",
+            fontFamily: "\"SFMono-Regular\", Consolas, monospace",
+            fontSize: 12,
+            lineHeight: 1.65,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word"
+          }}
+        >
+          {task?.logs.join("\n") || "Waiting for workspace log output..."}
+        </pre>
+      </div>
+    </Card>
   );
 
   const renderRunLogsCollapse = (run: TaskRun) => (
@@ -3053,6 +3085,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       children: (
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
           {chatPreparingNotice}
+          {showTaskActivityLogs ? renderTaskActivityLogsPanel() : null}
           {interactiveTerminalRunning && canEditTask && task && !isArchived ? (
             <Alert
               type="info"
