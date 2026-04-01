@@ -48,6 +48,8 @@ docker compose up --build
 
 Then open **[http://localhost:3217/login](http://localhost:3217/login)**.
 
+For non-local deployments, set `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL`, and `NEXT_PUBLIC_SOCKET_URL` before `docker compose up --build`. The `NEXT_PUBLIC_*` values are baked into the web image during the build step.
+
 - API health: `http://localhost:4000/health`
 - Hot dev (after `npm install`): `npm run dev`
 - CI-style build: `npm run build`

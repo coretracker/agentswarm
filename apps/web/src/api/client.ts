@@ -44,6 +44,7 @@ import type {
   SpawnPresetInput,
   User
 } from "@agentswarm/shared-types";
+import { buildApiUrl } from "../lib/public-url";
 
 export interface ProviderModelsResponse {
   models: ProviderModelOption[];
@@ -62,8 +63,6 @@ export interface TaskWorkspaceFilePreview {
   content: string;
 }
 
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
-
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -80,7 +79,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(`${apiBaseUrl}${path}`, {
+  const response = await fetch(buildApiUrl(path), {
     ...init,
     headers,
     cache: "no-store",

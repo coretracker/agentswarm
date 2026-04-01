@@ -2,9 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { io, type Socket } from "socket.io-client";
+import { getSocketUrl } from "../lib/public-url";
 import { useAuth } from "../../components/auth-provider";
-
-const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4000";
 
 export const useSocket = (): Socket | null => {
   const { session } = useAuth();
@@ -16,7 +15,7 @@ export const useSocket = (): Socket | null => {
       return;
     }
 
-    const nextSocket = io(socketUrl, {
+    const nextSocket = io(getSocketUrl(), {
       transports: ["websocket"],
       withCredentials: true
     });

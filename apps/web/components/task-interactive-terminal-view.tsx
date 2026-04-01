@@ -6,8 +6,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
 import { api } from "../src/api/client";
-
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
+import { buildWebSocketUrl } from "../src/lib/public-url";
 
 const FONT_SIZE_STORAGE_KEY = "agentswarm-interactive-terminal-font-size";
 const FONT_MIN = 10;
@@ -73,7 +72,7 @@ export function TaskInteractiveTerminalView({
     term.open(el);
     term.writeln("\x1b[90mConnecting…\x1b[0m");
 
-    const wsUrl = `${apiBaseUrl.replace(/^http/, "ws")}/tasks/${encodeURIComponent(taskId)}/interactive-terminal`;
+    const wsUrl = buildWebSocketUrl(`/tasks/${encodeURIComponent(taskId)}/interactive-terminal`);
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
     let wsOpened = false;
