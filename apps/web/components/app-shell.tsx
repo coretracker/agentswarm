@@ -5,6 +5,7 @@ import { App, Button, Flex, Layout, Menu, Result, Segmented, Spin, Typography, t
 import { BulbOutlined, CopyOutlined, DatabaseOutlined, LogoutOutlined, MoonOutlined, SettingOutlined, TeamOutlined, UnorderedListOutlined } from "@ant-design/icons";
 import { usePathname, useRouter } from "next/navigation";
 import { AppLogo } from "./app-logo";
+import { AppFooterNote } from "./app-footer-note";
 import { useAuth } from "./auth-provider";
 import { TaskBrowserNotifications } from "./task-browser-notifications";
 import { useThemeMode } from "./theme-provider";
@@ -176,6 +177,16 @@ export function AppShell({ children }: { children: ReactNode }) {
             )}
           </div>
         </Layout.Content>
+        <Layout.Footer
+          style={{
+            padding: "8px 24px 18px",
+            background: token.colorBgLayout
+          }}
+        >
+          <div style={{ width: "100%", maxWidth: contentMaxWidth, marginInline: "auto" }}>
+            <AppFooterNote />
+          </div>
+        </Layout.Footer>
       </Layout>
     </App>
   );
