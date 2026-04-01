@@ -22,6 +22,30 @@ import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
 
+function resolveInteractiveWorkspacePaths(taskId: string): { serverPath: string; hostPath: string } {
+  return {
+    serverPath: path.join(env.TASK_WORKSPACE_ROOT, taskId),
+    hostPath: path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId)
+  };
+}
+
+async function getInteractiveWorkspaceMismatchReason(taskId: string): Promise<string | null> {
+  const { serverPath, hostPath } = resolveInteractiveWorkspacePaths(taskId);
+
+  try {
+    await access(serverPath, constants.R_OK | constants.X_OK);
+  } catch {
+    return "No workspace folder on disk for this task yet.";
+  }
+
+  try {
+    await access(hostPath, constants.R_OK | constants.X_OK);
+    return null;
+  } catch {
+    return `Workspace exists in the server container but not at the host bind path ${hostPath}. Check TASK_WORKSPACE_HOST_ROOT; it must point to the same host directory mounted to ${env.TASK_WORKSPACE_ROOT}.`;
+  }
+}
+
 function buildCodexUserConfigToml(workspacePath: string, model: string): string {
   const pathSafe = workspacePath.replace(/"/g, "");
   const modelSafe = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -338,11 +362,9 @@ export async function getTaskInteractiveTerminalStatus(
     };
   }
 
-  const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
-  try {
-    await access(workspaceOnServer, constants.R_OK | constants.X_OK);
-  } catch {
-    return { available: false, reason: "No workspace folder on disk for this task yet." };
+  const workspaceReason = await getInteractiveWorkspaceMismatchReason(taskId);
+  if (workspaceReason) {
+    return { available: false, reason: workspaceReason };
   }
 
   return { available: true };
@@ -432,7 +454,14 @@ async function initializeTaskInteractiveTerminalWebSocket(
     interactiveSessionId = started.sessionId;
 
     const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
-    const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
+    const { hostPath: dockerBindSource } = resolveInteractiveWorkspacePaths(taskId);
+    try {
+      await access(dockerBindSource, constants.R_OK | constants.X_OK);
+    } catch {
+      throw new Error(
+        `Interactive terminal could not find the host workspace at ${dockerBindSource}. Check TASK_WORKSPACE_HOST_ROOT; it must match the host directory mounted to ${env.TASK_WORKSPACE_ROOT}.`
+      );
+    }
     const workspaceOwner = await stat(dockerBindSource);
     const statePaths = runtime.persistentState
       ? await ensureTaskProviderStatePaths(task.id, runtime.provider, {
