@@ -13,8 +13,8 @@ services:
     environment:
       - PORT=4000
       - REDIS_URL=redis://redis:6379
-      - GIT_USER_NAME=AgentSwarm Bot
-      - GIT_USER_EMAIL=agentswarm@local.dev
+      - GIT_USER_NAME=${GIT_USER_NAME:-AgentSwarm Bot}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-agentswarm@local.dev}
       - LOCAL_PLANS_ROOT=/plans
       - REPO_CACHE_ROOT=/repo-cache
       - REPO_CACHE_VOLUME=agentswarm_repo_cache
