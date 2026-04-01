@@ -27,7 +27,7 @@ function buildCodexUserConfigToml(workspacePath: string, model: string): string 
   const modelSafe = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   const modelTomlKey = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   return `model = "${modelSafe}"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 approval_policy = "never"
 
 [projects."${pathSafe}"]
