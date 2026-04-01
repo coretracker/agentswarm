@@ -99,8 +99,6 @@ interface WorkspacePreparation {
   workspaceBaseRef: string;
 }
 
-type TaskLogAppender = (line: string) => Promise<void>;
-
 export class SpawnerService {
   private readonly runtimeReady = new Set<AgentProvider>();
   private activeExecutions = new Map<string, { containerName: string; process: ReturnType<typeof spawn> }>();
@@ -661,29 +659,6 @@ esac
     }
   }
 
-  private async logMultiline(
-    appendLog: TaskLogAppender | undefined,
-    prefix: string,
-    content: string
-  ): Promise<void> {
-    if (!appendLog) {
-      return;
-    }
-
-    const lines = content
-      .split("\n")
-      .map((line) => line.trimEnd())
-      .filter((line) => line.trim().length > 0);
-
-    if (lines.length === 0) {
-      return;
-    }
-
-    for (const line of lines) {
-      await appendLog(`${prefix}${line}`);
-    }
-  }
-
   async getTaskBranchSyncCounts(task: Task): Promise<{ pullCount: number; pushCount: number }> {
     const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
     const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
@@ -1103,7 +1078,6 @@ esac
     action: TaskAction,
     branchName: string,
     repoCachePath: string,
-    appendLog?: TaskLogAppender,
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<WorkspacePreparation> {
@@ -1114,46 +1088,30 @@ esac
 
     if (!workspaceExists) {
       await mkdir(path.dirname(workspacePath), { recursive: true });
-      await appendLog?.(`Spawner: cloning workspace from mirror into ${workspacePath}.`);
       await this.gitCommand(["clone", "--no-local", repoCachePath, workspacePath], githubToken, gitUsername);
     } else {
-      await appendLog?.(`Spawner: reusing existing workspace at ${workspacePath}.`);
       await this.cleanupWorkspaceGitLocks(workspacePath);
     }
 
-    await appendLog?.(`Spawner: syncing base branch origin/${task.baseBranch}.`);
     await this.gitCommand(["-C", workspacePath, "remote", "set-url", "origin", task.repoUrl], githubToken, gitUsername);
     await this.gitCommand(["-C", workspacePath, "fetch", "origin", task.baseBranch], githubToken, gitUsername);
 
     if (task.branchStrategy === "work_on_branch") {
       if (await this.localBranchExists(workspacePath, task.baseBranch, githubToken, gitUsername)) {
-        await appendLog?.(`Spawner: checking out existing local branch ${task.baseBranch}.`);
         await this.gitCommand(["-C", workspacePath, "checkout", task.baseBranch], githubToken, gitUsername);
       } else {
-        await appendLog?.(`Spawner: creating local branch ${task.baseBranch} from origin/${task.baseBranch}.`);
         await this.gitCommand(["-C", workspacePath, "checkout", "-B", task.baseBranch, `origin/${task.baseBranch}`], githubToken, gitUsername);
       }
     } else if (await this.localBranchExists(workspacePath, branchName, githubToken, gitUsername)) {
-      await appendLog?.(`Spawner: checking out existing local branch ${branchName}.`);
       await this.gitCommand(["-C", workspacePath, "checkout", branchName], githubToken, gitUsername);
     } else if (await this.remoteBranchExists(task.repoUrl, branchName, githubToken, gitUsername)) {
-      await appendLog?.(`Spawner: fetching and checking out existing remote branch ${branchName}.`);
       await this.gitCommand(["-C", workspacePath, "fetch", "origin", branchName], githubToken, gitUsername);
       await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, `origin/${branchName}`], githubToken, gitUsername);
     } else {
-      await appendLog?.(`Spawner: creating new branch ${branchName} from origin/${task.baseBranch}.`);
       await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, `origin/${task.baseBranch}`], githubToken, gitUsername);
     }
 
     const startRef = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
-    await appendLog?.(`Spawner: workspace HEAD is ${startRef.slice(0, 12)} on ${branchName}.`);
-    const statusSummary = await this.gitCommandCaptureAllowExitCodes(
-      ["-C", workspacePath, "status", "--short", "--branch"],
-      [0],
-      githubToken,
-      gitUsername
-    );
-    await this.logMultiline(appendLog, "git status: ", statusSummary);
     return { workspacePath, startRef, workspaceBaseRef: task.workspaceBaseRef ?? startRef };
   }
 
@@ -2645,23 +2603,18 @@ esac
     const action: TaskAction = workingTask.taskType === "ask" ? "ask" : "build";
     const repoCachePath = this.resolveRepoCachePath(workingTask);
 
-    await this.taskStore.appendLog(workingTask.id, "Spawner: preparing workspace for Interactive (clone/checkout only).");
-
     const { workspace } = await this.withRepoLock(repoCachePath, async () => {
-      await this.taskStore.appendLog(workingTask.id, "Spawner: refreshing repository mirror cache.");
       const ensuredRepoCachePath = await this.ensureRepoMirror(
         workingTask,
         runtimeCredentials.githubToken,
         runtimeCredentials.gitUsername
       );
-      await this.taskStore.appendLog(workingTask.id, `Spawner: repository mirror ready at ${ensuredRepoCachePath}.`);
       try {
         const prepared = await this.prepareWorkspace(
           workingTask,
           action,
           branchName,
           ensuredRepoCachePath,
-          (line) => this.taskStore.appendLog(workingTask.id, line),
           runtimeCredentials.githubToken,
           runtimeCredentials.gitUsername
         );
@@ -2670,20 +2623,17 @@ esac
         if (!this.shouldRebuildMirror(error)) {
           throw error;
         }
-        await this.taskStore.appendLog(workingTask.id, "Spawner: local repo cache looked inconsistent; rebuilding mirror and retrying workspace preparation.");
         await rm(ensuredRepoCachePath, { recursive: true, force: true });
         const rebuiltRepoCachePath = await this.ensureRepoMirror(
           workingTask,
           runtimeCredentials.githubToken,
           runtimeCredentials.gitUsername
         );
-        await this.taskStore.appendLog(workingTask.id, `Spawner: repository mirror rebuilt at ${rebuiltRepoCachePath}.`);
         const prepared = await this.prepareWorkspace(
           workingTask,
           action,
           branchName,
           rebuiltRepoCachePath,
-          (line) => this.taskStore.appendLog(workingTask.id, line),
           runtimeCredentials.githubToken,
           runtimeCredentials.gitUsername
         );
@@ -2717,7 +2667,6 @@ esac
       await chmod(path.join(hooksDir, "pre-commit"), 0o755);
       await chmod(path.join(hooksDir, "pre-push"), 0o755);
       await this.runCommand("chmod", ["-R", "o-w", gitDir]);
-      await this.taskStore.appendLog(workingTask.id, "Spawner: installed git hooks (same as automated build).");
     }
 
     const readyStatus = getSuccessfulStatusForAction(action);
@@ -2731,7 +2680,6 @@ esac
       role: "system",
       content: "Workspace prepared and ready for changes."
     });
-    await this.taskStore.appendLog(workingTask.id, `Spawner: workspace ready at ${workspace.workspacePath}.`);
     return (await this.taskStore.getTask(workingTask.id)) ?? nextTask;
   }
 
@@ -2792,7 +2740,6 @@ esac
             action,
             branchName,
             ensuredRepoCachePath,
-            appendRunLog,
             runtimeCredentials.githubToken,
             runtimeCredentials.gitUsername
           );
@@ -2815,7 +2762,6 @@ esac
             action,
             branchName,
             rebuiltRepoCachePath,
-            appendRunLog,
             runtimeCredentials.githubToken,
             runtimeCredentials.gitUsername
           );
