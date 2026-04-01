@@ -1,34 +1,120 @@
 const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+const LOCAL_API_PORT = 4000;
+const PROXY_API_PREFIX = "/api";
+
+interface UrlTarget {
+  origin: string | null;
+  basePath: string;
+}
 
 const trimTrailingSlash = (value: string): string => value.replace(/\/+$/, "");
 
-const readConfiguredUrl = (value: string | undefined): string | null => {
+const normalizeBasePath = (value: string): string => {
+  const trimmed = trimTrailingSlash(value.trim());
+  if (!trimmed || trimmed === "/") {
+    return "";
+  }
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+};
+
+const normalizePath = (value: string): string => {
+  if (!value) {
+    return "";
+  }
+  return value.startsWith("/") ? value : `/${value}`;
+};
+
+const isLocalHostname = (hostname: string): boolean =>
+  LOCAL_HOSTNAMES.has(hostname) || hostname.endsWith(".localhost");
+
+const getBrowserOrigin = (): string | null =>
+  typeof window === "undefined" ? null : trimTrailingSlash(window.location.origin);
+
+const parseConfiguredTarget = (value: string | undefined): UrlTarget | null => {
   const trimmed = value?.trim();
   if (!trimmed) {
     return null;
   }
-  return trimTrailingSlash(trimmed);
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    const url = new URL(trimmed);
+    return {
+      origin: trimTrailingSlash(url.origin),
+      basePath: normalizeBasePath(url.pathname)
+    };
+  }
+
+  if (trimmed.startsWith("/")) {
+    return {
+      origin: getBrowserOrigin(),
+      basePath: normalizeBasePath(trimmed)
+    };
+  }
+
+  return {
+    origin: trimTrailingSlash(trimmed),
+    basePath: ""
+  };
 };
 
-const inferBrowserOrigin = (): string | null => {
+const inferDefaultTarget = (): UrlTarget => {
   if (typeof window === "undefined") {
-    return null;
+    return {
+      origin: "http://localhost:4000",
+      basePath: ""
+    };
   }
 
-  const { hostname, origin, protocol } = window.location;
-  if (LOCAL_HOSTNAMES.has(hostname) || hostname.endsWith(".localhost")) {
-    return trimTrailingSlash(`${protocol}//${hostname}:4000`);
+  const { hostname, protocol } = window.location;
+  if (process.env.NODE_ENV === "development" && isLocalHostname(hostname)) {
+    return {
+      origin: trimTrailingSlash(`${protocol}//${hostname}:${LOCAL_API_PORT}`),
+      basePath: ""
+    };
   }
 
-  return trimTrailingSlash(origin);
+  return {
+    origin: getBrowserOrigin(),
+    basePath: PROXY_API_PREFIX
+  };
 };
 
-export const getApiBaseUrl = (): string =>
-  readConfiguredUrl(process.env.NEXT_PUBLIC_API_URL) ?? inferBrowserOrigin() ?? "http://localhost:4000";
+const resolveUrlTarget = (value: string | undefined): UrlTarget => parseConfiguredTarget(value) ?? inferDefaultTarget();
 
-export const getSocketUrl = (): string =>
-  readConfiguredUrl(process.env.NEXT_PUBLIC_SOCKET_URL) ?? inferBrowserOrigin() ?? "http://localhost:4000";
+const buildUrl = (target: UrlTarget, path = ""): string => {
+  const normalizedPath = normalizePath(path);
+  const base = `${target.basePath}${normalizedPath}`;
+  return target.origin ? `${trimTrailingSlash(target.origin)}${base}` : base;
+};
 
-export const buildApiUrl = (path: string): string => `${getApiBaseUrl()}${path}`;
+const getApiTarget = (): UrlTarget => resolveUrlTarget(process.env.NEXT_PUBLIC_API_URL);
 
-export const buildWebSocketUrl = (path: string): string => `${getSocketUrl().replace(/^http/i, "ws")}${path}`;
+const getSocketTarget = (): UrlTarget =>
+  resolveUrlTarget(process.env.NEXT_PUBLIC_SOCKET_URL ?? process.env.NEXT_PUBLIC_API_URL);
+
+export const getApiBaseUrl = (): string => buildUrl(getApiTarget());
+
+export const buildApiUrl = (path: string): string => buildUrl(getApiTarget(), path);
+
+export const getSocketUrl = (): string | null => getSocketTarget().origin ?? getBrowserOrigin();
+
+export const getSocketPath = (): string => {
+  const { basePath } = getSocketTarget();
+  return `${basePath || ""}/socket.io`;
+};
+
+export const buildWebSocketUrl = (path: string): string => {
+  const target = getApiTarget();
+  const origin = target.origin ?? getBrowserOrigin();
+  if (!origin) {
+    throw new Error("Unable to resolve WebSocket origin");
+  }
+
+  return buildUrl(
+    {
+      ...target,
+      origin: origin.replace(/^http/i, "ws")
+    },
+    path
+  );
+};

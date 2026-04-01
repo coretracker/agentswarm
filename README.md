@@ -48,11 +48,13 @@ docker compose up --build
 
 Then open **[http://localhost:3217/login](http://localhost:3217/login)**.
 
-For non-local deployments, set `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL`, and `NEXT_PUBLIC_SOCKET_URL` before `docker compose up --build`. The `NEXT_PUBLIC_*` values are baked into the web image during the build step.
+Docker Compose now exposes a single public port through an internal Nginx proxy. The web app stays on `/`, and the API, Socket.IO, and interactive terminal stay behind `/api/*` on the same hostname.
 
-- API health: `http://localhost:4000/health`
+- API health: `http://localhost:3217/api/health`
 - Hot dev (after `npm install`): `npm run dev`
 - CI-style build: `npm run build`
+
+For non-local deployments, set `CORS_ORIGIN=https://your-domain`. Leave `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SOCKET_URL` empty if you want to use the bundled same-origin `/api` proxy. Only set them when the API really lives on a separate public origin, and rebuild the web image after changing them.
 
 ## First-time setup (2 minutes)
 

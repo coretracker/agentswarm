@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { io, type Socket } from "socket.io-client";
-import { getSocketUrl } from "../lib/public-url";
+import { getSocketPath, getSocketUrl } from "../lib/public-url";
 import { useAuth } from "../../components/auth-provider";
 
 export const useSocket = (): Socket | null => {
@@ -15,7 +15,8 @@ export const useSocket = (): Socket | null => {
       return;
     }
 
-    const nextSocket = io(getSocketUrl(), {
+    const nextSocket = io(getSocketUrl() ?? window.location.origin, {
+      path: getSocketPath(),
       transports: ["websocket"],
       withCredentials: true
     });
