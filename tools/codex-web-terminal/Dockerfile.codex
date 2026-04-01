@@ -1,6 +1,6 @@
 FROM node:20-alpine
 
-RUN apk add --no-cache git bash openssh-client ripgrep curl \
+RUN apk add --no-cache git bash openssh-client ripgrep curl bubblewrap \
   && npm install -g @openai/codex
 
 WORKDIR /workspace
