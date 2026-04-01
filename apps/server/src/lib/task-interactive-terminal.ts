@@ -1,6 +1,6 @@
 import { spawn as spawnChild } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, constants, stat } from "node:fs/promises";
+import { access, constants } from "node:fs/promises";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import path from "node:path";
 import type { Duplex } from "node:stream";
@@ -462,7 +462,6 @@ async function initializeTaskInteractiveTerminalWebSocket(
         `Interactive terminal could not find the host workspace at ${dockerBindSource}. Check TASK_WORKSPACE_HOST_ROOT; it must match the host directory mounted to ${env.TASK_WORKSPACE_ROOT}.`
       );
     }
-    const workspaceOwner = await stat(dockerBindSource);
     const statePaths = runtime.persistentState
       ? await ensureTaskProviderStatePaths(task.id, runtime.provider, {
           uid: runtime.persistentState.uid,
@@ -482,8 +481,6 @@ async function initializeTaskInteractiveTerminalWebSocket(
       "--rm",
       "--name",
       sessionName,
-      "--user",
-      `${workspaceOwner.uid}:${workspaceOwner.gid}`,
       "-v",
       `${dockerBindSource}:/workspace:rw`,
       ...(statePaths && runtime.persistentState
