@@ -362,6 +362,19 @@ export interface TaskWorkspaceCommitLog {
   message: string | null;
 }
 
+export type TaskWorkspaceFilePreviewKind = "text" | "image" | "binary";
+
+export interface TaskWorkspaceFilePreview {
+  path: string;
+  /** Git ref used for the preview, or null when reading the live workspace file. */
+  ref: string | null;
+  kind: TaskWorkspaceFilePreviewKind;
+  mimeType: string | null;
+  encoding: "utf8" | "base64";
+  content: string;
+  sizeBytes: number;
+}
+
 /** Snapshot for the Push UI before staging/commit (working tree + index vs HEAD). */
 export interface TaskPushPreview {
   branchName: string;

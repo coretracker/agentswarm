@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import { Alert, Modal, Space, Spin, Tag, Typography } from "antd";
+import { useThemeMode } from "./theme-provider";
 
 export interface WorkspaceFileLinkTarget {
   taskId: string;
@@ -13,7 +14,11 @@ export interface WorkspaceFilePreviewModalProps {
   open: boolean;
   loading: boolean;
   filePath: string;
+  kind: "text" | "image" | "binary";
+  mimeType: string | null;
+  encoding: "utf8" | "base64";
   content: string;
+  sizeBytes: number;
   line: number | null;
   error: string | null;
   onCancel: () => void;
@@ -730,26 +735,42 @@ export function WorkspaceFilePreviewModal({
   open,
   loading,
   filePath,
+  kind,
+  mimeType,
+  encoding,
   content,
+  sizeBytes,
   line,
   error,
   onCancel
 }: WorkspaceFilePreviewModalProps) {
+  const { mode } = useThemeMode();
   const language = useMemo(() => detectCodeLanguage(filePath), [filePath]);
   const languageLabel = (languageConfigs[language] ?? defaultLanguageConfig).label;
-  const lines = useMemo(() => (content.length > 0 ? content.split(/\r?\n/) : [""]), [content]);
+  const lines = useMemo(() => (kind === "text" && content.length > 0 ? content.split(/\r?\n/) : [""]), [content, kind]);
+  const imageSrc = useMemo(() => {
+    if (kind !== "image" || encoding !== "base64" || !mimeType || !content) {
+      return null;
+    }
+    return `data:${mimeType};base64,${content}`;
+  }, [content, encoding, kind, mimeType]);
   const contentRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (!open || !line || !contentRef.current) {
+    if (!open || kind !== "text" || !line || !contentRef.current) {
       return;
     }
 
     const target = contentRef.current.querySelector<HTMLElement>(`[data-line="${line}"]`);
     target?.scrollIntoView({ block: "center" });
-  }, [content, line, open]);
+  }, [content, kind, line, open]);
 
   const gutterWidth = Math.max(56, String(lines.length || 1).length * 10 + 24);
+  const surfaceBorder = mode === "dark" ? "rgba(255, 255, 255, 0.08)" : "#d9e2db";
+  const surfaceBackground = mode === "dark" ? "rgba(255, 255, 255, 0.03)" : "#f6f8f6";
+  const gutterBorder = mode === "dark" ? "rgba(255, 255, 255, 0.08)" : "#e5ebe7";
+  const gutterBackground = mode === "dark" ? "rgba(255, 255, 255, 0.04)" : "rgba(0, 0, 0, 0.02)";
+  const alternateRowBackground = mode === "dark" ? "rgba(255, 255, 255, 0.02)" : "rgba(0, 0, 0, 0.015)";
 
   return (
     <Modal
@@ -757,8 +778,8 @@ export function WorkspaceFilePreviewModal({
       title={
         <Space wrap size={8}>
           <Typography.Text code>{filePath || "Workspace file"}</Typography.Text>
-          <Tag>{languageLabel}</Tag>
-          {line ? <Tag color="blue">Line {line}</Tag> : null}
+          <Tag>{kind === "text" ? languageLabel : kind === "image" ? mimeType ?? "Image" : "Binary"}</Tag>
+          {kind === "text" && line ? <Tag color="blue">Line {line}</Tag> : null}
         </Space>
       }
       width={1100}
@@ -773,15 +794,44 @@ export function WorkspaceFilePreviewModal({
         </div>
       ) : error ? (
         <Alert type="error" showIcon message="Could not open workspace file" description={error} />
+      ) : kind === "image" ? (
+        <div
+          style={{
+            maxHeight: "70vh",
+            overflow: "auto",
+            border: `1px solid ${surfaceBorder}`,
+            borderRadius: 10,
+            background: surfaceBackground,
+            padding: 16,
+            textAlign: "center"
+          }}
+        >
+          {imageSrc ? (
+            <img
+              alt={filePath || "Workspace image"}
+              src={imageSrc}
+              style={{ maxWidth: "100%", maxHeight: "65vh", objectFit: "contain", borderRadius: 8 }}
+            />
+          ) : (
+            <Alert type="warning" showIcon message="Image preview unavailable" />
+          )}
+        </div>
+      ) : kind === "binary" ? (
+        <Alert
+          type="info"
+          showIcon
+          message="Binary file preview is not available"
+          description={sizeBytes > 0 ? `${filePath || "File"} is ${sizeBytes.toLocaleString()} bytes.` : undefined}
+        />
       ) : (
         <div
           ref={contentRef}
           style={{
             maxHeight: "70vh",
             overflow: "auto",
-            border: "1px solid #f0f0f0",
+            border: `1px solid ${surfaceBorder}`,
             borderRadius: 10,
-            background: "#fafafa"
+            background: surfaceBackground
           }}
         >
           <div
@@ -803,7 +853,7 @@ export function WorkspaceFilePreviewModal({
                     display: "grid",
                     gridTemplateColumns: `${gutterWidth}px minmax(0, 1fr)`,
                     alignItems: "stretch",
-                    background: selected ? "rgba(22, 119, 255, 0.08)" : lineNumber % 2 === 0 ? "rgba(0, 0, 0, 0.015)" : "transparent",
+                    background: selected ? "rgba(22, 119, 255, 0.08)" : lineNumber % 2 === 0 ? alternateRowBackground : "transparent",
                     borderInlineStart: selected ? "3px solid #1677ff" : "3px solid transparent"
                   }}
                 >
@@ -813,8 +863,8 @@ export function WorkspaceFilePreviewModal({
                       textAlign: "right",
                       userSelect: "none",
                       color: selected ? "#1677ff" : "#8c8c8c",
-                      borderRight: "1px solid #f0f0f0",
-                      background: selected ? "rgba(22, 119, 255, 0.06)" : "rgba(0, 0, 0, 0.02)"
+                      borderRight: `1px solid ${gutterBorder}`,
+                      background: selected ? "rgba(22, 119, 255, 0.06)" : gutterBackground
                     }}
                   >
                     {lineNumber}

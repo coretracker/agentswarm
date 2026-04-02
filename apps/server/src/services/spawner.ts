@@ -18,6 +18,7 @@ import {
   type TaskRun,
   type TaskMergePreview,
   type TaskPushPreview,
+  type TaskWorkspaceFilePreview,
   type TaskWorkspaceCommit,
   type TaskWorkspaceCommitLog
 } from "@agentswarm/shared-types";
@@ -28,7 +29,11 @@ import { resolveWorkspaceGitRuntimeMounts } from "../lib/git-runtime-mounts.js";
 import { installManagedGitHooks } from "../lib/managed-git-hooks.js";
 import { reconcileTaskStatusWithPendingCheckpoint, resolveTaskReadyStatus } from "../lib/task-status.js";
 import { buildTaskCommitSubject, formatCommitSubject } from "../lib/task-commit-subject.js";
-import { resolveSafeWorkspaceFilePath } from "../lib/safe-workspace-file.js";
+import {
+  normalizeSafeWorkspaceRelativePath,
+  readSafeWorkspaceFileBuffer,
+  resolveSafeWorkspaceFilePath
+} from "../lib/safe-workspace-file.js";
 import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
 import { env } from "../config/env.js";
@@ -104,6 +109,50 @@ interface WorkspacePreparation {
   startRef: string;
   workspaceBaseRef: string;
   kind: "worktree" | "clone";
+}
+
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  ".apng": "image/apng",
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
+  ".gif": "image/gif",
+  ".ico": "image/x-icon",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".webp": "image/webp"
+};
+
+const WORKSPACE_FILE_PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
+const SAFE_GIT_PREVIEW_REF_PATTERN = /^[A-Za-z0-9._/-]+(?:[~^][0-9]*)*$/;
+
+function getPreviewMimeType(filePath: string): string | null {
+  return IMAGE_MIME_BY_EXTENSION[path.extname(filePath).toLowerCase()] ?? null;
+}
+
+function isBinaryBuffer(buffer: Buffer): boolean {
+  if (buffer.length === 0) {
+    return false;
+  }
+
+  const sample = buffer.subarray(0, Math.min(buffer.length, 8000));
+  if (sample.includes(0)) {
+    return true;
+  }
+
+  let suspicious = 0;
+  for (const byte of sample) {
+    const isAllowedWhitespace = byte === 9 || byte === 10 || byte === 13;
+    const isSuspiciousControl = (byte >= 0 && byte < 8) || byte === 11 || byte === 12 || (byte >= 14 && byte < 32) || byte === 127;
+    if (!isAllowedWhitespace && isSuspiciousControl) {
+      suspicious += 1;
+    }
+  }
+
+  return suspicious / sample.length > 0.3;
 }
 
 export class SpawnerService {
@@ -189,6 +238,33 @@ export class SpawnerService {
       proc.on("close", (code) => {
         if (code === 0) {
           resolve(stdout);
+          return;
+        }
+
+        reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+      });
+    });
+  }
+
+  private runCommandCaptureBuffer(command: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...extraEnv } });
+
+      const stdout: Buffer[] = [];
+      let stderr = "";
+
+      proc.stdout.on("data", (data) => {
+        stdout.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
+      });
+
+      proc.stderr.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on("error", reject);
+      proc.on("close", (code) => {
+        if (code === 0) {
+          resolve(Buffer.concat(stdout));
           return;
         }
 
@@ -366,6 +442,11 @@ esac
   private async gitCommandCaptureRaw(args: string[], githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
     const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
     return this.runGitWithRecovery(args, () => this.runCommandCaptureRaw("git", args, gitEnv));
+  }
+
+  private async gitCommandCaptureBuffer(args: string[], githubToken?: string | null, gitUsername = "x-access-token"): Promise<Buffer> {
+    const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
+    return this.runGitWithRecovery(args, () => this.runCommandCaptureBuffer("git", args, gitEnv));
   }
 
   private async gitCommandCaptureAllowExitCodes(
@@ -724,6 +805,88 @@ esac
     } catch {
       return null;
     }
+  }
+
+  private async readGitFileBuffer(
+    repoPath: string,
+    ref: string,
+    filePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<Buffer | null> {
+    try {
+      return await this.gitCommandCaptureBuffer(["-C", repoPath, "show", `${ref}:${filePath}`], githubToken, gitUsername);
+    } catch {
+      return null;
+    }
+  }
+
+  async getTaskWorkspaceFilePreview(
+    task: Task,
+    filePath: string,
+    ref?: string | null
+  ): Promise<TaskWorkspaceFilePreview | null> {
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const relativePath = normalizeSafeWorkspaceRelativePath(filePath);
+    if (!relativePath) {
+      return null;
+    }
+
+    const refValue = ref?.trim() || null;
+    if (refValue && !SAFE_GIT_PREVIEW_REF_PATTERN.test(refValue)) {
+      return null;
+    }
+
+    let buffer: Buffer | null;
+    if (refValue) {
+      const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+      buffer = await this.readGitFileBuffer(workspacePath, refValue, relativePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    } else {
+      buffer = await readSafeWorkspaceFileBuffer(workspacePath, relativePath);
+    }
+
+    if (buffer === null) {
+      return null;
+    }
+
+    if (buffer.length > WORKSPACE_FILE_PREVIEW_MAX_BYTES) {
+      throw new Error(`File is too large to preview (${buffer.length} bytes).`);
+    }
+
+    const mimeType = getPreviewMimeType(relativePath);
+    if (mimeType) {
+      return {
+        path: relativePath,
+        ref: refValue,
+        kind: "image",
+        mimeType,
+        encoding: "base64",
+        content: buffer.toString("base64"),
+        sizeBytes: buffer.length
+      };
+    }
+
+    if (isBinaryBuffer(buffer)) {
+      return {
+        path: relativePath,
+        ref: refValue,
+        kind: "binary",
+        mimeType: null,
+        encoding: "base64",
+        content: "",
+        sizeBytes: buffer.length
+      };
+    }
+
+    return {
+      path: relativePath,
+      ref: refValue,
+      kind: "text",
+      mimeType: null,
+      encoding: "utf8",
+      content: buffer.toString("utf8"),
+      sizeBytes: buffer.length
+    };
   }
 
   private async ensureRepoProfile(task: Task, repoPath: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {

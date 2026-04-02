@@ -2,6 +2,7 @@ import { parseDiff, type FileData } from "react-diff-view";
 
 const FILE_HEADER_PATTERN = /^diff --git a\/(.+?) b\/(.+)$/;
 const FULL_HUNK_HEADER_PATTERN = /^@@\s*-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s*@@(.*)$/;
+const IMAGE_FILE_EXTENSION_PATTERN = /\.(apng|avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/i;
 
 function isDiffBodyStart(line: string): boolean {
   if (line.startsWith("@@")) {
@@ -186,6 +187,9 @@ export function parseRenderableDiff(diffText: string): FileData[] {
     return [];
   }
 
-  const parsedFiles = parseDiff(normalized);
-  return parsedFiles.filter((file) => file.hunks.length > 0);
+  return parseDiff(normalized);
+}
+
+export function isImageDiffPath(filePath: string): boolean {
+  return IMAGE_FILE_EXTENSION_PATTERN.test(filePath.trim());
 }

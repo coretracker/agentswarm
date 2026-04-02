@@ -24,6 +24,7 @@ import type {
   OpenAiDiffAssistInput,
   OpenAiDiffAssistResult,
   TaskLiveDiff,
+  TaskWorkspaceFilePreview,
   TaskWorkspaceCommitLog,
   TaskPushPreview,
   TaskMergePreview,
@@ -44,6 +45,7 @@ import type {
   UpdateUserInput,
   User
 } from "@agentswarm/shared-types";
+export type { TaskWorkspaceFilePreview } from "@agentswarm/shared-types";
 import { buildApiUrl } from "../lib/public-url";
 
 export interface ProviderModelsResponse {
@@ -56,11 +58,6 @@ export interface TaskInteractiveTerminalStatus {
   reason?: string;
   /** Server sets this when a terminal WebSocket session is active for the task. */
   activeInteractiveSession?: boolean;
-}
-
-export interface TaskWorkspaceFilePreview {
-  path: string;
-  content: string;
 }
 
 export class ApiError extends Error {
@@ -202,8 +199,14 @@ export const api = {
     const query = params.toString();
     return request<TaskWorkspaceCommitLog>(`/tasks/${id}/workspace-commit-log${query ? `?${query}` : ""}`);
   },
-  getTaskWorkspaceFile: (id: string, filePath: string) =>
-    request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file?path=${encodeURIComponent(filePath)}`),
+  getTaskWorkspaceFile: (id: string, filePath: string, options?: { ref?: string | null }) => {
+    const params = new URLSearchParams({ path: filePath });
+    const ref = options?.ref?.trim();
+    if (ref) {
+      params.set("ref", ref);
+    }
+    return request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file?${params.toString()}`);
+  },
   openAiDiffAssist: (taskId: string, input: OpenAiDiffAssistInput) =>
     request<OpenAiDiffAssistResult>(`/tasks/${taskId}/openai/diff-assist`, {
       method: "POST",

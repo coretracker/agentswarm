@@ -3,7 +3,7 @@ import { after, describe, test } from "node:test";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { resolveSafeWorkspaceFilePath } from "./safe-workspace-file.js";
+import { normalizeSafeWorkspaceRelativePath, resolveSafeWorkspaceFilePath } from "./safe-workspace-file.js";
 
 describe("resolveSafeWorkspaceFilePath", () => {
   const base = mkdtempSync(path.join(tmpdir(), "agentswarm-ws-"));
@@ -26,6 +26,12 @@ describe("resolveSafeWorkspaceFilePath", () => {
     mkdirSync(ws, { recursive: true });
     assert.equal(resolveSafeWorkspaceFilePath(ws, ""), null);
     assert.equal(resolveSafeWorkspaceFilePath(ws, "   "), null);
+  });
+
+  test("normalizes separators while rejecting traversal", () => {
+    assert.equal(normalizeSafeWorkspaceRelativePath("dir\\\\file.png"), "dir/file.png");
+    assert.equal(normalizeSafeWorkspaceRelativePath("../escape"), null);
+    assert.equal(normalizeSafeWorkspaceRelativePath("bad:name.png"), null);
   });
 
   test("rejects absolute user path", () => {

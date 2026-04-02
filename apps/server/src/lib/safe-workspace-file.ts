@@ -2,23 +2,32 @@ import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-/**
- * Resolves a repo-relative file path inside a task workspace root.
- * Rejects absolute paths, `..` segments, and paths that escape the workspace (including via symlinks).
- */
-export function resolveSafeWorkspaceFilePath(workspaceRoot: string, userRelativePath: string): string | null {
+export function normalizeSafeWorkspaceRelativePath(userRelativePath: string): string | null {
   const trimmed = userRelativePath.trim();
   if (!trimmed) {
     return null;
   }
 
-  if (path.isAbsolute(trimmed)) {
+  if (path.isAbsolute(trimmed) || trimmed.includes("\0") || trimmed.includes(":")) {
     return null;
   }
 
   const normalized = trimmed.replace(/\\/g, "/");
   const parts = normalized.split("/").filter((p) => p.length > 0);
-  if (parts.some((p) => p === "..")) {
+  if (parts.length === 0 || parts.some((p) => p === "..")) {
+    return null;
+  }
+
+  return parts.join("/");
+}
+
+/**
+ * Resolves a repo-relative file path inside a task workspace root.
+ * Rejects absolute paths, `..` segments, and paths that escape the workspace (including via symlinks).
+ */
+export function resolveSafeWorkspaceFilePath(workspaceRoot: string, userRelativePath: string): string | null {
+  const normalizedRelativePath = normalizeSafeWorkspaceRelativePath(userRelativePath);
+  if (!normalizedRelativePath) {
     return null;
   }
 
@@ -29,7 +38,7 @@ export function resolveSafeWorkspaceFilePath(workspaceRoot: string, userRelative
     return null;
   }
 
-  const candidate = path.resolve(workspaceReal, ...parts);
+  const candidate = path.resolve(workspaceReal, ...normalizedRelativePath.split("/"));
 
   let probe = candidate;
   for (;;) {
@@ -59,17 +68,22 @@ export function resolveSafeWorkspaceFilePath(workspaceRoot: string, userRelative
   return candidate;
 }
 
-export async function readSafeWorkspaceFile(workspaceRoot: string, userRelativePath: string): Promise<string | null> {
+export async function readSafeWorkspaceFileBuffer(workspaceRoot: string, userRelativePath: string): Promise<Buffer | null> {
   const full = resolveSafeWorkspaceFilePath(workspaceRoot, userRelativePath);
   if (!full) {
     return null;
   }
 
   try {
-    return await readFile(full, "utf8");
+    return await readFile(full);
   } catch {
     return null;
   }
+}
+
+export async function readSafeWorkspaceFile(workspaceRoot: string, userRelativePath: string): Promise<string | null> {
+  const buffer = await readSafeWorkspaceFileBuffer(workspaceRoot, userRelativePath);
+  return buffer ? buffer.toString("utf8") : null;
 }
 
 export async function writeSafeWorkspaceFile(

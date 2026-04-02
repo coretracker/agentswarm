@@ -27,7 +27,8 @@ import {
   type TaskMergePreview,
   type TaskPushPreview,
   type TaskChangeProposal,
-  type TaskWorkspaceCommit
+  type TaskWorkspaceCommit,
+  type TaskWorkspaceFilePreview
 } from "@agentswarm/shared-types";
 import {
   Alert,
@@ -58,9 +59,9 @@ import { ArrowRightOutlined, CopyOutlined, EditOutlined, LoadingOutlined, MoreOu
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
-import { Diff, Hunk } from "react-diff-view";
+import { Diff, Hunk, type FileData } from "react-diff-view";
 import remarkGfm from "remark-gfm";
-import { api, type TaskInteractiveTerminalStatus, type TaskWorkspaceFilePreview } from "../src/api/client";
+import { api, type TaskInteractiveTerminalStatus } from "../src/api/client";
 import { useSnippets } from "../src/hooks/useSnippets";
 import { useTask } from "../src/hooks/useTask";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -68,7 +69,7 @@ import { useTaskMessages } from "../src/hooks/useTaskMessages";
 import { useTaskRuns } from "../src/hooks/useTaskRuns";
 import { useTaskChangeProposals } from "../src/hooks/useTaskChangeProposals";
 import { useSettings } from "../src/hooks/useSettings";
-import { normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
+import { isImageDiffPath, normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
 import { insertSnippetContent } from "../src/utils/snippets";
 import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { useAuth } from "./auth-provider";
@@ -146,7 +147,11 @@ interface WorkspaceFilePreviewState {
   loading: boolean;
   taskId: string;
   filePath: string;
+  kind: TaskWorkspaceFilePreview["kind"];
+  mimeType: string | null;
+  encoding: TaskWorkspaceFilePreview["encoding"];
   content: string;
+  sizeBytes: number;
   line: number | null;
   error: string | null;
 }
@@ -204,6 +209,40 @@ function formatDiffRefDisplay(ref: string | null | undefined): string {
   return trimmed;
 }
 
+function renderNonTextDiffCard(file: FileData, collapseFiles: boolean): ReactNode {
+  const fileLabel = file.newPath || file.oldPath || "Changed file";
+  const description = isImageDiffPath(fileLabel)
+    ? "No line-based diff is available for this image in this view."
+    : "No line-based diff is available for this file.";
+
+  if (collapseFiles) {
+    return (
+      <Collapse
+        key={`${file.oldRevision}-${file.newRevision}-${file.oldPath}-${file.newPath}`}
+        size="small"
+        defaultActiveKey={[]}
+        items={[
+          {
+            key: "file",
+            label: fileLabel,
+            children: <Typography.Text type="secondary">{description}</Typography.Text>
+          }
+        ]}
+      />
+    );
+  }
+
+  return (
+    <Card
+      key={`${file.oldRevision}-${file.newRevision}-${file.oldPath}-${file.newPath}`}
+      size="small"
+      title={fileLabel}
+    >
+      <Typography.Text type="secondary">{description}</Typography.Text>
+    </Card>
+  );
+}
+
 function renderParsedDiff(diffText: string, emptyMessage: string, options?: { collapseFiles?: boolean }): ReactNode {
   if (!diffText.trim()) {
     return (
@@ -236,10 +275,16 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: { co
                 {
                   key: "file",
                   label: file.newPath || file.oldPath || "Changed file",
-                  children: (
+                  children: file.hunks.length > 0 ? (
                     <Diff viewType="unified" diffType={file.type} hunks={file.hunks}>
                       {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
                     </Diff>
+                  ) : (
+                    <Typography.Text type="secondary">
+                      {isImageDiffPath(file.newPath || file.oldPath || "")
+                        ? "No line-based diff is available for this image in this view."
+                        : "No line-based diff is available for this file."}
+                    </Typography.Text>
                   )
                 }
               ]}
@@ -252,15 +297,19 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: { co
     return (
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
         {files.map((file) => (
-          <Card
-            key={`${file.oldRevision}-${file.newRevision}-${file.oldPath}-${file.newPath}`}
-            size="small"
-            title={file.newPath || file.oldPath || "Changed file"}
-          >
-            <Diff viewType="unified" diffType={file.type} hunks={file.hunks}>
-              {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
-            </Diff>
-          </Card>
+          file.hunks.length > 0 ? (
+            <Card
+              key={`${file.oldRevision}-${file.newRevision}-${file.oldPath}-${file.newPath}`}
+              size="small"
+              title={file.newPath || file.oldPath || "Changed file"}
+            >
+              <Diff viewType="unified" diffType={file.type} hunks={file.hunks}>
+                {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
+              </Diff>
+            </Card>
+          ) : (
+            renderNonTextDiffCard(file, false)
+          )
         ))}
       </Space>
     );
@@ -457,7 +506,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     loading: false,
     taskId: "",
     filePath: "",
+    kind: "text",
+    mimeType: null,
+    encoding: "utf8",
     content: "",
+    sizeBytes: 0,
     line: null,
     error: null
   });
@@ -665,6 +718,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         : hasLiveDiff
           ? liveDiff?.diff ?? ""
           : task?.branchDiff ?? "";
+  const diffPreviewRefs =
+    !task || !hasLiveDiff
+      ? null
+      : diffLiveKind === "compare"
+        ? {
+            before: liveDiff?.baseRef ?? liveDiff?.defaultBaseRef ?? null,
+            after: "HEAD"
+          }
+        : selectedCommitSha
+          ? {
+              before: `${selectedCommitSha}^`,
+              after: selectedCommitSha
+            }
+          : null;
   const hasDiffTab = hasStoredDiff || canRequestLiveDiff;
   const diffBaseBranchOptions = useMemo(() => {
     const options: Array<{ value: string; label: string }> = [];
@@ -1373,7 +1440,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       loading: true,
       taskId: target.taskId,
       filePath: target.filePath,
+      kind: "text",
+      mimeType: null,
+      encoding: "utf8",
       content: "",
+      sizeBytes: 0,
       line: target.line,
       error: null
     });
@@ -1390,7 +1461,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           open: true,
           loading: false,
           filePath: result.path,
+          kind: result.kind,
+          mimeType: result.mimeType,
+          encoding: result.encoding,
           content: result.content,
+          sizeBytes: result.sizeBytes,
           error: null
         }));
       })
@@ -2045,6 +2120,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               collapseFiles
               taskId={task.id}
               liveDiff={liveDiff}
+              previewRefs={diffPreviewRefs}
               selectionResetToken={`${task.id}-${diffLiveKind}-${selectedCommitSha ?? ""}`}
             />
           </div>
@@ -3052,7 +3128,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         open={workspaceFilePreview.open}
         loading={workspaceFilePreview.loading}
         filePath={workspaceFilePreview.filePath}
+        kind={workspaceFilePreview.kind}
+        mimeType={workspaceFilePreview.mimeType}
+        encoding={workspaceFilePreview.encoding}
         content={workspaceFilePreview.content}
+        sizeBytes={workspaceFilePreview.sizeBytes}
         line={workspaceFilePreview.line}
         error={workspaceFilePreview.error}
         onCancel={() => {

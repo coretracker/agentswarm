@@ -1,10 +1,7 @@
 import { z } from "zod";
-import path from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { isActiveTaskStatus, type Task, type TaskAction } from "@agentswarm/shared-types";
-import { env } from "../config/env.js";
 import type { AuthService } from "../lib/auth.js";
-import { readSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
@@ -100,7 +97,14 @@ const openAiDiffAssistSchema = z.object({
 });
 
 const workspaceFileQuerySchema = z.object({
-  path: z.string().trim().min(1).max(4096)
+  path: z.string().trim().min(1).max(4096),
+  ref: z
+    .string()
+    .trim()
+    .min(1)
+    .max(255)
+    .regex(/^[A-Za-z0-9._/-]+(?:[~^][0-9]*)*$/, "Invalid git ref.")
+    .optional()
 });
 
 const archivedTaskReadOnlyMessage = "Archived tasks are read-only";
@@ -298,16 +302,17 @@ export const registerTaskRoutes = (
         return;
       }
 
-      const workspaceRoot = path.join(env.TASK_WORKSPACE_ROOT, task.id);
-      const content = await readSafeWorkspaceFile(workspaceRoot, parsed.data.path);
-      if (content === null) {
-        return reply.status(404).send({ message: "Workspace file not found or is outside the task workspace." });
-      }
+      try {
+        const preview = await deps.spawner.getTaskWorkspaceFilePreview(task, parsed.data.path, parsed.data.ref ?? null);
+        if (preview === null) {
+          return reply.status(404).send({ message: "Workspace file not found or is outside the task workspace." });
+        }
 
-      return reply.send({
-        path: parsed.data.path,
-        content
-      });
+        return reply.send(preview);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not preview workspace file.";
+        return reply.status(413).send({ message });
+      }
     }
   );
 
