@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import {
   App,
   Button,
@@ -21,7 +21,16 @@ import {
 import dayjs from "dayjs";
 import { api } from "../src/api/client";
 import { useTasks } from "../src/hooks/useTasks";
+import {
+  getSeenTaskVersions,
+  isTaskSeen,
+  markTaskSeen,
+  migrateSeenTaskVersions,
+  subscribeToSeenTasks,
+  type SeenTaskVersions
+} from "../src/utils/seen-tasks";
 import { useAuth } from "./auth-provider";
+import { TaskCreateModal } from "./task-create-modal";
 
 interface AppSidebarProps {
   pathname: string;
@@ -56,6 +65,18 @@ function getStatusAccentColor(task: Task, token: ReturnType<typeof antTheme.useT
   return token.colorTextSecondary;
 }
 
+function getTaskAttentionMarker(task: Task, seenTaskVersions: SeenTaskVersions): { color: string; label: string } | null {
+  if (task.hasPendingCheckpoint) {
+    return { color: "#FA8C16", label: "Pending checkpoint" };
+  }
+
+  if (!isTaskSeen(task, seenTaskVersions)) {
+    return { color: "#1C8057", label: "Unseen task" };
+  }
+
+  return null;
+}
+
 function getSelectedTaskId(pathname: string): string | null {
   const match = pathname.match(/^\/tasks\/([^/]+)(?:\/.*)?$/);
   if (!match) {
@@ -71,6 +92,7 @@ function TaskSection({
   selectedTaskId,
   canEditTask,
   pinningTaskId,
+  seenTaskVersions,
   onOpenTask,
   onTogglePin
 }: {
@@ -79,7 +101,8 @@ function TaskSection({
   selectedTaskId: string | null;
   canEditTask: boolean;
   pinningTaskId: string | null;
-  onOpenTask: (taskId: string) => void;
+  seenTaskVersions: SeenTaskVersions;
+  onOpenTask: (task: Task) => void;
   onTogglePin: (task: Task) => void;
 }) {
   const { token } = antTheme.useToken();
@@ -88,13 +111,13 @@ function TaskSection({
     return null;
   }
 
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>, taskId: string) => {
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>, task: Task) => {
     if (event.key !== "Enter" && event.key !== " ") {
       return;
     }
 
     event.preventDefault();
-    onOpenTask(taskId);
+    onOpenTask(task);
   };
 
   return (
@@ -114,14 +137,16 @@ function TaskSection({
         {tasks.map((task) => {
           const selected = task.id === selectedTaskId;
           const statusAccentColor = getStatusAccentColor(task, token);
+          const attentionMarker = getTaskAttentionMarker(task, seenTaskVersions);
+          const showIndicator = isLiveTask(task) || attentionMarker !== null;
 
           return (
             <div
               key={task.id}
               role="button"
               tabIndex={0}
-              onClick={() => onOpenTask(task.id)}
-              onKeyDown={(event) => onKeyDown(event, task.id)}
+              onClick={() => onOpenTask(task)}
+              onKeyDown={(event) => onKeyDown(event, task)}
               style={{
                 padding: "10px 12px",
                 borderRadius: token.borderRadiusLG,
@@ -131,62 +156,73 @@ function TaskSection({
                 transition: "border-color 0.2s ease, background-color 0.2s ease"
               }}
             >
-              <Flex align="start" gap={8}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minWidth: 14, paddingTop: 3 }}>
-                  {isLiveTask(task) ? (
-                    <Spin size="small" />
-                  ) : (
-                    <span
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: "50%",
-                        background: statusAccentColor,
-                        display: "inline-block"
+              <Flex vertical gap={2} style={{ minWidth: 0 }}>
+                <Flex align="start" justify="space-between" gap={6}>
+                  <Flex align="center" gap={6} style={{ minWidth: 0, flex: 1 }}>
+                    {showIndicator ? (
+                      <span
+                        style={{
+                          width: 10,
+                          height: 10,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flex: "0 0 auto"
+                        }}
+                      >
+                        {isLiveTask(task) ? (
+                          <Spin size="small" />
+                        ) : attentionMarker ? (
+                          <span
+                            aria-label={attentionMarker.label}
+                            title={attentionMarker.label}
+                            style={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: "50%",
+                              background: attentionMarker.color,
+                              display: "inline-block"
+                            }}
+                          />
+                        ) : null}
+                      </span>
+                    ) : null}
+                    <Typography.Text strong ellipsis={{ tooltip: task.title }} style={{ display: "block", lineHeight: 1.25, minWidth: 0 }}>
+                      {task.title}
+                    </Typography.Text>
+                  </Flex>
+                  {canEditTask ? (
+                    <Button
+                      type="text"
+                      size="small"
+                      aria-label={task.pinned ? "Unpin task" : "Pin task"}
+                      icon={task.pinned ? <PushpinFilled style={{ color: token.colorPrimary }} /> : <PushpinOutlined />}
+                      loading={pinningTaskId === task.id}
+                      style={{ marginInlineEnd: -8 }}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onTogglePin(task);
                       }}
                     />
-                  )}
-                </div>
-                <Flex vertical gap={2} style={{ flex: 1, minWidth: 0 }}>
-                  <Flex align="start" justify="space-between" gap={6}>
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <Typography.Text strong ellipsis={{ tooltip: task.title }} style={{ display: "block", lineHeight: 1.25 }}>
-                        {task.title}
-                      </Typography.Text>
-                    </div>
-                    {canEditTask ? (
-                      <Button
-                        type="text"
-                        size="small"
-                        aria-label={task.pinned ? "Unpin task" : "Pin task"}
-                        icon={task.pinned ? <PushpinFilled style={{ color: token.colorPrimary }} /> : <PushpinOutlined />}
-                        loading={pinningTaskId === task.id}
-                        style={{ marginInlineEnd: -8 }}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onTogglePin(task);
-                        }}
-                      />
-                    ) : null}
-                  </Flex>
+                  ) : null}
+                </Flex>
+                <Typography.Text
+                  type="secondary"
+                  ellipsis={{ tooltip: task.repoName }}
+                  style={{ fontSize: 12, display: "block", lineHeight: 1.2 }}
+                >
+                  {task.repoName}
+                </Typography.Text>
+                <Flex justify="space-between" align="center" gap={8} wrap={false}>
                   <Typography.Text
-                    type="secondary"
-                    ellipsis={{ tooltip: task.repoName }}
-                    style={{ fontSize: 12, display: "block", lineHeight: 1.2 }}
+                    ellipsis={{ tooltip: getTaskStatusText(task) }}
+                    style={{ fontSize: 12, color: statusAccentColor, flex: 1, minWidth: 0, lineHeight: 1.2 }}
                   >
-                    {task.repoName}
+                    {getTaskStatusText(task)}
                   </Typography.Text>
-                  <Flex justify="space-between" align="center" gap={8} wrap={false}>
-                    <Typography.Text
-                      ellipsis={{ tooltip: getTaskStatusText(task) }}
-                      style={{ fontSize: 12, color: statusAccentColor, flex: 1, minWidth: 0, lineHeight: 1.2 }}
-                    >
-                      {getTaskStatusText(task)}
-                    </Typography.Text>
-                    <Typography.Text type="secondary" style={{ fontSize: 11, whiteSpace: "nowrap", lineHeight: 1.2 }}>
-                      {dayjs(task.updatedAt).format("MMM D, HH:mm")}
-                    </Typography.Text>
-                  </Flex>
+                  <Typography.Text type="secondary" style={{ fontSize: 11, whiteSpace: "nowrap", lineHeight: 1.2 }}>
+                    {dayjs(task.updatedAt).format("MMM D, HH:mm")}
+                  </Typography.Text>
                 </Flex>
               </Flex>
             </div>
@@ -203,10 +239,34 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
   const { can } = useAuth();
   const canListTasks = can("task:list");
   const canEditTask = can("task:edit");
+  const canCreateTask = can("task:create") && (can("task:build") || can("task:ask") || can("task:interactive"));
   const { tasks, setTasks, loading } = useTasks({ enabled: canListTasks });
   const [query, setQuery] = useState("");
   const [pinningTaskId, setPinningTaskId] = useState<string | null>(null);
+  const [taskCreateModalOpen, setTaskCreateModalOpen] = useState(false);
+  const [seenTaskVersions, setSeenTaskVersions] = useState<SeenTaskVersions>({});
   const selectedTaskId = getSelectedTaskId(pathname);
+
+  useEffect(() => {
+    if (!canListTasks) {
+      setSeenTaskVersions({});
+      return;
+    }
+
+    const syncSeenTaskVersions = () => {
+      setSeenTaskVersions(getSeenTaskVersions());
+    };
+
+    syncSeenTaskVersions();
+    return subscribeToSeenTasks(syncSeenTaskVersions);
+  }, [canListTasks]);
+
+  useEffect(() => {
+    const migratedSeenTaskVersions = migrateSeenTaskVersions(seenTaskVersions, tasks);
+    if (migratedSeenTaskVersions) {
+      setSeenTaskVersions(migratedSeenTaskVersions);
+    }
+  }, [seenTaskVersions, tasks]);
 
   const visibleTasks = useMemo(() => {
     const trimmedQuery = query.trim().toLowerCase();
@@ -225,6 +285,21 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
     () => visibleTasks.filter((task) => !task.pinned && !isLiveTask(task)),
     [visibleTasks]
   );
+
+  const handleOpenTask = (task: Task) => {
+    markTaskSeen(task);
+    setSeenTaskVersions((current) => {
+      if (current[task.id] === task.updatedAt) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [task.id]: task.updatedAt
+      };
+    });
+    onNavigate(`/tasks/${task.id}`);
+  };
 
   const handleTogglePin = async (task: Task) => {
     if (!canEditTask) {
@@ -281,6 +356,11 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
                 placeholder="Filter by task name"
                 prefix={<SearchOutlined />}
               />
+              {canCreateTask ? (
+                <Button type="primary" block onClick={() => setTaskCreateModalOpen(true)}>
+                  New Task
+                </Button>
+              ) : null}
             </Flex>
           </div>
           <div style={{ minHeight: 0, overflowY: "auto", padding: 16 }}>
@@ -302,7 +382,8 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
                   selectedTaskId={selectedTaskId}
                   canEditTask={canEditTask}
                   pinningTaskId={pinningTaskId}
-                  onOpenTask={(taskId) => onNavigate(`/tasks/${taskId}`)}
+                  seenTaskVersions={seenTaskVersions}
+                  onOpenTask={handleOpenTask}
                   onTogglePin={handleTogglePin}
                 />
                 <TaskSection
@@ -311,7 +392,8 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
                   selectedTaskId={selectedTaskId}
                   canEditTask={canEditTask}
                   pinningTaskId={pinningTaskId}
-                  onOpenTask={(taskId) => onNavigate(`/tasks/${taskId}`)}
+                  seenTaskVersions={seenTaskVersions}
+                  onOpenTask={handleOpenTask}
                   onTogglePin={handleTogglePin}
                 />
                 <TaskSection
@@ -320,7 +402,8 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
                   selectedTaskId={selectedTaskId}
                   canEditTask={canEditTask}
                   pinningTaskId={pinningTaskId}
-                  onOpenTask={(taskId) => onNavigate(`/tasks/${taskId}`)}
+                  seenTaskVersions={seenTaskVersions}
+                  onOpenTask={handleOpenTask}
                   onTogglePin={handleTogglePin}
                 />
               </Flex>
@@ -328,6 +411,13 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
           </div>
         </div>
       ) : null}
+      <TaskCreateModal
+        open={taskCreateModalOpen}
+        onClose={() => setTaskCreateModalOpen(false)}
+        onCreated={(task) => {
+          setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+        }}
+      />
     </div>
   );
 }

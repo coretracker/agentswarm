@@ -2,7 +2,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentProvider, McpServerConfig, ProviderProfile } from "@agentswarm/shared-types";
 import {
-  claudeMaxTurnsForProfile,
+  claudeModelSupportsThinkingBudget,
+  claudeThinkingBudgetTokensForProfile,
   codexReasoningEffortForProfile,
   defaultModelForProvider
 } from "../lib/provider-config.js";
@@ -91,7 +92,10 @@ export interface ProviderRuntimeDefinition {
   getRuntimeEnv(credentials: RuntimeCredentials & { openaiBaseUrl: string | null }): Record<string, string | undefined>;
   getProviderConfig(servers: McpServerConfig[]): string;
   getResolvedModel(modelOverride: string | null, profile: ProviderProfile): string | null;
-  getResolvedProfileSettings(profile: ProviderProfile): { reasoningEffort?: string; maxTurns?: number | undefined };
+  getResolvedProfileSettings(
+    profile: ProviderProfile,
+    resolvedModel: string | null
+  ): { reasoningEffort?: string; thinkingBudgetTokens?: number | undefined };
 }
 
 export const providerRuntimeDefinitions: Record<AgentProvider, ProviderRuntimeDefinition> = {
@@ -124,8 +128,10 @@ export const providerRuntimeDefinitions: Record<AgentProvider, ProviderRuntimeDe
     }),
     getProviderConfig: serializeClaudeMcpConfig,
     getResolvedModel: (modelOverride, profile) => modelOverride ?? defaultModelForProvider("claude", profile),
-    getResolvedProfileSettings: (profile) => ({
-      maxTurns: claudeMaxTurnsForProfile(profile)
+    getResolvedProfileSettings: (profile, resolvedModel) => ({
+      thinkingBudgetTokens: claudeModelSupportsThinkingBudget(resolvedModel)
+        ? claudeThinkingBudgetTokensForProfile(profile)
+        : undefined
     })
   }
 };

@@ -18,7 +18,12 @@ import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import { canUserAccessTask } from "./task-ownership.js";
 import { resolveWorkspaceGitRuntimeMounts } from "./git-runtime-mounts.js";
-import { claudeMaxTurnsForProfile, codexReasoningEffortForProfile, defaultModelForProvider } from "./provider-config.js";
+import {
+  claudeModelSupportsThinkingBudget,
+  claudeThinkingBudgetTokensForProfile,
+  codexReasoningEffortForProfile,
+  defaultModelForProvider
+} from "./provider-config.js";
 import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
@@ -88,16 +93,13 @@ function buildClaudeSettingsJson(): string {
   });
 }
 
-function buildClaudeStartScript(model: string, maxTurns: number | undefined, settingsJson: string): string {
+function buildClaudeStartScript(model: string, settingsJson: string): string {
   const claudeArgs = [
     "--model",
     shellSingleQuote(model),
     "--settings",
     shellSingleQuote(settingsJson)
   ];
-  if (typeof maxTurns === "number") {
-    claudeArgs.push("--max-turns", String(maxTurns));
-  }
 
   return [
     'mkdir -p "$HOME/.claude" "$HOME/.local/bin"',
@@ -160,6 +162,10 @@ function resolveInteractiveTerminalRuntimeConfig(
       return { ok: false, reason: "Anthropic API key is not configured in Settings." };
     }
 
+    const thinkingBudgetTokens = claudeModelSupportsThinkingBudget(model)
+      ? claudeThinkingBudgetTokensForProfile(task.providerProfile)
+      : undefined;
+
     return {
       ok: true,
       provider: "claude",
@@ -176,9 +182,10 @@ function resolveInteractiveTerminalRuntimeConfig(
         ["TERM", "xterm-256color"],
         ["HOME", "/home/claude"],
         ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
+        ...(typeof thinkingBudgetTokens === "number" ? [["MAX_THINKING_TOKENS", String(thinkingBudgetTokens)] as [string, string]] : []),
         ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
       ],
-      startScript: buildClaudeStartScript(model, claudeMaxTurnsForProfile(task.providerProfile), buildClaudeSettingsJson())
+      startScript: buildClaudeStartScript(model, buildClaudeSettingsJson())
     };
   }
 

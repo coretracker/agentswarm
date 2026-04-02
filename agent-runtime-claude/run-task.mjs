@@ -112,9 +112,6 @@ const args = [
 if (manifest.resolvedModel) {
   args.push("--model", manifest.resolvedModel);
 }
-if (manifest.resolvedMaxTurns) {
-  args.push("--max-turns", String(manifest.resolvedMaxTurns));
-}
 
 const workspaceStats = await stat(manifest.workspacePath);
 const runtimeIdentity = workspaceStats.uid > 0 && workspaceStats.gid > 0 ? `${workspaceStats.uid}:${workspaceStats.gid}` : "agent:agent";
@@ -129,7 +126,7 @@ await mkdir(providerStatePath, { recursive: true });
 const claudeBinary = await resolveClaudeBinary(runtimeHome);
 
 console.log(`[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only tools)" : ""}`);
-console.log(`[runtime] claude max_turns=${manifest.resolvedMaxTurns ?? "default"}`);
+console.log(`[runtime] claude thinking_budget_tokens=${manifest.resolvedThinkingBudgetTokens ?? "default"}`);
 await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(manifest.resultJsonPath)]);
 console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);
 
@@ -143,6 +140,9 @@ let partialTextBuffer = "";
 const proc = spawn("su-exec", [runtimeIdentity, claudeBinary, ...args], {
   env: {
     ...process.env,
+    ...(typeof manifest.resolvedThinkingBudgetTokens === "number"
+      ? { MAX_THINKING_TOKENS: String(manifest.resolvedThinkingBudgetTokens) }
+      : {}),
     HOME: runtimeHome,
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "safe.directory",
@@ -265,7 +265,7 @@ const buildResultError = () => {
 
   if (resultSubtype.includes("max_turns")) {
     return new Error(
-      `Claude hit the turn limit before producing a final answer.${resultDetails ? ` ${resultDetails}` : ""} Increase the profile or max turns for this task.`
+      `Claude hit a turn limit before producing a final answer.${resultDetails ? ` ${resultDetails}` : ""} AgentSwarm did not set --max-turns for this run.`
     );
   }
 

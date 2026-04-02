@@ -84,7 +84,7 @@ interface RuntimeManifest {
   modelOverride: string | null;
   resolvedModel: string | null;
   resolvedReasoningEffort?: string;
-  resolvedMaxTurns?: number;
+  resolvedThinkingBudgetTokens?: number;
   workspacePath: string;
   resultMarkdownPath: string;
   resultJsonPath: string;
@@ -2862,7 +2862,8 @@ esac
       const providerConfigPath = path.join(payloadDir, providerDefinition.configFileName);
       const resultMarkdownPath = path.join(payloadDir, "result.md");
       const resultJsonPath = path.join(payloadDir, "result.json");
-      const resolvedProfileSettings = providerDefinition.getResolvedProfileSettings(task.providerProfile);
+      const resolvedModel = providerDefinition.getResolvedModel(task.modelOverride, task.providerProfile);
+      const resolvedProfileSettings = providerDefinition.getResolvedProfileSettings(task.providerProfile, resolvedModel);
       const manifest: RuntimeManifest = {
         taskId: task.id,
         provider: task.provider,
@@ -2879,9 +2880,9 @@ esac
         branchName,
         providerProfile: task.providerProfile,
         modelOverride: task.modelOverride,
-        resolvedModel: providerDefinition.getResolvedModel(task.modelOverride, task.providerProfile),
+        resolvedModel,
         resolvedReasoningEffort: resolvedProfileSettings.reasoningEffort,
-        resolvedMaxTurns: resolvedProfileSettings.maxTurns,
+        resolvedThinkingBudgetTokens: resolvedProfileSettings.thinkingBudgetTokens,
         workspacePath: workspace.workspacePath,
         resultMarkdownPath,
         resultJsonPath,

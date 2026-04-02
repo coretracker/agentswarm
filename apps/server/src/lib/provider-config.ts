@@ -61,11 +61,29 @@ export const defaultModelForProvider = (provider: AgentProvider, profile: Provid
 export const codexReasoningEffortForProfile = (profile: ProviderProfile): string =>
   profile === "max" ? "high" : profile;
 
-/** Claude CLI uses --max-turns; "max" means unlimited (undefined = no flag). */
-export const claudeMaxTurnsForProfile = (profile: ProviderProfile): number | undefined =>
+export const claudeModelSupportsThinkingBudget = (model: string | null | undefined): boolean => {
+  const normalized = model?.trim().toLowerCase() ?? "";
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized === "claude-opus-4" ||
+    normalized.startsWith("claude-opus-4-") ||
+    normalized === "claude-sonnet-4" ||
+    normalized.startsWith("claude-sonnet-4-") ||
+    normalized === "claude-3-7-sonnet" ||
+    normalized.startsWith("claude-3-7-sonnet-") ||
+    normalized === "claude-sonnet-3-7" ||
+    normalized.startsWith("claude-sonnet-3-7-")
+  );
+};
+
+/** Claude Code exposes reasoning via thinking budgets; "max" means leave the budget unset. */
+export const claudeThinkingBudgetTokensForProfile = (profile: ProviderProfile): number | undefined =>
   ({
-    low: 8,
-    medium: 16,
-    high: 32,
+    low: 1024,
+    medium: 4096,
+    high: 16384,
     max: undefined
   })[profile];

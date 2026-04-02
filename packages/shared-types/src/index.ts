@@ -40,7 +40,7 @@ export const CODEX_EFFORT_OPTIONS: ProviderEffortOption[] = [
   { label: "High", value: "high" }
 ];
 
-/** Claude supports low / medium / high / max effort (max = unlimited turns, Opus 4 only). */
+/** Claude profiles map to thinking budgets when the resolved model supports it; "max" leaves the budget unset. */
 export const CLAUDE_EFFORT_OPTIONS: ProviderEffortOption[] = [
   { label: "Low", value: "low" },
   { label: "Medium", value: "medium" },
