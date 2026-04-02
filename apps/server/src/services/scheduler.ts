@@ -43,7 +43,7 @@ export class SchedulerService {
       return false;
     }
 
-    if (isActiveTaskStatus(task.status) || task.status === "accepted" || task.status === "archived") {
+    if (isActiveTaskStatus(task.status) || task.status === "archived") {
       return false;
     }
 

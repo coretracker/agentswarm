@@ -56,13 +56,14 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
       open={open}
       onCancel={handleCancel}
       title="New Task"
-      width={1180}
+      width="min(1180px, calc(100vw - 32px))"
       destroyOnHidden
       maskClosable={!submitting}
       styles={{
         body: {
           maxHeight: "calc(100vh - 220px)",
           overflowY: "auto",
+          overflowX: "hidden",
           paddingTop: 12
         }
       }}

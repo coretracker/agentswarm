@@ -537,7 +537,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     !isArchived &&
     isImplementationTask &&
     !!task?.branchName &&
-    (task.status === "completed" || task.status === "accepted");
+    (task.status === "awaiting_review" || task.status === "open");
   const currentTaskProvider = task?.provider ?? "codex";
   const currentTaskProviderProfile = task?.providerProfile ?? "high";
   const currentTaskModelOverride = task?.modelOverride ?? "";
@@ -1268,7 +1268,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       })
     : "Working";
   const canKillInteractiveTerminal = canEditTask && canUseInteractiveTerminal && !!task && !isArchived && interactiveTerminalRunning;
-  const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "accepted" || task.status === "archived";
+  const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived";
   const chatDisabled =
     chatClosed ||
     interactiveTerminalRunning ||

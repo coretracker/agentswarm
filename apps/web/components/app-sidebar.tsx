@@ -58,7 +58,11 @@ function getStatusAccentColor(task: Task, token: ReturnType<typeof antTheme.useT
     return token.colorError;
   }
 
-  if (task.status === "completed" || task.status === "answered" || task.status === "accepted") {
+  if (task.status === "awaiting_review") {
+    return token.colorWarning;
+  }
+
+  if (task.status === "open") {
     return token.colorSuccess;
   }
 

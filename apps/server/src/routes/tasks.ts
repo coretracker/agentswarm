@@ -921,9 +921,11 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    const canAcceptImplementationFailure = task.taskType === "build" && task.status === "failed";
-    if (task.status !== "completed" && task.status !== "answered" && !canAcceptImplementationFailure) {
-      return reply.status(409).send({ message: "Only completed task results can be accepted" });
+    const canPublishBuild =
+      task.taskType === "build" && (task.status === "awaiting_review" || task.status === "open" || task.status === "failed");
+    const canAcceptAsk = task.taskType === "ask" && task.status === "open" && Boolean(task.resultMarkdown?.trim());
+    if (!canPublishBuild && !canAcceptAsk) {
+      return reply.status(409).send({ message: "Only ready task results can be accepted" });
     }
 
     if (task.taskType === "build") {
@@ -931,11 +933,11 @@ export const registerTaskRoutes = (
       return reply.send(accepted);
     }
 
-    const accepted = await deps.taskStore.setStatus(task.id, "accepted", {
+    const accepted = await deps.taskStore.setStatus(task.id, "open", {
       errorMessage: null,
       enqueued: false
     });
-    await deps.taskStore.appendLog(task.id, "Task result manually accepted by user.");
+    await deps.taskStore.appendLog(task.id, "Ask result accepted; task remains open.");
     return reply.send(accepted);
   });
 

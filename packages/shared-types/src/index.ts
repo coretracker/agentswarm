@@ -65,6 +65,8 @@ export type TaskStatus =
   | "building"
   | "ask_queued"
   | "asking"
+  | "open"
+  | "awaiting_review"
   | "completed"
   | "answered"
   | "accepted"
@@ -706,7 +708,7 @@ export function getCheckpointMutationBlockedReason(status: TaskStatus): string |
 }
 
 export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
-  status === "accepted" || status === "archived" || status === "cancelled" || status === "failed";
+  status === "archived";
 export const getTaskStatusLabel = (status: TaskStatus): string =>
   ({
     build_queued: "Build Queued",
@@ -714,6 +716,8 @@ export const getTaskStatusLabel = (status: TaskStatus): string =>
     building: "Building",
     ask_queued: "Ask Queued",
     asking: "Answering",
+    open: "Open",
+    awaiting_review: "Awaiting Review",
     completed: "Completed",
     answered: "Answered",
     accepted: "Accepted",

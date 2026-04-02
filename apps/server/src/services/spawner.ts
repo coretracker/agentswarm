@@ -6,7 +6,6 @@ import path from "node:path";
 import {
   getActiveStatusForAction,
   getCheckpointMutationBlockedReason,
-  getSuccessfulStatusForAction,
   getTaskStatusLabel,
   isActiveTaskStatus,
   isQueuedTaskStatus,
@@ -27,6 +26,7 @@ import { extractGitLockPathFromErrorMessage, isPathInside, resolveGitTargetLockK
 import { resolveGitPaths } from "../lib/git-paths.js";
 import { resolveWorkspaceGitRuntimeMounts } from "../lib/git-runtime-mounts.js";
 import { installManagedGitHooks } from "../lib/managed-git-hooks.js";
+import { reconcileTaskStatusWithPendingCheckpoint, resolveTaskReadyStatus } from "../lib/task-status.js";
 import { buildTaskCommitSubject, formatCommitSubject } from "../lib/task-commit-subject.js";
 import { resolveSafeWorkspaceFilePath } from "../lib/safe-workspace-file.js";
 import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
@@ -1681,6 +1681,20 @@ esac
     }
   }
 
+  private async syncTaskReviewStatus(taskId: string): Promise<Task | null> {
+    const task = await this.taskStore.getTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    const nextStatus = reconcileTaskStatusWithPendingCheckpoint(task.status, task.hasPendingCheckpoint);
+    if (nextStatus === task.status) {
+      return task;
+    }
+
+    return this.taskStore.setStatus(task.id, nextStatus);
+  }
+
   async beginInteractiveTerminalSession(taskId: string): Promise<{ sessionId: string }> {
     const task = await this.taskStore.getTask(taskId);
     if (!task) {
@@ -1808,7 +1822,10 @@ esac
         taskId,
         "Checkpoint for this terminal session could not be created because another pending checkpoint already exists."
       );
+      return;
     }
+
+    await this.syncTaskReviewStatus(taskId);
   }
 
   /**
@@ -1995,6 +2012,7 @@ esac
           }
         }
         await this.taskStore.updateChangeProposalStatus(proposalId, "applied", task.id);
+        await this.syncTaskReviewStatus(task.id);
         await this.taskStore.appendLog(
           task.id,
           isReapply
@@ -2043,6 +2061,7 @@ esac
           return { ok: false, message: clean.message };
         }
         await this.taskStore.updateChangeProposalStatus(proposalId, "applied", task.id);
+        await this.syncTaskReviewStatus(task.id);
         await this.taskStore.appendLog(
           task.id,
           didCommit
@@ -2060,6 +2079,7 @@ esac
     }
 
     await this.taskStore.updateChangeProposalStatus(proposalId, "applied", task.id);
+    await this.syncTaskReviewStatus(task.id);
     await this.taskStore.appendLog(
       task.id,
       isReapply
@@ -2258,6 +2278,7 @@ esac
       if (!updated) {
         return { ok: false, message: "Could not record revert in store." };
       }
+      await this.syncTaskReviewStatus(task.id);
       const how = usedPatchReverse
         ? "stored diff"
         : `restored ${proposal.changedFiles.length} path(s) from checkpoint base`;
@@ -2315,6 +2336,7 @@ esac
     }
 
     await this.taskStore.updateChangeProposalStatus(proposalId, "rejected", task.id);
+    await this.syncTaskReviewStatus(task.id);
     await this.taskStore.appendLog(
       task.id,
       `Checkpoint ${proposalId} rejected; reset to ${proposal.fromRef.slice(0, 7)}… and removed ${toRemove.length} new untracked path(s).`
@@ -2710,15 +2732,16 @@ esac
 
   async publishAcceptedTask(task: Task): Promise<Task> {
     await this.pushTaskBranch(task);
-    const accepted = await this.taskStore.setStatus(task.id, "accepted", {
+    const published = await this.taskStore.setStatus(task.id, "open", {
       errorMessage: null,
       enqueued: false
     });
     await this.cleanupTaskArtifacts(task);
-    if (!accepted) {
+    if (!published) {
       throw new Error("Failed to update task after publishing");
     }
-    return accepted;
+    await this.taskStore.appendLog(task.id, "Task branch pushed; task remains open for more work.");
+    return published;
   }
 
   /**
@@ -2778,7 +2801,7 @@ esac
       await this.ensureWorkspaceGitHooks(workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     }
 
-    const readyStatus = getSuccessfulStatusForAction(action);
+    const readyStatus = resolveTaskReadyStatus(false);
     await this.taskStore.patchTask(workingTask.id, {
       status: readyStatus,
       enqueued: false,
@@ -3057,7 +3080,7 @@ esac
 
         const branchDiff = null;
         await this.taskStore.updateResultArtifacts(task.id, finalMarkdown);
-        await this.taskStore.setStatus(task.id, getSuccessfulStatusForAction(action), {
+        await this.taskStore.setStatus(task.id, resolveTaskReadyStatus(false), {
           finishedAt,
           enqueued: false,
           branchDiff,
@@ -3091,13 +3114,6 @@ esac
         if (runtimeResult.summaryMarkdown.trim()) {
           await this.taskStore.updateResultArtifacts(task.id, runtimeResult.summaryMarkdown.trim());
         }
-        await this.taskStore.setStatus(task.id, getSuccessfulStatusForAction(action), {
-          finishedAt,
-          enqueued: false,
-          branchDiff: branchDiff.length > 0 ? branchDiff : task.branchDiff,
-          lastAction: action,
-          branchName
-        });
         await this.taskStore.appendMessage(task.id, {
           role: "assistant",
           action,
@@ -3115,6 +3131,14 @@ esac
         if (runId && action === "build") {
           await this.createBuildRunChangeProposal(task, runId, workspace.workspacePath);
         }
+        const hasPendingCheckpoint = await this.taskStore.hasPendingChangeProposal(task.id);
+        await this.taskStore.setStatus(task.id, resolveTaskReadyStatus(hasPendingCheckpoint), {
+          finishedAt,
+          enqueued: false,
+          branchDiff: branchDiff.length > 0 ? branchDiff : task.branchDiff,
+          lastAction: action,
+          branchName
+        });
       }
 
       await appendRunLog("Spawner: task finished successfully.");

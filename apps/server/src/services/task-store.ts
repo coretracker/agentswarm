@@ -2,7 +2,6 @@ import { nanoid } from "nanoid";
 import type Redis from "ioredis";
 import {
   getQueuedStatusForAction,
-  getSuccessfulStatusForAction,
   isQueuedTaskStatus,
   type AgentProvider,
   type CreateTaskInput,
@@ -24,6 +23,10 @@ import {
   normalizeProvider,
   normalizeProviderProfile
 } from "../lib/provider-config.js";
+import {
+  normalizeTaskLifecycleStatus,
+  reconcileTaskStatusWithPendingCheckpoint
+} from "../lib/task-status.js";
 import { buildExecutionSummaryFromPrompt, classifyTaskComplexity } from "../lib/task-intelligence.js";
 
 /** When creating with Interactive prep, make the task title identifiable without duplicating markers. */
@@ -69,6 +72,8 @@ const currentTaskStatuses = new Set<TaskStatus>([
   "building",
   "ask_queued",
   "asking",
+  "open",
+  "awaiting_review",
   "completed",
   "answered",
   "accepted",
@@ -83,30 +88,6 @@ const normalizeLegacyTaskAction = (action: string | null | undefined): TaskActio
   }
 
   return action === "ask" ? "ask" : "build";
-};
-
-const normalizeLegacyTaskStatus = (status: string, fallbackAction: TaskAction): TaskStatus => {
-  if (currentTaskStatuses.has(status as TaskStatus)) {
-    return status as TaskStatus;
-  }
-
-  if (status === "queued" || status.endsWith("_queued")) {
-    return getQueuedStatusForAction(fallbackAction);
-  }
-
-  if (status === "spawning" || status === "running" || status.endsWith("ing")) {
-    return fallbackAction === "ask" ? "asking" : "building";
-  }
-
-  if (status === "succeeded" || status.endsWith("ed")) {
-    return getSuccessfulStatusForAction(fallbackAction);
-  }
-
-  if (!status.includes("_")) {
-    return getSuccessfulStatusForAction(fallbackAction);
-  }
-
-  return "failed";
 };
 
 export interface QueueEntry {
@@ -158,7 +139,11 @@ export class TaskStore {
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
     return {
       ...normalizedTask,
-      status: normalizeLegacyTaskStatus(legacyTask.status as string, fallbackAction)
+      status: normalizeTaskLifecycleStatus(
+        currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as string) : String(legacyTask.status ?? ""),
+        fallbackAction,
+        normalizedTask.hasPendingCheckpoint
+      )
     };
   }
 
@@ -243,9 +228,11 @@ export class TaskStore {
       this.listChangeProposals(task.id),
       this.getActiveInteractiveSession(task.id)
     ]);
+    const hasPendingCheckpoint = proposals.some((proposal) => proposal.status === "pending");
     return {
       ...task,
-      hasPendingCheckpoint: proposals.some((proposal) => proposal.status === "pending"),
+      status: reconcileTaskStatusWithPendingCheckpoint(task.status, hasPendingCheckpoint),
+      hasPendingCheckpoint,
       activeInteractiveSession: activeInteractiveSession !== null
     };
   }
