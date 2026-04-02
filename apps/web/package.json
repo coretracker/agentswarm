@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start -H 0.0.0.0 -p 3217",
     "lint": "tsc --noEmit",
-    "test": "node --import tsx --test src/utils/task-history.test.ts"
+    "test": "node --import tsx --test src/utils/task-history.test.ts src/utils/snippets.test.ts"
   },
   "dependencies": {
     "@agentswarm/shared-types": "*",

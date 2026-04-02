@@ -4,7 +4,7 @@ import type {
   AgentProvider,
   AuthSession,
   CreateRoleInput,
-  Preset,
+  CreateSnippetInput,
   CreateTaskFromIssueInput,
   CreateTaskFromPullRequestInput,
   CreateTaskMessageInput,
@@ -18,8 +18,8 @@ import type {
   ProviderModelOption,
   Repository,
   Role,
+  Snippet,
   SystemSettings,
-  TaskDefinitionInput,
   Task,
   OpenAiDiffAssistInput,
   OpenAiDiffAssistResult,
@@ -34,6 +34,7 @@ import type {
   TaskChangeProposal,
   TaskAction,
   UpdateRoleInput,
+  UpdateSnippetInput,
   UpdateTaskPinInput,
   UpdateTaskTitleInput,
   UpdateCredentialSettingsInput,
@@ -41,7 +42,6 @@ import type {
   UpdateRepositoryInput,
   UpdateSettingsInput,
   UpdateUserInput,
-  SpawnPresetInput,
   User
 } from "@agentswarm/shared-types";
 import { buildApiUrl } from "../lib/public-url";
@@ -149,26 +149,21 @@ export const api = {
     request<void>(`/roles/${id}`, {
       method: "DELETE"
     }),
-  listPresets: () => request<Preset[]>("/presets"),
-  getPreset: (id: string) => request<Preset>(`/presets/${id}`),
-  createPreset: (input: TaskDefinitionInput) =>
-    request<Preset>("/presets", {
+  listSnippets: () => request<Snippet[]>("/snippets"),
+  getSnippet: (id: string) => request<Snippet>(`/snippets/${id}`),
+  createSnippet: (input: CreateSnippetInput) =>
+    request<Snippet>("/snippets", {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  updatePreset: (id: string, input: TaskDefinitionInput) =>
-    request<Preset>(`/presets/${id}`, {
+  updateSnippet: (id: string, input: UpdateSnippetInput) =>
+    request<Snippet>(`/snippets/${id}`, {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
-  deletePreset: (id: string) =>
-    request<void>(`/presets/${id}`, {
+  deleteSnippet: (id: string) =>
+    request<void>(`/snippets/${id}`, {
       method: "DELETE"
-    }),
-  spawnPreset: (id: string, input?: SpawnPresetInput) =>
-    request<Task>(`/presets/${id}/spawn`, {
-      method: "POST",
-      ...(input ? { body: JSON.stringify(input) } : {})
     }),
   listTasks: () => request<Task[]>("/tasks"),
   getTask: (id: string) => request<Task>(`/tasks/${id}`),

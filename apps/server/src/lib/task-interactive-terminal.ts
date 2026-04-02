@@ -17,10 +17,20 @@ import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import { canUserAccessTask } from "./task-ownership.js";
+import { resolveWorkspaceGitRuntimeMounts } from "./git-runtime-mounts.js";
 import { claudeMaxTurnsForProfile, codexReasoningEffortForProfile, defaultModelForProvider } from "./provider-config.js";
 import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
+const INTERACTIVE_WORKSPACE_PATH = "/workspace";
+
+function buildInteractiveWorkspaceGitEnvEntries(workspacePath: string): Array<[string, string]> {
+  return [
+    ["GIT_CONFIG_COUNT", "1"],
+    ["GIT_CONFIG_KEY_0", "safe.directory"],
+    ["GIT_CONFIG_VALUE_0", workspacePath]
+  ];
+}
 
 function buildCodexUserConfigToml(workspacePath: string, model: string): string {
   const pathSafe = workspacePath.replace(/"/g, "");
@@ -78,11 +88,8 @@ function buildClaudeSettingsJson(): string {
   });
 }
 
-const CLAUDE_BINARY = "/opt/claude-code/.local/bin/claude";
-
 function buildClaudeStartScript(model: string, maxTurns: number | undefined, settingsJson: string): string {
   const claudeArgs = [
-    `exec ${shellSingleQuote(CLAUDE_BINARY)}`,
     "--model",
     shellSingleQuote(model),
     "--settings",
@@ -92,7 +99,17 @@ function buildClaudeStartScript(model: string, maxTurns: number | undefined, set
     claudeArgs.push("--max-turns", String(maxTurns));
   }
 
-  return ['mkdir -p "$HOME/.claude"', `cd "$TASK_INTERACTIVE_WORKSPACE"`, "sleep 1", claudeArgs.join(" ")].join(" && ");
+  return [
+    'mkdir -p "$HOME/.claude" "$HOME/.local/bin"',
+    'if [ ! -x "$HOME/.local/bin/claude" ] && [ -x "/opt/claude-code/.local/bin/claude" ]; then ln -sf "/opt/claude-code/.local/bin/claude" "$HOME/.local/bin/claude"; fi',
+    'CLAUDE_BIN="$HOME/.local/bin/claude"',
+    'if [ ! -x "$CLAUDE_BIN" ] && [ -x "/opt/claude-code/.local/bin/claude" ]; then CLAUDE_BIN="/opt/claude-code/.local/bin/claude"; fi',
+    'if [ ! -x "$CLAUDE_BIN" ]; then CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"; fi',
+    'if [ -z "$CLAUDE_BIN" ] || [ ! -x "$CLAUDE_BIN" ]; then echo "Claude CLI not found in image." >&2; exit 127; fi',
+    'cd "$TASK_INTERACTIVE_WORKSPACE"',
+    "sleep 1",
+    `exec "$CLAUDE_BIN" ${claudeArgs.join(" ")}`
+  ].join(" && ");
 }
 
 type InteractiveTerminalRuntimeConfig =
@@ -158,7 +175,8 @@ function resolveInteractiveTerminalRuntimeConfig(
         ["ANTHROPIC_API_KEY", credentials.anthropicApiKey],
         ["TERM", "xterm-256color"],
         ["HOME", "/home/claude"],
-        ["TASK_INTERACTIVE_WORKSPACE", "/workspace"]
+        ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
+        ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
       ],
       startScript: buildClaudeStartScript(model, claudeMaxTurnsForProfile(task.providerProfile), buildClaudeSettingsJson())
     };
@@ -176,8 +194,9 @@ function resolveInteractiveTerminalRuntimeConfig(
     ["OPENAI_API_KEY", credentials.openaiApiKey],
     ["TERM", "xterm-256color"],
     ["HOME", "/root"],
-    ["TASK_INTERACTIVE_WORKSPACE", "/workspace"],
-    ["CODEX_TRUST_WORKSPACE", "/workspace"]
+    ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
+    ["CODEX_TRUST_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
+    ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
   ];
   if (settings.openaiBaseUrl?.trim()) {
     envEntries.push(["OPENAI_BASE_URL", settings.openaiBaseUrl.trim()]);
@@ -195,7 +214,7 @@ function resolveInteractiveTerminalRuntimeConfig(
     },
     envEntries,
     startScript: buildCodexStartScript(
-      Buffer.from(buildCodexUserConfigToml("/workspace", model), "utf8").toString("base64"),
+      Buffer.from(buildCodexUserConfigToml(INTERACTIVE_WORKSPACE_PATH, model), "utf8").toString("base64"),
       model,
       codexReasoningEffortForProfile(task.providerProfile)
     )
@@ -436,7 +455,9 @@ async function initializeTaskInteractiveTerminalWebSocket(
     interactiveSessionId = started.sessionId;
 
     const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
+    const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
     const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
+    const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
     const statePaths = runtime.persistentState
       ? await ensureTaskProviderStatePaths(task.id, runtime.provider, {
           uid: runtime.persistentState.uid,
@@ -458,6 +479,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       sessionName,
       "-v",
       `${dockerBindSource}:/workspace:rw`,
+      ...gitRuntimeMounts,
       ...(statePaths && runtime.persistentState
         ? ["-v", `${statePaths.hostPath}:${runtime.persistentState.containerPath}:rw`]
         : []),

@@ -9,8 +9,8 @@ import { useAuth } from "./auth-provider";
 import {
   TaskDefinitionFields,
   type TaskDefinitionFormValues,
-  getTaskDefinitionInitialValues,
-  stripSaveAsPreset
+  buildTaskDefinitionInput,
+  getTaskDefinitionInitialValues
 } from "./task-definition-fields";
 
 export function TaskCreatePage() {
@@ -104,20 +104,10 @@ export function TaskCreatePage() {
   const handleSubmit = async (values: TaskDefinitionFormValues) => {
     setSubmitting(true);
     try {
-      const definition = stripSaveAsPreset(values);
+      const definition = buildTaskDefinitionInput(values);
       const task = await createTaskFromDefinition(definition);
 
       messageApi.success(startMessageForDefinition(definition));
-      if (values.saveAsPreset) {
-        try {
-          await api.createPreset(definition);
-          messageApi.success("Preset saved");
-        } catch (error) {
-          messageApi.warning(
-            error instanceof Error ? `Task created, but preset was not saved: ${error.message}` : "Task created, but preset was not saved"
-          );
-        }
-      }
       router.push(`/tasks/${task.id}`);
     } finally {
       setSubmitting(false);
@@ -151,7 +141,7 @@ export function TaskCreatePage() {
             </Space>
           </Flex>
 
-          <TaskDefinitionFields form={form} showSaveAsPreset={can("preset:create")} />
+          <TaskDefinitionFields form={form} />
         </Flex>
       </Form>
     </>

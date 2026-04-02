@@ -25,6 +25,7 @@ import {
 import { makeBranchName } from "../lib/branch.js";
 import { extractGitLockPathFromErrorMessage, isPathInside, resolveGitTargetLockKey } from "../lib/git-locks.js";
 import { resolveGitPaths } from "../lib/git-paths.js";
+import { resolveWorkspaceGitRuntimeMounts } from "../lib/git-runtime-mounts.js";
 import { installManagedGitHooks } from "../lib/managed-git-hooks.js";
 import { buildTaskCommitSubject, formatCommitSubject } from "../lib/task-commit-subject.js";
 import { resolveSafeWorkspaceFilePath } from "../lib/safe-workspace-file.js";
@@ -2931,6 +2932,7 @@ esac
       const containerName = `agentswarm-task-${task.id}`;
       const workspaceMountMode = action === "ask" ? "ro" : "rw";
       const hostWorkspacePath = this.resolveWorkspaceHostPath(task.id);
+      const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
       const providerStateContainerPath = this.resolveProviderStateContainerPath(task.provider);
       const providerStatePaths = await ensureTaskProviderStatePaths(task.id, task.provider);
       if (workspaceMountMode === "ro") {
@@ -2945,6 +2947,7 @@ esac
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         "-v",
         `${env.TASK_WORKSPACE_HOST_ROOT}:${env.TASK_WORKSPACE_ROOT}:${workspaceMountMode}`,
+        ...gitRuntimeMounts,
         "-v",
         `${providerStatePaths.hostPath}:${providerStateContainerPath}:rw`,
         "-e",

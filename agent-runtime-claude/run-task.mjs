@@ -1,8 +1,6 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, constants, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
-
-const CLAUDE_BINARY = "/opt/claude-code/.local/bin/claude";
 
 const manifestPath = process.env.TASK_MANIFEST_FILE;
 const providerConfigPath = process.env.PROVIDER_CONFIG_FILE;
@@ -48,6 +46,34 @@ const runCommand = (command, args, options = {}) =>
       reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
     });
   });
+
+const isExecutable = async (candidate) => {
+  try {
+    await access(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const resolveClaudeBinary = async (runtimeHome) => {
+  const homeBinary = path.join(runtimeHome, ".local", "bin", "claude");
+  if (await isExecutable(homeBinary)) {
+    return homeBinary;
+  }
+
+  const legacyBinary = "/opt/claude-code/.local/bin/claude";
+  if (await isExecutable(legacyBinary)) {
+    await mkdir(path.dirname(homeBinary), { recursive: true });
+    await symlink(legacyBinary, homeBinary).catch(() => undefined);
+    if (await isExecutable(homeBinary)) {
+      return homeBinary;
+    }
+    return legacyBinary;
+  }
+
+  return homeBinary;
+};
 
 const buildPrompt = () => {
   const rawInput = typeof manifest.input === "string" && manifest.input.length > 0
@@ -100,6 +126,7 @@ const providerStatePath = configuredStatePath && configuredStatePath.length > 0
   : path.join(runtimeHome, ".claude");
 await mkdir(runtimeHome, { recursive: true });
 await mkdir(providerStatePath, { recursive: true });
+const claudeBinary = await resolveClaudeBinary(runtimeHome);
 
 console.log(`[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only tools)" : ""}`);
 console.log(`[runtime] claude max_turns=${manifest.resolvedMaxTurns ?? "default"}`);
@@ -113,7 +140,7 @@ const assistantLines = [];
 const toolBlocks = new Map();
 let sawPartialAssistantText = false;
 let partialTextBuffer = "";
-const proc = spawn("su-exec", [runtimeIdentity, CLAUDE_BINARY, ...args], {
+const proc = spawn("su-exec", [runtimeIdentity, claudeBinary, ...args], {
   env: {
     ...process.env,
     HOME: runtimeHome,

@@ -16,30 +16,46 @@ interface TaskDeletedPayload {
   id: string;
 }
 
-export const useTasks = () => {
+export const useTasks = ({ enabled = true }: { enabled?: boolean } = {}) => {
   const socket = useSocket();
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
 
   useEffect(() => {
-    let active = true;
-
-    void api.listTasks().then((items) => {
-      if (!active) {
-        return;
-      }
-
-      setTasks(sortTasks(items));
+    if (!enabled) {
+      setTasks([]);
       setLoading(false);
-    });
+      return;
+    }
+
+    let active = true;
+    setLoading(true);
+
+    void api
+      .listTasks()
+      .then((items) => {
+        if (!active) {
+          return;
+        }
+
+        setTasks(sortTasks(items));
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!active) {
+          return;
+        }
+
+        setLoading(false);
+      });
 
     return () => {
       active = false;
     };
-  }, []);
+  }, [enabled]);
 
   useEffect(() => {
-    if (!socket) {
+    if (!enabled || !socket) {
       return;
     }
 
@@ -73,7 +89,7 @@ export const useTasks = () => {
       socket.off("task:updated", onTaskUpdate);
       socket.off("task:deleted", onTaskDelete);
     };
-  }, [socket]);
+  }, [enabled, socket]);
 
   return { tasks, setTasks, loading };
 };

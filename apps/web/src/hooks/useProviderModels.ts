@@ -12,26 +12,43 @@ interface UseProviderModelsResult {
 }
 
 export function useProviderModels(provider: AgentProvider): UseProviderModelsResult {
-  const [models, setModels] = useState<ProviderModelOption[]>(getModelsForProvider(provider));
-  const [loading, setLoading] = useState(true);
-  const [fromApi, setFromApi] = useState(false);
+  const [state, setState] = useState<{
+    provider: AgentProvider;
+    models: ProviderModelOption[];
+    loading: boolean;
+    fromApi: boolean;
+  }>({
+    provider,
+    models: getModelsForProvider(provider),
+    loading: true,
+    fromApi: false
+  });
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    setModels(getModelsForProvider(provider));
-    setFromApi(false);
+    setState({
+      provider,
+      models: getModelsForProvider(provider),
+      loading: true,
+      fromApi: false
+    });
 
     void api.listModels(provider).then((response) => {
       if (!active) return;
-      setModels(response.models.length > 0 ? response.models : getModelsForProvider(provider));
-      setFromApi(response.source === "api");
-      setLoading(false);
+      setState({
+        provider,
+        models: response.models.length > 0 ? response.models : getModelsForProvider(provider),
+        loading: false,
+        fromApi: response.source === "api"
+      });
     }).catch(() => {
       if (!active) return;
-      setModels(getModelsForProvider(provider));
-      setFromApi(false);
-      setLoading(false);
+      setState({
+        provider,
+        models: getModelsForProvider(provider),
+        loading: false,
+        fromApi: false
+      });
     });
 
     return () => {
@@ -39,5 +56,9 @@ export function useProviderModels(provider: AgentProvider): UseProviderModelsRes
     };
   }, [provider]);
 
-  return { models, loading, fromApi };
+  if (state.provider !== provider) {
+    return { models: getModelsForProvider(provider), loading: true, fromApi: false };
+  }
+
+  return { models: state.models, loading: state.loading, fromApi: state.fromApi };
 }

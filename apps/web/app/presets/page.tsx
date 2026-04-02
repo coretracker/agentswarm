@@ -1,5 +1,5 @@
-import { PresetsPage } from "../../components/presets-page";
+import { redirect } from "next/navigation";
 
 export default function PresetsRoute() {
-  return <PresetsPage />;
+  redirect("/snippets");
 }

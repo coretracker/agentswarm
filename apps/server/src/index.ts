@@ -8,7 +8,7 @@ import { createAuthService } from "./lib/auth.js";
 import { createRedisClients } from "./lib/redis.js";
 import { EventBus } from "./lib/events.js";
 import { TaskStore } from "./services/task-store.js";
-import { PresetStore } from "./services/preset-store.js";
+import { SnippetStore } from "./services/snippet-store.js";
 import { RepositoryStore } from "./services/repository-store.js";
 import { CredentialStore } from "./services/credential-store.js";
 import { RoleStore } from "./services/role-store.js";
@@ -26,7 +26,7 @@ import { registerUserRoutes } from "./routes/users.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerImportRoutes } from "./routes/imports.js";
-import { registerPresetRoutes } from "./routes/presets.js";
+import { registerSnippetRoutes } from "./routes/snippets.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
 
 const bootstrap = async (): Promise<void> => {
@@ -42,7 +42,7 @@ const bootstrap = async (): Promise<void> => {
   const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
 
   const taskStore = new TaskStore(redisClients.command, eventBus);
-  const presetStore = new PresetStore(redisClients.command, eventBus);
+  const snippetStore = new SnippetStore(redisClients.command, eventBus);
   const repositoryStore = new RepositoryStore(redisClients.command, eventBus);
   const credentialStore = new CredentialStore(redisClients.command);
   const roleStore = new RoleStore(redisClients.command);
@@ -71,7 +71,7 @@ const bootstrap = async (): Promise<void> => {
   registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
   registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
   registerTaskRoutes(app, { taskStore, repositoryStore, scheduler, spawner, settingsStore, auth });
-  registerPresetRoutes(app, { presetStore, repositoryStore, taskStore, scheduler, spawner, githubImportService, auth });
+  registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
   registerImportRoutes(app, { githubImportService, repositoryStore, taskStore, scheduler, spawner, auth });

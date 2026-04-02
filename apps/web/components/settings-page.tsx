@@ -21,6 +21,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popconfirm,
   Select,
   Space,
   Switch,
@@ -71,6 +72,8 @@ interface RoleFormValues {
   allowedModels: string[];
   allowedEfforts: ProviderProfile[];
 }
+
+type ClearCredentialTarget = "github" | "openai" | "anthropic";
 
 const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
   { label: "stdio", value: "stdio" },
@@ -153,6 +156,46 @@ export function SettingsPage() {
   useEffect(() => {
     void loadRoles();
   }, []);
+
+  const handleClearCredential = async (target: ClearCredentialTarget): Promise<void> => {
+    setSavingCredentials(true);
+    try {
+      if (target === "github") {
+        const nextSettings = await api.updateCredentials({ clearGithubToken: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["githubToken"]);
+        message.success("GitHub token cleared");
+        return;
+      }
+
+      if (target === "openai") {
+        const nextSettings = await api.updateCredentials({ clearOpenAiApiKey: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["openaiApiKey"]);
+        message.success("OpenAI API key cleared");
+        return;
+      }
+
+      const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
+      setSettings(nextSettings);
+      credentialForm.resetFields(["anthropicApiKey"]);
+      message.success("Anthropic API key cleared");
+    } catch (error) {
+      if (target === "github") {
+        message.error(error instanceof Error ? error.message : "Failed to clear GitHub token");
+        return;
+      }
+
+      if (target === "openai") {
+        message.error(error instanceof Error ? error.message : "Failed to clear OpenAI API key");
+        return;
+      }
+
+      message.error(error instanceof Error ? error.message : "Failed to clear Anthropic API key");
+    } finally {
+      setSavingCredentials(false);
+    }
+  };
 
   return (
     <>
@@ -461,66 +504,48 @@ export function SettingsPage() {
               <Button type="primary" htmlType="submit" loading={savingCredentials} disabled={!canEditSettings}>
                 Save Credentials
               </Button>
-              <Button
-                danger
-                loading={savingCredentials}
+              <Popconfirm
+                title="Clear GitHub token?"
+                description="This removes the stored GitHub token from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
                 disabled={!canEditSettings}
-                onClick={async () => {
-                  setSavingCredentials(true);
-                  try {
-                    const nextSettings = await api.updateCredentials({ clearGithubToken: true });
-                    setSettings(nextSettings);
-                    credentialForm.resetFields(["githubToken"]);
-                    message.success("GitHub token cleared");
-                  } catch (error) {
-                    message.error(error instanceof Error ? error.message : "Failed to clear GitHub token");
-                  } finally {
-                    setSavingCredentials(false);
-                  }
-                }}
+                onConfirm={() => handleClearCredential("github")}
               >
-                Clear GitHub Token
-              </Button>
-              <Button
-                danger
-                loading={savingCredentials}
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear GitHub Token
+                </Button>
+              </Popconfirm>
+              <Popconfirm
+                title="Clear OpenAI API key?"
+                description="This removes the stored OpenAI API key from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
                 disabled={!canEditSettings}
-                onClick={async () => {
-                  setSavingCredentials(true);
-                  try {
-                    const nextSettings = await api.updateCredentials({ clearOpenAiApiKey: true });
-                    setSettings(nextSettings);
-                    credentialForm.resetFields(["openaiApiKey"]);
-                    message.success("OpenAI API key cleared");
-                  } catch (error) {
-                    message.error(error instanceof Error ? error.message : "Failed to clear OpenAI API key");
-                  } finally {
-                    setSavingCredentials(false);
-                  }
-                }}
+                onConfirm={() => handleClearCredential("openai")}
               >
-                Clear OpenAI API Key
-              </Button>
-              <Button
-                danger
-                loading={savingCredentials}
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear OpenAI API Key
+                </Button>
+              </Popconfirm>
+              <Popconfirm
+                title="Clear Anthropic API key?"
+                description="This removes the stored Anthropic API key from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
                 disabled={!canEditSettings}
-                onClick={async () => {
-                  setSavingCredentials(true);
-                  try {
-                    const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
-                    setSettings(nextSettings);
-                    credentialForm.resetFields(["anthropicApiKey"]);
-                    message.success("Anthropic API key cleared");
-                  } catch (error) {
-                    message.error(error instanceof Error ? error.message : "Failed to clear Anthropic API key");
-                  } finally {
-                    setSavingCredentials(false);
-                  }
-                }}
+                onConfirm={() => handleClearCredential("anthropic")}
               >
-                Clear Anthropic API Key
-              </Button>
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear Anthropic API Key
+                </Button>
+              </Popconfirm>
             </Space>
           </Form>
         </Card>

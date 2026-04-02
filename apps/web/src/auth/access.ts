@@ -8,7 +8,7 @@ export interface NavigationRoute {
 
 export const navigationRoutes: NavigationRoute[] = [
   { key: "/tasks", label: "Tasks", requiredScopes: ["task:list"] },
-  { key: "/presets", label: "Presets", requiredScopes: ["preset:list"] },
+  { key: "/snippets", label: "Snippets", requiredScopes: ["snippet:list"] },
   { key: "/repositories", label: "Repositories", requiredScopes: ["repo:list"] },
   { key: "/settings", label: "Settings", requiredScopes: ["settings:read"] },
   { key: "/users", label: "Users", requiredScopes: ["user:list"] }
@@ -36,8 +36,8 @@ export const getRequiredScopesForPathname = (pathname: string): PermissionScope[
     return ["task:read"];
   }
 
-  if (pathname === "/presets") {
-    return ["preset:list"];
+  if (pathname === "/snippets" || pathname === "/presets") {
+    return ["snippet:list"];
   }
 
   if (pathname === "/repositories") {
@@ -78,8 +78,8 @@ export const getSelectedNavigationKey = (pathname: string): string => {
     return "/tasks";
   }
 
-  if (pathname.startsWith("/presets")) {
-    return "/presets";
+  if (pathname.startsWith("/snippets") || pathname.startsWith("/presets")) {
+    return "/snippets";
   }
 
   if (pathname.startsWith("/repositories")) {

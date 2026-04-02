@@ -88,11 +88,11 @@ export type PermissionScope =
   | "task:ask"
   | "task:interactive"
   | "task:delete"
-  | "preset:list"
-  | "preset:create"
-  | "preset:read"
-  | "preset:edit"
-  | "preset:delete"
+  | "snippet:list"
+  | "snippet:create"
+  | "snippet:read"
+  | "snippet:edit"
+  | "snippet:delete"
   | "repo:list"
   | "repo:read"
   | "repo:create"
@@ -115,11 +115,11 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "task:ask",
   "task:interactive",
   "task:delete",
-  "preset:list",
-  "preset:create",
-  "preset:read",
-  "preset:edit",
-  "preset:delete",
+  "snippet:list",
+  "snippet:create",
+  "snippet:read",
+  "snippet:edit",
+  "snippet:delete",
   "repo:list",
   "repo:read",
   "repo:create",
@@ -141,7 +141,7 @@ export interface PermissionScopeGroup {
 
 export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
   { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:interactive", "task:delete"] },
-  { label: "Presets", scopes: ["preset:list", "preset:create", "preset:read", "preset:edit", "preset:delete"] },
+  { label: "Snippets", scopes: ["snippet:list", "snippet:create", "snippet:read", "snippet:edit", "snippet:delete"] },
   { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
   { label: "Settings", scopes: ["settings:read", "settings:edit"] },
   { label: "Users", scopes: ["user:list", "user:create", "user:read", "user:edit", "user:delete"] }
@@ -562,15 +562,22 @@ export interface PullRequestTaskDefinitionInput {
 
 export type TaskDefinitionInput = BlankTaskDefinitionInput | IssueTaskDefinitionInput | PullRequestTaskDefinitionInput;
 
-export interface Preset {
+export interface Snippet {
   id: string;
   name: string;
-  repoId: string;
-  repoName: string;
-  sourceType: TaskSourceType;
-  definition: TaskDefinitionInput;
+  content: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CreateSnippetInput {
+  name: string;
+  content: string;
+}
+
+export interface UpdateSnippetInput {
+  name: string;
+  content: string;
 }
 
 export interface CreateTaskFromIssueInput {
@@ -631,10 +638,6 @@ export interface UpdateTaskMessageInput {
 export interface MergeTaskInput {
   targetBranch: string;
   commitMessage?: string;
-}
-
-export interface SpawnPresetInput {
-  baseBranch?: string;
 }
 
 export const getTaskBranchStrategyLabel = (strategy: TaskBranchStrategy): string =>
@@ -818,9 +821,9 @@ export interface RepositoryEvent {
   payload: Repository | { id: string };
 }
 
-export interface PresetEvent {
-  type: "preset:created" | "preset:updated" | "preset:deleted";
-  payload: Preset | { id: string };
+export interface SnippetEvent {
+  type: "snippet:created" | "snippet:updated" | "snippet:deleted";
+  payload: Snippet | { id: string };
 }
 
 export type RealtimeEvent =
@@ -835,4 +838,4 @@ export type RealtimeEvent =
   | TaskMergedEvent
   | SettingsEvent
   | RepositoryEvent
-  | PresetEvent;
+  | SnippetEvent;

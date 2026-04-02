@@ -7,7 +7,6 @@ import {
   getEffortOptionsForProvider,
   getProviderProfileLabel,
   getCheckpointMutationBlockedReason,
-  hasRequiredTaskCapabilitiesForDefinition,
   getTaskBranchStrategyLabel,
   getTaskStatusLabel,
   getTaskTypeLabel,
@@ -23,7 +22,7 @@ import {
   type AgentProvider,
   type TaskBranchStrategy,
   type ProviderProfile,
-  type Preset,
+  type SystemSettings,
   type GitHubBranchReference,
   type TaskMergePreview,
   type TaskPushPreview,
@@ -44,6 +43,7 @@ import {
   Input,
   List,
   Modal,
+  Popconfirm,
   Segmented,
   Spin,
   Select,
@@ -61,13 +61,15 @@ import ReactMarkdown from "react-markdown";
 import { Diff, Hunk } from "react-diff-view";
 import remarkGfm from "remark-gfm";
 import { api, type TaskInteractiveTerminalStatus, type TaskWorkspaceFilePreview } from "../src/api/client";
-import { usePresets } from "../src/hooks/usePresets";
+import { useSnippets } from "../src/hooks/useSnippets";
 import { useTask } from "../src/hooks/useTask";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useTaskMessages } from "../src/hooks/useTaskMessages";
 import { useTaskRuns } from "../src/hooks/useTaskRuns";
 import { useTaskChangeProposals } from "../src/hooks/useTaskChangeProposals";
+import { useSettings } from "../src/hooks/useSettings";
 import { normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
+import { insertSnippetContent } from "../src/utils/snippets";
 import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { useAuth } from "./auth-provider";
 import { TaskDiffOpenAiPanel } from "./task-diff-openai-panel";
@@ -112,6 +114,12 @@ function getDefaultComposerAction(task: Task | null, allowedActions: ComposerAct
   }
 
   return defaultAction;
+}
+
+function getProviderDefaultModel(provider: AgentProvider, settings?: SystemSettings | null): string {
+  return provider === "claude"
+    ? settings?.claudeDefaultModel ?? getDefaultModelForProvider(provider)
+    : settings?.codexDefaultModel ?? getDefaultModelForProvider(provider);
 }
 
 function formatRunDuration(startedAt: string, finishedAt: string | null): string {
@@ -370,12 +378,14 @@ function ExpandableMessageContent({ children, fadeColor }: { children: ReactNode
 export function TaskDetailPage({ taskId }: { taskId: string }) {
   const router = useRouter();
   const { can, canAll, session } = useAuth();
+  const { settings } = useSettings();
   const { task, setTask, loading } = useTask(taskId);
   const hadLoadedTaskRef = useRef(false);
   const { messages: taskMessages, setMessages: setTaskMessages, loading: messagesLoading } = useTaskMessages(taskId);
   const { runs: taskRuns, loading: runsLoading } = useTaskRuns(taskId);
   const { proposals: changeProposals, refetch: refetchChangeProposals } = useTaskChangeProposals(taskId);
-  const { presets, loading: presetsLoading } = usePresets();
+  const canUseSnippets = can("snippet:list");
+  const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
   const [liveDiff, setLiveDiff] = useState<TaskLiveDiff | null>(null);
   const [liveDiffLoading, setLiveDiffLoading] = useState(false);
   const [liveDiffError, setLiveDiffError] = useState<string | null>(null);
@@ -421,7 +431,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [messageApi, contextHolder] = message.useMessage();
   const selectedChatActionRef = useRef(false);
   const diffCompareBaseSyncedTaskIdRef = useRef<string | null>(null);
-  const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
+  const [selectedSnippetId, setSelectedSnippetId] = useState<string | null>(null);
   const [pushPreview, setPushPreview] = useState<TaskPushPreview | null>(null);
   const [pushPreviewLoading, setPushPreviewLoading] = useState(false);
   const [pushCommitMessage, setPushCommitMessage] = useState("");
@@ -435,16 +445,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [mergeCommitMessage, setMergeCommitMessage] = useState("");
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
+  const [killTerminalConfirmOpen, setKillTerminalConfirmOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [commentEditModalOpen, setCommentEditModalOpen] = useState(false);
   const [editingComment, setEditingComment] = useState<TaskMessage | null>(null);
   const [commentEditDraft, setCommentEditDraft] = useState("");
-  const [spawnPresetFromTask, setSpawnPresetFromTask] = useState<Preset | null>(null);
-  const [spawnBranches, setSpawnBranches] = useState<GitHubBranchReference[]>([]);
-  const [spawnBranchesLoading, setSpawnBranchesLoading] = useState(false);
-  const [spawnBaseBranch, setSpawnBaseBranch] = useState<string | undefined>();
-  const [spawnModalOpen, setSpawnModalOpen] = useState(false);
-  const [spawningId, setSpawningId] = useState<string | null>(null);
   const [interactiveTerminalStatus, setInteractiveTerminalStatus] = useState<TaskInteractiveTerminalStatus | null>(null);
   const [redirectingToTaskList, setRedirectingToTaskList] = useState(false);
   const [workspaceFilePreview, setWorkspaceFilePreview] = useState<WorkspaceFilePreviewState>({
@@ -511,7 +516,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     task?.branchStrategy === "feature_branch" &&
     !!task?.branchName &&
     task.branchName !== task.repoDefaultBranch;
-  const canSpawnPresetFromTask = canAll(["preset:read", "task:create"]) && !!task;
   const pullCount = task?.pullCount ?? 0;
   const pushCount = task?.pushCount ?? 0;
   const canDelete = canDeleteTask && !!task && !isActive;
@@ -683,10 +687,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     return options;
   }, [task?.repoDefaultBranch, diffBranches]);
   const allowedChatActions = useMemo(() => getAllowedComposerActions(canBuildTasks, canAskTasks), [canAskTasks, canBuildTasks]);
-  const taskPresets = useMemo(
-    () => presets.filter((preset) => hasRequiredTaskCapabilitiesForDefinition(session?.user.scopes ?? [], preset.definition)),
-    [presets, session]
-  );
 
   useEffect(() => {
     const defaultAction = getDefaultComposerAction(task ?? null, allowedChatActions);
@@ -723,6 +723,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   }, [providerInput, providerInputOptions]);
 
   useEffect(() => {
+    if (providerModelsLoading) {
+      return;
+    }
     if (allowedProviderModels.some((option) => option.value === modelInput)) {
       return;
     }
@@ -730,7 +733,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (fallback) {
       setModelInput(fallback);
     }
-  }, [allowedProviderModels, modelInput]);
+  }, [allowedProviderModels, modelInput, providerModelsLoading]);
 
   useEffect(() => {
     if (allowedEffortOptions.some((option) => option.value === providerProfileInput)) {
@@ -1313,146 +1316,35 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     followUpForm.setFieldsValue({ title: "", prompt: "" });
     setFollowUpMode(mode);
   };
-  const handlePresetSelection = (presetId: string | null) => {
-    if (!presetId) {
-      setSelectedPresetId(null);
-      setChatInput("");
-
-      if (task) {
-        const nextProvider = currentTaskProvider;
-        setProviderInput(nextProvider);
-        setModelInput(currentTaskModelOverride || getDefaultModelForProvider(nextProvider));
-        setProviderProfileInput(currentTaskProviderProfile);
-      }
-
+  const handleInsertSelectedSnippet = () => {
+    if (!selectedSnippetId) {
       return;
     }
 
-    setSelectedPresetId(presetId);
-
-    const preset = taskPresets.find((item) => item.id === presetId);
-    if (!preset) {
-      messageApi.error("Selected preset is no longer available.");
+    const snippet = snippets.find((item) => item.id === selectedSnippetId);
+    if (!snippet) {
+      messageApi.error("Selected snippet is no longer available.");
       return;
     }
 
-    const definition = preset.definition;
-
-    setProviderInput(definition.provider);
-    setModelInput(definition.model);
-    setProviderProfileInput(definition.providerProfile);
-
-    if ("taskType" in definition) {
-      const nextAction: ComposerAction = definition.taskType === "ask" ? "ask" : "build";
-      selectedChatActionRef.current = true;
-      setSelectedChatAction(nextAction);
-    }
-
-    if (definition.sourceType === "blank") {
-      setChatInput(definition.prompt ?? "");
-    } else {
-      setChatInput("");
-    }
-
-    if (!task || !canSpawnPresetFromTask) {
-      return;
-    }
+    setChatInput((current) => insertSnippetContent(current, snippet.content));
+    setSelectedSnippetId(null);
   };
-  const handleClearComposer = () => {
-    const hasChangesToClear =
-      !!selectedPresetId ||
-      !!chatInput.trim() ||
-      providerInput !== currentTaskProvider ||
-      providerProfileInput !== currentTaskProviderProfile ||
-      modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider));
-
-    if (!hasChangesToClear) {
-      return;
-    }
-
-    Modal.confirm({
-      title: "Clear preset and composer?",
-      content:
-        "This will deselect the preset, clear the message input, and reset provider and model settings to this task's defaults.",
-      okText: "Clear",
-      cancelText: "Cancel",
-      okButtonProps: { danger: true },
-      onOk: () => {
-        handlePresetSelection(null);
-      }
-    });
-  };
-  const handleStartPresetFromTask = () => {
-    if (!selectedPresetId || !task || !canSpawnPresetFromTask) {
-      return;
-    }
-
-    const preset = taskPresets.find((item) => item.id === selectedPresetId);
-    if (!preset) {
-      messageApi.error("Selected preset is no longer available.");
-      return;
-    }
-
-    setSpawnPresetFromTask(preset);
-    setSpawnModalOpen(true);
-    setSpawnBranches([]);
-    setSpawnBaseBranch(undefined);
-
-    if (preset.sourceType === "pull_request") {
-      return;
-    }
-
-    setSpawnBranchesLoading(true);
-    void api
-      .listGitHubBranches(preset.repoId)
-      .then((branches) => {
-        setSpawnBranches(branches);
-        const defaultBranch = branches.find((branch) => branch.isDefault)?.name ?? branches[0]?.name;
-        const currentTaskBranch = task.branchName ?? task.baseBranch;
-        const definitionBaseBranch = "baseBranch" in preset.definition ? preset.definition.baseBranch : undefined;
-        const candidateBranches = [currentTaskBranch, definitionBaseBranch, defaultBranch].filter(
-          (value): value is string => Boolean(value)
-        );
-        const branchNames = new Set(branches.map((branch) => branch.name));
-        const initialBranch = candidateBranches.find((value) => branchNames.has(value)) ?? branches[0]?.name;
-        setSpawnBaseBranch(initialBranch);
-      })
-      .catch((error) => {
-        messageApi.error(error instanceof Error ? error.message : "Failed to load branches");
-      })
-      .finally(() => {
-        setSpawnBranchesLoading(false);
-      });
-  };
-  const handleCloseSpawnModalFromTask = () => {
-    setSpawnModalOpen(false);
-    setSpawnPresetFromTask(null);
-    setSpawnBranches([]);
-    setSpawnBaseBranch(undefined);
-  };
-  const handleConfirmSpawnFromTask = async () => {
-    if (!spawnPresetFromTask) {
-      return;
-    }
-
-    if (spawnPresetFromTask.sourceType !== "pull_request" && !spawnBaseBranch) {
-      messageApi.error("Select a target branch before starting this preset.");
-      return;
-    }
-
-    setSpawningId(spawnPresetFromTask.id);
-    try {
-      const spawnedTask =
-        spawnPresetFromTask.sourceType === "pull_request"
-          ? await api.spawnPreset(spawnPresetFromTask.id)
-          : await api.spawnPreset(spawnPresetFromTask.id, { baseBranch: spawnBaseBranch });
-      messageApi.success("Task created from preset");
-      handleCloseSpawnModalFromTask();
-      router.push(`/tasks/${spawnedTask.id}`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to spawn preset");
-    } finally {
-      setSpawningId(null);
+  const composerHasChangesToClear =
+    !!selectedSnippetId ||
+    !!chatInput.trim() ||
+    providerInput !== currentTaskProvider ||
+    providerProfileInput !== currentTaskProviderProfile ||
+    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider));
+  const composerClearDisabled = interactiveTerminalRunning || !composerHasChangesToClear;
+  const handleConfirmClearComposer = () => {
+    setSelectedSnippetId(null);
+    setChatInput("");
+    if (task) {
+      const nextProvider = currentTaskProvider;
+      setProviderInput(nextProvider);
+      setModelInput(currentTaskModelOverride || getDefaultModelForProvider(nextProvider));
+      setProviderProfileInput(currentTaskProviderProfile);
     }
   };
   const handleDeleteTask = async () => {
@@ -1792,6 +1684,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             }
           : updatedTask
       );
+      setKillTerminalConfirmOpen(false);
       messageApi.success("Interactive terminal terminated");
       setLiveDiffRefreshKey((k) => k + 1);
       refetchChangeProposals();
@@ -2163,11 +2056,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const chatComposer = (
     <Flex vertical gap={12}>
       <Input.TextArea
-        rows={4}
+        autoSize={{ minRows: 4, maxRows: 14 }}
         value={chatInput}
         onChange={(event) => setChatInput(event.target.value)}
         placeholder={chatPlaceholder}
         disabled={chatDisabled}
+        style={{ resize: "none" }}
       />
       <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
         <Flex align="flex-end" gap={12} wrap="wrap" style={{ flex: "1 1 0", minWidth: 0 }}>
@@ -2191,7 +2085,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 const nextEfforts = getEffortOptionsForProvider(value).filter(
                   (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
                 );
-                setModelInput(nextModels[0]?.value ?? getDefaultModelForProvider(value));
+                const nextDefaultModel = getProviderDefaultModel(value, settings);
+                const nextModelAllowedByRole = roleAllowedModels.length === 0 || roleAllowedModels.includes(nextDefaultModel);
+                setModelInput(nextModelAllowedByRole ? nextDefaultModel : (nextModels[0]?.value ?? nextDefaultModel));
                 if (!nextEfforts.some((option) => option.value === providerProfileInput)) {
                   setProviderProfileInput(nextEfforts[0]?.value ?? "high");
                 }
@@ -2239,34 +2135,36 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </div>
           <div
             style={{
-              minWidth: 180,
-              maxWidth: 260,
+              minWidth: 260,
+              maxWidth: 420,
               display: "flex",
               flexDirection: "column"
             }}
           >
-            <Typography.Text type="secondary">Preset</Typography.Text>
-            <Select
-              showSearch
-              style={{ width: "100%", marginTop: 6 }}
-              placeholder={presetsLoading ? "Loading presets..." : "Select preset"}
-              value={selectedPresetId}
-              onChange={(value) => handlePresetSelection(value)}
-              optionFilterProp="label"
-              loading={presetsLoading}
-              disabled={
-                presetsLoading ||
-                taskPresets.length === 0 ||
-                !canSpawnPresetFromTask ||
-                !canEditTask ||
-                isArchived ||
-                interactiveTerminalRunning
-              }
-              options={taskPresets.map((preset) => ({
-                label: `${preset.name} · ${preset.repoName}`,
-                value: preset.id
-              }))}
-            />
+            <Typography.Text type="secondary">Snippet</Typography.Text>
+            <Flex gap={8} style={{ marginTop: 6 }}>
+              <Select
+                showSearch
+                style={{ minWidth: 180, flex: 1 }}
+                placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
+                value={selectedSnippetId}
+                onChange={(value) => setSelectedSnippetId(value)}
+                optionFilterProp="label"
+                allowClear
+                loading={snippetsLoading}
+                disabled={snippetsLoading || snippets.length === 0 || !canEditTask || isArchived || interactiveTerminalRunning}
+                options={snippets.map((snippet) => ({
+                  label: snippet.name,
+                  value: snippet.id
+                }))}
+              />
+              <Button
+                onClick={handleInsertSelectedSnippet}
+                disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning}
+              >
+                Insert
+              </Button>
+            </Flex>
           </div>
         </Flex>
         <Flex align="center" gap={12} wrap="wrap" style={{ flexShrink: 0 }}>
@@ -2334,19 +2232,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               >
                 Send
               </Button>
-              <Button
-                onClick={handleClearComposer}
-                disabled={
-                  interactiveTerminalRunning ||
-                  (!selectedPresetId &&
-                    !chatInput.trim() &&
-                    providerInput === currentTaskProvider &&
-                    providerProfileInput === currentTaskProviderProfile &&
-                    modelInput === (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)))
-                }
+              <Popconfirm
+                title="Clear composer?"
+                description="This will clear the message input and reset provider and model settings to this task's defaults."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true }}
+                placement="top"
+                disabled={composerClearDisabled}
+                onConfirm={handleConfirmClearComposer}
               >
-                Clear
-              </Button>
+                <Button disabled={composerClearDisabled}>Clear</Button>
+              </Popconfirm>
             </Space.Compact>
             {canPull || canPush || canMerge ? (
               <Space
@@ -3288,14 +3185,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                             }
 
                             if (key === "killInteractiveTerminal") {
-                              Modal.confirm({
-                                title: "Kill interactive terminal?",
-                                content:
-                                  "This force-terminates the live interactive terminal session and keeps whatever is currently in the workspace so AgentSwarm can create the usual checkpoint for recovery.",
-                                okText: "Kill Terminal",
-                                okButtonProps: { danger: true, loading: submitting === "killTerminal" },
-                                onOk: handleKillInteractiveTerminal
-                              });
+                              setKillTerminalConfirmOpen(true);
                               return;
                             }
 
@@ -3365,54 +3255,23 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </Flex>
 
       <Modal
-        open={spawnModalOpen && !!spawnPresetFromTask}
-        title="Confirm Target Branch"
-        onCancel={handleCloseSpawnModalFromTask}
+        open={killTerminalConfirmOpen}
+        title="Kill interactive terminal?"
+        onCancel={() => {
+          if (submitting !== "killTerminal") {
+            setKillTerminalConfirmOpen(false);
+          }
+        }}
+        okText="Kill Terminal"
+        okButtonProps={{ danger: true }}
+        confirmLoading={submitting === "killTerminal"}
+        cancelButtonProps={{ disabled: submitting === "killTerminal" }}
+        onOk={() => void handleKillInteractiveTerminal()}
         destroyOnClose
-        footer={
-          <Flex justify="flex-end" gap={12}>
-            <Button onClick={handleCloseSpawnModalFromTask}>Cancel</Button>
-            <Button
-              type="primary"
-              onClick={handleConfirmSpawnFromTask}
-              loading={spawningId === spawnPresetFromTask?.id}
-              disabled={spawnPresetFromTask?.sourceType !== "pull_request" && !spawnBaseBranch}
-            >
-              Create Task
-            </Button>
-          </Flex>
-        }
       >
-        {spawnPresetFromTask ? (
-          <Space direction="vertical" style={{ width: "100%" }}>
-            <Typography.Paragraph>
-              {spawnPresetFromTask.sourceType === "pull_request"
-                ? "This preset will run on the pull request's branch. Confirm before starting."
-                : "Select the branch this preset should work on. This will be used as the base branch for the new task."}
-            </Typography.Paragraph>
-            {spawnPresetFromTask.sourceType !== "pull_request" ? (
-              <Form layout="vertical">
-                <Form.Item label="Target Branch" required>
-                  <Select
-                    showSearch
-                    allowClear
-                    placeholder="Select target branch"
-                    loading={spawnBranchesLoading}
-                    value={spawnBaseBranch}
-                    onChange={(value) => setSpawnBaseBranch(value ?? undefined)}
-                    optionFilterProp="label"
-                    options={spawnBranches.map((branch) => ({
-                      label: branch.isDefault ? `${branch.name} (default)` : branch.name,
-                      value: branch.name
-                    }))}
-                  />
-                </Form.Item>
-              </Form>
-            ) : null}
-          </Space>
-        ) : null}
+        This force-terminates the live interactive terminal session and keeps whatever is currently in the workspace so
+        AgentSwarm can create the usual checkpoint for recovery.
       </Modal>
-
       <Modal
         open={deleteConfirmOpen && !!task}
         title="Delete task?"
@@ -3490,7 +3349,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 <Input placeholder="Follow-up task on this branch" />
               </Form.Item>
               <Form.Item name="prompt" label="Prompt" rules={[{ required: true }]}>
-                <Input.TextArea rows={8} placeholder="Describe the new problem to solve on this branch." />
+                <Input.TextArea
+                  autoSize={{ minRows: 6, maxRows: 18 }}
+                  placeholder="Describe the new problem to solve on this branch."
+                  style={{ resize: "none" }}
+                />
               </Form.Item>
               <Button type="primary" htmlType="submit" loading={submitting === "continue"}>
                 Create Continued Task
