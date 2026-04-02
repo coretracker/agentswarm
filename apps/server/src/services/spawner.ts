@@ -24,12 +24,17 @@ import {
 } from "@agentswarm/shared-types";
 import { makeBranchName } from "../lib/branch.js";
 import { extractGitLockPathFromErrorMessage, isPathInside, resolveGitTargetLockKey } from "../lib/git-locks.js";
+import { resolveGitPaths } from "../lib/git-paths.js";
+import { installManagedGitHooks } from "../lib/managed-git-hooks.js";
+import { buildTaskCommitSubject, formatCommitSubject } from "../lib/task-commit-subject.js";
 import { resolveSafeWorkspaceFilePath } from "../lib/safe-workspace-file.js";
+import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
 import { env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
 import { TaskStore } from "./task-store.js";
 import { SettingsStore } from "./settings-store.js";
+import { UserStore } from "./user-store.js";
 
 const ansiPattern = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\))/g;
 
@@ -97,9 +102,12 @@ interface WorkspacePreparation {
   workspacePath: string;
   startRef: string;
   workspaceBaseRef: string;
+  kind: "worktree" | "clone";
 }
 
 export class SpawnerService {
+  private static readonly MANAGED_REPO_HEAD_REF = "refs/heads/agentswarm-cache";
+
   private readonly runtimeReady = new Set<AgentProvider>();
   private activeExecutions = new Map<string, { containerName: string; process: ReturnType<typeof spawn> }>();
   private cancelRequestedTaskIds = new Set<string>();
@@ -109,7 +117,8 @@ export class SpawnerService {
 
   constructor(
     private readonly taskStore: TaskStore,
-    private readonly settingsStore: SettingsStore
+    private readonly settingsStore: SettingsStore,
+    private readonly userStore: UserStore
   ) {}
 
   private runCommand(command: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<void> {
@@ -267,10 +276,14 @@ esac
   }
 
   private async cleanupWorkspaceGitLocks(workspacePath: string): Promise<void> {
-    const gitDir = path.join(workspacePath, ".git");
+    const gitPaths = await resolveGitPaths(path.join(workspacePath, ".git")).catch(() => null);
+    if (!gitPaths) {
+      return;
+    }
+
     await Promise.all(
       ["index.lock", "HEAD.lock", "config.lock", "packed-refs.lock", "shallow.lock"].map((lockFile) =>
-        rm(path.join(gitDir, lockFile), { force: true }).catch(() => undefined)
+        rm(path.join(gitPaths.gitDir, lockFile), { force: true }).catch(() => undefined)
       )
     );
   }
@@ -375,6 +388,172 @@ esac
     return this.withNamedLock(this.repoLocks, repoKey, fn);
   }
 
+  private async buildGitCommitArgs(
+    task: Pick<Task, "ownerUserId">,
+    message: string
+  ): Promise<string[]> {
+    const identity = await resolveTaskGitCommitIdentity(task, this.userStore, {
+      name: env.GIT_USER_NAME,
+      email: env.GIT_USER_EMAIL
+    });
+    return ["-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`, "commit", "--no-verify", "-m", message];
+  }
+
+  private async commitWorkspaceChanges(
+    task: Pick<Task, "ownerUserId">,
+    workspacePath: string,
+    message: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<void> {
+    const commitArgs = await this.buildGitCommitArgs(task, message);
+    await this.gitCommand(["-C", workspacePath, ...commitArgs], githubToken, gitUsername);
+  }
+
+  private async getWorkspaceGitPaths(workspacePath: string): Promise<Awaited<ReturnType<typeof resolveGitPaths>>> {
+    return resolveGitPaths(path.join(workspacePath, ".git"));
+  }
+
+  private async syncWorkspaceRemoteRefsIfNeeded(
+    task: Pick<Task, "repoUrl">,
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<void> {
+    const gitPaths = await this.getWorkspaceGitPaths(workspacePath).catch(() => null);
+    if (!gitPaths || gitPaths.usesLinkedWorktree) {
+      return;
+    }
+
+    await this.gitCommand(["-C", workspacePath, "remote", "set-url", "origin", task.repoUrl], githubToken, gitUsername).catch(async () => {
+      await this.gitCommand(["-C", workspacePath, "remote", "add", "origin", task.repoUrl], githubToken, gitUsername);
+    });
+    await this.gitCommand(["-C", workspacePath, "fetch", "--prune", "origin"], githubToken, gitUsername);
+  }
+
+  private async ensureWorkspaceGitHooks(
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<void> {
+    const gitPaths = await this.getWorkspaceGitPaths(workspacePath);
+    const hooksPath = gitPaths.usesLinkedWorktree ? gitPaths.commonDir : gitPaths.gitDir;
+    await installManagedGitHooks(hooksPath);
+  }
+
+  private async findBranchWorktreePath(
+    repoPath: string,
+    branchName: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string | null> {
+    const raw = await this.gitCommandCaptureAllowExitCodes(["-C", repoPath, "worktree", "list", "--porcelain"], [0], githubToken, gitUsername);
+
+    let currentPath: string | null = null;
+    let currentBranch: string | null = null;
+    const flush = (): string | null => {
+      if (currentPath && currentBranch === `refs/heads/${branchName}`) {
+        return currentPath;
+      }
+      return null;
+    };
+
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) {
+        const matched = flush();
+        if (matched) {
+          return matched;
+        }
+        currentPath = null;
+        currentBranch = null;
+        continue;
+      }
+
+      if (line.startsWith("worktree ")) {
+        currentPath = line.slice("worktree ".length).trim();
+        continue;
+      }
+      if (line.startsWith("branch ")) {
+        currentBranch = line.slice("branch ".length).trim();
+      }
+    }
+
+    return flush();
+  }
+
+  private async addManagedWorktree(
+    repoPath: string,
+    workspacePath: string,
+    branchName: string,
+    startPoint: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<void> {
+    await this.gitCommand(["-C", repoPath, "worktree", "add", "-B", branchName, workspacePath, startPoint], githubToken, gitUsername);
+  }
+
+  private async cloneWorkspaceFallback(
+    task: Task,
+    workspacePath: string,
+    branchName: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<void> {
+    await this.gitCommand(["clone", "--no-checkout", task.repoUrl, workspacePath], githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "remote", "set-url", "origin", task.repoUrl], githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "fetch", "--prune", "origin", task.baseBranch], githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, `origin/${task.baseBranch}`], githubToken, gitUsername);
+  }
+
+  private async removeWorkspaceFromManagedRepo(
+    repoPath: string,
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<void> {
+    const gitPaths = await this.getWorkspaceGitPaths(workspacePath).catch(() => null);
+    if (!gitPaths?.usesLinkedWorktree) {
+      return;
+    }
+
+    await this.gitCommand(["-C", repoPath, "worktree", "remove", "--force", workspacePath], githubToken, gitUsername).catch(() => undefined);
+    await this.gitCommand(["-C", repoPath, "worktree", "prune"], githubToken, gitUsername).catch(() => undefined);
+  }
+
+  private async withFreshManagedRepo<T>(
+    task: Task,
+    githubToken: string | null | undefined,
+    gitUsername: string,
+    fn: (repoPath: string) => Promise<T>
+  ): Promise<T> {
+    const repoCachePath = this.resolveRepoCachePath(task);
+    return this.withRepoLock(repoCachePath, async () => {
+      let managedRepoPath = await this.ensureManagedRepoFresh(task, githubToken, gitUsername);
+      try {
+        return await fn(managedRepoPath);
+      } catch (error) {
+        if (!this.shouldRebuildMirror(error)) {
+          throw error;
+        }
+
+        await rm(managedRepoPath, { recursive: true, force: true });
+        managedRepoPath = await this.ensureManagedRepoFresh(task, githubToken, gitUsername);
+        return fn(managedRepoPath);
+      }
+    });
+  }
+
+  private async refreshWorkspaceRemoteState(
+    task: Task,
+    workspacePath: string,
+    githubToken: string | null | undefined,
+    gitUsername: string
+  ): Promise<void> {
+    await this.withFreshManagedRepo(task, githubToken, gitUsername, async () => {
+      await this.syncWorkspaceRemoteRefsIfNeeded(task, workspacePath, githubToken, gitUsername);
+    });
+  }
+
   private shouldRebuildMirror(error: unknown): boolean {
     if (!(error instanceof Error)) {
       return false;
@@ -416,7 +595,7 @@ esac
 
   private resolveRepoCachePath(task: Task): string {
     const repoCacheKey = sanitizePathSegment(task.repoId || task.repoName || "repo").replace(/\//g, "-");
-    return path.join(env.REPO_CACHE_ROOT, `${repoCacheKey}.git`);
+    return path.join(env.REPO_CACHE_ROOT, "repos", repoCacheKey);
   }
 
   private resolveRepoProfilePath(task: Task): string {
@@ -533,23 +712,23 @@ esac
   }
 
   private async readGitFile(
-    mirrorPath: string,
+    repoPath: string,
     ref: string,
     filePath: string,
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<string | null> {
     try {
-      return await this.gitCommandCapture(["--git-dir", mirrorPath, "show", `${ref}:${filePath}`], githubToken, gitUsername);
+      return await this.gitCommandCapture(["-C", repoPath, "show", `${ref}:${filePath}`], githubToken, gitUsername);
     } catch {
       return null;
     }
   }
 
-  private async ensureRepoProfile(task: Task, mirrorPath: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
-    const ref = `refs/heads/${task.baseBranch}`;
+  private async ensureRepoProfile(task: Task, repoPath: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
+    const ref = `origin/${task.baseBranch}`;
     const profilePath = this.resolveRepoProfilePath(task);
-    const headSha = await this.gitCommandCapture(["--git-dir", mirrorPath, "rev-parse", ref], githubToken, gitUsername);
+    const headSha = await this.gitCommandCapture(["-C", repoPath, "rev-parse", ref], githubToken, gitUsername);
 
     try {
       const raw = await readFile(profilePath, "utf8");
@@ -561,11 +740,11 @@ esac
       // Cache miss.
     }
 
-    const rootPackageJson = await this.readGitFile(mirrorPath, ref, "package.json", githubToken, gitUsername);
+    const rootPackageJson = await this.readGitFile(repoPath, ref, "package.json", githubToken, gitUsername);
 
     // Fetch every file path in the repo once — used for both the directory map
     // and workspace package discovery, so we only pay the git cost once.
-    const allFilePathsRaw = await this.gitCommandCapture(["--git-dir", mirrorPath, "ls-tree", "-r", "--name-only", ref], githubToken, gitUsername);
+    const allFilePathsRaw = await this.gitCommandCapture(["-C", repoPath, "ls-tree", "-r", "--name-only", ref], githubToken, gitUsername);
     const allFilePaths = allFilePathsRaw
       .split("\n")
       .map((line) => line.trim())
@@ -577,7 +756,7 @@ esac
 
     const workspacePackageSummaries: string[] = [];
     for (const packagePath of workspacePackagePaths) {
-      const packageJson = await this.readGitFile(mirrorPath, ref, packagePath, githubToken, gitUsername);
+      const packageJson = await this.readGitFile(repoPath, ref, packagePath, githubToken, gitUsername);
       if (!packageJson) {
         continue;
       }
@@ -612,33 +791,34 @@ esac
     return summary;
   }
 
-  private async ensureRepoMirror(task: Task, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
-    const mirrorPath = this.resolveRepoCachePath(task);
-    await mkdir(env.REPO_CACHE_ROOT, { recursive: true });
+  private async ensureManagedRepoFresh(task: Task, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
+    const repoPath = this.resolveRepoCachePath(task);
+    await mkdir(path.dirname(repoPath), { recursive: true });
 
-    try {
-      await access(mirrorPath);
-    } catch {
-      await this.gitCommand(["clone", "--mirror", task.repoUrl, mirrorPath], githubToken, gitUsername);
+    const repoGitDir = path.join(repoPath, ".git");
+    const repoExists = await access(repoGitDir)
+      .then(() => true)
+      .catch(() => false);
+    if (!repoExists) {
+      await rm(repoPath, { recursive: true, force: true });
+      await mkdir(repoPath, { recursive: true });
+      await this.gitCommand(["init", repoPath], githubToken, gitUsername);
     }
 
-    await this.gitCommand(["-C", mirrorPath, "remote", "set-url", "origin", task.repoUrl], githubToken, gitUsername);
+    await this.gitCommand(["-C", repoPath, "symbolic-ref", "HEAD", SpawnerService.MANAGED_REPO_HEAD_REF], githubToken, gitUsername).catch(
+      () => undefined
+    );
+    await this.gitCommand(["-C", repoPath, "remote", "set-url", "origin", task.repoUrl], githubToken, gitUsername).catch(async () => {
+      await this.gitCommand(["-C", repoPath, "remote", "add", "origin", task.repoUrl], githubToken, gitUsername);
+    });
     await this.gitCommand(
-      ["--git-dir", mirrorPath, "fetch", "--prune", "origin", "+refs/heads/*:refs/heads/*"],
+      ["-C", repoPath, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"],
       githubToken,
       gitUsername
     );
+    await this.gitCommand(["-C", repoPath, "worktree", "prune"], githubToken, gitUsername).catch(() => undefined);
 
-    return mirrorPath;
-  }
-
-  private async remoteBranchExists(repoUrl: string, branchName: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<boolean> {
-    try {
-      const output = await this.gitCommandCapture(["ls-remote", "--heads", repoUrl, branchName], githubToken, gitUsername);
-      return output.trim().length > 0;
-    } catch {
-      return false;
-    }
+    return repoPath;
   }
 
   private async localBranchExists(workspacePath: string, branchName: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<boolean> {
@@ -679,7 +859,7 @@ esac
         return { pullCount: 0, pushCount: 0 };
       }
 
-      await this.gitCommand(["-C", workspacePath, "fetch", "origin"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
 
       let pullCount = 0;
       let pushCount = 0;
@@ -1088,31 +1268,31 @@ esac
 
     if (!workspaceExists) {
       await mkdir(path.dirname(workspacePath), { recursive: true });
-      await this.gitCommand(["clone", "--no-local", repoCachePath, workspacePath], githubToken, gitUsername);
+      if (task.branchStrategy === "work_on_branch") {
+        const activeWorktreePath = await this.findBranchWorktreePath(repoCachePath, task.baseBranch, githubToken, gitUsername);
+        if (activeWorktreePath && activeWorktreePath !== repoCachePath) {
+          await this.cloneWorkspaceFallback(task, workspacePath, task.baseBranch, githubToken, gitUsername);
+        } else {
+          await this.addManagedWorktree(repoCachePath, workspacePath, task.baseBranch, `origin/${task.baseBranch}`, githubToken, gitUsername);
+        }
+      } else if (await this.refExists(repoCachePath, `origin/${branchName}`, githubToken, gitUsername)) {
+        await this.addManagedWorktree(repoCachePath, workspacePath, branchName, `origin/${branchName}`, githubToken, gitUsername);
+      } else {
+        await this.addManagedWorktree(repoCachePath, workspacePath, branchName, `origin/${task.baseBranch}`, githubToken, gitUsername);
+      }
     } else {
       await this.cleanupWorkspaceGitLocks(workspacePath);
-    }
-
-    await this.gitCommand(["-C", workspacePath, "remote", "set-url", "origin", task.repoUrl], githubToken, gitUsername);
-    await this.gitCommand(["-C", workspacePath, "fetch", "origin", task.baseBranch], githubToken, gitUsername);
-
-    if (task.branchStrategy === "work_on_branch") {
-      if (await this.localBranchExists(workspacePath, task.baseBranch, githubToken, gitUsername)) {
-        await this.gitCommand(["-C", workspacePath, "checkout", task.baseBranch], githubToken, gitUsername);
-      } else {
-        await this.gitCommand(["-C", workspacePath, "checkout", "-B", task.baseBranch, `origin/${task.baseBranch}`], githubToken, gitUsername);
-      }
-    } else if (await this.localBranchExists(workspacePath, branchName, githubToken, gitUsername)) {
-      await this.gitCommand(["-C", workspacePath, "checkout", branchName], githubToken, gitUsername);
-    } else if (await this.remoteBranchExists(task.repoUrl, branchName, githubToken, gitUsername)) {
-      await this.gitCommand(["-C", workspacePath, "fetch", "origin", branchName], githubToken, gitUsername);
-      await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, `origin/${branchName}`], githubToken, gitUsername);
-    } else {
-      await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, `origin/${task.baseBranch}`], githubToken, gitUsername);
+      await this.syncWorkspaceRemoteRefsIfNeeded(task, workspacePath, githubToken, gitUsername);
     }
 
     const startRef = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
-    return { workspacePath, startRef, workspaceBaseRef: task.workspaceBaseRef ?? startRef };
+    const gitPaths = await this.getWorkspaceGitPaths(workspacePath);
+    return {
+      workspacePath,
+      startRef,
+      workspaceBaseRef: task.workspaceBaseRef ?? startRef,
+      kind: gitPaths.usesLinkedWorktree ? "worktree" : "clone"
+    };
   }
 
   private async writeRuntimePayloadFiles(
@@ -1182,34 +1362,7 @@ esac
   }
 
   private toCommitSubject(input: string): string {
-    const cleaned = input.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
-    return cleaned.length > 72 ? `${cleaned.slice(0, 69).trimEnd()}...` : cleaned;
-  }
-
-  private inferCommitType(taskTitle: string, files: string[]): "fix" | "feat" | "refactor" | "docs" | "test" | "chore" {
-    const title = taskTitle.toLowerCase();
-    if (/\bfix\b|\bbug\b|\bregress/.test(title)) return "fix";
-
-    const loweredFiles = files.map((file) => file.toLowerCase());
-    if (loweredFiles.length > 0 && loweredFiles.every((file) => file.endsWith(".md") || file.includes("/docs/"))) return "docs";
-    if (loweredFiles.length > 0 && loweredFiles.every((file) => file.includes(".test.") || file.includes(".spec.") || file.includes("/test/"))) return "test";
-    if (/\brefactor\b|\bcleanup\b/.test(title)) return "refactor";
-    if (/\badd\b|\bimplement\b|\bfeature\b|\binteractive\b/.test(title)) return "feat";
-    return "chore";
-  }
-
-  private summarizeChangedPaths(files: string[]): string {
-    const unique = [...new Set(files.filter(Boolean))];
-    if (unique.length === 0) {
-      return "update workspace changes";
-    }
-    if (unique.length === 1) {
-      return `update ${path.basename(unique[0])}`;
-    }
-    if (unique.length === 2) {
-      return `update ${path.basename(unique[0])} and ${path.basename(unique[1])}`;
-    }
-    return `update ${unique.length} files`;
+    return formatCommitSubject(input);
   }
 
   private async getStagedFiles(
@@ -1229,9 +1382,7 @@ esac
   }
 
   private buildGeneratedCommitSubjectFromFiles(task: Task, files: string[]): string {
-    const type = this.inferCommitType(task.title, files);
-    const subject = this.summarizeChangedPaths(files);
-    return this.toCommitSubject(`${type}(agentswarm): ${subject}`);
+    return buildTaskCommitSubject(task.title, files);
   }
 
   private async buildGeneratedCommitSubject(
@@ -1377,10 +1528,8 @@ esac
       }
     }
 
-    await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], githubToken, gitUsername);
-    await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], githubToken, gitUsername);
     const generatedSubject = await this.buildGeneratedCommitSubject(task, workspacePath, githubToken, gitUsername);
-    await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", generatedSubject], githubToken, gitUsername);
+    await this.commitWorkspaceChanges(task, workspacePath, generatedSubject, githubToken, gitUsername);
 
     const branchDiff = await this.gitCommandCapture(["-C", workspacePath, "diff", `${diffBaseRef}..HEAD`], githubToken, gitUsername);
     const changedFiles = await this.collectChangedFiles(workspacePath, diffBaseRef, githubToken, gitUsername);
@@ -1684,10 +1833,8 @@ esac
       }
     }
 
-    await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], githubToken, gitUsername);
-    await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], githubToken, gitUsername);
     const generatedSubject = await this.buildGeneratedCommitSubject(task, workspacePath, githubToken, gitUsername);
-    await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", generatedSubject], githubToken, gitUsername);
+    await this.commitWorkspaceChanges(task, workspacePath, generatedSubject, githubToken, gitUsername);
     return { didCommit: true };
   }
 
@@ -1715,16 +1862,15 @@ esac
       }
     }
 
-    await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], githubToken, gitUsername);
-    await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], githubToken, gitUsername);
     const shortId = proposalId.slice(0, 8);
-    const subject = this.toCommitSubject(`revert(agentswarm): undo checkpoint ${shortId}`);
-    await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", subject], githubToken, gitUsername);
+    const subject = this.toCommitSubject(`revert(checkpoint): undo checkpoint ${shortId}`);
+    await this.commitWorkspaceChanges(task, workspacePath, subject, githubToken, gitUsername);
     return { didCommit: true };
   }
 
   /** After re-applying a reverted checkpoint, stage and commit so the branch stays clean (same pattern as revert). */
   private async commitWorkspaceAfterCheckpointReapply(
+    task: Task,
     workspacePath: string,
     proposalId: string,
     githubToken?: string | null,
@@ -1743,11 +1889,9 @@ esac
       }
     }
 
-    await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], githubToken, gitUsername);
-    await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], githubToken, gitUsername);
     const shortId = proposalId.slice(0, 8);
-    const subject = this.toCommitSubject(`reapply(agentswarm): checkpoint ${shortId}`);
-    await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", subject], githubToken, gitUsername);
+    const subject = this.toCommitSubject(`chore(checkpoint): reapply checkpoint ${shortId}`);
+    await this.commitWorkspaceChanges(task, workspacePath, subject, githubToken, gitUsername);
     return { didCommit: true };
   }
 
@@ -1831,7 +1975,7 @@ esac
       const { githubToken, gitUsername } = runtimeCredentials;
       try {
         const { didCommit } = isReapply
-          ? await this.commitWorkspaceAfterCheckpointReapply(workspacePath, proposalId, githubToken, gitUsername)
+          ? await this.commitWorkspaceAfterCheckpointReapply(task, workspacePath, proposalId, githubToken, gitUsername)
           : await this.commitWorkspaceAfterInteractiveCheckpointApply(
               task,
               workspacePath,
@@ -1882,6 +2026,7 @@ esac
       const { githubToken, gitUsername } = runtimeCredentials;
       try {
         const { didCommit } = await this.commitWorkspaceAfterCheckpointReapply(
+          task,
           workspacePath,
           proposalId,
           githubToken,
@@ -2212,6 +2357,15 @@ esac
     const legacyCodexStatePath = resolveTaskProviderStatePaths(task.id, "codex").legacyServerPath;
     const legacyClaudeStatePath = resolveTaskProviderStatePaths(task.id, "claude").legacyServerPath;
     await rm(payloadDir, { recursive: true, force: true });
+    const repoCachePath = this.resolveRepoCachePath(task);
+    await this.withRepoLock(repoCachePath, async () => {
+      const repoExists = await access(path.join(repoCachePath, ".git"))
+        .then(() => true)
+        .catch(() => false);
+      if (repoExists) {
+        await this.removeWorkspaceFromManagedRepo(repoCachePath, workspacePath);
+      }
+    });
     await rm(workspacePath, { recursive: true, force: true });
     await rm(taskStateRootPath, { recursive: true, force: true });
     await rm(legacyCodexStatePath, { recursive: true, force: true });
@@ -2239,7 +2393,7 @@ esac
       await this.gitCommand(["-C", workspacePath, "checkout", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     }
 
-    await this.gitCommand(["-C", workspacePath, "fetch", "origin"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
 
     const remoteRef = `origin/${branchName}`;
     if (!(await this.refExists(workspacePath, remoteRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
@@ -2260,10 +2414,14 @@ esac
         throw error;
       }
 
-      await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       const generatedSubject = await this.buildGeneratedCommitSubject(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", generatedSubject], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.commitWorkspaceChanges(
+        task,
+        workspacePath,
+        generatedSubject,
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername
+      );
       createdLocalCommit = true;
     }
 
@@ -2271,7 +2429,7 @@ esac
       await this.taskStore.appendLog(task.id, "Spawner: created a local commit from workspace changes before pulling.");
     }
 
-    await this.gitCommand(["-C", workspacePath, "fetch", "origin"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     await this.gitCommand(["-C", workspacePath, "rebase", remoteRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
       async (error) => {
         await this.gitCommand(["-C", workspacePath, "rebase", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
@@ -2312,14 +2470,12 @@ esac
         throw error;
       }
 
-      await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       const custom = options?.commitMessage?.trim();
       const subject =
         custom && custom.length > 0
           ? this.toCommitSubject(custom)
           : await this.buildGeneratedCommitSubject(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", subject], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.commitWorkspaceChanges(task, workspacePath, subject, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       createdLocalCommit = true;
     }
 
@@ -2346,9 +2502,7 @@ esac
     try {
       await this.gitCommand(["-C", workspacePath, "push", "--no-verify", "-u", "origin", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     } catch {
-      await this.gitCommand(["-C", workspacePath, "fetch", "origin", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
-        () => undefined
-      );
+      await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(() => undefined);
       try {
         await this.gitCommandCapture(
           ["-C", workspacePath, "rev-parse", "--verify", `origin/${branchName}`],
@@ -2402,25 +2556,24 @@ esac
     }
 
     const repoCachePath = this.resolveRepoCachePath(task);
-    return this.withRepoLock(repoCachePath, async () => {
-      const mirrorPath = await this.ensureRepoMirror(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      const sourceRef = `refs/heads/${sourceBranch}`;
-      const targetRef = `refs/heads/${normalizedTargetBranch}`;
+    return this.withFreshManagedRepo(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, async (managedRepoPath) => {
+      const sourceRef = `origin/${sourceBranch}`;
+      const targetRef = `origin/${normalizedTargetBranch}`;
 
       try {
-        await this.gitCommandCapture(["--git-dir", mirrorPath, "rev-parse", "--verify", sourceRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+        await this.gitCommandCapture(["-C", managedRepoPath, "rev-parse", "--verify", sourceRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       } catch {
         throw new Error(`Task branch ${sourceBranch} is not available on origin`);
       }
 
       try {
-        await this.gitCommandCapture(["--git-dir", mirrorPath, "rev-parse", "--verify", targetRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+        await this.gitCommandCapture(["-C", managedRepoPath, "rev-parse", "--verify", targetRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       } catch {
         throw new Error(`Target branch ${normalizedTargetBranch} does not exist on origin`);
       }
 
       const changedFilesRaw = await this.gitCommandCapture(
-        ["--git-dir", mirrorPath, "diff", "--name-only", `${targetRef}...${sourceRef}`],
+        ["-C", managedRepoPath, "diff", "--name-only", `${targetRef}...${sourceRef}`],
         runtimeCredentials.githubToken,
         runtimeCredentials.gitUsername
       );
@@ -2432,7 +2585,7 @@ esac
 
       try {
         await this.gitCommandCapture(
-          ["--git-dir", mirrorPath, "merge-base", "--is-ancestor", sourceRef, targetRef],
+          ["-C", managedRepoPath, "merge-base", "--is-ancestor", sourceRef, targetRef],
           runtimeCredentials.githubToken,
           runtimeCredentials.gitUsername
         );
@@ -2451,7 +2604,7 @@ esac
       }
 
       const mergeTreeOutput = await this.gitCommandCaptureAllowExitCodes(
-        ["--git-dir", mirrorPath, "merge-tree", "--write-tree", "--messages", targetRef, sourceRef],
+        ["-C", managedRepoPath, "merge-tree", "--write-tree", "--messages", targetRef, sourceRef],
         [0, 1],
         runtimeCredentials.githubToken,
         runtimeCredentials.gitUsername
@@ -2487,75 +2640,69 @@ esac
     const workspaceExists = await access(workspacePath)
       .then(() => true)
       .catch(() => false);
-    if (!workspaceExists) {
-      const repoCachePath = this.resolveRepoCachePath(task);
-      await this.withRepoLock(repoCachePath, async () => {
-        let ensuredRepoCachePath = await this.ensureRepoMirror(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
 
-        try {
-          await mkdir(path.dirname(workspacePath), { recursive: true });
-          await this.gitCommand(["clone", "--no-local", ensuredRepoCachePath, workspacePath], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-        } catch (error) {
-          if (!this.shouldRebuildMirror(error)) {
-            throw error;
-          }
-
-          await rm(ensuredRepoCachePath, { recursive: true, force: true });
-          ensuredRepoCachePath = await this.ensureRepoMirror(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-          await mkdir(path.dirname(workspacePath), { recursive: true });
-          await this.gitCommand(["clone", "--no-local", ensuredRepoCachePath, workspacePath], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-        }
-      });
-    }
-
-    await this.gitCommand(["-C", workspacePath, "remote", "set-url", "origin", task.repoUrl], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-
-    if (await this.localBranchExists(workspacePath, branchName, runtimeCredentials.githubToken, runtimeCredentials.gitUsername)) {
+    if (workspaceExists && (await this.localBranchExists(workspacePath, branchName, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
       await this.gitCommand(["-C", workspacePath, "checkout", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       await this.pushTaskBranch(task);
     }
 
-    await this.gitCommand(["-C", workspacePath, "fetch", "origin", targetBranchName, branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    await this.withFreshManagedRepo(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, async (managedRepoPath) => {
+      const defaultRef = `origin/${targetBranchName}`;
+      const remoteBranchRef = `origin/${branchName}`;
 
-    const defaultRef = `origin/${targetBranchName}`;
-    if (!(await this.refExists(workspacePath, defaultRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
-      throw new Error(`Target branch ${targetBranchName} does not exist on origin`);
-    }
+      if (!(await this.refExists(managedRepoPath, defaultRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
+        throw new Error(`Target branch ${targetBranchName} does not exist on origin`);
+      }
 
-    const remoteBranchRef = `origin/${branchName}`;
-    if (!(await this.refExists(workspacePath, remoteBranchRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
-      throw new Error(`Task branch ${branchName} is not available on origin`);
-    }
+      if (!(await this.refExists(managedRepoPath, remoteBranchRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
+        throw new Error(`Task branch ${branchName} is not available on origin`);
+      }
 
-    if (!(await this.localBranchExists(workspacePath, targetBranchName, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
-      await this.gitCommand(["-C", workspacePath, "checkout", "-B", targetBranchName, defaultRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-    } else {
-      await this.gitCommand(["-C", workspacePath, "checkout", targetBranchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      await this.gitCommand(["-C", workspacePath, "reset", "--hard", defaultRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-    }
+      const mergeRoot = await mkdtemp(path.join(tmpdir(), `agentswarm-merge-${task.id}-`));
+      const mergeWorkspacePath = path.join(mergeRoot, "workspace");
+      const mergeBranchName = `agentswarm-merge-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${nanoid(6).toLowerCase()}`;
 
-    try {
-      await this.gitCommand(
-        ["-C", workspacePath, "merge", "--squash", "--no-commit", remoteBranchRef],
-        runtimeCredentials.githubToken,
-        runtimeCredentials.gitUsername
-      );
+      try {
+        await this.addManagedWorktree(
+          managedRepoPath,
+          mergeWorkspacePath,
+          mergeBranchName,
+          defaultRef,
+          runtimeCredentials.githubToken,
+          runtimeCredentials.gitUsername
+        );
 
-      await this.gitCommand(["-C", workspacePath, "config", "user.name", env.GIT_USER_NAME], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      await this.gitCommand(["-C", workspacePath, "config", "user.email", env.GIT_USER_EMAIL], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      const custom = options?.commitMessage?.trim();
-      const subject =
-        custom && custom.length > 0
-          ? this.toCommitSubject(custom)
-          : await this.buildGeneratedCommitSubject(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      await this.gitCommand(["-C", workspacePath, "commit", "--no-verify", "-m", subject], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-    } catch (error) {
-      await this.gitCommand(["-C", workspacePath, "merge", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(() => undefined);
-      await this.gitCommand(["-C", workspacePath, "reset", "--hard", defaultRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(() => undefined);
-      throw error;
-    }
+        await this.gitCommand(
+          ["-C", mergeWorkspacePath, "merge", "--squash", "--no-commit", remoteBranchRef],
+          runtimeCredentials.githubToken,
+          runtimeCredentials.gitUsername
+        );
 
-    await this.gitCommand(["-C", workspacePath, "push", "--no-verify", "origin", targetBranchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+        const custom = options?.commitMessage?.trim();
+        const subject =
+          custom && custom.length > 0
+            ? this.toCommitSubject(custom)
+            : await this.buildGeneratedCommitSubject(task, mergeWorkspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+        await this.commitWorkspaceChanges(task, mergeWorkspacePath, subject, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+        await this.gitCommand(
+          ["-C", mergeWorkspacePath, "push", "--no-verify", "origin", `HEAD:refs/heads/${targetBranchName}`],
+          runtimeCredentials.githubToken,
+          runtimeCredentials.gitUsername
+        );
+      } catch (error) {
+        await this.gitCommand(["-C", mergeWorkspacePath, "merge", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
+          () => undefined
+        );
+        await this.gitCommand(["-C", mergeWorkspacePath, "reset", "--hard", defaultRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
+          () => undefined
+        );
+        throw error;
+      } finally {
+        await this.removeWorkspaceFromManagedRepo(managedRepoPath, mergeWorkspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+        await rm(mergeRoot, { recursive: true, force: true });
+      }
+    });
+
     await this.taskStore.appendLog(task.id, `Spawner: squash merged ${branchName} into ${targetBranchName}.`);
     return (await this.taskStore.getTask(task.id)) ?? task;
   }
@@ -2601,45 +2748,21 @@ esac
     }
 
     const action: TaskAction = workingTask.taskType === "ask" ? "ask" : "build";
-    const repoCachePath = this.resolveRepoCachePath(workingTask);
-
-    const { workspace } = await this.withRepoLock(repoCachePath, async () => {
-      const ensuredRepoCachePath = await this.ensureRepoMirror(
-        workingTask,
-        runtimeCredentials.githubToken,
-        runtimeCredentials.gitUsername
-      );
-      try {
-        const prepared = await this.prepareWorkspace(
+    const { workspace } = await this.withFreshManagedRepo(
+      workingTask,
+      runtimeCredentials.githubToken,
+      runtimeCredentials.gitUsername,
+      async (managedRepoPath) => ({
+        workspace: await this.prepareWorkspace(
           workingTask,
           action,
           branchName,
-          ensuredRepoCachePath,
+          managedRepoPath,
           runtimeCredentials.githubToken,
           runtimeCredentials.gitUsername
-        );
-        return { workspace: prepared };
-      } catch (error) {
-        if (!this.shouldRebuildMirror(error)) {
-          throw error;
-        }
-        await rm(ensuredRepoCachePath, { recursive: true, force: true });
-        const rebuiltRepoCachePath = await this.ensureRepoMirror(
-          workingTask,
-          runtimeCredentials.githubToken,
-          runtimeCredentials.gitUsername
-        );
-        const prepared = await this.prepareWorkspace(
-          workingTask,
-          action,
-          branchName,
-          rebuiltRepoCachePath,
-          runtimeCredentials.githubToken,
-          runtimeCredentials.gitUsername
-        );
-        return { workspace: prepared };
-      }
-    });
+        )
+      })
+    );
 
     let nextTask = (await this.taskStore.getTask(workingTask.id)) ?? workingTask;
     if (action === "build" && !nextTask.workspaceBaseRef) {
@@ -2651,22 +2774,7 @@ esac
 
     if (action === "build") {
       const workspacePath = workspace.workspacePath;
-      const gitDir = path.join(workspacePath, ".git");
-      const hooksDir = path.join(gitDir, "hooks");
-      await mkdir(hooksDir, { recursive: true });
-      await writeFile(
-        path.join(hooksDir, "pre-commit"),
-        "#!/bin/sh\n# AgentSwarm: only the spawner may create commits.\nexit 1\n",
-        "utf8"
-      );
-      await writeFile(
-        path.join(hooksDir, "pre-push"),
-        "#!/bin/sh\n# AgentSwarm: only the spawner may push.\nexit 1\n",
-        "utf8"
-      );
-      await chmod(path.join(hooksDir, "pre-commit"), 0o755);
-      await chmod(path.join(hooksDir, "pre-push"), 0o755);
-      await this.runCommand("chmod", ["-R", "o-w", gitDir]);
+      await this.ensureWorkspaceGitHooks(workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     }
 
     const readyStatus = getSuccessfulStatusForAction(action);
@@ -2723,55 +2831,28 @@ esac
       runId = run?.id ?? null;
       const appendRunLog = (line: string) => this.taskStore.appendLogForRun(task.id, line, runId);
       const repoCachePath = this.resolveRepoCachePath(task);
-      await appendRunLog("Spawner: preparing repository mirror and workspace.");
-      const { repoProfile, workspace } = await this.withRepoLock(repoCachePath, async () => {
-        const ensuredRepoCachePath = await this.ensureRepoMirror(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-        let ensuredRepoProfile = await this.ensureRepoProfile(
-          task,
-          ensuredRepoCachePath,
-          runtimeCredentials.githubToken,
-          runtimeCredentials.gitUsername
-        );
-        let preparedWorkspace: WorkspacePreparation;
-
-        try {
-          preparedWorkspace = await this.prepareWorkspace(
+      await appendRunLog("Spawner: preparing managed repository and workspace.");
+      const { repoProfile, workspace } = await this.withFreshManagedRepo(
+        task,
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername,
+        async (managedRepoPath) => ({
+          repoProfile: await this.ensureRepoProfile(
+            task,
+            managedRepoPath,
+            runtimeCredentials.githubToken,
+            runtimeCredentials.gitUsername
+          ),
+          workspace: await this.prepareWorkspace(
             task,
             action,
             branchName,
-            ensuredRepoCachePath,
+            managedRepoPath,
             runtimeCredentials.githubToken,
             runtimeCredentials.gitUsername
-          );
-        } catch (error) {
-          if (!this.shouldRebuildMirror(error)) {
-            throw error;
-          }
-
-          await appendRunLog("Spawner: local repo cache looked inconsistent; rebuilding mirror and retrying workspace preparation.");
-          await rm(ensuredRepoCachePath, { recursive: true, force: true });
-          const rebuiltRepoCachePath = await this.ensureRepoMirror(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-          ensuredRepoProfile = await this.ensureRepoProfile(
-            task,
-            rebuiltRepoCachePath,
-            runtimeCredentials.githubToken,
-            runtimeCredentials.gitUsername
-          );
-          preparedWorkspace = await this.prepareWorkspace(
-            task,
-            action,
-            branchName,
-            rebuiltRepoCachePath,
-            runtimeCredentials.githubToken,
-            runtimeCredentials.gitUsername
-          );
-        }
-
-        return {
-          repoProfile: ensuredRepoProfile,
-          workspace: preparedWorkspace
-        };
-      });
+          )
+        })
+      );
       workspacePath = workspace.workspacePath;
       if (action === "build" && !task.workspaceBaseRef) {
         await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
@@ -2807,32 +2888,17 @@ esac
       };
       await appendRunLog(`Spawner: preparing ${task.provider} runtime image (${action}).`);
       await this.ensureRuntimeImage(task.provider);
-      await appendRunLog("Spawner: refreshing repository mirror cache.");
-      await appendRunLog(`Spawner: repository mirror ready at ${repoCachePath}.`);
+      await appendRunLog("Spawner: refreshed managed repository cache.");
+      await appendRunLog(`Spawner: managed repository ready at ${repoCachePath}.`);
       await appendRunLog("Spawner: repository profile ready.");
-      await appendRunLog(`Spawner: managed workspace ready at ${workspace.workspacePath}.`);
+      await appendRunLog(`Spawner: ${workspace.kind} workspace ready at ${workspace.workspacePath}.`);
 
       const payloadPaths = await this.writeRuntimePayloadFiles(manifest, providerDefinition.getProviderConfig(settings.mcpServers));
       await appendRunLog(`Spawner: runtime payload files ready at ${payloadDir}.`);
 
       if (action === "build") {
-        const gitDir = path.join(workspace.workspacePath, ".git");
-        const hooksDir = path.join(gitDir, "hooks");
-        await mkdir(hooksDir, { recursive: true });
-        await writeFile(
-          path.join(hooksDir, "pre-commit"),
-          "#!/bin/sh\n# AgentSwarm: only the spawner may create commits.\nexit 1\n",
-          "utf8"
-        );
-        await writeFile(
-          path.join(hooksDir, "pre-push"),
-          "#!/bin/sh\n# AgentSwarm: only the spawner may push.\nexit 1\n",
-          "utf8"
-        );
-        await chmod(path.join(hooksDir, "pre-commit"), 0o755);
-        await chmod(path.join(hooksDir, "pre-push"), 0o755);
-        await this.runCommand("chmod", ["-R", "o-w", gitDir]);
-        await appendRunLog("Spawner: installed git hooks and restricted .git so only the spawner can add/commit/push.");
+        await this.ensureWorkspaceGitHooks(workspace.workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+        await appendRunLog("Spawner: installed git hooks to block direct commit/push from the runtime.");
       }
 
       await appendRunLog(

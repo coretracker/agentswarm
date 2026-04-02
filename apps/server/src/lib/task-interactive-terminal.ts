@@ -101,6 +101,7 @@ type InteractiveTerminalRuntimeConfig =
       providerLabel: string;
       persistentState?: {
         containerPath: string;
+        configContainerPath?: string;
         uid: number;
         gid: number;
       };
@@ -147,6 +148,7 @@ function resolveInteractiveTerminalRuntimeConfig(
       providerLabel: "Claude Code",
       persistentState: {
         containerPath: "/home/claude/.claude",
+        configContainerPath: "/home/claude/.claude.json",
         uid: 1000,
         gid: 1000
       },
@@ -456,6 +458,9 @@ async function initializeTaskInteractiveTerminalWebSocket(
       `${dockerBindSource}:/workspace:rw`,
       ...(statePaths && runtime.persistentState
         ? ["-v", `${statePaths.hostPath}:${runtime.persistentState.containerPath}:rw`]
+        : []),
+      ...(statePaths && runtime.persistentState?.configContainerPath && statePaths.configHostPath
+        ? ["-v", `${statePaths.configHostPath}:${runtime.persistentState.configContainerPath}:rw`]
         : []),
       ...dockerEnv,
       runtime.image,
