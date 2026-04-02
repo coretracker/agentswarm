@@ -1221,24 +1221,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
   };
 
-  if (redirectingToTaskList) {
-    return (
-      <Flex justify="center" align="center" style={{ minHeight: 240 }}>
-        <Spin size="large" tip="Returning to tasks..." />
-      </Flex>
-    );
-  }
-
-  if (!loading && !task) {
-    return (
-      <Alert
-        type="error"
-        message="Task not found"
-        description="The task may have been deleted or the page was opened before task state loaded."
-      />
-    );
-  }
-
   const outputTitle =
     task?.lastAction === "ask"
       ? "Answer"
@@ -1483,7 +1465,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       await api.deleteTask(task.id);
       setDeleteConfirmOpen(false);
       setRedirectingToTaskList(true);
-      setTask(null);
       messageApi.success("Task deleted");
     } catch (error) {
       messageApi.error(error instanceof Error ? error.message : "Failed to delete task");
@@ -1837,6 +1818,24 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
     void loadPushPreview();
   }, [canPush, task?.id, task?.updatedAt]);
+
+  if (redirectingToTaskList) {
+    return (
+      <Flex justify="center" align="center" style={{ minHeight: 240 }}>
+        <Spin size="large" tip="Returning to tasks..." />
+      </Flex>
+    );
+  }
+
+  if (!loading && !task) {
+    return (
+      <Alert
+        type="error"
+        message="Task not found"
+        description="The task may have been deleted or the page was opened before task state loaded."
+      />
+    );
+  }
 
   const moreActionItems = task
     ? [
