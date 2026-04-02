@@ -472,9 +472,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   useEffect(() => {
     if (!loading && !task && hadLoadedTaskRef.current) {
       setRedirectingToTaskList(true);
-      router.replace("/tasks");
     }
-  }, [loading, task, router]);
+  }, [loading, task]);
+
+  useEffect(() => {
+    if (!redirectingToTaskList) {
+      return;
+    }
+
+    window.location.replace("/tasks");
+  }, [redirectingToTaskList]);
 
   const taskType = task?.taskType ?? "build";
   const isBuildTask = taskType === "build";
@@ -1478,7 +1485,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setRedirectingToTaskList(true);
       setTask(null);
       messageApi.success("Task deleted");
-      router.replace("/tasks");
     } catch (error) {
       messageApi.error(error instanceof Error ? error.message : "Failed to delete task");
     } finally {
