@@ -78,9 +78,11 @@ function buildClaudeSettingsJson(): string {
   });
 }
 
+const CLAUDE_BINARY = "/opt/claude-code/.local/bin/claude";
+
 function buildClaudeStartScript(model: string, maxTurns: number | undefined, settingsJson: string): string {
   const claudeArgs = [
-    "exec claude",
+    `exec ${shellSingleQuote(CLAUDE_BINARY)}`,
     "--model",
     shellSingleQuote(model),
     "--settings",

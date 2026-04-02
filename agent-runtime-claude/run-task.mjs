@@ -2,6 +2,8 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
+const CLAUDE_BINARY = "/opt/claude-code/.local/bin/claude";
+
 const manifestPath = process.env.TASK_MANIFEST_FILE;
 const providerConfigPath = process.env.PROVIDER_CONFIG_FILE;
 const anthropicApiKey = process.env.ANTHROPIC_API_KEY ?? "";
@@ -111,7 +113,7 @@ const assistantLines = [];
 const toolBlocks = new Map();
 let sawPartialAssistantText = false;
 let partialTextBuffer = "";
-const proc = spawn("su-exec", [runtimeIdentity, "claude", ...args], {
+const proc = spawn("su-exec", [runtimeIdentity, CLAUDE_BINARY, ...args], {
   env: {
     ...process.env,
     HOME: runtimeHome,

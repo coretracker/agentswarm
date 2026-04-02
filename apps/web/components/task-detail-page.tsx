@@ -128,31 +128,6 @@ function formatRunDuration(startedAt: string, finishedAt: string | null): string
   return `${seconds}s`;
 }
 
-function quoteShellArg(value: string): string {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
-}
-
-function getTaskSyncBranch(task: Task | null): string | null {
-  if (!task) {
-    return null;
-  }
-
-  const candidate = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName ?? task.baseBranch;
-  const normalized = candidate?.trim();
-  return normalized && normalized.length > 0 ? normalized : null;
-}
-
-function buildTaskTerminalSyncCommand(branchName: string): string {
-  const quotedBranch = quoteShellArg(branchName);
-  const quotedRemoteBranch = quoteShellArg(`origin/${branchName}`);
-
-  return [
-    "git fetch origin",
-    `git switch ${quotedBranch} || git switch -c ${quotedBranch} --track ${quotedRemoteBranch}`,
-    "git pull"
-  ].join("\n");
-}
-
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: "Codex (OpenAI)", value: "codex" },
   { label: getAgentProviderLabel("claude"), value: "claude" }
@@ -519,10 +494,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const isPreparingWorkspace = task?.status === "preparing_workspace";
   const canCancel = canEditTask && (isQueued || isActive);
   const hasBranchForSync = isBuildTask || isAskTask;
-  const syncBranchName = getTaskSyncBranch(task ?? null);
   const canPull = canEditTask && hasBranchForSync && !!task?.branchName && !isArchived && !isActive;
   const canPush = canPull;
-  const canCheckout = hasBranchForSync && !!syncBranchName;
   const canMerge =
     canEditTask &&
     hasBranchForSync &&
@@ -664,55 +637,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         setSubmitting((current) => (current === "config" ? null : current));
       }
     }
-  };
-  const showTaskTerminalInstructions = (
-    nextTask: Task,
-    options?: {
-      title?: string;
-      description?: string;
-      fallbackMessage?: string;
-    }
-  ) => {
-    const branchName = getTaskSyncBranch(nextTask);
-    if (!branchName) {
-      if (options?.fallbackMessage) {
-        messageApi.success(options.fallbackMessage);
-      }
-      return;
-    }
-
-    const terminalCommand = buildTaskTerminalSyncCommand(branchName);
-    Modal.success({
-      title: options?.title ?? "Changes pushed",
-      okText: "Close",
-      width: 720,
-      content: (
-        <Space direction="vertical" size={12} style={{ width: "100%" }}>
-          <Typography.Paragraph style={{ marginBottom: 0 }}>
-            {options?.description ?? "Run this in your local repository terminal to continue working on the pushed branch immediately."}
-          </Typography.Paragraph>
-          <div>
-            <Typography.Text type="secondary">Branch</Typography.Text>
-            <div style={{ marginTop: 6 }}>
-              <Typography.Text code>{branchName}</Typography.Text>
-            </div>
-          </div>
-          <div>
-            <Typography.Text type="secondary">Terminal</Typography.Text>
-            <Typography.Paragraph copyable={{ text: terminalCommand }} style={{ ...codeTextStyle, marginTop: 8 }}>
-              {terminalCommand}
-            </Typography.Paragraph>
-          </div>
-        </Space>
-      )
-    });
-  };
-  const showPushTerminalInstructions = (nextTask: Task) => {
-    showTaskTerminalInstructions(nextTask, {
-      title: "Changes pushed",
-      description: "Run this in your local repository terminal to continue working on the pushed branch immediately.",
-      fallbackMessage: "Changes pushed"
-    });
   };
   const hasOutputTab = (task?.resultMarkdown?.trim().length ?? 0) > 0;
   const hasStoredDiff = (task?.branchDiff?.trim().length ?? 0) > 0;
@@ -1784,7 +1708,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             }
           : updatedTask
       );
-      showPushTerminalInstructions(updatedTask);
+      messageApi.success("Changes pushed");
       void loadPushPreview();
       setLiveDiffRefreshKey((k) => k + 1);
     } catch (error) {
@@ -2042,19 +1966,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </Button>
         </span>
       </Tooltip>
-    ) : null;
-  const renderCheckoutTaskButton = () =>
-    canCheckout && task ? (
-      <Button
-        onClick={() =>
-          showTaskTerminalInstructions(task, {
-            title: "Checkout branch",
-            description: "Run this in your local repository terminal to fetch the task branch, switch to it, and pull the latest changes."
-          })
-        }
-      >
-        Checkout
-      </Button>
     ) : null;
   const renderMergeTaskButton = () =>
     canMerge ? (
@@ -2427,7 +2338,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 Clear
               </Button>
             </Space.Compact>
-            {canPull || canPush || canCheckout || canMerge ? (
+            {canPull || canPush || canMerge ? (
               <Space
                 size={8}
                 wrap
@@ -2439,7 +2350,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               >
                 {renderPullTaskButton()}
                 {renderPushTaskButton()}
-                {renderCheckoutTaskButton()}
                 {renderMergeTaskButton()}
               </Space>
             ) : null}
@@ -3250,12 +3160,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Typography.Title level={2} style={{ margin: 0 }}>
                 {task?.title ?? "Task Detail"}
               </Typography.Title>
-              {task && showWorkingIndicator ? (
-                <Space size={6} align="center" style={{ color: "rgba(0,0,0,0.65)" }}>
-                  <Spin size="small" />
-                  <Typography.Text type="secondary">{workingIndicatorLabel}</Typography.Text>
-                </Space>
-              ) : null}
               {canEditTask && !isArchived && task ? (
                 <Tooltip title="Rename task">
                   <Button
@@ -3272,6 +3176,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             </Space>
             {task ? (
               <Space wrap size={8} style={{ justifyContent: "flex-end" }}>
+                {showWorkingIndicator ? (
+                  <Space size={6} align="center" style={{ color: "rgba(0,0,0,0.65)" }}>
+                    <Spin size="small" />
+                    <Typography.Text type="secondary">{workingIndicatorLabel}</Typography.Text>
+                  </Space>
+                ) : null}
+
                 {hasSyncButtons ? (
                   <Space wrap size={8}>
                     {canOpenInteractive ? (
