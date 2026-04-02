@@ -435,6 +435,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [mergeCommitMessage, setMergeCommitMessage] = useState("");
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [commentEditModalOpen, setCommentEditModalOpen] = useState(false);
   const [editingComment, setEditingComment] = useState<TaskMessage | null>(null);
   const [commentEditDraft, setCommentEditDraft] = useState("");
@@ -1473,9 +1474,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setSubmitting("delete");
     try {
       await api.deleteTask(task.id);
+      setDeleteConfirmOpen(false);
       setRedirectingToTaskList(true);
+      setTask(null);
       messageApi.success("Task deleted");
       router.replace("/tasks");
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to delete task");
     } finally {
       setSubmitting(null);
     }
@@ -3310,13 +3315,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                             }
 
                             if (key === "delete") {
-                              Modal.confirm({
-                                title: "Delete task?",
-                                content: "This removes the task and its stored logs.",
-                                okText: "Delete",
-                                okButtonProps: { danger: true, loading: submitting === "delete" },
-                                onOk: handleDeleteTask
-                              });
+                              setDeleteConfirmOpen(true);
                             }
                           }
                         }}
@@ -3407,6 +3406,25 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             ) : null}
           </Space>
         ) : null}
+      </Modal>
+
+      <Modal
+        open={deleteConfirmOpen && !!task}
+        title="Delete task?"
+        onCancel={() => {
+          if (submitting !== "delete") {
+            setDeleteConfirmOpen(false);
+          }
+        }}
+        okText="Delete"
+        okButtonProps={{ danger: true, loading: submitting === "delete" }}
+        cancelButtonProps={{ disabled: submitting === "delete" }}
+        onOk={() => void handleDeleteTask()}
+        destroyOnClose
+      >
+        <Typography.Paragraph style={{ marginBottom: 0 }}>
+          This removes the task and its stored logs.
+        </Typography.Paragraph>
       </Modal>
 
       <Modal

@@ -46,6 +46,16 @@ cd agentswarm   # your clone of this repository
 docker compose up --build
 ```
 
+Convenience wrapper:
+
+```bash
+./agentswarm.sh start
+./agentswarm.sh rebuild
+./agentswarm.sh stop
+```
+
+`rebuild` also rebuilds the automated Codex and Claude runtime images used for task runs, plus the interactive terminal images, before restarting the main stack.
+
 Then open **[http://localhost:3217/login](http://localhost:3217/login)**.
 
 Docker Compose now exposes a single public port through an internal Nginx proxy. The web app stays on `/`, and the API, Socket.IO, and interactive terminal stay behind `/api/*` on the same hostname.
