@@ -90,16 +90,6 @@ const taskActionLabel: Record<TaskMessageAction | TaskAction, string> = {
   comment: "Comment"
 };
 
-function describeFileList(paths: string[], maxItems = 4): string | null {
-  if (paths.length === 0) {
-    return null;
-  }
-
-  const preview = paths.slice(0, maxItems).join(", ");
-  const extra = paths.length > maxItems ? ` (+${paths.length - maxItems} more)` : "";
-  return `${preview}${extra}`;
-}
-
 type ComposerAction = TaskMessageAction;
 
 function getAllowedComposerActions(canBuildTasks: boolean, canAskTasks: boolean): ComposerAction[] {
@@ -1588,54 +1578,21 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
-  const loadPushPreview = async (): Promise<TaskPushPreview | null> => {
+  const loadPushPreview = async () => {
     if (!task) {
-      return null;
+      return;
     }
     setPushPreviewLoading(true);
     try {
       const preview = await api.getTaskPushPreview(task.id);
       setPushPreview(preview);
       setPushCommitMessage((current) => (current.trim().length > 0 ? current : preview.suggestedCommitMessage));
-      return preview;
     } catch (error) {
       setPushPreview(null);
       messageApi.error(error instanceof Error ? error.message : "Could not load push preview");
-      return null;
     } finally {
       setPushPreviewLoading(false);
     }
-  };
-
-  const promptPushBeforePull = (preview: TaskPushPreview) => {
-    const fileSummary = describeFileList(preview.changedFiles);
-    Modal.confirm({
-      title: "Push local changes before pulling",
-      okText: "Push instead",
-      cancelText: "Open Git tab",
-      content: (
-        <Space direction="vertical" size={8} style={{ width: "100%" }}>
-          <Typography.Paragraph style={{ marginBottom: 0 }}>
-            Pull is blocked while this workspace still has local changes that have not been pushed.
-          </Typography.Paragraph>
-          {fileSummary ? (
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              Files: <Typography.Text code>{fileSummary}</Typography.Text>
-            </Typography.Paragraph>
-          ) : null}
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            Use Push here in AgentSwarm to create the local commit from the current workspace and sync it before pulling.
-          </Typography.Paragraph>
-        </Space>
-      ),
-      onOk: async () => {
-        setActiveMainTab("diff");
-        await confirmPushTask();
-      },
-      onCancel: () => {
-        setActiveMainTab("diff");
-      }
-    });
   };
 
   const confirmRenameTask = async () => {
@@ -1791,12 +1748,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   };
   const handlePullTask = async () => {
     if (!task) {
-      return;
-    }
-
-    const preview = pushPreview ?? (await loadPushPreview());
-    if (preview?.hasUncommittedChanges) {
-      promptPushBeforePull(preview);
       return;
     }
 
@@ -1982,16 +1933,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     pushPreview &&
       (pushPreview.hasUncommittedChanges || pushPreview.unpushedCommitSubjects.length > 0)
   );
-  const pullBlockedByUncommittedChanges = Boolean(pushPreview?.hasUncommittedChanges);
-  const pushPreviewFileSummary = pushPreview ? describeFileList(pushPreview.changedFiles) : null;
   const pushNothingToPush = Boolean(pushPreview) && pushCount === 0 && !pushPreviewHasPushableChanges;
   const pushPrimaryDisabled = submitting === "push" || pushPreviewLoading || pushNothingToPush;
-  const pullBlockedReason =
-    pendingChangeProposal
-      ? "Apply or reject the pending checkpoint before pulling."
-      : pullBlockedByUncommittedChanges
-        ? "Push local workspace changes first. AgentSwarm can resolve that here in the UI."
-        : undefined;
   const mergeBlockedReason =
     pendingChangeProposal
       ? "Apply or reject the pending checkpoint before merging."
@@ -2000,9 +1943,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         : undefined;
   const renderPullTaskButton = () =>
     canPull ? (
-      <Tooltip title={pullBlockedReason}>
+      <Tooltip
+        title={
+          pendingChangeProposal
+            ? "Apply or reject the pending checkpoint before pulling."
+            : undefined
+        }
+      >
         <span style={{ display: "inline-block" }}>
-          <Button onClick={handlePullTask} loading={submitting === "pull"} disabled={!!pullBlockedReason || submitting === "push"}>
+          <Button onClick={handlePullTask} loading={submitting === "pull"} disabled={!!pendingChangeProposal || submitting === "push"}>
             {`Pull (${pullCount})`}
           </Button>
         </span>
@@ -2039,26 +1988,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const diffContent = hasDiffTab ? (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
-      {canPush && pushPreview?.hasUncommittedChanges ? (
-        <Alert
-          type="warning"
-          showIcon
-          message="Local workspace changes are waiting to be pushed"
-          description={
-            pushPreviewFileSummary
-              ? `Use Push to commit and sync these changes before Pull. Files: ${pushPreviewFileSummary}.`
-              : "Use Push to commit and sync the current workspace changes before Pull."
-          }
-        />
-      ) : null}
-      {canPush && !pushPreview?.hasUncommittedChanges && (pushPreview?.unpushedCommitSubjects.length ?? 0) > 0 ? (
-        <Alert
-          type="info"
-          showIcon
-          message="This branch has local commits that are not on origin yet"
-          description={`Push will publish ${pushPreview?.unpushedCommitSubjects.length ?? 0} local commit(s) from this workspace branch.`}
-        />
-      ) : null}
       {task ? (
         <Card size="small" styles={{ body: { paddingBottom: 12 } }}>
           <Segmented

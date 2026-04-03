@@ -1051,8 +1051,13 @@ esac
         }
       }
 
-      const dirtyPaths = await this.getWorkspaceStatusPaths(workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      if (dirtyPaths.length > 0) {
+      const dirtyOutput = await this.gitCommandCaptureAllowExitCodes(
+        ["-C", workspacePath, "status", "--porcelain"],
+        [0],
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername
+      );
+      if (dirtyOutput.trim().length > 0) {
         pushCount += 1;
       }
 
@@ -1554,68 +1559,16 @@ esac
     return this.buildGeneratedCommitSubjectFromFiles(task, stagedFiles);
   }
 
-  private parseStatusPorcelainPaths(raw: string): string[] {
-    return raw
-      .split("\n")
-      .map((line) => line.trimEnd())
-      .filter(Boolean)
-      .map((line) => {
-        const pathPart = line.length > 3 ? line.slice(3).trim() : line.trim();
-        const renamedParts = pathPart.split(" -> ");
-        return renamedParts[renamedParts.length - 1]?.trim() ?? "";
-      })
-      .filter(Boolean);
-  }
-
-  private async getWorkspaceStatusPaths(
-    workspacePath: string,
-    githubToken?: string | null,
-    gitUsername = "x-access-token"
-  ): Promise<string[]> {
-    const raw = await this.gitCommandCaptureAllowExitCodes(
-      ["-C", workspacePath, "status", "--porcelain"],
-      [0],
-      githubToken,
-      gitUsername
-    );
-    return this.parseStatusPorcelainPaths(raw);
-  }
-
   private async getWorkingTreePathsVersusHead(
     workspacePath: string,
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<string[]> {
-    const diffPaths = await this.gitCommandCapture(["-C", workspacePath, "diff", "HEAD", "--name-only"], githubToken, gitUsername)
-      .then((raw) =>
-        raw
-          .split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean)
-      );
-    const statusPaths = await this.getWorkspaceStatusPaths(workspacePath, githubToken, gitUsername);
-    return [...new Set([...diffPaths, ...statusPaths])];
-  }
-
-  private describeWorkspaceStatusPaths(paths: string[], maxItems = 5): string {
-    const preview = paths.slice(0, maxItems).join(", ");
-    const extra = paths.length > maxItems ? ` (+${paths.length - maxItems} more)` : "";
-    return `${preview}${extra}`;
-  }
-
-  private async ensureWorkspaceCleanForPull(
-    workspacePath: string,
-    githubToken?: string | null,
-    gitUsername = "x-access-token"
-  ): Promise<void> {
-    const dirtyPaths = await this.getWorkspaceStatusPaths(workspacePath, githubToken, gitUsername);
-    if (dirtyPaths.length === 0) {
-      return;
-    }
-
-    throw new Error(
-      `Pull is blocked by local workspace changes: ${this.describeWorkspaceStatusPaths(dirtyPaths)}. Use Push in AgentSwarm to commit and sync these changes before pulling.`
-    );
+    const raw = await this.gitCommandCapture(["-C", workspacePath, "diff", "HEAD", "--name-only"], githubToken, gitUsername);
+    return raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
   }
 
   private static readonly PUSH_PREVIEW_DIFF_MAX_CHARS = 120_000;
@@ -2667,7 +2620,6 @@ esac
       await this.taskStore.appendLog(task.id, "Spawner: created a local commit from workspace changes before pulling.");
     }
 
-    await this.ensureWorkspaceCleanForPull(workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     await this.gitCommand(["-C", workspacePath, "rebase", remoteRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
       async (error) => {
