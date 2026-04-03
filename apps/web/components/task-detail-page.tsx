@@ -27,6 +27,7 @@ import {
   type TaskMergePreview,
   type TaskPushPreview,
   type TaskChangeProposal,
+  type TaskInteractiveTerminalTranscript,
   type TaskWorkspaceCommit,
   type TaskWorkspaceFilePreview
 } from "@agentswarm/shared-types";
@@ -61,7 +62,7 @@ import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import { Diff, Hunk, type FileData } from "react-diff-view";
 import remarkGfm from "remark-gfm";
-import { api, type TaskInteractiveTerminalStatus } from "../src/api/client";
+import { api, ApiError, type TaskInteractiveTerminalStatus } from "../src/api/client";
 import { useSnippets } from "../src/hooks/useSnippets";
 import { useTask } from "../src/hooks/useTask";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -75,6 +76,7 @@ import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
 import { TaskDiffOpenAiPanel } from "./task-diff-openai-panel";
+import { TaskTerminalTranscriptView } from "./task-terminal-transcript-view";
 import { parseWorkspaceFileLink, WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 
 const runStatusColor: Record<TaskRun["status"], string> = {
@@ -530,6 +532,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [editingComment, setEditingComment] = useState<TaskMessage | null>(null);
   const [commentEditDraft, setCommentEditDraft] = useState("");
   const [interactiveTerminalStatus, setInteractiveTerminalStatus] = useState<TaskInteractiveTerminalStatus | null>(null);
+  const [interactiveTerminalTranscripts, setInteractiveTerminalTranscripts] = useState<
+    Record<
+      string,
+      {
+        loading: boolean;
+        loaded: boolean;
+        transcript: TaskInteractiveTerminalTranscript | null;
+        error: string | null;
+      }
+    >
+  >({});
   const [redirectingToTaskList, setRedirectingToTaskList] = useState(false);
   const [workspaceFilePreview, setWorkspaceFilePreview] = useState<WorkspaceFilePreviewState>({
     open: false,
@@ -570,6 +583,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
     window.location.replace("/tasks");
   }, [redirectingToTaskList]);
+
+  useEffect(() => {
+    setInteractiveTerminalTranscripts({});
+  }, [taskId]);
 
   const taskType = task?.taskType ?? "build";
   const isBuildTask = taskType === "build";
@@ -1356,6 +1373,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
     return best.id;
   }, [changeProposals]);
+  const interactiveTerminalResumeAvailable = interactiveTerminalStatus?.resumableInteractiveSession === true;
   const interactiveTerminalRunning = interactiveTerminalStatus?.activeInteractiveSession === true;
   const showWorkingIndicator = hasTaskWorkingState || interactiveTerminalRunning;
   const workingIndicatorLabel = task
@@ -1790,7 +1808,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : updatedTask
       );
       setKillTerminalConfirmOpen(false);
-      messageApi.success("Interactive terminal terminated");
+      messageApi.success("Interactive terminal stopped");
       setLiveDiffRefreshKey((k) => k + 1);
       refetchChangeProposals();
       void api
@@ -1805,9 +1823,95 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           });
         });
     } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to terminate interactive terminal");
+      messageApi.error(error instanceof Error ? error.message : "Failed to stop interactive terminal");
     } finally {
       setSubmitting(null);
+    }
+  };
+  const openInteractiveTerminalWindow = (): void => {
+    if (!task) {
+      return;
+    }
+
+    const path = `/tasks/${task.id}/interactive`;
+    const url = `${window.location.origin}${path}`;
+    const w = Math.min(1280, window.screen.availWidth - 48);
+    const h = Math.min(840, window.screen.availHeight - 48);
+    const features = [
+      "popup=yes",
+      `width=${w}`,
+      `height=${h}`,
+      "menubar=no",
+      "toolbar=no",
+      "location=yes",
+      "status=no",
+      "resizable=yes",
+      "scrollbars=yes"
+    ].join(",");
+    window.open(url, "_blank", `${features},noopener,noreferrer`);
+  };
+  const loadInteractiveTerminalTranscript = async (sessionId: string): Promise<void> => {
+    if (!task) {
+      return;
+    }
+
+    let shouldFetch = false;
+    setInteractiveTerminalTranscripts((current) => {
+      const existing = current[sessionId];
+      if (existing?.loading || (existing?.loaded && !existing.error)) {
+        return current;
+      }
+      shouldFetch = true;
+      return {
+        ...current,
+        [sessionId]: {
+          loading: true,
+          loaded: false,
+          transcript: null,
+          error: null
+        }
+      };
+    });
+
+    if (!shouldFetch) {
+      return;
+    }
+
+    try {
+      const transcript = await api.getTaskInteractiveTerminalTranscript(task.id, sessionId);
+      setInteractiveTerminalTranscripts((current) => ({
+        ...current,
+        [sessionId]: {
+          loading: false,
+          loaded: true,
+          transcript,
+          error: null
+        }
+      }));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        setInteractiveTerminalTranscripts((current) => ({
+          ...current,
+          [sessionId]: {
+            loading: false,
+            loaded: true,
+            transcript: null,
+            error: null
+          }
+        }));
+        return;
+      }
+
+      const message = error instanceof Error && error.message.trim() ? error.message : "Could not load terminal logs.";
+      setInteractiveTerminalTranscripts((current) => ({
+        ...current,
+        [sessionId]: {
+          loading: false,
+          loaded: true,
+          transcript: null,
+          error: message
+        }
+      }));
     }
   };
   useEffect(() => {
@@ -1838,7 +1942,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const moreActionItems = task
     ? [
         canRequestLiveDiff ? { key: "refreshDiff", label: "Refresh Diff" } : null,
-        canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Kill Terminal", danger: true } : null,
+        canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Terminal", danger: true } : null,
         canEditTask && !isArchived ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
         canContinueOnBranch ? { key: "continue", label: "Continue On Branch" } : null,
         canArchive ? { key: "archive", label: "Archive Task", danger: true } : null,
@@ -2920,6 +3024,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       : entry.proposal
         ? { color: checkpointStatusColor(entry.proposal.status), label: checkpointStatusLabel(entry.proposal.status) }
         : null;
+    const showTerminalSessionControls = entry.active && canEditTask && task && !isArchived;
+    const transcriptKey = `${entryKey}-terminal-logs`;
+    const transcriptState = entry.sessionId ? interactiveTerminalTranscripts[entry.sessionId] : null;
+    const showTranscriptSection = !entry.active && !!entry.sessionId;
+    const transcriptLabel = `Logs${transcriptState?.transcript?.truncated ? " (truncated)" : ""}`;
+
     return (
       <Card
         key={entryKey}
@@ -2934,6 +3044,32 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         extra={<Typography.Text type="secondary">{dayjs(entry.startMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>}
       >
         <Flex vertical gap="small">
+          {entry.active ? (
+            <Alert
+              type="info"
+              showIcon
+              message={interactiveTerminalResumeAvailable ? "Terminal session can be resumed" : "Terminal session is active"}
+              description={
+                interactiveTerminalResumeAvailable
+                  ? "This live terminal session is still running. Reconnect to continue in the existing workspace session, or stop it to end the session and create a checkpoint."
+                  : "This terminal session is currently attached to another window or tab. Stop it there or use Stop here to end the session and create a checkpoint."
+              }
+              action={
+                showTerminalSessionControls ? (
+                  <Space wrap>
+                    {interactiveTerminalResumeAvailable ? (
+                      <Button type="primary" size="small" onClick={openInteractiveTerminalWindow}>
+                        Reconnect
+                      </Button>
+                    ) : null}
+                    <Button size="small" danger onClick={() => setKillTerminalConfirmOpen(true)}>
+                      Stop
+                    </Button>
+                  </Space>
+                ) : null
+              }
+            />
+          ) : null}
           <Typography.Text type="secondary">
             {`${dayjs(entry.startMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")} - ${entry.startMessage.content}`}
           </Typography.Text>
@@ -2942,6 +3078,43 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               ? `${dayjs(entry.endMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")} - ${entry.endMessage.content}`
               : "Running - Interactive terminal session is still running."}
           </Typography.Text>
+          {showTranscriptSection ? (
+            <Collapse
+              size="small"
+              onChange={(keys) => {
+                const activeKeys = Array.isArray(keys) ? keys : keys ? [keys] : [];
+                if (activeKeys.includes(transcriptKey) && entry.sessionId) {
+                  void loadInteractiveTerminalTranscript(entry.sessionId);
+                }
+              }}
+              items={[
+                {
+                  key: transcriptKey,
+                  label: transcriptLabel,
+                  children: transcriptState?.loading ? (
+                    <Flex justify="center" style={{ padding: "12px 0" }}>
+                      <Spin size="small" />
+                    </Flex>
+                  ) : transcriptState?.error ? (
+                    <Alert type="error" showIcon message="Could not load terminal logs" description={transcriptState.error} />
+                  ) : transcriptState?.transcript ? (
+                    <Flex vertical gap={8}>
+                      <TaskTerminalTranscriptView content={transcriptState.transcript.content} />
+                      {transcriptState.transcript.truncated ? (
+                        <Typography.Text type="secondary">
+                          The stored terminal transcript was truncated because it exceeded the size limit.
+                        </Typography.Text>
+                      ) : null}
+                    </Flex>
+                  ) : transcriptState?.loaded ? (
+                    <Typography.Text type="secondary">No terminal output was captured for this session.</Typography.Text>
+                  ) : (
+                    <Typography.Text type="secondary">Open this panel to load the terminal logs for this session.</Typography.Text>
+                  )
+                }
+              ]}
+            />
+          ) : null}
           {entry.proposal ? renderCheckpointDiffSection(entry.proposal, entryKey) : null}
         </Flex>
       </Card>
@@ -2984,14 +3157,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       children: (
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
           {chatPreparingNotice}
-          {interactiveTerminalRunning && canEditTask && task && !isArchived ? (
-            <Alert
-              type="info"
-              showIcon
-              message="Interactive terminal is running"
-              description="This task already has an active terminal session (another window or tab). Close or end that session before sending instructions here or opening another terminal."
-            />
-          ) : null}
           {pendingChangeProposal && canEditTask && task && !isArchived ? (
             <Alert
               type="warning"
@@ -3215,36 +3380,25 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                         title={
                           pendingChangeProposal
                             ? "Apply or reject the pending checkpoint before opening a terminal."
-                            : interactiveTerminalConfigDirty
-                              ? `Saving provider, model, and effort changes for ${interactiveTerminalTargetProviderLabel}…`
+                            : interactiveTerminalResumeAvailable
+                              ? `Reconnect to the live ${interactiveTerminalTargetProviderLabel} session for this task workspace.`
                             : interactiveTerminalStatus && !interactiveTerminalStatus.available
                               ? interactiveTerminalStatus.reason ?? "Unavailable"
+                            : interactiveTerminalConfigDirty
+                              ? `Saving provider, model, and effort changes for ${interactiveTerminalTargetProviderLabel}…`
                               : `Opens a new browser window with ${interactiveTerminalTargetProviderLabel}; workspace is mounted at /workspace.${interactiveTerminalTargetModelLabel ? ` Model: ${interactiveTerminalTargetModelLabel}.` : ""}${interactiveTerminalTargetEffortLabel ? ` Effort: ${interactiveTerminalTargetEffortLabel}.` : ""}`
                         }
                       >
                         <Button
                           type="default"
-                          onClick={() => {
-                            const path = `/tasks/${task.id}/interactive`;
-                            const url = `${window.location.origin}${path}`;
-                            const w = Math.min(1280, window.screen.availWidth - 48);
-                            const h = Math.min(840, window.screen.availHeight - 48);
-                            const features = [
-                              "popup=yes",
-                              `width=${w}`,
-                              `height=${h}`,
-                              "menubar=no",
-                              "toolbar=no",
-                              "location=yes",
-                              "status=no",
-                              "resizable=yes",
-                              "scrollbars=yes"
-                            ].join(",");
-                            window.open(url, "_blank", `${features},noopener,noreferrer`);
-                          }}
-                          disabled={interactiveTerminalConfigDirty || !interactiveTerminalStatus?.available || !!pendingChangeProposal}
+                          onClick={openInteractiveTerminalWindow}
+                          disabled={
+                            (!interactiveTerminalResumeAvailable && interactiveTerminalConfigDirty) ||
+                            !interactiveTerminalStatus?.available ||
+                            !!pendingChangeProposal
+                          }
                         >
-                          {`Open ${interactiveTerminalTargetProviderLabel}`}
+                          {`${interactiveTerminalResumeAvailable ? "Resume" : "Open"} ${interactiveTerminalTargetProviderLabel}`}
                         </Button>
                       </Tooltip>
                     ) : null}
@@ -3374,21 +3528,21 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
       <Modal
         open={killTerminalConfirmOpen}
-        title="Kill interactive terminal?"
+        title="Stop interactive terminal?"
         onCancel={() => {
           if (submitting !== "killTerminal") {
             setKillTerminalConfirmOpen(false);
           }
         }}
-        okText="Kill Terminal"
+        okText="Stop Terminal"
         okButtonProps={{ danger: true }}
         confirmLoading={submitting === "killTerminal"}
         cancelButtonProps={{ disabled: submitting === "killTerminal" }}
         onOk={() => void handleKillInteractiveTerminal()}
         destroyOnClose
       >
-        This force-terminates the live interactive terminal session and keeps whatever is currently in the workspace so
-        AgentSwarm can create the usual checkpoint for recovery.
+        This stops the live interactive terminal session and keeps whatever is currently in the workspace so AgentSwarm
+        can create the usual checkpoint for recovery.
       </Modal>
       <Modal
         open={deleteConfirmOpen && !!task}

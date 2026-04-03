@@ -35,6 +35,7 @@ export type GroupedTerminalHistoryEntry = {
   key: string;
   kind: "grouped_terminal_session";
   timestamp: string;
+  sessionId: string | null;
   startMessage: TaskMessage;
   endMessage: TaskMessage | null;
   proposal: TaskChangeProposal | null;
@@ -174,6 +175,12 @@ export function buildTaskHistoryEntries(input: {
   const terminalEndMessages = sortedMessages.filter(isInteractiveTerminalEndMessage);
   const interactiveProposals = sortedProposals.filter((proposal) => proposal.sourceType === "interactive_session");
   const lastTerminalStartMessageId = terminalStartMessages.at(-1)?.id ?? null;
+  const interactiveProposalsBySessionId = new Map<string, TaskChangeProposal>();
+  for (const proposal of interactiveProposals) {
+    if (!interactiveProposalsBySessionId.has(proposal.sourceId)) {
+      interactiveProposalsBySessionId.set(proposal.sourceId, proposal);
+    }
+  }
   let terminalEndCursor = 0;
   let interactiveProposalCursor = 0;
 
@@ -190,7 +197,21 @@ export function buildTaskHistoryEntries(input: {
       terminalEndCursor += 1;
     }
 
-    const endMessage = terminalEndCursor < terminalEndMessages.length ? terminalEndMessages[terminalEndCursor]! : null;
+    const startSessionId = typeof startMessage.sessionId === "string" && startMessage.sessionId.trim().length > 0 ? startMessage.sessionId : null;
+    let endMessage: TaskMessage | null = null;
+
+    if (startSessionId) {
+      endMessage =
+        terminalEndMessages.find(
+          (message) =>
+            !consumedMessageIds.has(message.id) &&
+            message.createdAt >= startMessage.createdAt &&
+            message.sessionId === startSessionId
+        ) ?? null;
+    } else {
+      endMessage = terminalEndCursor < terminalEndMessages.length ? terminalEndMessages[terminalEndCursor]! : null;
+    }
+
     if (!endMessage) {
       if (input.interactiveTerminalRunning && startMessage.id === lastTerminalStartMessageId) {
         consumedMessageIds.add(startMessage.id);
@@ -198,6 +219,7 @@ export function buildTaskHistoryEntries(input: {
           key: `grouped-terminal-${startMessage.id}`,
           kind: "grouped_terminal_session",
           timestamp: startMessage.createdAt,
+          sessionId: startSessionId,
           startMessage,
           endMessage: null,
           proposal: null,
@@ -211,27 +233,42 @@ export function buildTaskHistoryEntries(input: {
     consumedMessageIds.add(startMessage.id);
     consumedMessageIds.add(endMessage.id);
 
+    const endSessionId = typeof endMessage.sessionId === "string" && endMessage.sessionId.trim().length > 0 ? endMessage.sessionId : null;
+    let sessionId = startSessionId ?? endSessionId;
     let proposal: TaskChangeProposal | null = null;
     if (endMessage.content === INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE) {
-      while (
-        interactiveProposalCursor < interactiveProposals.length &&
-        (consumedProposalIds.has(interactiveProposals[interactiveProposalCursor]!.id) ||
-          interactiveProposals[interactiveProposalCursor]!.createdAt < endMessage.createdAt)
-      ) {
-        interactiveProposalCursor += 1;
+      if (sessionId) {
+        const matchedProposal = interactiveProposalsBySessionId.get(sessionId) ?? null;
+        if (matchedProposal && !consumedProposalIds.has(matchedProposal.id)) {
+          proposal = matchedProposal;
+          consumedProposalIds.add(matchedProposal.id);
+        }
       }
 
-      proposal = interactiveProposalCursor < interactiveProposals.length ? interactiveProposals[interactiveProposalCursor]! : null;
-      if (proposal) {
-        consumedProposalIds.add(proposal.id);
-        interactiveProposalCursor += 1;
+      if (!proposal) {
+        while (
+          interactiveProposalCursor < interactiveProposals.length &&
+          (consumedProposalIds.has(interactiveProposals[interactiveProposalCursor]!.id) ||
+            interactiveProposals[interactiveProposalCursor]!.createdAt < endMessage.createdAt)
+        ) {
+          interactiveProposalCursor += 1;
+        }
+
+        proposal = interactiveProposalCursor < interactiveProposals.length ? interactiveProposals[interactiveProposalCursor]! : null;
+        if (proposal) {
+          consumedProposalIds.add(proposal.id);
+          interactiveProposalCursor += 1;
+        }
       }
     }
+
+    sessionId = sessionId ?? proposal?.sourceId ?? null;
 
     groupedTerminalEntries.push({
       key: `grouped-terminal-${startMessage.id}`,
       kind: "grouped_terminal_session",
       timestamp: startMessage.createdAt,
+      sessionId,
       startMessage,
       endMessage,
       proposal,

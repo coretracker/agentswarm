@@ -16,7 +16,25 @@ interface TaskDeletedPayload {
   id: string;
 }
 
-export const useTasks = ({ enabled = true }: { enabled?: boolean } = {}) => {
+function matchesTaskView(task: Task, view: "all" | "active" | "archived"): boolean {
+  if (view === "active") {
+    return task.status !== "archived";
+  }
+  if (view === "archived") {
+    return task.status === "archived";
+  }
+  return true;
+}
+
+export const useTasks = ({
+  enabled = true,
+  view = "all",
+  limit
+}: {
+  enabled?: boolean;
+  view?: "all" | "active" | "archived";
+  limit?: number;
+} = {}) => {
   const socket = useSocket();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(enabled);
@@ -32,7 +50,7 @@ export const useTasks = ({ enabled = true }: { enabled?: boolean } = {}) => {
     setLoading(true);
 
     void api
-      .listTasks()
+      .listTasks({ view, limit })
       .then((items) => {
         if (!active) {
           return;
@@ -52,7 +70,7 @@ export const useTasks = ({ enabled = true }: { enabled?: boolean } = {}) => {
     return () => {
       active = false;
     };
-  }, [enabled]);
+  }, [enabled, limit, view]);
 
   useEffect(() => {
     if (!enabled || !socket) {
@@ -61,18 +79,15 @@ export const useTasks = ({ enabled = true }: { enabled?: boolean } = {}) => {
 
     const onTaskUpdate = (task: Task) => {
       setTasks((current) => {
-        const next = [...current];
-        const index = next.findIndex((item) => item.id === task.id);
-        if (index >= 0) {
-          next[index] = {
-            ...next[index],
-            ...task,
-            logs: []
-          };
-        } else {
+        const next = current.filter((item) => item.id !== task.id);
+        if (matchesTaskView(task, view)) {
           next.unshift({ ...task, logs: [] });
         }
-        return sortTasks(next);
+        const sorted = sortTasks(next);
+        if (limit != null && Number.isFinite(limit)) {
+          return sorted.slice(0, Math.max(0, limit));
+        }
+        return sorted;
       });
     };
 
@@ -89,7 +104,7 @@ export const useTasks = ({ enabled = true }: { enabled?: boolean } = {}) => {
       socket.off("task:updated", onTaskUpdate);
       socket.off("task:deleted", onTaskDelete);
     };
-  }, [enabled, socket]);
+  }, [enabled, limit, socket, view]);
 
   return { tasks, setTasks, loading };
 };

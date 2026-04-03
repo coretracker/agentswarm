@@ -180,11 +180,15 @@ export function TaskInteractiveTerminalView({
         });
     };
 
-    const onWsClose = (): void => {
+    const onWsClose = (event: CloseEvent): void => {
       if (!wsOpened && connectFailureHandled) {
         return;
       }
-      term.writeln("\r\n\x1b[33m[disconnected]\x1b[0m");
+      const details = event.reason?.trim() || (event.code > 0 ? `code ${event.code}` : "");
+      term.writeln(`\r\n\x1b[33m[disconnected${details ? `: ${details}` : ""}]\x1b[0m`);
+      if (event.code !== 1000) {
+        term.writeln("\r\n\x1b[90mRefresh this page to try resuming the session if it is still running.\x1b[0m");
+      }
     };
 
     const endBrowserSession = (): void => {

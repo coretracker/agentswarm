@@ -33,6 +33,7 @@ import type {
   UpdateTaskMessageInput,
   TaskRun,
   TaskChangeProposal,
+  TaskInteractiveTerminalTranscript,
   TaskAction,
   UpdateRoleInput,
   UpdateSnippetInput,
@@ -58,6 +59,13 @@ export interface TaskInteractiveTerminalStatus {
   reason?: string;
   /** Server sets this when a terminal WebSocket session is active for the task. */
   activeInteractiveSession?: boolean;
+  /** Server sets this when an active session can be resumed by opening the terminal again. */
+  resumableInteractiveSession?: boolean;
+}
+
+export interface ListTasksOptions {
+  view?: "all" | "active" | "archived";
+  limit?: number;
 }
 
 export class ApiError extends Error {
@@ -162,10 +170,22 @@ export const api = {
     request<void>(`/snippets/${id}`, {
       method: "DELETE"
     }),
-  listTasks: () => request<Task[]>("/tasks"),
+  listTasks: (options?: ListTasksOptions) => {
+    const params = new URLSearchParams();
+    if (options?.view) {
+      params.set("view", options.view);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<Task[]>(`/tasks${query ? `?${query}` : ""}`);
+  },
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
   getTaskInteractiveTerminalStatus: (id: string) =>
     request<TaskInteractiveTerminalStatus>(`/tasks/${id}/interactive-terminal/status`),
+  getTaskInteractiveTerminalTranscript: (taskId: string, sessionId: string) =>
+    request<TaskInteractiveTerminalTranscript>(`/tasks/${taskId}/interactive-terminal/sessions/${encodeURIComponent(sessionId)}/transcript`),
   killTaskInteractiveTerminal: (id: string) =>
     request<Task>(`/tasks/${id}/interactive-terminal/kill`, {
       method: "POST"

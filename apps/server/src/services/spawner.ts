@@ -1911,7 +1911,8 @@ esac
     });
     await this.taskStore.appendMessage(taskId, {
       role: "system",
-      content: "Interactive terminal session started."
+      content: "Interactive terminal session started.",
+      sessionId
     });
     return { sessionId };
   }
@@ -1936,7 +1937,8 @@ esac
     if (!exists) {
       await this.taskStore.appendMessage(taskId, {
         role: "system",
-        content: "Interactive terminal session ended."
+        content: "Interactive terminal session ended.",
+        sessionId
       });
       return;
     }
@@ -1953,7 +1955,8 @@ esac
     if (changedFiles.length === 0) {
       await this.taskStore.appendMessage(taskId, {
         role: "system",
-        content: "Interactive terminal session ended. No workspace changes were detected."
+        content: "Interactive terminal session ended. No workspace changes were detected.",
+        sessionId
       });
       await this.taskStore.appendLog(taskId, "Terminal session ended with no workspace changes; checkpoint not created.");
       return;
@@ -1961,7 +1964,8 @@ esac
 
     await this.taskStore.appendMessage(taskId, {
       role: "system",
-      content: "Interactive terminal session ended. Review proposed changes below."
+      content: "Interactive terminal session ended. Review proposed changes below.",
+      sessionId
     });
 
     const proposal = await this.taskStore.createChangeProposal({

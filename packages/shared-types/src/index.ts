@@ -404,6 +404,8 @@ export interface TaskMessage {
   role: TaskMessageRole;
   content: string;
   action: TaskMessageAction | null;
+  /** Present for interactive terminal lifecycle messages so history can address the terminal session. */
+  sessionId?: string | null;
   createdAt: string;
 }
 
@@ -452,6 +454,13 @@ export interface TaskChangeProposal {
   resolvedAt: string | null;
   /** Set when an applied checkpoint is reverted via stored diff. */
   revertedAt: string | null;
+}
+
+export interface TaskInteractiveTerminalTranscript {
+  taskId: string;
+  sessionId: string;
+  content: string;
+  truncated: boolean;
 }
 
 export interface McpServerConfig {

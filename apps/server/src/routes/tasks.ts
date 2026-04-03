@@ -107,6 +107,11 @@ const workspaceFileQuerySchema = z.object({
     .optional()
 });
 
+const listTasksQuerySchema = z.object({
+  view: z.enum(["all", "active", "archived"]).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional()
+});
+
 const archivedTaskReadOnlyMessage = "Archived tasks are read-only";
 
 export const withBranchSyncCounts = async (spawner: SpawnerService, task: Task): Promise<Task> => {
@@ -148,15 +153,23 @@ export const registerTaskRoutes = (
     auth: AuthService;
   }
 ): void => {
-  app.get("/tasks", { preHandler: deps.auth.requireAllScopes(["task:list"]) }, async (request) => {
-    const tasks = await deps.taskStore.listTasks();
-    if (isAdminUser(request.auth?.user)) {
-      return tasks;
-    }
+  app.get<{ Querystring: { view?: string; limit?: string } }>(
+    "/tasks",
+    { preHandler: deps.auth.requireAllScopes(["task:list"]) },
+    async (request, reply) => {
+      const parsed = listTasksQuerySchema.safeParse(request.query);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
 
-    const userId = request.auth?.user.id;
-    return tasks.filter((task) => Boolean(userId && task.ownerUserId === userId));
-  });
+      const userId = request.auth?.user.id ?? null;
+      return deps.taskStore.listTasks({
+        ownerUserId: isAdminUser(request.auth?.user) ? null : userId,
+        view: parsed.data.view ?? "all",
+        limit: parsed.data.limit
+      });
+    }
+  );
 
   app.get<{ Params: { id: string } }>("/tasks/:id", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
     const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
@@ -226,6 +239,24 @@ export const registerTaskRoutes = (
       const refreshed = await deps.taskStore.getTask(task.id);
       return reply.send(await withBranchSyncCounts(deps.spawner, refreshed ?? task));
     },
+  );
+
+  app.get<{ Params: { id: string; sessionId: string } }>(
+    "/tasks/:id/interactive-terminal/sessions/:sessionId/transcript",
+    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      const transcript = await deps.taskStore.getInteractiveTerminalTranscript(task.id, request.params.sessionId);
+      if (!transcript) {
+        return reply.status(404).send({ message: "Interactive terminal transcript not found." });
+      }
+
+      return reply.send(transcript);
+    }
   );
 
   app.get<{ Params: { id: string } }>("/tasks/:id/messages", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {

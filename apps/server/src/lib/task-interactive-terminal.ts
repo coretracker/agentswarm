@@ -28,6 +28,12 @@ import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
 const INTERACTIVE_WORKSPACE_PATH = "/workspace";
+const INTERACTIVE_RESUME_GRACE_MS = 30 * 60_000;
+const INTERACTIVE_WS_PING_INTERVAL_MS = 25_000;
+const INTERACTIVE_OUTPUT_BUFFER_LIMIT = 256_000;
+const INTERACTIVE_TRANSCRIPT_LIMIT = 2_000_000;
+const INTERACTIVE_EXIT_WAIT_MS = 1_500;
+const INTERACTIVE_TERMINAL_CLOSE_CODE = 1012;
 
 function buildInteractiveWorkspaceGitEnvEntries(workspacePath: string): Array<[string, string]> {
   return [
@@ -269,17 +275,33 @@ export interface TaskInteractiveTerminalDeps {
 
 interface ActiveInteractiveTerminalController {
   sessionId: string;
-  terminate: () => Promise<void>;
+  hasAttachedClient: () => boolean;
+  canResume: () => boolean;
+  attachClient: (ws: WebSocket) => boolean;
+  terminate: (reason?: string) => Promise<void>;
 }
 
 const activeInteractiveTerminalControllers = new Map<string, ActiveInteractiveTerminalController>();
 
+function getActiveInteractiveTerminalController(
+  taskId: string,
+  sessionId?: string | null
+): ActiveInteractiveTerminalController | null {
+  const active = activeInteractiveTerminalControllers.get(taskId);
+  if (!active) {
+    return null;
+  }
+  if (sessionId && active.sessionId !== sessionId) {
+    return null;
+  }
+  return active;
+}
+
 function registerActiveInteractiveTerminalController(
   taskId: string,
-  sessionId: string,
-  terminate: () => Promise<void>
+  controller: ActiveInteractiveTerminalController
 ): void {
-  activeInteractiveTerminalControllers.set(taskId, { sessionId, terminate });
+  activeInteractiveTerminalControllers.set(taskId, controller);
 }
 
 function unregisterActiveInteractiveTerminalController(taskId: string, sessionId: string): void {
@@ -318,6 +340,8 @@ export type TaskInteractiveTerminalStatusPayload = {
   reason?: string;
   /** When true, a browser session is already connected; block duplicate terminals and task composer sends. */
   activeInteractiveSession?: boolean;
+  /** When true, the browser can reconnect to an existing live terminal session for this task. */
+  resumableInteractiveSession?: boolean;
 };
 
 export async function getTaskInteractiveTerminalStatus(
@@ -341,16 +365,40 @@ export async function getTaskInteractiveTerminalStatus(
     };
   }
 
-  if (await taskStore.hasPendingChangeProposal(taskId)) {
-    return { available: false, reason: "Apply or reject the pending checkpoint before opening a terminal." };
-  }
-
-  if (await taskStore.getActiveInteractiveSession(taskId)) {
+  const activeInteractiveSession = await taskStore.getActiveInteractiveSession(taskId);
+  if (activeInteractiveSession) {
+    const controller = getActiveInteractiveTerminalController(taskId, activeInteractiveSession.sessionId);
+    if (!controller) {
+      return {
+        available: false,
+        reason: "An interactive terminal session is active but cannot be resumed from this server process. Use Kill Terminal to clear it.",
+        activeInteractiveSession: true
+      };
+    }
+    if (controller.hasAttachedClient()) {
+      return {
+        available: false,
+        reason: "An interactive terminal session is already open in another window.",
+        activeInteractiveSession: true
+      };
+    }
+    if (controller.canResume()) {
+      return {
+        available: true,
+        reason: "Resume the active interactive terminal session.",
+        activeInteractiveSession: true,
+        resumableInteractiveSession: true
+      };
+    }
     return {
       available: false,
-      reason: "An interactive terminal session is already active for this task.",
+      reason: "The interactive terminal session is shutting down.",
       activeInteractiveSession: true
     };
+  }
+
+  if (await taskStore.hasPendingChangeProposal(taskId)) {
+    return { available: false, reason: "Apply or reject the pending checkpoint before opening a terminal." };
   }
 
   const [settings, credentials] = await Promise.all([
@@ -439,6 +487,27 @@ async function initializeTaskInteractiveTerminalWebSocket(
   deps: TaskInteractiveTerminalDeps
 ): Promise<void> {
   const taskId = task.id;
+  const activeInteractiveSession = await deps.taskStore.getActiveInteractiveSession(taskId);
+  if (activeInteractiveSession) {
+    const controller = getActiveInteractiveTerminalController(taskId, activeInteractiveSession.sessionId);
+    if (!controller) {
+      sendInteractiveTerminalError(
+        ws,
+        "An interactive terminal session is active but cannot be resumed from this server process. Use Kill Terminal to clear it."
+      );
+      return;
+    }
+    if (controller.hasAttachedClient()) {
+      sendInteractiveTerminalError(ws, "An interactive terminal session is already open in another window.");
+      return;
+    }
+    if (!controller.attachClient(ws)) {
+      sendInteractiveTerminalError(ws, "The interactive terminal session is shutting down.");
+      return;
+    }
+    return;
+  }
+
   const status = await getTaskInteractiveTerminalStatus(deps.taskStore, deps.settingsStore, taskId);
   if (!status.available) {
     sendInteractiveTerminalError(ws, status.reason ?? "Interactive session unavailable");
@@ -511,7 +580,8 @@ async function initializeTaskInteractiveTerminalWebSocket(
     wireTerminalWebSocket(ws, child, sessionName, {
       taskId,
       sessionId: interactiveSessionId,
-      spawner: deps.spawner
+      spawner: deps.spawner,
+      taskStore: deps.taskStore
     });
   } catch (error) {
     if (interactiveSessionId) {
@@ -526,20 +596,105 @@ function wireTerminalWebSocket(
   ws: WebSocket,
   child: pty.IPty,
   sessionContainerName: string,
-  proposalCtx: { taskId: string; sessionId: string; spawner: SpawnerService }
+  proposalCtx: { taskId: string; sessionId: string; spawner: SpawnerService; taskStore: TaskStore }
 ): void {
   let sawTerminalOutput = false;
+  let outputBuffer = "";
+  let transcriptBuffer = "";
+  let transcriptTruncated = false;
+  let transcriptSaved = false;
+  let currentWs: WebSocket | null = null;
+  let currentWsCleanup: (() => void) | null = null;
   let cleanupPromise: Promise<void> | null = null;
-  const cleanupSession = (): Promise<void> => {
+  let resumeTimer: ReturnType<typeof setTimeout> | null = null;
+  let resolveChildExit: (() => void) | null = null;
+  const childExitPromise = new Promise<void>((resolve) => {
+    resolveChildExit = resolve;
+  });
+
+  const logLifecycle = (message: string): void => {
+    const taskMessage = `Interactive terminal (${proposalCtx.sessionId}): ${message}`;
+    console.info(`[interactive-terminal][${proposalCtx.taskId}][${proposalCtx.sessionId}] ${message}`);
+    void proposalCtx.taskStore.appendLog(proposalCtx.taskId, taskMessage).catch(() => undefined);
+  };
+
+  const trimOutputBuffer = (value: string): string =>
+    value.length > INTERACTIVE_OUTPUT_BUFFER_LIMIT ? value.slice(-INTERACTIVE_OUTPUT_BUFFER_LIMIT) : value;
+
+  const appendTranscriptChunk = (chunk: string): void => {
+    if (transcriptTruncated || chunk.length === 0) {
+      return;
+    }
+
+    const remaining = INTERACTIVE_TRANSCRIPT_LIMIT - transcriptBuffer.length;
+    if (remaining <= 0) {
+      transcriptTruncated = true;
+      return;
+    }
+
+    if (chunk.length > remaining) {
+      transcriptBuffer += chunk.slice(0, remaining);
+      transcriptTruncated = true;
+      return;
+    }
+
+    transcriptBuffer += chunk;
+  };
+
+  const persistTranscriptIfNeeded = async (): Promise<void> => {
+    if (transcriptSaved || (!transcriptTruncated && transcriptBuffer.length === 0)) {
+      return;
+    }
+
+    transcriptSaved = true;
+    await proposalCtx.taskStore
+      .saveInteractiveTerminalTranscript(proposalCtx.taskId, proposalCtx.sessionId, transcriptBuffer, transcriptTruncated)
+      .catch(() => undefined);
+  };
+
+  const clearResumeTimer = (): void => {
+    if (resumeTimer !== null) {
+      clearTimeout(resumeTimer);
+      resumeTimer = null;
+    }
+  };
+
+  const detachCurrentClient = (reason: string, allowResume: boolean): void => {
+    const activeWs = currentWs;
+    currentWs = null;
+    if (currentWsCleanup) {
+      currentWsCleanup();
+      currentWsCleanup = null;
+    }
+    if (!activeWs || cleanupPromise) {
+      return;
+    }
+    if (!allowResume) {
+      clearResumeTimer();
+      return;
+    }
+    clearResumeTimer();
+    logLifecycle(`${reason}; waiting ${Math.round(INTERACTIVE_RESUME_GRACE_MS / 1000)}s for a reconnect before ending the session.`);
+    resumeTimer = setTimeout(() => {
+      resumeTimer = null;
+      void controller.terminate("Reconnect window expired.");
+    }, INTERACTIVE_RESUME_GRACE_MS);
+  };
+
+  const cleanupSession = (reason = "Interactive terminal session terminated."): Promise<void> => {
     if (cleanupPromise) {
       return cleanupPromise;
     }
 
     cleanupPromise = (async () => {
       unregisterActiveInteractiveTerminalController(proposalCtx.taskId, proposalCtx.sessionId);
+      clearResumeTimer();
+      const activeWs = currentWs;
+      detachCurrentClient(reason, false);
+      logLifecycle(reason);
       try {
-        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-          ws.close(1012, "interactive terminal terminated");
+        if (activeWs && (activeWs.readyState === WebSocket.OPEN || activeWs.readyState === WebSocket.CONNECTING)) {
+          activeWs.close(INTERACTIVE_TERMINAL_CLOSE_CODE, "interactive terminal terminated");
         }
       } catch {
         /* ignore */
@@ -550,59 +705,148 @@ function wireTerminalWebSocket(
         /* ignore */
       }
       forceRemoveDockerSession(sessionContainerName);
+      await Promise.race([
+        childExitPromise,
+        new Promise<void>((resolve) => setTimeout(resolve, INTERACTIVE_EXIT_WAIT_MS))
+      ]);
+      await persistTranscriptIfNeeded();
       await proposalCtx.spawner.endInteractiveTerminalSession(proposalCtx.taskId, proposalCtx.sessionId).catch(() => undefined);
     })();
 
     return cleanupPromise;
   };
 
-  registerActiveInteractiveTerminalController(proposalCtx.taskId, proposalCtx.sessionId, cleanupSession);
+  const controller: ActiveInteractiveTerminalController = {
+    sessionId: proposalCtx.sessionId,
+    hasAttachedClient: () => currentWs !== null,
+    canResume: () => currentWs === null && cleanupPromise === null,
+    attachClient: (nextWs) => {
+      if (cleanupPromise || currentWs) {
+        return false;
+      }
+
+      const isResume = resumeTimer !== null;
+      clearResumeTimer();
+      currentWs = nextWs;
+      let awaitingPong = false;
+
+      const onMessage = (data: WebSocket.RawData, isBinary: boolean) => {
+        if (isBinary) {
+          child.write(Buffer.from(data as Buffer).toString("utf8"));
+          return;
+        }
+        try {
+          const msg = JSON.parse(String(data)) as { type?: string; cols?: number; rows?: number };
+          if (msg.type === "resize") {
+            const cols = Number(msg.cols);
+            const rows = Number(msg.rows);
+            if (Number.isFinite(cols) && Number.isFinite(rows)) {
+              child.resize(
+                Math.max(2, Math.min(512, Math.floor(cols))),
+                Math.max(1, Math.min(256, Math.floor(rows))),
+              );
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      };
+
+      const onClose = (code: number, reason: Buffer) => {
+        detachCurrentClient(`Client disconnected (code ${code}${reason.length > 0 ? `, reason: ${JSON.stringify(reason.toString("utf8"))}` : ""}).`, true);
+      };
+
+      const onError = (error: Error) => {
+        const message = error instanceof Error && error.message.trim() ? error.message.trim() : "unknown WebSocket error";
+        detachCurrentClient(`WebSocket error: ${message}.`, true);
+      };
+
+      const onPong = () => {
+        awaitingPong = false;
+      };
+
+      const heartbeatInterval = setInterval(() => {
+        if (cleanupPromise || currentWs !== nextWs) {
+          return;
+        }
+        if (awaitingPong) {
+          detachCurrentClient("WebSocket ping timeout.", false);
+          void cleanupSession("WebSocket ping timeout.");
+          return;
+        }
+        awaitingPong = true;
+        try {
+          nextWs.ping();
+        } catch (error) {
+          const message = error instanceof Error && error.message.trim() ? error.message.trim() : "could not send ping";
+          detachCurrentClient(`WebSocket ping failed: ${message}.`, false);
+          void cleanupSession(`WebSocket ping failed: ${message}.`);
+        }
+      }, INTERACTIVE_WS_PING_INTERVAL_MS);
+
+      currentWsCleanup = () => {
+        clearInterval(heartbeatInterval);
+        nextWs.off("message", onMessage);
+        nextWs.off("close", onClose);
+        nextWs.off("error", onError);
+        nextWs.off("pong", onPong);
+      };
+
+      nextWs.on("message", onMessage);
+      nextWs.on("close", onClose);
+      nextWs.on("error", onError);
+      nextWs.on("pong", onPong);
+
+      if (outputBuffer.length > 0 && nextWs.readyState === WebSocket.OPEN) {
+        try {
+          nextWs.send(Buffer.from(outputBuffer, "utf8"), { binary: true });
+        } catch (error) {
+          const message = error instanceof Error && error.message.trim() ? error.message.trim() : "could not replay terminal output";
+          detachCurrentClient(`Could not replay terminal output: ${message}.`, false);
+          void cleanupSession(`Could not replay terminal output: ${message}.`);
+          return false;
+        }
+      }
+
+      if (isResume) {
+        logLifecycle("Client resumed the live interactive terminal session.");
+      }
+
+      return true;
+    },
+    terminate: (reason?: string) => cleanupSession(reason)
+  };
+
+  registerActiveInteractiveTerminalController(proposalCtx.taskId, controller);
 
   child.onData((data) => {
     sawTerminalOutput = true;
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(Buffer.from(data, "utf8"), { binary: true });
+    outputBuffer = trimOutputBuffer(outputBuffer + data);
+    appendTranscriptChunk(data);
+    if (currentWs?.readyState === WebSocket.OPEN) {
+      currentWs.send(Buffer.from(data, "utf8"), { binary: true });
     }
   });
 
-  child.onExit(() => {
+  child.onExit((event) => {
+    resolveChildExit?.();
+    resolveChildExit = null;
+    const exitSummary = `exit code ${event.exitCode}${event.signal ? `, signal ${event.signal}` : ""}`;
     if (!sawTerminalOutput) {
-      sendInteractiveTerminalError(ws, "Interactive process exited before it produced terminal output.");
-      return;
-    }
-    try {
-      ws.close();
-    } catch {
-      /* ignore */
-    }
-  });
-
-  ws.on("message", (data, isBinary) => {
-    if (isBinary) {
-      child.write(Buffer.from(data as Buffer).toString("utf8"));
-      return;
-    }
-    try {
-      const msg = JSON.parse(String(data)) as { type?: string; cols?: number; rows?: number };
-      if (msg.type === "resize") {
-        const cols = Number(msg.cols);
-        const rows = Number(msg.rows);
-        if (Number.isFinite(cols) && Number.isFinite(rows)) {
-          child.resize(
-            Math.max(2, Math.min(512, Math.floor(cols))),
-            Math.max(1, Math.min(256, Math.floor(rows))),
-          );
+      if (currentWs?.readyState === WebSocket.OPEN) {
+        try {
+          currentWs.send(JSON.stringify({ type: "error", message: "Interactive process exited before it produced terminal output." }));
+        } catch {
+          /* ignore */
         }
       }
-    } catch {
-      /* ignore */
+      void cleanupSession(`Interactive process exited before it produced terminal output (${exitSummary}).`);
+      return;
     }
+    void cleanupSession(`Interactive process exited (${exitSummary}).`);
   });
 
-  ws.on("close", () => {
-    void cleanupSession();
-  });
-  ws.on("error", () => {
-    void cleanupSession();
-  });
+  if (!controller.attachClient(ws)) {
+    void cleanupSession("Could not attach the initial terminal client.");
+  }
 }

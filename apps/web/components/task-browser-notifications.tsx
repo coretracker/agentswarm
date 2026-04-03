@@ -77,16 +77,6 @@ export function TaskBrowserNotifications() {
 
     const seedKnownTasks = async () => {
       try {
-        if (canListTasks) {
-          const tasks = await api.listTasks();
-          if (cancelled) {
-            return;
-          }
-
-          knownTasksRef.current = new Map(tasks.map((task) => [task.id, task]));
-          return;
-        }
-
         if (openTaskId) {
           const task = await api.getTask(openTaskId);
           if (cancelled) {
@@ -110,7 +100,7 @@ export function TaskBrowserNotifications() {
     return () => {
       cancelled = true;
     };
-  }, [session?.user.id, canListTasks, canReadTasks, openTaskId]);
+  }, [session?.user.id, canReadTasks, openTaskId]);
 
   const openNotificationTarget = (href: string) => {
     if (typeof window !== "undefined") {
@@ -180,13 +170,22 @@ export function TaskBrowserNotifications() {
         return;
       }
 
-      const task = knownTasksRef.current.get(run.taskId) ?? null;
-      showNotification(
-        getRunNotificationTitle(run),
-        buildTaskNotificationBody(task, run.taskId),
-        `/tasks/${run.taskId}`,
-        `task-run-${run.id}`
-      );
+      void (async () => {
+        let task = knownTasksRef.current.get(run.taskId) ?? null;
+        if (!task && canReadTasks) {
+          task = await api.getTask(run.taskId).catch(() => null);
+          if (task) {
+            knownTasksRef.current.set(task.id, task);
+          }
+        }
+
+        showNotification(
+          getRunNotificationTitle(run),
+          buildTaskNotificationBody(task, run.taskId),
+          `/tasks/${run.taskId}`,
+          `task-run-${run.id}`
+        );
+      })();
     };
 
     socket.on("task:created", onTaskCreated);

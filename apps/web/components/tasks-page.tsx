@@ -31,7 +31,8 @@ export function TasksPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { can } = useAuth();
-  const { tasks, setTasks, loading } = useTasks();
+  const archivedView = searchParams.get("view") === "archived";
+  const { tasks, setTasks, loading } = useTasks({ view: archivedView ? "archived" : "active" });
   const { repositories } = useRepositories();
   const [seenTaskVersions, setSeenTaskVersions] = useState<SeenTaskVersions>({});
   const [titleFilter, setTitleFilter] = useState("");
@@ -42,7 +43,6 @@ export function TasksPage() {
   const canCreateTask = can("task:create") && (can("task:build") || can("task:ask") || can("task:interactive"));
   const canEditTask = can("task:edit");
   const canDeleteTask = can("task:delete");
-  const archivedView = searchParams.get("view") === "archived";
   useEffect(() => {
     const syncSeenTaskVersions = () => {
       setSeenTaskVersions(getSeenTaskVersions());
@@ -61,9 +61,6 @@ export function TasksPage() {
 
   const filteredTasks = useMemo(() => {
     return tasks.filter((task) => {
-      if (archivedView ? task.status !== "archived" : task.status === "archived") {
-        return false;
-      }
       if (titleFilter && !task.title.toLowerCase().includes(titleFilter.toLowerCase())) {
         return false;
       }

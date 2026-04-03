@@ -180,13 +180,15 @@ test("groups completed terminal sessions with a diff proposal", () => {
     id: "m1",
     createdAt: "2026-03-24T13:00:00.000Z",
     role: "system",
-    content: INTERACTIVE_TERMINAL_START_MESSAGE
+    content: INTERACTIVE_TERMINAL_START_MESSAGE,
+    sessionId: "session-1"
   });
   const end = createMessage({
     id: "m2",
     createdAt: "2026-03-24T13:10:00.000Z",
     role: "system",
-    content: INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE
+    content: INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE,
+    sessionId: "session-1"
   });
   const proposal = createProposal({
     id: "p1",
@@ -208,6 +210,7 @@ test("groups completed terminal sessions with a diff proposal", () => {
   if (entries[0]?.kind !== "grouped_terminal_session") {
     throw new Error("Expected grouped_terminal_session");
   }
+  assert.equal(entries[0].sessionId, "session-1");
   assert.equal(entries[0].startMessage.id, "m1");
   assert.equal(entries[0].endMessage?.id, "m2");
   assert.equal(entries[0].proposal?.id, "p1");

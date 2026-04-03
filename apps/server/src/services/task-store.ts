@@ -15,7 +15,8 @@ import {
   type TaskStartMode,
   type TaskStatus,
   type TaskChangeProposal,
-  type TaskChangeProposalStatus
+  type TaskChangeProposalStatus,
+  type TaskInteractiveTerminalTranscript
 } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
 import {
@@ -55,6 +56,7 @@ const TASK_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_change_proposal:";
 const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "agentswarm:task_change_proposal_ids:";
 const TASK_PENDING_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_pending_change_proposal:";
 const TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX = "agentswarm:task_active_interactive_session:";
+const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "agentswarm:task_interactive_terminal_transcript:";
 const TASK_IDS_KEY = "agentswarm:task_ids";
 const TASK_QUEUE_KEY = "agentswarm:queue";
 const MAX_LOG_LINES = 400;
@@ -97,6 +99,12 @@ export interface QueueEntry {
   input?: string;
 }
 
+export interface ListTasksOptions {
+  ownerUserId?: string | null;
+  view?: "all" | "active" | "archived";
+  limit?: number;
+}
+
 export class TaskStore {
   constructor(
     private readonly redis: Redis,
@@ -123,6 +131,7 @@ export class TaskStore {
       ...legacyTask,
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
+      activeInteractiveSession: legacyTask.activeInteractiveSession === true,
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
       taskType: normalizeLegacyTaskType(legacyTask.taskType),
       provider: normalizeProvider(legacyTask.provider),
@@ -205,6 +214,10 @@ export class TaskStore {
     return `${TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX}${taskId}`;
   }
 
+  private taskInteractiveTerminalTranscriptKey(sessionId: string): string {
+    return `${TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX}${sessionId}`;
+  }
+
   private async getStoredTask(taskId: string): Promise<Task | null> {
     const raw = await this.redis.get(this.taskKey(taskId));
     if (!raw) {
@@ -217,28 +230,36 @@ export class TaskStore {
 
   private async hydrateTask(task: Task): Promise<Task> {
     const logs = await this.redis.lrange(this.taskLogKey(task.id), 0, -1);
-    return this.withPendingCheckpointState({
+    const hydratedTask = {
       ...task,
       logs
-    });
-  }
-
-  private async withPendingCheckpointState(task: Task): Promise<Task> {
+    };
     const [proposals, activeInteractiveSession] = await Promise.all([
       this.listChangeProposals(task.id),
       this.getActiveInteractiveSession(task.id)
     ]);
-    const hasPendingCheckpoint = proposals.some((proposal) => proposal.status === "pending");
+    const hasPendingCheckpoint = hydratedTask.hasPendingCheckpoint || proposals.some((proposal) => proposal.status === "pending");
+    return {
+      ...this.withPendingCheckpointState({
+        ...hydratedTask,
+        hasPendingCheckpoint
+      }),
+      activeInteractiveSession: hydratedTask.activeInteractiveSession === true || activeInteractiveSession !== null
+    };
+  }
+
+  private withPendingCheckpointState(task: Task): Task {
+    const hasPendingCheckpoint = task.hasPendingCheckpoint ?? false;
     return {
       ...task,
       status: reconcileTaskStatusWithPendingCheckpoint(task.status, hasPendingCheckpoint),
       hasPendingCheckpoint,
-      activeInteractiveSession: activeInteractiveSession !== null
+      activeInteractiveSession: task.activeInteractiveSession === true
     };
   }
 
   private async publishTaskEvent(type: "task:created" | "task:updated", task: Task): Promise<Task> {
-    const payload = await this.withPendingCheckpointState(task);
+    const payload = this.withPendingCheckpointState(task);
     await this.eventBus.publish({ type, payload });
     return payload;
   }
@@ -290,6 +311,7 @@ export class TaskStore {
       title,
       pinned: false,
       hasPendingCheckpoint: false,
+      activeInteractiveSession: false,
       ownerUserId,
       repoId: repository.id,
       repoName: repository.name,
@@ -341,7 +363,7 @@ export class TaskStore {
     return this.hydrateTask(task);
   }
 
-  async listTasks(): Promise<Task[]> {
+  async listTasks(options: ListTasksOptions = {}): Promise<Task[]> {
     const ids = await this.redis.smembers(TASK_IDS_KEY);
     if (ids.length === 0) {
       return [];
@@ -354,23 +376,41 @@ export class TaskStore {
 
     const result = await pipeline.exec();
     const tasks: Task[] = [];
+    const view = options.view ?? "all";
+    const ownerUserId = options.ownerUserId?.trim() || null;
 
     for (const row of result ?? []) {
       const raw = row[1];
       if (typeof raw === "string") {
-        const task = this.normalizeTask(JSON.parse(raw) as Task);
-        tasks.push({ ...task, logs: [] });
+        const task = this.withPendingCheckpointState({
+          ...this.normalizeTask(JSON.parse(raw) as Task),
+          logs: []
+        });
+        if (ownerUserId && task.ownerUserId !== ownerUserId) {
+          continue;
+        }
+        if (view === "active" && task.status === "archived") {
+          continue;
+        }
+        if (view === "archived" && task.status !== "archived") {
+          continue;
+        }
+        tasks.push(task);
       }
     }
 
-    const hydratedTasks = await Promise.all(tasks.map((task) => this.withPendingCheckpointState(task)));
-
-    return hydratedTasks.sort((a, b) => {
+    const sortedTasks = tasks.sort((a, b) => {
       if (a.pinned !== b.pinned) {
         return a.pinned ? -1 : 1;
       }
       return b.createdAt.localeCompare(a.createdAt);
     });
+
+    if (options.limit != null && Number.isFinite(options.limit)) {
+      return sortedTasks.slice(0, Math.max(0, options.limit));
+    }
+
+    return sortedTasks;
   }
 
   async patchTask(
@@ -561,6 +601,7 @@ export class TaskStore {
       role: TaskMessage["role"];
       content: string;
       action?: TaskMessage["action"];
+      sessionId?: string | null;
     }
   ): Promise<TaskMessage | null> {
     const task = await this.getStoredTask(taskId);
@@ -574,6 +615,7 @@ export class TaskStore {
       role: input.role,
       content: input.content,
       action: input.action ?? null,
+      sessionId: input.sessionId ?? null,
       createdAt: nowIso()
     };
 
@@ -821,8 +863,8 @@ export class TaskStore {
   }
 
   async hasPendingChangeProposal(taskId: string): Promise<boolean> {
-    const proposals = await this.listChangeProposals(taskId);
-    return proposals.some((p) => p.status === "pending");
+    const task = await this.getStoredTask(taskId);
+    return task?.hasPendingCheckpoint ?? false;
   }
 
   private normalizeStoredProposal(parsed: TaskChangeProposal): TaskChangeProposal {
@@ -875,19 +917,73 @@ export class TaskStore {
     taskId: string,
     session: { sessionId: string; checkpointRef: string; startedAt: string; untrackedPathsAtCheckpoint: string[] }
   ): Promise<void> {
-    await this.redis.set(this.taskActiveInteractiveSessionKey(taskId), JSON.stringify(session));
     const task = await this.getStoredTask(taskId);
-    if (task) {
-      await this.publishTaskEvent("task:updated", task);
+    const nextTask = task ? { ...task, activeInteractiveSession: true, logs: [] } : null;
+    const pipeline = this.redis.multi().set(this.taskActiveInteractiveSessionKey(taskId), JSON.stringify(session));
+    if (nextTask) {
+      pipeline.set(this.taskKey(taskId), JSON.stringify(nextTask));
+    }
+    await pipeline.exec();
+    if (nextTask) {
+      await this.publishTaskEvent("task:updated", nextTask);
     }
   }
 
   async clearActiveInteractiveSession(taskId: string): Promise<void> {
-    await this.redis.del(this.taskActiveInteractiveSessionKey(taskId));
     const task = await this.getStoredTask(taskId);
-    if (task) {
-      await this.publishTaskEvent("task:updated", task);
+    const nextTask = task ? { ...task, activeInteractiveSession: false, logs: [] } : null;
+    const pipeline = this.redis.multi().del(this.taskActiveInteractiveSessionKey(taskId));
+    if (nextTask) {
+      pipeline.set(this.taskKey(taskId), JSON.stringify(nextTask));
     }
+    await pipeline.exec();
+    if (nextTask) {
+      await this.publishTaskEvent("task:updated", nextTask);
+    }
+  }
+
+  async saveInteractiveTerminalTranscript(
+    taskId: string,
+    sessionId: string,
+    content: string,
+    truncated: boolean
+  ): Promise<void> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return;
+    }
+
+    const transcript: TaskInteractiveTerminalTranscript = {
+      taskId,
+      sessionId,
+      content,
+      truncated
+    };
+    await this.redis.set(this.taskInteractiveTerminalTranscriptKey(sessionId), JSON.stringify(transcript));
+  }
+
+  async getInteractiveTerminalTranscript(taskId: string, sessionId: string): Promise<TaskInteractiveTerminalTranscript | null> {
+    const raw = await this.redis.get(this.taskInteractiveTerminalTranscriptKey(sessionId));
+    if (!raw) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as TaskInteractiveTerminalTranscript;
+      if (
+        parsed &&
+        parsed.taskId === taskId &&
+        parsed.sessionId === sessionId &&
+        typeof parsed.content === "string" &&
+        typeof parsed.truncated === "boolean"
+      ) {
+        return parsed;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    return null;
   }
 
   async listChangeProposals(taskId: string): Promise<TaskChangeProposal[]> {
@@ -895,10 +991,15 @@ export class TaskStore {
     if (ids.length === 0) {
       return [];
     }
-    const proposals: TaskChangeProposal[] = [];
+    const pipeline = this.redis.pipeline();
     for (const id of ids) {
-      const raw = await this.redis.get(this.taskChangeProposalKey(id));
-      if (!raw) {
+      pipeline.get(this.taskChangeProposalKey(id));
+    }
+    const proposals: TaskChangeProposal[] = [];
+    const result = await pipeline.exec();
+    for (const row of result ?? []) {
+      const raw = row[1];
+      if (typeof raw !== "string") {
         continue;
       }
       try {
@@ -958,17 +1059,20 @@ export class TaskStore {
       resolvedAt: null,
       revertedAt: null
     };
-
-    await this.redis
+    const task = await this.getStoredTask(input.taskId);
+    const nextTask = task ? { ...task, hasPendingCheckpoint: true, logs: [] } : null;
+    const pipeline = this.redis
       .multi()
       .set(this.taskChangeProposalKey(proposal.id), JSON.stringify(proposal))
-      .rpush(this.taskChangeProposalIdsKey(input.taskId), proposal.id)
-      .exec();
+      .rpush(this.taskChangeProposalIdsKey(input.taskId), proposal.id);
+    if (nextTask) {
+      pipeline.set(this.taskKey(input.taskId), JSON.stringify(nextTask));
+    }
+    await pipeline.exec();
 
     await this.eventBus.publish({ type: "task:change_proposal", payload: proposal });
-    const task = await this.getStoredTask(input.taskId);
-    if (task) {
-      await this.publishTaskEvent("task:updated", task);
+    if (nextTask) {
+      await this.publishTaskEvent("task:updated", nextTask);
     }
     return proposal;
   }
@@ -993,12 +1097,18 @@ export class TaskStore {
       revertedAt: status === "applied" ? null : (existing.revertedAt ?? null)
     };
 
-    await this.redis.set(this.taskChangeProposalKey(proposalId), JSON.stringify(next));
+    const task = await this.getStoredTask(taskId);
+    const nextHasPendingCheckpoint = next.status === "pending" ? true : existing.status === "pending" ? false : (task?.hasPendingCheckpoint ?? false);
+    const nextTask = task ? { ...task, hasPendingCheckpoint: nextHasPendingCheckpoint, logs: [] } : null;
+    const pipeline = this.redis.multi().set(this.taskChangeProposalKey(proposalId), JSON.stringify(next));
+    if (nextTask) {
+      pipeline.set(this.taskKey(taskId), JSON.stringify(nextTask));
+    }
+    await pipeline.exec();
 
     await this.eventBus.publish({ type: "task:change_proposal", payload: next });
-    const task = await this.getStoredTask(taskId);
-    if (task) {
-      await this.publishTaskEvent("task:updated", task);
+    if (nextTask) {
+      await this.publishTaskEvent("task:updated", nextTask);
     }
     return next;
   }
@@ -1015,11 +1125,16 @@ export class TaskStore {
       revertedAt: nowIso()
     };
 
-    await this.redis.set(this.taskChangeProposalKey(proposalId), JSON.stringify(next));
-    await this.eventBus.publish({ type: "task:change_proposal", payload: next });
     const task = await this.getStoredTask(taskId);
-    if (task) {
-      await this.publishTaskEvent("task:updated", task);
+    const nextTask = task ? { ...task, logs: [] } : null;
+    const pipeline = this.redis.multi().set(this.taskChangeProposalKey(proposalId), JSON.stringify(next));
+    if (nextTask) {
+      pipeline.set(this.taskKey(taskId), JSON.stringify(nextTask));
+    }
+    await pipeline.exec();
+    await this.eventBus.publish({ type: "task:change_proposal", payload: next });
+    if (nextTask) {
+      await this.publishTaskEvent("task:updated", nextTask);
     }
     return next;
   }
