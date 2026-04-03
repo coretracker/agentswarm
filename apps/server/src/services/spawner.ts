@@ -2174,7 +2174,12 @@ esac
             return { ok: false, message: clean.message };
           }
         }
-        await this.taskStore.updateChangeProposalStatus(proposalId, "applied", task.id);
+        const appliedHeadRef = (
+          await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername)
+        ).trim();
+        await this.taskStore.updateChangeProposalStatus(proposalId, "applied", task.id, {
+          toRef: appliedHeadRef || proposal.toRef
+        });
         await this.syncTaskReviewStatus(task.id);
         await this.taskStore.appendLog(
           task.id,

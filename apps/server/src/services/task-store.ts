@@ -976,7 +976,8 @@ export class TaskStore {
   async updateChangeProposalStatus(
     proposalId: string,
     status: TaskChangeProposalStatus,
-    taskId: string
+    taskId: string,
+    updates?: Partial<Pick<TaskChangeProposal, "toRef">>
   ): Promise<TaskChangeProposal | null> {
     const existing = await this.getChangeProposal(proposalId);
     if (!existing || existing.taskId !== taskId) {
@@ -985,6 +986,7 @@ export class TaskStore {
 
     const next: TaskChangeProposal = {
       ...existing,
+      ...updates,
       status,
       resolvedAt: status === "pending" ? null : nowIso(),
       /** Re-applying after revert clears this so the row is "applied" again. */

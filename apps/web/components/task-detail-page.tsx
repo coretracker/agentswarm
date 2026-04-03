@@ -2660,7 +2660,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               previewRefs: {
                 before: proposal.fromRef,
                 after: proposal.toRef,
-                useWorkspaceAfter: proposal.status === "pending"
+                useWorkspaceAfter: proposal.sourceType === "interactive_session" && proposal.status !== "reverted"
               }
             })
           }
