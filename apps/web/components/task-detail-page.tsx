@@ -295,6 +295,7 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: Pars
                         taskId={options.taskId}
                         previewRefs={options.previewRefs ?? null}
                         previewUnavailableMessage={options.previewUnavailableMessage}
+                        framed={false}
                       />
                     ) : (
                       <Typography.Text type="secondary">
@@ -2658,7 +2659,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               taskId: proposal.taskId,
               previewRefs: {
                 before: proposal.fromRef,
-                after: proposal.toRef
+                after: proposal.toRef,
+                useWorkspaceAfter: proposal.status === "pending"
               }
             })
           }

@@ -10,6 +10,7 @@ import { useThemeMode } from "./theme-provider";
 export interface TaskDiffPreviewRefs {
   before: string | null;
   after: string | null;
+  useWorkspaceAfter?: boolean;
 }
 
 interface ImagePreviewState {
@@ -27,7 +28,7 @@ function getDiffFileLabel(file: Pick<FileData, "newPath" | "oldPath">): string {
 }
 
 function useTaskImagePreview(taskId: string, filePath: string, ref: string | null): ImagePreviewState {
-  const shouldLoad = Boolean(taskId && filePath && ref);
+  const shouldLoad = Boolean(taskId && filePath);
   const [state, setState] = useState<ImagePreviewState>({
     loading: shouldLoad,
     preview: null,
@@ -44,7 +45,7 @@ function useTaskImagePreview(taskId: string, filePath: string, ref: string | nul
     setState({ loading: true, preview: null, error: null });
 
     void api
-      .getTaskWorkspaceFile(taskId, filePath, { ref })
+      .getTaskWorkspaceFile(taskId, filePath, ref ? { ref } : undefined)
       .then((preview) => {
         if (cancelled) {
           return;
@@ -131,21 +132,27 @@ export function TaskBinaryDiffCard({
   collapseFiles,
   taskId,
   previewRefs,
-  previewUnavailableMessage
+  previewUnavailableMessage,
+  framed = true
 }: {
   file: FileData;
   collapseFiles: boolean;
   taskId: string;
   previewRefs: TaskDiffPreviewRefs | null;
   previewUnavailableMessage?: string;
+  framed?: boolean;
 }) {
   const fileLabel = getDiffFileLabel(file);
   const filePath = getDiffFilePath(file);
   const isImage = isImageDiffPath(filePath);
   const showBefore = Boolean(previewRefs?.before) && file.type !== "add";
-  const showAfter = Boolean(previewRefs?.after) && file.type !== "delete";
+  const showAfter = (Boolean(previewRefs?.after) || previewRefs?.useWorkspaceAfter === true) && file.type !== "delete";
   const beforePreview = useTaskImagePreview(taskId, showBefore ? file.oldPath || filePath : "", showBefore ? previewRefs?.before ?? null : null);
-  const afterPreview = useTaskImagePreview(taskId, showAfter ? file.newPath || filePath : "", showAfter ? previewRefs?.after ?? null : null);
+  const afterPreview = useTaskImagePreview(
+    taskId,
+    showAfter ? file.newPath || filePath : "",
+    previewRefs?.useWorkspaceAfter ? null : showAfter ? previewRefs?.after ?? null : null
+  );
   const showBeforePane = showBefore && (beforePreview.loading || beforePreview.preview !== null);
   const showAfterPane = showAfter && (afterPreview.loading || afterPreview.preview !== null);
 
@@ -185,6 +192,10 @@ export function TaskBinaryDiffCard({
         ]}
       />
     );
+  }
+
+  if (!framed) {
+    return content;
   }
 
   return (
