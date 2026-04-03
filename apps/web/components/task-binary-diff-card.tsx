@@ -23,6 +23,10 @@ function getPreviewErrorMessage(preview: TaskWorkspaceFilePreview): string {
   return preview.kind === "binary" ? "This file cannot be rendered as an image." : "Image preview is unavailable.";
 }
 
+function isNullRevision(revision: string | null | undefined): boolean {
+  return typeof revision === "string" && /^0+$/.test(revision);
+}
+
 function getDiffFilePath(file: Pick<FileData, "newPath" | "oldPath">): string {
   return file.newPath || file.oldPath || "";
 }
@@ -112,18 +116,18 @@ function useTaskImagePreview(
 }
 
 function isAddedBinaryDiff(file: Pick<FileData, "oldRevision">): boolean {
-  return file.oldRevision === "0000000";
+  return isNullRevision(file.oldRevision);
 }
 
 function isDeletedBinaryDiff(file: Pick<FileData, "newRevision">): boolean {
-  return file.newRevision === "0000000";
+  return isNullRevision(file.newRevision);
 }
 
 function ImagePreviewPane({
   title,
   state
 }: {
-  title: string;
+  title?: string | null;
   state: ImagePreviewState;
 }) {
   const { mode } = useThemeMode();
@@ -132,9 +136,11 @@ function ImagePreviewPane({
 
   return (
     <div style={{ flex: "1 1 280px", minWidth: 0 }}>
-      <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
-        {title}
-      </Typography.Text>
+      {title ? (
+        <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
+          {title}
+        </Typography.Text>
+      ) : null}
       <div
         style={{
           minHeight: 180,
@@ -151,7 +157,7 @@ function ImagePreviewPane({
           <Spin size="small" />
         ) : state.preview && state.preview.mimeType ? (
           <img
-            alt={title}
+            alt={title ?? "Image preview"}
             src={`data:${state.preview.mimeType};base64,${state.preview.content}`}
             style={{ maxWidth: "100%", maxHeight: 320, objectFit: "contain", borderRadius: 6 }}
           />
@@ -196,12 +202,13 @@ export function TaskBinaryDiffCard({
   );
   const showBeforePane = showBefore;
   const showAfterPane = showAfter;
+  const showComparisonTitles = showBeforePane && showAfterPane;
 
   const content = isImage ? (
     previewRefs ? (
       <Flex gap={12} wrap="wrap">
-        {showBeforePane ? <ImagePreviewPane title="Before" state={beforePreview} /> : null}
-        {showAfterPane ? <ImagePreviewPane title="After" state={afterPreview} /> : null}
+        {showBeforePane ? <ImagePreviewPane title={showComparisonTitles ? "Before" : null} state={beforePreview} /> : null}
+        {showAfterPane ? <ImagePreviewPane title={showComparisonTitles ? "After" : null} state={afterPreview} /> : null}
         {!showBeforePane && !showAfterPane ? (
           <Typography.Text type="secondary">
             This image change does not have a previewable before/after image.
