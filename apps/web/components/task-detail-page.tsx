@@ -73,6 +73,7 @@ import { isImageDiffPath, normalizeDiffForRendering, parseRenderableDiff } from 
 import { insertSnippetContent } from "../src/utils/snippets";
 import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { useAuth } from "./auth-provider";
+import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
 import { TaskDiffOpenAiPanel } from "./task-diff-openai-panel";
 import { parseWorkspaceFileLink, WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 
@@ -243,7 +244,14 @@ function renderNonTextDiffCard(file: FileData, collapseFiles: boolean): ReactNod
   );
 }
 
-function renderParsedDiff(diffText: string, emptyMessage: string, options?: { collapseFiles?: boolean }): ReactNode {
+interface ParsedDiffRenderOptions {
+  collapseFiles?: boolean;
+  taskId?: string;
+  previewRefs?: TaskDiffPreviewRefs | null;
+  previewUnavailableMessage?: string;
+}
+
+function renderParsedDiff(diffText: string, emptyMessage: string, options?: ParsedDiffRenderOptions): ReactNode {
   if (!diffText.trim()) {
     return (
       <Card size="small">
@@ -280,11 +288,21 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: { co
                       {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
                     </Diff>
                   ) : (
-                    <Typography.Text type="secondary">
-                      {isImageDiffPath(file.newPath || file.oldPath || "")
-                        ? "No line-based diff is available for this image in this view."
-                        : "No line-based diff is available for this file."}
-                    </Typography.Text>
+                    options?.taskId ? (
+                      <TaskBinaryDiffCard
+                        file={file}
+                        collapseFiles={false}
+                        taskId={options.taskId}
+                        previewRefs={options.previewRefs ?? null}
+                        previewUnavailableMessage={options.previewUnavailableMessage}
+                      />
+                    ) : (
+                      <Typography.Text type="secondary">
+                        {isImageDiffPath(file.newPath || file.oldPath || "")
+                          ? "No line-based diff is available for this image in this view."
+                          : "No line-based diff is available for this file."}
+                      </Typography.Text>
+                    )
                   )
                 }
               ]}
@@ -308,7 +326,18 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: { co
               </Diff>
             </Card>
           ) : (
-            renderNonTextDiffCard(file, false)
+            options?.taskId ? (
+              <TaskBinaryDiffCard
+                key={`${file.oldRevision}-${file.newRevision}-${file.oldPath}-${file.newPath}`}
+                file={file}
+                collapseFiles={false}
+                taskId={options.taskId}
+                previewRefs={options.previewRefs ?? null}
+                previewUnavailableMessage={options.previewUnavailableMessage}
+              />
+            ) : (
+              renderNonTextDiffCard(file, false)
+            )
           )
         ))}
       </Space>
@@ -2624,7 +2653,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   </Space>
                 </span>
               ) : null,
-            children: renderParsedDiff(proposal.diff, "No diff text.", { collapseFiles: true })
+            children: renderParsedDiff(proposal.diff, "No diff text.", {
+              collapseFiles: true,
+              taskId: proposal.taskId,
+              previewRefs: {
+                before: proposal.fromRef,
+                after: proposal.toRef
+              }
+            })
           }
         ]}
       />
