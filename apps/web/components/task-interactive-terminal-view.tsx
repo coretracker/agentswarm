@@ -38,6 +38,9 @@ export interface TaskInteractiveTerminalViewProps {
   taskId: string;
   /** Initial / reset font size (px) before any session zoom. Default 14. */
   defaultFontSize?: number;
+  disconnectHint?: string;
+  onConnected?: () => void;
+  onDisconnected?: (event: { code: number; reason: string; opened: boolean }) => void;
 }
 
 /**
@@ -45,9 +48,17 @@ export interface TaskInteractiveTerminalViewProps {
  */
 export function TaskInteractiveTerminalView({
   taskId,
-  defaultFontSize = DEFAULT_INTERACTIVE_TERMINAL_FONT_SIZE
+  defaultFontSize = DEFAULT_INTERACTIVE_TERMINAL_FONT_SIZE,
+  disconnectHint = "Refresh this page to try resuming the session if it is still running.",
+  onConnected,
+  onDisconnected
 }: TaskInteractiveTerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const onConnectedRef = useRef(onConnected);
+  const onDisconnectedRef = useRef(onDisconnected);
+
+  onConnectedRef.current = onConnected;
+  onDisconnectedRef.current = onDisconnected;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -139,8 +150,10 @@ export function TaskInteractiveTerminalView({
     const onOpen = (): void => {
       wsOpened = true;
       term.reset();
+      sendResize();
       scheduleLayout();
       term.focus();
+      onConnectedRef.current?.();
     };
 
     const onMessage = (ev: MessageEvent): void => {
@@ -187,8 +200,13 @@ export function TaskInteractiveTerminalView({
       const details = event.reason?.trim() || (event.code > 0 ? `code ${event.code}` : "");
       term.writeln(`\r\n\x1b[33m[disconnected${details ? `: ${details}` : ""}]\x1b[0m`);
       if (event.code !== 1000) {
-        term.writeln("\r\n\x1b[90mRefresh this page to try resuming the session if it is still running.\x1b[0m");
+        term.writeln(`\r\n\x1b[90m${disconnectHint}\x1b[0m`);
       }
+      onDisconnectedRef.current?.({
+        code: event.code,
+        reason: event.reason?.trim() ?? "",
+        opened: wsOpened
+      });
     };
 
     const endBrowserSession = (): void => {
@@ -229,7 +247,7 @@ export function TaskInteractiveTerminalView({
       }
       term.dispose();
     };
-  }, [taskId, defaultFontSize]);
+  }, [taskId, defaultFontSize, disconnectHint]);
 
   return (
     <div

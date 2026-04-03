@@ -78,6 +78,11 @@ pre {
   font-family: "SFMono-Regular", "Consolas", monospace;
 }
 
+.xterm .xterm-screen {
+  padding: 30px;
+  box-sizing: border-box;
+}
+
 .diff {
   background: var(--diff-background-color);
   color: var(--diff-text-color);

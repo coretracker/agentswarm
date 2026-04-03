@@ -30,7 +30,6 @@ const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
 const INTERACTIVE_WORKSPACE_PATH = "/workspace";
 const INTERACTIVE_RESUME_GRACE_MS = 30 * 60_000;
 const INTERACTIVE_WS_PING_INTERVAL_MS = 25_000;
-const INTERACTIVE_OUTPUT_BUFFER_LIMIT = 256_000;
 const INTERACTIVE_TRANSCRIPT_LIMIT = 2_000_000;
 const INTERACTIVE_EXIT_WAIT_MS = 1_500;
 const INTERACTIVE_TERMINAL_CLOSE_CODE = 1012;
@@ -599,7 +598,6 @@ function wireTerminalWebSocket(
   proposalCtx: { taskId: string; sessionId: string; spawner: SpawnerService; taskStore: TaskStore }
 ): void {
   let sawTerminalOutput = false;
-  let outputBuffer = "";
   let transcriptBuffer = "";
   let transcriptTruncated = false;
   let transcriptSaved = false;
@@ -617,9 +615,6 @@ function wireTerminalWebSocket(
     console.info(`[interactive-terminal][${proposalCtx.taskId}][${proposalCtx.sessionId}] ${message}`);
     void proposalCtx.taskStore.appendLog(proposalCtx.taskId, taskMessage).catch(() => undefined);
   };
-
-  const trimOutputBuffer = (value: string): string =>
-    value.length > INTERACTIVE_OUTPUT_BUFFER_LIMIT ? value.slice(-INTERACTIVE_OUTPUT_BUFFER_LIMIT) : value;
 
   const appendTranscriptChunk = (chunk: string): void => {
     if (transcriptTruncated || chunk.length === 0) {
@@ -729,6 +724,23 @@ function wireTerminalWebSocket(
       clearResumeTimer();
       currentWs = nextWs;
       let awaitingPong = false;
+      let pendingResumeReplay = isResume && transcriptBuffer.length > 0;
+
+      const flushResumeReplay = (): boolean => {
+        if (!pendingResumeReplay || nextWs.readyState !== WebSocket.OPEN) {
+          return true;
+        }
+        try {
+          nextWs.send(Buffer.from(transcriptBuffer, "utf8"), { binary: true });
+          pendingResumeReplay = false;
+          return true;
+        } catch (error) {
+          const message = error instanceof Error && error.message.trim() ? error.message.trim() : "could not replay terminal transcript";
+          detachCurrentClient(`Could not replay terminal transcript: ${message}.`, false);
+          void cleanupSession(`Could not replay terminal transcript: ${message}.`);
+          return false;
+        }
+      };
 
       const onMessage = (data: WebSocket.RawData, isBinary: boolean) => {
         if (isBinary) {
@@ -745,6 +757,9 @@ function wireTerminalWebSocket(
                 Math.max(2, Math.min(512, Math.floor(cols))),
                 Math.max(1, Math.min(256, Math.floor(rows))),
               );
+              if (!flushResumeReplay()) {
+                return;
+              }
             }
           }
         } catch {
@@ -797,17 +812,6 @@ function wireTerminalWebSocket(
       nextWs.on("error", onError);
       nextWs.on("pong", onPong);
 
-      if (outputBuffer.length > 0 && nextWs.readyState === WebSocket.OPEN) {
-        try {
-          nextWs.send(Buffer.from(outputBuffer, "utf8"), { binary: true });
-        } catch (error) {
-          const message = error instanceof Error && error.message.trim() ? error.message.trim() : "could not replay terminal output";
-          detachCurrentClient(`Could not replay terminal output: ${message}.`, false);
-          void cleanupSession(`Could not replay terminal output: ${message}.`);
-          return false;
-        }
-      }
-
       if (isResume) {
         logLifecycle("Client resumed the live interactive terminal session.");
       }
@@ -821,7 +825,6 @@ function wireTerminalWebSocket(
 
   child.onData((data) => {
     sawTerminalOutput = true;
-    outputBuffer = trimOutputBuffer(outputBuffer + data);
     appendTranscriptChunk(data);
     if (currentWs?.readyState === WebSocket.OPEN) {
       currentWs.send(Buffer.from(data, "utf8"), { binary: true });

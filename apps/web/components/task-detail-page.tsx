@@ -76,6 +76,7 @@ import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
 import { TaskDiffOpenAiPanel } from "./task-diff-openai-panel";
+import { TaskInteractiveTerminalView } from "./task-interactive-terminal-view";
 import { TaskTerminalTranscriptView } from "./task-terminal-transcript-view";
 import { parseWorkspaceFileLink, WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 
@@ -86,15 +87,20 @@ const runStatusColor: Record<TaskRun["status"], string> = {
   cancelled: "default"
 };
 
-const taskActionLabel: Record<TaskMessageAction | TaskAction, string> = {
+type ComposerAction = TaskMessageAction | "interactive";
+
+const taskActionLabel: Record<ComposerAction | TaskAction, string> = {
   build: "Build",
   ask: "Ask",
-  comment: "Comment"
+  comment: "Comment",
+  interactive: "Interactive"
 };
 
-type ComposerAction = TaskMessageAction;
-
-function getAllowedComposerActions(canBuildTasks: boolean, canAskTasks: boolean): ComposerAction[] {
+function getAllowedComposerActions(
+  canBuildTasks: boolean,
+  canAskTasks: boolean,
+  canUseInteractiveTerminal: boolean
+): ComposerAction[] {
   const actions: ComposerAction[] = [];
   if (canBuildTasks) {
     actions.push("build");
@@ -102,12 +108,15 @@ function getAllowedComposerActions(canBuildTasks: boolean, canAskTasks: boolean)
   if (canAskTasks) {
     actions.push("ask");
   }
+  if (canUseInteractiveTerminal) {
+    actions.push("interactive");
+  }
   actions.push("comment");
   return actions;
 }
 
 function getDefaultComposerAction(task: Task | null, allowedActions: ComposerAction[]): ComposerAction {
-  const defaultAction = allowedActions.find((action) => action !== "comment") ?? "comment";
+  const defaultAction = allowedActions.find((action) => action !== "comment" && action !== "interactive") ?? "comment";
 
   if (!task) {
     return defaultAction;
@@ -532,6 +541,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [editingComment, setEditingComment] = useState<TaskMessage | null>(null);
   const [commentEditDraft, setCommentEditDraft] = useState("");
   const [interactiveTerminalStatus, setInteractiveTerminalStatus] = useState<TaskInteractiveTerminalStatus | null>(null);
+  const [inlineInteractiveTerminalOpen, setInlineInteractiveTerminalOpen] = useState(false);
+  const [inlineInteractiveTerminalDisconnected, setInlineInteractiveTerminalDisconnected] = useState(false);
+  const [inlineInteractiveTerminalMountKey, setInlineInteractiveTerminalMountKey] = useState(0);
+  const [inlineInteractiveTerminalOpenedAt, setInlineInteractiveTerminalOpenedAt] = useState<string | null>(null);
   const [interactiveTerminalTranscripts, setInteractiveTerminalTranscripts] = useState<
     Record<
       string,
@@ -560,6 +573,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const workspaceFilePreviewRequestIdRef = useRef(0);
   const executionConfigAutosaveTimeoutRef = useRef<number | null>(null);
   const executionConfigSaveRequestIdRef = useRef(0);
+  const bottomScrollAnchorRef = useRef<HTMLDivElement | null>(null);
+  const initialBottomScrollStateRef = useRef<{ taskId: string; scrolledWithTerminal: boolean } | null>(null);
 
   useEffect(() => {
     if (task) {
@@ -586,6 +601,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   useEffect(() => {
     setInteractiveTerminalTranscripts({});
+    setInlineInteractiveTerminalOpen(false);
+    setInlineInteractiveTerminalDisconnected(false);
+    setInlineInteractiveTerminalMountKey(0);
+    setInlineInteractiveTerminalOpenedAt(null);
+    initialBottomScrollStateRef.current = null;
   }, [taskId]);
 
   const taskType = task?.taskType ?? "build";
@@ -800,7 +820,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
     return options;
   }, [task?.repoDefaultBranch, diffBranches]);
-  const allowedChatActions = useMemo(() => getAllowedComposerActions(canBuildTasks, canAskTasks), [canAskTasks, canBuildTasks]);
+  const allowedChatActions = useMemo(
+    () => getAllowedComposerActions(canBuildTasks, canAskTasks, canUseInteractiveTerminal),
+    [canAskTasks, canBuildTasks, canUseInteractiveTerminal]
+  );
 
   useEffect(() => {
     const defaultAction = getDefaultComposerAction(task ?? null, allowedChatActions);
@@ -1383,16 +1406,22 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       })
     : "Working";
   const canKillInteractiveTerminal = canEditTask && canUseInteractiveTerminal && !!task && !isArchived && interactiveTerminalRunning;
+  const interactiveComposerSelected = selectedChatAction === "interactive";
+  const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive";
   const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived";
   const chatDisabled =
     chatClosed ||
     interactiveTerminalRunning ||
     (selectedChatAction !== "comment" && (isQueued || isActive || !!pendingChangeProposal));
+  const chatInputDisabled = chatDisabled || interactiveComposerSelected;
   const chatPlaceholder = (() => {
     if (interactiveTerminalRunning) {
       return "An interactive terminal session is already running for this task. Close or end it before sending from here.";
     }
     if (!chatDisabled) {
+      if (selectedChatAction === "interactive") {
+        return "Interactive terminal does not need a prompt. Press Start to open the live session below.";
+      }
       if (selectedChatAction === "comment") {
         return "Add a comment to the task history";
       }
@@ -1423,10 +1452,95 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         messages: taskMessages,
         runs: taskRuns,
         proposals: changeProposals,
-        interactiveTerminalRunning
+        interactiveTerminalRunning: interactiveTerminalRunning || interactiveTerminalResumeAvailable || inlineInteractiveTerminalOpen
       }),
-    [changeProposals, interactiveTerminalRunning, taskMessages, taskRuns]
+    [changeProposals, inlineInteractiveTerminalOpen, interactiveTerminalResumeAvailable, interactiveTerminalRunning, taskMessages, taskRuns]
   );
+  const activeTerminalHistoryEntry = useMemo(
+    () =>
+      [...chatTimeline]
+        .reverse()
+        .find(
+          (entry): entry is Extract<(typeof chatTimeline)[number], { kind: "grouped_terminal_session" }> =>
+            entry.kind === "grouped_terminal_session" && entry.active
+        ) ?? null,
+    [chatTimeline]
+  );
+  const historicalChatTimeline = useMemo(
+    () => chatTimeline.filter((entry) => !(entry.kind === "grouped_terminal_session" && entry.active)),
+    [chatTimeline]
+  );
+  const showInlineInteractiveTerminalCard =
+    !!task &&
+    canUseInteractiveTerminal &&
+    (inlineInteractiveTerminalOpen ||
+      interactiveTerminalRunning ||
+      interactiveTerminalResumeAvailable ||
+      activeTerminalHistoryEntry !== null);
+  const showInlineInteractiveTerminalReconnectNotice =
+    inlineInteractiveTerminalDisconnected && interactiveTerminalResumeAvailable;
+  const showInlineInteractiveTerminalViewport =
+    showInlineInteractiveTerminalCard &&
+    !showInlineInteractiveTerminalReconnectNotice &&
+    (inlineInteractiveTerminalOpen || interactiveTerminalResumeAvailable);
+  const inlineInteractiveTerminalTimestamp =
+    activeTerminalHistoryEntry?.startMessage.createdAt ?? inlineInteractiveTerminalOpenedAt;
+
+  useEffect(() => {
+    if (!interactiveTerminalResumeAvailable) {
+      return;
+    }
+    setInlineInteractiveTerminalOpen(true);
+    setInlineInteractiveTerminalDisconnected(false);
+    setInlineInteractiveTerminalOpenedAt((current) => current ?? new Date().toISOString());
+  }, [interactiveTerminalResumeAvailable]);
+
+  useEffect(() => {
+    if (interactiveTerminalRunning || interactiveTerminalResumeAvailable || activeTerminalHistoryEntry) {
+      return;
+    }
+    setInlineInteractiveTerminalOpen(false);
+    setInlineInteractiveTerminalDisconnected(false);
+    setInlineInteractiveTerminalOpenedAt(null);
+  }, [activeTerminalHistoryEntry, interactiveTerminalResumeAvailable, interactiveTerminalRunning]);
+
+  useEffect(() => {
+    if (!task?.id || loading || messagesLoading || runsLoading) {
+      return;
+    }
+
+    const current = initialBottomScrollStateRef.current;
+    const needsInitialScroll = !current || current.taskId !== task.id;
+    const needsTerminalFollowupScroll =
+      showInlineInteractiveTerminalCard && (!current || current.taskId !== task.id || !current.scrolledWithTerminal);
+
+    if (!needsInitialScroll && !needsTerminalFollowupScroll) {
+      return;
+    }
+
+    initialBottomScrollStateRef.current = {
+      taskId: task.id,
+      scrolledWithTerminal: showInlineInteractiveTerminalCard
+    };
+
+    const scrollToBottomAnchor = () => {
+      bottomScrollAnchorRef.current?.scrollIntoView({
+        block: "end",
+        inline: "nearest",
+        behavior: "auto"
+      });
+    };
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(scrollToBottomAnchor);
+    });
+
+    const timeoutId = window.setTimeout(scrollToBottomAnchor, 180);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [loading, messagesLoading, runsLoading, showInlineInteractiveTerminalCard, task?.id]);
+
   const openFollowUp = (mode: FollowUpMode) => {
     followUpForm.setFieldsValue({ title: "", prompt: "" });
     setFollowUpMode(mode);
@@ -1452,6 +1566,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     providerProfileInput !== currentTaskProviderProfile ||
     modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider));
   const composerClearDisabled = interactiveTerminalRunning || !composerHasChangesToClear;
+  const chatSubmitDisabled = chatDisabled || (selectedChatActionRequiresPrompt && chatInput.trim().length === 0);
+  const chatSubmitLabel = selectedChatAction === "comment" ? "Add Comment" : "Start";
   const handleConfirmClearComposer = () => {
     setSelectedSnippetId(null);
     setChatInput("");
@@ -1808,6 +1924,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : updatedTask
       );
       setKillTerminalConfirmOpen(false);
+      setInlineInteractiveTerminalOpen(false);
+      setInlineInteractiveTerminalDisconnected(false);
+      setInlineInteractiveTerminalOpenedAt(null);
       messageApi.success("Interactive terminal stopped");
       setLiveDiffRefreshKey((k) => k + 1);
       refetchChangeProposals();
@@ -1828,27 +1947,30 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
-  const openInteractiveTerminalWindow = (): void => {
+  const handleStartInlineInteractiveTerminal = async (): Promise<void> => {
     if (!task) {
       return;
     }
 
-    const path = `/tasks/${task.id}/interactive`;
-    const url = `${window.location.origin}${path}`;
-    const w = Math.min(1280, window.screen.availWidth - 48);
-    const h = Math.min(840, window.screen.availHeight - 48);
-    const features = [
-      "popup=yes",
-      `width=${w}`,
-      `height=${h}`,
-      "menubar=no",
-      "toolbar=no",
-      "location=yes",
-      "status=no",
-      "resizable=yes",
-      "scrollbars=yes"
-    ].join(",");
-    window.open(url, "_blank", `${features},noopener,noreferrer`);
+    if (configDirty && canEditTask && !isArchived) {
+      try {
+        await handleSaveConfig({ notify: false });
+      } catch (error) {
+        messageApi.error(error instanceof Error ? error.message : "Execution config could not be updated");
+        return;
+      }
+    }
+
+    setActiveMainTab("chat");
+    setInlineInteractiveTerminalDisconnected(false);
+    setInlineInteractiveTerminalOpen(true);
+    setInlineInteractiveTerminalOpenedAt(new Date().toISOString());
+    setInlineInteractiveTerminalMountKey((current) => current + 1);
+  };
+  const handleReconnectInlineInteractiveTerminal = (): void => {
+    setInlineInteractiveTerminalDisconnected(false);
+    setInlineInteractiveTerminalOpen(true);
+    setInlineInteractiveTerminalMountKey((current) => current + 1);
   };
   const loadInteractiveTerminalTranscript = async (sessionId: string): Promise<void> => {
     if (!task) {
@@ -1942,7 +2064,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const moreActionItems = task
     ? [
         canRequestLiveDiff ? { key: "refreshDiff", label: "Refresh Diff" } : null,
-        canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Terminal", danger: true } : null,
+        canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Session", danger: true } : null,
         canEditTask && !isArchived ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
         canContinueOnBranch ? { key: "continue", label: "Continue On Branch" } : null,
         canArchive ? { key: "archive", label: "Archive Task", danger: true } : null,
@@ -1950,8 +2072,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       ].filter(Boolean)
     : [];
   const hasMoreActions = moreActionItems.length > 0;
-  const canOpenInteractive = canEditTask && canUseInteractiveTerminal && !isArchived && !!task;
-  const hasSyncButtons = canOpenInteractive;
   const hasExecutionButtons = canCancel;
   const hasManagementButtons = Boolean(githubDiffTarget) || hasMoreActions;
   const contextContent = (
@@ -2270,7 +2390,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         value={chatInput}
         onChange={(event) => setChatInput(event.target.value)}
         placeholder={chatPlaceholder}
-        disabled={chatDisabled}
+        disabled={chatInputDisabled}
         style={{ resize: "none" }}
       />
       <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
@@ -2343,39 +2463,41 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               disabled={!canEditTask || isArchived || interactiveTerminalRunning}
             />
           </div>
-          <div
-            style={{
-              minWidth: 260,
-              maxWidth: 420,
-              display: "flex",
-              flexDirection: "column"
-            }}
-          >
-            <Typography.Text type="secondary">Snippet</Typography.Text>
-            <Flex gap={8} style={{ marginTop: 6 }}>
-              <Select
-                showSearch
-                style={{ minWidth: 180, flex: 1 }}
-                placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
-                value={selectedSnippetId}
-                onChange={(value) => setSelectedSnippetId(value)}
-                optionFilterProp="label"
-                allowClear
-                loading={snippetsLoading}
-                disabled={snippetsLoading || snippets.length === 0 || !canEditTask || isArchived || interactiveTerminalRunning}
-                options={snippets.map((snippet) => ({
-                  label: snippet.name,
-                  value: snippet.id
-                }))}
-              />
-              <Button
-                onClick={handleInsertSelectedSnippet}
-                disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning}
-              >
-                Insert
-              </Button>
-            </Flex>
-          </div>
+          {!interactiveComposerSelected ? (
+            <div
+              style={{
+                minWidth: 260,
+                maxWidth: 420,
+                display: "flex",
+                flexDirection: "column"
+              }}
+            >
+              <Typography.Text type="secondary">Snippet</Typography.Text>
+              <Flex gap={8} style={{ marginTop: 6 }}>
+                <Select
+                  showSearch
+                  style={{ minWidth: 180, flex: 1 }}
+                  placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
+                  value={selectedSnippetId}
+                  onChange={(value) => setSelectedSnippetId(value)}
+                  optionFilterProp="label"
+                  allowClear
+                  loading={snippetsLoading}
+                  disabled={snippetsLoading || snippets.length === 0 || !canEditTask || isArchived || interactiveTerminalRunning}
+                  options={snippets.map((snippet) => ({
+                    label: snippet.name,
+                    value: snippet.id
+                  }))}
+                />
+                <Button
+                  onClick={handleInsertSelectedSnippet}
+                  disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning}
+                >
+                  Insert
+                </Button>
+              </Flex>
+            </div>
+          ) : null}
         </Flex>
         <Flex align="center" gap={12} wrap="wrap" style={{ flexShrink: 0 }}>
           <Typography.Text type="secondary">Next run: {chatActionLabel}</Typography.Text>
@@ -2397,9 +2519,23 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Button
                 type="primary"
                 loading={submitting === "message"}
-                disabled={chatDisabled || chatInput.trim().length === 0}
+                disabled={chatSubmitDisabled}
                 onClick={async () => {
-                  if (!task || chatInput.trim().length === 0) {
+                  if (!task) {
+                    return;
+                  }
+
+                  if (selectedChatAction === "interactive") {
+                    setSubmitting("message");
+                    try {
+                      await handleStartInlineInteractiveTerminal();
+                    } finally {
+                      setSubmitting(null);
+                    }
+                    return;
+                  }
+
+                  if (chatInput.trim().length === 0) {
                     return;
                   }
 
@@ -2440,7 +2576,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   }
                 }}
               >
-                Send
+                {chatSubmitLabel}
               </Button>
               <Popconfirm
                 title="Clear composer?"
@@ -3048,24 +3184,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Alert
               type="info"
               showIcon
-              message={interactiveTerminalResumeAvailable ? "Terminal session can be resumed" : "Terminal session is active"}
+              message="Terminal session is active"
               description={
-                interactiveTerminalResumeAvailable
-                  ? "This live terminal session is still running. Reconnect to continue in the existing workspace session, or stop it to end the session and create a checkpoint."
-                  : "This terminal session is currently attached to another window or tab. Stop it there or use Stop here to end the session and create a checkpoint."
+                "This live terminal session is still running. The active terminal now renders inline in the latest Terminal history entry."
               }
               action={
                 showTerminalSessionControls ? (
-                  <Space wrap>
-                    {interactiveTerminalResumeAvailable ? (
-                      <Button type="primary" size="small" onClick={openInteractiveTerminalWindow}>
-                        Reconnect
-                      </Button>
-                    ) : null}
-                    <Button size="small" danger onClick={() => setKillTerminalConfirmOpen(true)}>
-                      Stop
-                    </Button>
-                  </Space>
+                  <Button size="small" danger onClick={() => setKillTerminalConfirmOpen(true)}>
+                    Stop Session
+                  </Button>
                 ) : null
               }
             />
@@ -3121,9 +3248,115 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   };
 
-  const chatTimelineBlock = chatTimeline.length > 0 ? (
+  const renderLiveInteractiveTerminalCard = (): ReactNode => {
+    if (!showInlineInteractiveTerminalCard || !task) {
+      return null;
+    }
+
+    const timestamp = inlineInteractiveTerminalTimestamp;
+    const providerSummary = `${interactiveTerminalTargetProviderLabel}${interactiveTerminalTargetModelLabel ? ` · ${interactiveTerminalTargetModelLabel}` : ""}${interactiveTerminalTargetEffortLabel ? ` · ${interactiveTerminalTargetEffortLabel}` : ""}`;
+    const showStopButton = canEditTask && !isArchived && interactiveTerminalRunning;
+
+    return (
+      <Card
+        key="live-inline-terminal"
+        size="small"
+        title={
+          <Space wrap>
+            <Tag color="green">Terminal</Tag>
+            <Tag color="processing">Active</Tag>
+          </Space>
+        }
+        extra={
+          <Space wrap size={12}>
+            {timestamp ? <Typography.Text type="secondary">{dayjs(timestamp).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text> : null}
+            {showStopButton ? (
+              <Button size="small" danger onClick={() => setKillTerminalConfirmOpen(true)}>
+                Stop Session
+              </Button>
+            ) : null}
+          </Space>
+        }
+      >
+        <Flex vertical gap="middle">
+          <Typography.Text type="secondary">{providerSummary}</Typography.Text>
+          {showInlineInteractiveTerminalReconnectNotice ? (
+            <Alert
+              type="warning"
+              showIcon
+              message="Terminal disconnected"
+              description="The live session is still resumable. Reconnect to continue working in the same terminal session."
+              action={
+                <Button type="primary" size="small" onClick={handleReconnectInlineInteractiveTerminal}>
+                  Reconnect
+                </Button>
+              }
+            />
+          ) : showInlineInteractiveTerminalViewport ? (
+            <div
+              style={{
+                height: 560,
+                minHeight: 360,
+                borderRadius: 8,
+                overflow: "hidden",
+                background: "#1e1e1e"
+              }}
+            >
+              <TaskInteractiveTerminalView
+                key={`inline-terminal-${inlineInteractiveTerminalMountKey}`}
+                taskId={task.id}
+                disconnectHint="Use Reconnect in this task view to try resuming the session if it is still running."
+                onConnected={() => {
+                  setInlineInteractiveTerminalOpen(true);
+                  setInlineInteractiveTerminalDisconnected(false);
+                  setInlineInteractiveTerminalOpenedAt((current) => current ?? new Date().toISOString());
+                }}
+                onDisconnected={({ reason, opened }) => {
+                  if (!opened) {
+                    return;
+                  }
+                  setInlineInteractiveTerminalDisconnected(true);
+                  void api
+                    .getTaskInteractiveTerminalStatus(task.id)
+                    .then((status) => {
+                      setInteractiveTerminalStatus(status);
+                    })
+                    .catch(() => {
+                      setInteractiveTerminalStatus({
+                        available: false,
+                        reason: "Could not load interactive terminal status."
+                      });
+                    });
+                  if (reason === "interactive terminal terminated") {
+                    setInlineInteractiveTerminalOpen(false);
+                    setInlineInteractiveTerminalDisconnected(false);
+                  }
+                }}
+              />
+            </div>
+          ) : interactiveTerminalRunning ? (
+            <Alert
+              type="info"
+              showIcon
+              message="Terminal session is already attached elsewhere"
+              description="Open this task detail page in that tab to keep using the live terminal, or stop the session here."
+            />
+          ) : (
+            <Alert
+              type="info"
+              showIcon
+              message="Starting interactive terminal"
+              description="The live terminal will appear here as soon as the session attaches."
+            />
+          )}
+        </Flex>
+      </Card>
+    );
+  };
+
+  const chatTimelineBlock = historicalChatTimeline.length > 0 || showInlineInteractiveTerminalCard ? (
     <Flex vertical gap={12} style={{ width: "100%" }}>
-      {chatTimeline.map((entry) => {
+      {historicalChatTimeline.map((entry) => {
         if (entry.kind === "message") {
           return renderRawMessageEntry(entry.key, entry.message);
         }
@@ -3142,11 +3375,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
         return renderRawRunEntry(entry.key, entry.run);
       })}
+      {renderLiveInteractiveTerminalCard()}
     </Flex>
   ) : null;
 
   const chatHistoryEmptyState =
-    !isPreparingWorkspace && chatTimeline.length === 0 ? (
+    !isPreparingWorkspace && historicalChatTimeline.length === 0 && !showInlineInteractiveTerminalCard ? (
       <Empty description={messagesLoading || runsLoading ? "Loading history..." : "No history yet."} image={Empty.PRESENTED_IMAGE_SIMPLE} />
     ) : null;
 
@@ -3373,43 +3607,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   </Space>
                 ) : null}
 
-                {hasSyncButtons ? (
-                  <Space wrap size={8}>
-                    {canOpenInteractive ? (
-                      <Tooltip
-                        title={
-                          pendingChangeProposal
-                            ? "Apply or reject the pending checkpoint before opening a terminal."
-                            : interactiveTerminalResumeAvailable
-                              ? `Reconnect to the live ${interactiveTerminalTargetProviderLabel} session for this task workspace.`
-                            : interactiveTerminalStatus && !interactiveTerminalStatus.available
-                              ? interactiveTerminalStatus.reason ?? "Unavailable"
-                            : interactiveTerminalConfigDirty
-                              ? `Saving provider, model, and effort changes for ${interactiveTerminalTargetProviderLabel}…`
-                              : `Opens a new browser window with ${interactiveTerminalTargetProviderLabel}; workspace is mounted at /workspace.${interactiveTerminalTargetModelLabel ? ` Model: ${interactiveTerminalTargetModelLabel}.` : ""}${interactiveTerminalTargetEffortLabel ? ` Effort: ${interactiveTerminalTargetEffortLabel}.` : ""}`
-                        }
-                      >
-                        <Button
-                          type="default"
-                          onClick={openInteractiveTerminalWindow}
-                          disabled={
-                            (!interactiveTerminalResumeAvailable && interactiveTerminalConfigDirty) ||
-                            !interactiveTerminalStatus?.available ||
-                            !!pendingChangeProposal
-                          }
-                        >
-                          {`${interactiveTerminalResumeAvailable ? "Resume" : "Open"} ${interactiveTerminalTargetProviderLabel}`}
-                        </Button>
-                      </Tooltip>
-                    ) : null}
-
-                  </Space>
-                ) : null}
-
-                {hasSyncButtons && (hasExecutionButtons || hasManagementButtons) ? (
-                  <Divider type="vertical" style={{ marginInline: 2 }} />
-                ) : null}
-
                 {hasExecutionButtons ? (
                   <Space wrap size={8}>
                     {canCancel ? (
@@ -3522,19 +3719,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Card bordered={false}>
               <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff")} items={mainTabItems} />
             </Card>
+            <div ref={bottomScrollAnchorRef} style={{ height: 40, width: "100%", flexShrink: 0 }} />
           </Flex>
         ) : null}
       </Flex>
 
       <Modal
         open={killTerminalConfirmOpen}
-        title="Stop interactive terminal?"
+        title="Stop interactive session?"
         onCancel={() => {
           if (submitting !== "killTerminal") {
             setKillTerminalConfirmOpen(false);
           }
         }}
-        okText="Stop Terminal"
+        okText="Stop Session"
         okButtonProps={{ danger: true }}
         confirmLoading={submitting === "killTerminal"}
         cancelButtonProps={{ disabled: submitting === "killTerminal" }}
