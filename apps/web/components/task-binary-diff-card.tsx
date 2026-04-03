@@ -19,6 +19,10 @@ interface ImagePreviewState {
   error: string | null;
 }
 
+function getPreviewErrorMessage(preview: TaskWorkspaceFilePreview): string {
+  return preview.kind === "binary" ? "This file cannot be rendered as an image." : "Image preview is unavailable.";
+}
+
 function getDiffFilePath(file: Pick<FileData, "newPath" | "oldPath">): string {
   return file.newPath || file.oldPath || "";
 }
@@ -27,7 +31,12 @@ function getDiffFileLabel(file: Pick<FileData, "newPath" | "oldPath">): string {
   return getDiffFilePath(file) || "Changed file";
 }
 
-function useTaskImagePreview(taskId: string, filePath: string, ref: string | null): ImagePreviewState {
+function useTaskImagePreview(
+  taskId: string,
+  filePath: string,
+  ref: string | null,
+  fallbackRef?: string | null
+): ImagePreviewState {
   const shouldLoad = Boolean(taskId && filePath);
   const [state, setState] = useState<ImagePreviewState>({
     loading: shouldLoad,
@@ -44,41 +53,70 @@ function useTaskImagePreview(taskId: string, filePath: string, ref: string | nul
     let cancelled = false;
     setState({ loading: true, preview: null, error: null });
 
-    void api
-      .getTaskWorkspaceFile(taskId, filePath, ref ? { ref } : undefined)
-      .then((preview) => {
-        if (cancelled) {
-          return;
-        }
+    const hasFallback = fallbackRef !== undefined && fallbackRef !== ref;
+    const loadPreview = async (previewRef: string | null): Promise<ImagePreviewState> => {
+      try {
+        const preview = await api.getTaskWorkspaceFile(taskId, filePath, previewRef ? { ref: previewRef } : undefined);
 
         if (preview.kind !== "image" || preview.encoding !== "base64") {
-          setState({
+          return {
             loading: false,
             preview: null,
-            error: preview.kind === "binary" ? "This file cannot be rendered as an image." : "Image preview is unavailable."
-          });
-          return;
+            error: getPreviewErrorMessage(preview)
+          };
         }
 
-        setState({ loading: false, preview, error: null });
-      })
-      .catch((error: unknown) => {
-        if (cancelled) {
-          return;
-        }
-        setState({
+        return { loading: false, preview, error: null };
+      } catch (error: unknown) {
+        return {
           loading: false,
           preview: null,
           error: error instanceof Error ? error.message : "Failed to load image preview."
-        });
+        };
+      }
+    };
+
+    void loadPreview(ref)
+      .then(async (result) => {
+        if (cancelled) {
+          return;
+        }
+
+        if (result.preview || !hasFallback) {
+          setState(result);
+          return;
+        }
+
+        const fallbackResult = await loadPreview(fallbackRef ?? null);
+        if (cancelled) {
+          return;
+        }
+
+        setState(
+          fallbackResult.preview
+            ? fallbackResult
+            : {
+                loading: false,
+                preview: null,
+                error: fallbackResult.error ?? result.error ?? "Failed to load image preview."
+              }
+        );
       });
 
     return () => {
       cancelled = true;
     };
-  }, [filePath, ref, shouldLoad, taskId]);
+  }, [fallbackRef, filePath, ref, shouldLoad, taskId]);
 
   return state;
+}
+
+function isAddedBinaryDiff(file: Pick<FileData, "oldRevision">): boolean {
+  return file.oldRevision === "0000000";
+}
+
+function isDeletedBinaryDiff(file: Pick<FileData, "newRevision">): boolean {
+  return file.newRevision === "0000000";
 }
 
 function ImagePreviewPane({
@@ -145,16 +183,19 @@ export function TaskBinaryDiffCard({
   const fileLabel = getDiffFileLabel(file);
   const filePath = getDiffFilePath(file);
   const isImage = isImageDiffPath(filePath);
-  const showBefore = Boolean(previewRefs?.before) && file.type !== "add";
-  const showAfter = (Boolean(previewRefs?.after) || previewRefs?.useWorkspaceAfter === true) && file.type !== "delete";
+  const isAdded = isAddedBinaryDiff(file);
+  const isDeleted = isDeletedBinaryDiff(file);
+  const showBefore = Boolean(previewRefs?.before) && !isAdded;
+  const showAfter = (Boolean(previewRefs?.after) || previewRefs?.useWorkspaceAfter === true) && !isDeleted;
   const beforePreview = useTaskImagePreview(taskId, showBefore ? file.oldPath || filePath : "", showBefore ? previewRefs?.before ?? null : null);
   const afterPreview = useTaskImagePreview(
     taskId,
     showAfter ? file.newPath || filePath : "",
-    previewRefs?.useWorkspaceAfter ? null : showAfter ? previewRefs?.after ?? null : null
+    showAfter ? previewRefs?.after ?? null : null,
+    previewRefs?.useWorkspaceAfter && previewRefs?.after ? null : undefined
   );
-  const showBeforePane = showBefore && (beforePreview.loading || beforePreview.preview !== null);
-  const showAfterPane = showAfter && (afterPreview.loading || afterPreview.preview !== null);
+  const showBeforePane = showBefore;
+  const showAfterPane = showAfter;
 
   const content = isImage ? (
     previewRefs ? (
