@@ -134,6 +134,28 @@ function ImagePreviewPane({
   const surfaceBackground = mode === "dark" ? "rgba(255, 255, 255, 0.03)" : "#f6f8f6";
   const borderColor = mode === "dark" ? "rgba(255, 255, 255, 0.08)" : "#d9e2db";
   const imageSrc = state.preview?.mimeType ? `data:${state.preview.mimeType};base64,${state.preview.content}` : null;
+  const [fullSizeHref, setFullSizeHref] = useState<string | null>(null);
+
+  useEffect(() => {
+    const preview = state.preview;
+    if (!preview?.mimeType) {
+      setFullSizeHref(null);
+      return;
+    }
+
+    const binary = atob(preview.content);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+
+    const url = URL.createObjectURL(new Blob([bytes], { type: preview.mimeType }));
+    setFullSizeHref(url);
+
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [state.preview]);
 
   return (
     <div style={{ flex: "1 1 280px", minWidth: 0 }}>
@@ -156,9 +178,9 @@ function ImagePreviewPane({
       >
         {state.loading ? (
           <Spin size="small" />
-        ) : imageSrc ? (
+        ) : imageSrc && fullSizeHref ? (
           <a
-            href={imageSrc}
+            href={fullSizeHref}
             target="_blank"
             rel="noreferrer"
             aria-label="Open image full size in a new tab"
@@ -170,6 +192,12 @@ function ImagePreviewPane({
               style={{ maxWidth: "100%", maxHeight: 320, objectFit: "contain", borderRadius: 6, cursor: "zoom-in" }}
             />
           </a>
+        ) : imageSrc ? (
+          <img
+            alt={title ?? "Image preview"}
+            src={imageSrc}
+            style={{ maxWidth: "100%", maxHeight: 320, objectFit: "contain", borderRadius: 6 }}
+          />
         ) : (
           <Typography.Text type="secondary" style={{ textAlign: "center" }}>
             {state.error ?? "Preview unavailable."}
