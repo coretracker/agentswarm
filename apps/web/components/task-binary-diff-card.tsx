@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Card, Collapse, Flex, Spin, Typography } from "antd";
 import type { FileData } from "react-diff-view";
 import { api, type TaskWorkspaceFilePreview } from "../src/api/client";
+import { isDarkAppTheme } from "../src/theme/antd-theme";
 import { isImageDiffPath } from "../src/utils/diff";
 import { useThemeMode } from "./theme-provider";
 
@@ -131,8 +132,9 @@ function ImagePreviewPane({
   state: ImagePreviewState;
 }) {
   const { mode } = useThemeMode();
-  const surfaceBackground = mode === "dark" ? "rgba(255, 255, 255, 0.03)" : "#f6f8f6";
-  const borderColor = mode === "dark" ? "rgba(255, 255, 255, 0.08)" : "#d9e2db";
+  const darkTheme = isDarkAppTheme(mode);
+  const surfaceBackground = darkTheme ? "rgba(255, 255, 255, 0.03)" : "#f6f8f6";
+  const borderColor = darkTheme ? "rgba(255, 255, 255, 0.08)" : "#d9e2db";
   const imageSrc = state.preview?.mimeType ? `data:${state.preview.mimeType};base64,${state.preview.content}` : null;
   const [fullSizeHref, setFullSizeHref] = useState<string | null>(null);
 

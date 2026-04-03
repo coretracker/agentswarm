@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
 import { Alert, Modal, Space, Spin, Tag, Typography } from "antd";
+import { isDarkAppTheme } from "../src/theme/antd-theme";
 import { useThemeMode } from "./theme-provider";
 
 export interface WorkspaceFileLinkTarget {
@@ -745,6 +746,7 @@ export function WorkspaceFilePreviewModal({
   onCancel
 }: WorkspaceFilePreviewModalProps) {
   const { mode } = useThemeMode();
+  const darkTheme = isDarkAppTheme(mode);
   const language = useMemo(() => detectCodeLanguage(filePath), [filePath]);
   const languageLabel = (languageConfigs[language] ?? defaultLanguageConfig).label;
   const lines = useMemo(() => (kind === "text" && content.length > 0 ? content.split(/\r?\n/) : [""]), [content, kind]);
@@ -766,11 +768,11 @@ export function WorkspaceFilePreviewModal({
   }, [content, kind, line, open]);
 
   const gutterWidth = Math.max(56, String(lines.length || 1).length * 10 + 24);
-  const surfaceBorder = mode === "dark" ? "rgba(255, 255, 255, 0.08)" : "#d9e2db";
-  const surfaceBackground = mode === "dark" ? "rgba(255, 255, 255, 0.03)" : "#f6f8f6";
-  const gutterBorder = mode === "dark" ? "rgba(255, 255, 255, 0.08)" : "#e5ebe7";
-  const gutterBackground = mode === "dark" ? "rgba(255, 255, 255, 0.04)" : "rgba(0, 0, 0, 0.02)";
-  const alternateRowBackground = mode === "dark" ? "rgba(255, 255, 255, 0.02)" : "rgba(0, 0, 0, 0.015)";
+  const surfaceBorder = darkTheme ? "rgba(255, 255, 255, 0.08)" : "#d9e2db";
+  const surfaceBackground = darkTheme ? "rgba(255, 255, 255, 0.03)" : "#f6f8f6";
+  const gutterBorder = darkTheme ? "rgba(255, 255, 255, 0.08)" : "#e5ebe7";
+  const gutterBackground = darkTheme ? "rgba(255, 255, 255, 0.04)" : "rgba(0, 0, 0, 0.02)";
+  const alternateRowBackground = darkTheme ? "rgba(255, 255, 255, 0.02)" : "rgba(0, 0, 0, 0.015)";
 
   return (
     <Modal

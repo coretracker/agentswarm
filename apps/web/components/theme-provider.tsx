@@ -2,13 +2,14 @@
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { ConfigProvider } from "antd";
-import { getAppAntdTheme, type AppThemeMode } from "../src/theme/antd-theme";
+import { getAppAntdTheme, isDarkAppTheme, type AppThemeMode } from "../src/theme/antd-theme";
 
 const THEME_STORAGE_KEY = "agentswarm-theme-mode";
 
 interface ThemeModeContextValue {
   mode: AppThemeMode;
   setMode: (mode: AppThemeMode) => void;
+  isDarkTheme: boolean;
 }
 
 const ThemeModeContext = createContext<ThemeModeContextValue | null>(null);
@@ -19,7 +20,7 @@ function resolveInitialThemeMode(): AppThemeMode {
   }
 
   const storedMode = window.localStorage.getItem(THEME_STORAGE_KEY);
-  if (storedMode === "light" || storedMode === "dark") {
+  if (storedMode === "light" || storedMode === "dark" || storedMode === "cyber") {
     return storedMode;
   }
 
@@ -45,7 +46,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const contextValue = useMemo<ThemeModeContextValue>(
     () => ({
       mode,
-      setMode
+      setMode,
+      isDarkTheme: isDarkAppTheme(mode)
     }),
     [mode]
   );

@@ -12,7 +12,7 @@ export function AppLogo({
   height: number | string;
   style?: CSSProperties;
 }) {
-  const { mode } = useThemeMode();
+  const { isDarkTheme } = useThemeMode();
 
   return (
     <img
@@ -22,7 +22,7 @@ export function AppLogo({
         width,
         height,
         display: "block",
-        filter: mode === "dark" ? "brightness(0) invert(0.95)" : undefined,
+        filter: isDarkTheme ? "brightness(0) invert(0.95)" : undefined,
         transition: "filter 160ms ease",
         ...style
       }}

@@ -6,6 +6,7 @@ import { Alert, App, Button, Card, Flex, Form, Input, Typography } from "antd";
 import type { LoginInput } from "@agentswarm/shared-types";
 import { ApiError } from "../src/api/client";
 import { resolveDefaultPath } from "../src/auth/access";
+import { isDarkAppTheme } from "../src/theme/antd-theme";
 import { AppFooterNote } from "./app-footer-note";
 import { AppLogo } from "./app-logo";
 import { useAuth } from "./auth-provider";
@@ -36,7 +37,9 @@ export function LoginPage() {
         minHeight: "100vh",
         padding: 24,
         background:
-          mode === "dark"
+          mode === "cyber"
+            ? "radial-gradient(circle at top, rgba(0, 240, 255, 0.16) 0%, rgba(0, 240, 255, 0) 28%), linear-gradient(180deg, #050814 0%, #0a0a1a 56%, #101733 100%)"
+            : isDarkAppTheme(mode)
             ? "linear-gradient(180deg, #0f1613 0%, #19231e 100%)"
             : "linear-gradient(180deg, #f6f7fb 0%, #e8edf5 100%)"
       }}
@@ -54,7 +57,12 @@ export function LoginPage() {
           style={{
             width: "100%",
             maxWidth: 440,
-            boxShadow: mode === "dark" ? "0 24px 60px rgba(0, 0, 0, 0.38)" : "0 24px 60px rgba(15, 23, 42, 0.12)"
+            boxShadow:
+              mode === "cyber"
+                ? "0 24px 70px rgba(0, 240, 255, 0.14)"
+                : isDarkAppTheme(mode)
+                  ? "0 24px 60px rgba(0, 0, 0, 0.38)"
+                  : "0 24px 60px rgba(15, 23, 42, 0.12)"
           }}
         >
           <Flex vertical gap={8} style={{ marginBottom: 24 }}>

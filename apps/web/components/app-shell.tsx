@@ -1,14 +1,13 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { App, Button, Drawer, Flex, Grid, Layout, Menu, Result, Segmented, Spin, Typography, theme as antTheme } from "antd";
+import { App, Button, Drawer, Flex, Grid, Layout, Menu, Result, Select, Spin, Typography, theme as antTheme } from "antd";
 import {
-  BulbOutlined,
+  BgColorsOutlined,
   CopyOutlined,
   DatabaseOutlined,
   LogoutOutlined,
   MenuOutlined,
-  MoonOutlined,
   SettingOutlined,
   TeamOutlined,
   UnorderedListOutlined
@@ -20,6 +19,7 @@ import { AppFooterNote } from "./app-footer-note";
 import { useAuth } from "./auth-provider";
 import { TaskBrowserNotifications } from "./task-browser-notifications";
 import { useThemeMode } from "./theme-provider";
+import { appThemeOptions, type AppThemeMode } from "../src/theme/antd-theme";
 import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
@@ -156,14 +156,14 @@ export function AppShell({ children }: { children: ReactNode }) {
               style={{ minWidth: 0, borderBottom: 0, flex: 1, background: "transparent" }}
             />
             <Flex align="center" gap={12}>
-              <Segmented
+              <Select
                 size="small"
                 value={mode}
-                onChange={(value) => setMode(value as "light" | "dark")}
-                options={[
-                  { label: "Light", value: "light", icon: <BulbOutlined /> },
-                  { label: "Dark", value: "dark", icon: <MoonOutlined /> }
-                ]}
+                onChange={(value) => setMode(value as AppThemeMode)}
+                options={appThemeOptions}
+                variant="borderless"
+                suffixIcon={<BgColorsOutlined />}
+                style={{ minWidth: 132 }}
               />
               <TaskBrowserNotifications />
               <Flex vertical gap={0} style={{ minWidth: 0 }}>

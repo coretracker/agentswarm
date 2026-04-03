@@ -52,6 +52,33 @@ html[data-theme="dark"] {
   --diff-omit-gutter-line-color: #d46c6c;
 }
 
+html[data-theme="cyber"] {
+  color-scheme: dark;
+  --app-body-bg: #0a0a1a;
+  --app-body-text: rgba(224, 230, 255, 0.9);
+  --diff-background-color: #111326;
+  --diff-text-color: #e0e6ff;
+  --diff-selection-background-color: rgba(0, 240, 255, 0.16);
+  --diff-selection-text-color: #f4fbff;
+  --diff-gutter-insert-background-color: #0a2f21;
+  --diff-gutter-insert-text-color: #5fffb4;
+  --diff-gutter-delete-background-color: #3a0b1d;
+  --diff-gutter-delete-text-color: #ff7aa5;
+  --diff-gutter-selected-background-color: #3a2b06;
+  --diff-gutter-selected-text-color: #ffd66e;
+  --diff-code-insert-background-color: #082117;
+  --diff-code-insert-text-color: #d7ffee;
+  --diff-code-delete-background-color: #2a0916;
+  --diff-code-delete-text-color: #ffd2df;
+  --diff-code-insert-edit-background-color: #00633a;
+  --diff-code-insert-edit-text-color: #effff7;
+  --diff-code-delete-edit-background-color: #8a1241;
+  --diff-code-delete-edit-text-color: #fff0f5;
+  --diff-code-selected-background-color: #352805;
+  --diff-code-selected-text-color: #ffe9a8;
+  --diff-omit-gutter-line-color: #ff0055;
+}
+
 html,
 body {
   margin: 0;
@@ -117,22 +144,29 @@ pre {
 
 html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
 html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
   border-top-color: rgba(255, 255, 255, 0.06);
 }
 
-html[data-theme="dark"] .diff-gutter {
+html[data-theme="dark"] .diff-gutter,
+html[data-theme="cyber"] .diff-gutter {
   color: #8ea394;
   background: rgba(255, 255, 255, 0.02);
   border-right-color: rgba(255, 255, 255, 0.06);
 }
 
-html[data-theme="dark"] .diff-code-normal {
+html[data-theme="dark"] .diff-code-normal,
+html[data-theme="cyber"] .diff-code-normal {
   background: rgba(255, 255, 255, 0.01);
 }
 
 html[data-theme="dark"] .diff-decoration-content,
-html[data-theme="dark"] .diff-widget-content {
+html[data-theme="dark"] .diff-widget-content,
+html[data-theme="cyber"] .diff-decoration-content,
+html[data-theme="cyber"] .diff-widget-content {
   background: rgba(255, 255, 255, 0.03);
   color: #9fb3a5;
 }
