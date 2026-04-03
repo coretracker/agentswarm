@@ -133,6 +133,7 @@ function ImagePreviewPane({
   const { mode } = useThemeMode();
   const surfaceBackground = mode === "dark" ? "rgba(255, 255, 255, 0.03)" : "#f6f8f6";
   const borderColor = mode === "dark" ? "rgba(255, 255, 255, 0.08)" : "#d9e2db";
+  const imageSrc = state.preview?.mimeType ? `data:${state.preview.mimeType};base64,${state.preview.content}` : null;
 
   return (
     <div style={{ flex: "1 1 280px", minWidth: 0 }}>
@@ -155,12 +156,20 @@ function ImagePreviewPane({
       >
         {state.loading ? (
           <Spin size="small" />
-        ) : state.preview && state.preview.mimeType ? (
-          <img
-            alt={title ?? "Image preview"}
-            src={`data:${state.preview.mimeType};base64,${state.preview.content}`}
-            style={{ maxWidth: "100%", maxHeight: 320, objectFit: "contain", borderRadius: 6 }}
-          />
+        ) : imageSrc ? (
+          <a
+            href={imageSrc}
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Open image full size in a new tab"
+            style={{ display: "inline-flex", maxWidth: "100%", maxHeight: 320 }}
+          >
+            <img
+              alt={title ?? "Image preview"}
+              src={imageSrc}
+              style={{ maxWidth: "100%", maxHeight: 320, objectFit: "contain", borderRadius: 6, cursor: "zoom-in" }}
+            />
+          </a>
         ) : (
           <Typography.Text type="secondary" style={{ textAlign: "center" }}>
             {state.error ?? "Preview unavailable."}
