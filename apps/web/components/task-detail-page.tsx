@@ -76,7 +76,6 @@ import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
 import { TaskDiffOpenAiPanel } from "./task-diff-openai-panel";
-import { TaskInteractiveTerminalView } from "./task-interactive-terminal-view";
 import { TaskTerminalTranscriptView } from "./task-terminal-transcript-view";
 import { parseWorkspaceFileLink, WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 
@@ -541,10 +540,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [editingComment, setEditingComment] = useState<TaskMessage | null>(null);
   const [commentEditDraft, setCommentEditDraft] = useState("");
   const [interactiveTerminalStatus, setInteractiveTerminalStatus] = useState<TaskInteractiveTerminalStatus | null>(null);
-  const [inlineInteractiveTerminalOpen, setInlineInteractiveTerminalOpen] = useState(false);
-  const [inlineInteractiveTerminalDisconnected, setInlineInteractiveTerminalDisconnected] = useState(false);
-  const [inlineInteractiveTerminalMountKey, setInlineInteractiveTerminalMountKey] = useState(0);
-  const [inlineInteractiveTerminalOpenedAt, setInlineInteractiveTerminalOpenedAt] = useState<string | null>(null);
+  const [interactiveTerminalLaunchPending, setInteractiveTerminalLaunchPending] = useState(false);
   const [interactiveTerminalTranscripts, setInteractiveTerminalTranscripts] = useState<
     Record<
       string,
@@ -601,10 +597,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   useEffect(() => {
     setInteractiveTerminalTranscripts({});
-    setInlineInteractiveTerminalOpen(false);
-    setInlineInteractiveTerminalDisconnected(false);
-    setInlineInteractiveTerminalMountKey(0);
-    setInlineInteractiveTerminalOpenedAt(null);
+    setInteractiveTerminalLaunchPending(false);
     initialBottomScrollStateRef.current = null;
   }, [taskId]);
 
@@ -662,8 +655,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const currentTaskProviderProfile = task?.providerProfile ?? "high";
   const currentTaskModelOverride = task?.modelOverride ?? "";
   const interactiveTerminalTargetProviderLabel = providerInput === "claude" ? "Claude Code" : "Codex";
-  const interactiveTerminalTargetModelLabel = modelInput || getDefaultModelForProvider(providerInput);
-  const interactiveTerminalTargetEffortLabel = getProviderProfileLabel(providerProfileInput);
   const interactiveTerminalConfigDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
@@ -708,6 +699,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           }
         : updatedTask
     );
+  };
+  const showTaskActionError = (error: unknown, fallback: string): void => {
+    const nextMessage = error instanceof Error ? error.message : fallback;
+    if (nextMessage === "Close the interactive terminal session before continuing.") {
+      return;
+    }
+    messageApi.error(nextMessage);
   };
   const persistTaskConfig = async ({
     provider,
@@ -937,7 +935,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         notify: false,
         refreshTaskOnFailure: true
       }).catch((error) => {
-        messageApi.error(error instanceof Error ? error.message : "Execution config could not be updated");
+        showTaskActionError(error, "Execution config could not be updated");
       });
     }, 300);
 
@@ -1420,7 +1418,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
     if (!chatDisabled) {
       if (selectedChatAction === "interactive") {
-        return "Interactive terminal does not need a prompt. Press Start to open the live session below.";
+        return "Interactive terminal does not need a prompt. Press Start to open the live session in a new window.";
       }
       if (selectedChatAction === "comment") {
         return "Add a comment to the task history";
@@ -1452,9 +1450,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         messages: taskMessages,
         runs: taskRuns,
         proposals: changeProposals,
-        interactiveTerminalRunning: interactiveTerminalRunning || interactiveTerminalResumeAvailable || inlineInteractiveTerminalOpen
+        interactiveTerminalRunning: interactiveTerminalRunning || interactiveTerminalResumeAvailable || interactiveTerminalLaunchPending
       }),
-    [changeProposals, inlineInteractiveTerminalOpen, interactiveTerminalResumeAvailable, interactiveTerminalRunning, taskMessages, taskRuns]
+    [changeProposals, interactiveTerminalLaunchPending, interactiveTerminalResumeAvailable, interactiveTerminalRunning, taskMessages, taskRuns]
   );
   const activeTerminalHistoryEntry = useMemo(
     () =>
@@ -1467,42 +1465,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     [chatTimeline]
   );
   const historicalChatTimeline = useMemo(
-    () => chatTimeline.filter((entry) => !(entry.kind === "grouped_terminal_session" && entry.active)),
+    () => chatTimeline,
     [chatTimeline]
   );
-  const showInlineInteractiveTerminalCard =
-    !!task &&
-    canUseInteractiveTerminal &&
-    (inlineInteractiveTerminalOpen ||
-      interactiveTerminalRunning ||
-      interactiveTerminalResumeAvailable ||
-      activeTerminalHistoryEntry !== null);
-  const showInlineInteractiveTerminalReconnectNotice =
-    inlineInteractiveTerminalDisconnected && interactiveTerminalResumeAvailable;
-  const showInlineInteractiveTerminalViewport =
-    showInlineInteractiveTerminalCard &&
-    !showInlineInteractiveTerminalReconnectNotice &&
-    (inlineInteractiveTerminalOpen || interactiveTerminalResumeAvailable);
-  const inlineInteractiveTerminalTimestamp =
-    activeTerminalHistoryEntry?.startMessage.createdAt ?? inlineInteractiveTerminalOpenedAt;
+  const hasActiveTerminalHistoryEntry = activeTerminalHistoryEntry !== null;
 
   useEffect(() => {
-    if (!interactiveTerminalResumeAvailable) {
-      return;
+    if (interactiveTerminalRunning || interactiveTerminalResumeAvailable) {
+      setInteractiveTerminalLaunchPending(false);
     }
-    setInlineInteractiveTerminalOpen(true);
-    setInlineInteractiveTerminalDisconnected(false);
-    setInlineInteractiveTerminalOpenedAt((current) => current ?? new Date().toISOString());
-  }, [interactiveTerminalResumeAvailable]);
-
-  useEffect(() => {
-    if (interactiveTerminalRunning || interactiveTerminalResumeAvailable || activeTerminalHistoryEntry) {
-      return;
-    }
-    setInlineInteractiveTerminalOpen(false);
-    setInlineInteractiveTerminalDisconnected(false);
-    setInlineInteractiveTerminalOpenedAt(null);
-  }, [activeTerminalHistoryEntry, interactiveTerminalResumeAvailable, interactiveTerminalRunning]);
+  }, [interactiveTerminalResumeAvailable, interactiveTerminalRunning]);
 
   useEffect(() => {
     if (!task?.id || loading || messagesLoading || runsLoading) {
@@ -1512,7 +1484,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     const current = initialBottomScrollStateRef.current;
     const needsInitialScroll = !current || current.taskId !== task.id;
     const needsTerminalFollowupScroll =
-      showInlineInteractiveTerminalCard && (!current || current.taskId !== task.id || !current.scrolledWithTerminal);
+      hasActiveTerminalHistoryEntry && (!current || current.taskId !== task.id || !current.scrolledWithTerminal);
 
     if (!needsInitialScroll && !needsTerminalFollowupScroll) {
       return;
@@ -1520,7 +1492,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
     initialBottomScrollStateRef.current = {
       taskId: task.id,
-      scrolledWithTerminal: showInlineInteractiveTerminalCard
+      scrolledWithTerminal: hasActiveTerminalHistoryEntry
     };
 
     const scrollToBottomAnchor = () => {
@@ -1539,7 +1511,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [loading, messagesLoading, runsLoading, showInlineInteractiveTerminalCard, task?.id]);
+  }, [hasActiveTerminalHistoryEntry, loading, messagesLoading, runsLoading, task?.id]);
 
   const openFollowUp = (mode: FollowUpMode) => {
     followUpForm.setFieldsValue({ title: "", prompt: "" });
@@ -1590,7 +1562,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setRedirectingToTaskList(true);
       messageApi.success("Task deleted");
     } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to delete task");
+      showTaskActionError(error, "Failed to delete task");
     } finally {
       setSubmitting(null);
     }
@@ -1707,7 +1679,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setFollowUpMode(null);
       messageApi.success("Task archived");
     } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to archive task");
+      showTaskActionError(error, "Failed to archive task");
     } finally {
       setSubmitting(null);
     }
@@ -1723,7 +1695,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setPushCommitMessage((current) => (current.trim().length > 0 ? current : preview.suggestedCommitMessage));
     } catch (error) {
       setPushPreview(null);
-      messageApi.error(error instanceof Error ? error.message : "Could not load push preview");
+      showTaskActionError(error, "Could not load push preview");
     } finally {
       setPushPreviewLoading(false);
     }
@@ -1757,7 +1729,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       messageApi.success("Task renamed");
       setRenameModalOpen(false);
     } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to rename task");
+      showTaskActionError(error, "Failed to rename task");
     } finally {
       setSubmitting(null);
     }
@@ -1806,7 +1778,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       messageApi.success("Comment updated");
       resetCommentEditModal();
     } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to update comment");
+      showTaskActionError(error, "Failed to update comment");
     } finally {
       setSubmitting(null);
     }
@@ -1835,7 +1807,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       void loadPushPreview();
       setLiveDiffRefreshKey((k) => k + 1);
     } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to push changes");
+      showTaskActionError(error, "Failed to push changes");
     } finally {
       setSubmitting(null);
     }
@@ -1873,7 +1845,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           setMergeCommitMessage("");
           messageApi.success(`Squash merged into ${mergeTargetBranch}`);
         } catch (error) {
-          messageApi.error(error instanceof Error ? error.message : "Failed to merge task branch");
+          showTaskActionError(error, "Failed to merge task branch");
         } finally {
           setSubmitting(null);
         }
@@ -1901,7 +1873,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setLiveDiffRefreshKey((k) => k + 1);
       void loadPushPreview();
     } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to pull changes");
+      showTaskActionError(error, "Failed to pull changes");
     } finally {
       setSubmitting(null);
     }
@@ -1924,9 +1896,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : updatedTask
       );
       setKillTerminalConfirmOpen(false);
-      setInlineInteractiveTerminalOpen(false);
-      setInlineInteractiveTerminalDisconnected(false);
-      setInlineInteractiveTerminalOpenedAt(null);
+      setInteractiveTerminalLaunchPending(false);
       messageApi.success("Interactive terminal stopped");
       setLiveDiffRefreshKey((k) => k + 1);
       refetchChangeProposals();
@@ -1942,12 +1912,34 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           });
         });
     } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to stop interactive terminal");
+      showTaskActionError(error, "Failed to stop interactive terminal");
     } finally {
       setSubmitting(null);
     }
   };
-  const handleStartInlineInteractiveTerminal = async (): Promise<void> => {
+  const openInteractiveTerminalWindow = (): void => {
+    if (!task) {
+      return;
+    }
+
+    const path = `/tasks/${task.id}/interactive`;
+    const url = `${window.location.origin}${path}`;
+    const w = Math.min(1280, window.screen.availWidth - 48);
+    const h = Math.min(840, window.screen.availHeight - 48);
+    const features = [
+      "popup=yes",
+      `width=${w}`,
+      `height=${h}`,
+      "menubar=no",
+      "toolbar=no",
+      "location=yes",
+      "status=no",
+      "resizable=yes",
+      "scrollbars=yes"
+    ].join(",");
+    window.open(url, "_blank", `${features},noopener,noreferrer`);
+  };
+  const handleStartInteractiveTerminalWindow = async (): Promise<void> => {
     if (!task) {
       return;
     }
@@ -1956,21 +1948,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       try {
         await handleSaveConfig({ notify: false });
       } catch (error) {
-        messageApi.error(error instanceof Error ? error.message : "Execution config could not be updated");
+        showTaskActionError(error, "Execution config could not be updated");
         return;
       }
     }
 
-    setActiveMainTab("chat");
-    setInlineInteractiveTerminalDisconnected(false);
-    setInlineInteractiveTerminalOpen(true);
-    setInlineInteractiveTerminalOpenedAt(new Date().toISOString());
-    setInlineInteractiveTerminalMountKey((current) => current + 1);
-  };
-  const handleReconnectInlineInteractiveTerminal = (): void => {
-    setInlineInteractiveTerminalDisconnected(false);
-    setInlineInteractiveTerminalOpen(true);
-    setInlineInteractiveTerminalMountKey((current) => current + 1);
+    setInteractiveTerminalLaunchPending(true);
+    openInteractiveTerminalWindow();
   };
   const loadInteractiveTerminalTranscript = async (sessionId: string): Promise<void> => {
     if (!task) {
@@ -2528,7 +2512,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   if (selectedChatAction === "interactive") {
                     setSubmitting("message");
                     try {
-                      await handleStartInlineInteractiveTerminal();
+                      await handleStartInteractiveTerminalWindow();
                     } finally {
                       setSubmitting(null);
                     }
@@ -2543,7 +2527,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                     try {
                       await handleSaveConfig({ notify: false });
                     } catch (error) {
-                      messageApi.error(error instanceof Error ? error.message : "Execution config could not be updated");
+                      showTaskActionError(error, "Execution config could not be updated");
                       return;
                     }
                   }
@@ -2569,8 +2553,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                         : `${taskActionLabel[selectedChatAction]} queued from history`
                     );
                   } catch (error) {
-                    const nextMessage = error instanceof Error ? error.message : "Task execution could not be started";
-                    messageApi.error(nextMessage);
+                    showTaskActionError(error, "Task execution could not be started");
                   } finally {
                     setSubmitting(null);
                   }
@@ -2647,7 +2630,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setLiveDiffRefreshKey((k) => k + 1);
       refetchChangeProposals();
     } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Could not apply checkpoint");
+      showTaskActionError(error, "Could not apply checkpoint");
     } finally {
       setProposalBusy(null);
     }
@@ -2673,7 +2656,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           setLiveDiffRefreshKey((k) => k + 1);
           refetchChangeProposals();
         } catch (error) {
-          messageApi.error(error instanceof Error ? error.message : "Could not reject checkpoint");
+          showTaskActionError(error, "Could not reject checkpoint");
         } finally {
           setProposalBusy(null);
         }
@@ -2701,7 +2684,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           setLiveDiffRefreshKey((k) => k + 1);
           refetchChangeProposals();
         } catch (error) {
-          messageApi.error(error instanceof Error ? error.message : "Could not revert checkpoint");
+          showTaskActionError(error, "Could not revert checkpoint");
         } finally {
           setProposalBusy(null);
         }
@@ -2919,7 +2902,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       await navigator.clipboard.writeText(markdown);
       messageApi.success(`${label} copied`);
     } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : `Could not copy ${label.toLowerCase()}`);
+      showTaskActionError(error, `Could not copy ${label.toLowerCase()}`);
     }
   };
 
@@ -3184,15 +3167,24 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Alert
               type="info"
               showIcon
-              message="Terminal session is active"
+              message={interactiveTerminalResumeAvailable ? "Terminal session can be resumed" : "Terminal session is active"}
               description={
-                "This live terminal session is still running. The active terminal now renders inline in the latest Terminal history entry."
+                interactiveTerminalResumeAvailable
+                  ? "This live terminal session is still running. Reconnect to continue in the existing workspace session, or stop it to end the session and create a checkpoint."
+                  : "This terminal session is currently attached to another window or tab. Stop it there or use Stop here to end the session and create a checkpoint."
               }
               action={
                 showTerminalSessionControls ? (
-                  <Button size="small" danger onClick={() => setKillTerminalConfirmOpen(true)}>
-                    Stop Session
-                  </Button>
+                  <Space wrap>
+                    {interactiveTerminalResumeAvailable ? (
+                      <Button type="primary" size="small" onClick={openInteractiveTerminalWindow}>
+                        Reconnect
+                      </Button>
+                    ) : null}
+                    <Button size="small" danger onClick={() => setKillTerminalConfirmOpen(true)}>
+                      Stop Session
+                    </Button>
+                  </Space>
                 ) : null
               }
             />
@@ -3247,114 +3239,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </Card>
     );
   };
-
-  const renderLiveInteractiveTerminalCard = (): ReactNode => {
-    if (!showInlineInteractiveTerminalCard || !task) {
-      return null;
-    }
-
-    const timestamp = inlineInteractiveTerminalTimestamp;
-    const providerSummary = `${interactiveTerminalTargetProviderLabel}${interactiveTerminalTargetModelLabel ? ` · ${interactiveTerminalTargetModelLabel}` : ""}${interactiveTerminalTargetEffortLabel ? ` · ${interactiveTerminalTargetEffortLabel}` : ""}`;
-    const showStopButton = canEditTask && !isArchived && interactiveTerminalRunning;
-
-    return (
-      <Card
-        key="live-inline-terminal"
-        size="small"
-        title={
-          <Space wrap>
-            <Tag color="green">Terminal</Tag>
-            <Tag color="processing">Active</Tag>
-          </Space>
-        }
-        extra={
-          <Space wrap size={12}>
-            {timestamp ? <Typography.Text type="secondary">{dayjs(timestamp).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text> : null}
-            {showStopButton ? (
-              <Button size="small" danger onClick={() => setKillTerminalConfirmOpen(true)}>
-                Stop Session
-              </Button>
-            ) : null}
-          </Space>
-        }
-      >
-        <Flex vertical gap="middle">
-          <Typography.Text type="secondary">{providerSummary}</Typography.Text>
-          {showInlineInteractiveTerminalReconnectNotice ? (
-            <Alert
-              type="warning"
-              showIcon
-              message="Terminal disconnected"
-              description="The live session is still resumable. Reconnect to continue working in the same terminal session."
-              action={
-                <Button type="primary" size="small" onClick={handleReconnectInlineInteractiveTerminal}>
-                  Reconnect
-                </Button>
-              }
-            />
-          ) : showInlineInteractiveTerminalViewport ? (
-            <div
-              style={{
-                height: 560,
-                minHeight: 360,
-                borderRadius: 8,
-                overflow: "hidden",
-                background: "#1e1e1e"
-              }}
-            >
-              <TaskInteractiveTerminalView
-                key={`inline-terminal-${inlineInteractiveTerminalMountKey}`}
-                taskId={task.id}
-                disconnectHint="Use Reconnect in this task view to try resuming the session if it is still running."
-                onConnected={() => {
-                  setInlineInteractiveTerminalOpen(true);
-                  setInlineInteractiveTerminalDisconnected(false);
-                  setInlineInteractiveTerminalOpenedAt((current) => current ?? new Date().toISOString());
-                }}
-                onDisconnected={({ reason, opened }) => {
-                  if (!opened) {
-                    return;
-                  }
-                  setInlineInteractiveTerminalDisconnected(true);
-                  void api
-                    .getTaskInteractiveTerminalStatus(task.id)
-                    .then((status) => {
-                      setInteractiveTerminalStatus(status);
-                    })
-                    .catch(() => {
-                      setInteractiveTerminalStatus({
-                        available: false,
-                        reason: "Could not load interactive terminal status."
-                      });
-                    });
-                  if (reason === "interactive terminal terminated") {
-                    setInlineInteractiveTerminalOpen(false);
-                    setInlineInteractiveTerminalDisconnected(false);
-                  }
-                }}
-              />
-            </div>
-          ) : interactiveTerminalRunning ? (
-            <Alert
-              type="info"
-              showIcon
-              message="Terminal session is already attached elsewhere"
-              description="Open this task detail page in that tab to keep using the live terminal, or stop the session here."
-            />
-          ) : (
-            <Alert
-              type="info"
-              showIcon
-              message="Starting interactive terminal"
-              description="The live terminal will appear here as soon as the session attaches."
-            />
-          )}
-        </Flex>
-      </Card>
-    );
-  };
-
-  const chatTimelineBlock = historicalChatTimeline.length > 0 || showInlineInteractiveTerminalCard ? (
+  const chatTimelineBlock = historicalChatTimeline.length > 0 ? (
     <Flex vertical gap={12} style={{ width: "100%" }}>
       {historicalChatTimeline.map((entry) => {
         if (entry.kind === "message") {
@@ -3375,12 +3260,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
         return renderRawRunEntry(entry.key, entry.run);
       })}
-      {renderLiveInteractiveTerminalCard()}
     </Flex>
   ) : null;
 
   const chatHistoryEmptyState =
-    !isPreparingWorkspace && historicalChatTimeline.length === 0 && !showInlineInteractiveTerminalCard ? (
+    !isPreparingWorkspace && historicalChatTimeline.length === 0 ? (
       <Empty description={messagesLoading || runsLoading ? "Loading history..." : "No history yet."} image={Empty.PRESENTED_IMAGE_SIMPLE} />
     ) : null;
 
