@@ -534,7 +534,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [mergeCommitMessage, setMergeCommitMessage] = useState("");
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
-  const [killTerminalConfirmSource, setKillTerminalConfirmSource] = useState<"toolbar" | "session" | null>(null);
+  const [killTerminalConfirmOpen, setKillTerminalConfirmOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [commentEditModalOpen, setCommentEditModalOpen] = useState(false);
   const [editingComment, setEditingComment] = useState<TaskMessage | null>(null);
@@ -1895,7 +1895,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             }
           : updatedTask
       );
-      setKillTerminalConfirmSource(null);
+      setKillTerminalConfirmOpen(false);
       setInteractiveTerminalLaunchPending(false);
       messageApi.success("Interactive terminal stopped");
       setLiveDiffRefreshKey((k) => k + 1);
@@ -2048,7 +2048,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const moreActionItems = task
     ? [
         canRequestLiveDiff ? { key: "refreshDiff", label: "Refresh Diff" } : null,
-        canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "End & Review", danger: true } : null,
+        canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Session", danger: true } : null,
         canEditTask && !isArchived ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
         canContinueOnBranch ? { key: "continue", label: "Continue On Branch" } : null,
         canArchive ? { key: "archive", label: "Archive Task", danger: true } : null,
@@ -3170,8 +3170,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               message={interactiveTerminalResumeAvailable ? "Terminal session can be resumed" : "Terminal session is active"}
               description={
                 interactiveTerminalResumeAvailable
-                  ? "This live terminal session is still running. Reconnect to continue in the existing workspace session, or end and review it to create a checkpoint."
-                  : "This terminal session is currently attached to another window or tab. End it there or use End & Review here to create a checkpoint."
+                  ? "This live terminal session is still running. Reconnect to continue in the existing workspace session, or stop it to end the session and create a checkpoint."
+                  : "This terminal session is currently attached to another window or tab. Stop it there or use Stop here to end the session and create a checkpoint."
               }
               action={
                 showTerminalSessionControls ? (
@@ -3181,25 +3181,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                         Reconnect
                       </Button>
                     ) : null}
-                    killTerminalConfirmSource === "session" ? (
-                      <Space wrap size={8}>
-                        <Typography.Text type="warning">End this session and create a checkpoint?</Typography.Text>
-                        <Button size="small" danger loading={submitting === "killTerminal"} onClick={() => void handleKillInteractiveTerminal()}>
-                          End & Review
-                        </Button>
-                        <Button
-                          size="small"
-                          disabled={submitting === "killTerminal"}
-                          onClick={() => setKillTerminalConfirmSource(null)}
-                        >
-                          Cancel
-                        </Button>
-                      </Space>
-                    ) : (
-                      <Button size="small" danger onClick={() => setKillTerminalConfirmSource("session")}>
-                        End & Review
-                      </Button>
-                    )
+                    <Button size="small" danger onClick={() => setKillTerminalConfirmOpen(true)}>
+                      Stop Session
+                    </Button>
                   </Space>
                 ) : null
               }
@@ -3554,7 +3538,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                             }
 
                             if (key === "killInteractiveTerminal") {
-                              setKillTerminalConfirmSource("toolbar");
+                              setKillTerminalConfirmOpen(true);
                               return;
                             }
 
@@ -3595,24 +3579,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               </Space>
             ) : null}
           </Flex>
-          {killTerminalConfirmSource === "toolbar" ? (
-            <Alert
-              type="warning"
-              showIcon
-              message="End interactive session and review checkpoint?"
-              description="This stops the live interactive terminal session and keeps the current workspace state so AgentSwarm can create the usual checkpoint for recovery."
-              action={
-                <Space wrap>
-                  <Button danger loading={submitting === "killTerminal"} onClick={() => void handleKillInteractiveTerminal()}>
-                    End & Review
-                  </Button>
-                  <Button disabled={submitting === "killTerminal"} onClick={() => setKillTerminalConfirmSource(null)}>
-                    Cancel
-                  </Button>
-                </Space>
-              }
-            />
-          ) : null}
           {isArchived ? (
           <Alert
               type="info"
@@ -3642,6 +3608,24 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         ) : null}
       </Flex>
 
+      <Modal
+        open={killTerminalConfirmOpen}
+        title="Stop interactive session?"
+        onCancel={() => {
+          if (submitting !== "killTerminal") {
+            setKillTerminalConfirmOpen(false);
+          }
+        }}
+        okText="Stop Session"
+        okButtonProps={{ danger: true }}
+        confirmLoading={submitting === "killTerminal"}
+        cancelButtonProps={{ disabled: submitting === "killTerminal" }}
+        onOk={() => void handleKillInteractiveTerminal()}
+        destroyOnClose
+      >
+        This stops the live interactive terminal session and keeps whatever is currently in the workspace so AgentSwarm
+        can create the usual checkpoint for recovery.
+      </Modal>
       <Modal
         open={deleteConfirmOpen && !!task}
         title="Delete task?"
