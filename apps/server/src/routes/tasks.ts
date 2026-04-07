@@ -584,15 +584,22 @@ export const registerTaskRoutes = (
       return;
     }
 
+    const allowParallelAsk = parsed.data.action === "ask" && (task.status === "building" || task.status === "asking");
+
     const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
     if (blocked) {
       return reply.status(409).send({ message: blocked });
     }
 
-    const accepted = await deps.scheduler.triggerAction(
-      task.id,
-      parsed.data.action
-    );
+    if (isActiveTaskStatus(task.status) && !allowParallelAsk) {
+      return reply.status(409).send({ message: "Task is already running" });
+    }
+
+    if (allowParallelAsk && !(await deps.scheduler.hasExecutionCapacity())) {
+      return reply.status(409).send({ message: "No agent capacity is available for a parallel ask right now." });
+    }
+
+    const accepted = await deps.scheduler.triggerAction(task.id, parsed.data.action);
     if (!accepted) {
       return reply.status(409).send({ message: "Task is already running" });
     }
@@ -724,9 +731,15 @@ export const registerTaskRoutes = (
       return;
     }
 
-    // comments are treated as read-only messages; other actions can always run
-    if (action !== "comment" && isActiveTaskStatus(task.status)) {
+    const allowParallelAsk = action === "ask" && (task.status === "building" || task.status === "asking");
+
+    // comments are treated as read-only messages; ask can also run in parallel with another ask/build.
+    if (action !== "comment" && isActiveTaskStatus(task.status) && !allowParallelAsk) {
       return reply.status(409).send({ message: "Task is already running" });
+    }
+
+    if (allowParallelAsk && !(await deps.scheduler.hasExecutionCapacity())) {
+      return reply.status(409).send({ message: "No agent capacity is available for a parallel ask right now." });
     }
 
     if (action !== "comment") {

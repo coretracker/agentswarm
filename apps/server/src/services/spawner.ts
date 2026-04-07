@@ -4,7 +4,6 @@ import { nanoid } from "nanoid";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
-  getActiveStatusForAction,
   getCheckpointMutationBlockedReason,
   getTaskStatusLabel,
   isActiveTaskStatus,
@@ -106,9 +105,12 @@ interface RuntimeResultPayload {
 
 interface WorkspacePreparation {
   workspacePath: string;
+  hostWorkspacePath: string;
   startRef: string;
   workspaceBaseRef: string;
   kind: "worktree" | "clone";
+  ephemeral: boolean;
+  cleanupRepoPath: string | null;
 }
 
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
@@ -159,7 +161,7 @@ export class SpawnerService {
   private static readonly MANAGED_REPO_HEAD_REF = "refs/heads/agentswarm-cache";
 
   private readonly runtimeReady = new Set<AgentProvider>();
-  private activeExecutions = new Map<string, { containerName: string; process: ReturnType<typeof spawn> }>();
+  private activeExecutions = new Map<string, Map<string, { containerName: string; process: ReturnType<typeof spawn> }>>();
   private cancelRequestedTaskIds = new Set<string>();
   private gitAskPassPath: string | null = null;
   private repoLocks = new Map<string, Promise<void>>();
@@ -659,8 +661,8 @@ esac
     this.runtimeReady.add(provider);
   }
 
-  private resolveRuntimePayloadDir(taskId: string): string {
-    return path.join(env.RUNTIME_PAYLOAD_ROOT, taskId);
+  private resolveRuntimePayloadDir(taskId: string, executionId?: string): string {
+    return executionId ? path.join(env.RUNTIME_PAYLOAD_ROOT, taskId, executionId) : path.join(env.RUNTIME_PAYLOAD_ROOT, taskId);
   }
 
   private resolveWorkspacePath(taskId: string): string {
@@ -669,6 +671,64 @@ esac
 
   private resolveWorkspaceHostPath(taskId: string): string {
     return path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
+  }
+
+  private resolveAskWorkspaceRoot(taskId: string): string {
+    return path.join(env.TASK_WORKSPACE_ROOT, ".ask-runs", taskId);
+  }
+
+  private resolveAskWorkspaceHostRoot(taskId: string): string {
+    return path.join(env.TASK_WORKSPACE_HOST_ROOT, ".ask-runs", taskId);
+  }
+
+  private resolveAskWorkspacePath(taskId: string, executionId: string): string {
+    return path.join(this.resolveAskWorkspaceRoot(taskId), executionId);
+  }
+
+  private resolveAskWorkspaceHostPath(taskId: string, executionId: string): string {
+    return path.join(this.resolveAskWorkspaceHostRoot(taskId), executionId);
+  }
+
+  private registerActiveExecution(taskId: string, executionId: string, execution: { containerName: string; process: ReturnType<typeof spawn> }): void {
+    const executions = this.activeExecutions.get(taskId) ?? new Map<string, { containerName: string; process: ReturnType<typeof spawn> }>();
+    executions.set(executionId, execution);
+    this.activeExecutions.set(taskId, executions);
+  }
+
+  private unregisterActiveExecution(taskId: string, executionId: string): void {
+    const executions = this.activeExecutions.get(taskId);
+    if (!executions) {
+      return;
+    }
+
+    executions.delete(executionId);
+    if (executions.size === 0) {
+      this.activeExecutions.delete(taskId);
+    }
+  }
+
+  private async syncTaskStatusForRunningRuns(taskId: string, patch: Partial<Task> = {}): Promise<boolean> {
+    const runs = await this.taskStore.listRuns(taskId);
+    const activeRuns = runs.filter((run) => run.status === "running");
+    if (activeRuns.length === 0) {
+      return false;
+    }
+
+    const nextStatus = activeRuns.some((run) => run.action === "build") ? "building" : "asking";
+    const earliestStartedAt = activeRuns.reduce(
+      (earliest, run) => (run.startedAt < earliest ? run.startedAt : earliest),
+      activeRuns[0]!.startedAt
+    );
+
+    await this.taskStore.setStatus(taskId, nextStatus, {
+      ...patch,
+      startedAt: earliestStartedAt,
+      finishedAt: null,
+      errorMessage: null,
+      enqueued: false
+    });
+
+    return true;
   }
 
   private resolveProviderStateContainerPath(provider: AgentProvider): string {
@@ -1419,7 +1479,7 @@ esac
 
   private async prepareWorkspace(
     task: Task,
-    action: TaskAction,
+    _action: TaskAction,
     branchName: string,
     repoCachePath: string,
     githubToken?: string | null,
@@ -1453,10 +1513,72 @@ esac
     const gitPaths = await this.getWorkspaceGitPaths(workspacePath);
     return {
       workspacePath,
+      hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
       startRef,
       workspaceBaseRef: task.workspaceBaseRef ?? startRef,
-      kind: gitPaths.usesLinkedWorktree ? "worktree" : "clone"
+      kind: gitPaths.usesLinkedWorktree ? "worktree" : "clone",
+      ephemeral: false,
+      cleanupRepoPath: null
     };
+  }
+
+  private async prepareAskWorkspace(
+    task: Task,
+    branchName: string,
+    repoCachePath: string,
+    executionId: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<WorkspacePreparation> {
+    const askWorkspacePath = this.resolveAskWorkspacePath(task.id, executionId);
+    const taskWorkspacePath = this.resolveWorkspacePath(task.id);
+    const taskWorkspaceExists = await access(taskWorkspacePath)
+      .then(() => true)
+      .catch(() => false);
+
+    const sourceRepoPath = taskWorkspaceExists ? taskWorkspacePath : repoCachePath;
+    const startPoint = taskWorkspaceExists
+      ? "HEAD"
+      : (await this.refExists(repoCachePath, `origin/${branchName}`, githubToken, gitUsername))
+        ? `origin/${branchName}`
+        : `origin/${task.baseBranch}`;
+
+    await rm(askWorkspacePath, { recursive: true, force: true });
+    await mkdir(path.dirname(askWorkspacePath), { recursive: true });
+    await this.gitCommand(["-C", sourceRepoPath, "worktree", "prune"], githubToken, gitUsername).catch(() => undefined);
+    await this.gitCommand(["-C", sourceRepoPath, "worktree", "add", "--detach", askWorkspacePath, startPoint], githubToken, gitUsername);
+
+    const startRef = await this.gitCommandCapture(["-C", askWorkspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
+    const gitPaths = await this.getWorkspaceGitPaths(askWorkspacePath);
+    return {
+      workspacePath: askWorkspacePath,
+      hostWorkspacePath: this.resolveAskWorkspaceHostPath(task.id, executionId),
+      startRef,
+      workspaceBaseRef: task.workspaceBaseRef ?? startRef,
+      kind: gitPaths.usesLinkedWorktree ? "worktree" : "clone",
+      ephemeral: true,
+      cleanupRepoPath: sourceRepoPath
+    };
+  }
+
+  private async cleanupPreparedWorkspace(
+    workspace: WorkspacePreparation | null,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<void> {
+    if (!workspace?.ephemeral) {
+      return;
+    }
+
+    if (workspace.cleanupRepoPath) {
+      await this.gitCommand(
+        ["-C", workspace.cleanupRepoPath, "worktree", "remove", "--force", workspace.workspacePath],
+        githubToken,
+        gitUsername
+      ).catch(() => undefined);
+    }
+
+    await rm(workspace.workspacePath, { recursive: true, force: true }).catch(() => undefined);
   }
 
   private async writeRuntimePayloadFiles(
@@ -1469,7 +1591,7 @@ esac
     resultMarkdownPath: string;
     resultJsonPath: string;
   }> {
-    const payloadDir = this.resolveRuntimePayloadDir(manifest.taskId);
+    const payloadDir = path.dirname(manifest.resultJsonPath);
     await rm(payloadDir, { recursive: true, force: true });
     await mkdir(payloadDir, { recursive: true });
 
@@ -2519,26 +2641,28 @@ esac
   async cancelTask(taskId: string): Promise<boolean> {
     this.cancelRequestedTaskIds.add(taskId);
 
-    const execution = this.activeExecutions.get(taskId);
-    if (!execution) {
+    const executions = [...(this.activeExecutions.get(taskId)?.values() ?? [])];
+    if (executions.length === 0) {
       return true;
     }
 
-    await this.taskStore.appendLog(taskId, `Spawner: stopping container ${execution.containerName} (graceful shutdown).`);
+    for (const execution of executions) {
+      await this.taskStore.appendLog(taskId, `Spawner: stopping container ${execution.containerName} (graceful shutdown).`);
 
-    try {
-      await this.runCommand("docker", ["stop", "-t", "15", execution.containerName]);
-    } catch {
-      // Container may already be gone or stop may fail; force remove below.
-    }
-
-    try {
-      await this.runCommand("docker", ["rm", "-f", execution.containerName]);
-    } catch {
       try {
-        execution.process.kill("SIGTERM");
+        await this.runCommand("docker", ["stop", "-t", "15", execution.containerName]);
       } catch {
-        // Ignore process kill errors.
+        // Container may already be gone or stop may fail; force remove below.
+      }
+
+      try {
+        await this.runCommand("docker", ["rm", "-f", execution.containerName]);
+      } catch {
+        try {
+          execution.process.kill("SIGTERM");
+        } catch {
+          // Ignore process kill errors.
+        }
       }
     }
 
@@ -2548,10 +2672,12 @@ esac
   async cleanupTaskArtifacts(task: Task): Promise<void> {
     const payloadDir = this.resolveRuntimePayloadDir(task.id);
     const workspacePath = this.resolveWorkspacePath(task.id);
+    const askWorkspaceRoot = this.resolveAskWorkspaceRoot(task.id);
     const taskStateRootPath = resolveTaskStateRootPaths(task.id).serverPath;
     const legacyCodexStatePath = resolveTaskProviderStatePaths(task.id, "codex").legacyServerPath;
     const legacyClaudeStatePath = resolveTaskProviderStatePaths(task.id, "claude").legacyServerPath;
     await rm(payloadDir, { recursive: true, force: true });
+    await rm(askWorkspaceRoot, { recursive: true, force: true }).catch(() => undefined);
     const repoCachePath = this.resolveRepoCachePath(task);
     await this.withRepoLock(repoCachePath, async () => {
       const repoExists = await access(path.join(repoCachePath, ".git"))
@@ -3003,20 +3129,11 @@ esac
       task.branchStrategy === "work_on_branch"
         ? task.baseBranch
         : task.branchName ?? makeBranchName(task.title, task.id, settings.branchPrefix);
-    const startedAt = new Date().toISOString();
-    const payloadDir = this.resolveRuntimePayloadDir(task.id);
     let runId: string | null = null;
-    let workspacePath: string | null = null;
+    let executionId: string | null = null;
+    let workspace: WorkspacePreparation | null = null;
 
     try {
-      await this.taskStore.setStatus(task.id, getActiveStatusForAction(action), {
-        branchName,
-        startedAt,
-        finishedAt: null,
-        errorMessage: null,
-        enqueued: false,
-        lastAction: action
-      });
       const run = await this.taskStore.createRun(task.id, {
         action,
         provider: task.provider,
@@ -3025,10 +3142,16 @@ esac
         branchName
       });
       runId = run?.id ?? null;
+      executionId = runId ?? nanoid();
+      const payloadDir = this.resolveRuntimePayloadDir(task.id, executionId);
       const appendRunLog = (line: string) => this.taskStore.appendLogForRun(task.id, line, runId);
+      await this.syncTaskStatusForRunningRuns(task.id, {
+        branchName,
+        ...(action === "ask" && isActiveTaskStatus(task.status) ? {} : { lastAction: action })
+      });
       const repoCachePath = this.resolveRepoCachePath(task);
       await appendRunLog("Spawner: preparing managed repository and workspace.");
-      const { repoProfile, workspace } = await this.withFreshManagedRepo(
+      const { repoProfile, workspace: preparedWorkspace } = await this.withFreshManagedRepo(
         task,
         runtimeCredentials.githubToken,
         runtimeCredentials.gitUsername,
@@ -3039,17 +3162,27 @@ esac
             runtimeCredentials.githubToken,
             runtimeCredentials.gitUsername
           ),
-          workspace: await this.prepareWorkspace(
-            task,
-            action,
-            branchName,
-            managedRepoPath,
-            runtimeCredentials.githubToken,
-            runtimeCredentials.gitUsername
-          )
+          workspace:
+            action === "ask"
+              ? await this.prepareAskWorkspace(
+                  task,
+                  branchName,
+                  managedRepoPath,
+                  executionId,
+                  runtimeCredentials.githubToken,
+                  runtimeCredentials.gitUsername
+                )
+              : await this.prepareWorkspace(
+                  task,
+                  action,
+                  branchName,
+                  managedRepoPath,
+                  runtimeCredentials.githubToken,
+                  runtimeCredentials.gitUsername
+                )
         })
       );
-      workspacePath = workspace.workspacePath;
+      workspace = preparedWorkspace;
       if (action === "build" && !task.workspaceBaseRef) {
         await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
       }
@@ -3125,9 +3258,8 @@ esac
         });
       }
 
-      const containerName = `agentswarm-task-${task.id}`;
+      const containerName = `agentswarm-task-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
       const workspaceMountMode = action === "ask" ? "ro" : "rw";
-      const hostWorkspacePath = this.resolveWorkspaceHostPath(task.id);
       const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
       const providerStateContainerPath = this.resolveProviderStateContainerPath(task.provider);
       const providerStatePaths = await ensureTaskProviderStatePaths(task.id, task.provider);
@@ -3151,9 +3283,9 @@ esac
         "-e",
         `PROVIDER_CONFIG_FILE=${payloadPaths.providerConfigPath}`,
         "-e",
-        `TASK_WORKSPACE_PATH=${hostWorkspacePath}`,
+        `TASK_WORKSPACE_PATH=${workspace.hostWorkspacePath}`,
         "-e",
-        `TASK_WORSPACE_PATH=${hostWorkspacePath}`,
+        `TASK_WORSPACE_PATH=${workspace.hostWorkspacePath}`,
         "-e",
         `TASK_PROVIDER_STATE_PATH=${providerStateContainerPath}`,
         "-e",
@@ -3175,7 +3307,7 @@ esac
 
       await new Promise<void>((resolve, reject) => {
         const proc = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
-        this.activeExecutions.set(task.id, { containerName, process: proc });
+        this.registerActiveExecution(task.id, executionId, { containerName, process: proc });
 
         let stdoutRemainder = "";
         let stderrRemainder = "";
@@ -3214,7 +3346,7 @@ esac
 
         proc.on("error", reject);
         proc.on("close", (code) => {
-          this.activeExecutions.delete(task.id);
+          this.unregisterActiveExecution(task.id, executionId);
 
           if (stdoutRemainder.trim().length > 0) {
             processLine("stdout", stdoutRemainder.trimEnd());
@@ -3252,12 +3384,6 @@ esac
 
         const branchDiff = null;
         await this.taskStore.updateResultArtifacts(task.id, finalMarkdown);
-        await this.taskStore.setStatus(task.id, resolveTaskReadyStatus(false), {
-          finishedAt,
-          enqueued: false,
-          branchDiff,
-          lastAction: action
-        });
         await this.taskStore.appendMessage(task.id, {
           role: "assistant",
           action,
@@ -3268,6 +3394,21 @@ esac
             status: "succeeded",
             finishedAt,
             summary: finalMarkdown
+          });
+        }
+        if (
+          !(await this.syncTaskStatusForRunningRuns(task.id, {
+            finishedAt,
+            lastAction: action,
+            errorMessage: null
+          }))
+        ) {
+          await this.taskStore.setStatus(task.id, resolveTaskReadyStatus(false), {
+            finishedAt,
+            enqueued: false,
+            branchDiff,
+            lastAction: action,
+            errorMessage: null
           });
         }
       } else {
@@ -3303,36 +3444,68 @@ esac
         if (runId && action === "build") {
           await this.createBuildRunChangeProposal(task, runId, workspace.workspacePath);
         }
+        const nextBranchDiff = branchDiff.length > 0 ? branchDiff : task.branchDiff;
         const hasPendingCheckpoint = await this.taskStore.hasPendingChangeProposal(task.id);
-        await this.taskStore.setStatus(task.id, resolveTaskReadyStatus(hasPendingCheckpoint), {
-          finishedAt,
-          enqueued: false,
-          branchDiff: branchDiff.length > 0 ? branchDiff : task.branchDiff,
-          lastAction: action,
-          branchName
-        });
+        if (
+          !(await this.syncTaskStatusForRunningRuns(task.id, {
+            finishedAt,
+            branchDiff: nextBranchDiff,
+            lastAction: action,
+            branchName,
+            errorMessage: null
+          }))
+        ) {
+          await this.taskStore.setStatus(task.id, resolveTaskReadyStatus(hasPendingCheckpoint), {
+            finishedAt,
+            enqueued: false,
+            branchDiff: nextBranchDiff,
+            lastAction: action,
+            branchName,
+            errorMessage: null
+          });
+        }
       }
 
       await appendRunLog("Spawner: task finished successfully.");
     } catch (error) {
+      const finishedAt = new Date().toISOString();
+      const message = error instanceof Error ? error.message : "Unknown runtime error";
+      const isCancelled = error instanceof CancelledTaskError;
       if (runId) {
-        const message = error instanceof Error ? error.message : "Unknown runtime error";
-        const isCancelled = error instanceof CancelledTaskError;
         await this.taskStore.updateRun(runId, {
           status: isCancelled ? "cancelled" : "failed",
-          finishedAt: new Date().toISOString(),
+          finishedAt,
           errorMessage: isCancelled ? null : message,
           summary: isCancelled ? "Task cancelled by user." : null
         });
       }
+      if (
+        !(await this.syncTaskStatusForRunningRuns(task.id, {
+          lastAction: action
+        }))
+      ) {
+        await this.taskStore.setStatus(task.id, isCancelled ? "cancelled" : "failed", {
+          finishedAt,
+          enqueued: false,
+          errorMessage: isCancelled ? "Cancelled by user" : message,
+          lastAction: action
+        });
+      }
       throw error;
     } finally {
-      this.activeExecutions.delete(task.id);
-      this.cancelRequestedTaskIds.delete(task.id);
-      if (workspacePath) {
-        await this.cleanupWorkspaceGitLocks(workspacePath).catch(() => undefined);
+      if (executionId) {
+        this.unregisterActiveExecution(task.id, executionId);
       }
-      await rm(payloadDir, { recursive: true, force: true });
+      if ((this.activeExecutions.get(task.id)?.size ?? 0) === 0) {
+        this.cancelRequestedTaskIds.delete(task.id);
+      }
+      if (workspace?.workspacePath) {
+        await this.cleanupWorkspaceGitLocks(workspace.workspacePath).catch(() => undefined);
+      }
+      await this.cleanupPreparedWorkspace(workspace, runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(() => undefined);
+      if (executionId) {
+        await rm(this.resolveRuntimePayloadDir(task.id, executionId), { recursive: true, force: true });
+      }
     }
   }
 }

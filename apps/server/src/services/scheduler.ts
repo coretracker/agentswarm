@@ -4,7 +4,7 @@ import { SettingsStore } from "./settings-store.js";
 import { CancelledTaskError, SpawnerService } from "./spawner.js";
 
 export class SchedulerService {
-  private activeTaskIds = new Set<string>();
+  private activeExecutionCount = 0;
   private interval: NodeJS.Timeout | null = null;
   private draining = false;
 
@@ -37,13 +37,19 @@ export class SchedulerService {
     await this.drainQueue();
   }
 
+  async hasExecutionCapacity(): Promise<boolean> {
+    const settings = await this.settingsStore.getSettings();
+    return this.activeExecutionCount < settings.maxAgents;
+  }
+
   async triggerAction(taskId: string, action: TaskAction, input?: string): Promise<boolean> {
     const task = await this.taskStore.getTask(taskId);
     if (!task) {
       return false;
     }
 
-    if (isActiveTaskStatus(task.status) || task.status === "archived") {
+    const allowParallelAsk = action === "ask" && (task.status === "building" || task.status === "asking");
+    if ((!allowParallelAsk && isActiveTaskStatus(task.status)) || task.status === "archived") {
       return false;
     }
 
@@ -53,6 +59,17 @@ export class SchedulerService {
 
     if (await this.taskStore.getActiveInteractiveSession(taskId)) {
       return false;
+    }
+
+    if (allowParallelAsk) {
+      const settings = await this.settingsStore.getSettings();
+      if (this.activeExecutionCount >= settings.maxAgents) {
+        return false;
+      }
+
+      this.activeExecutionCount += 1;
+      void this.executeTask({ taskId, reason: "manual", action, input }, false);
+      return true;
     }
 
     await this.taskStore.markQueuedForAction(taskId, action);
@@ -99,7 +116,7 @@ export class SchedulerService {
 
     try {
       const settings = await this.settingsStore.getSettings();
-      while (this.activeTaskIds.size < settings.maxAgents) {
+      while (this.activeExecutionCount < settings.maxAgents) {
         const queueEntry = await this.taskStore.dequeueTask();
         if (!queueEntry) {
           break;
@@ -118,16 +135,16 @@ export class SchedulerService {
           enqueued: false,
           lastAction: queueEntry.action
         });
-        this.activeTaskIds.add(task.id);
+        this.activeExecutionCount += 1;
 
-        void this.executeTask(queueEntry);
+        void this.executeTask(queueEntry, true);
       }
     } finally {
       this.draining = false;
     }
   }
 
-  private async executeTask(queueEntry: QueueEntry): Promise<void> {
+  private async executeTask(queueEntry: QueueEntry, requireQueuedStatus: boolean): Promise<void> {
     const taskId = queueEntry.taskId;
     try {
       const task = await this.taskStore.getTask(taskId);
@@ -135,7 +152,7 @@ export class SchedulerService {
         return;
       }
 
-      if (!isQueuedTaskStatus(task.status)) {
+      if (requireQueuedStatus && !isQueuedTaskStatus(task.status)) {
         if (task.status === "archived") {
           await this.taskStore.appendLog(taskId, "Scheduler: archived task skipped before execution.");
         }
@@ -146,24 +163,13 @@ export class SchedulerService {
     } catch (error) {
       const task = await this.taskStore.getTask(taskId);
       if (error instanceof CancelledTaskError || task?.status === "cancelled") {
-        await this.taskStore.setStatus(taskId, "cancelled", {
-          finishedAt: task?.finishedAt ?? new Date().toISOString(),
-          errorMessage: "Cancelled by user",
-          enqueued: false
-        });
         await this.taskStore.appendLog(taskId, "Spawner: task cancelled by user.");
       } else {
-        const finishedAt = new Date().toISOString();
         const message = error instanceof Error ? error.message : "Unknown runtime error";
-        await this.taskStore.setStatus(taskId, "failed", {
-          finishedAt,
-          errorMessage: message,
-          enqueued: false
-        });
         await this.taskStore.appendLog(taskId, `Spawner: task failed - ${message}`);
       }
     } finally {
-      this.activeTaskIds.delete(taskId);
+      this.activeExecutionCount = Math.max(0, this.activeExecutionCount - 1);
       await this.drainQueue();
     }
   }

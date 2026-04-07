@@ -1407,29 +1407,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const interactiveComposerSelected = selectedChatAction === "interactive";
   const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive";
   const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived";
-  const chatDisabled =
-    chatClosed ||
-    interactiveTerminalRunning ||
-    (selectedChatAction !== "comment" && (isQueued || isActive || !!pendingChangeProposal));
-  const chatInputDisabled = chatDisabled || interactiveComposerSelected;
+  const parallelAskAllowed = selectedChatAction === "ask" && (task?.status === "building" || task?.status === "asking");
+  const autoRunStartBlocked =
+    selectedChatAction !== "comment" && (!!pendingChangeProposal || ((isQueued || isActive) && !parallelAskAllowed));
+  const chatDisabled = chatClosed || interactiveTerminalRunning || autoRunStartBlocked;
+  const chatInputDisabled = chatClosed || interactiveTerminalRunning || interactiveComposerSelected;
+  const draftActionLabel = taskActionLabel[selectedChatAction].toLowerCase();
   const chatPlaceholder = (() => {
     if (interactiveTerminalRunning) {
       return "An interactive terminal session is already running for this task. Close or end it before sending from here.";
-    }
-    if (!chatDisabled) {
-      if (selectedChatAction === "interactive") {
-        return "Interactive terminal does not need a prompt. Press Start to open the live session in a new window.";
-      }
-      if (selectedChatAction === "comment") {
-        return "Add a comment to the task history";
-      }
-      if (selectedChatAction === "ask") {
-        return "Ask a repository question or refine the last answer";
-      }
-      if (selectedChatAction === "build") {
-        return "Describe the next implementation change for this branch";
-      }
-      return hasExecutionContext ? "Add instructions for the next build run" : "Add instructions for the first build run";
     }
     if (hasReadOnlyTaskAccess) {
       return "You have read-only access to this task.";
@@ -1439,10 +1425,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         ? "This task is archived and read-only."
         : "This task is closed. Create a follow-up task to continue.";
     }
-    if (pendingChangeProposal && selectedChatAction !== "comment") {
-      return "Apply or reject the pending checkpoint before sending build or ask instructions.";
+    if (selectedChatAction === "interactive") {
+      return "Interactive terminal does not need a prompt. Press Start to open the live session in a new window.";
     }
-    return "Wait for the current run to finish before sending another instruction.";
+    if (selectedChatAction === "comment") {
+      return "Add a comment to the task history";
+    }
+    if (pendingChangeProposal && selectedChatAction !== "comment") {
+      return `Draft the next ${draftActionLabel} while you review the pending checkpoint. Start is available again after you apply or reject it.`;
+    }
+    if (parallelAskAllowed) {
+      return "Ask a repository question while the current run keeps working. This ask will start immediately.";
+    }
+    if ((isQueued || isActive) && selectedChatAction !== "comment") {
+      return `Draft the next ${draftActionLabel} while the current run finishes. Start becomes available when the task is ready.`;
+    }
+    if (selectedChatAction === "ask") {
+      return "Ask a repository question or refine the last answer";
+    }
+    if (selectedChatAction === "build") {
+      return "Describe the next implementation change for this branch";
+    }
+    return hasExecutionContext ? "Add instructions for the next build run" : "Add instructions for the first build run";
   })();
   const chatTimeline = useMemo(
     () =>
@@ -2550,7 +2554,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                     messageApi.success(
                       selectedChatAction === "comment"
                         ? "Comment added to history"
-                        : `${taskActionLabel[selectedChatAction]} queued from history`
+                        : parallelAskAllowed && selectedChatAction === "ask"
+                          ? "Ask started from history"
+                          : `${taskActionLabel[selectedChatAction]} queued from history`
                     );
                   } catch (error) {
                     showTaskActionError(error, "Task execution could not be started");
