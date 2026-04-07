@@ -1431,13 +1431,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (selectedChatAction === "comment") {
       return "Add a comment to the task history";
     }
-    if (pendingChangeProposal && selectedChatAction !== "comment") {
+    if (pendingChangeProposal) {
       return `Draft the next ${draftActionLabel} while you review the pending checkpoint. Start is available again after you apply or reject it.`;
     }
     if (parallelAskAllowed) {
       return "Ask a repository question while the current run keeps working. This ask will start immediately.";
     }
-    if ((isQueued || isActive) && selectedChatAction !== "comment") {
+    if (isQueued || isActive) {
       return `Draft the next ${draftActionLabel} while the current run finishes. Start becomes available when the task is ready.`;
     }
     if (selectedChatAction === "ask") {
