@@ -3065,7 +3065,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </Typography.Paragraph>
           {normalizedRunSummary ? (
             isCollapsibleSummaryRun ? (
-              <Collapse size="small" defaultActiveKey={[]} items={summaryCollapseItems} style={{ marginBottom: 12 }} />
+              <Collapse
+                size="small"
+                defaultActiveKey={summaryCollapseItems.map((item) => item.key)}
+                items={summaryCollapseItems}
+                style={{ marginBottom: 12 }}
+              />
             ) : (
               <div style={{ marginBottom: 12 }}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
@@ -3113,6 +3118,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </div>
           <Collapse
             size="small"
+            defaultActiveKey={[`${entryKey}-summary`]}
             items={[
               {
                 key: `${entryKey}-summary`,
