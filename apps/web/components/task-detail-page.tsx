@@ -3069,7 +3069,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     return (
       <Collapse
         size="small"
-        ghost
         items={[
           {
             key: `${collapseKey}-context`,
