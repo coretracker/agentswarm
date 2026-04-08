@@ -12,15 +12,30 @@ export const useRepositories = () => {
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const refreshRepositories = async (): Promise<void> => {
+    setLoading(true);
+    try {
+      const items = await api.listRepositories();
+      setRepositories(sortRepositories(items));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     let active = true;
-    void api.listRepositories().then((items) => {
-      if (!active) {
-        return;
-      }
-      setRepositories(sortRepositories(items));
-      setLoading(false);
-    });
+    void api.listRepositories()
+      .then((items) => {
+        if (!active) {
+          return;
+        }
+        setRepositories(sortRepositories(items));
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false);
+        }
+      });
 
     return () => {
       active = false;
@@ -60,5 +75,5 @@ export const useRepositories = () => {
     };
   }, [socket]);
 
-  return { repositories, setRepositories, loading };
+  return { repositories, setRepositories, refreshRepositories, loading };
 };

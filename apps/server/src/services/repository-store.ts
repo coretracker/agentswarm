@@ -1,8 +1,9 @@
 import { nanoid } from "nanoid";
 import type Redis from "ioredis";
-import type { CreateRepositoryInput, Repository, UpdateRepositoryInput } from "@agentswarm/shared-types";
+import type { AuthSessionUser, CreateRepositoryInput, Repository, UpdateRepositoryInput } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
 import { HttpError } from "../lib/http-error.js";
+import { canUserAccessRepository } from "../lib/repository-access.js";
 
 const REPO_KEY_PREFIX = "agentswarm:repo:";
 const REPO_IDS_KEY = "agentswarm:repo_ids";
@@ -39,6 +40,10 @@ export class RepositoryStore {
     return normalized.length > 0 ? normalized : null;
   }
 
+  private normalizeUserIds(userIds: string[] | null | undefined): string[] {
+    return Array.from(new Set((userIds ?? []).map((userId) => String(userId ?? "").trim()).filter(Boolean)));
+  }
+
   private assertValidWebhookConfiguration(input: { webhookEnabled: boolean; webhookUrl: string | null; webhookSecret: string | null }): void {
     if (!input.webhookEnabled) {
       return;
@@ -62,6 +67,7 @@ export class RepositoryStore {
       name: String(repository.name ?? "").trim(),
       url: String(repository.url ?? "").trim(),
       defaultBranch: String(repository.defaultBranch ?? "").trim() || "develop",
+      userIds: this.normalizeUserIds(repository.userIds as string[] | null | undefined),
       webhookUrl,
       webhookEnabled,
       webhookSecret,
@@ -80,6 +86,7 @@ export class RepositoryStore {
       name: normalized.name,
       url: normalized.url,
       defaultBranch: normalized.defaultBranch,
+      userIds: normalized.userIds,
       webhookUrl: normalized.webhookUrl,
       webhookEnabled: normalized.webhookEnabled,
       webhookSecretConfigured: Boolean(normalized.webhookSecret),
@@ -116,6 +123,7 @@ export class RepositoryStore {
       name: input.name.trim(),
       url: input.url.trim(),
       defaultBranch: input.defaultBranch?.trim() || "develop",
+      userIds: this.normalizeUserIds(input.userIds),
       webhookUrl,
       webhookEnabled,
       webhookSecret,
@@ -160,6 +168,11 @@ export class RepositoryStore {
     return repositories.sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  async listRepositoriesForUser(user: Pick<AuthSessionUser, "id" | "roles"> | null | undefined): Promise<Repository[]> {
+    const repositories = await this.listRepositories();
+    return repositories.filter((repository) => canUserAccessRepository(user, repository));
+  }
+
   async getRepository(repositoryId: string): Promise<Repository | null> {
     const stored = await this.getStoredRepository(repositoryId);
     if (!stored) {
@@ -167,6 +180,18 @@ export class RepositoryStore {
     }
 
     return this.normalizeRepository(stored);
+  }
+
+  async getRepositoryForUser(
+    repositoryId: string,
+    user: Pick<AuthSessionUser, "id" | "roles"> | null | undefined
+  ): Promise<Repository | null> {
+    const repository = await this.getRepository(repositoryId);
+    if (!repository || !canUserAccessRepository(user, repository)) {
+      return null;
+    }
+
+    return repository;
   }
 
   async updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null> {
@@ -197,6 +222,7 @@ export class RepositoryStore {
       name: input.name?.trim() || current.name,
       url: input.url?.trim() || current.url,
       defaultBranch: input.defaultBranch?.trim() || current.defaultBranch,
+      userIds: input.userIds !== undefined ? this.normalizeUserIds(input.userIds) : current.userIds,
       webhookUrl: nextWebhookUrl,
       webhookEnabled: nextWebhookEnabled,
       webhookSecret: nextWebhookSecret,

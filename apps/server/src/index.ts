@@ -53,7 +53,8 @@ const bootstrap = async (): Promise<void> => {
     userStore,
     sessionStore,
     cookieName: env.AUTH_COOKIE_NAME,
-    taskStore
+    taskStore,
+    repositoryStore
   });
   const spawner = new SpawnerService(taskStore, settingsStore, userStore);
   const scheduler = new SchedulerService(taskStore, settingsStore, spawner);
@@ -72,7 +73,7 @@ const bootstrap = async (): Promise<void> => {
   registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
   registerTaskRoutes(app, { taskStore, repositoryStore, scheduler, spawner, settingsStore, auth });
   registerSnippetRoutes(app, { snippetStore, auth });
-  registerRepositoryRoutes(app, { repositoryStore, auth });
+  registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
   registerImportRoutes(app, { githubImportService, repositoryStore, taskStore, scheduler, spawner, auth });
 

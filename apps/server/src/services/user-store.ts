@@ -467,4 +467,19 @@ export class UserStore {
     const users = await this.getStoredUsers(userIds);
     return users.filter((user) => user.roleIds.includes(roleId)).map((user) => user.id);
   }
+
+  async normalizeUserIds(userIds: string[] | undefined): Promise<string[]> {
+    const normalizedUserIds = Array.from(new Set((userIds ?? []).map((userId) => userId.trim()).filter(Boolean)));
+    if (normalizedUserIds.length === 0) {
+      return [];
+    }
+
+    const users = await this.getStoredUsers(normalizedUserIds);
+    if (users.length !== normalizedUserIds.length) {
+      const missingUserId = normalizedUserIds.find((userId) => !users.some((user) => user.id === userId));
+      throw new HttpError(400, `Unknown user: ${missingUserId ?? "unknown"}`);
+    }
+
+    return normalizedUserIds;
+  }
 }

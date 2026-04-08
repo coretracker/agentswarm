@@ -271,6 +271,7 @@ export interface Repository {
   name: string;
   url: string;
   defaultBranch: string;
+  userIds: string[];
   webhookUrl: string | null;
   webhookEnabled: boolean;
   webhookSecretConfigured: boolean;
@@ -512,6 +513,7 @@ export interface CreateRepositoryInput {
   name: string;
   url: string;
   defaultBranch?: string;
+  userIds?: string[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
@@ -521,6 +523,7 @@ export interface UpdateRepositoryInput {
   name?: string;
   url?: string;
   defaultBranch?: string;
+  userIds?: string[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;

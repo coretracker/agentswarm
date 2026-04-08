@@ -1,8 +1,23 @@
 "use client";
 
-import { useState } from "react";
-import type { Repository } from "@agentswarm/shared-types";
-import { Button, Card, Checkbox, Flex, Form, Input, Modal, Popconfirm, Space, Switch, Table, Typography, message } from "antd";
+import { useEffect, useState } from "react";
+import type { Repository, User } from "@agentswarm/shared-types";
+import {
+  Button,
+  Card,
+  Checkbox,
+  Flex,
+  Form,
+  Input,
+  Modal,
+  Popconfirm,
+  Select,
+  Space,
+  Switch,
+  Table,
+  Typography,
+  message
+} from "antd";
 import { api } from "../src/api/client";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useAuth } from "./auth-provider";
@@ -15,19 +30,48 @@ type RepositoryFormValues = {
   webhookUrl: string;
   webhookSecret: string;
   clearWebhookSecret: boolean;
+  userIds: string[];
 };
 
 export function RepositoriesPage() {
-  const { repositories, loading } = useRepositories();
+  const { repositories, refreshRepositories, loading } = useRepositories();
   const { can } = useAuth();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Repository | null>(null);
   const [form] = Form.useForm<RepositoryFormValues>();
   const [submitting, setSubmitting] = useState(false);
+  const [users, setUsers] = useState<User[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
   const canCreateRepository = can("repo:create");
   const canEditRepository = can("repo:edit");
   const canDeleteRepository = can("repo:delete");
+  const canManageRepositoryUsers = canEditRepository && can("user:list");
+
+  useEffect(() => {
+    if (!canManageRepositoryUsers) {
+      setUsers([]);
+      return;
+    }
+
+    let active = true;
+    setUsersLoading(true);
+    void api.listUsers()
+      .then((items) => {
+        if (active) {
+          setUsers(items);
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setUsersLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [canManageRepositoryUsers]);
 
   const openCreate = () => {
     setEditing(null);
@@ -35,6 +79,7 @@ export function RepositoriesPage() {
       name: "",
       url: "",
       defaultBranch: "develop",
+      userIds: [],
       webhookEnabled: false,
       webhookUrl: "",
       webhookSecret: "",
@@ -49,6 +94,7 @@ export function RepositoriesPage() {
       name: repository.name,
       url: repository.url,
       defaultBranch: repository.defaultBranch,
+      userIds: repository.userIds,
       webhookEnabled: repository.webhookEnabled,
       webhookUrl: repository.webhookUrl ?? "",
       webhookSecret: "",
@@ -56,6 +102,8 @@ export function RepositoriesPage() {
     });
     setOpen(true);
   };
+
+  const userNameById = new Map(users.map((user) => [user.id, user.name]));
 
   return (
     <>
@@ -84,6 +132,28 @@ export function RepositoriesPage() {
               { title: "Name", dataIndex: "name" },
               { title: "URL", dataIndex: "url" },
               { title: "Default Branch", dataIndex: "defaultBranch" },
+              {
+                title: "Access",
+                render: (_, repository) => {
+                  if (repository.userIds.length === 0) {
+                    return <Typography.Text type="secondary">Admins only</Typography.Text>;
+                  }
+
+                  const assignedNames = repository.userIds
+                    .map((userId) => userNameById.get(userId))
+                    .filter((value): value is string => Boolean(value));
+                  return (
+                    <Flex vertical gap={0}>
+                      <Typography.Text>
+                        {assignedNames.length > 0 ? assignedNames.join(", ") : `${repository.userIds.length} assigned user(s)`}
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        {repository.userIds.length} non-admin user{repository.userIds.length === 1 ? "" : "s"}
+                      </Typography.Text>
+                    </Flex>
+                  );
+                }
+              },
               {
                 title: "Webhook",
                 render: (_, repository) => {
@@ -118,6 +188,7 @@ export function RepositoriesPage() {
                         description="Tasks keep their stored snapshot, but this repository will be removed from quick selection."
                         onConfirm={async () => {
                           await api.deleteRepository(repository.id);
+                          await refreshRepositories();
                           messageApi.success("Repository deleted");
                         }}
                       >
@@ -143,6 +214,7 @@ export function RepositoriesPage() {
                 name: values.name,
                 url: values.url,
                 defaultBranch: values.defaultBranch,
+                ...(canManageRepositoryUsers ? { userIds: values.userIds } : {}),
                 webhookEnabled: values.webhookEnabled,
                 webhookUrl: values.webhookUrl.trim().length > 0 ? values.webhookUrl.trim() : null,
                 ...(values.webhookSecret.trim().length > 0 ? { webhookSecret: values.webhookSecret.trim() } : {}),
@@ -155,7 +227,10 @@ export function RepositoriesPage() {
                 await api.createRepository(payload);
                 messageApi.success("Repository created");
               }
+              await refreshRepositories();
               setOpen(false);
+            } catch (error) {
+              messageApi.error(error instanceof Error ? error.message : "Failed to save repository");
             } finally {
               setSubmitting(false);
             }
@@ -170,6 +245,24 @@ export function RepositoriesPage() {
           <Form.Item name="defaultBranch" label="Default Branch" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
+          {canManageRepositoryUsers ? (
+            <Form.Item
+              name="userIds"
+              label="Allowed Users"
+              extra="Admins always have access. Non-admins must be assigned here to access this repository."
+            >
+              <Select
+                mode="multiple"
+                loading={usersLoading}
+                options={users.map((user) => ({
+                  label: user.active ? `${user.name} (${user.email})` : `${user.name} (${user.email}) - inactive`,
+                  value: user.id
+                }))}
+                optionFilterProp="label"
+                placeholder="Select users"
+              />
+            </Form.Item>
+          ) : null}
           <Form.Item name="webhookEnabled" label="Enable Webhooks" valuePropName="checked">
             <Switch />
           </Form.Item>

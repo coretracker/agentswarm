@@ -5,6 +5,8 @@ import type { Server as SocketIOServer, Socket } from "socket.io";
 import type { SessionStore } from "../services/session-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { UserStore } from "../services/user-store.js";
+import type { RepositoryStore } from "../services/repository-store.js";
+import { canUserAccessRepository } from "./repository-access.js";
 import { canUserAccessTask } from "./task-ownership.js";
 
 const realtimeScopesByEventType: Record<RealtimeEvent["type"], PermissionScope[]> = {
@@ -77,12 +79,14 @@ export const createAuthService = ({
   cookieName,
   sessionStore,
   userStore,
-  taskStore
+  taskStore,
+  repositoryStore
 }: {
   cookieName: string;
   sessionStore: SessionStore;
   userStore: UserStore;
   taskStore: TaskStore;
+  repositoryStore: RepositoryStore;
 }): AuthService => {
   const getRequestToken = (request: FastifyRequest): string | null => {
     const token = request.cookies?.[cookieName];
@@ -282,6 +286,30 @@ export const createAuthService = ({
           }
 
           socket.emit(event.type, event.payload);
+        }
+        return;
+      }
+
+      if (event.type === "repository:created" || event.type === "repository:updated") {
+        const repository = "userIds" in event.payload ? event.payload : await repositoryStore.getRepository(event.payload.id);
+        if (!repository) {
+          return;
+        }
+
+        for (const socket of io.sockets.sockets.values()) {
+          const auth = socket.data.auth as RequestAuthContext | undefined;
+          if (!auth || !hasAllScopes(auth.scopes, requiredScopes)) {
+            continue;
+          }
+
+          if (canUserAccessRepository(auth.user, repository)) {
+            socket.emit(event.type, repository);
+            continue;
+          }
+
+          if (event.type === "repository:updated") {
+            socket.emit("repository:deleted", { id: repository.id });
+          }
         }
         return;
       }

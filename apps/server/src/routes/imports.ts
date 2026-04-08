@@ -8,6 +8,7 @@ import type { TaskStore } from "../services/task-store.js";
 import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
 import { applyTaskStartMode } from "../lib/task-start-mode.js";
 import { requireTaskCapabilityAccess, requireTaskExecutionConfigAccess } from "../lib/task-capability-access.js";
+import { canUserAccessRepository } from "../lib/repository-access.js";
 import { withBranchSyncCounts } from "./tasks.js";
 
 const issueImportSchema = z.object({
@@ -56,7 +57,7 @@ export const registerImportRoutes = (
 
     try {
       const repository = await deps.repositoryStore.getRepository(repoId);
-      if (!repository) {
+      if (!repository || !canUserAccessRepository(request.auth?.user, repository)) {
         return reply.status(404).send({ message: "Repository not found" });
       }
 
@@ -79,7 +80,7 @@ export const registerImportRoutes = (
 
     try {
       const repository = await deps.repositoryStore.getRepository(repoId);
-      if (!repository) {
+      if (!repository || !canUserAccessRepository(request.auth?.user, repository)) {
         return reply.status(404).send({ message: "Repository not found" });
       }
 
@@ -102,7 +103,7 @@ export const registerImportRoutes = (
 
     try {
       const repository = await deps.repositoryStore.getRepository(repoId);
-      if (!repository) {
+      if (!repository || !canUserAccessRepository(request.auth?.user, repository)) {
         return reply.status(404).send({ message: "Repository not found" });
       }
 
@@ -125,7 +126,7 @@ export const registerImportRoutes = (
 
     try {
       const repository = await deps.repositoryStore.getRepository(parsed.data.repoId);
-      if (!repository) {
+      if (!repository || !canUserAccessRepository(request.auth?.user, repository)) {
         return reply.status(404).send({ message: "Repository not found" });
       }
 
@@ -184,7 +185,7 @@ export const registerImportRoutes = (
 
     try {
       const repository = await deps.repositoryStore.getRepository(parsed.data.repoId);
-      if (!repository) {
+      if (!repository || !canUserAccessRepository(request.auth?.user, repository)) {
         return reply.status(404).send({ message: "Repository not found" });
       }
 

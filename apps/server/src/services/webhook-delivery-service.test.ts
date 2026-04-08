@@ -66,6 +66,8 @@ class FakeRedis {
   multi(): {
     set: (key: string, value: string) => unknown;
     zadd: (key: string, score: number, member: string) => unknown;
+    zrem: (key: string, member: string) => unknown;
+    del: (...keys: string[]) => unknown;
     exec: () => Promise<unknown[]>;
   } {
     const operations: Array<() => void> = [];
@@ -79,6 +81,20 @@ class FakeRedis {
       zadd: (key: string, score: number, member: string) => {
         operations.push(() => {
           this.getZset(key).set(member, score);
+        });
+        return chain;
+      },
+      zrem: (key: string, member: string) => {
+        operations.push(() => {
+          this.getZset(key).delete(member);
+        });
+        return chain;
+      },
+      del: (...keys: string[]) => {
+        operations.push(() => {
+          for (const key of keys) {
+            this.kv.delete(key);
+          }
         });
         return chain;
       },
@@ -132,6 +148,7 @@ const baseRepository = (): Repository => ({
   name: "Repo",
   url: "https://github.com/example/repo.git",
   defaultBranch: "main",
+  userIds: [],
   webhookUrl: "https://example.com/webhook",
   webhookEnabled: true,
   webhookSecretConfigured: true,

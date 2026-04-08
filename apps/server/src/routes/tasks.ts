@@ -18,6 +18,7 @@ import {
   requireTaskCapabilityAccess,
   requireTaskExecutionConfigAccess
 } from "../lib/task-capability-access.js";
+import { canUserAccessRepository } from "../lib/repository-access.js";
 import { canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
 
 const taskStartModeSchema = z.enum(["run_now", "prepare_workspace", "idle"]);
@@ -514,7 +515,7 @@ export const registerTaskRoutes = (
     }
 
     const repository = await deps.repositoryStore.getRepository(parsed.data.repoId);
-    if (!repository) {
+    if (!repository || !canUserAccessRepository(request.auth?.user, repository)) {
       return reply.status(404).send({ message: "Repository not found" });
     }
 
