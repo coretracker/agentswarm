@@ -56,7 +56,8 @@ import {
   Tabs,
   Tooltip,
   Typography,
-  message
+  message,
+  theme as antTheme
 } from "antd";
 import { ArrowRightOutlined, CopyOutlined, EditOutlined, LoadingOutlined, MoreOutlined, PushpinOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -469,6 +470,7 @@ function ExpandableMessageContent({ children, fadeColor }: { children: ReactNode
 
 export function TaskDetailPage({ taskId }: { taskId: string }) {
   const router = useRouter();
+  const { token } = antTheme.useToken();
   const { can, canAll, session } = useAuth();
   const { settings } = useSettings();
   const { task, setTask, loading } = useTask(taskId);
@@ -1596,10 +1598,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const composerClearDisabled = interactiveTerminalRunning || !composerHasChangesToClear;
   const chatSubmitDisabled = chatDisabled || (selectedChatActionRequiresPrompt && chatInput.trim().length === 0);
   const chatSubmitLabel = selectedChatAction === "comment" ? "Add Comment" : "Start";
+  const handleClearSelectedContext = () => {
+    setSelectedContextEntryKeys([]);
+  };
   const handleConfirmClearComposer = () => {
     setSelectedSnippetId(null);
     setChatInput("");
-    setSelectedContextEntryKeys([]);
+    handleClearSelectedContext();
     if (task) {
       const nextProvider = currentTaskProvider;
       setProviderInput(nextProvider);
@@ -2428,14 +2433,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     <Card
       size="small"
       bodyStyle={{ padding: "12px 14px" }}
-      style={{ background: "rgba(107,143,163,0.06)", borderColor: "rgba(107,143,163,0.18)" }}
+      style={{ background: token.colorInfoBg, borderColor: token.colorInfoBorder }}
     >
       <Flex vertical gap={10}>
         <Flex justify="space-between" align="center" gap={12} wrap="wrap">
           <Typography.Text strong>Selected context</Typography.Text>
-          <Typography.Text type="secondary">
-            {selectedContextEntries.length}/{TASK_CONTEXT_ENTRY_MAX_COUNT} items · {selectedContextSize.toLocaleString()}/{TASK_CONTEXT_TOTAL_MAX_CHARS.toLocaleString()} chars
-          </Typography.Text>
+          <Space size={8} wrap>
+            <Typography.Text type="secondary">
+              {selectedContextEntries.length}/{TASK_CONTEXT_ENTRY_MAX_COUNT} items · {selectedContextSize.toLocaleString()}/
+              {TASK_CONTEXT_TOTAL_MAX_CHARS.toLocaleString()} chars
+            </Typography.Text>
+            <Button size="small" onClick={handleClearSelectedContext}>
+              Clear
+            </Button>
+          </Space>
         </Flex>
         <Space direction="vertical" size={8} style={{ width: "100%" }}>
           {selectedContextEntries.map((contextEntry) => (
@@ -2448,8 +2459,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 width: "100%",
                 padding: "10px 12px",
                 borderRadius: 8,
-                border: "1px solid var(--ant-colorBorderSecondary, rgba(5, 5, 5, 0.06))",
-                background: "#fff"
+                border: `1px solid ${token.colorBorderSecondary}`,
+                background: token.colorBgContainer
               }}
             >
               <Flex vertical gap={2} style={{ minWidth: 0 }}>
@@ -2654,9 +2665,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                         : updatedTask
                     );
                     setChatInput("");
-                    if (selectedChatAction !== "comment") {
-                      setSelectedContextEntryKeys([]);
-                    }
                     messageApi.success(
                       selectedChatAction === "comment"
                         ? "Comment added to history"
@@ -2675,7 +2683,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               </Button>
               <Popconfirm
                 title="Clear composer?"
-                description="This will clear the message input and reset provider and model settings to this task's defaults."
+                description="This will clear the message input, selected context, and reset provider and model settings to this task's defaults."
                 okText="Clear"
                 cancelText="Cancel"
                 okButtonProps={{ danger: true }}
@@ -3030,12 +3038,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     const selected = selectedContextEntryKeys.includes(entryKey);
     return (
       <span onClick={(event) => event.stopPropagation()}>
-        <Button
-          size="small"
-          type="text"
-          disabled={!canEditTask || isArchived}
-          onClick={() => handleToggleHistoryContext(entryKey)}
-        >
+        <Button size="small" disabled={!canEditTask || isArchived} onClick={() => handleToggleHistoryContext(entryKey)}>
           {selected ? "Remove from context" : "Add to context"}
         </Button>
       </span>
@@ -3060,9 +3063,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   <Tag color="default" style={{ marginInlineEnd: 0 }}>
                     system
                   </Tag>
+                  {renderHistoryContextToggleButton(entryKey)}
                   <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
                 </Space>
-                {renderHistoryContextToggleButton(entryKey)}
               </Flex>
               <Typography.Text style={{ whiteSpace: "pre-wrap" }}>{entryMessage.content}</Typography.Text>
             </Flex>
@@ -3098,16 +3101,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                     {entryMessage.role}
                   </Tag>
                   {entryMessage.action ? <Tag style={{ marginInlineEnd: 0 }}>{taskActionLabel[entryMessage.action]}</Tag> : null}
+                  {renderHistoryContextToggleButton(entryKey)}
                   <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
                 </Space>
-                <Space size={4} wrap>
-                  {renderHistoryContextToggleButton(entryKey)}
-                  {canEditCommentMessage ? (
-                    <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openCommentEditModal(entryMessage)}>
-                      Edit
-                    </Button>
-                  ) : null}
-                </Space>
+                {canEditCommentMessage ? (
+                  <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openCommentEditModal(entryMessage)}>
+                    Edit
+                  </Button>
+                ) : null}
               </Flex>
               <div>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
@@ -3121,11 +3122,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 <Space wrap size={8}>
                   <Tag color="blue">assistant</Tag>
                   {entryMessage.action ? <Tag>{taskActionLabel[entryMessage.action]}</Tag> : null}
-                </Space>
-                <Space size={4} wrap>
-                  <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
                   {renderHistoryContextToggleButton(entryKey)}
                 </Space>
+                <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
               </Flex>
               <ExpandableMessageContent fadeColor={messageColor}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
@@ -3149,13 +3148,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Tag>{changeProposalSourceLabel(proposal.sourceType)}</Tag>
               <Tag color={checkpointStatusColor(proposal.status)}>{checkpointStatusLabel(proposal.status)}</Tag>
               {proposal.diffTruncated ? <Tag>Truncated preview</Tag> : null}
-            </Space>
-            <Space size={4} wrap>
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {dayjs(proposal.createdAt).format("YYYY-MM-DD HH:mm:ss")}
-              </Typography.Text>
               {renderHistoryContextToggleButton(entryKey)}
             </Space>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {dayjs(proposal.createdAt).format("YYYY-MM-DD HH:mm:ss")}
+            </Typography.Text>
           </Flex>
           {renderCheckpointDiffSection(proposal, entryKey)}
         </Card>
@@ -3189,13 +3186,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Tag color={runStatusColor[run.status]}>{run.status}</Tag>
               <Tag>{taskActionLabel[run.action]}</Tag>
               <Tag>{getAgentProviderLabel(run.provider)}</Tag>
-            </Space>
-            <Space size={4} wrap>
-              <Typography.Text type="secondary">
-                {dayjs(run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(run.startedAt, run.finishedAt)}
-              </Typography.Text>
               {renderHistoryContextToggleButton(entryKey)}
             </Space>
+            <Typography.Text type="secondary">
+              {dayjs(run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(run.startedAt, run.finishedAt)}
+            </Typography.Text>
           </Flex>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
             Branch: <Typography.Text code>{run.branchName ?? "(pending)"}</Typography.Text>
@@ -3239,15 +3234,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Tag>{getAgentProviderLabel(entry.run.provider)}</Tag>
             {entry.proposal ? <Tag color={checkpointStatusColor(entry.proposal.status)}>{checkpointStatusLabel(entry.proposal.status)}</Tag> : null}
             {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
+            {renderHistoryContextToggleButton(entryKey)}
           </Space>
         }
         extra={
-          <Space size={4} wrap>
-            <Typography.Text type="secondary">
-              {dayjs(entry.run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(entry.run.startedAt, entry.run.finishedAt)}
-            </Typography.Text>
-            {renderHistoryContextToggleButton(entryKey)}
-          </Space>
+          <Typography.Text type="secondary">
+            {dayjs(entry.run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(entry.run.startedAt, entry.run.finishedAt)}
+          </Typography.Text>
         }
       >
         <Flex vertical gap="middle">
@@ -3310,13 +3303,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Tag color="green">Terminal</Tag>
             {terminalStatusTag ? <Tag color={terminalStatusTag.color}>{terminalStatusTag.label}</Tag> : null}
             {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
+            {renderHistoryContextToggleButton(entryKey)}
           </Space>
         }
         extra={
-          <Space size={4} wrap>
-            <Typography.Text type="secondary">{dayjs(entry.startMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
-            {renderHistoryContextToggleButton(entryKey)}
-          </Space>
+          <Typography.Text type="secondary">{dayjs(entry.startMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
         }
       >
         <Flex vertical gap="small">
