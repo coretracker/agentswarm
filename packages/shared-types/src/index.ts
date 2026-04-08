@@ -409,6 +409,8 @@ export interface TaskMessage {
   role: TaskMessageRole;
   content: string;
   action: TaskMessageAction | null;
+  /** Optional saved context entries that were attached when the user submitted this message. */
+  contextEntries?: TaskContextEntry[];
   /** Present for interactive terminal lifecycle messages so history can address the terminal session. */
   sessionId?: string | null;
   createdAt: string;

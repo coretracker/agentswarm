@@ -778,7 +778,8 @@ export const registerTaskRoutes = (
     await deps.taskStore.appendMessage(task.id, {
       role: "user",
       action,
-      content: parsed.data.content
+      content: parsed.data.content,
+      contextEntries: parsed.data.contextEntries ?? []
     });
 
     if (action === "comment") {

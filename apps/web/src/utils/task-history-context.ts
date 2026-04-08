@@ -102,6 +102,14 @@ function joinSections(sections: Array<{ title: string; content: string | null | 
     .join("\n\n");
 }
 
+function buildNestedContextSummary(entries: TaskContextEntry[] | undefined): string | null {
+  if (!entries || entries.length === 0) {
+    return null;
+  }
+
+  return entries.map((entry) => `${entry.label}:\n${entry.content}`).join("\n\n");
+}
+
 function finalizeContext(key: string, kind: TaskContextEntry["kind"], label: string, content: string): SerializedTaskHistoryContextEntry {
   const normalizedContent = truncate(content.trim(), TASK_CONTEXT_ENTRY_MAX_CONTENT_LENGTH);
   return {
@@ -123,8 +131,21 @@ function serializeMessageEntry(key: string, message: TaskMessage): SerializedTas
     labelParts.push(titleCase(message.action));
   }
   labelParts.push("message");
+  const nestedContextSummary = buildNestedContextSummary(message.contextEntries);
+  const content = nestedContextSummary
+    ? joinSections([
+        {
+          title: "Message",
+          content: message.content
+        },
+        {
+          title: "Additional context",
+          content: nestedContextSummary
+        }
+      ])
+    : message.content;
 
-  return finalizeContext(key, "message", `${labelParts.join(" ")} · ${toUtcLabel(message.createdAt)}`, message.content);
+  return finalizeContext(key, "message", `${labelParts.join(" ")} · ${toUtcLabel(message.createdAt)}`, content);
 }
 
 function serializeRunEntry(key: string, run: TaskRun): SerializedTaskHistoryContextEntry {

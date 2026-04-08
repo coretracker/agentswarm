@@ -17,6 +17,7 @@ import {
   TASK_CONTEXT_TOTAL_MAX_CHARS,
   type Task,
   type TaskAction,
+  type TaskContextEntry,
   type TaskMessageAction,
   type TaskMessage,
   type TaskLiveDiff,
@@ -97,6 +98,20 @@ const taskActionLabel: Record<ComposerAction | TaskAction, string> = {
   ask: "Ask",
   comment: "Comment",
   interactive: "Interactive"
+};
+
+const taskContextKindLabel: Record<TaskContextEntry["kind"], string> = {
+  message: "Message",
+  run: "Run",
+  proposal: "Checkpoint",
+  terminal_session: "Terminal"
+};
+
+const taskContextKindColor: Record<TaskContextEntry["kind"], string> = {
+  message: "default",
+  run: "blue",
+  proposal: "gold",
+  terminal_session: "green"
 };
 
 function getAllowedComposerActions(
@@ -3045,6 +3060,52 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   };
 
+  const renderPersistedMessageContext = (message: TaskMessage, collapseKey: string) => {
+    const contextEntries = message.contextEntries ?? [];
+    if (message.role !== "user" || contextEntries.length === 0) {
+      return null;
+    }
+
+    return (
+      <Collapse
+        size="small"
+        ghost
+        items={[
+          {
+            key: `${collapseKey}-context`,
+            label: `Additional context (${contextEntries.length})`,
+            children: (
+              <Flex vertical gap={8}>
+                {contextEntries.map((contextEntry, index) => (
+                  <Card
+                    key={`${collapseKey}-context-${index}`}
+                    size="small"
+                    bodyStyle={{
+                      padding: "10px 12px",
+                      background: "rgba(107,143,163,0.06)"
+                    }}
+                  >
+                    <Flex vertical gap={8}>
+                      <Space wrap size={8}>
+                        <Tag color={taskContextKindColor[contextEntry.kind]} style={{ marginInlineEnd: 0 }}>
+                          {taskContextKindLabel[contextEntry.kind]}
+                        </Tag>
+                        <Typography.Text strong>{contextEntry.label}</Typography.Text>
+                      </Space>
+                      <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}>
+                        {contextEntry.content}
+                      </Typography.Paragraph>
+                    </Flex>
+                  </Card>
+                ))}
+              </Flex>
+            )
+          }
+        ]}
+      />
+    );
+  };
+
   const renderRawMessageEntry = (entryKey: string, entryMessage: TaskMessage) => {
     if (entryMessage.role === "system") {
       return (
@@ -3115,6 +3176,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   {entryMessage.content}
                 </ReactMarkdown>
               </div>
+              {renderPersistedMessageContext(entryMessage, entryKey)}
             </Flex>
           ) : (
             <>
@@ -3249,6 +3311,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               {promptText}
             </ReactMarkdown>
           </div>
+          {entry.promptMessage ? renderPersistedMessageContext(entry.promptMessage, entryKey) : null}
           <Collapse
             size="small"
             defaultActiveKey={[`${entryKey}-summary`]}

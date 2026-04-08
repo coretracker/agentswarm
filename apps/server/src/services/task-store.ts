@@ -94,6 +94,14 @@ const normalizeLegacyTaskAction = (action: string | null | undefined): TaskActio
   return action === "ask" ? "ask" : "build";
 };
 
+const normalizeTaskMessageAction = (action: string | null | undefined): TaskMessage["action"] => {
+  if (action === "build" || action === "ask" || action === "comment") {
+    return action;
+  }
+
+  return null;
+};
+
 const normalizeTaskContextEntry = (value: unknown): TaskContextEntry | null => {
   if (!value || typeof value !== "object") {
     return null;
@@ -112,6 +120,21 @@ const normalizeTaskContextEntry = (value: unknown): TaskContextEntry | null => {
     kind: entry.kind,
     label: entry.label,
     content: entry.content
+  };
+};
+
+const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
+  const rawContextEntries = (message as TaskMessage & { contextEntries?: unknown }).contextEntries;
+  const contextEntries = Array.isArray(rawContextEntries)
+    ? rawContextEntries.map(normalizeTaskContextEntry).filter((entry): entry is TaskContextEntry => entry !== null)
+    : [];
+  const sessionId = typeof message.sessionId === "string" && message.sessionId.trim().length > 0 ? message.sessionId : null;
+
+  return {
+    ...message,
+    action: normalizeTaskMessageAction(message.action),
+    ...(contextEntries.length > 0 ? { contextEntries } : {}),
+    ...(sessionId !== null || "sessionId" in message ? { sessionId } : {})
   };
 };
 
@@ -538,7 +561,7 @@ export class TaskStore {
     return rawMessages.flatMap((raw) => {
       try {
         const parsed = JSON.parse(raw) as TaskMessage;
-        return parsed;
+        return normalizeTaskMessage(parsed);
       } catch {
         return [];
       }
@@ -649,6 +672,7 @@ export class TaskStore {
       role: TaskMessage["role"];
       content: string;
       action?: TaskMessage["action"];
+      contextEntries?: TaskContextEntry[];
       sessionId?: string | null;
     }
   ): Promise<TaskMessage | null> {
@@ -657,13 +681,18 @@ export class TaskStore {
       return null;
     }
 
+    const contextEntries = (input.contextEntries ?? [])
+      .map((entry) => normalizeTaskContextEntry(entry))
+      .filter((entry): entry is TaskContextEntry => entry !== null);
+
     const message: TaskMessage = {
       id: nanoid(),
       taskId,
       role: input.role,
       content: input.content,
       action: input.action ?? null,
-      sessionId: input.sessionId ?? null,
+      ...(contextEntries.length > 0 ? { contextEntries } : {}),
+      ...(input.sessionId !== undefined ? { sessionId: input.sessionId ?? null } : {}),
       createdAt: nowIso()
     };
 
@@ -693,7 +722,7 @@ export class TaskStore {
     let updatedMessage: TaskMessage | null = null;
     const nextRawMessages = rawMessages.map((raw) => {
       try {
-        const message = JSON.parse(raw) as TaskMessage;
+        const message = normalizeTaskMessage(JSON.parse(raw) as TaskMessage);
         if (message.id !== messageId) {
           return raw;
         }

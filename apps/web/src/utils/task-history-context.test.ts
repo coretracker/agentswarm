@@ -154,3 +154,37 @@ test("truncates oversized history content blocks to the configured maximum", () 
   assert.match(serialized.entry.content, /\.\.\.$/);
 });
 
+test("serializes persisted additional context on user messages", () => {
+  const message = createMessage({
+    id: "m1",
+    createdAt: "2026-03-24T16:00:00.000Z",
+    role: "user",
+    action: "ask",
+    content: "What changed since the last run?",
+    contextEntries: [
+      {
+        kind: "run",
+        label: "Build run · Succeeded · 2026-03-24 15:45:00 UTC",
+        content: "Summary:\nImplemented the previous fix."
+      },
+      {
+        kind: "proposal",
+        label: "Checkpoint · Pending · 2026-03-24 15:46:00 UTC",
+        content: "Diff stat: 2 files changed, 8 insertions(+)"
+      }
+    ]
+  });
+
+  const [entry] = buildTaskHistoryEntries({
+    messages: [message],
+    runs: [],
+    proposals: []
+  });
+
+  assert.ok(entry);
+  const serialized = serializeTaskHistoryContextEntry(entry!);
+  assert.match(serialized.entry.content, /Message:\nWhat changed since the last run\?/);
+  assert.match(serialized.entry.content, /Additional context:\nBuild run · Succeeded · 2026-03-24 15:45:00 UTC:/);
+  assert.match(serialized.entry.content, /Summary:\nImplemented the previous fix\./);
+  assert.match(serialized.entry.content, /Checkpoint · Pending · 2026-03-24 15:46:00 UTC:/);
+});
