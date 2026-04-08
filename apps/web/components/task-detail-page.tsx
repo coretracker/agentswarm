@@ -3066,6 +3066,23 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return null;
     }
 
+    const contextCollapseItems = contextEntries.map((contextEntry, index) => ({
+      key: `${collapseKey}-context-${index}`,
+      label: (
+        <Space wrap size={8}>
+          <Tag color={taskContextKindColor[contextEntry.kind]} style={{ marginInlineEnd: 0 }}>
+            {taskContextKindLabel[contextEntry.kind]}
+          </Tag>
+          <Typography.Text strong>{contextEntry.label}</Typography.Text>
+        </Space>
+      ),
+      children: (
+        <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}>
+          {contextEntry.content}
+        </Typography.Paragraph>
+      )
+    }));
+
     return (
       <Collapse
         size="small"
@@ -3074,30 +3091,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             key: `${collapseKey}-context`,
             label: `Additional context (${contextEntries.length})`,
             children: (
-              <Flex vertical gap={8}>
-                {contextEntries.map((contextEntry, index) => (
-                  <Card
-                    key={`${collapseKey}-context-${index}`}
-                    size="small"
-                    bodyStyle={{
-                      padding: "10px 12px",
-                      background: "rgba(107,143,163,0.06)"
-                    }}
-                  >
-                    <Flex vertical gap={8}>
-                      <Space wrap size={8}>
-                        <Tag color={taskContextKindColor[contextEntry.kind]} style={{ marginInlineEnd: 0 }}>
-                          {taskContextKindLabel[contextEntry.kind]}
-                        </Tag>
-                        <Typography.Text strong>{contextEntry.label}</Typography.Text>
-                      </Space>
-                      <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}>
-                        {contextEntry.content}
-                      </Typography.Paragraph>
-                    </Flex>
-                  </Card>
-                ))}
-              </Flex>
+              <Collapse size="small" defaultActiveKey={[]} items={contextCollapseItems} />
             )
           }
         ]}
