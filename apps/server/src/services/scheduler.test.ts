@@ -3,9 +3,9 @@ import { describe, it } from "node:test";
 import { SchedulerService } from "./scheduler.js";
 
 describe("SchedulerService.triggerAction", () => {
-  it("allows open tasks to queue a new action", async () => {
+  it("allows open tasks to queue a new action with structured context", async () => {
     let markedQueued = false;
-    let enqueued = false;
+    let enqueuedInput: unknown = null;
     const taskStore = {
       getTask: async () => ({
         id: "task-1",
@@ -16,8 +16,8 @@ describe("SchedulerService.triggerAction", () => {
       markQueuedForAction: async () => {
         markedQueued = true;
       },
-      enqueueTask: async () => {
-        enqueued = true;
+      enqueueTask: async (_taskId: string, _reason: string, _action: string, input?: unknown) => {
+        enqueuedInput = input ?? null;
       },
       dequeueTask: async () => null,
       patchTask: async () => null
@@ -29,11 +29,29 @@ describe("SchedulerService.triggerAction", () => {
     };
 
     const scheduler = new SchedulerService(taskStore as never, settingsStore as never, {} as never);
-    const accepted = await scheduler.triggerAction("task-1", "build", "next step");
+    const accepted = await scheduler.triggerAction("task-1", "build", {
+      content: "next step",
+      contextEntries: [
+        {
+          kind: "run",
+          label: "Build run · Succeeded · 2026-04-01 10:00:00 UTC",
+          content: "Summary:\nImplemented the previous step."
+        }
+      ]
+    });
 
     assert.equal(accepted, true);
     assert.equal(markedQueued, true);
-    assert.equal(enqueued, true);
+    assert.deepEqual(enqueuedInput, {
+      content: "next step",
+      contextEntries: [
+        {
+          kind: "run",
+          label: "Build run · Succeeded · 2026-04-01 10:00:00 UTC",
+          content: "Summary:\nImplemented the previous step."
+        }
+      ]
+    });
   });
 
   it("keeps pending checkpoints blocking new runs in the status-only phase", async () => {

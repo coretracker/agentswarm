@@ -12,6 +12,8 @@ import {
   type McpServerConfig,
   type Task,
   type TaskChangeProposal,
+  type TaskContextEntry,
+  type TaskExecutionInput,
   type TaskLiveDiff,
   type TaskAction,
   type TaskRun,
@@ -79,7 +81,8 @@ interface RuntimeManifest {
   prompt: string;
   executionSummary: string;
   repoProfile: string;
-  input: string;
+  content: string;
+  contextEntries: TaskContextEntry[];
   baseBranch: string;
   repoDefaultBranch: string;
   branchStrategy: Task["branchStrategy"];
@@ -3113,7 +3116,7 @@ esac
     return (await this.taskStore.getTask(workingTask.id)) ?? nextTask;
   }
 
-  async runTask(task: Task, action: TaskAction, input?: string): Promise<void> {
+  async runTask(task: Task, action: TaskAction, input?: TaskExecutionInput | string): Promise<void> {
     this.cancelRequestedTaskIds.delete(task.id);
     const [settings, runtimeCredentials] = await Promise.all([
       this.settingsStore.getSettings(),
@@ -3130,7 +3133,7 @@ esac
         ? task.baseBranch
         : task.branchName ?? makeBranchName(task.title, task.id, settings.branchPrefix);
     let runId: string | null = null;
-    let executionId: string | null = null;
+    let executionId = nanoid();
     let workspace: WorkspacePreparation | null = null;
 
     try {
@@ -3142,7 +3145,7 @@ esac
         branchName
       });
       runId = run?.id ?? null;
-      executionId = runId ?? nanoid();
+      executionId = runId ?? executionId;
       const payloadDir = this.resolveRuntimePayloadDir(task.id, executionId);
       const appendRunLog = (line: string) => this.taskStore.appendLogForRun(task.id, line, runId);
       await this.syncTaskStatusForRunningRuns(task.id, {
@@ -3192,6 +3195,16 @@ esac
       const resultJsonPath = path.join(payloadDir, "result.json");
       const resolvedModel = providerDefinition.getResolvedModel(task.modelOverride, task.providerProfile);
       const resolvedProfileSettings = providerDefinition.getResolvedProfileSettings(task.providerProfile, resolvedModel);
+      const normalizedInput =
+        typeof input === "string"
+          ? {
+              content: input,
+              contextEntries: [] as TaskContextEntry[]
+            }
+          : {
+              content: input?.content ?? "",
+              contextEntries: input?.contextEntries ?? []
+            };
       const manifest: RuntimeManifest = {
         taskId: task.id,
         provider: task.provider,
@@ -3201,7 +3214,8 @@ esac
         prompt: task.prompt,
         executionSummary: task.executionSummary,
         repoProfile,
-        input: input ?? "",
+        content: normalizedInput.content,
+        contextEntries: normalizedInput.contextEntries,
         baseBranch: task.baseBranch,
         repoDefaultBranch: task.repoDefaultBranch,
         branchStrategy: task.branchStrategy,

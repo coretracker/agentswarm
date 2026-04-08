@@ -9,6 +9,8 @@ import {
   type Repository,
   type Task,
   type TaskAction,
+  type TaskContextEntry,
+  type TaskExecutionInput,
   type TaskMessage,
   type TaskReasoningEffort,
   type TaskRun,
@@ -92,11 +94,57 @@ const normalizeLegacyTaskAction = (action: string | null | undefined): TaskActio
   return action === "ask" ? "ask" : "build";
 };
 
+const normalizeTaskContextEntry = (value: unknown): TaskContextEntry | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const entry = value as Partial<TaskContextEntry>;
+  if (
+    (entry.kind !== "message" && entry.kind !== "run" && entry.kind !== "proposal" && entry.kind !== "terminal_session") ||
+    typeof entry.label !== "string" ||
+    typeof entry.content !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    kind: entry.kind,
+    label: entry.label,
+    content: entry.content
+  };
+};
+
+const normalizeQueueEntryInput = (input: unknown): TaskExecutionInput | undefined => {
+  if (typeof input === "string") {
+    return {
+      content: input,
+      contextEntries: []
+    };
+  }
+
+  if (!input || typeof input !== "object") {
+    return undefined;
+  }
+
+  const value = input as Partial<TaskExecutionInput> & { contextEntries?: unknown };
+  if (typeof value.content !== "string") {
+    return undefined;
+  }
+
+  const contextEntries = Array.isArray(value.contextEntries) ? value.contextEntries.map(normalizeTaskContextEntry).filter((entry): entry is TaskContextEntry => entry !== null) : [];
+
+  return {
+    content: value.content,
+    contextEntries
+  };
+};
+
 export interface QueueEntry {
   taskId: string;
   reason: QueueReason;
   action: TaskAction;
-  input?: string;
+  input?: TaskExecutionInput;
 }
 
 export interface ListTasksOptions {
@@ -701,7 +749,7 @@ export class TaskStore {
     return this.publishTaskEvent("task:updated", next);
   }
 
-  async enqueueTask(taskId: string, reason: QueueReason, action: TaskAction, input?: string): Promise<boolean> {
+  async enqueueTask(taskId: string, reason: QueueReason, action: TaskAction, input?: TaskExecutionInput | string): Promise<boolean> {
     const task = await this.getStoredTask(taskId);
     if (!task || (isQueuedTaskStatus(task.status) && task.enqueued)) {
       return false;
@@ -715,7 +763,7 @@ export class TaskStore {
       updatedAt: nowIso()
     };
 
-    const queueEntry: QueueEntry = { taskId, reason, action, input };
+    const queueEntry: QueueEntry = { taskId, reason, action, input: normalizeQueueEntryInput(input) };
 
     await this.redis
       .multi()
@@ -735,12 +783,11 @@ export class TaskStore {
 
     try {
       const parsed = JSON.parse(raw) as QueueEntry;
-      if (
-        typeof parsed.taskId === "string" &&
-        (parsed.reason === "manual" || parsed.reason === "auto") &&
-        (parsed.action === "build" || parsed.action === "ask")
-      ) {
-        return parsed;
+      if (typeof parsed.taskId === "string" && (parsed.reason === "manual" || parsed.reason === "auto") && (parsed.action === "build" || parsed.action === "ask")) {
+        return {
+          ...parsed,
+          input: normalizeQueueEntryInput(parsed.input)
+        };
       }
       return null;
     } catch {

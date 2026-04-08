@@ -1,7 +1,15 @@
-import { isActiveTaskStatus, isQueuedTaskStatus, type TaskAction } from "@agentswarm/shared-types";
+import { isActiveTaskStatus, isQueuedTaskStatus, type TaskAction, type TaskExecutionInput } from "@agentswarm/shared-types";
 import { TaskStore, type QueueEntry } from "./task-store.js";
 import { SettingsStore } from "./settings-store.js";
 import { CancelledTaskError, SpawnerService } from "./spawner.js";
+
+const normalizeExecutionInput = (input?: TaskExecutionInput | string): TaskExecutionInput | undefined =>
+  typeof input === "string"
+    ? {
+        content: input,
+        contextEntries: []
+      }
+    : input;
 
 export class SchedulerService {
   private activeExecutionCount = 0;
@@ -42,7 +50,7 @@ export class SchedulerService {
     return this.activeExecutionCount < settings.maxAgents;
   }
 
-  async triggerAction(taskId: string, action: TaskAction, input?: string): Promise<boolean> {
+  async triggerAction(taskId: string, action: TaskAction, input?: TaskExecutionInput | string): Promise<boolean> {
     const task = await this.taskStore.getTask(taskId);
     if (!task) {
       return false;
@@ -68,7 +76,7 @@ export class SchedulerService {
       }
 
       this.activeExecutionCount += 1;
-      void this.executeTask({ taskId, reason: "manual", action, input }, false);
+      void this.executeTask({ taskId, reason: "manual", action, input: normalizeExecutionInput(input) }, false);
       return true;
     }
 

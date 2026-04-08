@@ -13,6 +13,8 @@ import {
   getModelsForProvider,
   isActiveTaskStatus,
   isTaskWorking,
+  TASK_CONTEXT_ENTRY_MAX_COUNT,
+  TASK_CONTEXT_TOTAL_MAX_CHARS,
   type Task,
   type TaskAction,
   type TaskMessageAction,
@@ -72,6 +74,7 @@ import { useTaskChangeProposals } from "../src/hooks/useTaskChangeProposals";
 import { useSettings } from "../src/hooks/useSettings";
 import { isImageDiffPath, normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
 import { insertSnippetContent } from "../src/utils/snippets";
+import { serializeTaskHistoryContextEntry } from "../src/utils/task-history-context";
 import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
@@ -489,6 +492,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [diffBranchesLoading, setDiffBranchesLoading] = useState(false);
   const [followUpForm] = Form.useForm();
   const [chatInput, setChatInput] = useState("");
+  const [selectedContextEntryKeys, setSelectedContextEntryKeys] = useState<string[]>([]);
   const [providerInput, setProviderInput] = useState<AgentProvider>("codex");
   const [providerProfileInput, setProviderProfileInput] = useState<ProviderProfile>("high");
   const [modelInput, setModelInput] = useState<string>("gpt-5.4");
@@ -1472,7 +1476,29 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     () => chatTimeline,
     [chatTimeline]
   );
+  const serializedContextEntriesByKey = useMemo(
+    () => new Map(historicalChatTimeline.map((entry) => {
+      const serialized = serializeTaskHistoryContextEntry(entry);
+      return [serialized.key, serialized] as const;
+    })),
+    [historicalChatTimeline]
+  );
+  const selectedContextEntries = useMemo(
+    () =>
+      selectedContextEntryKeys
+        .map((key) => serializedContextEntriesByKey.get(key) ?? null)
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null),
+    [selectedContextEntryKeys, serializedContextEntriesByKey]
+  );
+  const selectedContextSize = useMemo(
+    () => selectedContextEntries.reduce((sum, entry) => sum + entry.size, 0),
+    [selectedContextEntries]
+  );
   const hasActiveTerminalHistoryEntry = activeTerminalHistoryEntry !== null;
+
+  useEffect(() => {
+    setSelectedContextEntryKeys((current) => current.filter((key) => serializedContextEntriesByKey.has(key)));
+  }, [serializedContextEntriesByKey]);
 
   useEffect(() => {
     if (interactiveTerminalRunning || interactiveTerminalResumeAvailable) {
@@ -1521,6 +1547,31 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     followUpForm.setFieldsValue({ title: "", prompt: "" });
     setFollowUpMode(mode);
   };
+  const handleToggleHistoryContext = (entryKey: string) => {
+    const serialized = serializedContextEntriesByKey.get(entryKey);
+    if (!serialized) {
+      return;
+    }
+
+    setSelectedContextEntryKeys((current) => {
+      if (current.includes(entryKey)) {
+        return current.filter((key) => key !== entryKey);
+      }
+
+      if (current.length >= TASK_CONTEXT_ENTRY_MAX_COUNT) {
+        messageApi.error(`You can add up to ${TASK_CONTEXT_ENTRY_MAX_COUNT} history items to context.`);
+        return current;
+      }
+
+      const nextSize = current.reduce((sum, key) => sum + (serializedContextEntriesByKey.get(key)?.size ?? 0), 0) + serialized.size;
+      if (nextSize > TASK_CONTEXT_TOTAL_MAX_CHARS) {
+        messageApi.error(`Selected context is full. Keep it under ${TASK_CONTEXT_TOTAL_MAX_CHARS.toLocaleString()} characters.`);
+        return current;
+      }
+
+      return [...current, entryKey];
+    });
+  };
   const handleInsertSelectedSnippet = () => {
     if (!selectedSnippetId) {
       return;
@@ -1537,6 +1588,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   };
   const composerHasChangesToClear =
     !!selectedSnippetId ||
+    selectedContextEntryKeys.length > 0 ||
     !!chatInput.trim() ||
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
@@ -1547,6 +1599,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const handleConfirmClearComposer = () => {
     setSelectedSnippetId(null);
     setChatInput("");
+    setSelectedContextEntryKeys([]);
     if (task) {
       const nextProvider = currentTaskProvider;
       setProviderInput(nextProvider);
@@ -2371,6 +2424,52 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     </Space>
   ) : null;
 
+  const selectedContextPanel = selectedContextEntries.length > 0 ? (
+    <Card
+      size="small"
+      bodyStyle={{ padding: "12px 14px" }}
+      style={{ background: "rgba(107,143,163,0.06)", borderColor: "rgba(107,143,163,0.18)" }}
+    >
+      <Flex vertical gap={10}>
+        <Flex justify="space-between" align="center" gap={12} wrap="wrap">
+          <Typography.Text strong>Selected context</Typography.Text>
+          <Typography.Text type="secondary">
+            {selectedContextEntries.length}/{TASK_CONTEXT_ENTRY_MAX_COUNT} items · {selectedContextSize.toLocaleString()}/{TASK_CONTEXT_TOTAL_MAX_CHARS.toLocaleString()} chars
+          </Typography.Text>
+        </Flex>
+        <Space direction="vertical" size={8} style={{ width: "100%" }}>
+          {selectedContextEntries.map((contextEntry) => (
+            <Flex
+              key={contextEntry.key}
+              justify="space-between"
+              align="flex-start"
+              gap={12}
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid var(--ant-colorBorderSecondary, rgba(5, 5, 5, 0.06))",
+                background: "#fff"
+              }}
+            >
+              <Flex vertical gap={2} style={{ minWidth: 0 }}>
+                <Typography.Text strong ellipsis={{ tooltip: contextEntry.label }}>
+                  {contextEntry.label}
+                </Typography.Text>
+                <Typography.Text type="secondary" style={{ whiteSpace: "pre-wrap" }}>
+                  {contextEntry.preview}
+                </Typography.Text>
+              </Flex>
+              <Button size="small" type="text" onClick={() => handleToggleHistoryContext(contextEntry.key)}>
+                Remove
+              </Button>
+            </Flex>
+          ))}
+        </Space>
+      </Flex>
+    </Card>
+  ) : null;
+
   const chatComposer = (
     <Flex vertical gap={12}>
       <Input.TextArea
@@ -2381,6 +2480,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         disabled={chatInputDisabled}
         style={{ resize: "none" }}
       />
+      {selectedContextPanel}
       <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
         <Flex align="flex-end" gap={12} wrap="wrap" style={{ flex: "1 1 0", minWidth: 0 }}>
           <div
@@ -2537,9 +2637,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   }
                   setSubmitting("message");
                   try {
+                    const contextEntries =
+                      selectedChatAction === "comment" ? undefined : selectedContextEntries.map((entry) => entry.entry);
                     const updatedTask = await api.createTaskMessage(task.id, {
                       content: chatInput.trim(),
-                      action: selectedChatAction
+                      action: selectedChatAction,
+                      contextEntries
                     });
                     setTask((current) =>
                       current
@@ -2551,6 +2654,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                         : updatedTask
                     );
                     setChatInput("");
+                    if (selectedChatAction !== "comment") {
+                      setSelectedContextEntryKeys([]);
+                    }
                     messageApi.success(
                       selectedChatAction === "comment"
                         ? "Comment added to history"
@@ -2920,6 +3026,22 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     </span>
   );
 
+  const renderHistoryContextToggleButton = (entryKey: string) => {
+    const selected = selectedContextEntryKeys.includes(entryKey);
+    return (
+      <span onClick={(event) => event.stopPropagation()}>
+        <Button
+          size="small"
+          type="text"
+          disabled={!canEditTask || isArchived}
+          onClick={() => handleToggleHistoryContext(entryKey)}
+        >
+          {selected ? "Remove from context" : "Add to context"}
+        </Button>
+      </span>
+    );
+  };
+
   const renderRawMessageEntry = (entryKey: string, entryMessage: TaskMessage) => {
     if (entryMessage.role === "system") {
       return (
@@ -2933,11 +3055,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             style={{ width: "100%" }}
           >
             <Flex vertical gap={4}>
-              <Flex align="baseline" gap={8} wrap="wrap">
-                <Tag color="default" style={{ marginInlineEnd: 0 }}>
-                  system
-                </Tag>
-                <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
+              <Flex justify="space-between" align="flex-start" gap={12} wrap="wrap">
+                <Space wrap size={8}>
+                  <Tag color="default" style={{ marginInlineEnd: 0 }}>
+                    system
+                  </Tag>
+                  <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
+                </Space>
+                {renderHistoryContextToggleButton(entryKey)}
               </Flex>
               <Typography.Text style={{ whiteSpace: "pre-wrap" }}>{entryMessage.content}</Typography.Text>
             </Flex>
@@ -2975,11 +3100,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   {entryMessage.action ? <Tag style={{ marginInlineEnd: 0 }}>{taskActionLabel[entryMessage.action]}</Tag> : null}
                   <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
                 </Space>
-                {canEditCommentMessage ? (
-                  <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openCommentEditModal(entryMessage)}>
-                    Edit
-                  </Button>
-                ) : null}
+                <Space size={4} wrap>
+                  {renderHistoryContextToggleButton(entryKey)}
+                  {canEditCommentMessage ? (
+                    <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openCommentEditModal(entryMessage)}>
+                      Edit
+                    </Button>
+                  ) : null}
+                </Space>
               </Flex>
               <div>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
@@ -2994,7 +3122,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   <Tag color="blue">assistant</Tag>
                   {entryMessage.action ? <Tag>{taskActionLabel[entryMessage.action]}</Tag> : null}
                 </Space>
-                <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
+                <Space size={4} wrap>
+                  <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
+                  {renderHistoryContextToggleButton(entryKey)}
+                </Space>
               </Flex>
               <ExpandableMessageContent fadeColor={messageColor}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
@@ -3019,9 +3150,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Tag color={checkpointStatusColor(proposal.status)}>{checkpointStatusLabel(proposal.status)}</Tag>
               {proposal.diffTruncated ? <Tag>Truncated preview</Tag> : null}
             </Space>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {dayjs(proposal.createdAt).format("YYYY-MM-DD HH:mm:ss")}
-            </Typography.Text>
+            <Space size={4} wrap>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {dayjs(proposal.createdAt).format("YYYY-MM-DD HH:mm:ss")}
+              </Typography.Text>
+              {renderHistoryContextToggleButton(entryKey)}
+            </Space>
           </Flex>
           {renderCheckpointDiffSection(proposal, entryKey)}
         </Card>
@@ -3056,9 +3190,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Tag>{taskActionLabel[run.action]}</Tag>
               <Tag>{getAgentProviderLabel(run.provider)}</Tag>
             </Space>
-            <Typography.Text type="secondary">
-              {dayjs(run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(run.startedAt, run.finishedAt)}
-            </Typography.Text>
+            <Space size={4} wrap>
+              <Typography.Text type="secondary">
+                {dayjs(run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(run.startedAt, run.finishedAt)}
+              </Typography.Text>
+              {renderHistoryContextToggleButton(entryKey)}
+            </Space>
           </Flex>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
             Branch: <Typography.Text code>{run.branchName ?? "(pending)"}</Typography.Text>
@@ -3105,9 +3242,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </Space>
         }
         extra={
-          <Typography.Text type="secondary">
-            {dayjs(entry.run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(entry.run.startedAt, entry.run.finishedAt)}
-          </Typography.Text>
+          <Space size={4} wrap>
+            <Typography.Text type="secondary">
+              {dayjs(entry.run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(entry.run.startedAt, entry.run.finishedAt)}
+            </Typography.Text>
+            {renderHistoryContextToggleButton(entryKey)}
+          </Space>
         }
       >
         <Flex vertical gap="middle">
@@ -3172,7 +3312,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
           </Space>
         }
-        extra={<Typography.Text type="secondary">{dayjs(entry.startMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>}
+        extra={
+          <Space size={4} wrap>
+            <Typography.Text type="secondary">{dayjs(entry.startMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
+            {renderHistoryContextToggleButton(entryKey)}
+          </Space>
+        }
       >
         <Flex vertical gap="small">
           {entry.active ? (

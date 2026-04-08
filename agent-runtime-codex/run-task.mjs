@@ -42,22 +42,48 @@ process.env.GIT_OPTIONAL_LOCKS = "0";
 process.env.HOME = homeDir;
 
 const buildPrompt = () => {
-  const rawInput = typeof manifest.input === "string" && manifest.input.length > 0
-    ? manifest.input
-    : (manifest.prompt ?? "");
+  const rawContent = typeof manifest.content === "string" && manifest.content.trim().length > 0
+    ? manifest.content.trim()
+    : (typeof manifest.prompt === "string" ? manifest.prompt.trim() : "");
+  const contextEntries = Array.isArray(manifest.contextEntries)
+    ? manifest.contextEntries.filter(
+        (entry) =>
+          entry &&
+          typeof entry === "object" &&
+          typeof entry.label === "string" &&
+          typeof entry.content === "string" &&
+          entry.label.trim().length > 0 &&
+          entry.content.trim().length > 0
+      )
+    : [];
 
-  if (rawInput.length === 0) {
+  if (rawContent.length === 0) {
     throw new Error("Task prompt is empty");
   }
+
+  const promptBody = contextEntries.length > 0
+    ? [
+        "Selected task history context:",
+        "",
+        ...contextEntries.flatMap((entry, index) => [
+          `[Context ${index + 1}] ${entry.label.trim()}`,
+          entry.content.trim(),
+          ""
+        ]),
+        "Current user request:",
+        "",
+        rawContent
+      ].join("\n")
+    : rawContent;
 
   if (manifest.action === "ask") {
     return (
       "You are in read-only mode. Answer the user's question using only read-only operations: read files, list directories, search. Do not edit, write, or modify any files. Do not run commands that change the repository.\n\n" +
-      rawInput
+      promptBody
     );
   }
 
-  return rawInput;
+  return promptBody;
 };
 
 await new Promise((resolve, reject) => {

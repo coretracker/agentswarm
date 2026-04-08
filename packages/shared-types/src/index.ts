@@ -76,6 +76,11 @@ export type TaskStatus =
 
 export type TaskAction = "build" | "ask";
 export type TaskMessageAction = TaskAction | "comment";
+export type TaskContextEntryKind = "message" | "run" | "proposal" | "terminal_session";
+export const TASK_CONTEXT_ENTRY_MAX_COUNT = 8;
+export const TASK_CONTEXT_ENTRY_MAX_LABEL_LENGTH = 160;
+export const TASK_CONTEXT_ENTRY_MAX_CONTENT_LENGTH = 2_500;
+export const TASK_CONTEXT_TOTAL_MAX_CHARS = 12_000;
 /** @deprecated Use ProviderProfile instead. Kept for Redis migration in task-store. */
 export type TaskReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type TaskComplexity = "trivial" | "normal" | "complex";
@@ -409,6 +414,17 @@ export interface TaskMessage {
   createdAt: string;
 }
 
+export interface TaskContextEntry {
+  kind: TaskContextEntryKind;
+  label: string;
+  content: string;
+}
+
+export interface TaskExecutionInput {
+  content: string;
+  contextEntries?: TaskContextEntry[];
+}
+
 export interface TaskRun {
   id: string;
   taskId: string;
@@ -650,8 +666,7 @@ export interface UpdateTaskTitleInput {
   title: string;
 }
 
-export interface CreateTaskMessageInput {
-  content: string;
+export interface CreateTaskMessageInput extends TaskExecutionInput {
   action?: TaskMessageAction;
 }
 

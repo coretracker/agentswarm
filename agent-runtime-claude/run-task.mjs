@@ -76,15 +76,39 @@ const resolveClaudeBinary = async (runtimeHome) => {
 };
 
 const buildPrompt = () => {
-  const rawInput = typeof manifest.input === "string" && manifest.input.length > 0
-    ? manifest.input
-    : (manifest.prompt ?? "");
+  const rawContent = typeof manifest.content === "string" && manifest.content.trim().length > 0
+    ? manifest.content.trim()
+    : (typeof manifest.prompt === "string" ? manifest.prompt.trim() : "");
+  const contextEntries = Array.isArray(manifest.contextEntries)
+    ? manifest.contextEntries.filter(
+        (entry) =>
+          entry &&
+          typeof entry === "object" &&
+          typeof entry.label === "string" &&
+          typeof entry.content === "string" &&
+          entry.label.trim().length > 0 &&
+          entry.content.trim().length > 0
+      )
+    : [];
 
-  if (rawInput.length === 0) {
+  if (rawContent.length === 0) {
     throw new Error("Task prompt is empty");
   }
 
-  return rawInput;
+  return contextEntries.length > 0
+    ? [
+        "Selected task history context:",
+        "",
+        ...contextEntries.flatMap((entry, index) => [
+          `[Context ${index + 1}] ${entry.label.trim()}`,
+          entry.content.trim(),
+          ""
+        ]),
+        "Current user request:",
+        "",
+        rawContent
+      ].join("\n")
+    : rawContent;
 };
 
 const mcpTools = providerConfigPath

@@ -1,6 +1,14 @@
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { isActiveTaskStatus, type Task, type TaskAction } from "@agentswarm/shared-types";
+import {
+  isActiveTaskStatus,
+  TASK_CONTEXT_ENTRY_MAX_CONTENT_LENGTH,
+  TASK_CONTEXT_ENTRY_MAX_COUNT,
+  TASK_CONTEXT_ENTRY_MAX_LABEL_LENGTH,
+  TASK_CONTEXT_TOTAL_MAX_CHARS,
+  type Task,
+  type TaskAction
+} from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
@@ -66,10 +74,28 @@ const updateTaskTitleSchema = z.object({
   title: z.string().trim().min(1).max(500)
 });
 
-const createTaskMessageSchema = z.object({
-  content: z.string().trim().min(1),
-  action: z.enum(["build", "ask", "comment"]).optional()
+const taskContextEntrySchema = z.object({
+  kind: z.enum(["message", "run", "proposal", "terminal_session"]),
+  label: z.string().trim().min(1).max(TASK_CONTEXT_ENTRY_MAX_LABEL_LENGTH),
+  content: z.string().trim().min(1).max(TASK_CONTEXT_ENTRY_MAX_CONTENT_LENGTH)
 });
+
+const createTaskMessageSchema = z
+  .object({
+    content: z.string().trim().min(1),
+    action: z.enum(["build", "ask", "comment"]).optional(),
+    contextEntries: z.array(taskContextEntrySchema).max(TASK_CONTEXT_ENTRY_MAX_COUNT).optional()
+  })
+  .superRefine((data, ctx) => {
+    const totalContextChars = (data.contextEntries ?? []).reduce((sum, entry) => sum + entry.label.length + entry.content.length, 0);
+    if (totalContextChars > TASK_CONTEXT_TOTAL_MAX_CHARS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Selected context is too large. Keep it under ${TASK_CONTEXT_TOTAL_MAX_CHARS.toLocaleString()} characters.`,
+        path: ["contextEntries"]
+      });
+    }
+  });
 
 const updateTaskMessageSchema = z.object({
   content: z.string().trim().min(1)
@@ -760,7 +786,10 @@ export const registerTaskRoutes = (
       return reply.send(refreshed);
     }
 
-    const accepted = await deps.scheduler.triggerAction(task.id, action, parsed.data.content);
+    const accepted = await deps.scheduler.triggerAction(task.id, action, {
+      content: parsed.data.content,
+      contextEntries: parsed.data.contextEntries ?? []
+    });
     if (!accepted) {
       return reply.status(409).send({ message: "Task execution could not be started" });
     }
