@@ -3250,24 +3250,24 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
             Branch: <Typography.Text code>{run.branchName ?? "(pending)"}</Typography.Text>
           </Typography.Paragraph>
+          {renderRunErrorNotice(run)}
+          {renderRunLogsCollapse(run)}
           {normalizedRunSummary ? (
             isCollapsibleSummaryRun ? (
               <Collapse
                 size="small"
                 defaultActiveKey={summaryCollapseItems.map((item) => item.key)}
                 items={summaryCollapseItems}
-                style={{ marginBottom: 12 }}
+                style={{ marginTop: 12 }}
               />
             ) : (
-              <div style={{ marginBottom: 12 }}>
+              <div style={{ marginTop: 12 }}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                   {normalizedRunSummary}
                 </ReactMarkdown>
               </div>
             )
           ) : null}
-          {renderRunErrorNotice(run)}
-          {renderRunLogsCollapse(run)}
         </Card>
       </Flex>
     );
@@ -3305,6 +3305,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             </ReactMarkdown>
           </div>
           {entry.promptMessage ? renderPersistedMessageContext(entry.promptMessage, entryKey) : null}
+          {renderRunErrorNotice(entry.run)}
+          {renderRunLogsCollapse(entry.run)}
           <Collapse
             size="small"
             defaultActiveKey={[`${entryKey}-summary`]}
@@ -3327,8 +3329,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               }
             ]}
           />
-          {renderRunErrorNotice(entry.run)}
-          {renderRunLogsCollapse(entry.run)}
           {entry.proposal ? renderCheckpointDiffSection(entry.proposal, entryKey) : null}
         </Flex>
       </Card>
