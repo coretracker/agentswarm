@@ -2,6 +2,11 @@ import { chmod, writeFile } from "node:fs/promises";
 
 let gitAskPassPath: string | null = null;
 
+export interface GitProcessIdentity {
+  name: string;
+  email: string;
+}
+
 export async function ensureGitAskPassScript(): Promise<string> {
   if (gitAskPassPath) {
     return gitAskPassPath;
@@ -28,6 +33,7 @@ export async function buildGitProcessEnv(options: {
   workspacePath?: string | null;
   githubToken?: string | null;
   gitUsername?: string | null;
+  gitIdentity?: GitProcessIdentity | null;
 }): Promise<NodeJS.ProcessEnv> {
   const gitEnv: NodeJS.ProcessEnv = {
     GIT_OPTIONAL_LOCKS: "0"
@@ -40,6 +46,16 @@ export async function buildGitProcessEnv(options: {
     gitEnv.GIT_ASKPASS = await ensureGitAskPassScript();
     gitEnv.GIT_USERNAME = gitUsername;
     gitEnv.GIT_TOKEN = githubToken;
+  }
+
+  const gitIdentity = options.gitIdentity ?? null;
+  const identityName = gitIdentity?.name.trim() ?? "";
+  const identityEmail = gitIdentity?.email.trim() ?? "";
+  if (identityName && identityEmail) {
+    gitEnv.GIT_AUTHOR_NAME = identityName;
+    gitEnv.GIT_AUTHOR_EMAIL = identityEmail;
+    gitEnv.GIT_COMMITTER_NAME = identityName;
+    gitEnv.GIT_COMMITTER_EMAIL = identityEmail;
   }
 
   const workspacePath = options.workspacePath?.trim();

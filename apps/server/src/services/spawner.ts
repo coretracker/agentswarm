@@ -318,13 +318,21 @@ export class SpawnerService {
   private async buildGitEnv(
     args: string[],
     githubToken?: string | null,
-    gitUsername = "x-access-token"
+    gitUsername = "x-access-token",
+    task?: Pick<Task, "ownerUserId">
   ): Promise<NodeJS.ProcessEnv> {
     const workspacePath = args[0] === "-C" && typeof args[1] === "string" && args[1].startsWith("/") ? args[1] : null;
+    const gitIdentity = task
+      ? await resolveTaskGitCommitIdentity(task, this.userStore, {
+          name: env.GIT_USER_NAME,
+          email: env.GIT_USER_EMAIL
+        })
+      : null;
     return buildGitProcessEnv({
       workspacePath,
       githubToken,
-      gitUsername
+      gitUsername,
+      gitIdentity
     });
   }
 
@@ -405,8 +413,13 @@ export class SpawnerService {
     return this.withNamedLock(this.gitTargetLocks, lockKey, run);
   }
 
-  private async gitCommand(args: string[], githubToken?: string | null, gitUsername = "x-access-token"): Promise<void> {
-    const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
+  private async gitCommand(
+    args: string[],
+    githubToken?: string | null,
+    gitUsername = "x-access-token",
+    task?: Pick<Task, "ownerUserId">
+  ): Promise<void> {
+    const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername, task);
     await this.runGitWithRecovery(args, () => this.runCommand("git", args, gitEnv));
   }
 
@@ -446,15 +459,8 @@ export class SpawnerService {
     return this.withNamedLock(this.repoLocks, repoKey, fn);
   }
 
-  private async buildGitCommitArgs(
-    task: Pick<Task, "ownerUserId">,
-    message: string
-  ): Promise<string[]> {
-    const identity = await resolveTaskGitCommitIdentity(task, this.userStore, {
-      name: env.GIT_USER_NAME,
-      email: env.GIT_USER_EMAIL
-    });
-    return ["-c", `user.name=${identity.name}`, "-c", `user.email=${identity.email}`, "commit", "--no-verify", "-m", message];
+  private buildGitCommitArgs(message: string): string[] {
+    return ["commit", "--no-verify", "-m", message];
   }
 
   private async commitWorkspaceChanges(
@@ -464,8 +470,8 @@ export class SpawnerService {
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<void> {
-    const commitArgs = await this.buildGitCommitArgs(task, message);
-    await this.gitCommand(["-C", workspacePath, ...commitArgs], githubToken, gitUsername);
+    const commitArgs = this.buildGitCommitArgs(message);
+    await this.gitCommand(["-C", workspacePath, ...commitArgs], githubToken, gitUsername, task);
   }
 
   private async getWorkspaceGitPaths(workspacePath: string): Promise<Awaited<ReturnType<typeof resolveGitPaths>>> {
@@ -2971,7 +2977,8 @@ export class SpawnerService {
         await this.gitCommand(
           ["-C", mergeWorkspacePath, "merge", "--squash", "--no-commit", remoteBranchRef],
           runtimeCredentials.githubToken,
-          runtimeCredentials.gitUsername
+          runtimeCredentials.gitUsername,
+          task
         );
 
         const custom = options?.commitMessage?.trim();
