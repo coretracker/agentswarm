@@ -62,8 +62,6 @@ export interface TaskInteractiveTerminalStatus {
   activeInteractiveSession?: boolean;
   /** Present when an active session exists for this task. */
   terminalMode?: TaskTerminalSessionMode;
-  /** Server sets this when an active session can be resumed by opening the terminal again. */
-  resumableInteractiveSession?: boolean;
 }
 
 export interface ListTasksOptions {

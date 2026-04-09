@@ -37,7 +37,6 @@ import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
 const INTERACTIVE_WORKSPACE_PATH = "/workspace";
-const INTERACTIVE_RESUME_GRACE_MS = 30 * 60_000;
 const INTERACTIVE_WS_PING_INTERVAL_MS = 25_000;
 const INTERACTIVE_TRANSCRIPT_LIMIT = 2_000_000;
 const INTERACTIVE_EXIT_WAIT_MS = 1_500;
@@ -289,7 +288,6 @@ interface ActiveInteractiveTerminalController {
   sessionId: string;
   mode: TaskTerminalSessionMode;
   hasAttachedClient: () => boolean;
-  canResume: () => boolean;
   attachClient: (ws: WebSocket) => boolean;
   terminate: (reason?: string) => Promise<void>;
 }
@@ -355,8 +353,6 @@ export type TaskInteractiveTerminalStatusPayload = {
   activeInteractiveSession?: boolean;
   /** Present when a terminal session is active for the task. */
   terminalMode?: TaskTerminalSessionMode;
-  /** When true, the browser can reconnect to an existing live terminal session for this task. */
-  resumableInteractiveSession?: boolean;
 };
 
 export async function getTaskInteractiveTerminalStatus(
@@ -388,7 +384,7 @@ export async function getTaskInteractiveTerminalStatus(
     if (!controller) {
       return {
         available: false,
-        reason: `${activeModeLabel} session is active but cannot be resumed from this server process. Use Kill Terminal to clear it.`,
+        reason: `${activeModeLabel} session is active but unavailable from this server process. Use Kill Terminal to clear it.`,
         activeInteractiveSession: true,
         terminalMode: activeInteractiveSession.mode
       };
@@ -407,15 +403,6 @@ export async function getTaskInteractiveTerminalStatus(
         reason: `${activeModeLabel} session is already open in another window.`,
         activeInteractiveSession: true,
         terminalMode: activeInteractiveSession.mode
-      };
-    }
-    if (controller.canResume()) {
-      return {
-        available: true,
-        reason: `Resume the active ${getTaskTerminalSessionSentenceLabel(mode)} session.`,
-        activeInteractiveSession: true,
-        terminalMode: activeInteractiveSession.mode,
-        resumableInteractiveSession: true
       };
     }
     return {
@@ -530,7 +517,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
     if (!controller) {
       sendInteractiveTerminalError(
         ws,
-        `${activeModeLabel} session is active but cannot be resumed from this server process. Use Kill Terminal to clear it.`
+        `${activeModeLabel} session is active but unavailable from this server process. Use Kill Terminal to clear it.`
       );
       return;
     }
@@ -698,7 +685,6 @@ function wireTerminalWebSocket(
   let currentWs: WebSocket | null = null;
   let currentWsCleanup: (() => void) | null = null;
   let cleanupPromise: Promise<void> | null = null;
-  let resumeTimer: ReturnType<typeof setTimeout> | null = null;
   let resolveChildExit: (() => void) | null = null;
   const childExitPromise = new Promise<void>((resolve) => {
     resolveChildExit = resolve;
@@ -743,33 +729,14 @@ function wireTerminalWebSocket(
       .catch(() => undefined);
   };
 
-  const clearResumeTimer = (): void => {
-    if (resumeTimer !== null) {
-      clearTimeout(resumeTimer);
-      resumeTimer = null;
-    }
-  };
-
-  const detachCurrentClient = (reason: string, allowResume: boolean): void => {
+  const detachCurrentClient = (): WebSocket | null => {
     const activeWs = currentWs;
     currentWs = null;
     if (currentWsCleanup) {
       currentWsCleanup();
       currentWsCleanup = null;
     }
-    if (!activeWs || cleanupPromise) {
-      return;
-    }
-    if (!allowResume) {
-      clearResumeTimer();
-      return;
-    }
-    clearResumeTimer();
-    logLifecycle(`${reason}; waiting ${Math.round(INTERACTIVE_RESUME_GRACE_MS / 1000)}s for a reconnect before ending the session.`);
-    resumeTimer = setTimeout(() => {
-      resumeTimer = null;
-      void controller.terminate("Reconnect window expired.");
-    }, INTERACTIVE_RESUME_GRACE_MS);
+    return activeWs;
   };
 
   const cleanupSession = (reason = `${terminalLabel} session terminated.`): Promise<void> => {
@@ -779,9 +746,7 @@ function wireTerminalWebSocket(
 
     cleanupPromise = (async () => {
       unregisterActiveInteractiveTerminalController(proposalCtx.taskId, proposalCtx.sessionId);
-      clearResumeTimer();
-      const activeWs = currentWs;
-      detachCurrentClient(reason, false);
+      const activeWs = detachCurrentClient();
       logLifecycle(reason);
       try {
         if (activeWs && (activeWs.readyState === WebSocket.OPEN || activeWs.readyState === WebSocket.CONNECTING)) {
@@ -811,33 +776,13 @@ function wireTerminalWebSocket(
     sessionId: proposalCtx.sessionId,
     mode: proposalCtx.mode,
     hasAttachedClient: () => currentWs !== null,
-    canResume: () => currentWs === null && cleanupPromise === null,
     attachClient: (nextWs) => {
       if (cleanupPromise || currentWs) {
         return false;
       }
 
-      const isResume = resumeTimer !== null;
-      clearResumeTimer();
       currentWs = nextWs;
       let awaitingPong = false;
-      let pendingResumeReplay = isResume && transcriptBuffer.length > 0;
-
-      const flushResumeReplay = (): boolean => {
-        if (!pendingResumeReplay || nextWs.readyState !== WebSocket.OPEN) {
-          return true;
-        }
-        try {
-          nextWs.send(Buffer.from(transcriptBuffer, "utf8"), { binary: true });
-          pendingResumeReplay = false;
-          return true;
-        } catch (error) {
-          const message = error instanceof Error && error.message.trim() ? error.message.trim() : "could not replay terminal transcript";
-          detachCurrentClient(`Could not replay terminal transcript: ${message}.`, false);
-          void cleanupSession(`Could not replay terminal transcript: ${message}.`);
-          return false;
-        }
-      };
 
       const onMessage = (data: WebSocket.RawData, isBinary: boolean) => {
         if (isBinary) {
@@ -854,9 +799,6 @@ function wireTerminalWebSocket(
                 Math.max(2, Math.min(512, Math.floor(cols))),
                 Math.max(1, Math.min(256, Math.floor(rows))),
               );
-              if (!flushResumeReplay()) {
-                return;
-              }
             }
           }
         } catch {
@@ -865,12 +807,14 @@ function wireTerminalWebSocket(
       };
 
       const onClose = (code: number, reason: Buffer) => {
-        detachCurrentClient(`Client disconnected (code ${code}${reason.length > 0 ? `, reason: ${JSON.stringify(reason.toString("utf8"))}` : ""}).`, true);
+        detachCurrentClient();
+        void cleanupSession(`Client disconnected (code ${code}${reason.length > 0 ? `, reason: ${JSON.stringify(reason.toString("utf8"))}` : ""}).`);
       };
 
       const onError = (error: Error) => {
         const message = error instanceof Error && error.message.trim() ? error.message.trim() : "unknown WebSocket error";
-        detachCurrentClient(`WebSocket error: ${message}.`, true);
+        detachCurrentClient();
+        void cleanupSession(`WebSocket error: ${message}.`);
       };
 
       const onPong = () => {
@@ -882,7 +826,7 @@ function wireTerminalWebSocket(
           return;
         }
         if (awaitingPong) {
-          detachCurrentClient("WebSocket ping timeout.", false);
+          detachCurrentClient();
           void cleanupSession("WebSocket ping timeout.");
           return;
         }
@@ -891,7 +835,7 @@ function wireTerminalWebSocket(
           nextWs.ping();
         } catch (error) {
           const message = error instanceof Error && error.message.trim() ? error.message.trim() : "could not send ping";
-          detachCurrentClient(`WebSocket ping failed: ${message}.`, false);
+          detachCurrentClient();
           void cleanupSession(`WebSocket ping failed: ${message}.`);
         }
       }, INTERACTIVE_WS_PING_INTERVAL_MS);
@@ -908,10 +852,6 @@ function wireTerminalWebSocket(
       nextWs.on("close", onClose);
       nextWs.on("error", onError);
       nextWs.on("pong", onPong);
-
-      if (isResume) {
-        logLifecycle(`Client resumed the live ${terminalSentenceLabel} session.`);
-      }
 
       return true;
     },

@@ -52,7 +52,7 @@ export function TaskInteractiveTerminalView({
   taskId,
   mode = "interactive",
   defaultFontSize = DEFAULT_INTERACTIVE_TERMINAL_FONT_SIZE,
-  disconnectHint = "Refresh this page to try resuming the session if it is still running.",
+  disconnectHint = "Open the terminal again to start a new session.",
   onConnected,
   onDisconnected
 }: TaskInteractiveTerminalViewProps) {

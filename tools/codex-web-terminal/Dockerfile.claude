@@ -8,7 +8,7 @@ ENV CLAUDE_INSTALL_ROOT=/home/claude \
 
 RUN addgroup claude \
   && adduser -D -G claude -h /home/claude claude \
-  && apk add --no-cache git bash openssh-client ripgrep curl libgcc libstdc++ \
+  && apk add --no-cache git bash vim openssh-client ripgrep curl libgcc libstdc++ \
   && mkdir -p "$CLAUDE_INSTALL_ROOT" /workspace \
   && curl -fsSL https://claude.ai/install.sh | bash \
   && test -x "$CLAUDE_INSTALL_ROOT/.local/bin/claude" \

@@ -82,7 +82,7 @@ docker build -f tools/codex-web-terminal/Dockerfile.claude -t local/claude-inter
 
 AgentSwarm does not build those interactive runtime images automatically during `docker compose up`.
 If you already built the Claude image before this change, rebuild it so the container runs as a non-root user required by current Claude Code releases.
-Interactive sessions persist provider state under `task-workspaces/.interactive-homes/{codex|claude}/<task-id>/`, so `.codex` / `.claude` settings and auth survive when you reopen the same task terminal.
+Interactive sessions persist provider state under `task-workspaces/.interactive-homes/{codex|claude}/<task-id>/`, so `.codex` / `.claude` settings and auth survive across future terminal launches for the same task.
 
 The bootstrap password is only applied the **first** time the admin user is created.
 

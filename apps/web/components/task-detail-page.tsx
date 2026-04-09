@@ -1446,11 +1446,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const activeTerminalMode: TaskTerminalSessionMode | null =
     activeTerminalStatus?.terminalMode ??
     (task?.activeInteractiveSession ? (task.activeTerminalSessionMode === "git" ? "git" : "interactive") : null);
-  const interactiveTerminalResumeAvailable =
-    activeTerminalStatus?.terminalMode === "interactive" && activeTerminalStatus.resumableInteractiveSession === true;
   const interactiveTerminalRunning = activeTerminalStatus?.activeInteractiveSession === true;
-  const gitTerminalResumeAvailable =
-    activeTerminalStatus?.terminalMode === "git" && activeTerminalStatus.resumableInteractiveSession === true;
   const gitTerminalAvailable = gitTerminalStatus?.available === true;
   const activeTerminalLabel = activeTerminalMode ? getTaskTerminalSessionLabel(activeTerminalMode) : "Terminal";
   const activeTerminalSentenceLabel = activeTerminalMode ? getTaskTerminalSessionSentenceLabel(activeTerminalMode) : "Terminal";
@@ -1513,9 +1509,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         messages: taskMessages,
         runs: taskRuns,
         proposals: changeProposals,
-        interactiveTerminalRunning: interactiveTerminalRunning || interactiveTerminalResumeAvailable || interactiveTerminalLaunchPending
+        interactiveTerminalRunning: interactiveTerminalRunning || interactiveTerminalLaunchPending
       }),
-    [changeProposals, interactiveTerminalLaunchPending, interactiveTerminalResumeAvailable, interactiveTerminalRunning, taskMessages, taskRuns]
+    [changeProposals, interactiveTerminalLaunchPending, interactiveTerminalRunning, taskMessages, taskRuns]
   );
   const activeTerminalHistoryEntry = useMemo(
     () =>
@@ -1556,10 +1552,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   }, [serializedContextEntriesByKey]);
 
   useEffect(() => {
-    if (interactiveTerminalRunning || interactiveTerminalResumeAvailable) {
+    if (interactiveTerminalRunning) {
       setInteractiveTerminalLaunchPending(false);
     }
-  }, [interactiveTerminalResumeAvailable, interactiveTerminalRunning]);
+  }, [interactiveTerminalRunning]);
 
   useEffect(() => {
     if (!task?.id || loading || messagesLoading || runsLoading) {
@@ -2334,9 +2330,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 showIcon
                 message={
                   activeTerminalMode === "git"
-                    ? gitTerminalResumeAvailable
-                      ? "Git session can be resumed"
-                      : "Git session is active"
+                    ? "Git session is active"
                     : "Git session status"
                 }
                 description={gitTerminalStatus.reason}
@@ -2350,10 +2344,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   !canEditTask ||
                   isArchived ||
                   interactiveTerminalLaunchPending ||
-                  (!gitTerminalAvailable && !gitTerminalResumeAvailable)
+                  !gitTerminalAvailable
                 }
               >
-                {gitTerminalResumeAvailable ? "Reconnect Git Session" : "Start Git Session"}
+                Start Git Session
               </Button>
               {canKillInteractiveTerminal ? (
                 <Button danger onClick={() => setKillTerminalConfirmOpen(true)}>
@@ -3436,8 +3430,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     const terminalMode = getTerminalSessionModeFromMessage(entry.startMessage);
     const terminalLabel = getTaskTerminalSessionLabel(terminalMode);
     const terminalSentenceLabel = getTaskTerminalSessionSentenceLabel(terminalMode);
-    const terminalResumeAvailable =
-      terminalMode === "git" ? gitTerminalResumeAvailable : interactiveTerminalResumeAvailable;
     const terminalStatusTag = entry.active
       ? { color: "processing", label: "Active" }
       : entry.proposal
@@ -3470,20 +3462,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Alert
               type="info"
               showIcon
-              message={terminalResumeAvailable ? `${terminalLabel} session can be resumed` : `${terminalLabel} session is active`}
-              description={
-                terminalResumeAvailable
-                  ? `This live ${terminalSentenceLabel.toLowerCase()} session is still running. Reconnect to continue in the existing workspace session, or stop it to end the session and create a checkpoint.`
-                  : `This ${terminalSentenceLabel.toLowerCase()} session is currently attached to another window or tab. Stop it there or use Stop here to end the session and create a checkpoint.`
-              }
+              message={`${terminalLabel} session is active`}
+              description={`This ${terminalSentenceLabel.toLowerCase()} session is currently attached to another window or tab. Stop it there or use Stop here to end the session and create a checkpoint.`}
               action={
                 showTerminalSessionControls ? (
                   <Space wrap>
-                    {terminalResumeAvailable ? (
-                      <Button type="primary" size="small" onClick={() => openInteractiveTerminalWindow(terminalMode)}>
-                        Reconnect
-                      </Button>
-                    ) : null}
                     <Button size="small" danger onClick={() => setKillTerminalConfirmOpen(true)}>
                       Stop Session
                     </Button>

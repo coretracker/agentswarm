@@ -1,6 +1,6 @@
 FROM node:20-alpine
 
-RUN apk add --no-cache docker-cli git bash python3 make g++
+RUN apk add --no-cache docker-cli git bash vim python3 make g++
 
 WORKDIR /workspace
 COPY package.json package-lock.json ./
