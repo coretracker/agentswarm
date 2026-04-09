@@ -15,4 +15,4 @@ export HISTFILE=/dev/null
 
 cd "$workspace"
 
-exec /bin/ash -r -i
+exec /bin/bash --noprofile --norc --restricted -i
