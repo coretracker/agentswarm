@@ -4,12 +4,8 @@ import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from "
 import { Alert, Modal, Space, Spin, Tag, Typography } from "antd";
 import { isDarkAppTheme } from "../src/theme/antd-theme";
 import { useThemeMode } from "./theme-provider";
-
-export interface WorkspaceFileLinkTarget {
-  taskId: string;
-  filePath: string;
-  line: number | null;
-}
+export type { WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
+export { parseWorkspaceFileLink } from "../src/utils/workspace-file-links";
 
 export interface WorkspaceFilePreviewModalProps {
   open: boolean;
@@ -38,8 +34,6 @@ interface LanguageConfig {
   stringDelimiters: string[];
   keywords: Set<string>;
 }
-
-const workspaceFileLinkPathRe = /^\/task-workspaces\/([^/]+)\/(.+)$/;
 
 const tokenStyles: Record<HighlightTokenKind, CSSProperties> = {
   plain: { color: "#1f1f1f" },
@@ -707,29 +701,6 @@ function renderHighlightedLine(line: string, language: string): ReactNode {
       {token.text}
     </span>
   ));
-}
-
-export function parseWorkspaceFileLink(href?: string): WorkspaceFileLinkTarget | null {
-  if (!href?.trim()) {
-    return null;
-  }
-
-  try {
-    const url = new URL(href, typeof window !== "undefined" ? window.location.origin : "http://localhost");
-    const match = workspaceFileLinkPathRe.exec(url.pathname);
-    if (!match) {
-      return null;
-    }
-
-    const lineMatch = /^#L(\d+)(?:[-:].*)?$/.exec(url.hash);
-    return {
-      taskId: match[1] ?? "",
-      filePath: decodeURIComponent(match[2] ?? ""),
-      line: lineMatch ? Number.parseInt(lineMatch[1]!, 10) : null
-    };
-  } catch {
-    return null;
-  }
 }
 
 export function WorkspaceFilePreviewModal({

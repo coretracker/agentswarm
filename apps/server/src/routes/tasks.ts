@@ -130,6 +130,13 @@ const workspaceFileQuerySchema = z.object({
     .min(1)
     .max(255)
     .regex(/^[A-Za-z0-9._/-]+(?:[~^][0-9]*)*$/, "Invalid git ref.")
+    .optional(),
+  executionId: z
+    .string()
+    .trim()
+    .min(1)
+    .max(255)
+    .regex(/^[A-Za-z0-9_-]+$/, "Invalid execution id.")
     .optional()
 });
 
@@ -345,7 +352,7 @@ export const registerTaskRoutes = (
     }
   );
 
-  app.get<{ Params: { id: string }; Querystring: { path: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { path: string; ref?: string; executionId?: string } }>(
     "/tasks/:id/workspace-file",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
     async (request, reply) => {
@@ -360,7 +367,12 @@ export const registerTaskRoutes = (
       }
 
       try {
-        const preview = await deps.spawner.getTaskWorkspaceFilePreview(task, parsed.data.path, parsed.data.ref ?? null);
+        const preview = await deps.spawner.getTaskWorkspaceFilePreview(
+          task,
+          parsed.data.path,
+          parsed.data.ref ?? null,
+          parsed.data.executionId ?? null
+        );
         if (preview === null) {
           return reply.status(404).send({ message: "Workspace file not found or is outside the task workspace." });
         }
