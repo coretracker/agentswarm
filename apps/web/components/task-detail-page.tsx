@@ -2323,6 +2323,51 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const diffContent = hasDiffTab ? (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       {task ? (
+        <Card size="small" title="Git Session">
+          <Flex vertical gap={12}>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+              Open a popup terminal in this task workspace for manual git commands like status, commit, pull, push, and merge.
+            </Typography.Paragraph>
+            {gitTerminalStatus?.reason ? (
+              <Alert
+                type={gitTerminalAvailable ? "info" : "warning"}
+                showIcon
+                message={
+                  activeTerminalMode === "git"
+                    ? gitTerminalResumeAvailable
+                      ? "Git session can be resumed"
+                      : "Git session is active"
+                    : "Git session status"
+                }
+                description={gitTerminalStatus.reason}
+              />
+            ) : null}
+            <Space wrap>
+              <Button
+                type="primary"
+                onClick={() => void handleStartInteractiveTerminalWindow("git")}
+                disabled={
+                  !canEditTask ||
+                  isArchived ||
+                  interactiveTerminalLaunchPending ||
+                  (!gitTerminalAvailable && !gitTerminalResumeAvailable)
+                }
+              >
+                {gitTerminalResumeAvailable ? "Reconnect Git Session" : "Start Git Session"}
+              </Button>
+              {canKillInteractiveTerminal ? (
+                <Button danger onClick={() => setKillTerminalConfirmOpen(true)}>
+                  Stop Session
+                </Button>
+              ) : null}
+              {renderPullTaskButton()}
+              {renderPushTaskButton()}
+              {renderMergeTaskButton()}
+            </Space>
+          </Flex>
+        </Card>
+      ) : null}
+      {task ? (
         <Card size="small" styles={{ body: { paddingBottom: 12 } }}>
           <Segmented
             value={diffLiveKind}
@@ -2391,51 +2436,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               )}
             </Typography.Paragraph>
           )}
-        </Card>
-      ) : null}
-      {task ? (
-        <Card size="small" title="Git Session">
-          <Flex vertical gap={12}>
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              Open a popup terminal in this task workspace for manual git commands like status, commit, pull, push, and merge.
-            </Typography.Paragraph>
-            {gitTerminalStatus?.reason ? (
-              <Alert
-                type={gitTerminalAvailable ? "info" : "warning"}
-                showIcon
-                message={
-                  activeTerminalMode === "git"
-                    ? gitTerminalResumeAvailable
-                      ? "Git session can be resumed"
-                      : "Git session is active"
-                    : "Git session status"
-                }
-                description={gitTerminalStatus.reason}
-              />
-            ) : null}
-            <Space wrap>
-              <Button
-                type="primary"
-                onClick={() => void handleStartInteractiveTerminalWindow("git")}
-                disabled={
-                  !canEditTask ||
-                  isArchived ||
-                  interactiveTerminalLaunchPending ||
-                  (!gitTerminalAvailable && !gitTerminalResumeAvailable)
-                }
-              >
-                {gitTerminalResumeAvailable ? "Reconnect Git Session" : "Start Git Session"}
-              </Button>
-              {canKillInteractiveTerminal ? (
-                <Button danger onClick={() => setKillTerminalConfirmOpen(true)}>
-                  Stop Session
-                </Button>
-              ) : null}
-              {renderPullTaskButton()}
-              {renderPushTaskButton()}
-              {renderMergeTaskButton()}
-            </Space>
-          </Flex>
         </Card>
       ) : null}
       {liveDiffError ? <Alert type="warning" showIcon message="Live diff refresh failed" description={liveDiffError} /> : null}
