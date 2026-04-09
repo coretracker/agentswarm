@@ -6,6 +6,10 @@ import path from "node:path";
 import {
   getCheckpointMutationBlockedReason,
   getTaskStatusLabel,
+  getTaskTerminalSessionEndMessage,
+  getTaskTerminalSessionNoChangesMessage,
+  getTaskTerminalSessionReviewMessage,
+  getTaskTerminalSessionStartMessage,
   isActiveTaskStatus,
   isQueuedTaskStatus,
   type AgentProvider,
@@ -19,11 +23,13 @@ import {
   type TaskRun,
   type TaskMergePreview,
   type TaskPushPreview,
+  type TaskTerminalSessionMode,
   type TaskWorkspaceFilePreview,
   type TaskWorkspaceCommit,
   type TaskWorkspaceCommitLog
 } from "@agentswarm/shared-types";
 import { makeBranchName } from "../lib/branch.js";
+import { buildGitProcessEnv } from "../lib/git-env.js";
 import { extractGitLockPathFromErrorMessage, isPathInside, resolveGitTargetLockKey } from "../lib/git-locks.js";
 import { resolveGitPaths } from "../lib/git-paths.js";
 import { resolveWorkspaceGitRuntimeMounts } from "../lib/git-runtime-mounts.js";
@@ -166,7 +172,6 @@ export class SpawnerService {
   private readonly runtimeReady = new Set<AgentProvider>();
   private activeExecutions = new Map<string, Map<string, { containerName: string; process: ReturnType<typeof spawn> }>>();
   private cancelRequestedTaskIds = new Set<string>();
-  private gitAskPassPath: string | null = null;
   private repoLocks = new Map<string, Promise<void>>();
   private gitTargetLocks = new Map<string, Promise<void>>();
 
@@ -310,51 +315,17 @@ export class SpawnerService {
     });
   }
 
-  private async ensureGitAskPassScript(): Promise<string | null> {
-    if (this.gitAskPassPath) {
-      return this.gitAskPassPath;
-    }
-
-    const askPassPath = "/tmp/agentswarm-git-askpass.sh";
-    await writeFile(
-      askPassPath,
-      `#!/usr/bin/env sh
-case "$1" in
-  *sername*) echo "\${GIT_USERNAME:-x-access-token}" ;;
-  *assword*) echo "\${GIT_TOKEN:-}" ;;
-  *) echo "" ;;
-esac
-`,
-      "utf8"
-    );
-    await chmod(askPassPath, 0o700);
-    this.gitAskPassPath = askPassPath;
-    return askPassPath;
-  }
-
   private async buildGitEnv(
     args: string[],
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<NodeJS.ProcessEnv> {
-    const gitEnv: NodeJS.ProcessEnv = {
-      GIT_OPTIONAL_LOCKS: "0"
-    };
-    const askPassPath = githubToken ? await this.ensureGitAskPassScript() : null;
-    if (askPassPath) {
-      gitEnv.GIT_TERMINAL_PROMPT = "0";
-      gitEnv.GIT_ASKPASS = askPassPath;
-      gitEnv.GIT_USERNAME = gitUsername;
-      gitEnv.GIT_TOKEN = githubToken ?? "";
-    }
-
-    if (args[0] === "-C" && typeof args[1] === "string" && args[1].startsWith("/")) {
-      gitEnv.GIT_CONFIG_COUNT = "1";
-      gitEnv.GIT_CONFIG_KEY_0 = "safe.directory";
-      gitEnv.GIT_CONFIG_VALUE_0 = args[1];
-    }
-
-    return gitEnv;
+    const workspacePath = args[0] === "-C" && typeof args[1] === "string" && args[1].startsWith("/") ? args[1] : null;
+    return buildGitProcessEnv({
+      workspacePath,
+      githubToken,
+      gitUsername
+    });
   }
 
   private async cleanupWorkspaceGitLocks(workspacePath: string): Promise<void> {
@@ -1983,7 +1954,7 @@ esac
     return this.taskStore.setStatus(task.id, nextStatus);
   }
 
-  async beginInteractiveTerminalSession(taskId: string): Promise<{ sessionId: string }> {
+  async beginInteractiveTerminalSession(taskId: string, mode: TaskTerminalSessionMode = "interactive"): Promise<{ sessionId: string }> {
     const task = await this.taskStore.getTask(taskId);
     if (!task) {
       throw new Error("Task not found.");
@@ -2032,11 +2003,12 @@ esac
       sessionId,
       checkpointRef,
       startedAt,
-      untrackedPathsAtCheckpoint
+      untrackedPathsAtCheckpoint,
+      mode
     });
     await this.taskStore.appendMessage(taskId, {
       role: "system",
-      content: "Interactive terminal session started.",
+      content: getTaskTerminalSessionStartMessage(mode),
       sessionId
     });
     return { sessionId };
@@ -2062,7 +2034,7 @@ esac
     if (!exists) {
       await this.taskStore.appendMessage(taskId, {
         role: "system",
-        content: "Interactive terminal session ended.",
+        content: getTaskTerminalSessionEndMessage(active.mode),
         sessionId
       });
       return;
@@ -2080,7 +2052,7 @@ esac
     if (changedFiles.length === 0) {
       await this.taskStore.appendMessage(taskId, {
         role: "system",
-        content: "Interactive terminal session ended. No workspace changes were detected.",
+        content: getTaskTerminalSessionNoChangesMessage(active.mode),
         sessionId
       });
       await this.taskStore.appendLog(taskId, "Terminal session ended with no workspace changes; checkpoint not created.");
@@ -2089,7 +2061,7 @@ esac
 
     await this.taskStore.appendMessage(taskId, {
       role: "system",
-      content: "Interactive terminal session ended. Review proposed changes below.",
+      content: getTaskTerminalSessionReviewMessage(active.mode),
       sessionId
     });
 

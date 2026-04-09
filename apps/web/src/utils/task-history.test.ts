@@ -3,6 +3,8 @@ import test from "node:test";
 import type { TaskChangeProposal, TaskMessage, TaskRun } from "@agentswarm/shared-types";
 import {
   buildTaskHistoryEntries,
+  GIT_TERMINAL_END_REVIEW_MESSAGE,
+  GIT_TERMINAL_START_MESSAGE,
   INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE,
   INTERACTIVE_TERMINAL_START_MESSAGE
 } from "./task-history";
@@ -215,6 +217,47 @@ test("groups completed terminal sessions with a diff proposal", () => {
   assert.equal(entries[0].endMessage?.id, "m2");
   assert.equal(entries[0].proposal?.id, "p1");
   assert.equal(entries[0].active, false);
+});
+
+test("groups completed git terminal sessions with a diff proposal", () => {
+  const start = createMessage({
+    id: "m1",
+    createdAt: "2026-03-24T13:30:00.000Z",
+    role: "system",
+    content: GIT_TERMINAL_START_MESSAGE,
+    sessionId: "session-git-1"
+  });
+  const end = createMessage({
+    id: "m2",
+    createdAt: "2026-03-24T13:42:00.000Z",
+    role: "system",
+    content: GIT_TERMINAL_END_REVIEW_MESSAGE,
+    sessionId: "session-git-1"
+  });
+  const proposal = createProposal({
+    id: "p1",
+    sourceType: "interactive_session",
+    sourceId: "session-git-1",
+    status: "pending",
+    createdAt: "2026-03-24T13:42:01.000Z",
+    diff: "diff --git a/a b/a"
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [start, end],
+    runs: [],
+    proposals: [proposal]
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.kind, "grouped_terminal_session");
+  if (entries[0]?.kind !== "grouped_terminal_session") {
+    throw new Error("Expected grouped_terminal_session");
+  }
+  assert.equal(entries[0].sessionId, "session-git-1");
+  assert.equal(entries[0].startMessage.id, "m1");
+  assert.equal(entries[0].endMessage?.id, "m2");
+  assert.equal(entries[0].proposal?.id, "p1");
 });
 
 test("groups no-change terminal sessions without attaching a later proposal", () => {

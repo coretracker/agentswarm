@@ -9,6 +9,8 @@ import {
   getCheckpointMutationBlockedReason,
   getTaskBranchStrategyLabel,
   getTaskStatusLabel,
+  getTaskTerminalSessionLabel,
+  getTaskTerminalSessionSentenceLabel,
   getTaskTypeLabel,
   getModelsForProvider,
   isActiveTaskStatus,
@@ -31,6 +33,7 @@ import {
   type TaskPushPreview,
   type TaskChangeProposal,
   type TaskInteractiveTerminalTranscript,
+  type TaskTerminalSessionMode,
   type TaskWorkspaceCommit,
   type TaskWorkspaceFilePreview
 } from "@agentswarm/shared-types";
@@ -220,9 +223,13 @@ function changeProposalSourceLabel(sourceType: TaskChangeProposal["sourceType"])
   return sourceType === "build_run" ? "Build run" : "Terminal session";
 }
 
-function getTaskWorkingLabel(task: Pick<Task, "status" | "activeInteractiveSession">): string {
+function getTerminalSessionModeFromMessage(message: Pick<TaskMessage, "content">): TaskTerminalSessionMode {
+  return message.content.startsWith("Git terminal") ? "git" : "interactive";
+}
+
+function getTaskWorkingLabel(task: Pick<Task, "status" | "activeInteractiveSession" | "activeTerminalSessionMode">): string {
   if (task.activeInteractiveSession) {
-    return "Interactive Terminal Running";
+    return `${getTaskTerminalSessionLabel(task.activeTerminalSessionMode === "git" ? "git" : "interactive")} Running`;
   }
 
   return getTaskStatusLabel(task.status);
@@ -561,6 +568,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [editingComment, setEditingComment] = useState<TaskMessage | null>(null);
   const [commentEditDraft, setCommentEditDraft] = useState("");
   const [interactiveTerminalStatus, setInteractiveTerminalStatus] = useState<TaskInteractiveTerminalStatus | null>(null);
+  const [gitTerminalStatus, setGitTerminalStatus] = useState<TaskInteractiveTerminalStatus | null>(null);
   const [interactiveTerminalLaunchPending, setInteractiveTerminalLaunchPending] = useState(false);
   const [interactiveTerminalTranscripts, setInteractiveTerminalTranscripts] = useState<
     Record<
@@ -618,6 +626,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   useEffect(() => {
     setInteractiveTerminalTranscripts({});
+    setInteractiveTerminalStatus(null);
+    setGitTerminalStatus(null);
     setInteractiveTerminalLaunchPending(false);
     initialBottomScrollStateRef.current = null;
   }, [taskId]);
@@ -675,7 +685,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const currentTaskProvider = task?.provider ?? "codex";
   const currentTaskProviderProfile = task?.providerProfile ?? "high";
   const currentTaskModelOverride = task?.modelOverride ?? "";
-  const interactiveTerminalTargetProviderLabel = providerInput === "claude" ? "Claude Code" : "Codex";
   const interactiveTerminalConfigDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
@@ -723,7 +732,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   };
   const showTaskActionError = (error: unknown, fallback: string): void => {
     const nextMessage = error instanceof Error ? error.message : fallback;
-    if (nextMessage === "Close the interactive terminal session before continuing.") {
+    if (nextMessage === "Close the terminal session before continuing.") {
       return;
     }
     messageApi.error(nextMessage);
@@ -982,32 +991,43 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   useEffect(() => {
     if (!task?.id || !canEditTask || !canUseInteractiveTerminal || isArchived) {
       setInteractiveTerminalStatus(null);
+      setGitTerminalStatus(null);
       return;
     }
 
     let cancelled = false;
-    const loadInteractiveTerminalStatus = () => {
-      void api
-        .getTaskInteractiveTerminalStatus(task.id)
-        .then((status) => {
-          if (!cancelled) {
-            setInteractiveTerminalStatus(status);
-          }
-        })
-        .catch(() => {
-          if (!cancelled) {
-            setInteractiveTerminalStatus({
-              available: false,
-              reason: "Could not load interactive terminal status."
-            });
-          }
-        });
+    const loadTerminalStatuses = () => {
+      void Promise.allSettled([
+        api.getTaskInteractiveTerminalStatus(task.id, { mode: "interactive" }),
+        api.getTaskInteractiveTerminalStatus(task.id, { mode: "git" })
+      ]).then(([interactiveResult, gitResult]) => {
+        if (cancelled) {
+          return;
+        }
+
+        setInteractiveTerminalStatus(
+          interactiveResult.status === "fulfilled"
+            ? interactiveResult.value
+            : {
+                available: false,
+                reason: "Could not load interactive terminal status."
+              }
+        );
+        setGitTerminalStatus(
+          gitResult.status === "fulfilled"
+            ? gitResult.value
+            : {
+                available: false,
+                reason: "Could not load git terminal status."
+              }
+        );
+      });
     };
 
-    loadInteractiveTerminalStatus();
-    const intervalId = window.setInterval(loadInteractiveTerminalStatus, 4000);
+    loadTerminalStatuses();
+    const intervalId = window.setInterval(loadTerminalStatuses, 4000);
     const onFocus = () => {
-      loadInteractiveTerminalStatus();
+      loadTerminalStatuses();
     };
     window.addEventListener("focus", onFocus);
 
@@ -1415,13 +1435,31 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
     return best.id;
   }, [changeProposals]);
-  const interactiveTerminalResumeAvailable = interactiveTerminalStatus?.resumableInteractiveSession === true;
-  const interactiveTerminalRunning = interactiveTerminalStatus?.activeInteractiveSession === true;
+  const activeTerminalStatus =
+    gitTerminalStatus?.activeInteractiveSession && gitTerminalStatus.terminalMode === "git"
+      ? gitTerminalStatus
+      : interactiveTerminalStatus?.activeInteractiveSession
+        ? interactiveTerminalStatus
+        : gitTerminalStatus?.activeInteractiveSession
+          ? gitTerminalStatus
+          : null;
+  const activeTerminalMode: TaskTerminalSessionMode | null =
+    activeTerminalStatus?.terminalMode ??
+    (task?.activeInteractiveSession ? (task.activeTerminalSessionMode === "git" ? "git" : "interactive") : null);
+  const interactiveTerminalResumeAvailable =
+    activeTerminalStatus?.terminalMode === "interactive" && activeTerminalStatus.resumableInteractiveSession === true;
+  const interactiveTerminalRunning = activeTerminalStatus?.activeInteractiveSession === true;
+  const gitTerminalResumeAvailable =
+    activeTerminalStatus?.terminalMode === "git" && activeTerminalStatus.resumableInteractiveSession === true;
+  const gitTerminalAvailable = gitTerminalStatus?.available === true;
+  const activeTerminalLabel = activeTerminalMode ? getTaskTerminalSessionLabel(activeTerminalMode) : "Terminal";
+  const activeTerminalSentenceLabel = activeTerminalMode ? getTaskTerminalSessionSentenceLabel(activeTerminalMode) : "Terminal";
   const showWorkingIndicator = hasTaskWorkingState || interactiveTerminalRunning;
   const workingIndicatorLabel = task
     ? getTaskWorkingLabel({
         ...task,
-        activeInteractiveSession: task.activeInteractiveSession || interactiveTerminalRunning
+        activeInteractiveSession: task.activeInteractiveSession || interactiveTerminalRunning,
+        activeTerminalSessionMode: activeTerminalMode ?? task.activeTerminalSessionMode ?? null
       })
     : "Working";
   const canKillInteractiveTerminal = canEditTask && canUseInteractiveTerminal && !!task && !isArchived && interactiveTerminalRunning;
@@ -1436,7 +1474,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const draftActionLabel = taskActionLabel[selectedChatAction].toLowerCase();
   const chatPlaceholder = (() => {
     if (interactiveTerminalRunning) {
-      return "An interactive terminal session is already running for this task. Close or end it before sending from here.";
+      return `A ${activeTerminalSentenceLabel.toLowerCase()} session is already running for this task. Close or end it before sending from here.`;
     }
     if (hasReadOnlyTaskAccess) {
       return "You have read-only access to this task.";
@@ -1974,33 +2012,44 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       );
       setKillTerminalConfirmOpen(false);
       setInteractiveTerminalLaunchPending(false);
-      messageApi.success("Interactive terminal stopped");
+      messageApi.success(`${activeTerminalLabel} stopped`);
       setLiveDiffRefreshKey((k) => k + 1);
       refetchChangeProposals();
-      void api
-        .getTaskInteractiveTerminalStatus(task.id)
-        .then((status) => {
-          setInteractiveTerminalStatus(status);
-        })
-        .catch(() => {
-          setInteractiveTerminalStatus({
-            available: false,
-            reason: "Could not load interactive terminal status."
-          });
-        });
+      void Promise.allSettled([
+        api.getTaskInteractiveTerminalStatus(task.id, { mode: "interactive" }),
+        api.getTaskInteractiveTerminalStatus(task.id, { mode: "git" })
+      ]).then(([interactiveResult, gitResult]) => {
+        setInteractiveTerminalStatus(
+          interactiveResult.status === "fulfilled"
+            ? interactiveResult.value
+            : {
+                available: false,
+                reason: "Could not load interactive terminal status."
+              }
+        );
+        setGitTerminalStatus(
+          gitResult.status === "fulfilled"
+            ? gitResult.value
+            : {
+                available: false,
+                reason: "Could not load git terminal status."
+              }
+        );
+      });
     } catch (error) {
-      showTaskActionError(error, "Failed to stop interactive terminal");
+      showTaskActionError(error, "Failed to stop terminal session");
     } finally {
       setSubmitting(null);
     }
   };
-  const openInteractiveTerminalWindow = (): void => {
+  const openInteractiveTerminalWindow = (mode: TaskTerminalSessionMode = "interactive"): void => {
     if (!task) {
       return;
     }
 
     const path = `/tasks/${task.id}/interactive`;
-    const url = `${window.location.origin}${path}`;
+    const query = mode === "git" ? "?mode=git" : "";
+    const url = `${window.location.origin}${path}${query}`;
     const w = Math.min(1280, window.screen.availWidth - 48);
     const h = Math.min(840, window.screen.availHeight - 48);
     const features = [
@@ -2016,12 +2065,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     ].join(",");
     window.open(url, "_blank", `${features},noopener,noreferrer`);
   };
-  const handleStartInteractiveTerminalWindow = async (): Promise<void> => {
+  const handleStartInteractiveTerminalWindow = async (mode: TaskTerminalSessionMode = "interactive"): Promise<void> => {
     if (!task) {
       return;
     }
 
-    if (configDirty && canEditTask && !isArchived) {
+    if (mode === "interactive" && configDirty && canEditTask && !isArchived) {
       try {
         await handleSaveConfig({ notify: false });
       } catch (error) {
@@ -2031,7 +2080,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     setInteractiveTerminalLaunchPending(true);
-    openInteractiveTerminalWindow();
+    openInteractiveTerminalWindow(mode);
   };
   const loadInteractiveTerminalTranscript = async (sessionId: string): Promise<void> => {
     if (!task) {
@@ -2342,6 +2391,51 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               )}
             </Typography.Paragraph>
           )}
+        </Card>
+      ) : null}
+      {task ? (
+        <Card size="small" title="Git Session">
+          <Flex vertical gap={12}>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+              Open a popup terminal in this task workspace for manual git commands like status, commit, pull, push, and merge.
+            </Typography.Paragraph>
+            {gitTerminalStatus?.reason ? (
+              <Alert
+                type={gitTerminalAvailable ? "info" : "warning"}
+                showIcon
+                message={
+                  activeTerminalMode === "git"
+                    ? gitTerminalResumeAvailable
+                      ? "Git session can be resumed"
+                      : "Git session is active"
+                    : "Git session status"
+                }
+                description={gitTerminalStatus.reason}
+              />
+            ) : null}
+            <Space wrap>
+              <Button
+                type="primary"
+                onClick={() => void handleStartInteractiveTerminalWindow("git")}
+                disabled={
+                  !canEditTask ||
+                  isArchived ||
+                  interactiveTerminalLaunchPending ||
+                  (!gitTerminalAvailable && !gitTerminalResumeAvailable)
+                }
+              >
+                {gitTerminalResumeAvailable ? "Reconnect Git Session" : "Start Git Session"}
+              </Button>
+              {canKillInteractiveTerminal ? (
+                <Button danger onClick={() => setKillTerminalConfirmOpen(true)}>
+                  Stop Session
+                </Button>
+              ) : null}
+              {renderPullTaskButton()}
+              {renderPushTaskButton()}
+              {renderMergeTaskButton()}
+            </Space>
+          </Flex>
         </Card>
       ) : null}
       {liveDiffError ? <Alert type="warning" showIcon message="Live diff refresh failed" description={liveDiffError} /> : null}
@@ -3339,6 +3433,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     entryKey: string,
     entry: Extract<(typeof chatTimeline)[number], { kind: "grouped_terminal_session" }>
   ) => {
+    const terminalMode = getTerminalSessionModeFromMessage(entry.startMessage);
+    const terminalLabel = getTaskTerminalSessionLabel(terminalMode);
+    const terminalSentenceLabel = getTaskTerminalSessionSentenceLabel(terminalMode);
+    const terminalResumeAvailable =
+      terminalMode === "git" ? gitTerminalResumeAvailable : interactiveTerminalResumeAvailable;
     const terminalStatusTag = entry.active
       ? { color: "processing", label: "Active" }
       : entry.proposal
@@ -3356,7 +3455,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         size="small"
         title={
           <Space wrap>
-            <Tag color="green">Terminal</Tag>
+            <Tag color="green">{terminalLabel}</Tag>
             {terminalStatusTag ? <Tag color={terminalStatusTag.color}>{terminalStatusTag.label}</Tag> : null}
             {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
             {renderHistoryContextToggleButton(entryKey)}
@@ -3371,17 +3470,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Alert
               type="info"
               showIcon
-              message={interactiveTerminalResumeAvailable ? "Terminal session can be resumed" : "Terminal session is active"}
+              message={terminalResumeAvailable ? `${terminalLabel} session can be resumed` : `${terminalLabel} session is active`}
               description={
-                interactiveTerminalResumeAvailable
-                  ? "This live terminal session is still running. Reconnect to continue in the existing workspace session, or stop it to end the session and create a checkpoint."
-                  : "This terminal session is currently attached to another window or tab. Stop it there or use Stop here to end the session and create a checkpoint."
+                terminalResumeAvailable
+                  ? `This live ${terminalSentenceLabel.toLowerCase()} session is still running. Reconnect to continue in the existing workspace session, or stop it to end the session and create a checkpoint.`
+                  : `This ${terminalSentenceLabel.toLowerCase()} session is currently attached to another window or tab. Stop it there or use Stop here to end the session and create a checkpoint.`
               }
               action={
                 showTerminalSessionControls ? (
                   <Space wrap>
-                    {interactiveTerminalResumeAvailable ? (
-                      <Button type="primary" size="small" onClick={openInteractiveTerminalWindow}>
+                    {terminalResumeAvailable ? (
+                      <Button type="primary" size="small" onClick={() => openInteractiveTerminalWindow(terminalMode)}>
                         Reconnect
                       </Button>
                     ) : null}
@@ -3399,7 +3498,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Typography.Text type="secondary">
             {entry.endMessage
               ? `${dayjs(entry.endMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")} - ${entry.endMessage.content}`
-              : "Running - Interactive terminal session is still running."}
+              : `Running - ${terminalSentenceLabel} session is still running.`}
           </Typography.Text>
           {showTranscriptSection ? (
             <Collapse
@@ -3814,7 +3913,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
       <Modal
         open={killTerminalConfirmOpen}
-        title="Stop interactive session?"
+        title={`Stop ${activeTerminalSentenceLabel.toLowerCase()} session?`}
         onCancel={() => {
           if (submitting !== "killTerminal") {
             setKillTerminalConfirmOpen(false);
@@ -3827,7 +3926,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         onOk={() => void handleKillInteractiveTerminal()}
         destroyOnClose
       >
-        This stops the live interactive terminal session and keeps whatever is currently in the workspace so AgentSwarm
+        This stops the live {activeTerminalSentenceLabel.toLowerCase()} session and keeps whatever is currently in the workspace so AgentSwarm
         can create the usual checkpoint for recovery.
       </Modal>
       <Modal

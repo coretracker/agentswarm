@@ -7,7 +7,8 @@ import {
   TASK_CONTEXT_ENTRY_MAX_LABEL_LENGTH,
   TASK_CONTEXT_TOTAL_MAX_CHARS,
   type Task,
-  type TaskAction
+  type TaskAction,
+  type TaskTerminalSessionMode
 } from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
@@ -206,7 +207,7 @@ export const registerTaskRoutes = (
     return withBranchSyncCounts(deps.spawner, task);
   });
 
-  app.get<{ Params: { id: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { mode?: string } }>(
     "/tasks/:id/interactive-terminal/status",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
     async (request, reply) => {
@@ -219,10 +220,12 @@ export const registerTaskRoutes = (
         return;
       }
 
+      const terminalMode: TaskTerminalSessionMode = request.query.mode === "git" ? "git" : "interactive";
       const status = await getTaskInteractiveTerminalStatus(
         deps.taskStore,
         deps.settingsStore,
         task.id,
+        terminalMode
       );
       return reply.send(status);
     },
@@ -247,7 +250,7 @@ export const registerTaskRoutes = (
 
       const activeSession = await deps.taskStore.getActiveInteractiveSession(task.id);
       if (!activeSession) {
-        return reply.status(409).send({ message: "No interactive terminal session is active for this task." });
+        return reply.status(409).send({ message: "No terminal session is active for this task." });
       }
 
       const killedLiveSession = await killTaskInteractiveTerminalSession(task.id);
@@ -258,8 +261,8 @@ export const registerTaskRoutes = (
       await deps.taskStore.appendLog(
         task.id,
         killedLiveSession
-          ? "Interactive terminal session terminated by user via kill switch."
-          : "Interactive terminal kill requested after the live terminal process was already unreachable; cleaned up the session from server state."
+          ? `${activeSession.mode === "git" ? "Git" : "Interactive"} terminal session terminated by user via kill switch.`
+          : `${activeSession.mode === "git" ? "Git" : "Interactive"} terminal kill requested after the live terminal process was already unreachable; cleaned up the session from server state.`
       );
 
       const refreshed = await deps.taskStore.getTask(task.id);
@@ -278,7 +281,7 @@ export const registerTaskRoutes = (
 
       const transcript = await deps.taskStore.getInteractiveTerminalTranscript(task.id, request.params.sessionId);
       if (!transcript) {
-        return reply.status(404).send({ message: "Interactive terminal transcript not found." });
+        return reply.status(404).send({ message: "Terminal transcript not found." });
       }
 
       return reply.send(transcript);

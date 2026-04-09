@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
+import { getTaskTerminalSessionLabel, getTaskTerminalSessionSentenceLabel, type TaskTerminalSessionMode } from "@agentswarm/shared-types";
 import "@xterm/xterm/css/xterm.css";
 
 import { api } from "../src/api/client";
@@ -36,6 +37,7 @@ function readStoredFontSize(fallback: number): number {
 
 export interface TaskInteractiveTerminalViewProps {
   taskId: string;
+  mode?: TaskTerminalSessionMode;
   /** Initial / reset font size (px) before any session zoom. Default 14. */
   defaultFontSize?: number;
   disconnectHint?: string;
@@ -44,10 +46,11 @@ export interface TaskInteractiveTerminalViewProps {
 }
 
 /**
- * One browser tab/window == one WebSocket == one `docker run` with the task workspace at /workspace.
+ * One browser tab/window == one WebSocket == one live terminal session attached to the task workspace.
  */
 export function TaskInteractiveTerminalView({
   taskId,
+  mode = "interactive",
   defaultFontSize = DEFAULT_INTERACTIVE_TERMINAL_FONT_SIZE,
   disconnectHint = "Refresh this page to try resuming the session if it is still running.",
   onConnected,
@@ -83,7 +86,10 @@ export function TaskInteractiveTerminalView({
     term.open(el);
     term.writeln("\x1b[90mConnecting…\x1b[0m");
 
-    const wsUrl = buildWebSocketUrl(`/tasks/${encodeURIComponent(taskId)}/interactive-terminal`);
+    const terminalSentenceLabel = getTaskTerminalSessionSentenceLabel(mode);
+    const wsUrl = buildWebSocketUrl(
+      `/tasks/${encodeURIComponent(taskId)}/interactive-terminal${mode === "git" ? "?mode=git" : ""}`
+    );
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
     let wsOpened = false;
@@ -179,16 +185,16 @@ export function TaskInteractiveTerminalView({
       }
       connectFailureHandled = true;
       void api
-        .getTaskInteractiveTerminalStatus(taskId)
+        .getTaskInteractiveTerminalStatus(taskId, { mode })
         .then((status) => {
-          const message = status.reason?.trim() || "Interactive terminal connection failed.";
+          const message = status.reason?.trim() || `${getTaskTerminalSessionLabel(mode)} connection failed.`;
           term.writeln(`\r\n\x1b[31m${message}\x1b[0m`);
         })
         .catch((error) => {
           const message =
             error instanceof Error && error.message.trim()
               ? error.message
-              : "WebSocket error (check interactive image config, credentials, and workspace).";
+              : `WebSocket error while starting the ${terminalSentenceLabel.toLowerCase()} session.`;
           term.writeln(`\r\n\x1b[31m${message}\x1b[0m`);
         });
     };
@@ -247,7 +253,7 @@ export function TaskInteractiveTerminalView({
       }
       term.dispose();
     };
-  }, [taskId, defaultFontSize, disconnectHint]);
+  }, [taskId, mode, defaultFontSize, disconnectHint]);
 
   return (
     <div

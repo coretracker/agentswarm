@@ -18,7 +18,8 @@ import {
   type TaskStatus,
   type TaskChangeProposal,
   type TaskChangeProposalStatus,
-  type TaskInteractiveTerminalTranscript
+  type TaskInteractiveTerminalTranscript,
+  type TaskTerminalSessionMode
 } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
 import {
@@ -203,6 +204,12 @@ export class TaskStore {
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
+      activeTerminalSessionMode:
+        legacyTask.activeTerminalSessionMode === "git" || legacyTask.activeTerminalSessionMode === "interactive"
+          ? legacyTask.activeTerminalSessionMode
+          : legacyTask.activeInteractiveSession === true
+            ? "interactive"
+            : null,
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
       taskType: normalizeLegacyTaskType(legacyTask.taskType),
       provider: normalizeProvider(legacyTask.provider),
@@ -315,7 +322,8 @@ export class TaskStore {
         ...hydratedTask,
         hasPendingCheckpoint
       }),
-      activeInteractiveSession: hydratedTask.activeInteractiveSession === true || activeInteractiveSession !== null
+      activeInteractiveSession: hydratedTask.activeInteractiveSession === true || activeInteractiveSession !== null,
+      activeTerminalSessionMode: activeInteractiveSession?.mode ?? hydratedTask.activeTerminalSessionMode ?? null
     };
   }
 
@@ -325,7 +333,13 @@ export class TaskStore {
       ...task,
       status: reconcileTaskStatusWithPendingCheckpoint(task.status, hasPendingCheckpoint),
       hasPendingCheckpoint,
-      activeInteractiveSession: task.activeInteractiveSession === true
+      activeInteractiveSession: task.activeInteractiveSession === true,
+      activeTerminalSessionMode:
+        task.activeInteractiveSession === true
+          ? task.activeTerminalSessionMode === "git"
+            ? "git"
+            : "interactive"
+          : null
     };
   }
 
@@ -383,6 +397,7 @@ export class TaskStore {
       pinned: false,
       hasPendingCheckpoint: false,
       activeInteractiveSession: false,
+      activeTerminalSessionMode: null,
       ownerUserId,
       repoId: repository.id,
       repoName: repository.name,
@@ -963,7 +978,7 @@ export class TaskStore {
 
   async getActiveInteractiveSession(
     taskId: string
-  ): Promise<{ sessionId: string; checkpointRef: string; startedAt: string; untrackedPathsAtCheckpoint: string[] } | null> {
+  ): Promise<{ sessionId: string; checkpointRef: string; startedAt: string; untrackedPathsAtCheckpoint: string[]; mode: TaskTerminalSessionMode } | null> {
     const raw = await this.redis.get(this.taskActiveInteractiveSessionKey(taskId));
     if (!raw) {
       return null;
@@ -974,13 +989,15 @@ export class TaskStore {
         checkpointRef?: string;
         startedAt?: string;
         untrackedPathsAtCheckpoint?: string[];
+        mode?: TaskTerminalSessionMode;
       };
       if (typeof parsed.sessionId === "string" && typeof parsed.checkpointRef === "string" && typeof parsed.startedAt === "string") {
         return {
           sessionId: parsed.sessionId,
           checkpointRef: parsed.checkpointRef,
           startedAt: parsed.startedAt,
-          untrackedPathsAtCheckpoint: Array.isArray(parsed.untrackedPathsAtCheckpoint) ? parsed.untrackedPathsAtCheckpoint : []
+          untrackedPathsAtCheckpoint: Array.isArray(parsed.untrackedPathsAtCheckpoint) ? parsed.untrackedPathsAtCheckpoint : [],
+          mode: parsed.mode === "git" ? "git" : "interactive"
         };
       }
       return null;
@@ -991,10 +1008,12 @@ export class TaskStore {
 
   async setActiveInteractiveSession(
     taskId: string,
-    session: { sessionId: string; checkpointRef: string; startedAt: string; untrackedPathsAtCheckpoint: string[] }
+    session: { sessionId: string; checkpointRef: string; startedAt: string; untrackedPathsAtCheckpoint: string[]; mode: TaskTerminalSessionMode }
   ): Promise<void> {
     const task = await this.getStoredTask(taskId);
-    const nextTask = task ? { ...task, activeInteractiveSession: true, logs: [] } : null;
+    const nextTask = task
+      ? { ...task, activeInteractiveSession: true, activeTerminalSessionMode: session.mode, logs: [] }
+      : null;
     const pipeline = this.redis.multi().set(this.taskActiveInteractiveSessionKey(taskId), JSON.stringify(session));
     if (nextTask) {
       pipeline.set(this.taskKey(taskId), JSON.stringify(nextTask));
@@ -1007,7 +1026,7 @@ export class TaskStore {
 
   async clearActiveInteractiveSession(taskId: string): Promise<void> {
     const task = await this.getStoredTask(taskId);
-    const nextTask = task ? { ...task, activeInteractiveSession: false, logs: [] } : null;
+    const nextTask = task ? { ...task, activeInteractiveSession: false, activeTerminalSessionMode: null, logs: [] } : null;
     const pipeline = this.redis.multi().del(this.taskActiveInteractiveSessionKey(taskId));
     if (nextTask) {
       pipeline.set(this.taskKey(taskId), JSON.stringify(nextTask));

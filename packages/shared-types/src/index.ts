@@ -286,12 +286,15 @@ export interface Repository {
   updatedAt: string;
 }
 
+export type TaskTerminalSessionMode = "interactive" | "git";
+
 export interface Task {
   id: string;
   title: string;
   pinned: boolean;
   hasPendingCheckpoint: boolean;
   activeInteractiveSession?: boolean;
+  activeTerminalSessionMode?: TaskTerminalSessionMode | null;
   ownerUserId: string | null;
   repoId: string;
   repoName: string;
@@ -737,6 +740,24 @@ export const isActiveTaskStatus = (status: TaskStatus): boolean =>
 
 export const isTaskWorking = (task: Pick<Task, "status" | "activeInteractiveSession">): boolean =>
   isActiveTaskStatus(task.status) || task.activeInteractiveSession === true;
+
+export const getTaskTerminalSessionLabel = (mode: TaskTerminalSessionMode): string =>
+  mode === "git" ? "Git Terminal" : "Interactive Terminal";
+
+export const getTaskTerminalSessionSentenceLabel = (mode: TaskTerminalSessionMode): string =>
+  mode === "git" ? "Git terminal" : "Interactive terminal";
+
+export const getTaskTerminalSessionStartMessage = (mode: TaskTerminalSessionMode): string =>
+  `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
+
+export const getTaskTerminalSessionEndMessage = (mode: TaskTerminalSessionMode): string =>
+  `${getTaskTerminalSessionSentenceLabel(mode)} session ended.`;
+
+export const getTaskTerminalSessionNoChangesMessage = (mode: TaskTerminalSessionMode): string =>
+  `${getTaskTerminalSessionSentenceLabel(mode)} session ended. No workspace changes were detected.`;
+
+export const getTaskTerminalSessionReviewMessage = (mode: TaskTerminalSessionMode): string =>
+  `${getTaskTerminalSessionSentenceLabel(mode)} session ended. Review proposed changes below.`;
 
 /** When set, checkpoint apply / reject / revert must be refused (agent run queued or in progress). */
 export function getCheckpointMutationBlockedReason(status: TaskStatus): string | null {

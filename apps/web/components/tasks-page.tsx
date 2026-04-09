@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   getAgentProviderLabel,
   getTaskStatusLabel,
+  getTaskTerminalSessionLabel,
   getTaskTypeLabel,
   isActiveTaskStatus,
   isTaskWorking,
@@ -21,7 +22,7 @@ import { useAuth } from "./auth-provider";
 
 function getWorkingIndicatorLabel(task: Task): string {
   if (task.activeInteractiveSession) {
-    return "Interactive terminal is running";
+    return `${getTaskTerminalSessionLabel(task.activeTerminalSessionMode === "git" ? "git" : "interactive")} is running`;
   }
 
   return isActiveTaskStatus(task.status) ? getTaskStatusLabel(task.status) : `${getTaskTypeLabel(task.taskType)} task is working`;

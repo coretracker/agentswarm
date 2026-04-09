@@ -35,6 +35,7 @@ import type {
   TaskChangeProposal,
   TaskInteractiveTerminalTranscript,
   TaskAction,
+  TaskTerminalSessionMode,
   UpdateRoleInput,
   UpdateSnippetInput,
   UpdateTaskPinInput,
@@ -59,6 +60,8 @@ export interface TaskInteractiveTerminalStatus {
   reason?: string;
   /** Server sets this when a terminal WebSocket session is active for the task. */
   activeInteractiveSession?: boolean;
+  /** Present when an active session exists for this task. */
+  terminalMode?: TaskTerminalSessionMode;
   /** Server sets this when an active session can be resumed by opening the terminal again. */
   resumableInteractiveSession?: boolean;
 }
@@ -182,8 +185,14 @@ export const api = {
     return request<Task[]>(`/tasks${query ? `?${query}` : ""}`);
   },
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
-  getTaskInteractiveTerminalStatus: (id: string) =>
-    request<TaskInteractiveTerminalStatus>(`/tasks/${id}/interactive-terminal/status`),
+  getTaskInteractiveTerminalStatus: (id: string, options?: { mode?: TaskTerminalSessionMode }) => {
+    const params = new URLSearchParams();
+    if (options?.mode) {
+      params.set("mode", options.mode);
+    }
+    const query = params.toString();
+    return request<TaskInteractiveTerminalStatus>(`/tasks/${id}/interactive-terminal/status${query ? `?${query}` : ""}`);
+  },
   getTaskInteractiveTerminalTranscript: (taskId: string, sessionId: string) =>
     request<TaskInteractiveTerminalTranscript>(`/tasks/${taskId}/interactive-terminal/sessions/${encodeURIComponent(sessionId)}/transcript`),
   killTaskInteractiveTerminal: (id: string) =>

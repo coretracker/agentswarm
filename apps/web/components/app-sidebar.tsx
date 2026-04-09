@@ -14,6 +14,7 @@ import {
 import { PushpinFilled, PushpinOutlined, SearchOutlined } from "@ant-design/icons";
 import {
   getTaskStatusLabel,
+  getTaskTerminalSessionLabel,
   isQueuedTaskStatus,
   isTaskWorking,
   type Task
@@ -43,7 +44,7 @@ function isLiveTask(task: Task): boolean {
 
 function getTaskStatusText(task: Task): string {
   if (task.activeInteractiveSession) {
-    return "Interactive Terminal Running";
+    return `${getTaskTerminalSessionLabel(task.activeTerminalSessionMode === "git" ? "git" : "interactive")} Running`;
   }
 
   return getTaskStatusLabel(task.status);

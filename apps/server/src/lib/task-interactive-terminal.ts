@@ -9,10 +9,19 @@ import { URL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import pty from "node-pty";
 
-import { getTaskStatusLabel, isActiveTaskStatus, isQueuedTaskStatus, type Task } from "@agentswarm/shared-types";
+import {
+  getTaskStatusLabel,
+  getTaskTerminalSessionLabel,
+  getTaskTerminalSessionSentenceLabel,
+  isActiveTaskStatus,
+  isQueuedTaskStatus,
+  type Task,
+  type TaskTerminalSessionMode
+} from "@agentswarm/shared-types";
 
 import { env } from "../config/env.js";
 import type { AuthService } from "./auth.js";
+import { buildGitProcessEnv } from "./git-env.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
@@ -33,6 +42,10 @@ const INTERACTIVE_WS_PING_INTERVAL_MS = 25_000;
 const INTERACTIVE_TRANSCRIPT_LIMIT = 2_000_000;
 const INTERACTIVE_EXIT_WAIT_MS = 1_500;
 const INTERACTIVE_TERMINAL_CLOSE_CODE = 1012;
+
+function normalizeTerminalSessionMode(value: string | null | undefined): TaskTerminalSessionMode {
+  return value === "git" ? "git" : "interactive";
+}
 
 function buildInteractiveWorkspaceGitEnvEntries(workspacePath: string): Array<[string, string]> {
   return [
@@ -274,6 +287,7 @@ export interface TaskInteractiveTerminalDeps {
 
 interface ActiveInteractiveTerminalController {
   sessionId: string;
+  mode: TaskTerminalSessionMode;
   hasAttachedClient: () => boolean;
   canResume: () => boolean;
   attachClient: (ws: WebSocket) => boolean;
@@ -317,7 +331,7 @@ function sendInteractiveTerminalError(ws: WebSocket, message: string): void {
 
   ws.send(JSON.stringify({ type: "error", message }), () => {
     try {
-      ws.close(1011, "interactive terminal failed");
+      ws.close(1011, "terminal failed");
     } catch {
       /* ignore */
     }
@@ -339,6 +353,8 @@ export type TaskInteractiveTerminalStatusPayload = {
   reason?: string;
   /** When true, a browser session is already connected; block duplicate terminals and task composer sends. */
   activeInteractiveSession?: boolean;
+  /** Present when a terminal session is active for the task. */
+  terminalMode?: TaskTerminalSessionMode;
   /** When true, the browser can reconnect to an existing live terminal session for this task. */
   resumableInteractiveSession?: boolean;
 };
@@ -347,6 +363,7 @@ export async function getTaskInteractiveTerminalStatus(
   taskStore: TaskStore,
   settingsStore: SettingsStore,
   taskId: string,
+  mode: TaskTerminalSessionMode = "interactive"
 ): Promise<TaskInteractiveTerminalStatusPayload> {
   const task = await taskStore.getTask(taskId);
   if (!task) {
@@ -367,37 +384,61 @@ export async function getTaskInteractiveTerminalStatus(
   const activeInteractiveSession = await taskStore.getActiveInteractiveSession(taskId);
   if (activeInteractiveSession) {
     const controller = getActiveInteractiveTerminalController(taskId, activeInteractiveSession.sessionId);
+    const activeModeLabel = getTaskTerminalSessionLabel(activeInteractiveSession.mode);
     if (!controller) {
       return {
         available: false,
-        reason: "An interactive terminal session is active but cannot be resumed from this server process. Use Kill Terminal to clear it.",
-        activeInteractiveSession: true
+        reason: `${activeModeLabel} session is active but cannot be resumed from this server process. Use Kill Terminal to clear it.`,
+        activeInteractiveSession: true,
+        terminalMode: activeInteractiveSession.mode
+      };
+    }
+    if (activeInteractiveSession.mode !== mode) {
+      return {
+        available: false,
+        reason: `${activeModeLabel} session is already active for this task. Stop it before opening ${getTaskTerminalSessionLabel(mode)}.`,
+        activeInteractiveSession: true,
+        terminalMode: activeInteractiveSession.mode
       };
     }
     if (controller.hasAttachedClient()) {
       return {
         available: false,
-        reason: "An interactive terminal session is already open in another window.",
-        activeInteractiveSession: true
+        reason: `${activeModeLabel} session is already open in another window.`,
+        activeInteractiveSession: true,
+        terminalMode: activeInteractiveSession.mode
       };
     }
     if (controller.canResume()) {
       return {
         available: true,
-        reason: "Resume the active interactive terminal session.",
+        reason: `Resume the active ${getTaskTerminalSessionSentenceLabel(mode)} session.`,
         activeInteractiveSession: true,
+        terminalMode: activeInteractiveSession.mode,
         resumableInteractiveSession: true
       };
     }
     return {
       available: false,
-      reason: "The interactive terminal session is shutting down.",
-      activeInteractiveSession: true
+      reason: `The ${getTaskTerminalSessionSentenceLabel(mode)} session is shutting down.`,
+      activeInteractiveSession: true,
+      terminalMode: activeInteractiveSession.mode
     };
   }
 
   if (await taskStore.hasPendingChangeProposal(taskId)) {
     return { available: false, reason: "Apply or reject the pending checkpoint before opening a terminal." };
+  }
+
+  const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
+  try {
+    await access(workspaceOnServer, constants.R_OK | constants.X_OK);
+  } catch {
+    return { available: false, reason: "No workspace folder on disk for this task yet." };
+  }
+
+  if (mode === "git") {
+    return { available: true };
   }
 
   const [settings, credentials] = await Promise.all([
@@ -415,13 +456,6 @@ export async function getTaskInteractiveTerminalStatus(
     };
   }
 
-  const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
-  try {
-    await access(workspaceOnServer, constants.R_OK | constants.X_OK);
-  } catch {
-    return { available: false, reason: "No workspace folder on disk for this task yet." };
-  }
-
   return { available: true };
 }
 
@@ -434,7 +468,9 @@ export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, dep
 
   httpServer.prependListener("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const host = request.headers.host ?? "127.0.0.1";
-    const pathOnly = new URL(request.url ?? "/", `http://${host}`).pathname;
+    const requestUrl = new URL(request.url ?? "/", `http://${host}`);
+    const pathOnly = requestUrl.pathname;
+    const terminalMode = normalizeTerminalSessionMode(requestUrl.searchParams.get("mode"));
     const match = pathOnly.match(WS_PATH_RE);
     if (!match) {
       return;
@@ -466,8 +502,8 @@ export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, dep
         return;
       }
       wss.handleUpgrade(request, socket, head, (ws) => {
-        void initializeTaskInteractiveTerminalWebSocket(ws, task, deps).catch(() => {
-          sendInteractiveTerminalError(ws, "Interactive terminal initialization failed.");
+        void initializeTaskInteractiveTerminalWebSocket(ws, task, deps, terminalMode).catch(() => {
+          sendInteractiveTerminalError(ws, `${getTaskTerminalSessionLabel(terminalMode)} initialization failed.`);
         });
       });
     })().catch(() => {
@@ -483,54 +519,102 @@ export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, dep
 async function initializeTaskInteractiveTerminalWebSocket(
   ws: WebSocket,
   task: Task,
-  deps: TaskInteractiveTerminalDeps
+  deps: TaskInteractiveTerminalDeps,
+  mode: TaskTerminalSessionMode
 ): Promise<void> {
   const taskId = task.id;
   const activeInteractiveSession = await deps.taskStore.getActiveInteractiveSession(taskId);
   if (activeInteractiveSession) {
     const controller = getActiveInteractiveTerminalController(taskId, activeInteractiveSession.sessionId);
+    const activeModeLabel = getTaskTerminalSessionLabel(activeInteractiveSession.mode);
     if (!controller) {
       sendInteractiveTerminalError(
         ws,
-        "An interactive terminal session is active but cannot be resumed from this server process. Use Kill Terminal to clear it."
+        `${activeModeLabel} session is active but cannot be resumed from this server process. Use Kill Terminal to clear it.`
+      );
+      return;
+    }
+    if (activeInteractiveSession.mode !== mode) {
+      sendInteractiveTerminalError(
+        ws,
+        `${activeModeLabel} session is already active for this task. Stop it before opening ${getTaskTerminalSessionLabel(mode)}.`
       );
       return;
     }
     if (controller.hasAttachedClient()) {
-      sendInteractiveTerminalError(ws, "An interactive terminal session is already open in another window.");
+      sendInteractiveTerminalError(ws, `${activeModeLabel} session is already open in another window.`);
       return;
     }
     if (!controller.attachClient(ws)) {
-      sendInteractiveTerminalError(ws, "The interactive terminal session is shutting down.");
+      sendInteractiveTerminalError(ws, `The ${getTaskTerminalSessionSentenceLabel(mode)} session is shutting down.`);
       return;
     }
     return;
   }
 
-  const status = await getTaskInteractiveTerminalStatus(deps.taskStore, deps.settingsStore, taskId);
+  const status = await getTaskInteractiveTerminalStatus(deps.taskStore, deps.settingsStore, taskId, mode);
   if (!status.available) {
-    sendInteractiveTerminalError(ws, status.reason ?? "Interactive session unavailable");
-    return;
-  }
-
-  const [credentials, settings] = await Promise.all([
-    deps.settingsStore.getRuntimeCredentials(),
-    deps.settingsStore.getSettings()
-  ]);
-  const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
-  if (!runtime.ok) {
-    sendInteractiveTerminalError(ws, runtime.reason);
+    sendInteractiveTerminalError(ws, status.reason ?? `${getTaskTerminalSessionLabel(mode)} is unavailable`);
     return;
   }
 
   let interactiveSessionId: string | null = null;
 
   try {
-    const started = await deps.spawner.beginInteractiveTerminalSession(taskId);
+    const started = await deps.spawner.beginInteractiveTerminalSession(taskId, mode);
     interactiveSessionId = started.sessionId;
+    const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
+    if (mode === "git") {
+      const credentials = await deps.settingsStore.getRuntimeCredentials();
+      const shell = process.env.SHELL?.trim() || "sh";
+      const child = pty.spawn(
+        shell,
+        [
+          "-lc",
+          [
+            'printf "\\033[90mGit terminal ready in %s. Run git status, git commit -m ..., git pull --rebase, git push, or git merge from this workspace.\\033[0m\\n" "$PWD"',
+            `exec ${shellSingleQuote(shell)} -i`
+          ].join(" && ")
+        ],
+        {
+          name: "xterm-256color",
+          cols: 80,
+          rows: 24,
+          cwd: workspaceOnServer,
+          env: {
+            ...process.env,
+            ...(await buildGitProcessEnv({
+              workspacePath: workspaceOnServer,
+              githubToken: credentials.githubToken,
+              gitUsername: credentials.gitUsername
+            })),
+            TERM: "xterm-256color",
+            SHELL: shell,
+            AGENTSWARM_TERMINAL_MODE: mode
+          }
+        }
+      );
+
+      wireTerminalWebSocket(ws, child, {
+        taskId,
+        sessionId: interactiveSessionId,
+        spawner: deps.spawner,
+        taskStore: deps.taskStore,
+        mode
+      });
+      return;
+    }
+
+    const [credentials, settings] = await Promise.all([
+      deps.settingsStore.getRuntimeCredentials(),
+      deps.settingsStore.getSettings()
+    ]);
+    const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
+    if (!runtime.ok) {
+      throw new Error(runtime.reason);
+    }
 
     const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
-    const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
     const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
     const statePaths = runtime.persistentState
@@ -573,20 +657,24 @@ async function initializeTaskInteractiveTerminalWebSocket(
       cols: 80,
       rows: 24,
       cwd: process.env.HOME || "/",
-      env: { ...process.env, TERM: "xterm-256color" },
+      env: { ...process.env, TERM: "xterm-256color", AGENTSWARM_TERMINAL_MODE: mode },
     });
 
-    wireTerminalWebSocket(ws, child, sessionName, {
+    wireTerminalWebSocket(ws, child, {
       taskId,
       sessionId: interactiveSessionId,
       spawner: deps.spawner,
-      taskStore: deps.taskStore
+      taskStore: deps.taskStore,
+      mode,
+      forceCleanup: () => {
+        forceRemoveDockerSession(sessionName);
+      }
     });
   } catch (error) {
     if (interactiveSessionId) {
       await deps.spawner.endInteractiveTerminalSession(taskId, interactiveSessionId).catch(() => undefined);
     }
-    const message = error instanceof Error ? error.message : "Could not start interactive session";
+    const message = error instanceof Error ? error.message : `Could not start ${getTaskTerminalSessionSentenceLabel(mode)} session`;
     sendInteractiveTerminalError(ws, message);
   }
 }
@@ -594,8 +682,14 @@ async function initializeTaskInteractiveTerminalWebSocket(
 function wireTerminalWebSocket(
   ws: WebSocket,
   child: pty.IPty,
-  sessionContainerName: string,
-  proposalCtx: { taskId: string; sessionId: string; spawner: SpawnerService; taskStore: TaskStore }
+  proposalCtx: {
+    taskId: string;
+    sessionId: string;
+    spawner: SpawnerService;
+    taskStore: TaskStore;
+    mode: TaskTerminalSessionMode;
+    forceCleanup?: () => void;
+  }
 ): void {
   let sawTerminalOutput = false;
   let transcriptBuffer = "";
@@ -609,9 +703,11 @@ function wireTerminalWebSocket(
   const childExitPromise = new Promise<void>((resolve) => {
     resolveChildExit = resolve;
   });
+  const terminalLabel = getTaskTerminalSessionLabel(proposalCtx.mode);
+  const terminalSentenceLabel = getTaskTerminalSessionSentenceLabel(proposalCtx.mode);
 
   const logLifecycle = (message: string): void => {
-    const taskMessage = `Interactive terminal (${proposalCtx.sessionId}): ${message}`;
+    const taskMessage = `${terminalSentenceLabel} (${proposalCtx.sessionId}): ${message}`;
     console.info(`[interactive-terminal][${proposalCtx.taskId}][${proposalCtx.sessionId}] ${message}`);
     void proposalCtx.taskStore.appendLog(proposalCtx.taskId, taskMessage).catch(() => undefined);
   };
@@ -676,7 +772,7 @@ function wireTerminalWebSocket(
     }, INTERACTIVE_RESUME_GRACE_MS);
   };
 
-  const cleanupSession = (reason = "Interactive terminal session terminated."): Promise<void> => {
+  const cleanupSession = (reason = `${terminalLabel} session terminated.`): Promise<void> => {
     if (cleanupPromise) {
       return cleanupPromise;
     }
@@ -689,7 +785,7 @@ function wireTerminalWebSocket(
       logLifecycle(reason);
       try {
         if (activeWs && (activeWs.readyState === WebSocket.OPEN || activeWs.readyState === WebSocket.CONNECTING)) {
-          activeWs.close(INTERACTIVE_TERMINAL_CLOSE_CODE, "interactive terminal terminated");
+          activeWs.close(INTERACTIVE_TERMINAL_CLOSE_CODE, "terminal session terminated");
         }
       } catch {
         /* ignore */
@@ -699,7 +795,7 @@ function wireTerminalWebSocket(
       } catch {
         /* ignore */
       }
-      forceRemoveDockerSession(sessionContainerName);
+      proposalCtx.forceCleanup?.();
       await Promise.race([
         childExitPromise,
         new Promise<void>((resolve) => setTimeout(resolve, INTERACTIVE_EXIT_WAIT_MS))
@@ -713,6 +809,7 @@ function wireTerminalWebSocket(
 
   const controller: ActiveInteractiveTerminalController = {
     sessionId: proposalCtx.sessionId,
+    mode: proposalCtx.mode,
     hasAttachedClient: () => currentWs !== null,
     canResume: () => currentWs === null && cleanupPromise === null,
     attachClient: (nextWs) => {
@@ -813,7 +910,7 @@ function wireTerminalWebSocket(
       nextWs.on("pong", onPong);
 
       if (isResume) {
-        logLifecycle("Client resumed the live interactive terminal session.");
+        logLifecycle(`Client resumed the live ${terminalSentenceLabel} session.`);
       }
 
       return true;
@@ -838,15 +935,15 @@ function wireTerminalWebSocket(
     if (!sawTerminalOutput) {
       if (currentWs?.readyState === WebSocket.OPEN) {
         try {
-          currentWs.send(JSON.stringify({ type: "error", message: "Interactive process exited before it produced terminal output." }));
+          currentWs.send(JSON.stringify({ type: "error", message: "Terminal process exited before it produced terminal output." }));
         } catch {
           /* ignore */
         }
       }
-      void cleanupSession(`Interactive process exited before it produced terminal output (${exitSummary}).`);
+      void cleanupSession(`Terminal process exited before it produced terminal output (${exitSummary}).`);
       return;
     }
-    void cleanupSession(`Interactive process exited (${exitSummary}).`);
+    void cleanupSession(`Terminal process exited (${exitSummary}).`);
   });
 
   if (!controller.attachClient(ws)) {

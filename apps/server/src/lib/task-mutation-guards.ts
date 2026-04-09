@@ -5,7 +5,7 @@ export async function getMutationBlockedReason(taskStore: TaskStore, taskId: str
     return "Apply or reject the pending checkpoint before continuing.";
   }
   if (await taskStore.getActiveInteractiveSession(taskId)) {
-    return "Close the interactive terminal session before continuing.";
+    return "Close the terminal session before continuing.";
   }
   return null;
 }

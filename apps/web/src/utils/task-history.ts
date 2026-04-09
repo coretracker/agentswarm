@@ -1,4 +1,12 @@
-import type { TaskAction, TaskChangeProposal, TaskMessage, TaskRun } from "@agentswarm/shared-types";
+import {
+  getTaskTerminalSessionEndMessage,
+  getTaskTerminalSessionReviewMessage,
+  getTaskTerminalSessionStartMessage,
+  type TaskAction,
+  type TaskChangeProposal,
+  type TaskMessage,
+  type TaskRun
+} from "@agentswarm/shared-types";
 
 type RawMessageHistoryEntry = {
   key: string;
@@ -49,9 +57,12 @@ export type TaskHistoryEntry =
   | GroupedAutoRunHistoryEntry
   | GroupedTerminalHistoryEntry;
 
-export const INTERACTIVE_TERMINAL_START_MESSAGE = "Interactive terminal session started.";
-export const INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE = "Interactive terminal session ended. Review proposed changes below.";
-export const INTERACTIVE_TERMINAL_END_PREFIX = "Interactive terminal session ended.";
+export const INTERACTIVE_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("interactive");
+export const INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("interactive");
+export const INTERACTIVE_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("interactive").replace(/\.$/, "");
+export const GIT_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("git");
+export const GIT_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("git");
+export const GIT_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("git").replace(/\.$/, "");
 
 type AutoRunAction = Extract<TaskAction, "ask" | "build">;
 
@@ -76,11 +87,17 @@ function isAssistantSummaryMessage(message: TaskMessage): message is TaskMessage
 }
 
 function isInteractiveTerminalStartMessage(message: TaskMessage): boolean {
-  return message.role === "system" && message.content === INTERACTIVE_TERMINAL_START_MESSAGE;
+  return (
+    message.role === "system" &&
+    (message.content === INTERACTIVE_TERMINAL_START_MESSAGE || message.content === GIT_TERMINAL_START_MESSAGE)
+  );
 }
 
 function isInteractiveTerminalEndMessage(message: TaskMessage): boolean {
-  return message.role === "system" && message.content.startsWith(INTERACTIVE_TERMINAL_END_PREFIX);
+  return (
+    message.role === "system" &&
+    (message.content.startsWith(INTERACTIVE_TERMINAL_END_PREFIX) || message.content.startsWith(GIT_TERMINAL_END_PREFIX))
+  );
 }
 
 export function buildTaskHistoryEntries(input: {
@@ -236,7 +253,7 @@ export function buildTaskHistoryEntries(input: {
     const endSessionId = typeof endMessage.sessionId === "string" && endMessage.sessionId.trim().length > 0 ? endMessage.sessionId : null;
     let sessionId = startSessionId ?? endSessionId;
     let proposal: TaskChangeProposal | null = null;
-    if (endMessage.content === INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE) {
+    if (endMessage.content === INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE || endMessage.content === GIT_TERMINAL_END_REVIEW_MESSAGE) {
       if (sessionId) {
         const matchedProposal = interactiveProposalsBySessionId.get(sessionId) ?? null;
         if (matchedProposal && !consumedProposalIds.has(matchedProposal.id)) {
