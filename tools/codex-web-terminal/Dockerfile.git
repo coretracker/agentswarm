@@ -2,6 +2,11 @@ FROM alpine:latest
 
 RUN apk add --no-cache git vim diffutils ca-certificates
 
+COPY git-terminal-shell.sh /usr/local/bin/git-terminal-shell
+COPY git-terminal-bin/ /usr/local/git-terminal-bin/
+
+RUN chmod 755 /usr/local/bin/git-terminal-shell /usr/local/git-terminal-bin/*
+
 WORKDIR /workspace
 
 CMD ["sh"]
