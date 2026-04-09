@@ -11,6 +11,13 @@ This is a local experiment only: **no authentication**, and mounting the Docker 
 
 ## Build images (order matters)
 
+Build the restricted **Git terminal** image first if you want AgentSwarm's browser Git terminal to run inside a minimal Alpine container with `git`, `vim`, and `diff3`:
+
+```bash
+cd tools/codex-web-terminal
+docker build -f Dockerfile.git -t local/git-terminal:latest .
+```
+
 Build the **Codex runtime** image on the Docker host (the name must match `CODEX_IMAGE`, default `local/codex-interactive:latest`):
 
 ```bash

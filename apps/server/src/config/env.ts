@@ -20,6 +20,8 @@ const envSchema = z.object({
   DEFAULT_ADMIN_PASSWORD: z.string().min(8).default("admin123!"),
   AUTH_COOKIE_NAME: z.string().default("agentswarm_session"),
   AUTH_SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(7),
+  /** Docker image for the restricted in-browser Git terminal (see tools/codex-web-terminal/Dockerfile.git). Empty disables Git terminals. */
+  GIT_TERMINAL_IMAGE: z.string().default(""),
   /** Docker image for in-browser interactive Codex (see tools/codex-web-terminal/Dockerfile.codex). Empty disables Codex interactive terminals. */
   CODEX_INTERACTIVE_IMAGE: z.string().default(""),
   /** Docker image for in-browser interactive Claude Code (see tools/codex-web-terminal/Dockerfile.claude). Empty disables Claude interactive terminals. */

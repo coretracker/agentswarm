@@ -62,7 +62,7 @@ print_access_hint() {
 
 warn_if_missing_interactive_images() {
   local image
-  for image in "$CODEX_INTERACTIVE_IMAGE" "$CLAUDE_INTERACTIVE_IMAGE"; do
+  for image in "$GIT_TERMINAL_IMAGE" "$CODEX_INTERACTIVE_IMAGE" "$CLAUDE_INTERACTIVE_IMAGE"; do
     if ! docker image inspect "$image" >/dev/null 2>&1; then
       echo "warning: interactive image '$image' is not built." >&2
     fi
@@ -97,6 +97,14 @@ build_runtime_images() {
 }
 
 build_interactive_images() {
+  echo "Building restricted Git terminal image: $GIT_TERMINAL_IMAGE"
+  docker build \
+    --pull \
+    --no-cache \
+    -f "$ROOT_DIR/tools/codex-web-terminal/Dockerfile.git" \
+    -t "$GIT_TERMINAL_IMAGE" \
+    "$ROOT_DIR/tools/codex-web-terminal"
+
   echo "Building interactive Codex image: $CODEX_INTERACTIVE_IMAGE"
   docker build \
     --pull \
@@ -151,6 +159,7 @@ main() {
       cd "$ROOT_DIR"
       CODEX_RUNTIME_IMAGE="${CODEX_RUNTIME_IMAGE:-agentswarm-agent-runtime-codex:latest}"
       CLAUDE_RUNTIME_IMAGE="${CLAUDE_RUNTIME_IMAGE:-agentswarm-agent-runtime-claude:latest}"
+      GIT_TERMINAL_IMAGE="${GIT_TERMINAL_IMAGE:-local/git-terminal:latest}"
       CODEX_INTERACTIVE_IMAGE="${CODEX_INTERACTIVE_IMAGE:-local/codex-interactive:latest}"
       CLAUDE_INTERACTIVE_IMAGE="${CLAUDE_INTERACTIVE_IMAGE:-local/claude-interactive:latest}"
 

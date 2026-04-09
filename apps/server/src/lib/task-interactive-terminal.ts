@@ -21,7 +21,6 @@ import {
 
 import { env } from "../config/env.js";
 import type { AuthService } from "./auth.js";
-import { buildGitProcessEnv } from "./git-env.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
@@ -103,6 +102,21 @@ function buildCodexStartScript(configB64: string, model: string, reasoningEffort
   ].join(" && ");
 }
 
+function buildGitTerminalStartScript(): string {
+  return [
+    'cd "$TASK_INTERACTIVE_WORKSPACE"',
+    'printf "\\033[90mGit terminal ready in %s. This container only includes git, vim, and diff3.\\033[0m\\n" "$PWD"',
+    [
+      'if [ -n "${GIT_TOKEN:-}" ]; then',
+      "  printf '%s\\n' '#!/bin/sh' 'case \"$1\" in' '  *sername*) echo \"${GIT_USERNAME:-x-access-token}\" ;;' '  *assword*) echo \"${GIT_TOKEN:-}\" ;;' '  *) echo \"\" ;;' 'esac' > /tmp/agentswarm-git-askpass.sh",
+      "  chmod 700 /tmp/agentswarm-git-askpass.sh",
+      '  export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/tmp/agentswarm-git-askpass.sh',
+      "fi"
+    ].join("; "),
+    "exec sh -i"
+  ].join(" && ");
+}
+
 function buildClaudeSettingsJson(): string {
   return JSON.stringify({
     autoUpdaterStatus: "disabled",
@@ -153,6 +167,44 @@ type InteractiveTerminalRuntimeConfig =
 
 type InteractiveRuntimeSettings = Awaited<ReturnType<SettingsStore["getSettings"]>>;
 type InteractiveRuntimeCredentials = Awaited<ReturnType<SettingsStore["getRuntimeCredentials"]>>;
+
+function resolveGitTerminalRuntimeConfig(
+  credentials: InteractiveRuntimeCredentials
+):
+  | {
+      ok: true;
+      image: string;
+      envEntries: Array<[string, string]>;
+      startScript: string;
+    }
+  | {
+      ok: false;
+      reason: string;
+    } {
+  const image = env.GIT_TERMINAL_IMAGE?.trim();
+  if (!image) {
+    return { ok: false, reason: "Git terminal is not configured (set GIT_TERMINAL_IMAGE on the server)." };
+  }
+
+  const envEntries: Array<[string, string]> = [
+    ["TERM", "xterm-256color"],
+    ["HOME", "/root"],
+    ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
+    ["GIT_OPTIONAL_LOCKS", "0"],
+    ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
+  ];
+  if (credentials.githubToken?.trim()) {
+    envEntries.push(["GIT_TOKEN", credentials.githubToken.trim()]);
+    envEntries.push(["GIT_USERNAME", credentials.gitUsername?.trim() || "x-access-token"]);
+  }
+
+  return {
+    ok: true,
+    image,
+    envEntries,
+    startScript: buildGitTerminalStartScript()
+  };
+}
 
 function resolveInteractiveTerminalModel(task: Task): string {
   const configured = task.modelOverride?.trim();
@@ -253,8 +305,9 @@ function forceRemoveDockerSession(containerName: string): void {
   child.unref();
 }
 
-function interactiveImageBuildHint(provider: Task["provider"], image: string): string {
-  const dockerfile = provider === "claude" ? "Dockerfile.claude" : "Dockerfile.codex";
+function terminalImageBuildHint(mode: TaskTerminalSessionMode, provider: Task["provider"], image: string): string {
+  const dockerfile =
+    mode === "git" ? "Dockerfile.git" : provider === "claude" ? "Dockerfile.claude" : "Dockerfile.codex";
   return `docker build -f tools/codex-web-terminal/${dockerfile} -t ${image} tools/codex-web-terminal`;
 }
 
@@ -425,6 +478,17 @@ export async function getTaskInteractiveTerminalStatus(
   }
 
   if (mode === "git") {
+    const credentials = await settingsStore.getRuntimeCredentials();
+    const runtime = resolveGitTerminalRuntimeConfig(credentials);
+    if (!runtime.ok) {
+      return { available: false, reason: runtime.reason };
+    }
+    if (!(await dockerImageExists(runtime.image))) {
+      return {
+        available: false,
+        reason: `Git terminal image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("git", task.provider, runtime.image)}`
+      };
+    }
     return { available: true };
   }
 
@@ -439,7 +503,7 @@ export async function getTaskInteractiveTerminalStatus(
   if (!(await dockerImageExists(runtime.image))) {
     return {
       available: false,
-      reason: `Interactive ${runtime.providerLabel} image "${runtime.image}" is not available on the Docker host. Build it first: ${interactiveImageBuildHint(task.provider, runtime.image)}`
+      reason: `Interactive ${runtime.providerLabel} image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("interactive", task.provider, runtime.image)}`
     };
   }
 
@@ -551,43 +615,56 @@ async function initializeTaskInteractiveTerminalWebSocket(
     const started = await deps.spawner.beginInteractiveTerminalSession(taskId, mode);
     interactiveSessionId = started.sessionId;
     const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
+    const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
+    const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
     if (mode === "git") {
       const credentials = await deps.settingsStore.getRuntimeCredentials();
-      const shell = process.env.SHELL?.trim() || "sh";
-      const child = pty.spawn(
-        shell,
-        [
-          "-lc",
-          [
-            'printf "\\033[90mGit terminal ready in %s. Run git status, git commit -m ..., git pull --rebase, git push, or git merge from this workspace.\\033[0m\\n" "$PWD"',
-            `exec ${shellSingleQuote(shell)} -i`
-          ].join(" && ")
-        ],
-        {
-          name: "xterm-256color",
-          cols: 80,
-          rows: 24,
-          cwd: workspaceOnServer,
-          env: {
-            ...process.env,
-            ...(await buildGitProcessEnv({
-              workspacePath: workspaceOnServer,
-              githubToken: credentials.githubToken,
-              gitUsername: credentials.gitUsername
-            })),
-            TERM: "xterm-256color",
-            SHELL: shell,
-            AGENTSWARM_TERMINAL_MODE: mode
-          }
-        }
-      );
+      const runtime = resolveGitTerminalRuntimeConfig(credentials);
+      if (!runtime.ok) {
+        throw new Error(runtime.reason);
+      }
+
+      const sessionName = `aswgit-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
+      const dockerEnv: string[] = [];
+      for (const [name, value] of runtime.envEntries) {
+        dockerEnv.push("-e", `${name}=${value}`);
+      }
+      dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
+
+      const dockerArgs = [
+        "run",
+        "-i",
+        "-t",
+        "--rm",
+        "--name",
+        sessionName,
+        "-v",
+        `${dockerBindSource}:/workspace:rw`,
+        ...gitRuntimeMounts,
+        ...dockerEnv,
+        runtime.image,
+        "sh",
+        "-lc",
+        runtime.startScript
+      ];
+
+      const child = pty.spawn("docker", dockerArgs, {
+        name: "xterm-256color",
+        cols: 80,
+        rows: 24,
+        cwd: process.env.HOME || "/",
+        env: { ...process.env, TERM: "xterm-256color", AGENTSWARM_TERMINAL_MODE: mode }
+      });
 
       wireTerminalWebSocket(ws, child, {
         taskId,
         sessionId: interactiveSessionId,
         spawner: deps.spawner,
         taskStore: deps.taskStore,
-        mode
+        mode,
+        forceCleanup: () => {
+          forceRemoveDockerSession(sessionName);
+        }
       });
       return;
     }
@@ -602,8 +679,6 @@ async function initializeTaskInteractiveTerminalWebSocket(
     }
 
     const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
-    const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
-    const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
     const statePaths = runtime.persistentState
       ? await ensureTaskProviderStatePaths(task.id, runtime.provider, {
           uid: runtime.persistentState.uid,
