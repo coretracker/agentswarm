@@ -83,7 +83,8 @@ const bootstrap = async (): Promise<void> => {
     auth,
     taskStore,
     settingsStore,
-    spawner
+    spawner,
+    userStore
   });
 
   const io = new SocketIOServer(app.server, {

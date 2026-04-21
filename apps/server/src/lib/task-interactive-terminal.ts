@@ -34,6 +34,9 @@ import {
 } from "./provider-config.js";
 import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
 import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
+import { resolveTaskGitCommitIdentity, type GitCommitIdentity } from "./task-git-identity.js";
+import { buildGitTerminalEnvEntries, buildInteractiveWorkspaceGitEnvEntries } from "./task-interactive-terminal-git-env.js";
+import type { UserStore } from "../services/user-store.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
 const INTERACTIVE_WORKSPACE_PATH = "/workspace";
@@ -44,14 +47,6 @@ const INTERACTIVE_TERMINAL_CLOSE_CODE = 1012;
 
 function normalizeTerminalSessionMode(value: string | null | undefined): TaskTerminalSessionMode {
   return value === "git" ? "git" : "interactive";
-}
-
-function buildInteractiveWorkspaceGitEnvEntries(workspacePath: string): Array<[string, string]> {
-  return [
-    ["GIT_CONFIG_COUNT", "1"],
-    ["GIT_CONFIG_KEY_0", "safe.directory"],
-    ["GIT_CONFIG_VALUE_0", workspacePath]
-  ];
 }
 
 function buildCodexUserConfigToml(workspacePath: string, model: string): string {
@@ -155,7 +150,8 @@ type InteractiveRuntimeSettings = Awaited<ReturnType<SettingsStore["getSettings"
 type InteractiveRuntimeCredentials = Awaited<ReturnType<SettingsStore["getRuntimeCredentials"]>>;
 
 function resolveGitTerminalRuntimeConfig(
-  credentials: InteractiveRuntimeCredentials
+  credentials: InteractiveRuntimeCredentials,
+  gitIdentity?: GitCommitIdentity | null
 ):
   | {
       ok: true;
@@ -172,22 +168,15 @@ function resolveGitTerminalRuntimeConfig(
     return { ok: false, reason: "Git terminal is not configured (set GIT_TERMINAL_IMAGE on the server)." };
   }
 
-  const envEntries: Array<[string, string]> = [
-    ["TERM", "xterm-256color"],
-    ["HOME", "/root"],
-    ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
-    ["GIT_OPTIONAL_LOCKS", "0"],
-    ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
-  ];
-  if (credentials.githubToken?.trim()) {
-    envEntries.push(["GIT_TOKEN", credentials.githubToken.trim()]);
-    envEntries.push(["GIT_USERNAME", credentials.gitUsername?.trim() || "x-access-token"]);
-  }
-
   return {
     ok: true,
     image,
-    envEntries,
+    envEntries: buildGitTerminalEnvEntries({
+      workspacePath: INTERACTIVE_WORKSPACE_PATH,
+      githubToken: credentials.githubToken,
+      gitUsername: credentials.gitUsername,
+      gitIdentity
+    }),
     startScript: buildGitTerminalStartScript()
   };
 }
@@ -321,6 +310,7 @@ export interface TaskInteractiveTerminalDeps {
   taskStore: TaskStore;
   settingsStore: SettingsStore;
   spawner: SpawnerService;
+  userStore: Pick<UserStore, "getUser">;
 }
 
 interface ActiveInteractiveTerminalController {
@@ -604,8 +594,14 @@ async function initializeTaskInteractiveTerminalWebSocket(
     const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
     if (mode === "git") {
-      const credentials = await deps.settingsStore.getRuntimeCredentials();
-      const runtime = resolveGitTerminalRuntimeConfig(credentials);
+      const [credentials, gitIdentity] = await Promise.all([
+        deps.settingsStore.getRuntimeCredentials(),
+        resolveTaskGitCommitIdentity(task, deps.userStore, {
+          name: env.GIT_USER_NAME,
+          email: env.GIT_USER_EMAIL
+        })
+      ]);
+      const runtime = resolveGitTerminalRuntimeConfig(credentials, gitIdentity);
       if (!runtime.ok) {
         throw new Error(runtime.reason);
       }
