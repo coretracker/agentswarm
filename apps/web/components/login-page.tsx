@@ -39,9 +39,11 @@ export function LoginPage() {
         background:
           mode === "cyber"
             ? "radial-gradient(circle at top, rgba(0, 240, 255, 0.16) 0%, rgba(0, 240, 255, 0) 28%), linear-gradient(180deg, #050814 0%, #0a0a1a 56%, #101733 100%)"
+            : mode === "forge"
+              ? "radial-gradient(circle at top, rgba(255, 107, 53, 0.16) 0%, rgba(255, 107, 53, 0) 28%), linear-gradient(180deg, #0b0f14 0%, #0d1117 56%, #141b25 100%)"
             : isDarkAppTheme(mode)
-            ? "linear-gradient(180deg, #0f1613 0%, #19231e 100%)"
-            : "linear-gradient(180deg, #f6f7fb 0%, #e8edf5 100%)"
+              ? "linear-gradient(180deg, #0f1613 0%, #19231e 100%)"
+              : "linear-gradient(180deg, #f6f7fb 0%, #e8edf5 100%)"
       }}
     >
       <Flex
@@ -60,6 +62,8 @@ export function LoginPage() {
             boxShadow:
               mode === "cyber"
                 ? "none"
+                : mode === "forge"
+                  ? "0 24px 60px rgba(0, 0, 0, 0.5)"
                 : isDarkAppTheme(mode)
                   ? "0 24px 60px rgba(0, 0, 0, 0.38)"
                   : "0 24px 60px rgba(15, 23, 42, 0.12)"

@@ -20,7 +20,7 @@ function resolveInitialThemeMode(): AppThemeMode {
   }
 
   const storedMode = window.localStorage.getItem(THEME_STORAGE_KEY);
-  if (storedMode === "light" || storedMode === "dark" || storedMode === "cyber") {
+  if (storedMode === "light" || storedMode === "dark" || storedMode === "cyber" || storedMode === "forge") {
     return storedMode;
   }
 

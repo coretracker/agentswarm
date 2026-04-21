@@ -1,6 +1,6 @@
 import { theme as antTheme, type ThemeConfig } from "antd";
 
-export type AppThemeMode = "light" | "dark" | "cyber";
+export type AppThemeMode = "light" | "dark" | "cyber" | "forge";
 
 const sharedComponents: ThemeConfig["components"] = {
   Button: {
@@ -350,10 +350,107 @@ export const cyberAntdTheme: ThemeConfig = {
   }
 };
 
+export const forgeAntdTheme: ThemeConfig = {
+  algorithm: antTheme.darkAlgorithm,
+  token: {
+    colorPrimary: "#ff6b35",
+    colorSuccess: "#00c2a9",
+    colorWarning: "#ffa726",
+    colorError: "#ff5252",
+    colorInfo: "#5e72eb",
+    colorTextBase: "#c9d1d9",
+    colorBgBase: "#0d1117",
+    colorPrimaryBg: "#ff6b3520",
+    colorPrimaryBgHover: "#ff6b3530",
+    colorPrimaryBorder: "#ff6b3550",
+    colorPrimaryBorderHover: "#ff6b3570",
+    colorPrimaryHover: "#ff8257",
+    colorPrimaryActive: "#e55929",
+    colorPrimaryText: "#ff6b35",
+    colorPrimaryTextHover: "#ff8257",
+    colorPrimaryTextActive: "#e55929",
+    colorInfoBg: "#5e72eb20",
+    colorInfoBgHover: "#5e72eb30",
+    colorInfoBorder: "#5e72eb50",
+    colorInfoBorderHover: "#5e72eb70",
+    colorInfoHover: "#7c8ff0",
+    colorInfoActive: "#4c5fd6",
+    colorInfoText: "#5e72eb",
+    colorInfoTextHover: "#7c8ff0",
+    colorInfoTextActive: "#4c5fd6",
+    colorText: "rgba(201, 209, 217, 0.88)",
+    colorTextSecondary: "rgba(201, 209, 217, 0.65)",
+    colorTextTertiary: "rgba(201, 209, 217, 0.45)",
+    colorTextQuaternary: "rgba(201, 209, 217, 0.25)",
+    colorTextDisabled: "rgba(201, 209, 217, 0.25)",
+    colorTextPlaceholder: "rgba(201, 209, 217, 0.42)",
+    colorBgContainer: "#161b22",
+    colorBgElevated: "#21262d",
+    colorBgLayout: "#0d1117",
+    colorBgSpotlight: "rgba(201, 209, 217, 0.85)",
+    colorBgMask: "rgba(0, 0, 0, 0.6)",
+    colorBorder: "#30363d",
+    colorBorderSecondary: "#21262d",
+    borderRadius: 6,
+    borderRadiusXS: 2,
+    borderRadiusSM: 4,
+    borderRadiusLG: 8,
+    padding: 16,
+    paddingSM: 12,
+    paddingLG: 20,
+    margin: 16,
+    marginSM: 12,
+    marginLG: 20,
+    boxShadow: "0 2px 8px 0 rgba(0, 0, 0, 0.4)",
+    boxShadowSecondary: "0 4px 12px 0 rgba(0, 0, 0, 0.5)"
+  },
+  components: {
+    ...sharedComponents,
+    Button: {
+      ...sharedComponents?.Button,
+      defaultBg: "#161b22",
+      defaultColor: "rgba(201, 209, 217, 0.88)",
+      defaultBorderColor: "#30363d",
+      defaultHoverBg: "#21262d",
+      defaultHoverColor: "#ff8257",
+      defaultHoverBorderColor: "#ff6b3570",
+      defaultActiveBg: "#161b22",
+      defaultActiveColor: "#e55929",
+      defaultActiveBorderColor: "#e55929"
+    },
+    Card: {
+      ...sharedComponents?.Card,
+      headerBg: "#161b22",
+      extraColor: "rgba(201, 209, 217, 0.65)"
+    },
+    Input: {
+      hoverBorderColor: "#ff6b3570",
+      activeBorderColor: "#ff6b35",
+      activeShadow: "0 0 0 1px rgba(255, 107, 53, 0.24)",
+      hoverBg: "#0d1117",
+      activeBg: "#0d1117"
+    },
+    Tag: {
+      defaultBg: "#ff6b3520",
+      defaultColor: "#ff6b35"
+    },
+    Timeline: {
+      ...sharedComponents?.Timeline,
+      dotBg: "#ff6b35",
+      tailColor: "#30363d"
+    },
+    Progress: {
+      defaultColor: "#ff6b35",
+      remainingColor: "#30363d"
+    }
+  }
+};
+
 export const appThemeOptions: Array<{ label: string; value: AppThemeMode }> = [
   { label: "Light", value: "light" },
   { label: "Dark", value: "dark" },
-  { label: "Cyber Neon", value: "cyber" }
+  { label: "Cyber Neon", value: "cyber" },
+  { label: "Forge", value: "forge" }
 ];
 
 export const isDarkAppTheme = (mode: AppThemeMode): boolean => mode !== "light";
@@ -364,6 +461,8 @@ export const getAppAntdTheme = (mode: AppThemeMode): ThemeConfig => {
       return darkAntdTheme;
     case "cyber":
       return cyberAntdTheme;
+    case "forge":
+      return forgeAntdTheme;
     default:
       return lightAntdTheme;
   }
