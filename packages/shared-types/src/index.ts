@@ -513,6 +513,22 @@ export interface GitHubBranchReference {
   isDefault: boolean;
 }
 
+export type DataStoreBackend = "redis" | "postgres";
+
+export interface SystemDataStores {
+  taskStore: DataStoreBackend;
+  snippetStore: DataStoreBackend;
+  repositoryStore: DataStoreBackend;
+  credentialStore: DataStoreBackend;
+  roleStore: DataStoreBackend;
+  userStore: DataStoreBackend;
+  settingsStore: DataStoreBackend;
+  taskQueueStore: "redis";
+  webhookDeliveryStore: "redis";
+  sessionStore: "redis";
+  eventBus: "redis";
+}
+
 export interface SystemSettings {
   defaultProvider: AgentProvider;
   maxAgents: number;
@@ -527,6 +543,7 @@ export interface SystemSettings {
   codexDefaultEffort: ProviderProfile;
   claudeDefaultModel: string;
   claudeDefaultEffort: ProviderProfile;
+  dataStores?: SystemDataStores;
 }
 
 export interface CreateRepositoryInput {

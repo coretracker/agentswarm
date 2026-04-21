@@ -64,6 +64,11 @@ export interface TaskInteractiveTerminalStatus {
   terminalMode?: TaskTerminalSessionMode;
 }
 
+export interface TaskBranchSyncCounts {
+  pullCount: number;
+  pushCount: number;
+}
+
 export interface ListTasksOptions {
   view?: "all" | "active" | "archived";
   limit?: number;
@@ -183,6 +188,7 @@ export const api = {
     return request<Task[]>(`/tasks${query ? `?${query}` : ""}`);
   },
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
+  getTaskBranchSyncCounts: (id: string) => request<TaskBranchSyncCounts>(`/tasks/${id}/branch-sync-counts`),
   getTaskInteractiveTerminalStatus: (id: string, options?: { mode?: TaskTerminalSessionMode }) => {
     const params = new URLSearchParams();
     if (options?.mode) {

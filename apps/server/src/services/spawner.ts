@@ -45,9 +45,9 @@ import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
 import { env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
-import { TaskStore } from "./task-store.js";
-import { SettingsStore } from "./settings-store.js";
-import { UserStore } from "./user-store.js";
+import type { TaskStore } from "./task-store.js";
+import type { SettingsStore } from "./settings-store.js";
+import type { UserStore } from "./user-store.js";
 
 const ansiPattern = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\))/g;
 

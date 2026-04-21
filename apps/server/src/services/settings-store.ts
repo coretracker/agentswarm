@@ -1,21 +1,38 @@
 import type Redis from "ioredis";
+import type { Pool } from "pg";
 import type {
   AgentProvider,
+  SystemDataStores,
   McpServerConfig,
   ProviderProfile,
   SystemSettings,
   UpdateCredentialSettingsInput,
   UpdateSettingsInput
 } from "@agentswarm/shared-types";
+import { env } from "../config/env.js";
 import { EventBus } from "../lib/events.js";
 import { normalizeProvider, DEFAULT_PROVIDER, normalizeProviderProfile } from "../lib/provider-config.js";
 import { defaultModelForProvider } from "../lib/provider-config.js";
-import { CredentialStore, type RuntimeCredentials } from "./credential-store.js";
+import type { CredentialStore, RuntimeCredentials } from "./credential-store.js";
 
 const SETTINGS_KEY = "agentswarm:settings";
 
 const DEFAULT_CODEX_EFFORT: ProviderProfile = "high";
 const DEFAULT_CLAUDE_EFFORT: ProviderProfile = "high";
+
+const buildSystemDataStores = (): SystemDataStores => ({
+  taskStore: env.STORE_BACKENDS.taskStore,
+  snippetStore: env.STORE_BACKENDS.snippetStore,
+  repositoryStore: env.STORE_BACKENDS.repositoryStore,
+  credentialStore: env.STORE_BACKENDS.credentialStore,
+  roleStore: env.STORE_BACKENDS.roleStore,
+  userStore: env.STORE_BACKENDS.userStore,
+  settingsStore: env.STORE_BACKENDS.settingsStore,
+  taskQueueStore: "redis",
+  webhookDeliveryStore: "redis",
+  sessionStore: "redis",
+  eventBus: "redis"
+});
 
 const defaultSettings: SystemSettings = {
   defaultProvider: DEFAULT_PROVIDER,
@@ -30,7 +47,8 @@ const defaultSettings: SystemSettings = {
   codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.4",
   codexDefaultEffort: DEFAULT_CODEX_EFFORT,
   claudeDefaultModel: defaultModelForProvider("claude", DEFAULT_CLAUDE_EFFORT) ?? "claude-sonnet-4-5",
-  claudeDefaultEffort: DEFAULT_CLAUDE_EFFORT
+  claudeDefaultEffort: DEFAULT_CLAUDE_EFFORT,
+  dataStores: buildSystemDataStores()
 };
 
 const normalizeBranchPrefix = (value: string | undefined): string => {
@@ -110,7 +128,20 @@ const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerCon
   return normalized;
 };
 
-export class SettingsStore {
+export interface SettingsRuntimeCredentials extends RuntimeCredentials {
+  gitUsername: string;
+  openaiBaseUrl: string | null;
+  defaultProvider: AgentProvider;
+}
+
+export interface SettingsStore {
+  getSettings(): Promise<SystemSettings>;
+  updateSettings(input: UpdateSettingsInput): Promise<SystemSettings>;
+  updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings>;
+  getRuntimeCredentials(): Promise<SettingsRuntimeCredentials>;
+}
+
+export class RedisSettingsStore implements SettingsStore {
   constructor(
     private readonly redis: Redis,
     private readonly eventBus: EventBus,
@@ -165,7 +196,8 @@ export class SettingsStore {
     const credentialStatus = await this.credentialStore.getCredentialStatus();
     return {
       ...normalizedBase,
-      ...credentialStatus
+      ...credentialStatus,
+      dataStores: buildSystemDataStores()
     };
   }
 
@@ -203,9 +235,188 @@ export class SettingsStore {
     return settings;
   }
 
-  async getRuntimeCredentials(): Promise<
-    RuntimeCredentials & { gitUsername: string; openaiBaseUrl: string | null; defaultProvider: AgentProvider }
-  > {
+  async getRuntimeCredentials(): Promise<SettingsRuntimeCredentials> {
+    const [credentials, settings] = await Promise.all([
+      this.credentialStore.getCredentials(),
+      this.getSettings()
+    ]);
+
+    return {
+      ...credentials,
+      gitUsername: settings.gitUsername,
+      openaiBaseUrl: settings.openaiBaseUrl,
+      defaultProvider: settings.defaultProvider
+    };
+  }
+}
+
+export class PostgresSettingsStore implements SettingsStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly eventBus: EventBus,
+    private readonly credentialStore: CredentialStore
+  ) {}
+
+  private async publishSettings(settings: SystemSettings): Promise<void> {
+    await this.eventBus.publish({ type: "settings:updated", payload: settings });
+  }
+
+  private async ensureBaseSettingsRow(): Promise<void> {
+    await this.pool.query(
+      `
+        INSERT INTO system_settings (
+          singleton_id,
+          default_provider,
+          max_agents,
+          branch_prefix,
+          git_username,
+          mcp_servers,
+          openai_base_url,
+          codex_default_model,
+          codex_default_effort,
+          claude_default_model,
+          claude_default_effort
+        )
+        VALUES (1, $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+        ON CONFLICT (singleton_id) DO NOTHING
+      `,
+      [
+        defaultSettings.defaultProvider,
+        defaultSettings.maxAgents,
+        defaultSettings.branchPrefix,
+        defaultSettings.gitUsername,
+        JSON.stringify(defaultSettings.mcpServers),
+        defaultSettings.openaiBaseUrl,
+        defaultSettings.codexDefaultModel,
+        defaultSettings.codexDefaultEffort,
+        defaultSettings.claudeDefaultModel,
+        defaultSettings.claudeDefaultEffort
+      ]
+    );
+  }
+
+  async getSettings(): Promise<SystemSettings> {
+    await this.ensureBaseSettingsRow();
+    const result = await this.pool.query(
+      `
+        SELECT
+          default_provider,
+          max_agents,
+          branch_prefix,
+          git_username,
+          mcp_servers,
+          openai_base_url,
+          codex_default_model,
+          codex_default_effort,
+          claude_default_model,
+          claude_default_effort
+        FROM system_settings
+        WHERE singleton_id = 1
+      `
+    );
+    const row = result.rows[0];
+    const normalizedBase = {
+      defaultProvider: normalizeDefaultProvider(row?.default_provider),
+      maxAgents: typeof row?.max_agents === "number" ? row.max_agents : defaultSettings.maxAgents,
+      branchPrefix: normalizeBranchPrefix(typeof row?.branch_prefix === "string" ? row.branch_prefix : undefined),
+      gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
+      mcpServers: normalizeMcpServers(Array.isArray(row?.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined),
+      openaiBaseUrl: typeof row?.openai_base_url === "string" && row.openai_base_url.trim().length > 0 ? row.openai_base_url.trim() : null,
+      codexDefaultModel:
+        typeof row?.codex_default_model === "string" && row.codex_default_model.trim().length > 0
+          ? row.codex_default_model.trim()
+          : defaultSettings.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(row?.codex_default_effort) ?? defaultSettings.codexDefaultEffort,
+      claudeDefaultModel:
+        typeof row?.claude_default_model === "string" && row.claude_default_model.trim().length > 0
+          ? row.claude_default_model.trim()
+          : defaultSettings.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(row?.claude_default_effort) ?? defaultSettings.claudeDefaultEffort
+    };
+
+    const credentialStatus = await this.credentialStore.getCredentialStatus();
+    return {
+      ...normalizedBase,
+      ...credentialStatus,
+      dataStores: buildSystemDataStores()
+    };
+  }
+
+  async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
+    const current = await this.getSettings();
+    const nextBase = {
+      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
+      maxAgents: input.maxAgents ?? current.maxAgents,
+      branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
+      gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
+      mcpServers: input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
+      openaiBaseUrl:
+        input.openaiBaseUrl === undefined
+          ? current.openaiBaseUrl
+          : input.openaiBaseUrl?.trim()
+            ? input.openaiBaseUrl.trim()
+            : null,
+      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
+      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort
+    };
+
+    await this.pool.query(
+      `
+        INSERT INTO system_settings (
+          singleton_id,
+          default_provider,
+          max_agents,
+          branch_prefix,
+          git_username,
+          mcp_servers,
+          openai_base_url,
+          codex_default_model,
+          codex_default_effort,
+          claude_default_model,
+          claude_default_effort
+        )
+        VALUES (1, $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+        ON CONFLICT (singleton_id) DO UPDATE
+        SET
+          default_provider = EXCLUDED.default_provider,
+          max_agents = EXCLUDED.max_agents,
+          branch_prefix = EXCLUDED.branch_prefix,
+          git_username = EXCLUDED.git_username,
+          mcp_servers = EXCLUDED.mcp_servers,
+          openai_base_url = EXCLUDED.openai_base_url,
+          codex_default_model = EXCLUDED.codex_default_model,
+          codex_default_effort = EXCLUDED.codex_default_effort,
+          claude_default_model = EXCLUDED.claude_default_model,
+          claude_default_effort = EXCLUDED.claude_default_effort
+      `,
+      [
+        nextBase.defaultProvider,
+        nextBase.maxAgents,
+        nextBase.branchPrefix,
+        nextBase.gitUsername,
+        JSON.stringify(nextBase.mcpServers),
+        nextBase.openaiBaseUrl,
+        nextBase.codexDefaultModel,
+        nextBase.codexDefaultEffort,
+        nextBase.claudeDefaultModel,
+        nextBase.claudeDefaultEffort
+      ]
+    );
+    const next = await this.getSettings();
+    await this.publishSettings(next);
+    return next;
+  }
+
+  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings> {
+    await this.credentialStore.updateCredentials(input);
+    const settings = await this.getSettings();
+    await this.publishSettings(settings);
+    return settings;
+  }
+
+  async getRuntimeCredentials(): Promise<SettingsRuntimeCredentials> {
     const [credentials, settings] = await Promise.all([
       this.credentialStore.getCredentials(),
       this.getSettings()

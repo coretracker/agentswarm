@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   getAgentProviderLabel,
   getDefaultModelForProvider,
@@ -582,6 +582,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     >
   >({});
   const [redirectingToTaskList, setRedirectingToTaskList] = useState(false);
+  const [taskPageVisible, setTaskPageVisible] = useState(false);
   const [workspaceFilePreview, setWorkspaceFilePreview] = useState<WorkspaceFilePreviewState>({
     open: false,
     loading: false,
@@ -629,6 +630,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setInteractiveTerminalStatus(null);
     setGitTerminalStatus(null);
     setInteractiveTerminalLaunchPending(false);
+    setTaskPageVisible(false);
     initialBottomScrollStateRef.current = null;
   }, [taskId]);
 
@@ -875,6 +877,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setDiffCompareBaseRef(task.repoDefaultBranch?.trim() ? task.repoDefaultBranch : null);
     }
   }, [task?.id, task?.repoDefaultBranch]);
+
+  useEffect(() => {
+    if (activeMainTab !== "diff" || !hasDiffTab || !task?.id) {
+      return;
+    }
+
+    let cancelled = false;
+    void api
+      .getTaskBranchSyncCounts(task.id)
+      .then((counts) => {
+        if (cancelled) {
+          return;
+        }
+
+        setTask((current) => (current && current.id === task.id ? { ...current, ...counts } : current));
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMainTab, hasDiffTab, liveDiffRefreshKey, setTask, task?.id]);
 
   useEffect(() => {
     if (providerInputOptions.some((option) => option.value === providerInput)) {
@@ -1557,7 +1581,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
   }, [interactiveTerminalRunning]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!task?.id || loading || messagesLoading || runsLoading) {
       return;
     }
@@ -1568,9 +1592,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       hasActiveTerminalHistoryEntry && (!current || current.taskId !== task.id || !current.scrolledWithTerminal);
 
     if (!needsInitialScroll && !needsTerminalFollowupScroll) {
-      return;
+      const revealFrameId = window.requestAnimationFrame(() => {
+        setTaskPageVisible(true);
+      });
+
+      return () => {
+        window.cancelAnimationFrame(revealFrameId);
+      };
     }
 
+    setTaskPageVisible(false);
     initialBottomScrollStateRef.current = {
       taskId: task.id,
       scrolledWithTerminal: hasActiveTerminalHistoryEntry
@@ -1584,13 +1615,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       });
     };
 
-    requestAnimationFrame(() => {
-      requestAnimationFrame(scrollToBottomAnchor);
+    let nestedFrameId = 0;
+    const firstFrameId = window.requestAnimationFrame(() => {
+      nestedFrameId = window.requestAnimationFrame(scrollToBottomAnchor);
     });
 
     const timeoutId = window.setTimeout(scrollToBottomAnchor, 180);
+    const revealTimeoutId = window.setTimeout(() => {
+      setTaskPageVisible(true);
+    }, 220);
     return () => {
+      window.cancelAnimationFrame(firstFrameId);
+      window.cancelAnimationFrame(nestedFrameId);
       window.clearTimeout(timeoutId);
+      window.clearTimeout(revealTimeoutId);
     };
   }, [hasActiveTerminalHistoryEntry, loading, messagesLoading, runsLoading, task?.id]);
 
@@ -3554,6 +3592,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       <Empty description={messagesLoading || runsLoading ? "Loading history..." : "No history yet."} image={Empty.PRESENTED_IMAGE_SIMPLE} />
     ) : null;
 
+  const taskRevealStyle: CSSProperties = {
+    opacity: taskPageVisible ? 1 : 0,
+    visibility: taskPageVisible ? "visible" : "hidden",
+    transform: taskPageVisible ? "translateY(0)" : "translateY(12px)",
+    transition: "opacity 220ms ease-out, transform 220ms ease-out",
+    willChange: "opacity, transform"
+  };
+
   const mainTabItems = [
     {
       key: "chat",
@@ -3748,149 +3794,172 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }}
       />
       <Flex vertical gap={16} style={{ width: "100%", paddingBottom: 16 }}>
-        <Flex vertical gap={12}>
-          <Flex justify="space-between" align="center" gap={12} wrap="wrap">
-            <Space align="center" size={8} wrap>
-              <Typography.Title level={2} style={{ margin: 0 }}>
-                {task?.title ?? "Task Detail"}
-              </Typography.Title>
-              {canEditTask && !isArchived && task ? (
-                <Tooltip title="Rename task">
-                  <Button
-                    type="text"
-                    icon={<EditOutlined />}
-                    aria-label="Rename task"
-                    onClick={() => {
-                      setRenameTitleDraft(task.title);
-                      setRenameModalOpen(true);
-                    }}
-                  />
-                </Tooltip>
-              ) : null}
-            </Space>
-            {task ? (
-              <Space wrap size={8} style={{ justifyContent: "flex-end" }}>
-                {showWorkingIndicator ? (
-                  <Space size={6} align="center" style={{ color: "rgba(0,0,0,0.65)" }}>
-                    <Spin size="small" />
-                    <Typography.Text type="secondary">{workingIndicatorLabel}</Typography.Text>
-                  </Space>
-                ) : null}
-
-                {hasExecutionButtons ? (
-                  <Space wrap size={8}>
-                    {canCancel ? (
+        {task ? (
+          <div style={taskRevealStyle}>
+            <Flex vertical gap={12}>
+              <Flex justify="space-between" align="center" gap={12} wrap="wrap">
+                <Space align="center" size={8} wrap>
+                  <Typography.Title level={2} style={{ margin: 0 }}>
+                    {task.title}
+                  </Typography.Title>
+                  {canEditTask && !isArchived ? (
+                    <Tooltip title="Rename task">
                       <Button
-                        danger
-                        onClick={async () => {
-                          setSubmitting("cancel");
-                          try {
-                            await api.cancelTask(task.id);
-                            messageApi.success(isQueued ? "Task cancelled" : "Cancellation requested");
-                          } finally {
-                            setSubmitting(null);
-                          }
+                        type="text"
+                        icon={<EditOutlined />}
+                        aria-label="Rename task"
+                        onClick={() => {
+                          setRenameTitleDraft(task.title);
+                          setRenameModalOpen(true);
                         }}
-                        loading={submitting === "cancel"}
-                      >
-                        Cancel
-                      </Button>
-                    ) : null}
+                      />
+                    </Tooltip>
+                  ) : null}
+                </Space>
+                <Space wrap size={8} style={{ justifyContent: "flex-end" }}>
+                  {showWorkingIndicator ? (
+                    <Space size={6} align="center" style={{ color: "rgba(0,0,0,0.65)" }}>
+                      <Spin size="small" />
+                      <Typography.Text type="secondary">{workingIndicatorLabel}</Typography.Text>
+                    </Space>
+                  ) : null}
 
-                  </Space>
-                ) : null}
-
-                {hasExecutionButtons && hasManagementButtons ? <Divider type="vertical" style={{ marginInline: 2 }} /> : null}
-
-                {hasManagementButtons ? (
-                  <Space wrap size={8}>
-                    {githubDiffTarget ? (
-                      <Button href={githubDiffTarget.href} target="_blank" rel="noreferrer">
-                        {githubDiffTarget.label}
-                      </Button>
-                    ) : null}
-                    {hasMoreActions && Boolean(githubDiffTarget) ? (
-                      <Divider type="vertical" style={{ marginInline: 2 }} />
-                    ) : null}
-
-                    {hasMoreActions ? (
-                      <Dropdown
-                        menu={{
-                          items: moreActionItems,
-                          onClick: ({ key }) => {
-                            if (key === "refreshDiff") {
-                              setLiveDiffRefreshKey((k) => k + 1);
-                              return;
+                  {hasExecutionButtons ? (
+                    <Space wrap size={8}>
+                      {canCancel ? (
+                        <Button
+                          danger
+                          onClick={async () => {
+                            setSubmitting("cancel");
+                            try {
+                              await api.cancelTask(task.id);
+                              messageApi.success(isQueued ? "Task cancelled" : "Cancellation requested");
+                            } finally {
+                              setSubmitting(null);
                             }
-
-                            if (key === "killInteractiveTerminal") {
-                              setKillTerminalConfirmOpen(true);
-                              return;
-                            }
-
-                            if (key === "continue") {
-                              openFollowUp("continue");
-                              return;
-                            }
-
-                            if (key === "pin") {
-                              void handleTogglePin();
-                              return;
-                            }
-
-                            if (key === "archive") {
-                              Modal.confirm({
-                                title: "Archive task?",
-                                content: "Archived tasks become read-only and cannot be restarted.",
-                                okText: "Archive",
-                                onOk: handleArchiveTask
-                              });
-                              return;
-                            }
-
-                            if (key === "delete") {
-                              setDeleteConfirmOpen(true);
-                            }
-                          }
-                        }}
-                        trigger={["click"]}
-                      >
-                        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "killTerminal"}>
-                          More
+                          }}
+                          loading={submitting === "cancel"}
+                        >
+                          Cancel
                         </Button>
-                      </Dropdown>
-                    ) : null}
-                  </Space>
-                ) : null}
-              </Space>
-            ) : null}
-          </Flex>
-          {isArchived ? (
-          <Alert
-              type="info"
-              showIcon
-              message="Archived task"
-              description="Archived tasks are read-only for task changes. You can still inspect history, output, diffs, and delete the task."
-            />
-          ) : !canEditTask ? (
-            <Alert
-              type="info"
-              showIcon
-              message="Read-only task access"
-              description="This account can inspect task state and history, but it cannot change the task."
-            />
-          ) : null}
-        </Flex>
+                      ) : null}
+
+                    </Space>
+                  ) : null}
+
+                  {hasExecutionButtons && hasManagementButtons ? <Divider type="vertical" style={{ marginInline: 2 }} /> : null}
+
+                  {hasManagementButtons ? (
+                    <Space wrap size={8}>
+                      {githubDiffTarget ? (
+                        <Button href={githubDiffTarget.href} target="_blank" rel="noreferrer">
+                          {githubDiffTarget.label}
+                        </Button>
+                      ) : null}
+                      {hasMoreActions && Boolean(githubDiffTarget) ? (
+                        <Divider type="vertical" style={{ marginInline: 2 }} />
+                      ) : null}
+
+                      {hasMoreActions ? (
+                        <Dropdown
+                          menu={{
+                            items: moreActionItems,
+                            onClick: ({ key }) => {
+                              if (key === "refreshDiff") {
+                                setLiveDiffRefreshKey((k) => k + 1);
+                                return;
+                              }
+
+                              if (key === "killInteractiveTerminal") {
+                                setKillTerminalConfirmOpen(true);
+                                return;
+                              }
+
+                              if (key === "continue") {
+                                openFollowUp("continue");
+                                return;
+                              }
+
+                              if (key === "pin") {
+                                void handleTogglePin();
+                                return;
+                              }
+
+                              if (key === "archive") {
+                                Modal.confirm({
+                                  title: "Archive task?",
+                                  content: "Archived tasks become read-only and cannot be restarted.",
+                                  okText: "Archive",
+                                  onOk: handleArchiveTask
+                                });
+                                return;
+                              }
+
+                              if (key === "delete") {
+                                setDeleteConfirmOpen(true);
+                              }
+                            }
+                          }}
+                          trigger={["click"]}
+                        >
+                          <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "killTerminal"}>
+                            More
+                          </Button>
+                        </Dropdown>
+                      ) : null}
+                    </Space>
+                  ) : null}
+                </Space>
+              </Flex>
+              {isArchived ? (
+              <Alert
+                  type="info"
+                  showIcon
+                  message="Archived task"
+                  description="Archived tasks are read-only for task changes. You can still inspect history, output, diffs, and delete the task."
+                />
+              ) : !canEditTask ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Read-only task access"
+                  description="This account can inspect task state and history, but it cannot change the task."
+                />
+              ) : null}
+            </Flex>
+          </div>
+        ) : null}
 
         {loading ? (
           <Card loading bordered={false} />
         ) : task ? (
-          <Flex vertical gap={16}>
-            <Card bordered={false}>
-              <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff")} items={mainTabItems} />
-            </Card>
-            <div ref={bottomScrollAnchorRef} style={{ height: 40, width: "100%", flexShrink: 0 }} />
-          </Flex>
+          <div style={{ position: "relative" }}>
+            {!taskPageVisible ? (
+              <div
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  zIndex: 1,
+                  pointerEvents: "none",
+                  background: token.colorBgLayout
+                }}
+              >
+                <Flex justify="center" style={{ position: "sticky", top: 96, paddingTop: 48 }}>
+                  <Spin size="large" />
+                </Flex>
+              </div>
+            ) : null}
+            <div
+              style={taskRevealStyle}
+            >
+              <Flex vertical gap={16}>
+                <Card bordered={false}>
+                  <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff")} items={mainTabItems} />
+                </Card>
+                <div ref={bottomScrollAnchorRef} style={{ height: 40, width: "100%", flexShrink: 0 }} />
+              </Flex>
+            </div>
+          </div>
         ) : null}
       </Flex>
 

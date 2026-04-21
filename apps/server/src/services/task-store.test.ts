@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { CreateTaskInput, Repository, TaskContextEntry } from "@agentswarm/shared-types";
-import { TaskStore } from "./task-store.js";
+import { RedisTaskStore } from "./task-store.js";
 
 class FakeRedis {
   private readonly kv = new Map<string, string>();
@@ -181,7 +181,7 @@ describe("TaskStore.appendMessage", () => {
   it("persists context entries on user messages", async () => {
     const redis = new FakeRedis();
     const publishedEvents: unknown[] = [];
-    const taskStore = new TaskStore(redis as never, {
+    const taskStore = new RedisTaskStore(redis as never, {
       publish: async (event: unknown) => {
         publishedEvents.push(event);
       }

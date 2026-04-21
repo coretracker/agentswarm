@@ -5,16 +5,11 @@ import { Server as SocketIOServer } from "socket.io";
 import type { RealtimeEvent } from "@agentswarm/shared-types";
 import { env } from "./config/env.js";
 import { createAuthService } from "./lib/auth.js";
+import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
 import { createRedisClients } from "./lib/redis.js";
 import { EventBus } from "./lib/events.js";
-import { TaskStore } from "./services/task-store.js";
-import { SnippetStore } from "./services/snippet-store.js";
-import { RepositoryStore } from "./services/repository-store.js";
-import { CredentialStore } from "./services/credential-store.js";
-import { RoleStore } from "./services/role-store.js";
-import { SessionStore } from "./services/session-store.js";
-import { SettingsStore } from "./services/settings-store.js";
-import { UserStore } from "./services/user-store.js";
+import { usesPostgresBackends } from "./services/app-stores.js";
+import { createAppStores } from "./services/create-app-stores.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { SpawnerService } from "./services/spawner.js";
 import { SchedulerService } from "./services/scheduler.js";
@@ -40,15 +35,29 @@ const bootstrap = async (): Promise<void> => {
 
   const redisClients = createRedisClients(env.REDIS_URL);
   const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
+  const postgresPool = usesPostgresBackends(env.STORE_BACKENDS) ? createPostgresPool(env.DATABASE_URL) : null;
+  if (postgresPool && env.POSTGRES_AUTO_MIGRATE) {
+    await runPostgresMigrations(postgresPool);
+  }
 
-  const taskStore = new TaskStore(redisClients.command, eventBus);
-  const snippetStore = new SnippetStore(redisClients.command, eventBus);
-  const repositoryStore = new RepositoryStore(redisClients.command, eventBus);
-  const credentialStore = new CredentialStore(redisClients.command);
-  const roleStore = new RoleStore(redisClients.command);
-  const userStore = new UserStore(redisClients.command, roleStore);
-  const sessionStore = new SessionStore(redisClients.command, env.AUTH_SESSION_TTL_DAYS);
-  const settingsStore = new SettingsStore(redisClients.command, eventBus, credentialStore);
+  const {
+    taskStore,
+    taskQueueStore,
+    webhookDeliveryStore,
+    snippetStore,
+    repositoryStore,
+    credentialStore,
+    roleStore,
+    userStore,
+    sessionStore,
+    settingsStore
+  } = createAppStores({
+    pool: postgresPool,
+    redisClients,
+    eventBus,
+    sessionTtlDays: env.AUTH_SESSION_TTL_DAYS,
+    backends: env.STORE_BACKENDS
+  });
   const auth = createAuthService({
     userStore,
     sessionStore,
@@ -56,9 +65,9 @@ const bootstrap = async (): Promise<void> => {
     taskStore
   });
   const spawner = new SpawnerService(taskStore, settingsStore, userStore);
-  const scheduler = new SchedulerService(taskStore, settingsStore, spawner);
+  const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
   const githubImportService = new GitHubImportService(settingsStore);
-  const webhookDeliveryService = new WebhookDeliveryService(redisClients.command, repositoryStore);
+  const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
 
   await roleStore.ensureDefaultAdminRole();
   await userStore.ensureDefaultAdminUser({
@@ -70,7 +79,7 @@ const bootstrap = async (): Promise<void> => {
   registerAuthRoutes(app, { auth, userStore, sessionStore });
   registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
   registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
-  registerTaskRoutes(app, { taskStore, repositoryStore, scheduler, spawner, settingsStore, auth });
+  registerTaskRoutes(app, { taskStore, taskQueueStore, repositoryStore, scheduler, spawner, settingsStore, auth });
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
@@ -119,6 +128,7 @@ const bootstrap = async (): Promise<void> => {
     webhookDeliveryService.stop();
     io.close();
     await Promise.all([
+      ...(postgresPool ? [postgresPool.end()] : []),
       redisClients.command.quit(),
       redisClients.pub.quit(),
       redisClients.sub.quit()

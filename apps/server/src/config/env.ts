@@ -1,8 +1,25 @@
 import { z } from "zod";
+import type { DurableStoreBackends } from "../services/app-stores.js";
+
+const storeBackendSchema = z.enum(["redis", "postgres"]);
+const optionalStoreBackendSchema = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  storeBackendSchema.optional()
+);
 
 const envSchema = z.object({
   PORT: z.coerce.number().default(4000),
+  STORE_BACKEND: storeBackendSchema.default("redis"),
+  TASK_STORE_BACKEND: optionalStoreBackendSchema,
+  SNIPPET_STORE_BACKEND: optionalStoreBackendSchema,
+  REPOSITORY_STORE_BACKEND: optionalStoreBackendSchema,
+  CREDENTIAL_STORE_BACKEND: optionalStoreBackendSchema,
+  ROLE_STORE_BACKEND: optionalStoreBackendSchema,
+  USER_STORE_BACKEND: optionalStoreBackendSchema,
+  SETTINGS_STORE_BACKEND: optionalStoreBackendSchema,
   REDIS_URL: z.string().default("redis://localhost:6379"),
+  DATABASE_URL: z.string().default("postgres://postgres:postgres@localhost:5432/agentswarm"),
+  POSTGRES_AUTO_MIGRATE: z.coerce.boolean().default(true),
   EVENT_CHANNEL: z.string().default("agentswarm:events"),
   GIT_USER_NAME: z.string().default("AgentSwarm Bot"),
   GIT_USER_EMAIL: z.string().default("agentswarm@local.dev"),
@@ -43,4 +60,14 @@ const taskWorkspaceHostRoot =
   process.env.TASK_WORKSPACE_HOST_ROOT?.trim() ||
   (parsed.TASK_WORKSPACE_ROOT !== "/task-workspaces" ? parsed.TASK_WORKSPACE_ROOT : parsed.TASK_WORKSPACE_HOST_ROOT);
 
-export const env = { ...parsed, TASK_WORKSPACE_HOST_ROOT: taskWorkspaceHostRoot };
+const storeBackends: DurableStoreBackends = {
+  taskStore: parsed.TASK_STORE_BACKEND ?? parsed.STORE_BACKEND,
+  snippetStore: parsed.SNIPPET_STORE_BACKEND ?? parsed.STORE_BACKEND,
+  repositoryStore: parsed.REPOSITORY_STORE_BACKEND ?? parsed.STORE_BACKEND,
+  credentialStore: parsed.CREDENTIAL_STORE_BACKEND ?? parsed.STORE_BACKEND,
+  roleStore: parsed.ROLE_STORE_BACKEND ?? parsed.STORE_BACKEND,
+  userStore: parsed.USER_STORE_BACKEND ?? parsed.STORE_BACKEND,
+  settingsStore: parsed.SETTINGS_STORE_BACKEND ?? parsed.STORE_BACKEND
+};
+
+export const env = { ...parsed, TASK_WORKSPACE_HOST_ROOT: taskWorkspaceHostRoot, STORE_BACKENDS: storeBackends };

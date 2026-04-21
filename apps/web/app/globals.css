@@ -54,29 +54,29 @@ html[data-theme="dark"] {
 
 html[data-theme="cyber"] {
   color-scheme: dark;
-  --app-body-bg: #0a0a1a;
-  --app-body-text: rgba(224, 230, 255, 0.9);
-  --diff-background-color: #111326;
-  --diff-text-color: #e0e6ff;
-  --diff-selection-background-color: rgba(0, 240, 255, 0.16);
-  --diff-selection-text-color: #f4fbff;
-  --diff-gutter-insert-background-color: #0a2f21;
-  --diff-gutter-insert-text-color: #5fffb4;
-  --diff-gutter-delete-background-color: #3a0b1d;
-  --diff-gutter-delete-text-color: #ff7aa5;
-  --diff-gutter-selected-background-color: #3a2b06;
-  --diff-gutter-selected-text-color: #ffd66e;
-  --diff-code-insert-background-color: #082117;
-  --diff-code-insert-text-color: #d7ffee;
-  --diff-code-delete-background-color: #2a0916;
-  --diff-code-delete-text-color: #ffd2df;
-  --diff-code-insert-edit-background-color: #00633a;
-  --diff-code-insert-edit-text-color: #effff7;
-  --diff-code-delete-edit-background-color: #8a1241;
-  --diff-code-delete-edit-text-color: #fff0f5;
-  --diff-code-selected-background-color: #352805;
-  --diff-code-selected-text-color: #ffe9a8;
-  --diff-omit-gutter-line-color: #ff0055;
+  --app-body-bg: #181825;
+  --app-body-text: rgba(200, 182, 255, 0.9);
+  --diff-background-color: #1e1e2e;
+  --diff-text-color: #c8b6ff;
+  --diff-selection-background-color: rgba(157, 78, 221, 0.18);
+  --diff-selection-text-color: #f4eeff;
+  --diff-gutter-insert-background-color: #17353a;
+  --diff-gutter-insert-text-color: #72efdd;
+  --diff-gutter-delete-background-color: #3a1028;
+  --diff-gutter-delete-text-color: #ff8ab5;
+  --diff-gutter-selected-background-color: #3a3111;
+  --diff-gutter-selected-text-color: #ffd60a;
+  --diff-code-insert-background-color: #11272a;
+  --diff-code-insert-text-color: #d2fffb;
+  --diff-code-delete-background-color: #2a0c1b;
+  --diff-code-delete-text-color: #ffd1e4;
+  --diff-code-insert-edit-background-color: #1c4f56;
+  --diff-code-insert-edit-text-color: #effffd;
+  --diff-code-delete-edit-background-color: #6d1240;
+  --diff-code-delete-edit-text-color: #fff0f7;
+  --diff-code-selected-background-color: #3a3111;
+  --diff-code-selected-text-color: #ffe98a;
+  --diff-omit-gutter-line-color: #ff006e;
 }
 
 html,
@@ -169,4 +169,15 @@ html[data-theme="cyber"] .diff-decoration-content,
 html[data-theme="cyber"] .diff-widget-content {
   background: rgba(255, 255, 255, 0.03);
   color: #9fb3a5;
+}
+
+html[data-theme="cyber"] .diff-gutter {
+  color: rgba(200, 182, 255, 0.65);
+  background: rgba(255, 255, 255, 0.025);
+  border-right-color: rgba(200, 182, 255, 0.08);
+}
+
+html[data-theme="cyber"] .diff-decoration-content,
+html[data-theme="cyber"] .diff-widget-content {
+  color: rgba(200, 182, 255, 0.72);
 }

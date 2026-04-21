@@ -13,7 +13,14 @@ export interface SessionRecord {
 
 const nowIso = (): string => new Date().toISOString();
 
-export class SessionStore {
+export interface SessionStore {
+  createSession(userId: string): Promise<SessionRecord>;
+  getSession(token: string): Promise<SessionRecord | null>;
+  deleteSession(token: string): Promise<void>;
+  deleteSessionsForUser(userId: string): Promise<void>;
+}
+
+export class RedisSessionStore implements SessionStore {
   private readonly ttlSeconds: number;
 
   constructor(

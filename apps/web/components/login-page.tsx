@@ -59,7 +59,7 @@ export function LoginPage() {
             maxWidth: 440,
             boxShadow:
               mode === "cyber"
-                ? "0 24px 70px rgba(0, 240, 255, 0.14)"
+                ? "none"
                 : isDarkAppTheme(mode)
                   ? "0 24px 60px rgba(0, 0, 0, 0.38)"
                   : "0 24px 60px rgba(15, 23, 42, 0.12)"

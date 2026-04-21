@@ -1,25 +1,12 @@
-import { createHmac, randomUUID } from "node:crypto";
-import type Redis from "ioredis";
+import { createHmac } from "node:crypto";
 import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
 import type { RepositoryStore } from "./repository-store.js";
+import type { WebhookDeliveryStore, WebhookEventType, WebhookJob } from "./webhook-delivery-store.js";
 
-const WEBHOOK_QUEUE_KEY = "agentswarm:webhook_delivery_queue";
-const WEBHOOK_JOB_KEY_PREFIX = "agentswarm:webhook_delivery:";
-const WEBHOOK_LAST_TASK_STATUS_KEY_PREFIX = "agentswarm:webhook_task_status:";
 const WEBHOOK_PROCESS_INTERVAL_MS = 1_000;
 const WEBHOOK_TIMEOUT_MS = 10_000;
 const WEBHOOK_RETRY_DELAYS_MS = [60_000, 300_000, 900_000];
 const WEBHOOK_BATCH_SIZE = 20;
-
-type WebhookEventType = "created" | "updated" | "deleted" | "pushed" | "merged";
-
-interface WebhookJob {
-  id: string;
-  repositoryId: string;
-  eventType: WebhookEventType;
-  payload: Record<string, unknown>;
-  attempt: number;
-}
 
 interface WebhookEnvelope {
   deliveryId: string;
@@ -41,28 +28,9 @@ export class WebhookDeliveryService {
   private draining = false;
 
   constructor(
-    private readonly redis: Redis,
+    private readonly webhookDeliveryStore: WebhookDeliveryStore,
     private readonly repositoryStore: RepositoryStore
   ) {}
-
-  private statusKey(taskId: string): string {
-    return `${WEBHOOK_LAST_TASK_STATUS_KEY_PREFIX}${taskId}`;
-  }
-
-  private jobKey(deliveryId: string): string {
-    return `${WEBHOOK_JOB_KEY_PREFIX}${deliveryId}`;
-  }
-
-  private async enqueueJob(job: Omit<WebhookJob, "id" | "attempt">): Promise<void> {
-    const queued: WebhookJob = {
-      id: randomUUID(),
-      repositoryId: job.repositoryId,
-      eventType: job.eventType,
-      payload: job.payload,
-      attempt: 1
-    };
-    await this.redis.multi().set(this.jobKey(queued.id), JSON.stringify(queued)).zadd(WEBHOOK_QUEUE_KEY, Date.now(), queued.id).exec();
-  }
 
   private selectTaskPayload(task: Task): Record<string, unknown> {
     return {
@@ -81,19 +49,19 @@ export class WebhookDeliveryService {
 
   async handleRealtimeEvent(event: RealtimeEvent): Promise<void> {
     if (event.type === "task:created") {
-      await this.enqueueJob({
+      await this.webhookDeliveryStore.enqueueJob({
         repositoryId: event.payload.repoId,
         eventType: "created",
         payload: { task: this.selectTaskPayload(event.payload) }
       });
-      await this.redis.set(this.statusKey(event.payload.id), event.payload.status);
+      await this.webhookDeliveryStore.setLastTaskStatus(event.payload.id, event.payload.status);
       return;
     }
 
     if (event.type === "task:updated") {
-      const lastStatus = await this.redis.get(this.statusKey(event.payload.id));
+      const lastStatus = await this.webhookDeliveryStore.getLastTaskStatus(event.payload.id);
       if (lastStatus !== event.payload.status) {
-        await this.enqueueJob({
+        await this.webhookDeliveryStore.enqueueJob({
           repositoryId: event.payload.repoId,
           eventType: "updated",
           payload: {
@@ -103,12 +71,12 @@ export class WebhookDeliveryService {
           }
         });
       }
-      await this.redis.set(this.statusKey(event.payload.id), event.payload.status);
+      await this.webhookDeliveryStore.setLastTaskStatus(event.payload.id, event.payload.status);
       return;
     }
 
     if (event.type === "task:deleted") {
-      await this.enqueueJob({
+      await this.webhookDeliveryStore.enqueueJob({
         repositoryId: event.payload.repoId,
         eventType: "deleted",
         payload: {
@@ -116,12 +84,12 @@ export class WebhookDeliveryService {
           repoId: event.payload.repoId
         }
       });
-      await this.redis.del(this.statusKey(event.payload.id));
+      await this.webhookDeliveryStore.clearLastTaskStatus(event.payload.id);
       return;
     }
 
     if (event.type === "task:pushed") {
-      await this.enqueueJob({
+      await this.webhookDeliveryStore.enqueueJob({
         repositoryId: event.payload.repoId,
         eventType: "pushed",
         payload: {
@@ -136,7 +104,7 @@ export class WebhookDeliveryService {
     }
 
     if (event.type === "task:merged") {
-      await this.enqueueJob({
+      await this.webhookDeliveryStore.enqueueJob({
         repositoryId: event.payload.repoId,
         eventType: "merged",
         payload: {
@@ -226,29 +194,21 @@ export class WebhookDeliveryService {
     }
     this.draining = true;
     try {
-      const dueIds = await this.redis.zrangebyscore(WEBHOOK_QUEUE_KEY, 0, Date.now(), "LIMIT", 0, WEBHOOK_BATCH_SIZE);
+      const dueIds = await this.webhookDeliveryStore.listDueJobIds(Date.now(), WEBHOOK_BATCH_SIZE);
       if (dueIds.length === 0) {
         return;
       }
 
       for (const deliveryId of dueIds) {
-        const raw = await this.redis.get(this.jobKey(deliveryId));
-        if (!raw) {
-          await this.redis.zrem(WEBHOOK_QUEUE_KEY, deliveryId);
-          continue;
-        }
-
-        let job: WebhookJob;
-        try {
-          job = JSON.parse(raw) as WebhookJob;
-        } catch {
-          await this.redis.del(this.jobKey(deliveryId));
+        const job = await this.webhookDeliveryStore.getJob(deliveryId);
+        if (!job) {
+          await this.webhookDeliveryStore.deleteJob(deliveryId);
           continue;
         }
 
         try {
           await this.deliver(job);
-          await this.redis.multi().zrem(WEBHOOK_QUEUE_KEY, deliveryId).del(this.jobKey(deliveryId)).exec();
+          await this.webhookDeliveryStore.deleteJob(deliveryId);
         } catch (error) {
           const detail = error instanceof Error ? error.message : "Webhook delivery failed.";
           await this.repositoryStore.recordWebhookDeliveryResult(job.repositoryId, {
@@ -259,19 +219,11 @@ export class WebhookDeliveryService {
 
           const retryDelay = WEBHOOK_RETRY_DELAYS_MS[job.attempt - 1];
           if (retryDelay === undefined) {
-            await this.redis.multi().zrem(WEBHOOK_QUEUE_KEY, deliveryId).del(this.jobKey(deliveryId)).exec();
+            await this.webhookDeliveryStore.deleteJob(deliveryId);
             continue;
           }
 
-          const next: WebhookJob = {
-            ...job,
-            attempt: job.attempt + 1
-          };
-          await this.redis
-            .multi()
-            .set(this.jobKey(deliveryId), JSON.stringify(next))
-            .zadd(WEBHOOK_QUEUE_KEY, Date.now() + retryDelay, deliveryId)
-            .exec();
+          await this.webhookDeliveryStore.scheduleRetry(job, retryDelay);
         }
       }
     } finally {

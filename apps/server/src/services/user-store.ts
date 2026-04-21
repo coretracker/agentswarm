@@ -2,6 +2,7 @@ import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:cry
 import { promisify } from "node:util";
 import { nanoid } from "nanoid";
 import type Redis from "ioredis";
+import type { Pool } from "pg";
 import {
   ALL_PERMISSION_SCOPES,
   type AgentProvider,
@@ -15,7 +16,8 @@ import {
   type UpdateUserInput
 } from "@agentswarm/shared-types";
 import { HttpError } from "../lib/http-error.js";
-import { RoleStore, SYSTEM_ADMIN_ROLE_ID } from "./role-store.js";
+import { type PostgresQueryable, withPostgresTransaction } from "../lib/postgres.js";
+import { SYSTEM_ADMIN_ROLE_ID, type RoleStore } from "./role-store.js";
 
 const USER_KEY_PREFIX = "agentswarm:user:";
 const USER_IDS_KEY = "agentswarm:user_ids";
@@ -83,7 +85,20 @@ const verifyPassword = async (
   return timingSafeEqual(storedHash, providedHash);
 };
 
-export class UserStore {
+export interface UserStore {
+  ensureDefaultAdminUser(input: BootstrapAdminInput): Promise<User>;
+  listUsers(): Promise<User[]>;
+  getUser(userId: string): Promise<User | null>;
+  getAuthSessionUser(userId: string): Promise<AuthSessionUser | null>;
+  authenticate(email: string, password: string): Promise<User | null>;
+  createUser(input: CreateUserInput): Promise<User>;
+  updateUser(userId: string, input: UpdateUserInput): Promise<User | null>;
+  deleteUser(userId: string): Promise<boolean>;
+  hasUsersWithRole(roleId: string): Promise<boolean>;
+  listUserIdsByRoleId(roleId: string): Promise<string[]>;
+}
+
+export class RedisUserStore implements UserStore {
   constructor(
     private readonly redis: Redis,
     private readonly roleStore: RoleStore
@@ -466,5 +481,488 @@ export class UserStore {
     const userIds = await this.redis.smembers(USER_IDS_KEY);
     const users = await this.getStoredUsers(userIds);
     return users.filter((user) => user.roleIds.includes(roleId)).map((user) => user.id);
+  }
+}
+
+export class PostgresUserStore implements UserStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly roleStore: RoleStore
+  ) {}
+
+  private mapUserRow(row: Record<string, unknown>, roleIds: string[]): StoredUserRecord {
+    return this.normalizeStoredUser({
+      id: String(row.id),
+      name: String(row.name ?? ""),
+      email: String(row.email ?? ""),
+      active: row.active !== false,
+      roleIds,
+      passwordHash: String(row.password_hash ?? ""),
+      passwordSalt: String(row.password_salt ?? ""),
+      lastLoginAt: typeof row.last_login_at === "string" ? row.last_login_at : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    });
+  }
+
+  private normalizeStoredUser(user: StoredUserRecord): StoredUserRecord {
+    return {
+      ...user,
+      name: normalizeUserName(user.name),
+      email: normalizeUserEmail(user.email),
+      active: user.active !== false,
+      roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
+      lastLoginAt: user.lastLoginAt ?? null
+    };
+  }
+
+  private async getRoleIdsForUsers(
+    userIds: string[],
+    db: PostgresQueryable = this.pool
+  ): Promise<Map<string, string[]>> {
+    if (userIds.length === 0) {
+      return new Map();
+    }
+
+    const result = await db.query<{ user_id: string; role_id: string }>(
+      "SELECT user_id, role_id FROM user_roles WHERE user_id = ANY($1::text[]) ORDER BY role_id ASC",
+      [userIds]
+    );
+    const roleIdsByUser = new Map<string, string[]>();
+    for (const row of result.rows) {
+      const roleIds = roleIdsByUser.get(row.user_id) ?? [];
+      roleIds.push(row.role_id);
+      roleIdsByUser.set(row.user_id, roleIds);
+    }
+    return roleIdsByUser;
+  }
+
+  private async getStoredUsers(userIds: string[], db: PostgresQueryable = this.pool): Promise<StoredUserRecord[]> {
+    if (userIds.length === 0) {
+      return [];
+    }
+
+    const result = await db.query("SELECT * FROM users WHERE id = ANY($1::text[])", [userIds]);
+    const roleIdsByUser = await this.getRoleIdsForUsers(userIds, db);
+    const usersById = new Map<string, StoredUserRecord>();
+    for (const row of result.rows) {
+      const userId = String(row.id);
+      usersById.set(userId, this.mapUserRow(row, roleIdsByUser.get(userId) ?? []));
+    }
+
+    return userIds.flatMap((userId) => {
+      const user = usersById.get(userId);
+      return user ? [user] : [];
+    });
+  }
+
+  private async getStoredUser(userId: string, db: PostgresQueryable = this.pool): Promise<StoredUserRecord | null> {
+    const users = await this.getStoredUsers([userId], db);
+    return users[0] ?? null;
+  }
+
+  private async normalizeRoleIds(roleIds: string[] | undefined): Promise<string[]> {
+    const uniqueRoleIds = Array.from(new Set((roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean)));
+    if (uniqueRoleIds.length === 0) {
+      return [];
+    }
+
+    const roles = await this.roleStore.getRolesByIds(uniqueRoleIds);
+    if (roles.length !== uniqueRoleIds.length) {
+      const missingRoleId = uniqueRoleIds.find((roleId) => !roles.some((role) => role.id === roleId));
+      throw new HttpError(400, `Unknown role: ${missingRoleId ?? "unknown"}`);
+    }
+
+    return uniqueRoleIds;
+  }
+
+  private buildRoleRefs(roles: Role[]): UserRoleRef[] {
+    return roles.map((role) => ({
+      id: role.id,
+      name: role.name,
+      isSystem: role.isSystem
+    }));
+  }
+
+  private async sanitizeUser(user: StoredUserRecord): Promise<User> {
+    const roles = await this.roleStore.getRolesByIds(user.roleIds);
+    return {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      active: user.active,
+      roles: this.buildRoleRefs(roles),
+      lastLoginAt: user.lastLoginAt,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt
+    };
+  }
+
+  private async countOtherActiveAdmins(excludedUserId: string): Promise<number> {
+    const result = await this.pool.query<{ count: string }>(
+      `
+        SELECT COUNT(*)::text AS count
+        FROM users
+        INNER JOIN user_roles ON user_roles.user_id = users.id
+        WHERE users.id <> $1
+          AND users.active = TRUE
+          AND user_roles.role_id = $2
+      `,
+      [excludedUserId, SYSTEM_ADMIN_ROLE_ID]
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  private async assertAdminUserStillExists(
+    current: StoredUserRecord,
+    nextRoleIds: string[],
+    nextActive: boolean
+  ): Promise<void> {
+    if (
+      current.active &&
+      current.roleIds.includes(SYSTEM_ADMIN_ROLE_ID) &&
+      (!nextActive || !nextRoleIds.includes(SYSTEM_ADMIN_ROLE_ID))
+    ) {
+      const otherActiveAdmins = await this.countOtherActiveAdmins(current.id);
+      if (otherActiveAdmins === 0) {
+        throw new HttpError(409, "At least one active admin user is required");
+      }
+    }
+  }
+
+  private async persistUser(
+    nextUser: StoredUserRecord,
+    previousUser?: StoredUserRecord,
+    db: PostgresQueryable = this.pool
+  ): Promise<void> {
+    await db.query(
+      `
+        INSERT INTO users (
+          id,
+          name,
+          email,
+          active,
+          password_hash,
+          password_salt,
+          last_login_at,
+          created_at,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (id) DO UPDATE
+        SET
+          name = EXCLUDED.name,
+          email = EXCLUDED.email,
+          active = EXCLUDED.active,
+          password_hash = EXCLUDED.password_hash,
+          password_salt = EXCLUDED.password_salt,
+          last_login_at = EXCLUDED.last_login_at,
+          created_at = EXCLUDED.created_at,
+          updated_at = EXCLUDED.updated_at
+      `,
+      [
+        nextUser.id,
+        nextUser.name,
+        nextUser.email,
+        nextUser.active,
+        nextUser.passwordHash,
+        nextUser.passwordSalt,
+        nextUser.lastLoginAt,
+        nextUser.createdAt,
+        nextUser.updatedAt
+      ]
+    );
+    await db.query("DELETE FROM user_roles WHERE user_id = $1", [nextUser.id]);
+    if (nextUser.roleIds.length > 0) {
+      await db.query(
+        `
+          INSERT INTO user_roles (user_id, role_id)
+          SELECT $1, role_id
+          FROM unnest($2::text[]) AS role_id
+          ON CONFLICT DO NOTHING
+        `,
+        [nextUser.id, nextUser.roleIds]
+      );
+    }
+  }
+
+  private async setBootstrapAdminRoleIfMissing(user: StoredUserRecord): Promise<StoredUserRecord> {
+    if (user.roleIds.includes(SYSTEM_ADMIN_ROLE_ID)) {
+      return user;
+    }
+
+    const next: StoredUserRecord = {
+      ...user,
+      roleIds: [...user.roleIds, SYSTEM_ADMIN_ROLE_ID],
+      updatedAt: nowIso()
+    };
+    await withPostgresTransaction(this.pool, async (client) => {
+      await this.persistUser(next, user, client);
+    });
+    return next;
+  }
+
+  async ensureDefaultAdminUser(input: BootstrapAdminInput): Promise<User> {
+    const markerResult = await this.pool.query<{ value: string }>(
+      "SELECT value FROM app_metadata WHERE key = $1",
+      [BOOTSTRAP_ADMIN_MARKER_KEY]
+    );
+    const markerUserId = markerResult.rows[0]?.value ?? null;
+    if (markerUserId) {
+      const markedUser = await this.getStoredUser(markerUserId);
+      if (markedUser) {
+        const repairedUser = await this.setBootstrapAdminRoleIfMissing(markedUser);
+        return this.sanitizeUser(repairedUser);
+      }
+    }
+
+    const normalizedEmail = normalizeUserEmail(input.email);
+    const existingUserResult = await this.pool.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [normalizedEmail]);
+    const existingUserId = existingUserResult.rows[0]?.id ?? null;
+    if (existingUserId) {
+      const existingUser = await this.getStoredUser(existingUserId);
+      if (existingUser) {
+        const repairedUser = await this.setBootstrapAdminRoleIfMissing(existingUser);
+        await this.pool.query(
+          `
+            INSERT INTO app_metadata (key, value, updated_at)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+          `,
+          [BOOTSTRAP_ADMIN_MARKER_KEY, repairedUser.id, nowIso()]
+        );
+        return this.sanitizeUser(repairedUser);
+      }
+    }
+
+    const createdUser = await this.createUser({
+      name: input.name,
+      email: input.email,
+      password: input.password,
+      active: true,
+      roleIds: [SYSTEM_ADMIN_ROLE_ID]
+    });
+    await this.pool.query(
+      `
+        INSERT INTO app_metadata (key, value, updated_at)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (key) DO UPDATE
+        SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+      `,
+      [BOOTSTRAP_ADMIN_MARKER_KEY, createdUser.id, nowIso()]
+    );
+    return createdUser;
+  }
+
+  async listUsers(): Promise<User[]> {
+    const result = await this.pool.query<{ id: string }>("SELECT id FROM users ORDER BY name ASC, email ASC");
+    const users = await this.getStoredUsers(result.rows.map((row) => row.id));
+    const sanitizedUsers = await Promise.all(users.map((user) => this.sanitizeUser(user)));
+    return sanitizedUsers.sort((left, right) => {
+      const nameCompare = left.name.localeCompare(right.name);
+      if (nameCompare !== 0) {
+        return nameCompare;
+      }
+
+      return left.email.localeCompare(right.email);
+    });
+  }
+
+  async getUser(userId: string): Promise<User | null> {
+    const user = await this.getStoredUser(userId);
+    if (!user) {
+      return null;
+    }
+
+    return this.sanitizeUser(user);
+  }
+
+  async getAuthSessionUser(userId: string): Promise<AuthSessionUser | null> {
+    const user = await this.getStoredUser(userId);
+    if (!user || !user.active) {
+      return null;
+    }
+
+    const roles = await this.roleStore.getRolesByIds(user.roleIds);
+    const scopes = sortScopes(roles.flatMap((role) => role.scopes));
+    const allowedProviders = mergeRoleAllowlist<AgentProvider>(roles, (role) => role.allowedProviders);
+    const allowedModels = mergeRoleAllowlist<string>(roles, (role) => role.allowedModels);
+    const allowedEfforts = mergeRoleAllowlist<ProviderProfile>(roles, (role) => role.allowedEfforts);
+    return {
+      ...(await this.sanitizeUser(user)),
+      scopes,
+      allowedProviders,
+      allowedModels,
+      allowedEfforts
+    };
+  }
+
+  async authenticate(email: string, password: string): Promise<User | null> {
+    const normalizedEmail = normalizeUserEmail(email);
+    if (!normalizedEmail || !password) {
+      return null;
+    }
+
+    const result = await this.pool.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [normalizedEmail]);
+    const userId = result.rows[0]?.id ?? null;
+    if (!userId) {
+      return null;
+    }
+
+    const user = await this.getStoredUser(userId);
+    if (!user || !user.active) {
+      return null;
+    }
+
+    const validPassword = await verifyPassword(password, user.passwordSalt, user.passwordHash);
+    if (!validPassword) {
+      return null;
+    }
+
+    const next: StoredUserRecord = {
+      ...user,
+      lastLoginAt: nowIso(),
+      updatedAt: nowIso()
+    };
+    await withPostgresTransaction(this.pool, async (client) => {
+      await this.persistUser(next, user, client);
+    });
+    return this.sanitizeUser(next);
+  }
+
+  async createUser(input: CreateUserInput): Promise<User> {
+    const name = normalizeUserName(input.name);
+    const email = normalizeUserEmail(input.email);
+    const password = input.password.trim();
+
+    if (!name) {
+      throw new HttpError(400, "User name is required");
+    }
+
+    if (!email) {
+      throw new HttpError(400, "User email is required");
+    }
+
+    if (!password) {
+      throw new HttpError(400, "Password is required");
+    }
+
+    const existingUserResult = await this.pool.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [email]);
+    if (existingUserResult.rowCount) {
+      throw new HttpError(409, "A user with that email already exists");
+    }
+
+    const roleIds = await this.normalizeRoleIds(input.roleIds);
+    const timestamp = nowIso();
+    const passwordState = await hashPassword(password);
+    const user: StoredUserRecord = {
+      id: nanoid(),
+      name,
+      email,
+      active: input.active !== false,
+      roleIds,
+      passwordHash: passwordState.passwordHash,
+      passwordSalt: passwordState.passwordSalt,
+      lastLoginAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+
+    await withPostgresTransaction(this.pool, async (client) => {
+      await this.persistUser(user, undefined, client);
+    });
+    return this.sanitizeUser(user);
+  }
+
+  async updateUser(userId: string, input: UpdateUserInput): Promise<User | null> {
+    const current = await this.getStoredUser(userId);
+    if (!current) {
+      return null;
+    }
+
+    const nextName = input.name === undefined ? current.name : normalizeUserName(input.name);
+    const nextEmail = input.email === undefined ? current.email : normalizeUserEmail(input.email);
+    if (!nextName) {
+      throw new HttpError(400, "User name is required");
+    }
+
+    if (!nextEmail) {
+      throw new HttpError(400, "User email is required");
+    }
+
+    if (nextEmail !== current.email) {
+      const existingUserResult = await this.pool.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [nextEmail]);
+      const existingUserId = existingUserResult.rows[0]?.id ?? null;
+      if (existingUserId && existingUserId !== userId) {
+        throw new HttpError(409, "A user with that email already exists");
+      }
+    }
+
+    const nextRoleIds = input.roleIds === undefined ? current.roleIds : await this.normalizeRoleIds(input.roleIds);
+    const nextActive = input.active ?? current.active;
+    await this.assertAdminUserStillExists(current, nextRoleIds, nextActive);
+
+    let passwordHash = current.passwordHash;
+    let passwordSalt = current.passwordSalt;
+    if (input.password !== undefined) {
+      const nextPassword = input.password.trim();
+      if (!nextPassword) {
+        throw new HttpError(400, "Password is required");
+      }
+
+      const passwordState = await hashPassword(nextPassword);
+      passwordHash = passwordState.passwordHash;
+      passwordSalt = passwordState.passwordSalt;
+    }
+
+    const next: StoredUserRecord = {
+      ...current,
+      name: nextName,
+      email: nextEmail,
+      active: nextActive,
+      roleIds: nextRoleIds,
+      passwordHash,
+      passwordSalt,
+      updatedAt: nowIso()
+    };
+
+    await withPostgresTransaction(this.pool, async (client) => {
+      await this.persistUser(next, current, client);
+    });
+    return this.sanitizeUser(next);
+  }
+
+  async deleteUser(userId: string): Promise<boolean> {
+    const current = await this.getStoredUser(userId);
+    if (!current) {
+      return false;
+    }
+
+    if (current.active && current.roleIds.includes(SYSTEM_ADMIN_ROLE_ID)) {
+      const otherActiveAdmins = await this.countOtherActiveAdmins(current.id);
+      if (otherActiveAdmins === 0) {
+        throw new HttpError(409, "At least one active admin user is required");
+      }
+    }
+
+    await this.pool.query("DELETE FROM users WHERE id = $1", [userId]);
+    return true;
+  }
+
+  async hasUsersWithRole(roleId: string): Promise<boolean> {
+    const result = await this.pool.query<{ exists: boolean }>(
+      "SELECT EXISTS(SELECT 1 FROM user_roles WHERE role_id = $1) AS exists",
+      [roleId]
+    );
+    return result.rows[0]?.exists === true;
+  }
+
+  async listUserIdsByRoleId(roleId: string): Promise<string[]> {
+    const result = await this.pool.query<{ user_id: string }>(
+      "SELECT user_id FROM user_roles WHERE role_id = $1 ORDER BY user_id ASC",
+      [roleId]
+    );
+    return result.rows.map((row) => row.user_id);
   }
 }

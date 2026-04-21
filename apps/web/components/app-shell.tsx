@@ -142,9 +142,6 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <Typography.Title level={4} style={{ margin: 0, color: token.colorText }}>
                   AgentSwarm
                 </Typography.Title>
-                <Typography.Text style={{ color: token.colorTextSecondary, fontSize: 9, lineHeight: 1.1 }}>
-                  Cloud Agent Orchestrator
-                </Typography.Text>
               </Flex>
             </Flex>
             <Menu

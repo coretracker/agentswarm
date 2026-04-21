@@ -18,6 +18,7 @@ import { applyTaskStartMode, getTriggerActionForNewTask } from "../lib/task-star
 import { executeOpenAiDiffAssist } from "../services/openai-diff-assist-service.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
+import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import { buildExecutionSummaryFromPrompt, classifyTaskComplexity } from "../lib/task-intelligence.js";
 import { getMutationBlockedReason } from "../lib/task-mutation-guards.js";
@@ -173,6 +174,7 @@ export const registerTaskRoutes = (
   app: FastifyInstance,
   deps: {
     taskStore: TaskStore;
+    taskQueueStore: TaskQueueStore;
     repositoryStore: RepositoryStore;
     scheduler: SchedulerService;
     spawner: SpawnerService;
@@ -204,8 +206,21 @@ export const registerTaskRoutes = (
       return;
     }
 
-    return withBranchSyncCounts(deps.spawner, task);
+    return task;
   });
+
+  app.get<{ Params: { id: string } }>(
+    "/tasks/:id/branch-sync-counts",
+    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      return deps.spawner.getTaskBranchSyncCounts(task);
+    }
+  );
 
   app.get<{ Params: { id: string }; Querystring: { mode?: string } }>(
     "/tasks/:id/interactive-terminal/status",
@@ -987,6 +1002,7 @@ export const registerTaskRoutes = (
       targetBranch: parsed.data.targetBranch.trim(),
       commitMessage: parsed.data.commitMessage?.trim() || null
     });
+    await deps.taskQueueStore.removeTask(merged.id);
     await deps.taskStore.archiveTask(merged.id);
     await deps.taskStore.appendLog(merged.id, "Task archived after merge.");
     const refreshed = await deps.taskStore.getTask(merged.id);
@@ -1038,6 +1054,7 @@ export const registerTaskRoutes = (
     }
 
     await deps.spawner.cleanupTaskArtifacts(task);
+    await deps.taskQueueStore.removeTask(task.id);
     await deps.taskStore.archiveTask(task.id);
     await deps.taskStore.appendLog(task.id, "Task archived by user.");
     const refreshed = await deps.taskStore.getTask(task.id);
@@ -1055,6 +1072,7 @@ export const registerTaskRoutes = (
     }
 
     await deps.spawner.cleanupTaskArtifacts(task);
+    await deps.taskQueueStore.removeTask(task.id);
     await deps.taskStore.deleteTask(task.id);
     return reply.status(204).send();
   });

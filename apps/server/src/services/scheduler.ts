@@ -1,6 +1,7 @@
 import { isActiveTaskStatus, isQueuedTaskStatus, type TaskAction, type TaskExecutionInput } from "@agentswarm/shared-types";
-import { TaskStore, type QueueEntry } from "./task-store.js";
-import { SettingsStore } from "./settings-store.js";
+import type { TaskStore } from "./task-store.js";
+import type { QueueEntry, TaskQueueStore } from "./task-queue-store.js";
+import type { SettingsStore } from "./settings-store.js";
 import { CancelledTaskError, SpawnerService } from "./spawner.js";
 
 const normalizeExecutionInput = (input?: TaskExecutionInput | string): TaskExecutionInput | undefined =>
@@ -18,6 +19,7 @@ export class SchedulerService {
 
   constructor(
     private readonly taskStore: TaskStore,
+    private readonly taskQueueStore: TaskQueueStore,
     private readonly settingsStore: SettingsStore,
     private readonly spawner: SpawnerService
   ) {}
@@ -81,7 +83,15 @@ export class SchedulerService {
     }
 
     await this.taskStore.markQueuedForAction(taskId, action);
-    await this.taskStore.enqueueTask(taskId, "manual", action, input);
+    await this.taskQueueStore.replaceTask({
+      taskId,
+      reason: "manual",
+      action,
+      input: normalizeExecutionInput(input)
+    });
+    await this.taskStore.patchTask(taskId, {
+      enqueued: true
+    });
     await this.drainQueue();
 
     return true;
@@ -104,6 +114,7 @@ export class SchedulerService {
       enqueued: false,
       errorMessage: "Cancelled by user"
     });
+    await this.taskQueueStore.removeTask(taskId);
 
     if (isQueuedTaskStatus(task.status)) {
       await this.taskStore.appendLog(taskId, "Scheduler: queued task cancelled by user.");
@@ -125,7 +136,7 @@ export class SchedulerService {
     try {
       const settings = await this.settingsStore.getSettings();
       while (this.activeExecutionCount < settings.maxAgents) {
-        const queueEntry = await this.taskStore.dequeueTask();
+        const queueEntry = await this.taskQueueStore.dequeueTask();
         if (!queueEntry) {
           break;
         }

@@ -1,8 +1,8 @@
 import { nanoid } from "nanoid";
 import type Redis from "ioredis";
+import type { Pool } from "pg";
 import {
   getQueuedStatusForAction,
-  isQueuedTaskStatus,
   type AgentProvider,
   type CreateTaskInput,
   type ProviderProfile,
@@ -10,7 +10,6 @@ import {
   type Task,
   type TaskAction,
   type TaskContextEntry,
-  type TaskExecutionInput,
   type TaskMessage,
   type TaskReasoningEffort,
   type TaskRun,
@@ -27,6 +26,7 @@ import {
   normalizeProvider,
   normalizeProviderProfile
 } from "../lib/provider-config.js";
+import { parseJsonColumn, type PostgresQueryable, withPostgresTransaction } from "../lib/postgres.js";
 import {
   normalizeTaskLifecycleStatus,
   reconcileTaskStatusWithPendingCheckpoint
@@ -61,12 +61,10 @@ const TASK_PENDING_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_pending_change_
 const TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX = "agentswarm:task_active_interactive_session:";
 const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "agentswarm:task_interactive_terminal_transcript:";
 const TASK_IDS_KEY = "agentswarm:task_ids";
-const TASK_QUEUE_KEY = "agentswarm:queue";
 const MAX_LOG_LINES = 400;
 const MAX_MESSAGES = 200;
 
 const nowIso = (): string => new Date().toISOString();
-type QueueReason = "manual" | "auto";
 
 const getInitialAction = (task: { taskType: Task["taskType"] }): TaskAction => (task.taskType === "ask" ? "ask" : "build");
 
@@ -139,45 +137,104 @@ const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
   };
 };
 
-const normalizeQueueEntryInput = (input: unknown): TaskExecutionInput | undefined => {
-  if (typeof input === "string") {
-    return {
-      content: input,
-      contextEntries: []
-    };
-  }
-
-  if (!input || typeof input !== "object") {
-    return undefined;
-  }
-
-  const value = input as Partial<TaskExecutionInput> & { contextEntries?: unknown };
-  if (typeof value.content !== "string") {
-    return undefined;
-  }
-
-  const contextEntries = Array.isArray(value.contextEntries) ? value.contextEntries.map(normalizeTaskContextEntry).filter((entry): entry is TaskContextEntry => entry !== null) : [];
-
-  return {
-    content: value.content,
-    contextEntries
-  };
-};
-
-export interface QueueEntry {
-  taskId: string;
-  reason: QueueReason;
-  action: TaskAction;
-  input?: TaskExecutionInput;
-}
-
 export interface ListTasksOptions {
   ownerUserId?: string | null;
   view?: "all" | "active" | "archived";
   limit?: number;
 }
 
-export class TaskStore {
+export interface CreateTaskRunInput {
+  action: TaskAction;
+  provider: AgentProvider;
+  providerProfile: ProviderProfile;
+  modelOverride: string | null;
+  branchName: string | null;
+}
+
+export type UpdateTaskRunPatch = Partial<
+  Pick<
+    TaskRun,
+    "status" | "finishedAt" | "summary" | "errorMessage" | "branchName" | "changeProposalCheckpointRef" | "changeProposalUntrackedPaths"
+  >
+>;
+
+export interface AppendTaskMessageInput {
+  role: TaskMessage["role"];
+  content: string;
+  action?: TaskMessage["action"];
+  contextEntries?: TaskContextEntry[];
+  sessionId?: string | null;
+}
+
+export interface TaskPushedEventInput {
+  taskId: string;
+  branchName: string;
+  commitMessage: string | null;
+}
+
+export interface TaskMergedEventInput {
+  taskId: string;
+  sourceBranch: string;
+  targetBranch: string;
+  commitMessage: string | null;
+}
+
+export interface TaskActiveInteractiveSession {
+  sessionId: string;
+  checkpointRef: string;
+  startedAt: string;
+  untrackedPathsAtCheckpoint: string[];
+  mode: TaskTerminalSessionMode;
+}
+
+export type CreateTaskChangeProposalInput = Omit<TaskChangeProposal, "resolvedAt" | "revertedAt"> & {
+  resolvedAt?: null;
+  revertedAt?: null;
+};
+
+export type UpdateTaskChangeProposalUpdates = Partial<Pick<TaskChangeProposal, "toRef">>;
+
+export interface TaskStore {
+  createTask(input: CreateTaskInput, repository: Repository, ownerUserId: string): Promise<Task>;
+  getTask(taskId: string): Promise<Task | null>;
+  listTasks(options?: ListTasksOptions): Promise<Task[]>;
+  patchTask(taskId: string, patch: Partial<Omit<Task, "id" | "createdAt">>): Promise<Task | null>;
+  updateResultArtifacts(taskId: string, resultMarkdown: string): Promise<Task | null>;
+  appendLog(taskId: string, line: string): Promise<void>;
+  appendLogForRun(taskId: string, line: string, runId: string | null): Promise<void>;
+  listMessages(taskId: string): Promise<TaskMessage[]>;
+  listRuns(taskId: string): Promise<TaskRun[]>;
+  getRun(runId: string): Promise<TaskRun | null>;
+  createRun(taskId: string, input: CreateTaskRunInput): Promise<TaskRun | null>;
+  updateRun(runId: string, patch: UpdateTaskRunPatch): Promise<TaskRun | null>;
+  appendMessage(taskId: string, input: AppendTaskMessageInput): Promise<TaskMessage | null>;
+  updateMessage(taskId: string, messageId: string, content: string): Promise<TaskMessage | null>;
+  markQueuedForAction(taskId: string, action: TaskAction): Promise<Task | null>;
+  setStatus(taskId: string, status: TaskStatus, extra?: Partial<Task>): Promise<Task | null>;
+  archiveTask(taskId: string): Promise<Task | null>;
+  deleteTask(taskId: string): Promise<boolean>;
+  publishTaskPushedEvent(input: TaskPushedEventInput): Promise<void>;
+  publishTaskMergedEvent(input: TaskMergedEventInput): Promise<void>;
+  hasPendingChangeProposal(taskId: string): Promise<boolean>;
+  getActiveInteractiveSession(taskId: string): Promise<TaskActiveInteractiveSession | null>;
+  setActiveInteractiveSession(taskId: string, session: TaskActiveInteractiveSession): Promise<void>;
+  clearActiveInteractiveSession(taskId: string): Promise<void>;
+  saveInteractiveTerminalTranscript(taskId: string, sessionId: string, content: string, truncated: boolean): Promise<void>;
+  getInteractiveTerminalTranscript(taskId: string, sessionId: string): Promise<TaskInteractiveTerminalTranscript | null>;
+  listChangeProposals(taskId: string): Promise<TaskChangeProposal[]>;
+  getChangeProposal(proposalId: string): Promise<TaskChangeProposal | null>;
+  getLatestAppliedChangeProposalId(taskId: string): Promise<string | null>;
+  createChangeProposal(input: CreateTaskChangeProposalInput): Promise<TaskChangeProposal | null>;
+  updateChangeProposalStatus(
+    proposalId: string,
+    status: TaskChangeProposalStatus,
+    taskId: string,
+    updates?: UpdateTaskChangeProposalUpdates
+  ): Promise<TaskChangeProposal | null>;
+  markCheckpointReverted(proposalId: string, taskId: string): Promise<TaskChangeProposal | null>;
+}
+
+export class RedisTaskStore implements TaskStore {
   constructor(
     private readonly redis: Redis,
     private readonly eventBus: EventBus
@@ -232,24 +289,6 @@ export class TaskStore {
         normalizedTask.hasPendingCheckpoint
       )
     };
-  }
-
-  private async rewriteQueueWithoutTask(taskId: string): Promise<void> {
-    const rawEntries = await this.redis.lrange(TASK_QUEUE_KEY, 0, -1);
-    const filteredEntries = rawEntries.filter((raw) => {
-      try {
-        const entry = JSON.parse(raw) as QueueEntry;
-        return entry.taskId !== taskId;
-      } catch {
-        return true;
-      }
-    });
-
-    const pipeline = this.redis.multi().del(TASK_QUEUE_KEY);
-    if (filteredEntries.length > 0) {
-      pipeline.rpush(TASK_QUEUE_KEY, ...filteredEntries);
-    }
-    await pipeline.exec();
   }
 
   private taskKey(taskId: string): string {
@@ -774,8 +813,6 @@ export class TaskStore {
       return null;
     }
 
-    await this.rewriteQueueWithoutTask(taskId);
-
     const next: Task = {
       ...task,
       status: getQueuedStatusForAction(action),
@@ -791,52 +828,6 @@ export class TaskStore {
 
     await this.redis.set(this.taskKey(taskId), JSON.stringify(next));
     return this.publishTaskEvent("task:updated", next);
-  }
-
-  async enqueueTask(taskId: string, reason: QueueReason, action: TaskAction, input?: TaskExecutionInput | string): Promise<boolean> {
-    const task = await this.getStoredTask(taskId);
-    if (!task || (isQueuedTaskStatus(task.status) && task.enqueued)) {
-      return false;
-    }
-
-    const next: Task = {
-      ...task,
-      enqueued: true,
-      lastAction: action,
-      logs: [],
-      updatedAt: nowIso()
-    };
-
-    const queueEntry: QueueEntry = { taskId, reason, action, input: normalizeQueueEntryInput(input) };
-
-    await this.redis
-      .multi()
-      .set(this.taskKey(taskId), JSON.stringify(next))
-      .rpush(TASK_QUEUE_KEY, JSON.stringify(queueEntry))
-      .exec();
-
-    await this.publishTaskEvent("task:updated", next);
-    return true;
-  }
-
-  async dequeueTask(): Promise<QueueEntry | null> {
-    const raw = await this.redis.lpop(TASK_QUEUE_KEY);
-    if (!raw) {
-      return null;
-    }
-
-    try {
-      const parsed = JSON.parse(raw) as QueueEntry;
-      if (typeof parsed.taskId === "string" && (parsed.reason === "manual" || parsed.reason === "auto") && (parsed.action === "build" || parsed.action === "ask")) {
-        return {
-          ...parsed,
-          input: normalizeQueueEntryInput(parsed.input)
-        };
-      }
-      return null;
-    } catch {
-      return null;
-    }
   }
 
   async setStatus(taskId: string, status: TaskStatus, extra: Partial<Task> = {}): Promise<Task | null> {
@@ -863,8 +854,6 @@ export class TaskStore {
       return null;
     }
 
-    await this.rewriteQueueWithoutTask(taskId);
-
     const next: Task = {
       ...task,
       status: "archived",
@@ -882,8 +871,6 @@ export class TaskStore {
     if (!task) {
       return false;
     }
-
-    await this.rewriteQueueWithoutTask(taskId);
     const runIds = await this.redis.lrange(this.taskRunIdsKey(taskId), 0, -1);
     const proposalIds = await this.redis.lrange(this.taskChangeProposalIdsKey(taskId), 0, -1);
     const pipeline = this.redis
@@ -1227,6 +1214,969 @@ export class TaskStore {
       pipeline.set(this.taskKey(taskId), JSON.stringify(nextTask));
     }
     await pipeline.exec();
+    await this.eventBus.publish({ type: "task:change_proposal", payload: next });
+    if (nextTask) {
+      await this.publishTaskEvent("task:updated", nextTask);
+    }
+    return next;
+  }
+}
+
+export class PostgresTaskStore implements TaskStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly eventBus: EventBus
+  ) {}
+
+  private normalizeTask(task: Task): Task {
+    const legacyTask = task as Task & {
+      taskType?: string;
+      ownerUserId?: string | null;
+      repoDefaultBranch?: string;
+      resultMarkdown?: string | null;
+      provider?: Task["provider"];
+      providerProfile?: Task["providerProfile"];
+      modelOverride?: string | null;
+      model?: string | null;
+      reasoningEffort?: TaskReasoningEffort | null;
+      lastAction?: string | null;
+      requirements?: string;
+      prompt?: string;
+    };
+    const normalizedTask: Task = {
+      ...legacyTask,
+      pinned: legacyTask.pinned ?? false,
+      hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
+      activeInteractiveSession: legacyTask.activeInteractiveSession === true,
+      activeTerminalSessionMode:
+        legacyTask.activeTerminalSessionMode === "git" || legacyTask.activeTerminalSessionMode === "interactive"
+          ? legacyTask.activeTerminalSessionMode
+          : legacyTask.activeInteractiveSession === true
+            ? "interactive"
+            : null,
+      ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
+      taskType: normalizeLegacyTaskType(legacyTask.taskType),
+      provider: normalizeProvider(legacyTask.provider),
+      providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
+      modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
+      repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
+      branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
+      workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
+      resultMarkdown: legacyTask.resultMarkdown ?? null,
+      lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
+      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim()
+    };
+    const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
+    return {
+      ...normalizedTask,
+      status: normalizeTaskLifecycleStatus(
+        currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as string) : String(legacyTask.status ?? ""),
+        fallbackAction,
+        normalizedTask.hasPendingCheckpoint
+      )
+    };
+  }
+
+  private withPendingCheckpointState(task: Task): Task {
+    const hasPendingCheckpoint = task.hasPendingCheckpoint ?? false;
+    return {
+      ...task,
+      status: reconcileTaskStatusWithPendingCheckpoint(task.status, hasPendingCheckpoint),
+      hasPendingCheckpoint,
+      activeInteractiveSession: task.activeInteractiveSession === true,
+      activeTerminalSessionMode:
+        task.activeInteractiveSession === true
+          ? task.activeTerminalSessionMode === "git"
+            ? "git"
+            : "interactive"
+          : null
+    };
+  }
+
+  private async publishTaskEvent(type: "task:created" | "task:updated", task: Task): Promise<Task> {
+    const payload = this.withPendingCheckpointState(task);
+    await this.eventBus.publish({ type, payload });
+    return payload;
+  }
+
+  private normalizeRun(run: TaskRun): TaskRun {
+    return {
+      ...run,
+      changeProposalCheckpointRef: run.changeProposalCheckpointRef ?? null,
+      changeProposalUntrackedPaths: Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : null
+    };
+  }
+
+  private normalizeStoredProposal(parsed: TaskChangeProposal): TaskChangeProposal {
+    const rawStatus = parsed.status as string;
+    const status: TaskChangeProposalStatus =
+      rawStatus === "accepted"
+        ? "applied"
+        : rawStatus === "pending" || rawStatus === "applied" || rawStatus === "rejected" || rawStatus === "reverted"
+          ? rawStatus
+          : "pending";
+
+    return {
+      ...parsed,
+      status,
+      untrackedPathsAtCheckpoint: Array.isArray(parsed.untrackedPathsAtCheckpoint) ? parsed.untrackedPathsAtCheckpoint : [],
+      resolvedAt: parsed.resolvedAt ?? null,
+      revertedAt: parsed.revertedAt ?? null
+    };
+  }
+
+  private async storeTask(task: Task, db: PostgresQueryable = this.pool): Promise<void> {
+    await db.query(
+      `
+        INSERT INTO tasks (id, owner_user_id, status, pinned, created_at, task_data)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+        ON CONFLICT (id) DO UPDATE
+        SET
+          owner_user_id = EXCLUDED.owner_user_id,
+          status = EXCLUDED.status,
+          pinned = EXCLUDED.pinned,
+          created_at = EXCLUDED.created_at,
+          task_data = EXCLUDED.task_data
+      `,
+      [task.id, task.ownerUserId, task.status, task.pinned, task.createdAt, JSON.stringify({ ...task, logs: [] })]
+    );
+  }
+
+  private mapTaskRow(row: Record<string, unknown>): Task {
+    const task = this.normalizeTask(parseJsonColumn<Task>(row.task_data));
+    return { ...task, logs: [] };
+  }
+
+  private async getStoredTask(taskId: string, db: PostgresQueryable = this.pool): Promise<Task | null> {
+    const result = await db.query("SELECT task_data FROM tasks WHERE id = $1", [taskId]);
+    const row = result.rows[0];
+    return row ? this.mapTaskRow(row) : null;
+  }
+
+  private async loadTaskLogs(taskId: string, db: PostgresQueryable = this.pool): Promise<string[]> {
+    const result = await db.query<{ line: string }>(
+      "SELECT line FROM task_logs WHERE task_id = $1 ORDER BY log_id ASC",
+      [taskId]
+    );
+    return result.rows.map((row) => row.line);
+  }
+
+  private async trimTaskLogs(taskId: string, db: PostgresQueryable = this.pool): Promise<void> {
+    await db.query(
+      `
+        DELETE FROM task_logs
+        WHERE log_id IN (
+          SELECT log_id
+          FROM task_logs
+          WHERE task_id = $1
+          ORDER BY log_id DESC
+          OFFSET $2
+        )
+      `,
+      [taskId, MAX_LOG_LINES]
+    );
+  }
+
+  private async hydrateTask(task: Task): Promise<Task> {
+    const logs = await this.loadTaskLogs(task.id);
+    const hydratedTask = {
+      ...task,
+      logs
+    };
+    const [proposals, activeInteractiveSession] = await Promise.all([
+      this.listChangeProposals(task.id),
+      this.getActiveInteractiveSession(task.id)
+    ]);
+    const hasPendingCheckpoint = hydratedTask.hasPendingCheckpoint || proposals.some((proposal) => proposal.status === "pending");
+    return {
+      ...this.withPendingCheckpointState({
+        ...hydratedTask,
+        hasPendingCheckpoint
+      }),
+      activeInteractiveSession: hydratedTask.activeInteractiveSession === true || activeInteractiveSession !== null,
+      activeTerminalSessionMode: activeInteractiveSession?.mode ?? hydratedTask.activeTerminalSessionMode ?? null
+    };
+  }
+
+  private mapRunRow(row: Record<string, unknown>): TaskRun {
+    return { ...this.normalizeRun(parseJsonColumn<TaskRun>(row.run_data)), logs: [] };
+  }
+
+  private async getStoredRun(runId: string, db: PostgresQueryable = this.pool): Promise<TaskRun | null> {
+    const result = await db.query("SELECT run_data FROM task_runs WHERE id = $1", [runId]);
+    const row = result.rows[0];
+    return row ? this.mapRunRow(row) : null;
+  }
+
+  private async loadRunLogs(runId: string, db: PostgresQueryable = this.pool): Promise<string[]> {
+    const result = await db.query<{ line: string }>(
+      "SELECT line FROM task_run_logs WHERE run_id = $1 ORDER BY log_id ASC",
+      [runId]
+    );
+    return result.rows.map((row) => row.line);
+  }
+
+  private async trimRunLogs(runId: string, db: PostgresQueryable = this.pool): Promise<void> {
+    await db.query(
+      `
+        DELETE FROM task_run_logs
+        WHERE log_id IN (
+          SELECT log_id
+          FROM task_run_logs
+          WHERE run_id = $1
+          ORDER BY log_id DESC
+          OFFSET $2
+        )
+      `,
+      [runId, MAX_LOG_LINES]
+    );
+  }
+
+  private async hydrateRun(run: TaskRun): Promise<TaskRun> {
+    const logs = await this.loadRunLogs(run.id);
+    return {
+      ...run,
+      logs
+    };
+  }
+
+  private async trimMessages(taskId: string, db: PostgresQueryable = this.pool): Promise<void> {
+    await db.query(
+      `
+        DELETE FROM task_messages
+        WHERE position IN (
+          SELECT position
+          FROM task_messages
+          WHERE task_id = $1
+          ORDER BY position DESC
+          OFFSET $2
+        )
+      `,
+      [taskId, MAX_MESSAGES]
+    );
+  }
+
+  async createTask(input: CreateTaskInput, repository: Repository, ownerUserId: string): Promise<Task> {
+    const timestamp = nowIso();
+    const title = resolveTaskTitleForCreate(input);
+    const taskType = input.taskType ?? "build";
+    const promptRaw = (input.prompt ?? "").trim();
+    const startMode: TaskStartMode = input.startMode ?? "run_now";
+    const prompt =
+      promptRaw.length > 0 ? promptRaw : startMode === "prepare_workspace" ? "" : "(No prompt provided.)";
+    const complexity = classifyTaskComplexity(title, prompt);
+    const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
+    const branchStrategy = input.branchStrategy ?? "feature_branch";
+    const provider = normalizeProvider(input.provider);
+    const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
+    const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
+    const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
+    const initialStatus: TaskStatus =
+      startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
+    const task: Task = {
+      id: nanoid(),
+      title,
+      pinned: false,
+      hasPendingCheckpoint: false,
+      activeInteractiveSession: false,
+      activeTerminalSessionMode: null,
+      ownerUserId,
+      repoId: repository.id,
+      repoName: repository.name,
+      repoUrl: repository.url,
+      repoDefaultBranch: repository.defaultBranch,
+      taskType,
+      provider,
+      providerProfile,
+      modelOverride,
+      baseBranch,
+      branchStrategy,
+      complexity,
+      branchName: branchStrategy === "work_on_branch" ? baseBranch : null,
+      workspaceBaseRef: null,
+      prompt,
+      resultMarkdown: null,
+      executionSummary: buildExecutionSummaryFromPrompt(title, prompt),
+      branchDiff: null,
+      lastAction: initialAction,
+      status: initialStatus,
+      logs: [],
+      enqueued: false,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      startedAt: startMode === "prepare_workspace" ? timestamp : null,
+      finishedAt: null,
+      errorMessage: null
+    };
+
+    await this.storeTask(task);
+    await this.publishTaskEvent("task:created", task);
+    if (startMode !== "prepare_workspace" || prompt.trim().length > 0) {
+      await this.appendMessage(task.id, {
+        role: "user",
+        action: initialAction,
+        content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
+      });
+    }
+
+    return this.withPendingCheckpointState(task);
+  }
+
+  async getTask(taskId: string): Promise<Task | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    return this.hydrateTask(task);
+  }
+
+  async listTasks(options: ListTasksOptions = {}): Promise<Task[]> {
+    const values: Array<string | number> = [];
+    const clauses: string[] = [];
+    const ownerUserId = options.ownerUserId?.trim() || null;
+    const view = options.view ?? "all";
+
+    if (ownerUserId) {
+      values.push(ownerUserId);
+      clauses.push(`owner_user_id = $${values.length}`);
+    }
+    if (view === "active") {
+      values.push("archived");
+      clauses.push(`status <> $${values.length}`);
+    } else if (view === "archived") {
+      values.push("archived");
+      clauses.push(`status = $${values.length}`);
+    }
+
+    let sql = "SELECT task_data FROM tasks";
+    if (clauses.length > 0) {
+      sql += ` WHERE ${clauses.join(" AND ")}`;
+    }
+    sql += " ORDER BY pinned DESC, created_at DESC";
+    if (options.limit != null && Number.isFinite(options.limit)) {
+      values.push(Math.max(0, options.limit));
+      sql += ` LIMIT $${values.length}`;
+    }
+
+    const result = await this.pool.query(sql, values);
+    return result.rows.map((row) =>
+      this.withPendingCheckpointState({
+        ...this.mapTaskRow(row),
+        logs: []
+      })
+    );
+  }
+
+  async patchTask(taskId: string, patch: Partial<Omit<Task, "id" | "createdAt">>): Promise<Task | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    const next: Task = {
+      ...task,
+      ...patch,
+      id: task.id,
+      createdAt: task.createdAt,
+      logs: [],
+      updatedAt: nowIso()
+    };
+
+    await this.storeTask(next);
+    return this.publishTaskEvent("task:updated", next);
+  }
+
+  async updateResultArtifacts(taskId: string, resultMarkdown: string): Promise<Task | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    const next: Task = {
+      ...task,
+      resultMarkdown,
+      updatedAt: nowIso(),
+      logs: []
+    };
+
+    await this.storeTask(next);
+    return this.publishTaskEvent("task:updated", next);
+  }
+
+  async appendLog(taskId: string, line: string): Promise<void> {
+    await this.appendLogForRun(taskId, line, null);
+  }
+
+  async appendLogForRun(taskId: string, line: string, runId: string | null): Promise<void> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return;
+    }
+
+    const timestamped = `[${new Date().toISOString()}] ${line}`;
+    await withPostgresTransaction(this.pool, async (client) => {
+      await client.query("INSERT INTO task_logs (task_id, line) VALUES ($1, $2)", [taskId, timestamped]);
+      await this.trimTaskLogs(taskId, client);
+      if (runId) {
+        const run = await this.getStoredRun(runId, client);
+        if (run) {
+          await client.query("INSERT INTO task_run_logs (run_id, line) VALUES ($1, $2)", [runId, timestamped]);
+          await this.trimRunLogs(runId, client);
+        }
+      }
+    });
+    await this.eventBus.publish({
+      type: "task:log",
+      payload: {
+        taskId,
+        runId,
+        line: timestamped,
+        timestamp: new Date().toISOString()
+      }
+    });
+  }
+
+  async listMessages(taskId: string): Promise<TaskMessage[]> {
+    const result = await this.pool.query("SELECT message_data FROM task_messages WHERE task_id = $1 ORDER BY position ASC", [taskId]);
+    return result.rows.flatMap((row) => {
+      try {
+        const parsed = parseJsonColumn<TaskMessage>(row.message_data);
+        return normalizeTaskMessage(parsed);
+      } catch {
+        return [];
+      }
+    });
+  }
+
+  async listRuns(taskId: string): Promise<TaskRun[]> {
+    const result = await this.pool.query("SELECT run_data FROM task_runs WHERE task_id = $1 ORDER BY started_at ASC, id ASC", [taskId]);
+    const runs = await Promise.all(
+      result.rows.map(async (row) => {
+        const run = this.mapRunRow(row);
+        return this.hydrateRun(run);
+      })
+    );
+    return runs;
+  }
+
+  async getRun(runId: string): Promise<TaskRun | null> {
+    const run = await this.getStoredRun(runId);
+    if (!run) {
+      return null;
+    }
+
+    return this.hydrateRun(run);
+  }
+
+  async createRun(taskId: string, input: CreateTaskRunInput): Promise<TaskRun | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    const run: TaskRun = {
+      id: nanoid(),
+      taskId,
+      action: input.action,
+      provider: input.provider,
+      providerProfile: input.providerProfile,
+      modelOverride: input.modelOverride,
+      branchName: input.branchName,
+      status: "running",
+      startedAt: nowIso(),
+      finishedAt: null,
+      summary: null,
+      errorMessage: null,
+      changeProposalCheckpointRef: null,
+      changeProposalUntrackedPaths: null,
+      logs: []
+    };
+
+    await this.pool.query(
+      "INSERT INTO task_runs (id, task_id, started_at, run_data) VALUES ($1, $2, $3, $4::jsonb)",
+      [run.id, taskId, run.startedAt, JSON.stringify({ ...run, logs: [] })]
+    );
+    await this.eventBus.publish({ type: "task:run_updated", payload: run });
+    return run;
+  }
+
+  async updateRun(runId: string, patch: UpdateTaskRunPatch): Promise<TaskRun | null> {
+    const run = await this.getStoredRun(runId);
+    if (!run) {
+      return null;
+    }
+
+    const next: TaskRun = {
+      ...run,
+      ...patch,
+      logs: []
+    };
+
+    await this.pool.query(
+      "UPDATE task_runs SET started_at = $2, run_data = $3::jsonb WHERE id = $1",
+      [runId, next.startedAt, JSON.stringify({ ...next, logs: [] })]
+    );
+    await this.eventBus.publish({ type: "task:run_updated", payload: next });
+    return next;
+  }
+
+  async appendMessage(taskId: string, input: AppendTaskMessageInput): Promise<TaskMessage | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    const contextEntries = (input.contextEntries ?? [])
+      .map((entry) => normalizeTaskContextEntry(entry))
+      .filter((entry): entry is TaskContextEntry => entry !== null);
+
+    const message: TaskMessage = {
+      id: nanoid(),
+      taskId,
+      role: input.role,
+      content: input.content,
+      action: input.action ?? null,
+      ...(contextEntries.length > 0 ? { contextEntries } : {}),
+      ...(input.sessionId !== undefined ? { sessionId: input.sessionId ?? null } : {}),
+      createdAt: nowIso()
+    };
+
+    await withPostgresTransaction(this.pool, async (client) => {
+      await client.query(
+        `
+          INSERT INTO task_messages (message_id, task_id, created_at, message_data)
+          VALUES ($1, $2, $3, $4::jsonb)
+        `,
+        [message.id, taskId, message.createdAt, JSON.stringify(message)]
+      );
+      await this.trimMessages(taskId, client);
+    });
+    await this.eventBus.publish({
+      type: "task:message",
+      payload: message
+    });
+    return message;
+  }
+
+  async updateMessage(taskId: string, messageId: string, content: string): Promise<TaskMessage | null> {
+    const result = await this.pool.query(
+      "SELECT message_data FROM task_messages WHERE task_id = $1 AND message_id = $2",
+      [taskId, messageId]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+
+    const message = normalizeTaskMessage(parseJsonColumn<TaskMessage>(row.message_data));
+    const updatedMessage: TaskMessage = {
+      ...message,
+      content
+    };
+
+    await this.pool.query(
+      "UPDATE task_messages SET message_data = $3::jsonb WHERE task_id = $1 AND message_id = $2",
+      [taskId, messageId, JSON.stringify(updatedMessage)]
+    );
+    await this.eventBus.publish({
+      type: "task:message_updated",
+      payload: updatedMessage
+    });
+    return updatedMessage;
+  }
+
+  async markQueuedForAction(taskId: string, action: TaskAction): Promise<Task | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    const next: Task = {
+      ...task,
+      status: getQueuedStatusForAction(action),
+      enqueued: false,
+      errorMessage: null,
+      startedAt: null,
+      finishedAt: null,
+      lastAction: action,
+      branchDiff: action === "build" ? task.branchDiff : null,
+      logs: [],
+      updatedAt: nowIso()
+    };
+
+    await this.storeTask(next);
+    return this.publishTaskEvent("task:updated", next);
+  }
+
+  async setStatus(taskId: string, status: TaskStatus, extra: Partial<Task> = {}): Promise<Task | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    const next: Task = {
+      ...task,
+      ...extra,
+      status,
+      logs: [],
+      updatedAt: nowIso()
+    };
+
+    await this.storeTask(next);
+    return this.publishTaskEvent("task:updated", next);
+  }
+
+  async archiveTask(taskId: string): Promise<Task | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    const next: Task = {
+      ...task,
+      status: "archived",
+      enqueued: false,
+      logs: [],
+      updatedAt: nowIso()
+    };
+
+    await this.storeTask(next);
+    return this.publishTaskEvent("task:updated", next);
+  }
+
+  async deleteTask(taskId: string): Promise<boolean> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return false;
+    }
+
+    await this.pool.query("DELETE FROM tasks WHERE id = $1", [taskId]);
+    await this.eventBus.publish({ type: "task:deleted", payload: { id: taskId, repoId: task.repoId, ownerUserId: task.ownerUserId } });
+    return true;
+  }
+
+  async publishTaskPushedEvent(input: TaskPushedEventInput): Promise<void> {
+    const task = await this.getStoredTask(input.taskId);
+    if (!task) {
+      return;
+    }
+
+    await this.eventBus.publish({
+      type: "task:pushed",
+      payload: {
+        taskId: task.id,
+        repoId: task.repoId,
+        branchName: input.branchName,
+        commitMessage: input.commitMessage,
+        triggeredAt: nowIso()
+      }
+    });
+  }
+
+  async publishTaskMergedEvent(input: TaskMergedEventInput): Promise<void> {
+    const task = await this.getStoredTask(input.taskId);
+    if (!task) {
+      return;
+    }
+
+    await this.eventBus.publish({
+      type: "task:merged",
+      payload: {
+        taskId: task.id,
+        repoId: task.repoId,
+        sourceBranch: input.sourceBranch,
+        targetBranch: input.targetBranch,
+        commitMessage: input.commitMessage,
+        triggeredAt: nowIso()
+      }
+    });
+  }
+
+  async hasPendingChangeProposal(taskId: string): Promise<boolean> {
+    const task = await this.getStoredTask(taskId);
+    return task?.hasPendingCheckpoint ?? false;
+  }
+
+  async getActiveInteractiveSession(taskId: string): Promise<TaskActiveInteractiveSession | null> {
+    const result = await this.pool.query("SELECT session_data FROM task_active_interactive_sessions WHERE task_id = $1", [taskId]);
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+
+    try {
+      const parsed = parseJsonColumn<{
+        sessionId?: string;
+        checkpointRef?: string;
+        startedAt?: string;
+        untrackedPathsAtCheckpoint?: string[];
+        mode?: TaskTerminalSessionMode;
+      }>(row.session_data);
+      if (typeof parsed.sessionId === "string" && typeof parsed.checkpointRef === "string" && typeof parsed.startedAt === "string") {
+        return {
+          sessionId: parsed.sessionId,
+          checkpointRef: parsed.checkpointRef,
+          startedAt: parsed.startedAt,
+          untrackedPathsAtCheckpoint: Array.isArray(parsed.untrackedPathsAtCheckpoint) ? parsed.untrackedPathsAtCheckpoint : [],
+          mode: parsed.mode === "git" ? "git" : "interactive"
+        };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  async setActiveInteractiveSession(taskId: string, session: TaskActiveInteractiveSession): Promise<void> {
+    const task = await this.getStoredTask(taskId);
+    const nextTask = task
+      ? { ...task, activeInteractiveSession: true, activeTerminalSessionMode: session.mode, logs: [] }
+      : null;
+
+    await withPostgresTransaction(this.pool, async (client) => {
+      await client.query(
+        `
+          INSERT INTO task_active_interactive_sessions (task_id, session_data)
+          VALUES ($1, $2::jsonb)
+          ON CONFLICT (task_id) DO UPDATE
+          SET session_data = EXCLUDED.session_data
+        `,
+        [taskId, JSON.stringify(session)]
+      );
+      if (nextTask) {
+        await this.storeTask(nextTask, client);
+      }
+    });
+    if (nextTask) {
+      await this.publishTaskEvent("task:updated", nextTask);
+    }
+  }
+
+  async clearActiveInteractiveSession(taskId: string): Promise<void> {
+    const task = await this.getStoredTask(taskId);
+    const nextTask = task ? { ...task, activeInteractiveSession: false, activeTerminalSessionMode: null, logs: [] } : null;
+    await withPostgresTransaction(this.pool, async (client) => {
+      await client.query("DELETE FROM task_active_interactive_sessions WHERE task_id = $1", [taskId]);
+      if (nextTask) {
+        await this.storeTask(nextTask, client);
+      }
+    });
+    if (nextTask) {
+      await this.publishTaskEvent("task:updated", nextTask);
+    }
+  }
+
+  async saveInteractiveTerminalTranscript(taskId: string, sessionId: string, content: string, truncated: boolean): Promise<void> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return;
+    }
+
+    const transcript: TaskInteractiveTerminalTranscript = {
+      taskId,
+      sessionId,
+      content,
+      truncated
+    };
+    await this.pool.query(
+      `
+        INSERT INTO task_interactive_terminal_transcripts (session_id, task_id, transcript_data)
+        VALUES ($1, $2, $3::jsonb)
+        ON CONFLICT (session_id) DO UPDATE
+        SET task_id = EXCLUDED.task_id, transcript_data = EXCLUDED.transcript_data
+      `,
+      [sessionId, taskId, JSON.stringify(transcript)]
+    );
+  }
+
+  async getInteractiveTerminalTranscript(taskId: string, sessionId: string): Promise<TaskInteractiveTerminalTranscript | null> {
+    const result = await this.pool.query(
+      "SELECT transcript_data FROM task_interactive_terminal_transcripts WHERE session_id = $1 AND task_id = $2",
+      [sessionId, taskId]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+
+    try {
+      const parsed = parseJsonColumn<TaskInteractiveTerminalTranscript>(row.transcript_data);
+      if (
+        parsed &&
+        parsed.taskId === taskId &&
+        parsed.sessionId === sessionId &&
+        typeof parsed.content === "string" &&
+        typeof parsed.truncated === "boolean"
+      ) {
+        return parsed;
+      }
+    } catch {
+      /* ignore */
+    }
+
+    return null;
+  }
+
+  async listChangeProposals(taskId: string): Promise<TaskChangeProposal[]> {
+    const result = await this.pool.query(
+      "SELECT proposal_data FROM task_change_proposals WHERE task_id = $1 ORDER BY created_at ASC, id ASC",
+      [taskId]
+    );
+    const proposals: TaskChangeProposal[] = [];
+    for (const row of result.rows) {
+      try {
+        proposals.push(this.normalizeStoredProposal(parseJsonColumn<TaskChangeProposal>(row.proposal_data)));
+      } catch {
+        /* skip */
+      }
+    }
+    return proposals;
+  }
+
+  async getChangeProposal(proposalId: string): Promise<TaskChangeProposal | null> {
+    const result = await this.pool.query("SELECT proposal_data FROM task_change_proposals WHERE id = $1", [proposalId]);
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+    try {
+      return this.normalizeStoredProposal(parseJsonColumn<TaskChangeProposal>(row.proposal_data));
+    } catch {
+      return null;
+    }
+  }
+
+  async getLatestAppliedChangeProposalId(taskId: string): Promise<string | null> {
+    const proposals = await this.listChangeProposals(taskId);
+    const applied = proposals.filter((proposal) => proposal.status === "applied");
+    if (applied.length === 0) {
+      return null;
+    }
+    const rank = (proposal: TaskChangeProposal): string => `${proposal.resolvedAt ?? proposal.createdAt}\0${proposal.id}`;
+    let best = applied[0]!;
+    for (let index = 1; index < applied.length; index += 1) {
+      const proposal = applied[index]!;
+      if (rank(proposal) > rank(best)) {
+        best = proposal;
+      }
+    }
+    return best.id;
+  }
+
+  async createChangeProposal(input: CreateTaskChangeProposalInput): Promise<TaskChangeProposal | null> {
+    const existingList = await this.listChangeProposals(input.taskId);
+    if (existingList.some((proposal) => proposal.status === "pending")) {
+      return null;
+    }
+
+    const proposal: TaskChangeProposal = {
+      ...input,
+      untrackedPathsAtCheckpoint: Array.isArray(input.untrackedPathsAtCheckpoint) ? input.untrackedPathsAtCheckpoint : [],
+      resolvedAt: null,
+      revertedAt: null
+    };
+    const task = await this.getStoredTask(input.taskId);
+    const nextTask = task ? { ...task, hasPendingCheckpoint: true, logs: [] } : null;
+
+    await withPostgresTransaction(this.pool, async (client) => {
+      await client.query(
+        `
+          INSERT INTO task_change_proposals (id, task_id, status, created_at, resolved_at, proposal_data)
+          VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+        `,
+        [proposal.id, proposal.taskId, proposal.status, proposal.createdAt, proposal.resolvedAt, JSON.stringify(proposal)]
+      );
+      if (nextTask) {
+        await this.storeTask(nextTask, client);
+      }
+    });
+
+    await this.eventBus.publish({ type: "task:change_proposal", payload: proposal });
+    if (nextTask) {
+      await this.publishTaskEvent("task:updated", nextTask);
+    }
+    return proposal;
+  }
+
+  async updateChangeProposalStatus(
+    proposalId: string,
+    status: TaskChangeProposalStatus,
+    taskId: string,
+    updates?: UpdateTaskChangeProposalUpdates
+  ): Promise<TaskChangeProposal | null> {
+    const existing = await this.getChangeProposal(proposalId);
+    if (!existing || existing.taskId !== taskId) {
+      return null;
+    }
+
+    const next: TaskChangeProposal = {
+      ...existing,
+      ...updates,
+      status,
+      resolvedAt: status === "pending" ? null : nowIso(),
+      revertedAt: status === "applied" ? null : (existing.revertedAt ?? null)
+    };
+
+    const task = await this.getStoredTask(taskId);
+    const nextHasPendingCheckpoint =
+      next.status === "pending" ? true : existing.status === "pending" ? false : (task?.hasPendingCheckpoint ?? false);
+    const nextTask = task ? { ...task, hasPendingCheckpoint: nextHasPendingCheckpoint, logs: [] } : null;
+
+    await withPostgresTransaction(this.pool, async (client) => {
+      await client.query(
+        `
+          UPDATE task_change_proposals
+          SET
+            status = $2,
+            resolved_at = $3,
+            proposal_data = $4::jsonb
+          WHERE id = $1
+        `,
+        [proposalId, next.status, next.resolvedAt, JSON.stringify(next)]
+      );
+      if (nextTask) {
+        await this.storeTask(nextTask, client);
+      }
+    });
+
+    await this.eventBus.publish({ type: "task:change_proposal", payload: next });
+    if (nextTask) {
+      await this.publishTaskEvent("task:updated", nextTask);
+    }
+    return next;
+  }
+
+  async markCheckpointReverted(proposalId: string, taskId: string): Promise<TaskChangeProposal | null> {
+    const existing = await this.getChangeProposal(proposalId);
+    if (!existing || existing.taskId !== taskId || existing.status !== "applied") {
+      return null;
+    }
+
+    const next: TaskChangeProposal = {
+      ...existing,
+      status: "reverted",
+      revertedAt: nowIso()
+    };
+
+    const task = await this.getStoredTask(taskId);
+    const nextTask = task ? { ...task, logs: [] } : null;
+    await withPostgresTransaction(this.pool, async (client) => {
+      await client.query(
+        `
+          UPDATE task_change_proposals
+          SET
+            status = $2,
+            resolved_at = $3,
+            proposal_data = $4::jsonb
+          WHERE id = $1
+        `,
+        [proposalId, next.status, next.resolvedAt, JSON.stringify(next)]
+      );
+      if (nextTask) {
+        await this.storeTask(nextTask, client);
+      }
+    });
     await this.eventBus.publish({ type: "task:change_proposal", payload: next });
     if (nextTask) {
       await this.publishTaskEvent("task:updated", nextTask);
