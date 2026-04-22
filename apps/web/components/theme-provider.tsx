@@ -20,7 +20,21 @@ function resolveInitialThemeMode(): AppThemeMode {
   }
 
   const storedMode = window.localStorage.getItem(THEME_STORAGE_KEY);
-  if (storedMode === "light" || storedMode === "dark" || storedMode === "cyber" || storedMode === "forge") {
+  if (
+    storedMode === "light" ||
+    storedMode === "dark" ||
+    storedMode === "cyber" ||
+    storedMode === "forge" ||
+    storedMode === "github" ||
+    storedMode === "github-light" ||
+    storedMode === "nord" ||
+    storedMode === "solarized-light" ||
+    storedMode === "gruvbox-dark" ||
+    storedMode === "high-contrast" ||
+    storedMode === "tokyo-night" ||
+    storedMode === "solarized-dark" ||
+    storedMode === "paper"
+  ) {
     return storedMode;
   }
 

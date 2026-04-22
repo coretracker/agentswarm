@@ -106,6 +106,249 @@ html[data-theme="forge"] {
   --diff-omit-gutter-line-color: #ff5252;
 }
 
+html[data-theme="github"] {
+  color-scheme: dark;
+  --app-body-bg: #0d1117;
+  --app-body-text: #c9d1d9;
+  --diff-background-color: #161b22;
+  --diff-text-color: #c9d1d9;
+  --diff-selection-background-color: rgba(31, 111, 235, 0.18);
+  --diff-selection-text-color: #f0f6fc;
+  --diff-gutter-insert-background-color: #0f2419;
+  --diff-gutter-insert-text-color: #56d364;
+  --diff-gutter-delete-background-color: #2d1517;
+  --diff-gutter-delete-text-color: #ff7b72;
+  --diff-gutter-selected-background-color: #2b2415;
+  --diff-gutter-selected-text-color: #ffa657;
+  --diff-code-insert-background-color: #0d1f14;
+  --diff-code-insert-text-color: #aff5b4;
+  --diff-code-delete-background-color: #231417;
+  --diff-code-delete-text-color: #ffdcd7;
+  --diff-code-insert-edit-background-color: #1a3a24;
+  --diff-code-insert-edit-text-color: #d2ffd8;
+  --diff-code-delete-edit-background-color: #5d2023;
+  --diff-code-delete-edit-text-color: #fff1ee;
+  --diff-code-selected-background-color: #2b2415;
+  --diff-code-selected-text-color: #ffddb0;
+  --diff-omit-gutter-line-color: #f85149;
+}
+
+html[data-theme="github-light"] {
+  color-scheme: light;
+  --app-body-bg: #f6f8fa;
+  --app-body-text: #1f2328;
+  --diff-background-color: #ffffff;
+  --diff-text-color: #1f2328;
+  --diff-selection-background-color: rgba(9, 105, 218, 0.12);
+  --diff-selection-text-color: #1f2328;
+  --diff-gutter-insert-background-color: #dafbe1;
+  --diff-gutter-insert-text-color: #1a7f37;
+  --diff-gutter-delete-background-color: #ffebe9;
+  --diff-gutter-delete-text-color: #cf222e;
+  --diff-gutter-selected-background-color: #fff8c5;
+  --diff-gutter-selected-text-color: #9a6700;
+  --diff-code-insert-background-color: #ebfff0;
+  --diff-code-insert-text-color: #116329;
+  --diff-code-delete-background-color: #fff1f0;
+  --diff-code-delete-text-color: #a40e26;
+  --diff-code-insert-edit-background-color: #aceebb;
+  --diff-code-insert-edit-text-color: #0f5323;
+  --diff-code-delete-edit-background-color: #ffcecb;
+  --diff-code-delete-edit-text-color: #82071e;
+  --diff-code-selected-background-color: #fff1b8;
+  --diff-code-selected-text-color: #7d4e00;
+  --diff-omit-gutter-line-color: #cf222e;
+}
+
+html[data-theme="nord"] {
+  color-scheme: dark;
+  --app-body-bg: #2b303b;
+  --app-body-text: #e5e9f0;
+  --diff-background-color: #3b4252;
+  --diff-text-color: #e5e9f0;
+  --diff-selection-background-color: rgba(136, 192, 208, 0.18);
+  --diff-selection-text-color: #f7fafc;
+  --diff-gutter-insert-background-color: #334038;
+  --diff-gutter-insert-text-color: #a3be8c;
+  --diff-gutter-delete-background-color: #43343a;
+  --diff-gutter-delete-text-color: #d08770;
+  --diff-gutter-selected-background-color: #4a4437;
+  --diff-gutter-selected-text-color: #ebcb8b;
+  --diff-code-insert-background-color: #2f3933;
+  --diff-code-insert-text-color: #d8e7cb;
+  --diff-code-delete-background-color: #3a2f33;
+  --diff-code-delete-text-color: #f1c2b6;
+  --diff-code-insert-edit-background-color: #425046;
+  --diff-code-insert-edit-text-color: #f3faeb;
+  --diff-code-delete-edit-background-color: #6c4a52;
+  --diff-code-delete-edit-text-color: #fff1ef;
+  --diff-code-selected-background-color: #4a4437;
+  --diff-code-selected-text-color: #f5ddb0;
+  --diff-omit-gutter-line-color: #bf616a;
+}
+
+html[data-theme="solarized-light"] {
+  color-scheme: light;
+  --app-body-bg: #f4edd8;
+  --app-body-text: #586e75;
+  --diff-background-color: #fdf6e3;
+  --diff-text-color: #586e75;
+  --diff-selection-background-color: rgba(38, 139, 210, 0.12);
+  --diff-selection-text-color: #586e75;
+  --diff-gutter-insert-background-color: #eef6d2;
+  --diff-gutter-insert-text-color: #657b00;
+  --diff-gutter-delete-background-color: #f8e1dc;
+  --diff-gutter-delete-text-color: #c0392b;
+  --diff-gutter-selected-background-color: #f8efc8;
+  --diff-gutter-selected-text-color: #9a7400;
+  --diff-code-insert-background-color: #f5f9e7;
+  --diff-code-insert-text-color: #4e6400;
+  --diff-code-delete-background-color: #fbebe7;
+  --diff-code-delete-text-color: #a92b26;
+  --diff-code-insert-edit-background-color: #dfeab2;
+  --diff-code-insert-edit-text-color: #425300;
+  --diff-code-delete-edit-background-color: #f2c4ba;
+  --diff-code-delete-edit-text-color: #86211e;
+  --diff-code-selected-background-color: #f5e7a8;
+  --diff-code-selected-text-color: #7f5c00;
+  --diff-omit-gutter-line-color: #dc322f;
+}
+
+html[data-theme="gruvbox-dark"] {
+  color-scheme: dark;
+  --app-body-bg: #1d2021;
+  --app-body-text: #ebdbb2;
+  --diff-background-color: #32302f;
+  --diff-text-color: #ebdbb2;
+  --diff-selection-background-color: rgba(215, 153, 33, 0.18);
+  --diff-selection-text-color: #fbf1c7;
+  --diff-gutter-insert-background-color: #30361d;
+  --diff-gutter-insert-text-color: #b8bb26;
+  --diff-gutter-delete-background-color: #442726;
+  --diff-gutter-delete-text-color: #fb7c6d;
+  --diff-gutter-selected-background-color: #47341c;
+  --diff-gutter-selected-text-color: #fabd2f;
+  --diff-code-insert-background-color: #2a2f19;
+  --diff-code-insert-text-color: #dde79b;
+  --diff-code-delete-background-color: #3a2221;
+  --diff-code-delete-text-color: #ffd2cb;
+  --diff-code-insert-edit-background-color: #46511d;
+  --diff-code-insert-edit-text-color: #f4ffd1;
+  --diff-code-delete-edit-background-color: #7d3b34;
+  --diff-code-delete-edit-text-color: #fff0ed;
+  --diff-code-selected-background-color: #47341c;
+  --diff-code-selected-text-color: #ffd88a;
+  --diff-omit-gutter-line-color: #fb4934;
+}
+
+html[data-theme="high-contrast"] {
+  color-scheme: dark;
+  --app-body-bg: #000000;
+  --app-body-text: #ffffff;
+  --diff-background-color: #0f0f0f;
+  --diff-text-color: #ffffff;
+  --diff-selection-background-color: rgba(77, 163, 255, 0.26);
+  --diff-selection-text-color: #ffffff;
+  --diff-gutter-insert-background-color: #001d0d;
+  --diff-gutter-insert-text-color: #43f090;
+  --diff-gutter-delete-background-color: #2a0000;
+  --diff-gutter-delete-text-color: #ffb0b0;
+  --diff-gutter-selected-background-color: #241f00;
+  --diff-gutter-selected-text-color: #ffe14d;
+  --diff-code-insert-background-color: #002813;
+  --diff-code-insert-text-color: #b3ffd2;
+  --diff-code-delete-background-color: #300000;
+  --diff-code-delete-text-color: #ffe0e0;
+  --diff-code-insert-edit-background-color: #004d25;
+  --diff-code-insert-edit-text-color: #ecfff3;
+  --diff-code-delete-edit-background-color: #6b0000;
+  --diff-code-delete-edit-text-color: #fff5f5;
+  --diff-code-selected-background-color: #3d3500;
+  --diff-code-selected-text-color: #fff4a3;
+  --diff-omit-gutter-line-color: #ff5c5c;
+}
+
+html[data-theme="tokyo-night"] {
+  color-scheme: dark;
+  --app-body-bg: #16161e;
+  --app-body-text: #c0caf5;
+  --diff-background-color: #1f2335;
+  --diff-text-color: #c0caf5;
+  --diff-selection-background-color: rgba(122, 162, 247, 0.18);
+  --diff-selection-text-color: #eef2ff;
+  --diff-gutter-insert-background-color: #223126;
+  --diff-gutter-insert-text-color: #9ece6a;
+  --diff-gutter-delete-background-color: #3b2532;
+  --diff-gutter-delete-text-color: #f7768e;
+  --diff-gutter-selected-background-color: #393324;
+  --diff-gutter-selected-text-color: #e0af68;
+  --diff-code-insert-background-color: #1d2b22;
+  --diff-code-insert-text-color: #d8f2bc;
+  --diff-code-delete-background-color: #301f29;
+  --diff-code-delete-text-color: #ffc3ce;
+  --diff-code-insert-edit-background-color: #35503f;
+  --diff-code-insert-edit-text-color: #f0ffe5;
+  --diff-code-delete-edit-background-color: #6e4251;
+  --diff-code-delete-edit-text-color: #fff0f4;
+  --diff-code-selected-background-color: #393324;
+  --diff-code-selected-text-color: #f3d5a5;
+  --diff-omit-gutter-line-color: #f7768e;
+}
+
+html[data-theme="solarized-dark"] {
+  color-scheme: dark;
+  --app-body-bg: #001f27;
+  --app-body-text: #93a1a1;
+  --diff-background-color: #073642;
+  --diff-text-color: #93a1a1;
+  --diff-selection-background-color: rgba(38, 139, 210, 0.2);
+  --diff-selection-text-color: #eee8d5;
+  --diff-gutter-insert-background-color: #1b3314;
+  --diff-gutter-insert-text-color: #859900;
+  --diff-gutter-delete-background-color: #3b1712;
+  --diff-gutter-delete-text-color: #dc322f;
+  --diff-gutter-selected-background-color: #3a2d09;
+  --diff-gutter-selected-text-color: #b58900;
+  --diff-code-insert-background-color: #153016;
+  --diff-code-insert-text-color: #c3d269;
+  --diff-code-delete-background-color: #31130f;
+  --diff-code-delete-text-color: #ff9b94;
+  --diff-code-insert-edit-background-color: #31511d;
+  --diff-code-insert-edit-text-color: #eef7b3;
+  --diff-code-delete-edit-background-color: #723127;
+  --diff-code-delete-edit-text-color: #ffe5df;
+  --diff-code-selected-background-color: #3a2d09;
+  --diff-code-selected-text-color: #e8c65a;
+  --diff-omit-gutter-line-color: #dc322f;
+}
+
+html[data-theme="paper"] {
+  color-scheme: light;
+  --app-body-bg: #efe8d5;
+  --app-body-text: #4b463c;
+  --diff-background-color: #fffaf0;
+  --diff-text-color: #4b463c;
+  --diff-selection-background-color: rgba(70, 124, 138, 0.12);
+  --diff-selection-text-color: #4b463c;
+  --diff-gutter-insert-background-color: #edf2e3;
+  --diff-gutter-insert-text-color: #567038;
+  --diff-gutter-delete-background-color: #f5e3e1;
+  --diff-gutter-delete-text-color: #9d4f4f;
+  --diff-gutter-selected-background-color: #f6ead7;
+  --diff-gutter-selected-text-color: #9b6d2b;
+  --diff-code-insert-background-color: #f4f7eb;
+  --diff-code-insert-text-color: #445a2b;
+  --diff-code-delete-background-color: #faecea;
+  --diff-code-delete-text-color: #884646;
+  --diff-code-insert-edit-background-color: #dfe8d2;
+  --diff-code-insert-edit-text-color: #394b24;
+  --diff-code-delete-edit-background-color: #edd1ce;
+  --diff-code-delete-edit-text-color: #723b3b;
+  --diff-code-selected-background-color: #efddc0;
+  --diff-code-selected-text-color: #7f5b22;
+  --diff-omit-gutter-line-color: #b55d5d;
+}
+
 html,
 body {
   margin: 0;
@@ -177,13 +420,37 @@ html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
 html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
 html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-line:first-child td,
 html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="github"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="github"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="github"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
   border-top-color: rgba(255, 255, 255, 0.06);
 }
 
 html[data-theme="dark"] .diff-gutter,
 html[data-theme="cyber"] .diff-gutter,
-html[data-theme="forge"] .diff-gutter {
+html[data-theme="forge"] .diff-gutter,
+html[data-theme="github"] .diff-gutter,
+html[data-theme="nord"] .diff-gutter,
+html[data-theme="gruvbox-dark"] .diff-gutter,
+html[data-theme="high-contrast"] .diff-gutter,
+html[data-theme="tokyo-night"] .diff-gutter,
+html[data-theme="solarized-dark"] .diff-gutter {
   color: #8ea394;
   background: rgba(255, 255, 255, 0.02);
   border-right-color: rgba(255, 255, 255, 0.06);
@@ -191,7 +458,13 @@ html[data-theme="forge"] .diff-gutter {
 
 html[data-theme="dark"] .diff-code-normal,
 html[data-theme="cyber"] .diff-code-normal,
-html[data-theme="forge"] .diff-code-normal {
+html[data-theme="forge"] .diff-code-normal,
+html[data-theme="github"] .diff-code-normal,
+html[data-theme="nord"] .diff-code-normal,
+html[data-theme="gruvbox-dark"] .diff-code-normal,
+html[data-theme="high-contrast"] .diff-code-normal,
+html[data-theme="tokyo-night"] .diff-code-normal,
+html[data-theme="solarized-dark"] .diff-code-normal {
   background: rgba(255, 255, 255, 0.01);
 }
 
@@ -200,7 +473,19 @@ html[data-theme="dark"] .diff-widget-content,
 html[data-theme="cyber"] .diff-decoration-content,
 html[data-theme="cyber"] .diff-widget-content,
 html[data-theme="forge"] .diff-decoration-content,
-html[data-theme="forge"] .diff-widget-content {
+html[data-theme="forge"] .diff-widget-content,
+html[data-theme="github"] .diff-decoration-content,
+html[data-theme="github"] .diff-widget-content,
+html[data-theme="nord"] .diff-decoration-content,
+html[data-theme="nord"] .diff-widget-content,
+html[data-theme="gruvbox-dark"] .diff-decoration-content,
+html[data-theme="gruvbox-dark"] .diff-widget-content,
+html[data-theme="high-contrast"] .diff-decoration-content,
+html[data-theme="high-contrast"] .diff-widget-content,
+html[data-theme="tokyo-night"] .diff-decoration-content,
+html[data-theme="tokyo-night"] .diff-widget-content,
+html[data-theme="solarized-dark"] .diff-decoration-content,
+html[data-theme="solarized-dark"] .diff-widget-content {
   background: rgba(255, 255, 255, 0.03);
   color: #9fb3a5;
 }
@@ -225,4 +510,141 @@ html[data-theme="forge"] .diff-gutter {
 html[data-theme="forge"] .diff-decoration-content,
 html[data-theme="forge"] .diff-widget-content {
   color: rgba(201, 209, 217, 0.72);
+}
+
+html[data-theme="github"] .diff-gutter {
+  color: #8b949e;
+  background: rgba(255, 255, 255, 0.02);
+  border-right-color: rgba(201, 209, 217, 0.08);
+}
+
+html[data-theme="github"] .diff-decoration-content,
+html[data-theme="github"] .diff-widget-content {
+  color: #8b949e;
+}
+
+html[data-theme="nord"] .diff-gutter {
+  color: #c2cad6;
+  background: rgba(236, 239, 244, 0.03);
+  border-right-color: rgba(236, 239, 244, 0.08);
+}
+
+html[data-theme="nord"] .diff-decoration-content,
+html[data-theme="nord"] .diff-widget-content {
+  color: #c2cad6;
+}
+
+html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(208, 215, 222, 0.7);
+}
+
+html[data-theme="github-light"] .diff-gutter {
+  color: #57606a;
+  background: rgba(246, 248, 250, 0.9);
+  border-right-color: rgba(208, 215, 222, 0.9);
+}
+
+html[data-theme="github-light"] .diff-code-normal {
+  background: rgba(246, 248, 250, 0.65);
+}
+
+html[data-theme="github-light"] .diff-decoration-content,
+html[data-theme="github-light"] .diff-widget-content {
+  background: rgba(246, 248, 250, 0.85);
+  color: #57606a;
+}
+
+html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(131, 148, 150, 0.35);
+}
+
+html[data-theme="solarized-light"] .diff-gutter {
+  color: #6b7f86;
+  background: rgba(253, 246, 227, 0.9);
+  border-right-color: rgba(215, 206, 181, 0.9);
+}
+
+html[data-theme="solarized-light"] .diff-code-normal {
+  background: rgba(255, 249, 233, 0.72);
+}
+
+html[data-theme="solarized-light"] .diff-decoration-content,
+html[data-theme="solarized-light"] .diff-widget-content {
+  background: rgba(255, 249, 233, 0.88);
+  color: #6b7f86;
+}
+
+html[data-theme="gruvbox-dark"] .diff-gutter {
+  color: #bdae93;
+  background: rgba(235, 219, 178, 0.03);
+  border-right-color: rgba(235, 219, 178, 0.08);
+}
+
+html[data-theme="gruvbox-dark"] .diff-decoration-content,
+html[data-theme="gruvbox-dark"] .diff-widget-content {
+  color: #bdae93;
+}
+
+html[data-theme="high-contrast"] .diff-gutter {
+  color: #d9d9d9;
+  background: rgba(255, 255, 255, 0.04);
+  border-right-color: rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="high-contrast"] .diff-code-normal {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+html[data-theme="high-contrast"] .diff-decoration-content,
+html[data-theme="high-contrast"] .diff-widget-content {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+
+html[data-theme="tokyo-night"] .diff-gutter {
+  color: #a9b1d6;
+  background: rgba(192, 202, 245, 0.03);
+  border-right-color: rgba(192, 202, 245, 0.08);
+}
+
+html[data-theme="tokyo-night"] .diff-decoration-content,
+html[data-theme="tokyo-night"] .diff-widget-content {
+  color: #a9b1d6;
+}
+
+html[data-theme="solarized-dark"] .diff-gutter {
+  color: #839496;
+  background: rgba(147, 161, 161, 0.03);
+  border-right-color: rgba(147, 161, 161, 0.08);
+}
+
+html[data-theme="solarized-dark"] .diff-decoration-content,
+html[data-theme="solarized-dark"] .diff-widget-content {
+  color: #839496;
+}
+
+html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(216, 205, 182, 0.72);
+}
+
+html[data-theme="paper"] .diff-gutter {
+  color: #6a665c;
+  background: rgba(255, 250, 240, 0.86);
+  border-right-color: rgba(216, 205, 182, 0.92);
+}
+
+html[data-theme="paper"] .diff-code-normal {
+  background: rgba(255, 253, 247, 0.75);
+}
+
+html[data-theme="paper"] .diff-decoration-content,
+html[data-theme="paper"] .diff-widget-content {
+  background: rgba(255, 253, 247, 0.9);
+  color: #6a665c;
 }
