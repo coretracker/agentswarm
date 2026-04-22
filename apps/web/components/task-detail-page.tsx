@@ -29,6 +29,7 @@ import {
   type ProviderProfile,
   type SystemSettings,
   type GitHubBranchReference,
+  type GitHubPullRequestReference,
   type TaskMergePreview,
   type TaskPushPreview,
   type TaskChangeProposal,
@@ -407,32 +408,43 @@ function getGitHubRepositoryBaseUrl(repoUrl: string): string | null {
   return null;
 }
 
-function getGitHubDiffTarget(task: Task): { href: string; label: string } | null {
+function getTaskGitHubTargetBranch(task: Task): string | null {
+  if (task.taskType !== "build" && task.taskType !== "ask") {
+    return null;
+  }
+
+  return task.branchName ?? task.baseBranch ?? null;
+}
+
+function getGitHubDiffTarget(task: Task, existingPullRequest?: GitHubPullRequestReference | null): { href: string; label: string } | null {
   const repoBaseUrl = getGitHubRepositoryBaseUrl(task.repoUrl);
   if (!repoBaseUrl) {
     return null;
   }
 
-  if (task.taskType === "build" || task.taskType === "ask") {
-    const targetBranch = task.branchName ?? task.baseBranch;
-    if (!targetBranch) {
-      return null;
-    }
+  const targetBranch = getTaskGitHubTargetBranch(task);
+  if (!targetBranch) {
+    return null;
+  }
 
-    if (targetBranch === task.repoDefaultBranch) {
-      return {
-        href: `${repoBaseUrl}/tree/${encodeURIComponent(targetBranch)}`,
-        label: "Open Branch In GitHub"
-      };
-    }
-
+  if (targetBranch === task.repoDefaultBranch) {
     return {
-      href: `${repoBaseUrl}/compare/${encodeURIComponent(task.repoDefaultBranch)}...${encodeURIComponent(targetBranch)}`,
-      label: "Create PR"
+      href: `${repoBaseUrl}/tree/${encodeURIComponent(targetBranch)}`,
+      label: "Open Branch In GitHub"
     };
   }
 
-  return null;
+  if (existingPullRequest?.url) {
+    return {
+      href: existingPullRequest.url,
+      label: "Open PR"
+    };
+  }
+
+  return {
+    href: `${repoBaseUrl}/compare/${encodeURIComponent(task.repoDefaultBranch)}...${encodeURIComponent(targetBranch)}`,
+    label: "Create PR"
+  };
 }
 
 type FollowUpMode = "continue" | null;
@@ -514,6 +526,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [liveDiffRefreshKey, setLiveDiffRefreshKey] = useState(0);
   const [diffLiveKind, setDiffLiveKind] = useState<"compare" | "commits">("commits");
   const [diffCompareBaseRef, setDiffCompareBaseRef] = useState<string | null>(null);
+  const [existingGitHubPullRequest, setExistingGitHubPullRequest] = useState<GitHubPullRequestReference | null>(null);
+  const [existingGitHubPullRequestChecked, setExistingGitHubPullRequestChecked] = useState(false);
   const [commitLog, setCommitLog] = useState<TaskWorkspaceCommit[]>([]);
   const [commitLogLoading, setCommitLogLoading] = useState(false);
   const [commitLogError, setCommitLogError] = useState<string | null>(null);
@@ -1120,6 +1134,44 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   ]);
 
   useEffect(() => {
+    const targetBranch = task ? getTaskGitHubTargetBranch(task) : null;
+    if (!task?.repoId || !targetBranch || !task.repoDefaultBranch || targetBranch === task.repoDefaultBranch) {
+      setExistingGitHubPullRequest(null);
+      setExistingGitHubPullRequestChecked(false);
+      return;
+    }
+
+    let cancelled = false;
+    setExistingGitHubPullRequest(null);
+    setExistingGitHubPullRequestChecked(false);
+
+    void api
+      .listGitHubPullRequests(task.repoId)
+      .then((pullRequests) => {
+        if (cancelled) {
+          return;
+        }
+
+        setExistingGitHubPullRequest(
+          pullRequests.find((pullRequest) => pullRequest.headBranch === targetBranch) ?? null
+        );
+        setExistingGitHubPullRequestChecked(true);
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+
+        setExistingGitHubPullRequest(null);
+        setExistingGitHubPullRequestChecked(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [task]);
+
+  useEffect(() => {
     if (activeMainTab !== "diff" || !task?.repoId) {
       return;
     }
@@ -1486,7 +1538,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const providerLabel = task ? getAgentProviderLabel(task.provider) : "Agent";
   const hasBranch = isBuildTask || isAskTask;
   const runtimeBranchLabel = task ? (hasBranch ? task.branchName ?? task.baseBranch : task.baseBranch) : "";
-  const githubDiffTarget = task ? getGitHubDiffTarget(task) : null;
+  const githubPullRequestTargetBranch = task ? getTaskGitHubTargetBranch(task) : null;
+  const githubPullRequestLookupPending = Boolean(
+    task &&
+      githubPullRequestTargetBranch &&
+      task.repoDefaultBranch &&
+      githubPullRequestTargetBranch !== task.repoDefaultBranch &&
+      !existingGitHubPullRequestChecked
+  );
+  const githubDiffTarget =
+    task && !githubPullRequestLookupPending ? getGitHubDiffTarget(task, existingGitHubPullRequest) : null;
   const chatActionLabel = taskActionLabel[selectedChatAction];
   const hasReadOnlyTaskAccess = !canEditTask;
   const pendingChangeProposal = useMemo(
@@ -2266,7 +2327,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     : [];
   const hasMoreActions = moreActionItems.length > 0;
   const hasExecutionButtons = canCancel;
-  const hasManagementButtons = Boolean(githubDiffTarget) || hasMoreActions;
+  const hasManagementButtons = githubPullRequestLookupPending || Boolean(githubDiffTarget) || hasMoreActions;
   const contextContent = (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Card size="small">
@@ -2402,6 +2463,25 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         </span>
       </Tooltip>
     ) : null;
+  const renderGitHubDiffTargetButton = () => {
+    if (githubPullRequestLookupPending) {
+      return (
+        <Button loading disabled>
+          Checking PR…
+        </Button>
+      );
+    }
+
+    if (!githubDiffTarget) {
+      return null;
+    }
+
+    return (
+      <Button href={githubDiffTarget.href} target="_blank" rel="noreferrer">
+        {githubDiffTarget.label}
+      </Button>
+    );
+  };
 
   const diffContent = hasDiffTab ? (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
@@ -3936,12 +4016,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
                       {hasManagementButtons ? (
                         <Space wrap size={8}>
-                          {githubDiffTarget ? (
-                            <Button href={githubDiffTarget.href} target="_blank" rel="noreferrer">
-                              {githubDiffTarget.label}
-                            </Button>
-                          ) : null}
-                          {hasMoreActions && Boolean(githubDiffTarget) ? (
+                          {renderGitHubDiffTargetButton()}
+                          {hasMoreActions && (githubPullRequestLookupPending || Boolean(githubDiffTarget)) ? (
                             <Divider type="vertical" style={{ marginInline: 2 }} />
                           ) : null}
 
