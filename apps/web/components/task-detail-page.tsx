@@ -582,8 +582,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [mergePreviewLoading, setMergePreviewLoading] = useState(false);
   const [mergePreviewError, setMergePreviewError] = useState<string | null>(null);
   const [mergeCommitMessage, setMergeCommitMessage] = useState("");
+  const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
+  const [checkpointCommitMessages, setCheckpointCommitMessages] = useState<Record<string, string>>({});
   const [killTerminalConfirmOpen, setKillTerminalConfirmOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [commentEditModalOpen, setCommentEditModalOpen] = useState(false);
@@ -1788,6 +1790,21 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setChatInput((current) => insertSnippetContent(current, snippet.content));
     setSelectedSnippetId(null);
   };
+  const handleProviderInputChange = (value: AgentProvider) => {
+    setProviderInput(value);
+    const nextModels = getModelsForProvider(value).filter(
+      (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
+    );
+    const nextEfforts = getEffortOptionsForProvider(value).filter(
+      (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
+    );
+    const nextDefaultModel = getProviderDefaultModel(value, settings);
+    const nextModelAllowedByRole = roleAllowedModels.length === 0 || roleAllowedModels.includes(nextDefaultModel);
+    setModelInput(nextModelAllowedByRole ? nextDefaultModel : (nextModels[0]?.value ?? nextDefaultModel));
+    if (!nextEfforts.some((option) => option.value === providerProfileInput)) {
+      setProviderProfileInput(nextEfforts[0]?.value ?? "high");
+    }
+  };
   const composerHasChangesToClear =
     !!selectedSnippetId ||
     selectedContextEntryKeys.length > 0 ||
@@ -2331,22 +2348,21 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     : [];
   const hasMoreActions = moreActionItems.length > 0;
   const hasExecutionButtons = canCancel;
-  const hasManagementButtons = githubPullRequestLookupPending || Boolean(githubDiffTarget) || hasMoreActions;
+  const hasGitHubDiffTargetAction = githubPullRequestLookupPending || Boolean(githubDiffTarget);
+  const hasManagementButtons = hasMoreActions;
   const contextContent = (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Card size="small">
         <Descriptions column={2} size="small">
           <Descriptions.Item label="Repository">{task?.repoName}</Descriptions.Item>
-          <Descriptions.Item label="Task Type">{task ? getTaskTypeLabel(task.taskType) : ""}</Descriptions.Item>
           <Descriptions.Item label={baseBranchLabel}>{task?.baseBranch}</Descriptions.Item>
-          <Descriptions.Item label="Repository Default Branch">{task?.repoDefaultBranch}</Descriptions.Item>
           {hasBranch ? <Descriptions.Item label="Branch Strategy">{task ? getTaskBranchStrategyLabel(task.branchStrategy) : ""}</Descriptions.Item> : null}
           {hasBranch ? <Descriptions.Item label="Target Branch">{task?.branchName ?? "(pending)"}</Descriptions.Item> : null}
-          <Descriptions.Item label="Provider">{getAgentProviderLabel(currentTaskProvider)}</Descriptions.Item>
-          <Descriptions.Item label="Model">{currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)}</Descriptions.Item>
-          <Descriptions.Item label="Effort">{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
-          {isImplementationTask ? <Descriptions.Item label="Complexity">{task?.complexity}</Descriptions.Item> : null}
           <Descriptions.Item label="Created">{task ? dayjs(task.createdAt).format("YYYY-MM-DD HH:mm") : ""}</Descriptions.Item>
+          <Descriptions.Item label="Provider">{getAgentProviderLabel(currentTaskProvider)}</Descriptions.Item>
+          <Descriptions.Item label="Effort">{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
+          <Descriptions.Item label="Last Action">{task?.lastAction ?? "draft"}</Descriptions.Item>
+          <Descriptions.Item label="Model">{currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)}</Descriptions.Item>
           <Descriptions.Item label="Status">
             {task ? (
               showWorkingIndicator ? (
@@ -2361,47 +2377,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               ""
             )}
           </Descriptions.Item>
-          <Descriptions.Item label="Last Action">{task?.lastAction ?? "draft"}</Descriptions.Item>
         </Descriptions>
-
-        {task?.prompt?.trim() ? (
-          <>
-            <Divider orientation="left">{promptLabel}</Divider>
-            <Typography.Paragraph style={codeTextStyle}>{task.prompt}</Typography.Paragraph>
-          </>
-        ) : null}
       </Card>
-
-      {hasOutputTab ? (
-        <Collapse
-          size="small"
-          defaultActiveKey={["output-panel"]}
-          items={[
-            {
-              key: "output-panel",
-              label: outputTitle,
-              children: (
-                <Space direction="vertical" size={16} style={{ width: "100%" }}>
-                  {isActive ? (
-                    <Alert
-                      type="info"
-                      showIcon
-                      message={resultStatusText}
-                      description={`${providerLabel} is running. Watch the logs tab; this section will refresh when the run completes.`}
-                    />
-                  ) : null}
-
-                  {task?.resultMarkdown ? (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                      {task.resultMarkdown}
-                    </ReactMarkdown>
-                  ) : null}
-                </Space>
-              )
-            }
-          ]}
-        />
-      ) : null}
     </Space>
   );
 
@@ -2528,6 +2505,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               {renderPullTaskButton()}
               {renderPushTaskButton()}
               {renderMergeTaskButton()}
+              {renderGitHubDiffTargetButton()}
             </Space>
           </Flex>
         </Card>
@@ -2766,90 +2744,31 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         style={{ resize: "none" }}
       />
       {selectedContextPanel}
-      <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
-        <Flex align="flex-end" gap={12} wrap="wrap" style={{ flex: "1 1 0", minWidth: 0 }}>
-          <div
-            style={{
-              minWidth: 160,
-              maxWidth: 240,
-              display: "flex",
-              flexDirection: "column"
-            }}
-          >
-            <Typography.Text type="secondary">Provider</Typography.Text>
-            <Select
-              value={providerInput}
-              options={providerInputOptions}
-              onChange={(value) => {
-                setProviderInput(value);
-                const nextModels = getModelsForProvider(value).filter(
-                  (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
-                );
-                const nextEfforts = getEffortOptionsForProvider(value).filter(
-                  (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
-                );
-                const nextDefaultModel = getProviderDefaultModel(value, settings);
-                const nextModelAllowedByRole = roleAllowedModels.length === 0 || roleAllowedModels.includes(nextDefaultModel);
-                setModelInput(nextModelAllowedByRole ? nextDefaultModel : (nextModels[0]?.value ?? nextDefaultModel));
-                if (!nextEfforts.some((option) => option.value === providerProfileInput)) {
-                  setProviderProfileInput(nextEfforts[0]?.value ?? "high");
-                }
-              }}
-              style={{ width: "100%", marginTop: 6 }}
-              disabled={!canEditTask || isArchived || interactiveTerminalRunning}
-            />
-          </div>
-          <div
-            style={{
-              minWidth: 160,
-              maxWidth: 240,
-              display: "flex",
-              flexDirection: "column"
-            }}
-          >
-            <Typography.Text type="secondary">Model</Typography.Text>
-            <Select
-              value={modelInput}
-              options={allowedProviderModels}
-              loading={providerModelsLoading}
-              showSearch
-              optionFilterProp="label"
-              onChange={(value) => setModelInput(value)}
-              style={{ width: "100%", marginTop: 6 }}
-              disabled={!canEditTask || isArchived || interactiveTerminalRunning}
-            />
-          </div>
-          <div
-            style={{
-              minWidth: 160,
-              maxWidth: 220,
-              display: "flex",
-              flexDirection: "column"
-            }}
-          >
-            <Typography.Text type="secondary">Effort</Typography.Text>
-            <Select
-              value={providerProfileInput}
-              options={allowedEffortOptions}
-              onChange={(value) => setProviderProfileInput(value)}
-              style={{ width: "100%", marginTop: 6 }}
-              disabled={!canEditTask || isArchived || interactiveTerminalRunning}
-            />
-          </div>
-          {!interactiveComposerSelected ? (
-            <div
+	      <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
+	        <Flex align="flex-end" gap={12} wrap="wrap" style={{ flex: "1 1 0", minWidth: 0 }}>
+	          <div
+	            style={{
+	              display: "flex",
+	              flexDirection: "column"
+	            }}
+	          >
+	            <Button style={{ alignSelf: "flex-start" }} onClick={() => setAiSettingsModalOpen(true)}>
+	              AI Settings
+	            </Button>
+	          </div>
+	          {!interactiveComposerSelected ? (
+	            <div
               style={{
                 minWidth: 260,
                 maxWidth: 420,
-                display: "flex",
-                flexDirection: "column"
-              }}
-            >
-              <Typography.Text type="secondary">Snippet</Typography.Text>
-              <Flex gap={8} style={{ marginTop: 6 }}>
-                <Select
-                  showSearch
-                  style={{ minWidth: 180, flex: 1 }}
+	                display: "flex",
+	                flexDirection: "column"
+	              }}
+	            >
+	              <Flex gap={8}>
+	                <Select
+	                  showSearch
+	                  style={{ minWidth: 180, flex: 1 }}
                   placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
                   value={selectedSnippetId}
                   onChange={(value) => setSelectedSnippetId(value)}
@@ -2955,11 +2874,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               >
                 {chatSubmitLabel}
               </Button>
-              <Popconfirm
-                title="Clear composer?"
-                description="This will clear the message input, selected context, and reset provider and model settings to this task's defaults."
-                okText="Clear"
-                cancelText="Cancel"
+	              <Popconfirm
+	                title="Clear composer?"
+	                description="This will clear the message input, selected context, and reset the AI settings to this task's defaults."
+	                okText="Clear"
+	                cancelText="Cancel"
                 okButtonProps={{ danger: true }}
                 placement="top"
                 disabled={composerClearDisabled}
@@ -2968,7 +2887,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 <Button disabled={composerClearDisabled}>Clear</Button>
               </Popconfirm>
             </Space.Compact>
-            {canPull || canPush || canMerge ? (
+            {canPull || canPush || canMerge || hasGitHubDiffTargetAction ? (
               <Space
                 size={8}
                 wrap
@@ -2981,6 +2900,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 {renderPullTaskButton()}
                 {renderPushTaskButton()}
                 {renderMergeTaskButton()}
+                {renderGitHubDiffTargetButton()}
               </Space>
             ) : null}
           </Flex>
@@ -3011,15 +2931,24 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   };
 
-  const handleApplyCheckpoint = async (proposal: TaskChangeProposal, canReapplyReverted: boolean) => {
+  const handleApplyCheckpoint = async (proposal: TaskChangeProposal) => {
     if (!task) {
       return;
     }
-
+    const canReapplyReverted = proposal.status === "reverted";
     setProposalBusy({ id: proposal.id, kind: "apply" });
     try {
-      const updated = await api.applyTaskChangeProposal(task.id, proposal.id);
+      const commitMessage = checkpointCommitMessages[proposal.id]?.trim() ?? "";
+      const updated = await api.applyTaskChangeProposal(task.id, proposal.id, commitMessage ? { commitMessage } : undefined);
       syncTaskAfterCheckpointMutation(updated);
+      setCheckpointCommitMessages((current) => {
+        if (!(proposal.id in current)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[proposal.id];
+        return next;
+      });
       messageApi.success(canReapplyReverted ? "Checkpoint re-applied" : "Checkpoint applied");
       setLiveDiffRefreshKey((k) => k + 1);
       refetchChangeProposals();
@@ -3208,7 +3137,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                               size="small"
                               disabled={checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending}
                               loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "apply"}
-                              onClick={() => void handleApplyCheckpoint(proposal, canReapplyReverted)}
+                              onClick={() => void handleApplyCheckpoint(proposal)}
                             >
                               {canReapplyReverted ? "Apply again" : "Apply"}
                             </Button>
@@ -3271,15 +3200,42 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   </Space>
                 </span>
               ) : null,
-            children: renderParsedDiff(proposal.diff, "No diff text.", {
-              collapseFiles: true,
-              taskId: proposal.taskId,
-              previewRefs: {
-                before: proposal.fromRef,
-                after: proposal.toRef,
-                useWorkspaceAfter: proposal.sourceType === "interactive_session" && proposal.status !== "reverted"
-              }
-            })
+            children: (
+              <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                {showCheckpointApply ? (
+                  <>
+                    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                      <Typography.Text type="secondary">
+                        Optional commit message. AgentSwarm uses it whenever this apply action creates a local commit. Leave it blank to use the generated subject.
+                      </Typography.Text>
+                      <Input.TextArea
+                        autoSize={{ minRows: 2, maxRows: 4 }}
+                        maxLength={200}
+                        placeholder="feat(task): describe the applied change"
+                        value={checkpointCommitMessages[proposal.id] ?? ""}
+                        onChange={(event) =>
+                          setCheckpointCommitMessages((current) => ({
+                            ...current,
+                            [proposal.id]: event.target.value
+                          }))
+                        }
+                        disabled={checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending || proposalBusy?.id === proposal.id}
+                      />
+                    </Space>
+                    <Divider style={{ margin: 0 }} />
+                  </>
+                ) : null}
+                {renderParsedDiff(proposal.diff, "No diff text.", {
+                  collapseFiles: true,
+                  taskId: proposal.taskId,
+                  previewRefs: {
+                    before: proposal.fromRef,
+                    after: proposal.toRef,
+                    useWorkspaceAfter: proposal.sourceType === "interactive_session" && proposal.status !== "reverted"
+                  }
+                })}
+              </Space>
+            )
           }
         ]}
       />
@@ -3801,7 +3757,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       : []),
     {
       key: "context",
-      label: "Context",
+      label: "Info",
       children: contextContent
     }
   ];
@@ -3809,6 +3765,56 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   return (
     <>
       {contextHolder}
+      <Modal
+        title="AI Settings"
+        open={aiSettingsModalOpen}
+        onCancel={() => setAiSettingsModalOpen(false)}
+        destroyOnClose
+        footer={
+          <Button onClick={() => setAiSettingsModalOpen(false)}>
+            Done
+          </Button>
+        }
+      >
+        <Flex vertical gap={16}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            These settings control the provider, model, and effort used for the next run.
+          </Typography.Paragraph>
+          <div>
+            <Typography.Text type="secondary">Provider</Typography.Text>
+            <Select
+              value={providerInput}
+              options={providerInputOptions}
+              onChange={handleProviderInputChange}
+              style={{ width: "100%", marginTop: 6 }}
+              disabled={!canEditTask || isArchived || interactiveTerminalRunning}
+            />
+          </div>
+          <div>
+            <Typography.Text type="secondary">Model</Typography.Text>
+            <Select
+              value={modelInput}
+              options={allowedProviderModels}
+              loading={providerModelsLoading}
+              showSearch
+              optionFilterProp="label"
+              onChange={(value) => setModelInput(value)}
+              style={{ width: "100%", marginTop: 6 }}
+              disabled={!canEditTask || isArchived || interactiveTerminalRunning}
+            />
+          </div>
+          <div>
+            <Typography.Text type="secondary">Effort</Typography.Text>
+            <Select
+              value={providerProfileInput}
+              options={allowedEffortOptions}
+              onChange={(value) => setProviderProfileInput(value)}
+              style={{ width: "100%", marginTop: 6 }}
+              disabled={!canEditTask || isArchived || interactiveTerminalRunning}
+            />
+          </div>
+        </Flex>
+      </Modal>
       <Modal
         title="Rename task"
         open={renameModalOpen}
@@ -4037,11 +4043,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
                       {hasManagementButtons ? (
                         <Space wrap size={8}>
-                          {renderGitHubDiffTargetButton()}
-                          {hasMoreActions && (githubPullRequestLookupPending || Boolean(githubDiffTarget)) ? (
-                            <Divider type="vertical" style={{ marginInline: 2 }} />
-                          ) : null}
-
                           {hasMoreActions ? (
                             <Dropdown
                               menu={{

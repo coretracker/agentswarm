@@ -1537,8 +1537,9 @@ export class SpawnerService {
       startRef,
       workspaceBaseRef: task.workspaceBaseRef ?? startRef,
       kind: gitPaths.usesLinkedWorktree ? "worktree" : "clone",
-      ephemeral: true,
-      cleanupRepoPath: sourceRepoPath
+      // Keep ask-run workspaces on disk so file links in history remain previewable after the run finishes.
+      ephemeral: false,
+      cleanupRepoPath: null
     };
   }
 
@@ -1775,34 +1776,19 @@ export class SpawnerService {
   ): Promise<{ branchDiff: string; changedFiles: string[]; commitSha: string; providerCommitted: boolean }> {
     // Remove the ephemeral .agentswarm directory before staging so it never appears in the PR diff.
     await rm(path.join(workspacePath, ".agentswarm"), { recursive: true, force: true }).catch(() => undefined);
-
-    await this.gitCommand(["-C", workspacePath, "add", "-A"], githubToken, gitUsername);
-
-    try {
-      await this.gitCommand(["-C", workspacePath, "diff", "--cached", "--quiet"], githubToken, gitUsername);
-      const commitSha = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
-      if (commitSha !== runStartRef) {
-        const branchDiff = await this.gitCommandCapture(["-C", workspacePath, "diff", `${diffBaseRef}..HEAD`], githubToken, gitUsername);
-        const changedFiles = await this.collectChangedFiles(workspacePath, diffBaseRef, githubToken, gitUsername);
-        return { branchDiff, changedFiles, commitSha, providerCommitted: true };
-      }
-
+    const commitSha = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
+    const providerCommitted = commitSha !== runStartRef;
+    const { diff: branchDiff, changedFiles } = await this.collectWorkingTreeDiffSinceRef(
+      workspacePath,
+      diffBaseRef,
+      githubToken,
+      gitUsername
+    );
+    if (changedFiles.length === 0) {
       throw new Error("No changes detected after provider execution");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "";
-      if (!message.includes("exited with code 1")) {
-        throw error;
-      }
     }
 
-    const generatedSubject = await this.buildGeneratedCommitSubject(task, workspacePath, githubToken, gitUsername);
-    await this.commitWorkspaceChanges(task, workspacePath, generatedSubject, githubToken, gitUsername);
-
-    const branchDiff = await this.gitCommandCapture(["-C", workspacePath, "diff", `${diffBaseRef}..HEAD`], githubToken, gitUsername);
-    const changedFiles = await this.collectChangedFiles(workspacePath, diffBaseRef, githubToken, gitUsername);
-    const commitSha = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
-
-    return { branchDiff, changedFiles, commitSha, providerCommitted: false };
+    return { branchDiff, changedFiles, commitSha, providerCommitted };
   }
 
   private async collectReviewDiff(task: Task, workspacePath: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string | null> {
@@ -1908,7 +1894,7 @@ export class SpawnerService {
       return;
     }
 
-    const { diff, diffStat, changedFiles, diffTruncated, toRef } = await this.collectDiffRangeVersusHead(
+    const { diff, diffStat, changedFiles, diffTruncated, toRef } = await this.collectWorkingTreeDiffSinceRef(
       workspacePath,
       fromRef,
       githubToken,
@@ -2103,9 +2089,10 @@ export class SpawnerService {
    * After an interactive terminal session, changes are only in the working tree.
    * On apply, mirror {@link finalizeBuild}: strip `.agentswarm`, stage all, and commit when needed.
    */
-  private async commitWorkspaceAfterInteractiveCheckpointApply(
+  private async commitWorkspaceAfterCheckpointApply(
     task: Task,
     workspacePath: string,
+    customCommitMessage?: string | null,
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<{ didCommit: boolean }> {
@@ -2122,8 +2109,10 @@ export class SpawnerService {
       }
     }
 
-    const generatedSubject = await this.buildGeneratedCommitSubject(task, workspacePath, githubToken, gitUsername);
-    await this.commitWorkspaceChanges(task, workspacePath, generatedSubject, githubToken, gitUsername);
+    const subject = customCommitMessage?.trim()
+      ? this.toCommitSubject(customCommitMessage)
+      : await this.buildGeneratedCommitSubject(task, workspacePath, githubToken, gitUsername);
+    await this.commitWorkspaceChanges(task, workspacePath, subject, githubToken, gitUsername);
     return { didCommit: true };
   }
 
@@ -2162,6 +2151,7 @@ export class SpawnerService {
     task: Task,
     workspacePath: string,
     proposalId: string,
+    customCommitMessage?: string | null,
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<{ didCommit: boolean }> {
@@ -2179,7 +2169,9 @@ export class SpawnerService {
     }
 
     const shortId = proposalId.slice(0, 8);
-    const subject = this.toCommitSubject(`chore(checkpoint): reapply checkpoint ${shortId}`);
+    const subject = customCommitMessage?.trim()
+      ? this.toCommitSubject(customCommitMessage)
+      : this.toCommitSubject(`chore(checkpoint): reapply checkpoint ${shortId}`);
     await this.commitWorkspaceChanges(task, workspacePath, subject, githubToken, gitUsername);
     return { didCommit: true };
   }
@@ -2213,7 +2205,11 @@ export class SpawnerService {
     }
   }
 
-  async applyChangeProposal(task: Task, proposalId: string): Promise<{ ok: true } | { ok: false; message: string }> {
+  async applyChangeProposal(
+    task: Task,
+    proposalId: string,
+    options?: { commitMessage?: string | null }
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
     const proposal = await this.taskStore.getChangeProposal(proposalId);
     if (!proposal || proposal.taskId !== task.id) {
       return { ok: false, message: "Proposal not found." };
@@ -2252,7 +2248,7 @@ export class SpawnerService {
       }
     }
 
-    if (proposal.sourceType === "interactive_session") {
+    if (proposal.sourceType === "interactive_session" || proposal.sourceType === "build_run") {
       const workspacePath = this.resolveWorkspacePath(task.id);
       const workspaceExists = await access(workspacePath)
         .then(() => true)
@@ -2264,10 +2260,18 @@ export class SpawnerService {
       const { githubToken, gitUsername } = runtimeCredentials;
       try {
         const { didCommit } = isReapply
-          ? await this.commitWorkspaceAfterCheckpointReapply(task, workspacePath, proposalId, githubToken, gitUsername)
-          : await this.commitWorkspaceAfterInteractiveCheckpointApply(
+          ? await this.commitWorkspaceAfterCheckpointReapply(
               task,
               workspacePath,
+              proposalId,
+              options?.commitMessage ?? null,
+              githubToken,
+              gitUsername
+            )
+          : await this.commitWorkspaceAfterCheckpointApply(
+              task,
+              workspacePath,
+              options?.commitMessage ?? null,
               githubToken,
               gitUsername
             );
@@ -2296,7 +2300,7 @@ export class SpawnerService {
               ? `Checkpoint ${proposalId} re-applied; committed for a clean branch.`
               : `Checkpoint ${proposalId} re-applied; tree already matched HEAD after staging.`
             : didCommit
-              ? `Checkpoint ${proposalId} applied; created local commit (same flow as after a build).`
+              ? `Checkpoint ${proposalId} applied; created local commit.`
               : `Checkpoint ${proposalId} applied; nothing new to commit (tree already matched HEAD after staging).`
         );
         return { ok: true };
@@ -2309,65 +2313,16 @@ export class SpawnerService {
       }
     }
 
-    if (isReapply && proposal.sourceType === "build_run") {
-      const workspacePath = this.resolveWorkspacePath(task.id);
-      const workspaceExists = await access(workspacePath)
-        .then(() => true)
-        .catch(() => false);
-      if (!workspaceExists) {
-        return { ok: false, message: "No local workspace exists for this task." };
-      }
-      const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
-      const { githubToken, gitUsername } = runtimeCredentials;
-      try {
-        const { didCommit } = await this.commitWorkspaceAfterCheckpointReapply(
-          task,
-          workspacePath,
-          proposalId,
-          githubToken,
-          gitUsername
-        );
-        const clean = await this.assertReapplyWorkspaceCleanOrCommitted(
-          workspacePath,
-          didCommit,
-          githubToken,
-          gitUsername
-        );
-        if (!clean.ok) {
-          return { ok: false, message: clean.message };
-        }
-        await this.taskStore.updateChangeProposalStatus(proposalId, "applied", task.id);
-        await this.syncTaskReviewStatus(task.id);
-        await this.taskStore.appendLog(
-          task.id,
-          didCommit
-            ? `Checkpoint ${proposalId} re-applied; committed for a clean branch.`
-            : `Checkpoint ${proposalId} re-applied; tree already matched HEAD after staging.`
-        );
-        return { ok: true };
-      } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
-        return {
-          ok: false,
-          message: `Re-applied changes but committing failed: ${detail}. Checkpoint not marked applied.`
-        };
-      }
-    }
-
-    await this.taskStore.updateChangeProposalStatus(proposalId, "applied", task.id);
-    await this.syncTaskReviewStatus(task.id);
-    await this.taskStore.appendLog(
-      task.id,
-      isReapply
-        ? `Checkpoint ${proposalId} re-applied (changes kept in workspace).`
-        : `Checkpoint ${proposalId} applied (changes kept in workspace).`
-    );
-    return { ok: true };
+    return { ok: false, message: "Unsupported checkpoint source." };
   }
 
   /** Alias for `applyChangeProposal` (same HTTP route kept for compatibility). */
-  async acceptChangeProposal(task: Task, proposalId: string): Promise<{ ok: true } | { ok: false; message: string }> {
-    return this.applyChangeProposal(task, proposalId);
+  async acceptChangeProposal(
+    task: Task,
+    proposalId: string,
+    options?: { commitMessage?: string | null }
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    return this.applyChangeProposal(task, proposalId, options);
   }
 
   private safeSortedCheckpointPaths(changedFiles: string[]): string[] {

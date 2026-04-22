@@ -76,6 +76,10 @@ const updateTaskTitleSchema = z.object({
   title: z.string().trim().min(1).max(500)
 });
 
+const applyTaskChangeProposalSchema = z.object({
+  commitMessage: z.string().trim().min(1).max(200).optional()
+});
+
 const taskContextEntrySchema = z.object({
   kind: z.enum(["message", "run", "proposal", "terminal_session"]),
   label: z.string().trim().min(1).max(TASK_CONTEXT_ENTRY_MAX_LABEL_LENGTH),
@@ -416,10 +420,15 @@ export const registerTaskRoutes = (
     }
   );
 
-  app.post<{ Params: { id: string; proposalId: string } }>(
+  app.post<{ Params: { id: string; proposalId: string }; Body: { commitMessage?: string } }>(
     "/tasks/:id/change-proposals/:proposalId/apply",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
     async (request, reply) => {
+      const parsed = applyTaskChangeProposalSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+
       const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
       if (!task) {
         return;
@@ -429,7 +438,9 @@ export const registerTaskRoutes = (
         return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
       }
 
-      const result = await deps.spawner.applyChangeProposal(task, request.params.proposalId);
+      const result = await deps.spawner.applyChangeProposal(task, request.params.proposalId, {
+        commitMessage: parsed.data.commitMessage ?? null
+      });
       if (!result.ok) {
         return reply.status(409).send({ message: result.message });
       }
@@ -439,10 +450,15 @@ export const registerTaskRoutes = (
   );
 
   /** @deprecated Prefer POST .../apply */
-  app.post<{ Params: { id: string; proposalId: string } }>(
+  app.post<{ Params: { id: string; proposalId: string }; Body: { commitMessage?: string } }>(
     "/tasks/:id/change-proposals/:proposalId/accept",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
     async (request, reply) => {
+      const parsed = applyTaskChangeProposalSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+
       const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
       if (!task) {
         return;
@@ -452,7 +468,9 @@ export const registerTaskRoutes = (
         return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
       }
 
-      const result = await deps.spawner.applyChangeProposal(task, request.params.proposalId);
+      const result = await deps.spawner.applyChangeProposal(task, request.params.proposalId, {
+        commitMessage: parsed.data.commitMessage ?? null
+      });
       if (!result.ok) {
         return reply.status(409).send({ message: result.message });
       }

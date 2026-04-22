@@ -30,6 +30,7 @@ import type {
   TaskMergePreview,
   TaskMessage,
   MergeTaskInput,
+  ApplyTaskChangeProposalInput,
   UpdateTaskMessageInput,
   TaskRun,
   TaskChangeProposal,
@@ -257,11 +258,17 @@ export const api = {
     }),
   listTaskRuns: (id: string) => request<TaskRun[]>(`/tasks/${id}/runs`),
   listTaskChangeProposals: (id: string) => request<TaskChangeProposal[]>(`/tasks/${id}/change-proposals`),
-  applyTaskChangeProposal: (taskId: string, proposalId: string) =>
-    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/apply`, { method: "POST" }),
+  applyTaskChangeProposal: (taskId: string, proposalId: string, input?: ApplyTaskChangeProposalInput) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/apply`, {
+      method: "POST",
+      ...(input ? { body: JSON.stringify(input) } : {})
+    }),
   /** @deprecated Prefer applyTaskChangeProposal */
-  acceptTaskChangeProposal: (taskId: string, proposalId: string) =>
-    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/accept`, { method: "POST" }),
+  acceptTaskChangeProposal: (taskId: string, proposalId: string, input?: ApplyTaskChangeProposalInput) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/accept`, {
+      method: "POST",
+      ...(input ? { body: JSON.stringify(input) } : {})
+    }),
   revertTaskChangeProposal: (taskId: string, proposalId: string) =>
     request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/revert`, { method: "POST" }),
   rejectTaskChangeProposal: (taskId: string, proposalId: string) =>

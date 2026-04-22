@@ -477,6 +477,10 @@ export interface TaskChangeProposal {
   revertedAt: string | null;
 }
 
+export interface ApplyTaskChangeProposalInput {
+  commitMessage?: string;
+}
+
 export interface TaskInteractiveTerminalTranscript {
   taskId: string;
   sessionId: string;
