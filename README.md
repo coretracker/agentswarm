@@ -4,7 +4,7 @@
 
 <h1 align="center">AgentSwarm</h1>
 
-AgentSwarm is a local app for managing AI coding work on real repositories.
+AgentSwarm is a multi-agent orchestration web app for managing AI coding work on real repositories.
 
 Instead of juggling prompts, terminals, and branch management by hand, you can use one UI to:
 
