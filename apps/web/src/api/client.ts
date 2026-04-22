@@ -299,6 +299,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ action })
     }),
+  runTaskPostflight: (id: string) =>
+    request<Task>(`/tasks/${id}/postflight`, {
+      method: "POST"
+    }),
   createTaskMessage: (id: string, input: CreateTaskMessageInput) =>
     request<Task>(`/tasks/${id}/messages`, {
       method: "POST",

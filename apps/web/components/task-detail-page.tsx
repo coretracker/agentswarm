@@ -97,13 +97,14 @@ const runStatusColor: Record<TaskRun["status"], string> = {
   cancelled: "default"
 };
 
-type ComposerAction = TaskMessageAction | "interactive";
+type ComposerAction = TaskMessageAction | "interactive" | "postflight";
 
 const taskActionLabel: Record<ComposerAction | TaskAction, string> = {
   build: "Build",
   ask: "Ask",
   comment: "Comment",
-  interactive: "Interactive"
+  interactive: "Interactive",
+  postflight: "Postflight"
 };
 
 const taskContextKindLabel: Record<TaskContextEntry["kind"], string> = {
@@ -128,6 +129,7 @@ function getAllowedComposerActions(
   const actions: ComposerAction[] = [];
   if (canBuildTasks) {
     actions.push("build");
+    actions.push("postflight");
   }
   if (canAskTasks) {
     actions.push("ask");
@@ -140,7 +142,7 @@ function getAllowedComposerActions(
 }
 
 function getDefaultComposerAction(task: Task | null, allowedActions: ComposerAction[]): ComposerAction {
-  const defaultAction = allowedActions.find((action) => action !== "comment" && action !== "interactive") ?? "comment";
+  const defaultAction = allowedActions.find((action) => action !== "comment" && action !== "interactive" && action !== "postflight") ?? "comment";
 
   if (!task) {
     return defaultAction;
@@ -1599,13 +1601,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     : "Working";
   const canKillInteractiveTerminal = canEditTask && canUseInteractiveTerminal && !!task && !isArchived && interactiveTerminalRunning;
   const interactiveComposerSelected = selectedChatAction === "interactive";
-  const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive";
+  const postflightComposerSelected = selectedChatAction === "postflight";
+  const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive" && selectedChatAction !== "postflight";
   const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived";
   const parallelAskAllowed = selectedChatAction === "ask" && (task?.status === "building" || task?.status === "asking");
   const autoRunStartBlocked =
     selectedChatAction !== "comment" && (!!pendingChangeProposal || ((isQueued || isActive) && !parallelAskAllowed));
   const chatDisabled = chatClosed || interactiveTerminalRunning || autoRunStartBlocked;
-  const chatInputDisabled = chatClosed || interactiveTerminalRunning || interactiveComposerSelected;
+  const chatInputDisabled = chatClosed || interactiveTerminalRunning || interactiveComposerSelected || postflightComposerSelected;
   const draftActionLabel = taskActionLabel[selectedChatAction].toLowerCase();
   const chatPlaceholder = (() => {
     if (interactiveTerminalRunning) {
@@ -1621,6 +1624,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
     if (selectedChatAction === "interactive") {
       return "Interactive terminal does not need a prompt. Press Start to open the live session in a new window.";
+    }
+    if (selectedChatAction === "postflight") {
+      return "Postflight does not need a prompt. Press Run Postflight to execute .agentswarm/postflight.yml in the current workspace.";
     }
     if (selectedChatAction === "comment") {
       return "Add a comment to the task history";
@@ -1814,7 +1820,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider));
   const composerClearDisabled = interactiveTerminalRunning || !composerHasChangesToClear;
   const chatSubmitDisabled = chatDisabled || (selectedChatActionRequiresPrompt && chatInput.trim().length === 0);
-  const chatSubmitLabel = selectedChatAction === "comment" ? "Add Comment" : "Start";
+  const chatSubmitLabel =
+    selectedChatAction === "comment" ? "Add Comment" : selectedChatAction === "postflight" ? "Run Postflight" : "Start";
   const handleClearSelectedContext = () => {
     setSelectedContextEntryKeys([]);
   };
@@ -2775,7 +2782,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   optionFilterProp="label"
                   allowClear
                   loading={snippetsLoading}
-                  disabled={snippetsLoading || snippets.length === 0 || !canEditTask || isArchived || interactiveTerminalRunning}
+                  disabled={
+                    snippetsLoading ||
+                    snippets.length === 0 ||
+                    !canEditTask ||
+                    isArchived ||
+                    interactiveTerminalRunning ||
+                    postflightComposerSelected
+                  }
                   options={snippets.map((snippet) => ({
                     label: snippet.name,
                     value: snippet.id
@@ -2783,7 +2797,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 />
                 <Button
                   onClick={handleInsertSelectedSnippet}
-                  disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning}
+                  disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning || postflightComposerSelected}
                 >
                   Insert
                 </Button>
@@ -2821,6 +2835,37 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                     setSubmitting("message");
                     try {
                       await handleStartInteractiveTerminalWindow();
+                    } finally {
+                      setSubmitting(null);
+                    }
+                    return;
+                  }
+
+                  if (selectedChatAction === "postflight") {
+                    if (configDirty && canEditTask && !isArchived) {
+                      try {
+                        await handleSaveConfig({ notify: false });
+                      } catch (error) {
+                        showTaskActionError(error, "Execution config could not be updated");
+                        return;
+                      }
+                    }
+
+                    setSubmitting("message");
+                    try {
+                      const updatedTask = await api.runTaskPostflight(task.id);
+                      setTask((current) =>
+                        current
+                          ? {
+                              ...current,
+                              ...updatedTask,
+                              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+                            }
+                          : updatedTask
+                      );
+                      messageApi.success("Postflight started");
+                    } catch (error) {
+                      showTaskActionError(error, "Postflight could not be started");
                     } finally {
                       setSubmitting(null);
                     }
@@ -3231,7 +3276,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   previewRefs: {
                     before: proposal.fromRef,
                     after: proposal.toRef,
-                    useWorkspaceAfter: proposal.sourceType === "interactive_session" && proposal.status !== "reverted"
+                    useWorkspaceAfter:
+                      proposal.status !== "reverted" &&
+                      (proposal.sourceType === "interactive_session" ||
+                        (proposal.sourceType === "build_run" && proposal.status === "pending"))
                   }
                 })}
               </Space>

@@ -97,6 +97,34 @@ export class SchedulerService {
     return true;
   }
 
+  async triggerPostflight(taskId: string): Promise<boolean> {
+    const task = await this.taskStore.getTask(taskId);
+    if (!task || task.taskType !== "build") {
+      return false;
+    }
+
+    if (isActiveTaskStatus(task.status) || task.status === "archived") {
+      return false;
+    }
+
+    if (await this.taskStore.hasPendingChangeProposal(taskId)) {
+      return false;
+    }
+
+    if (await this.taskStore.getActiveInteractiveSession(taskId)) {
+      return false;
+    }
+
+    const settings = await this.settingsStore.getSettings();
+    if (this.activeExecutionCount >= settings.maxAgents) {
+      return false;
+    }
+
+    this.activeExecutionCount += 1;
+    void this.executePostflight(taskId);
+    return true;
+  }
+
   async cancelTask(taskId: string): Promise<boolean> {
     const task = await this.taskStore.getTask(taskId);
     if (!task) {
@@ -179,6 +207,28 @@ export class SchedulerService {
       }
 
       await this.spawner.runTask(task, queueEntry.action, queueEntry.input);
+    } catch (error) {
+      const task = await this.taskStore.getTask(taskId);
+      if (error instanceof CancelledTaskError || task?.status === "cancelled") {
+        await this.taskStore.appendLog(taskId, "Spawner: task cancelled by user.");
+      } else {
+        const message = error instanceof Error ? error.message : "Unknown runtime error";
+        await this.taskStore.appendLog(taskId, `Spawner: task failed - ${message}`);
+      }
+    } finally {
+      this.activeExecutionCount = Math.max(0, this.activeExecutionCount - 1);
+      await this.drainQueue();
+    }
+  }
+
+  private async executePostflight(taskId: string): Promise<void> {
+    try {
+      const task = await this.taskStore.getTask(taskId);
+      if (!task || task.status === "archived") {
+        return;
+      }
+
+      await this.spawner.runTaskPostflight(task);
     } catch (error) {
       const task = await this.taskStore.getTask(taskId);
       if (error instanceof CancelledTaskError || task?.status === "cancelled") {

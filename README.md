@@ -113,6 +113,44 @@ Leave both empty if you want to use the bundled same-origin `/api` proxy.
 
 These images are used only for in-browser terminal sessions. Automated agent runs use the runtime images built by `./agentswarm.sh rebuild`.
 
+## Postflight
+
+You can add repo-local post-build automation with `.agentswarm/postflight.yml`.
+
+AgentSwarm runs postflight after a successful build task, before the final checkpoint is created. Any files written into the task workspace, including binary files like screenshots, become part of the pending checkpoint and can be reviewed in task detail.
+
+Example:
+
+```yaml
+version: 1
+enabled: true
+
+when:
+  task_types: ["build"]
+  providers: ["codex", "claude"]
+
+runner:
+  image: "mcr.microsoft.com/playwright:v1.52.0-jammy"
+  timeout_seconds: 1800
+
+steps:
+  - run: "npm ci"
+  - run: "npx playwright test tests/mobile-screenshots.spec.ts --project=mobile-web --update-snapshots"
+
+on_failure: "fail_task"
+```
+
+Supported v1 fields:
+
+- `version`
+- `enabled`
+- `when.task_types`
+- `when.providers`
+- `runner.image`
+- `runner.timeout_seconds` with a default of `1800`
+- `steps[].run`
+- `on_failure` as `fail_task` or `ignore`
+
 ## Notes
 
 - API credentials such as GitHub, OpenAI, and Anthropic are configured in the AgentSwarm Settings UI, not in `.env`.

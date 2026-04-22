@@ -36,6 +36,7 @@ import { resolveWorkspaceGitRuntimeMounts } from "../lib/git-runtime-mounts.js";
 import { installManagedGitHooks } from "../lib/managed-git-hooks.js";
 import { reconcileTaskStatusWithPendingCheckpoint, resolveTaskReadyStatus } from "../lib/task-status.js";
 import { buildTaskCommitSubject, formatCommitSubject } from "../lib/task-commit-subject.js";
+import { parsePostflightConfig, postflightAppliesToTask, type PostflightConfig } from "../lib/postflight-config.js";
 import {
   normalizeSafeWorkspaceRelativePath,
   readSafeWorkspaceFileBuffer,
@@ -71,6 +72,8 @@ const sanitizePathSegment = (value: string): string => {
 
 const truncate = (value: string, maxLength: number): string =>
   value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 3))}...` : value;
+
+const shellSingleQuote = (value: string): string => `'${value.replace(/'/g, `'\"'\"'`)}'`;
 
 interface CachedRepoProfile {
   baseBranch: string;
@@ -639,6 +642,261 @@ export class SpawnerService {
     const definition = getProviderRuntimeDefinition(provider);
     await this.runCommand("docker", ["build", "-t", definition.image, definition.context]);
     this.runtimeReady.add(provider);
+  }
+
+  private async stripEphemeralWorkspaceFiles(workspacePath: string): Promise<void> {
+    await rm(path.join(workspacePath, ".agentswarm-runtime"), { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  private async loadPostflightConfig(workspacePath: string): Promise<PostflightConfig | null> {
+    for (const fileName of ["postflight.yml", "postflight.yaml"]) {
+      const configPath = path.join(workspacePath, ".agentswarm", fileName);
+      let raw: string | null = null;
+
+      try {
+        raw = await readFile(configPath, "utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+          continue;
+        }
+        throw error;
+      }
+
+      try {
+        return parsePostflightConfig(raw);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`Invalid .agentswarm/${fileName}: ${detail}`);
+      }
+    }
+
+    return null;
+  }
+
+  private buildPostflightScript(config: PostflightConfig): string {
+    const lines = ["#!/bin/sh", "set -eu"];
+
+    for (const [index, step] of config.steps.entries()) {
+      const command = step.run.replace(/\r/g, "").trim();
+      if (!command) {
+        throw new Error(`Postflight step ${index + 1} is empty.`);
+      }
+      if (command.includes("\n")) {
+        throw new Error(`Postflight step ${index + 1} must be a single shell command.`);
+      }
+
+      lines.push(`echo ${shellSingleQuote(`[postflight] step ${index + 1}/${config.steps.length}: ${command}`)}`);
+      lines.push(command);
+    }
+
+    return `${lines.join("\n")}\n`;
+  }
+
+  private async runPostflightContainer(
+    taskId: string,
+    executionId: string,
+    runId: string | null,
+    containerName: string,
+    args: string[],
+    timeoutSeconds: number
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
+      this.registerActiveExecution(taskId, executionId, { containerName, process: proc });
+
+      let stdoutRemainder = "";
+      let stderrRemainder = "";
+      let timedOut = false;
+      let settled = false;
+
+      const appendLogLine = (prefix: "stdout" | "stderr", line: string): void => {
+        if (line.trim().length > 0) {
+          void this.taskStore.appendLogForRun(taskId, `[postflight ${prefix}] ${line}`, runId);
+        }
+      };
+
+      const flushChunk = (prefix: "stdout" | "stderr", chunk: string): void => {
+        const sanitized = sanitizeChunk(chunk);
+        if (prefix === "stdout") {
+          stdoutRemainder += sanitized;
+          const lines = stdoutRemainder.split("\n");
+          stdoutRemainder = lines.pop() ?? "";
+          for (const line of lines) {
+            appendLogLine("stdout", line.trimEnd());
+          }
+          return;
+        }
+
+        stderrRemainder += sanitized;
+        const lines = stderrRemainder.split("\n");
+        stderrRemainder = lines.pop() ?? "";
+        for (const line of lines) {
+          appendLogLine("stderr", line.trimEnd());
+        }
+      };
+
+      const cleanup = (): void => {
+        this.unregisterActiveExecution(taskId, executionId);
+      };
+
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        void this.taskStore.appendLogForRun(
+          taskId,
+          `Spawner: postflight timed out after ${timeoutSeconds} seconds; stopping container ${containerName}.`,
+          runId
+        );
+        void (async () => {
+          try {
+            await this.runCommand("docker", ["stop", "-t", "5", containerName]);
+          } catch {
+            // Container may already be gone.
+          }
+
+          try {
+            await this.runCommand("docker", ["rm", "-f", containerName]);
+          } catch {
+            try {
+              proc.kill("SIGTERM");
+            } catch {
+              // Ignore process kill errors.
+            }
+          }
+        })();
+      }, timeoutSeconds * 1000);
+
+      proc.stdout.on("data", (data) => {
+        flushChunk("stdout", data.toString());
+      });
+      proc.stderr.on("data", (data) => {
+        flushChunk("stderr", data.toString());
+      });
+
+      proc.on("error", (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeoutId);
+        cleanup();
+        reject(error);
+      });
+      proc.on("close", (code) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeoutId);
+        cleanup();
+
+        if (stdoutRemainder.trim().length > 0) {
+          appendLogLine("stdout", stdoutRemainder.trimEnd());
+        }
+        if (stderrRemainder.trim().length > 0) {
+          appendLogLine("stderr", stderrRemainder.trimEnd());
+        }
+
+        if (timedOut) {
+          reject(new Error(`Postflight timed out after ${timeoutSeconds} seconds.`));
+          return;
+        }
+        if (this.isCancellationRequested(taskId)) {
+          reject(new CancelledTaskError());
+          return;
+        }
+        if (code === 0) {
+          resolve();
+          return;
+        }
+
+        reject(new Error(`Postflight container exited with code ${code ?? "unknown"}`));
+      });
+    });
+  }
+
+  private async runConfiguredPostflight(
+    task: Task,
+    workspace: WorkspacePreparation,
+    executionId: string,
+    runId: string | null,
+    payloadDir: string,
+    appendRunLog: (line: string) => Promise<unknown>
+  ): Promise<void> {
+    const config = await this.loadPostflightConfig(workspace.workspacePath);
+    if (!config || !postflightAppliesToTask(config, task)) {
+      return;
+    }
+
+    const postflightScript = this.buildPostflightScript(config);
+    const scriptPath = path.join(payloadDir, "postflight.sh");
+    await writeFile(scriptPath, postflightScript, "utf8");
+    await chmod(scriptPath, 0o755);
+
+    const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
+    const containerName = `agentswarm-postflight-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
+    await appendRunLog(
+      `Spawner: running postflight (${config.steps.length} step${config.steps.length === 1 ? "" : "s"}) in ${config.runner.image}.`
+    );
+
+    try {
+      await this.runPostflightContainer(
+        task.id,
+        executionId,
+        runId,
+        containerName,
+        [
+          "run",
+          "--rm",
+          "--name",
+          containerName,
+          "-v",
+          `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
+          "-v",
+          `${workspace.hostWorkspacePath}:/workspace:rw`,
+          ...gitRuntimeMounts,
+          "-w",
+          "/workspace",
+          config.runner.image,
+          "/bin/sh",
+          scriptPath
+        ],
+        config.runner.timeout_seconds
+      );
+      await appendRunLog("Spawner: postflight finished successfully.");
+    } catch (error) {
+      if (error instanceof CancelledTaskError) {
+        throw error;
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      if (config.on_failure === "ignore") {
+        await appendRunLog(`Spawner: postflight failed but on_failure=ignore; continuing. ${detail}`);
+        return;
+      }
+      throw new Error(`Postflight failed: ${detail}`);
+    }
+  }
+
+  async validateTaskPostflight(task: Task): Promise<void> {
+    if (task.taskType !== "build") {
+      throw new Error("Postflight is only available for build tasks.");
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const workspaceExists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!workspaceExists) {
+      throw new Error("No workspace folder on disk for this task yet. Prepare the workspace or run a build first.");
+    }
+
+    const config = await this.loadPostflightConfig(workspacePath);
+    if (!config) {
+      throw new Error("No .agentswarm/postflight.yml found in this task workspace.");
+    }
+
+    if (!postflightAppliesToTask(config, task)) {
+      throw new Error("Configured postflight is disabled for this task type or provider.");
+    }
   }
 
   private resolveRuntimePayloadDir(taskId: string, executionId?: string): string {
@@ -1774,8 +2032,8 @@ export class SpawnerService {
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<{ branchDiff: string; changedFiles: string[]; commitSha: string; providerCommitted: boolean }> {
-    // Remove the ephemeral .agentswarm directory before staging so it never appears in the PR diff.
-    await rm(path.join(workspacePath, ".agentswarm"), { recursive: true, force: true }).catch(() => undefined);
+    // Keep repo-owned .agentswarm files. Only strip workspace scratch paths from diffs/commits.
+    await this.stripEphemeralWorkspaceFiles(workspacePath);
     const commitSha = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
     const providerCommitted = commitSha !== runStartRef;
     const { diff: branchDiff, changedFiles } = await this.collectWorkingTreeDiffSinceRef(
@@ -2087,7 +2345,7 @@ export class SpawnerService {
 
   /**
    * After an interactive terminal session, changes are only in the working tree.
-   * On apply, mirror {@link finalizeBuild}: strip `.agentswarm`, stage all, and commit when needed.
+   * On apply, mirror {@link finalizeBuild}: strip workspace scratch paths, stage all, and commit when needed.
    */
   private async commitWorkspaceAfterCheckpointApply(
     task: Task,
@@ -2096,7 +2354,7 @@ export class SpawnerService {
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<{ didCommit: boolean }> {
-    await rm(path.join(workspacePath, ".agentswarm"), { recursive: true, force: true }).catch(() => undefined);
+    await this.stripEphemeralWorkspaceFiles(workspacePath);
     await this.gitCommand(["-C", workspacePath, "add", "-A"], githubToken, gitUsername);
 
     try {
@@ -2127,7 +2385,7 @@ export class SpawnerService {
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<{ didCommit: boolean }> {
-    await rm(path.join(workspacePath, ".agentswarm"), { recursive: true, force: true }).catch(() => undefined);
+    await this.stripEphemeralWorkspaceFiles(workspacePath);
     await this.gitCommand(["-C", workspacePath, "add", "-A"], githubToken, gitUsername);
 
     try {
@@ -2155,7 +2413,7 @@ export class SpawnerService {
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<{ didCommit: boolean }> {
-    await rm(path.join(workspacePath, ".agentswarm"), { recursive: true, force: true }).catch(() => undefined);
+    await this.stripEphemeralWorkspaceFiles(workspacePath);
     await this.gitCommand(["-C", workspacePath, "add", "-A"], githubToken, gitUsername);
 
     try {
@@ -3051,6 +3309,175 @@ export class SpawnerService {
     return (await this.taskStore.getTask(workingTask.id)) ?? nextTask;
   }
 
+  async runTaskPostflight(task: Task): Promise<void> {
+    this.cancelRequestedTaskIds.delete(task.id);
+    await this.validateTaskPostflight(task);
+
+    const [settings, runtimeCredentials] = await Promise.all([
+      this.settingsStore.getSettings(),
+      this.settingsStore.getRuntimeCredentials()
+    ]);
+
+    const branchName =
+      task.branchStrategy === "work_on_branch"
+        ? task.baseBranch
+        : task.branchName ?? makeBranchName(task.title, task.id, settings.branchPrefix);
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const hostWorkspacePath = this.resolveWorkspaceHostPath(task.id);
+
+    let runId: string | null = null;
+    let executionId = nanoid();
+
+    try {
+      const run = await this.taskStore.createRun(task.id, {
+        action: "build",
+        provider: task.provider,
+        providerProfile: task.providerProfile,
+        modelOverride: task.modelOverride,
+        branchName
+      });
+      runId = run?.id ?? null;
+      executionId = runId ?? executionId;
+      const payloadDir = this.resolveRuntimePayloadDir(task.id, executionId);
+      await mkdir(payloadDir, { recursive: true });
+
+      const appendRunLog = (line: string) => this.taskStore.appendLogForRun(task.id, line, runId);
+      await this.syncTaskStatusForRunningRuns(task.id, {
+        branchName,
+        lastAction: "build"
+      });
+
+      const checkpointRef = (
+        await this.gitCommandCapture(
+          ["-C", workspacePath, "rev-parse", "HEAD"],
+          runtimeCredentials.githubToken,
+          runtimeCredentials.gitUsername
+        )
+      ).trim();
+      const changeProposalUntrackedPaths = await this.listUntrackedRelativePaths(
+        workspacePath,
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername
+      );
+
+      if (runId) {
+        await this.taskStore.updateRun(runId, {
+          changeProposalCheckpointRef: checkpointRef,
+          changeProposalUntrackedPaths
+        });
+      }
+
+      const workspace: WorkspacePreparation = {
+        workspacePath,
+        hostWorkspacePath,
+        startRef: checkpointRef,
+        workspaceBaseRef: task.workspaceBaseRef ?? checkpointRef,
+        kind: "worktree",
+        ephemeral: false,
+        cleanupRepoPath: null
+      };
+
+      await appendRunLog("Spawner: starting manual postflight run.");
+      await this.runConfiguredPostflight(task, workspace, executionId, runId, payloadDir, appendRunLog);
+
+      if (this.isCancellationRequested(task.id)) {
+        throw new CancelledTaskError();
+      }
+
+      await this.stripEphemeralWorkspaceFiles(workspacePath);
+      const diffBaseRef = task.workspaceBaseRef ?? checkpointRef;
+      const { diff: branchDiff, changedFiles } = await this.collectWorkingTreeDiffSinceRef(
+        workspacePath,
+        diffBaseRef,
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername
+      );
+      const finishedAt = new Date().toISOString();
+      const summary =
+        changedFiles.length > 0
+          ? "Postflight completed locally. Review the generated changes in the pending checkpoint."
+          : "Postflight completed with no workspace changes.";
+
+      if (runId) {
+        await this.taskStore.updateRun(runId, {
+          status: "succeeded",
+          finishedAt,
+          summary
+        });
+      }
+
+      if (runId && changedFiles.length > 0) {
+        await this.createBuildRunChangeProposal(task, runId, workspacePath);
+      }
+
+      const hasPendingCheckpoint = await this.taskStore.hasPendingChangeProposal(task.id);
+      const nextBranchDiff = changedFiles.length > 0 ? branchDiff : task.branchDiff;
+      if (
+        !(await this.syncTaskStatusForRunningRuns(task.id, {
+          finishedAt,
+          branchDiff: nextBranchDiff,
+          lastAction: "build",
+          branchName,
+          errorMessage: null
+        }))
+      ) {
+        await this.taskStore.setStatus(task.id, resolveTaskReadyStatus(hasPendingCheckpoint), {
+          finishedAt,
+          enqueued: false,
+          branchDiff: nextBranchDiff,
+          lastAction: "build",
+          branchName,
+          errorMessage: null
+        });
+      }
+
+      await appendRunLog(
+        changedFiles.length > 0
+          ? "Spawner: postflight finished successfully and generated workspace changes."
+          : "Spawner: postflight finished successfully with no workspace changes."
+      );
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      const message = error instanceof Error ? error.message : "Unknown runtime error";
+      const isCancelled = error instanceof CancelledTaskError;
+
+      if (runId) {
+        await this.taskStore.updateRun(runId, {
+          status: isCancelled ? "cancelled" : "failed",
+          finishedAt,
+          errorMessage: isCancelled ? null : message,
+          summary: isCancelled ? "Task cancelled by user." : null
+        });
+      }
+
+      if (
+        !(await this.syncTaskStatusForRunningRuns(task.id, {
+          lastAction: "build"
+        }))
+      ) {
+        await this.taskStore.setStatus(task.id, isCancelled ? "cancelled" : "failed", {
+          finishedAt,
+          enqueued: false,
+          errorMessage: isCancelled ? "Cancelled by user" : message,
+          lastAction: "build"
+        });
+      }
+
+      throw error;
+    } finally {
+      if (executionId) {
+        this.unregisterActiveExecution(task.id, executionId);
+      }
+      if ((this.activeExecutions.get(task.id)?.size ?? 0) === 0) {
+        this.cancelRequestedTaskIds.delete(task.id);
+      }
+      await this.cleanupWorkspaceGitLocks(workspacePath).catch(() => undefined);
+      if (executionId) {
+        await rm(this.resolveRuntimePayloadDir(task.id, executionId), { recursive: true, force: true });
+      }
+    }
+  }
+
   async runTask(task: Task, action: TaskAction, input?: TaskExecutionInput | string): Promise<void> {
     this.cancelRequestedTaskIds.delete(task.id);
     const [settings, runtimeCredentials] = await Promise.all([
@@ -3323,6 +3750,9 @@ export class SpawnerService {
       }
 
       const runtimeResult = await this.readRuntimeResult(payloadPaths.resultMarkdownPath, payloadPaths.resultJsonPath);
+      if (action === "build") {
+        await this.runConfiguredPostflight(task, workspace, executionId, runId, payloadPaths.payloadDir, appendRunLog);
+      }
       const finishedAt = new Date().toISOString();
 
       if (action === "ask") {

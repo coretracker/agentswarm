@@ -682,6 +682,49 @@ export const registerTaskRoutes = (
     return reply.send(refreshed);
   });
 
+  app.post<{ Params: { id: string } }>("/tasks/:id/postflight", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    if (!requireTaskActionCapabilityAccess(request, reply, "build")) {
+      return;
+    }
+
+    if (task.taskType !== "build") {
+      return reply.status(409).send({ message: "Postflight is only available for build tasks." });
+    }
+
+    const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
+    if (blocked) {
+      return reply.status(409).send({ message: blocked });
+    }
+
+    if (isActiveTaskStatus(task.status)) {
+      return reply.status(409).send({ message: "Task is already running" });
+    }
+
+    try {
+      await deps.spawner.validateTaskPostflight(task);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Postflight is not available for this task.";
+      return reply.status(409).send({ message });
+    }
+
+    const accepted = await deps.scheduler.triggerPostflight(task.id);
+    if (!accepted) {
+      return reply.status(409).send({ message: "No agent capacity is available to run postflight right now." });
+    }
+
+    const refreshed = await deps.taskStore.getTask(task.id);
+    return reply.status(202).send(refreshed ?? task);
+  });
+
   app.post<{ Params: { id: string } }>("/tasks/:id/cancel", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
