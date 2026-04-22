@@ -87,7 +87,8 @@ import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
 import { TaskDiffOpenAiPanel } from "./task-diff-openai-panel";
 import { TaskTerminalTranscriptView } from "./task-terminal-transcript-view";
-import { parseWorkspaceFileLink, WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
+import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
+import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 
 const runStatusColor: Record<TaskRun["status"], string> = {
   running: "processing",
@@ -181,6 +182,7 @@ interface WorkspaceFilePreviewState {
   open: boolean;
   loading: boolean;
   taskId: string;
+  executionId: string | null;
   filePath: string;
   kind: TaskWorkspaceFilePreview["kind"];
   mimeType: string | null;
@@ -607,6 +609,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     open: false,
     loading: false,
     taskId: "",
+    executionId: null,
     filePath: "",
     kind: "text",
     mimeType: null,
@@ -1826,7 +1829,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
-  const openWorkspaceFilePreview = (target: { taskId: string; filePath: string; line: number | null }) => {
+  const openWorkspaceFilePreview = (target: WorkspaceFileLinkTarget) => {
     const requestId = workspaceFilePreviewRequestIdRef.current + 1;
     workspaceFilePreviewRequestIdRef.current = requestId;
 
@@ -1834,6 +1837,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       open: true,
       loading: true,
       taskId: target.taskId,
+      executionId: target.executionId,
       filePath: target.filePath,
       kind: "text",
       mimeType: null,
@@ -1845,7 +1849,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     });
 
     void api
-      .getTaskWorkspaceFile(target.taskId, target.filePath)
+      .getTaskWorkspaceFile(target.taskId, target.filePath, { executionId: target.executionId })
       .then((result: TaskWorkspaceFilePreview) => {
         if (workspaceFilePreviewRequestIdRef.current !== requestId) {
           return;

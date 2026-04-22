@@ -232,11 +232,15 @@ export const api = {
     const query = params.toString();
     return request<TaskWorkspaceCommitLog>(`/tasks/${id}/workspace-commit-log${query ? `?${query}` : ""}`);
   },
-  getTaskWorkspaceFile: (id: string, filePath: string, options?: { ref?: string | null }) => {
+  getTaskWorkspaceFile: (id: string, filePath: string, options?: { ref?: string | null; executionId?: string | null }) => {
     const params = new URLSearchParams({ path: filePath });
     const ref = options?.ref?.trim();
     if (ref) {
       params.set("ref", ref);
+    }
+    const executionId = options?.executionId?.trim();
+    if (executionId) {
+      params.set("executionId", executionId);
     }
     return request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file?${params.toString()}`);
   },

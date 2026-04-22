@@ -864,9 +864,10 @@ export class SpawnerService {
   async getTaskWorkspaceFilePreview(
     task: Task,
     filePath: string,
-    ref?: string | null
+    ref?: string | null,
+    executionId?: string | null
   ): Promise<TaskWorkspaceFilePreview | null> {
-    const workspacePath = this.resolveWorkspacePath(task.id);
+    const workspacePath = executionId ? this.resolveAskWorkspacePath(task.id, executionId) : this.resolveWorkspacePath(task.id);
     const relativePath = normalizeSafeWorkspaceRelativePath(filePath);
     if (!relativePath) {
       return null;
