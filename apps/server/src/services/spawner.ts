@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { nanoid } from "nanoid";
@@ -173,10 +174,11 @@ export class SpawnerService {
   private static readonly MANAGED_REPO_HEAD_REF = "refs/heads/agentswarm-cache";
 
   private readonly runtimeReady = new Set<AgentProvider>();
-  private activeExecutions = new Map<string, Map<string, { containerName: string; process: ReturnType<typeof spawn> }>>();
+  private activeExecutions = new Map<string, Map<string, { label: string; process: ReturnType<typeof spawn>; containerName?: string }>>();
   private cancelRequestedTaskIds = new Set<string>();
   private repoLocks = new Map<string, Promise<void>>();
   private gitTargetLocks = new Map<string, Promise<void>>();
+  private executionContextStorage = new AsyncLocalStorage<{ taskId: string; executionId: string }>();
 
   constructor(
     private readonly taskStore: TaskStore,
@@ -184,17 +186,58 @@ export class SpawnerService {
     private readonly userStore: UserStore
   ) {}
 
+  private formatExecutionLabel(command: string, args: string[]): string {
+    return truncate([command, ...args].join(" "), 160);
+  }
+
+  private registerCurrentExecutionProcess(command: string, args: string[], process: ReturnType<typeof spawn>): void {
+    const context = this.executionContextStorage.getStore();
+    if (!context) {
+      return;
+    }
+
+    this.registerActiveExecution(context.taskId, context.executionId, {
+      label: this.formatExecutionLabel(command, args),
+      process
+    });
+  }
+
+  private unregisterCurrentExecutionProcess(process: ReturnType<typeof spawn>): void {
+    const context = this.executionContextStorage.getStore();
+    if (!context) {
+      return;
+    }
+
+    this.unregisterActiveExecution(context.taskId, context.executionId, process);
+  }
+
+  private ensureTaskNotCancelled(taskId: string): void {
+    if (this.isCancellationRequested(taskId)) {
+      throw new CancelledTaskError();
+    }
+  }
+
   private runCommand(command: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<void> {
     return new Promise((resolve, reject) => {
       const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...extraEnv } });
+      this.registerCurrentExecutionProcess(command, args, proc);
 
       let stderr = "";
       proc.stderr.on("data", (data) => {
         stderr += data.toString();
       });
 
-      proc.on("error", reject);
+      proc.on("error", (error) => {
+        this.unregisterCurrentExecutionProcess(proc);
+        reject(error);
+      });
       proc.on("close", (code) => {
+        this.unregisterCurrentExecutionProcess(proc);
+        const context = this.executionContextStorage.getStore();
+        if (context && this.isCancellationRequested(context.taskId)) {
+          reject(new CancelledTaskError());
+          return;
+        }
         if (code === 0) {
           resolve();
           return;
@@ -208,6 +251,7 @@ export class SpawnerService {
   private runCommandCapture(command: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<string> {
     return new Promise((resolve, reject) => {
       const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...extraEnv } });
+      this.registerCurrentExecutionProcess(command, args, proc);
 
       let stdout = "";
       let stderr = "";
@@ -220,8 +264,17 @@ export class SpawnerService {
         stderr += data.toString();
       });
 
-      proc.on("error", reject);
+      proc.on("error", (error) => {
+        this.unregisterCurrentExecutionProcess(proc);
+        reject(error);
+      });
       proc.on("close", (code) => {
+        this.unregisterCurrentExecutionProcess(proc);
+        const context = this.executionContextStorage.getStore();
+        if (context && this.isCancellationRequested(context.taskId)) {
+          reject(new CancelledTaskError());
+          return;
+        }
         if (code === 0) {
           resolve(stdout.trim());
           return;
@@ -235,6 +288,7 @@ export class SpawnerService {
   private runCommandCaptureRaw(command: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<string> {
     return new Promise((resolve, reject) => {
       const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...extraEnv } });
+      this.registerCurrentExecutionProcess(command, args, proc);
 
       let stdout = "";
       let stderr = "";
@@ -247,8 +301,17 @@ export class SpawnerService {
         stderr += data.toString();
       });
 
-      proc.on("error", reject);
+      proc.on("error", (error) => {
+        this.unregisterCurrentExecutionProcess(proc);
+        reject(error);
+      });
       proc.on("close", (code) => {
+        this.unregisterCurrentExecutionProcess(proc);
+        const context = this.executionContextStorage.getStore();
+        if (context && this.isCancellationRequested(context.taskId)) {
+          reject(new CancelledTaskError());
+          return;
+        }
         if (code === 0) {
           resolve(stdout);
           return;
@@ -262,6 +325,7 @@ export class SpawnerService {
   private runCommandCaptureBuffer(command: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...extraEnv } });
+      this.registerCurrentExecutionProcess(command, args, proc);
 
       const stdout: Buffer[] = [];
       let stderr = "";
@@ -274,8 +338,17 @@ export class SpawnerService {
         stderr += data.toString();
       });
 
-      proc.on("error", reject);
+      proc.on("error", (error) => {
+        this.unregisterCurrentExecutionProcess(proc);
+        reject(error);
+      });
       proc.on("close", (code) => {
+        this.unregisterCurrentExecutionProcess(proc);
+        const context = this.executionContextStorage.getStore();
+        if (context && this.isCancellationRequested(context.taskId)) {
+          reject(new CancelledTaskError());
+          return;
+        }
         if (code === 0) {
           resolve(Buffer.concat(stdout));
           return;
@@ -294,6 +367,7 @@ export class SpawnerService {
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...extraEnv } });
+      this.registerCurrentExecutionProcess(command, args, proc);
 
       let stdout = "";
       let stderr = "";
@@ -306,8 +380,17 @@ export class SpawnerService {
         stderr += data.toString();
       });
 
-      proc.on("error", reject);
+      proc.on("error", (error) => {
+        this.unregisterCurrentExecutionProcess(proc);
+        reject(error);
+      });
       proc.on("close", (code) => {
+        this.unregisterCurrentExecutionProcess(proc);
+        const context = this.executionContextStorage.getStore();
+        if (context && this.isCancellationRequested(context.taskId)) {
+          reject(new CancelledTaskError());
+          return;
+        }
         if (code === 0 || (code !== null && allowedExitCodes.includes(code))) {
           resolve(stdout);
           return;
@@ -702,7 +785,7 @@ export class SpawnerService {
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       const proc = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
-      this.registerActiveExecution(taskId, executionId, { containerName, process: proc });
+      this.registerActiveExecution(taskId, executionId, { label: containerName, containerName, process: proc });
 
       let stdoutRemainder = "";
       let stderrRemainder = "";
@@ -736,7 +819,7 @@ export class SpawnerService {
       };
 
       const cleanup = (): void => {
-        this.unregisterActiveExecution(taskId, executionId);
+        this.unregisterActiveExecution(taskId, executionId, proc);
       };
 
       const timeoutId = setTimeout(() => {
@@ -927,15 +1010,25 @@ export class SpawnerService {
     return path.join(this.resolveAskWorkspaceHostRoot(taskId), executionId);
   }
 
-  private registerActiveExecution(taskId: string, executionId: string, execution: { containerName: string; process: ReturnType<typeof spawn> }): void {
-    const executions = this.activeExecutions.get(taskId) ?? new Map<string, { containerName: string; process: ReturnType<typeof spawn> }>();
+  private registerActiveExecution(
+    taskId: string,
+    executionId: string,
+    execution: { label: string; process: ReturnType<typeof spawn>; containerName?: string }
+  ): void {
+    const executions =
+      this.activeExecutions.get(taskId) ?? new Map<string, { label: string; process: ReturnType<typeof spawn>; containerName?: string }>();
     executions.set(executionId, execution);
     this.activeExecutions.set(taskId, executions);
   }
 
-  private unregisterActiveExecution(taskId: string, executionId: string): void {
+  private unregisterActiveExecution(taskId: string, executionId: string, process?: ReturnType<typeof spawn>): void {
     const executions = this.activeExecutions.get(taskId);
     if (!executions) {
+      return;
+    }
+
+    const current = executions.get(executionId);
+    if (process && current?.process !== process) {
       return;
     }
 
@@ -2842,19 +2935,28 @@ export class SpawnerService {
     }
 
     for (const execution of executions) {
-      await this.taskStore.appendLog(taskId, `Spawner: stopping container ${execution.containerName} (graceful shutdown).`);
+      await this.taskStore.appendLog(taskId, `Spawner: stopping ${execution.label} (graceful shutdown).`);
 
-      try {
-        await this.runCommand("docker", ["stop", "-t", "15", execution.containerName]);
-      } catch {
-        // Container may already be gone or stop may fail; force remove below.
+      if (execution.containerName) {
+        try {
+          await this.runCommand("docker", ["stop", "-t", "15", execution.containerName]);
+        } catch {
+          // Container may already be gone or stop may fail; force remove below.
+        }
+
+        try {
+          await this.runCommand("docker", ["rm", "-f", execution.containerName]);
+          continue;
+        } catch {
+          // Fall through to direct process kill below.
+        }
       }
 
       try {
-        await this.runCommand("docker", ["rm", "-f", execution.containerName]);
+        execution.process.kill("SIGTERM");
       } catch {
         try {
-          execution.process.kill("SIGTERM");
+          execution.process.kill("SIGKILL");
         } catch {
           // Ignore process kill errors.
         }
@@ -3338,6 +3440,7 @@ export class SpawnerService {
       });
       runId = run?.id ?? null;
       executionId = runId ?? executionId;
+      this.executionContextStorage.enterWith({ taskId: task.id, executionId });
       const payloadDir = this.resolveRuntimePayloadDir(task.id, executionId);
       await mkdir(payloadDir, { recursive: true });
 
@@ -3346,6 +3449,7 @@ export class SpawnerService {
         branchName,
         lastAction: "build"
       });
+      this.ensureTaskNotCancelled(task.id);
 
       const checkpointRef = (
         await this.gitCommandCapture(
@@ -3380,9 +3484,7 @@ export class SpawnerService {
       await appendRunLog("Spawner: starting manual postflight run.");
       await this.runConfiguredPostflight(task, workspace, executionId, runId, payloadDir, appendRunLog);
 
-      if (this.isCancellationRequested(task.id)) {
-        throw new CancelledTaskError();
-      }
+      this.ensureTaskNotCancelled(task.id);
 
       await this.stripEphemeralWorkspaceFiles(workspacePath);
       const diffBaseRef = task.workspaceBaseRef ?? checkpointRef;
@@ -3439,7 +3541,7 @@ export class SpawnerService {
     } catch (error) {
       const finishedAt = new Date().toISOString();
       const message = error instanceof Error ? error.message : "Unknown runtime error";
-      const isCancelled = error instanceof CancelledTaskError;
+      const isCancelled = error instanceof CancelledTaskError || this.isCancellationRequested(task.id);
 
       if (runId) {
         await this.taskStore.updateRun(runId, {
@@ -3508,12 +3610,14 @@ export class SpawnerService {
       });
       runId = run?.id ?? null;
       executionId = runId ?? executionId;
+      this.executionContextStorage.enterWith({ taskId: task.id, executionId });
       const payloadDir = this.resolveRuntimePayloadDir(task.id, executionId);
       const appendRunLog = (line: string) => this.taskStore.appendLogForRun(task.id, line, runId);
       await this.syncTaskStatusForRunningRuns(task.id, {
         branchName,
         ...(action === "ask" && isActiveTaskStatus(task.status) ? {} : { lastAction: action })
       });
+      this.ensureTaskNotCancelled(task.id);
       const repoCachePath = this.resolveRepoCachePath(task);
       await appendRunLog("Spawner: preparing managed repository and workspace.");
       const { repoProfile, workspace: preparedWorkspace } = await this.withFreshManagedRepo(
@@ -3548,6 +3652,7 @@ export class SpawnerService {
         })
       );
       workspace = preparedWorkspace;
+      this.ensureTaskNotCancelled(task.id);
       if (action === "build" && !task.workspaceBaseRef) {
         await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
       }
@@ -3601,6 +3706,7 @@ export class SpawnerService {
 
       const payloadPaths = await this.writeRuntimePayloadFiles(manifest, providerDefinition.getProviderConfig(settings.mcpServers));
       await appendRunLog(`Spawner: runtime payload files ready at ${payloadDir}.`);
+      this.ensureTaskNotCancelled(task.id);
 
       if (action === "build") {
         await this.ensureWorkspaceGitHooks(workspace.workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
@@ -3611,9 +3717,7 @@ export class SpawnerService {
         `Spawner: runtime config includes provider=${task.provider}, profile=${task.providerProfile}, and ${settings.mcpServers.length} MCP server${settings.mcpServers.length === 1 ? "" : "s"}.`
       );
 
-      if (this.isCancellationRequested(task.id)) {
-        throw new CancelledTaskError();
-      }
+      this.ensureTaskNotCancelled(task.id);
 
       if (runId && action === "build") {
         const checkpointRef = (
@@ -3683,7 +3787,7 @@ export class SpawnerService {
 
       await new Promise<void>((resolve, reject) => {
         const proc = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
-        this.registerActiveExecution(task.id, executionId, { containerName, process: proc });
+        this.registerActiveExecution(task.id, executionId, { label: containerName, containerName, process: proc });
 
         let stdoutRemainder = "";
         let stderrRemainder = "";
@@ -3722,7 +3826,7 @@ export class SpawnerService {
 
         proc.on("error", reject);
         proc.on("close", (code) => {
-          this.unregisterActiveExecution(task.id, executionId);
+          this.unregisterActiveExecution(task.id, executionId, proc);
 
           if (stdoutRemainder.trim().length > 0) {
             processLine("stdout", stdoutRemainder.trimEnd());
@@ -3745,9 +3849,7 @@ export class SpawnerService {
         });
       });
 
-      if (this.isCancellationRequested(task.id)) {
-        throw new CancelledTaskError();
-      }
+      this.ensureTaskNotCancelled(task.id);
 
       const runtimeResult = await this.readRuntimeResult(payloadPaths.resultMarkdownPath, payloadPaths.resultJsonPath);
       if (action === "build") {
@@ -3849,7 +3951,7 @@ export class SpawnerService {
     } catch (error) {
       const finishedAt = new Date().toISOString();
       const message = error instanceof Error ? error.message : "Unknown runtime error";
-      const isCancelled = error instanceof CancelledTaskError;
+      const isCancelled = error instanceof CancelledTaskError || this.isCancellationRequested(task.id);
       if (runId) {
         await this.taskStore.updateRun(runId, {
           status: isCancelled ? "cancelled" : "failed",

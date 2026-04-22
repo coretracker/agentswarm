@@ -25,6 +25,7 @@ export class SchedulerService {
   ) {}
 
   async bootstrap(): Promise<void> {
+    await this.recoverInterruptedExecutions();
     this.interval = setInterval(() => {
       void this.drainQueue();
     }, 1000);
@@ -153,6 +154,39 @@ export class SchedulerService {
     await this.taskStore.appendLog(taskId, "Scheduler: cancellation requested by user.");
     await this.spawner.cancelTask(taskId);
     return true;
+  }
+
+  private async recoverInterruptedExecutions(): Promise<void> {
+    const tasks = await this.taskStore.listTasks({ ownerUserId: null, view: "all" });
+    const finishedAt = new Date().toISOString();
+    const recoveryMessage = "Server restarted before the previous run completed.";
+
+    for (const task of tasks) {
+      const runs = await this.taskStore.listRuns(task.id);
+      const staleRuns = runs.filter((run) => run.status === "running");
+      const shouldRecoverTask = staleRuns.length > 0 || isActiveTaskStatus(task.status);
+
+      if (!shouldRecoverTask) {
+        continue;
+      }
+
+      for (const run of staleRuns) {
+        await this.taskStore.updateRun(run.id, {
+          status: "failed",
+          finishedAt,
+          errorMessage: recoveryMessage,
+          summary: null
+        });
+      }
+
+      await this.taskStore.setStatus(task.id, "failed", {
+        finishedAt,
+        enqueued: false,
+        errorMessage: recoveryMessage,
+        lastAction: staleRuns.at(-1)?.action ?? task.lastAction
+      });
+      await this.taskStore.appendLog(task.id, `Scheduler: recovered interrupted task after restart. ${recoveryMessage}`);
+    }
   }
 
   private async drainQueue(): Promise<void> {
