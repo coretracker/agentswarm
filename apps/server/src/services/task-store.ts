@@ -33,20 +33,8 @@ import {
 } from "../lib/task-status.js";
 import { buildExecutionSummaryFromPrompt, classifyTaskComplexity } from "../lib/task-intelligence.js";
 
-/** When creating with Interactive prep, make the task title identifiable without duplicating markers. */
 function resolveTaskTitleForCreate(input: CreateTaskInput): string {
-  const raw = (input.title ?? "").trim();
-  const startMode = input.startMode ?? "run_now";
-  if (startMode !== "prepare_workspace" || !raw) {
-    return raw;
-  }
-  if (/\(interactive\)\s*$/i.test(raw)) {
-    return raw;
-  }
-  if (/^interactive(\s|·)/i.test(raw)) {
-    return raw;
-  }
-  return `${raw} (Interactive)`;
+  return (input.title ?? "").trim();
 }
 
 const TASK_KEY_PREFIX = "agentswarm:task:";

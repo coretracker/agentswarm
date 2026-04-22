@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { TaskRun } from "@agentswarm/shared-types";
 import { api } from "../api/client";
 import { useSocket } from "./useSocket";
@@ -16,44 +16,45 @@ interface TaskDeletedPayload {
 }
 
 const MAX_LOG_LINES = 400;
+const sortRuns = (items: TaskRun[]): TaskRun[] => [...items].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
 
 export const useTaskRuns = (taskId: string) => {
   const socket = useSocket();
   const [runs, setRuns] = useState<TaskRun[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
+  const refetch = useCallback(
+    async ({ showLoading = false }: { showLoading?: boolean } = {}): Promise<TaskRun[]> => {
+      if (showLoading) {
+        setLoading(true);
+      }
 
-    void api
-      .listTaskRuns(taskId)
-      .then((items) => {
-        if (!active) {
-          return;
-        }
-
-        setRuns(items);
+      try {
+        const items = await api.listTaskRuns(taskId);
+        setRuns(sortRuns(items));
         setLoading(false);
-      })
-      .catch(() => {
-        if (!active) {
-          return;
-        }
-
+        return items;
+      } catch {
         setRuns([]);
         setLoading(false);
-      });
+        return [];
+      }
+    },
+    [taskId]
+  );
 
-    return () => {
-      active = false;
-    };
-  }, [taskId]);
+  useEffect(() => {
+    void refetch({ showLoading: true });
+  }, [refetch]);
 
   useEffect(() => {
     if (!socket) {
       return;
     }
+
+    const onConnect = () => {
+      void refetch();
+    };
 
     const onTaskRunUpdate = (run: TaskRun) => {
       if (run.taskId !== taskId) {
@@ -63,7 +64,7 @@ export const useTaskRuns = (taskId: string) => {
       setRuns((current) => {
         const existingIndex = current.findIndex((item) => item.id === run.id);
         if (existingIndex === -1) {
-          return [...current, run].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+          return sortRuns([...current, run]);
         }
 
         const next = [...current];
@@ -72,7 +73,7 @@ export const useTaskRuns = (taskId: string) => {
           ...run,
           logs: run.logs.length > 0 ? run.logs : next[existingIndex].logs
         };
-        return next;
+        return sortRuns(next);
       });
     };
 
@@ -101,16 +102,18 @@ export const useTaskRuns = (taskId: string) => {
       setRuns([]);
     };
 
+    socket.on("connect", onConnect);
     socket.on("task:run_updated", onTaskRunUpdate);
     socket.on("task:log", onTaskLog);
     socket.on("task:deleted", onTaskDelete);
 
     return () => {
+      socket.off("connect", onConnect);
       socket.off("task:run_updated", onTaskRunUpdate);
       socket.off("task:log", onTaskLog);
       socket.off("task:deleted", onTaskDelete);
     };
-  }, [socket, taskId]);
+  }, [refetch, socket, taskId]);
 
-  return { runs, loading };
+  return { runs, loading, refetch };
 };

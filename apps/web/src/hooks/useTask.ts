@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Task } from "@agentswarm/shared-types";
 import { api } from "../api/client";
 import { markTaskSeen } from "../utils/seen-tasks";
@@ -27,33 +27,37 @@ export const useTask = (taskId: string) => {
     activeTaskIdRef.current = taskId;
   }, [taskId]);
 
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
+  const refetch = useCallback(
+    async ({ showLoading = false }: { showLoading?: boolean } = {}): Promise<Task | null> => {
+      if (showLoading) {
+        setLoading(true);
+      }
 
-    void api
-      .getTask(taskId)
-      .then((item) => {
-        if (!active) {
-          return;
+      try {
+        const item = await api.getTask(taskId);
+        if (activeTaskIdRef.current !== taskId) {
+          return null;
         }
 
         setTask(item);
         setLoading(false);
-      })
-      .catch(() => {
-        if (!active) {
-          return;
+        return item;
+      } catch {
+        if (activeTaskIdRef.current !== taskId) {
+          return null;
         }
 
         setTask(null);
         setLoading(false);
-      });
+        return null;
+      }
+    },
+    [taskId]
+  );
 
-    return () => {
-      active = false;
-    };
-  }, [taskId]);
+  useEffect(() => {
+    void refetch({ showLoading: true });
+  }, [refetch]);
 
   useEffect(() => {
     if (!task) {
@@ -67,6 +71,10 @@ export const useTask = (taskId: string) => {
     if (!socket) {
       return;
     }
+
+    const onConnect = () => {
+      void refetch();
+    };
 
     const onTaskUpdate = (nextTask: Task) => {
       if (nextTask.id !== taskId) {
@@ -83,24 +91,7 @@ export const useTask = (taskId: string) => {
           : nextTask
       );
 
-      void api
-        .getTask(nextTask.id)
-        .then((fullTask) => {
-          if (activeTaskIdRef.current !== fullTask.id) {
-            return;
-          }
-
-          setTask((current) =>
-            current
-              ? {
-                  ...current,
-                  ...fullTask,
-                  logs: fullTask.logs.length > 0 ? fullTask.logs : current.logs
-                }
-              : fullTask
-          );
-        })
-        .catch(() => undefined);
+      void refetch();
     };
 
     const onTaskLog = (payload: TaskLogPayload) => {
@@ -126,16 +117,18 @@ export const useTask = (taskId: string) => {
       setTask(null);
     };
 
+    socket.on("connect", onConnect);
     socket.on("task:updated", onTaskUpdate);
     socket.on("task:log", onTaskLog);
     socket.on("task:deleted", onTaskDelete);
 
     return () => {
+      socket.off("connect", onConnect);
       socket.off("task:updated", onTaskUpdate);
       socket.off("task:log", onTaskLog);
       socket.off("task:deleted", onTaskDelete);
     };
-  }, [socket, taskId]);
+  }, [refetch, socket, taskId]);
 
-  return { task, setTask, loading };
+  return { task, setTask, loading, refetch };
 };

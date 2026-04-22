@@ -74,7 +74,7 @@ export const getTaskDefinitionInitialValues = (settings?: SystemSettings | null)
     providerProfile: getProviderDefaultProfile(provider, settings),
     branchStrategy: "feature_branch",
     includeComments: true,
-    startMode: "run_now"
+    startMode: "prepare_workspace"
   };
 };
 
@@ -168,7 +168,7 @@ export function TaskDefinitionFields({
   const selectedBaseBranch = Form.useWatch("baseBranch", form);
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
-  const selectedStartMode = (Form.useWatch("startMode", form) as TaskStartMode | undefined) ?? "run_now";
+  const selectedStartMode = (Form.useWatch("startMode", form) as TaskStartMode | undefined) ?? "prepare_workspace";
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
   const selectedIssueNumber = Form.useWatch("issueNumber", form);
   const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
@@ -395,6 +395,7 @@ export function TaskDefinitionFields({
 
   const promptPanelTitle = isBlankSource ? (effectiveTaskType === "ask" ? "Question" : "Prompt") : "Imported Context";
   const requirePromptForBlank = selectedStartMode === "run_now";
+  const disableBlankPromptInput = isBlankSource && selectedStartMode === "prepare_workspace";
 
   const renderPromptPanel = (repository: Repository | null) => {
     if (isBlankSource) {
@@ -423,7 +424,11 @@ export function TaskDefinitionFields({
                 : []
             }
             extra={
-              !requirePromptForBlank ? (
+              disableBlankPromptInput ? (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  Disabled for workspace preparation only. Switch to run now to enter a prompt.
+                </Typography.Text>
+              ) : !requirePromptForBlank ? (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   Optional for this start mode — you can describe intent later or work only in Interactive.
                 </Typography.Text>
@@ -443,7 +448,7 @@ export function TaskDefinitionFields({
                     optionFilterProp="label"
                     allowClear
                     loading={snippetsLoading}
-                    disabled={snippetsLoading || snippets.length === 0}
+                    disabled={disableBlankPromptInput || snippetsLoading || snippets.length === 0}
                     options={snippets.map((snippet) => ({
                       label: snippet.name,
                       value: snippet.id
@@ -457,7 +462,7 @@ export function TaskDefinitionFields({
                       form.setFieldValue("prompt", insertSnippetContent(form.getFieldValue("prompt"), selectedSnippet.content));
                       setSelectedSnippetId(null);
                     }}
-                    disabled={!selectedSnippet}
+                    disabled={disableBlankPromptInput || !selectedSnippet}
                   >
                     Insert Snippet
                   </Button>
@@ -466,8 +471,11 @@ export function TaskDefinitionFields({
               <Input.TextArea
                 autoSize={{ minRows: 12, maxRows: 28 }}
                 style={{ resize: "none" }}
+                disabled={disableBlankPromptInput}
                 placeholder={
-                  effectiveTaskType === "ask"
+                  disableBlankPromptInput
+                    ? "Prompt is disabled while preparing the workspace only."
+                    : effectiveTaskType === "ask"
                     ? requirePromptForBlank
                       ? "Ask a repository question."
                       : "Optional question for the agent when you start a run."
@@ -581,9 +589,48 @@ export function TaskDefinitionFields({
               onChange={(repoId) => {
                 const repository = repositories.find((item) => item.id === repoId);
                 form.setFieldValue("baseBranch", repository?.defaultBranch ?? "");
+                form.setFieldValue("issueNumber", undefined);
+                form.setFieldValue("pullRequestNumber", undefined);
               }}
             />
           </Form.Item>
+
+          {isPullRequestSource ? (
+            <Form.Item name="pullRequestNumber" label="Pull Request" rules={[{ required: true }]}>
+              <Select
+                showSearch
+                loading={githubOptionsLoading}
+                placeholder={selectedRepoId ? "Select open pull request" : "Select repository first"}
+                optionFilterProp="label"
+                disabled={!selectedRepoId}
+                options={githubPullRequests.map((pullRequest) => ({
+                  label: `#${pullRequest.number} ${pullRequest.title}`,
+                  value: pullRequest.number
+                }))}
+              />
+            </Form.Item>
+          ) : null}
+
+          {isIssueSource ? (
+            <>
+              <Form.Item name="issueNumber" label="Issue" rules={[{ required: true }]}>
+                <Select
+                  showSearch
+                  loading={githubOptionsLoading}
+                  placeholder={selectedRepoId ? "Select open issue" : "Select repository first"}
+                  optionFilterProp="label"
+                  disabled={!selectedRepoId}
+                  options={githubIssues.map((issue) => ({
+                    label: `#${issue.number} ${issue.title}`,
+                    value: issue.number
+                  }))}
+                />
+              </Form.Item>
+              <Form.Item name="includeComments" valuePropName="checked">
+                <Checkbox>Include issue comments</Checkbox>
+              </Form.Item>
+            </>
+          ) : null}
 
           {isBlankSource || isIssueSource ? (
             <Form.Item name="startMode" label="Start mode" rules={[{ required: true }]}>
@@ -643,42 +690,12 @@ export function TaskDefinitionFields({
 
           {isIssueSource ? (
             <>
-              <Form.Item name="issueNumber" label="Issue" rules={[{ required: true }]}>
-                <Select
-                  showSearch
-                  loading={githubOptionsLoading}
-                  placeholder="Select open issue"
-                  optionFilterProp="label"
-                  options={githubIssues.map((issue) => ({
-                    label: `#${issue.number} ${issue.title}`,
-                    value: issue.number
-                  }))}
-                />
-              </Form.Item>
               {selectedStartMode !== "prepare_workspace" ? (
                 <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
                   <Select options={taskTypeOptions} />
                 </Form.Item>
               ) : null}
-              <Form.Item name="includeComments" valuePropName="checked">
-                <Checkbox>Include issue comments</Checkbox>
-              </Form.Item>
             </>
-          ) : null}
-
-          {isPullRequestSource ? (
-            <Form.Item name="pullRequestNumber" label="Pull Request" rules={[{ required: true }]}>
-              <Select
-                showSearch
-                loading={githubOptionsLoading}
-                placeholder="Select open pull request"
-                optionFilterProp="label"
-                options={githubPullRequests.map((pullRequest) => ({
-                  label: `#${pullRequest.number} ${pullRequest.title}`,
-                  value: pullRequest.number
-                }))}
-              />
-            </Form.Item>
           ) : null}
 
           {(isBlankSource || isIssueSource) && baseBranchLabel ? (

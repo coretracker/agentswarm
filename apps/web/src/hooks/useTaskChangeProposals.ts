@@ -57,6 +57,10 @@ export const useTaskChangeProposals = (taskId: string) => {
       return;
     }
 
+    const onConnect = () => {
+      refetch();
+    };
+
     const onProposal = (payload: TaskChangeProposal) => {
       if (payload.taskId !== taskId) {
         return;
@@ -79,14 +83,16 @@ export const useTaskChangeProposals = (taskId: string) => {
       setProposals([]);
     };
 
+    socket.on("connect", onConnect);
     socket.on("task:change_proposal", onProposal);
     socket.on("task:deleted", onTaskDelete);
 
     return () => {
+      socket.off("connect", onConnect);
       socket.off("task:change_proposal", onProposal);
       socket.off("task:deleted", onTaskDelete);
     };
-  }, [socket, taskId]);
+  }, [refetch, socket, taskId]);
 
   return { proposals, loading, refetch };
 };

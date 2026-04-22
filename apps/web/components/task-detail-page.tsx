@@ -496,10 +496,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { token } = antTheme.useToken();
   const { can, canAll, session } = useAuth();
   const { settings } = useSettings();
-  const { task, setTask, loading } = useTask(taskId);
+  const { task, setTask, loading, refetch: refetchTask } = useTask(taskId);
   const hadLoadedTaskRef = useRef(false);
-  const { messages: taskMessages, setMessages: setTaskMessages, loading: messagesLoading } = useTaskMessages(taskId);
-  const { runs: taskRuns, loading: runsLoading } = useTaskRuns(taskId);
+  const {
+    messages: taskMessages,
+    setMessages: setTaskMessages,
+    loading: messagesLoading,
+    refetch: refetchTaskMessages
+  } = useTaskMessages(taskId);
+  const { runs: taskRuns, loading: runsLoading, refetch: refetchTaskRuns } = useTaskRuns(taskId);
   const { proposals: changeProposals, refetch: refetchChangeProposals } = useTaskChangeProposals(taskId);
   const canUseSnippets = can("snippet:list");
   const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
@@ -1069,6 +1074,49 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     canEditTask,
     canUseInteractiveTerminal,
     isArchived
+  ]);
+
+  useEffect(() => {
+    if (!task?.id || (!isActiveTaskStatus(task.status) && !task.activeInteractiveSession)) {
+      return;
+    }
+
+    let cancelled = false;
+    const refreshLiveTaskData = () => {
+      if (cancelled || document.visibilityState === "hidden") {
+        return;
+      }
+
+      void Promise.allSettled([refetchTask(), refetchTaskMessages(), refetchTaskRuns(), refetchChangeProposals()]);
+    };
+
+    const intervalId = window.setInterval(refreshLiveTaskData, 5000);
+    const onFocus = () => {
+      refreshLiveTaskData();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshLiveTaskData();
+      }
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [
+    task?.activeInteractiveSession,
+    task?.id,
+    task?.status,
+    refetchChangeProposals,
+    refetchTask,
+    refetchTaskMessages,
+    refetchTaskRuns
   ]);
 
   useEffect(() => {

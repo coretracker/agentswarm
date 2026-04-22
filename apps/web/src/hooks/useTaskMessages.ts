@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { TaskMessage } from "@agentswarm/shared-types";
 import { api } from "../api/client";
 import { useSocket } from "./useSocket";
@@ -14,45 +14,54 @@ export const useTaskMessages = (taskId: string) => {
   const [messages, setMessages] = useState<TaskMessage[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
+  const refetch = useCallback(
+    async ({ showLoading = false }: { showLoading?: boolean } = {}): Promise<TaskMessage[]> => {
+      if (showLoading) {
+        setLoading(true);
+      }
 
-    void api
-      .listTaskMessages(taskId)
-      .then((items) => {
-        if (!active) {
-          return;
-        }
-
+      try {
+        const items = await api.listTaskMessages(taskId);
         setMessages(items);
         setLoading(false);
-      })
-      .catch(() => {
-        if (!active) {
-          return;
-        }
-
+        return items;
+      } catch {
         setMessages([]);
         setLoading(false);
-      });
+        return [];
+      }
+    },
+    [taskId]
+  );
 
-    return () => {
-      active = false;
-    };
-  }, [taskId]);
+  useEffect(() => {
+    void refetch({ showLoading: true });
+  }, [refetch]);
 
   useEffect(() => {
     if (!socket) {
       return;
     }
 
+    const onConnect = () => {
+      void refetch();
+    };
+
     const onTaskMessage = (message: TaskMessage) => {
       if (message.taskId !== taskId) {
         return;
       }
 
-      setMessages((current) => [...current, message]);
+      setMessages((current) => {
+        const existingIndex = current.findIndex((entry) => entry.id === message.id);
+        if (existingIndex === -1) {
+          return [...current, message];
+        }
+
+        const next = [...current];
+        next[existingIndex] = message;
+        return next;
+      });
     };
 
     const onTaskMessageUpdated = (message: TaskMessage) => {
@@ -60,7 +69,16 @@ export const useTaskMessages = (taskId: string) => {
         return;
       }
 
-      setMessages((current) => current.map((entry) => (entry.id === message.id ? message : entry)));
+      setMessages((current) => {
+        const existingIndex = current.findIndex((entry) => entry.id === message.id);
+        if (existingIndex === -1) {
+          return [...current, message];
+        }
+
+        const next = [...current];
+        next[existingIndex] = message;
+        return next;
+      });
     };
 
     const onTaskDelete = (payload: TaskDeletedPayload) => {
@@ -71,16 +89,18 @@ export const useTaskMessages = (taskId: string) => {
       setMessages([]);
     };
 
+    socket.on("connect", onConnect);
     socket.on("task:message", onTaskMessage);
     socket.on("task:message_updated", onTaskMessageUpdated);
     socket.on("task:deleted", onTaskDelete);
 
     return () => {
+      socket.off("connect", onConnect);
       socket.off("task:message", onTaskMessage);
       socket.off("task:message_updated", onTaskMessageUpdated);
       socket.off("task:deleted", onTaskDelete);
     };
-  }, [socket, taskId]);
+  }, [refetch, socket, taskId]);
 
-  return { messages, setMessages, loading };
+  return { messages, setMessages, loading, refetch };
 };
