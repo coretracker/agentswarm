@@ -7,12 +7,13 @@ DEFAULT_PUBLIC_PORT="3217"
 
 print_usage() {
   cat <<EOF
-Usage: ./${SCRIPT_NAME} <start|stop|rebuild|help>
+Usage: ./${SCRIPT_NAME} <start|stop|rebuild|init|help>
 
 Commands:
   start    Start the AgentSwarm compose stack in the background.
   stop     Stop the AgentSwarm compose stack.
   rebuild  Rebuild compose, automated runtime, and interactive runtime images, then restart.
+  init     Alias for rebuild.
   help     Show this help text.
 EOF
 }
@@ -152,7 +153,7 @@ main() {
     help|-h|--help)
       print_usage
       ;;
-    start|stop|rebuild)
+    start|stop|rebuild|init)
       load_env_file
       require_docker
       detect_compose
@@ -170,7 +171,7 @@ main() {
         stop)
           stop_stack
           ;;
-        rebuild)
+        rebuild|init)
           rebuild_stack
           ;;
       esac

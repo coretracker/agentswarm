@@ -4,16 +4,16 @@
 
 <h1 align="center">AgentSwarm</h1>
 
-AgentSwarm is a local-first UI for running coding agents against real Git repositories.
+AgentSwarm is a local app for managing AI coding work on real repositories.
 
-Based on the codebase today, it does four main things:
+Instead of juggling prompts, terminals, and branch management by hand, you can use one UI to:
 
 - lets you connect repositories and create tasks from scratch, from GitHub issues, or from pull requests
 - runs automated Codex or Claude tasks inside Docker containers
 - prepares per-task workspaces you can later open in an interactive browser terminal
 - keeps task history, logs, diffs, checkpoints, and Git actions in one place
 
-The web app is Next.js, the API is Fastify, task state is stored in Redis and/or Postgres depending on configuration, and agent workspaces live on disk under the task workspace root.
+It is built for teams or individuals who want agent runs, interactive workspaces, task history, and Git state in one place without giving up control of the repo.
 
 ## Prerequisites
 
@@ -25,6 +25,7 @@ Node 20+ is optional if you want to run the web/server in host dev mode.
 
 ```bash
 ./agentswarm.sh start
+./agentswarm.sh init
 ./agentswarm.sh rebuild
 ./agentswarm.sh stop
 ```
@@ -32,6 +33,7 @@ Node 20+ is optional if you want to run the web/server in host dev mode.
 What they do:
 
 - `start`: starts the Docker Compose stack in the background
+- `init`: same as `rebuild`; useful for first-time setup
 - `rebuild`: rebuilds the compose images, automated runtime images, and interactive terminal images, then restarts the stack
 - `stop`: stops the stack
 
