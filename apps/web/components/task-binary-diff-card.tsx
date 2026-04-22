@@ -232,12 +232,14 @@ export function TaskBinaryDiffCard({
   const isDeleted = isDeletedBinaryDiff(file);
   const showBefore = Boolean(previewRefs?.before) && !isAdded;
   const showAfter = (Boolean(previewRefs?.after) || previewRefs?.useWorkspaceAfter === true) && !isDeleted;
+  const afterPreviewRef = previewRefs?.useWorkspaceAfter ? null : (previewRefs?.after ?? null);
+  const afterFallbackRef = previewRefs?.useWorkspaceAfter ? (previewRefs?.after ?? undefined) : undefined;
   const beforePreview = useTaskImagePreview(taskId, showBefore ? file.oldPath || filePath : "", showBefore ? previewRefs?.before ?? null : null);
   const afterPreview = useTaskImagePreview(
     taskId,
     showAfter ? file.newPath || filePath : "",
-    showAfter ? previewRefs?.after ?? null : null,
-    previewRefs?.useWorkspaceAfter && previewRefs?.after ? null : undefined
+    showAfter ? afterPreviewRef : null,
+    showAfter ? afterFallbackRef : undefined
   );
   const showBeforePane = showBefore;
   const showAfterPane = showAfter;
