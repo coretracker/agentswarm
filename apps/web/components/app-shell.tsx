@@ -3,7 +3,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { App, Button, Drawer, Flex, Grid, Layout, Menu, Result, Select, Spin, Typography, theme as antTheme } from "antd";
 import {
-  BgColorsOutlined,
   CopyOutlined,
   DatabaseOutlined,
   LogoutOutlined,
@@ -153,19 +152,16 @@ export function AppShell({ children }: { children: ReactNode }) {
               style={{ minWidth: 0, borderBottom: 0, flex: 1, background: "transparent" }}
             />
             <Flex align="center" gap={12}>
-              <Select
-                size="small"
-                value={mode}
-                onChange={(value) => setMode(value as AppThemeMode)}
-                options={appThemeOptions}
-                variant="borderless"
-                suffixIcon={<BgColorsOutlined />}
-                style={{ minWidth: 132 }}
-              />
               <TaskBrowserNotifications />
               <Flex vertical gap={0} style={{ minWidth: 0 }}>
                 <Typography.Text strong>{`Hi, ${session.user.name || "Administrator"}`}</Typography.Text>
               </Flex>
+              <Select
+                value={mode}
+                onChange={(value) => setMode(value as AppThemeMode)}
+                options={appThemeOptions}
+                style={{ minWidth: 180 }}
+              />
               <Button
                 icon={<LogoutOutlined />}
                 loading={loggingOut}

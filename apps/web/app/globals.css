@@ -106,6 +106,33 @@ html[data-theme="forge"] {
   --diff-omit-gutter-line-color: #ff5252;
 }
 
+html[data-theme="forge-light"] {
+  color-scheme: light;
+  --app-body-bg: #fff3eb;
+  --app-body-text: rgba(51, 40, 33, 0.92);
+  --diff-background-color: #ffffff;
+  --diff-text-color: #332821;
+  --diff-selection-background-color: rgba(255, 107, 53, 0.12);
+  --diff-selection-text-color: #332821;
+  --diff-gutter-insert-background-color: #e3f7f2;
+  --diff-gutter-insert-text-color: #0b7c69;
+  --diff-gutter-delete-background-color: #fff0ef;
+  --diff-gutter-delete-text-color: #dc2626;
+  --diff-gutter-selected-background-color: #fff0d8;
+  --diff-gutter-selected-text-color: #b96b00;
+  --diff-code-insert-background-color: #f0fffb;
+  --diff-code-insert-text-color: #0a5c4e;
+  --diff-code-delete-background-color: #fff5f4;
+  --diff-code-delete-text-color: #b91c1c;
+  --diff-code-insert-edit-background-color: #c7efe5;
+  --diff-code-insert-edit-text-color: #09483e;
+  --diff-code-delete-edit-background-color: #ffd6d1;
+  --diff-code-delete-edit-text-color: #991b1b;
+  --diff-code-selected-background-color: #ffe7c2;
+  --diff-code-selected-text-color: #9a5600;
+  --diff-omit-gutter-line-color: #dc2626;
+}
+
 html[data-theme="github"] {
   color-scheme: dark;
   --app-body-bg: #0d1117;
@@ -647,4 +674,26 @@ html[data-theme="paper"] .diff-decoration-content,
 html[data-theme="paper"] .diff-widget-content {
   background: rgba(255, 253, 247, 0.9);
   color: #6a665c;
+}
+
+html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(231, 216, 205, 0.9);
+}
+
+html[data-theme="forge-light"] .diff-gutter {
+  color: #6d584b;
+  background: rgba(255, 250, 246, 0.92);
+  border-right-color: rgba(231, 216, 205, 0.96);
+}
+
+html[data-theme="forge-light"] .diff-code-normal {
+  background: rgba(255, 252, 249, 0.82);
+}
+
+html[data-theme="forge-light"] .diff-decoration-content,
+html[data-theme="forge-light"] .diff-widget-content {
+  background: rgba(255, 252, 249, 0.94);
+  color: #6d584b;
 }

@@ -5,6 +5,7 @@ export type AppThemeMode =
   | "dark"
   | "cyber"
   | "forge"
+  | "forge-light"
   | "github"
   | "github-light"
   | "nord"
@@ -455,6 +456,129 @@ export const forgeAntdTheme: ThemeConfig = {
     Progress: {
       defaultColor: "#ff6b35",
       remainingColor: "#30363d"
+    }
+  }
+};
+
+export const forgeLightAntdTheme: ThemeConfig = {
+  algorithm: antTheme.defaultAlgorithm,
+  token: {
+    colorPrimary: "#ff6b35",
+    colorSuccess: "#0f9d85",
+    colorWarning: "#d97706",
+    colorError: "#dc2626",
+    colorInfo: "#4f6df5",
+    colorTextBase: "#332821",
+    colorBgBase: "#fff8f3",
+    colorPrimaryBg: "#fff0e8",
+    colorPrimaryBgHover: "#ffe1d4",
+    colorPrimaryBorder: "#ffc0a5",
+    colorPrimaryBorderHover: "#ff946b",
+    colorPrimaryHover: "#f97341",
+    colorPrimaryActive: "#e55b2a",
+    colorPrimaryText: "#d95a2c",
+    colorPrimaryTextHover: "#f97341",
+    colorPrimaryTextActive: "#b94820",
+    colorSuccessBg: "#e7f7f3",
+    colorSuccessBgHover: "#ccefe7",
+    colorSuccessBorder: "#93d8c8",
+    colorSuccessBorderHover: "#0f9d85",
+    colorSuccessHover: "#14b39a",
+    colorSuccessActive: "#0b7c69",
+    colorSuccessText: "#0f9d85",
+    colorSuccessTextHover: "#14b39a",
+    colorSuccessTextActive: "#0b7c69",
+    colorWarningBg: "#fff4db",
+    colorWarningBgHover: "#ffe7b0",
+    colorWarningBorder: "#f6c978",
+    colorWarningBorderHover: "#d97706",
+    colorWarningHover: "#ea8b17",
+    colorWarningActive: "#b95f05",
+    colorWarningText: "#b96b00",
+    colorWarningTextHover: "#d97706",
+    colorWarningTextActive: "#9a5600",
+    colorErrorBg: "#fff0ef",
+    colorErrorBgHover: "#ffd9d6",
+    colorErrorBorder: "#ffb0aa",
+    colorErrorBorderHover: "#dc2626",
+    colorErrorHover: "#ef4444",
+    colorErrorActive: "#b91c1c",
+    colorErrorText: "#dc2626",
+    colorErrorTextHover: "#ef4444",
+    colorErrorTextActive: "#b91c1c",
+    colorInfoBg: "#eef1ff",
+    colorInfoBgHover: "#dfe4ff",
+    colorInfoBorder: "#c0cbff",
+    colorInfoBorderHover: "#4f6df5",
+    colorInfoHover: "#6f86ff",
+    colorInfoActive: "#3e57d0",
+    colorInfoText: "#4f6df5",
+    colorInfoTextHover: "#6f86ff",
+    colorInfoTextActive: "#3e57d0",
+    colorText: "rgba(51, 40, 33, 0.92)",
+    colorTextSecondary: "rgba(51, 40, 33, 0.68)",
+    colorTextTertiary: "rgba(51, 40, 33, 0.5)",
+    colorTextQuaternary: "rgba(51, 40, 33, 0.34)",
+    colorTextDisabled: "rgba(51, 40, 33, 0.34)",
+    colorTextPlaceholder: "rgba(51, 40, 33, 0.46)",
+    colorBgContainer: "#ffffff",
+    colorBgElevated: "#fffaf6",
+    colorBgLayout: "#fff3eb",
+    colorBgSpotlight: "rgba(51, 40, 33, 0.86)",
+    colorBgMask: "rgba(91, 60, 45, 0.22)",
+    colorBorder: "#e7d8cd",
+    colorBorderSecondary: "#f2e8e1",
+    borderRadius: 6,
+    borderRadiusXS: 2,
+    borderRadiusSM: 4,
+    borderRadiusLG: 8,
+    padding: 16,
+    paddingSM: 12,
+    paddingLG: 20,
+    margin: 16,
+    marginSM: 12,
+    marginLG: 20,
+    boxShadow: "0 2px 8px 0 rgba(120, 73, 45, 0.10)",
+    boxShadowSecondary: "0 8px 24px 0 rgba(120, 73, 45, 0.16)"
+  },
+  components: {
+    ...sharedComponents,
+    Button: {
+      ...sharedComponents?.Button,
+      defaultBg: "#ffffff",
+      defaultColor: "rgba(51, 40, 33, 0.92)",
+      defaultBorderColor: "#e7d8cd",
+      defaultHoverBg: "#fff8f3",
+      defaultHoverColor: "#f97341",
+      defaultHoverBorderColor: "#ff946b",
+      defaultActiveBg: "#ffffff",
+      defaultActiveColor: "#d95a2c",
+      defaultActiveBorderColor: "#d95a2c"
+    },
+    Card: {
+      ...sharedComponents?.Card,
+      headerBg: "#ffffff",
+      extraColor: "rgba(51, 40, 33, 0.68)"
+    },
+    Input: {
+      hoverBorderColor: "#ff946b",
+      activeBorderColor: "#ff6b35",
+      activeShadow: "0 0 0 1px rgba(255, 107, 53, 0.22)",
+      hoverBg: "#ffffff",
+      activeBg: "#ffffff"
+    },
+    Tag: {
+      defaultBg: "#fff0e8",
+      defaultColor: "#d95a2c"
+    },
+    Timeline: {
+      ...sharedComponents?.Timeline,
+      dotBg: "#ff6b35",
+      tailColor: "#e7d8cd"
+    },
+    Progress: {
+      defaultColor: "#ff6b35",
+      remainingColor: "#f2e8e1"
     }
   }
 };
@@ -1571,6 +1695,7 @@ export const appThemeOptions: Array<{ label: string; value: AppThemeMode }> = [
   { label: "Dark", value: "dark" },
   { label: "Cyber Neon", value: "cyber" },
   { label: "Forge", value: "forge" },
+  { label: "Forge Light", value: "forge-light" },
   { label: "GitHub Dark", value: "github" },
   { label: "GitHub Light", value: "github-light" },
   { label: "Nord", value: "nord" },
@@ -1601,6 +1726,8 @@ export const getAppAntdTheme = (mode: AppThemeMode): ThemeConfig => {
       return cyberAntdTheme;
     case "forge":
       return forgeAntdTheme;
+    case "forge-light":
+      return forgeLightAntdTheme;
     case "github":
       return githubAntdTheme;
     case "github-light":
