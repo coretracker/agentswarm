@@ -437,7 +437,7 @@ function getGitHubDiffTarget(task: Task, existingPullRequest?: GitHubPullRequest
   if (existingPullRequest?.url) {
     return {
       href: existingPullRequest.url,
-      label: "Open PR"
+      label: "View PR"
     };
   }
 
