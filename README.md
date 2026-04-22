@@ -23,17 +23,24 @@ Node 20+ is optional if you want to run the web/server in host dev mode.
 
 ## Start
 
+Before the first run, initialize the stack and runtime images:
+
+```bash
+./agentswarm.sh init
+```
+
+After that, use the normal commands:
+
 ```bash
 ./agentswarm.sh start
-./agentswarm.sh init
 ./agentswarm.sh rebuild
 ./agentswarm.sh stop
 ```
 
 What they do:
 
-- `start`: starts the Docker Compose stack in the background
 - `init`: same as `rebuild`; useful for first-time setup
+- `start`: starts the Docker Compose stack in the background
 - `rebuild`: rebuilds the compose images, automated runtime images, and interactive terminal images, then restarts the stack
 - `stop`: stops the stack
 
