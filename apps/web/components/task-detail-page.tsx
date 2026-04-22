@@ -3319,6 +3319,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   };
 
+  const getHistoryContextCardStyle = (entryKey: string, baseStyle?: CSSProperties): CSSProperties => {
+    const selected = selectedContextEntryKeys.includes(entryKey);
+    return {
+      ...baseStyle,
+      borderInlineStart: selected ? `4px solid ${token.colorInfo}` : baseStyle?.borderInlineStart,
+      transition: "border-color 0.2s ease, border-inline-start-color 0.2s ease"
+    };
+  };
+
   const renderPersistedMessageContext = (message: TaskMessage, collapseKey: string) => {
     const contextEntries = message.contextEntries ?? [];
     if (message.role !== "user" || contextEntries.length === 0) {
@@ -3368,7 +3377,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               background: "rgba(107,143,163,0.12)",
               padding: "10px 12px"
             }}
-            style={{ width: "100%" }}
+            style={getHistoryContextCardStyle(entryKey, { width: "100%" })}
           >
             <Flex vertical gap={4}>
               <Flex justify="space-between" align="flex-start" gap={12} wrap="wrap">
@@ -3404,7 +3413,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             background: messageColor,
             padding: isCompactMessage ? "10px 12px" : undefined
           }}
-          style={{ width: "100%" }}
+          style={getHistoryContextCardStyle(entryKey, { width: "100%" })}
         >
           {isCompactMessage ? (
             <Flex vertical gap={4}>
@@ -3455,7 +3464,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const renderRawProposalEntry = (entryKey: string, proposal: TaskChangeProposal) => {
     return (
       <Flex key={entryKey}>
-        <Card size="small" style={{ width: "100%", borderColor: proposal.status === "pending" ? "rgba(250,173,20,0.45)" : undefined }}>
+        <Card
+          size="small"
+          style={getHistoryContextCardStyle(entryKey, {
+            width: "100%",
+            borderColor: proposal.status === "pending" ? "rgba(250,173,20,0.45)" : undefined
+          })}
+        >
           <Flex justify="space-between" align="flex-start" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
             <Space wrap size={8}>
               <Typography.Text strong>Checkpoint</Typography.Text>
@@ -3494,7 +3509,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
     return (
       <Flex key={entryKey}>
-        <Card size="small" style={{ width: "100%" }}>
+        <Card size="small" style={getHistoryContextCardStyle(entryKey, { width: "100%" })}>
           <Flex justify="space-between" align="center" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
             <Space wrap size={8}>
               <Tag color={runStatusColor[run.status]}>{run.status}</Tag>
@@ -3541,6 +3556,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       <Card
         key={entryKey}
         size="small"
+        style={getHistoryContextCardStyle(entryKey)}
         title={
           <Space wrap>
             <Tag color={runStatusColor[entry.run.status]}>{entry.run.status}</Tag>
@@ -3616,6 +3632,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       <Card
         key={entryKey}
         size="small"
+        style={getHistoryContextCardStyle(entryKey)}
         title={
           <Space wrap>
             <Tag color="green">{terminalLabel}</Tag>
