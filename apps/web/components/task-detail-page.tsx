@@ -1174,7 +1174,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [task]);
+  }, [task?.id, task?.repoId, task?.repoDefaultBranch, task?.taskType, task?.branchName, task?.baseBranch]);
 
   useEffect(() => {
     if (activeMainTab !== "diff" || !task?.repoId) {
