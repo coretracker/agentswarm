@@ -11,6 +11,7 @@ import {
   type TaskAction,
   type TaskContextEntry,
   type TaskMessage,
+  type TaskPromptAttachment,
   type TaskReasoningEffort,
   type TaskRun,
   type TaskStartMode,
@@ -27,6 +28,7 @@ import {
   normalizeProviderProfile
 } from "../lib/provider-config.js";
 import { parseJsonColumn, type PostgresQueryable, withPostgresTransaction } from "../lib/postgres.js";
+import { normalizeTaskPromptAttachment } from "../lib/task-prompt-attachments.js";
 import {
   normalizeTaskLifecycleStatus,
   reconcileTaskStatusWithPendingCheckpoint
@@ -115,12 +117,17 @@ const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
   const contextEntries = Array.isArray(rawContextEntries)
     ? rawContextEntries.map(normalizeTaskContextEntry).filter((entry): entry is TaskContextEntry => entry !== null)
     : [];
+  const rawAttachments = (message as TaskMessage & { attachments?: unknown }).attachments;
+  const attachments = Array.isArray(rawAttachments)
+    ? rawAttachments.map(normalizeTaskPromptAttachment).filter((attachment): attachment is TaskPromptAttachment => attachment !== null)
+    : [];
   const sessionId = typeof message.sessionId === "string" && message.sessionId.trim().length > 0 ? message.sessionId : null;
 
   return {
     ...message,
     action: normalizeTaskMessageAction(message.action),
     ...(contextEntries.length > 0 ? { contextEntries } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
     ...(sessionId !== null || "sessionId" in message ? { sessionId } : {})
   };
 };
@@ -151,6 +158,7 @@ export interface AppendTaskMessageInput {
   content: string;
   action?: TaskMessage["action"];
   contextEntries?: TaskContextEntry[];
+  attachments?: TaskPromptAttachment[];
   sessionId?: string | null;
 }
 
@@ -197,6 +205,7 @@ export interface TaskStore {
   updateRun(runId: string, patch: UpdateTaskRunPatch): Promise<TaskRun | null>;
   appendMessage(taskId: string, input: AppendTaskMessageInput): Promise<TaskMessage | null>;
   updateMessage(taskId: string, messageId: string, content: string): Promise<TaskMessage | null>;
+  setMessageAttachments(taskId: string, messageId: string, attachments: TaskPromptAttachment[]): Promise<TaskMessage | null>;
   markQueuedForAction(taskId: string, action: TaskAction): Promise<Task | null>;
   setStatus(taskId: string, status: TaskStatus, extra?: Partial<Task>): Promise<Task | null>;
   archiveTask(taskId: string): Promise<Task | null>;
@@ -708,16 +717,7 @@ export class RedisTaskStore implements TaskStore {
     return next;
   }
 
-  async appendMessage(
-    taskId: string,
-    input: {
-      role: TaskMessage["role"];
-      content: string;
-      action?: TaskMessage["action"];
-      contextEntries?: TaskContextEntry[];
-      sessionId?: string | null;
-    }
-  ): Promise<TaskMessage | null> {
+  async appendMessage(taskId: string, input: AppendTaskMessageInput): Promise<TaskMessage | null> {
     const task = await this.getStoredTask(taskId);
     if (!task) {
       return null;
@@ -726,6 +726,9 @@ export class RedisTaskStore implements TaskStore {
     const contextEntries = (input.contextEntries ?? [])
       .map((entry) => normalizeTaskContextEntry(entry))
       .filter((entry): entry is TaskContextEntry => entry !== null);
+    const attachments = (input.attachments ?? [])
+      .map((attachment) => normalizeTaskPromptAttachment(attachment))
+      .filter((attachment): attachment is TaskPromptAttachment => attachment !== null);
 
     const message: TaskMessage = {
       id: nanoid(),
@@ -734,6 +737,7 @@ export class RedisTaskStore implements TaskStore {
       content: input.content,
       action: input.action ?? null,
       ...(contextEntries.length > 0 ? { contextEntries } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
       ...(input.sessionId !== undefined ? { sessionId: input.sessionId ?? null } : {}),
       createdAt: nowIso()
     };
@@ -774,6 +778,58 @@ export class RedisTaskStore implements TaskStore {
           content
         };
         return JSON.stringify(updatedMessage);
+      } catch {
+        return raw;
+      }
+    });
+
+    if (!updatedMessage) {
+      return null;
+    }
+
+    const pipeline = this.redis.multi().del(this.taskMessageKey(taskId));
+    if (nextRawMessages.length > 0) {
+      pipeline.rpush(this.taskMessageKey(taskId), ...nextRawMessages);
+    }
+    await pipeline.exec();
+    await this.eventBus.publish({
+      type: "task:message_updated",
+      payload: updatedMessage
+    });
+    return updatedMessage;
+  }
+
+  async setMessageAttachments(taskId: string, messageId: string, attachmentsInput: TaskPromptAttachment[]): Promise<TaskMessage | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    const attachments = attachmentsInput
+      .map((attachment) => normalizeTaskPromptAttachment(attachment))
+      .filter((attachment): attachment is TaskPromptAttachment => attachment !== null);
+
+    const rawMessages = await this.redis.lrange(this.taskMessageKey(taskId), 0, -1);
+    if (rawMessages.length === 0) {
+      return null;
+    }
+
+    let updatedMessage: TaskMessage | null = null;
+    const nextRawMessages = rawMessages.map((raw) => {
+      try {
+        const message = normalizeTaskMessage(JSON.parse(raw) as TaskMessage);
+        if (message.id !== messageId) {
+          return raw;
+        }
+
+        const nextMessage: TaskMessage = { ...message };
+        if (attachments.length > 0) {
+          nextMessage.attachments = attachments;
+        } else {
+          delete (nextMessage as TaskMessage & { attachments?: TaskPromptAttachment[] }).attachments;
+        }
+        updatedMessage = nextMessage;
+        return JSON.stringify(nextMessage);
       } catch {
         return raw;
       }
@@ -1718,6 +1774,9 @@ export class PostgresTaskStore implements TaskStore {
     const contextEntries = (input.contextEntries ?? [])
       .map((entry) => normalizeTaskContextEntry(entry))
       .filter((entry): entry is TaskContextEntry => entry !== null);
+    const attachments = (input.attachments ?? [])
+      .map((attachment) => normalizeTaskPromptAttachment(attachment))
+      .filter((attachment): attachment is TaskPromptAttachment => attachment !== null);
 
     const message: TaskMessage = {
       id: nanoid(),
@@ -1726,6 +1785,7 @@ export class PostgresTaskStore implements TaskStore {
       content: input.content,
       action: input.action ?? null,
       ...(contextEntries.length > 0 ? { contextEntries } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
       ...(input.sessionId !== undefined ? { sessionId: input.sessionId ?? null } : {}),
       createdAt: nowIso()
     };
@@ -1762,6 +1822,39 @@ export class PostgresTaskStore implements TaskStore {
       ...message,
       content
     };
+
+    await this.pool.query(
+      "UPDATE task_messages SET message_data = $3::jsonb WHERE task_id = $1 AND message_id = $2",
+      [taskId, messageId, JSON.stringify(updatedMessage)]
+    );
+    await this.eventBus.publish({
+      type: "task:message_updated",
+      payload: updatedMessage
+    });
+    return updatedMessage;
+  }
+
+  async setMessageAttachments(taskId: string, messageId: string, attachmentsInput: TaskPromptAttachment[]): Promise<TaskMessage | null> {
+    const result = await this.pool.query(
+      "SELECT message_data FROM task_messages WHERE task_id = $1 AND message_id = $2",
+      [taskId, messageId]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+
+    const message = normalizeTaskMessage(parseJsonColumn<TaskMessage>(row.message_data));
+    const attachments = attachmentsInput
+      .map((attachment) => normalizeTaskPromptAttachment(attachment))
+      .filter((attachment): attachment is TaskPromptAttachment => attachment !== null);
+    const updatedMessage: TaskMessage = {
+      ...message,
+      ...(attachments.length > 0 ? { attachments } : {})
+    };
+    if (attachments.length === 0) {
+      delete (updatedMessage as TaskMessage & { attachments?: TaskPromptAttachment[] }).attachments;
+    }
 
     await this.pool.query(
       "UPDATE task_messages SET message_data = $3::jsonb WHERE task_id = $1 AND message_id = $2",

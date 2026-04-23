@@ -2,12 +2,14 @@ import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   isActiveTaskStatus,
+  TASK_PROMPT_ATTACHMENT_MAX_COUNT,
   TASK_CONTEXT_ENTRY_MAX_CONTENT_LENGTH,
   TASK_CONTEXT_ENTRY_MAX_COUNT,
   TASK_CONTEXT_ENTRY_MAX_LABEL_LENGTH,
   TASK_CONTEXT_TOTAL_MAX_CHARS,
   type Task,
   type TaskAction,
+  type TaskPromptAttachment,
   type TaskTerminalSessionMode
 } from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
@@ -22,6 +24,7 @@ import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import { buildExecutionSummaryFromPrompt, classifyTaskComplexity } from "../lib/task-intelligence.js";
 import { getMutationBlockedReason } from "../lib/task-mutation-guards.js";
+import { persistTaskPromptAttachments, readTaskPromptAttachmentBuffer } from "../lib/task-prompt-attachments.js";
 import {
   requireInteractiveTerminalAccess,
   requireTaskActionCapabilityAccess,
@@ -32,11 +35,18 @@ import { canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
 
 const taskStartModeSchema = z.enum(["run_now", "prepare_workspace", "idle"]);
 
+const taskPromptAttachmentInputSchema = z.object({
+  name: z.string().trim().min(1).max(255),
+  mimeType: z.string().trim().min(1).max(120),
+  dataBase64: z.string().trim().min(1)
+});
+
 const createTaskSchema = z
   .object({
     title: z.string().min(1),
     repoId: z.string().min(1),
     prompt: z.string().default(""),
+    attachments: z.array(taskPromptAttachmentInputSchema).max(TASK_PROMPT_ATTACHMENT_MAX_COUNT).optional(),
     startMode: taskStartModeSchema.optional().default("run_now"),
     taskType: z.enum(["build", "ask"]).optional(),
     provider: z.enum(["codex", "claude"]).optional(),
@@ -90,7 +100,8 @@ const createTaskMessageSchema = z
   .object({
     content: z.string().trim().min(1),
     action: z.enum(["build", "ask", "comment"]).optional(),
-    contextEntries: z.array(taskContextEntrySchema).max(TASK_CONTEXT_ENTRY_MAX_COUNT).optional()
+    contextEntries: z.array(taskContextEntrySchema).max(TASK_CONTEXT_ENTRY_MAX_COUNT).optional(),
+    attachments: z.array(taskPromptAttachmentInputSchema).max(TASK_PROMPT_ATTACHMENT_MAX_COUNT).optional()
   })
   .superRefine((data, ctx) => {
     const totalContextChars = (data.contextEntries ?? []).reduce((sum, entry) => sum + entry.label.length + entry.content.length, 0);
@@ -322,6 +333,38 @@ export const registerTaskRoutes = (
 
     return deps.taskStore.listMessages(task.id);
   });
+
+  app.get<{ Params: { id: string; messageId: string; attachmentId: string } }>(
+    "/tasks/:id/messages/:messageId/attachments/:attachmentId",
+    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      const messages = await deps.taskStore.listMessages(task.id);
+      const selectedMessage = messages.find((message) => message.id === request.params.messageId) ?? null;
+      if (!selectedMessage) {
+        return reply.status(404).send({ message: "Message not found." });
+      }
+
+      const attachment = (selectedMessage.attachments ?? []).find((item) => item.id === request.params.attachmentId) ?? null;
+      if (!attachment) {
+        return reply.status(404).send({ message: "Attachment not found." });
+      }
+
+      try {
+        const buffer = await readTaskPromptAttachmentBuffer(task.id, attachment);
+        reply.header("Content-Type", attachment.mimeType);
+        reply.header("Cache-Control", "no-store");
+        reply.header("Content-Length", String(buffer.length));
+        return reply.send(buffer);
+      } catch {
+        return reply.status(404).send({ message: "Attachment file is unavailable." });
+      }
+    }
+  );
 
   app.get<{ Params: { id: string } }>("/tasks/:id/runs", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
     const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
@@ -592,7 +635,10 @@ export const registerTaskRoutes = (
       return reply.status(404).send({ message: "Repository not found" });
     }
 
-    const { startMode, ...createPayload } = parsed.data;
+    const { startMode, attachments: attachmentUploads = [], ...createPayload } = parsed.data;
+    if (attachmentUploads.length > 0 && startMode !== "run_now") {
+      return reply.status(400).send({ message: "Image attachments are only supported when start mode is Run now." });
+    }
     if (
       !requireTaskCapabilityAccess(request, reply, {
         taskType: createPayload.taskType ?? "build",
@@ -614,11 +660,29 @@ export const registerTaskRoutes = (
       repository,
       request.auth!.user.id
     );
+
+    let persistedAttachments: TaskPromptAttachment[] = [];
+    if (attachmentUploads.length > 0) {
+      try {
+        persistedAttachments = await persistTaskPromptAttachments(task.id, attachmentUploads);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Image attachments could not be stored.";
+        return reply.status(400).send({ message });
+      }
+      const initialMessage = (await deps.taskStore.listMessages(task.id)).at(-1) ?? null;
+      if (initialMessage) {
+        await deps.taskStore.setMessageAttachments(task.id, initialMessage.id, persistedAttachments);
+      }
+    }
     try {
       const result = await applyTaskStartMode(task, startMode, {
         taskStore: deps.taskStore,
         scheduler: deps.scheduler,
         spawner: deps.spawner
+      }, {
+        content: createPayload.prompt.trim(),
+        contextEntries: [],
+        ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
       });
       return reply.status(201).send(await withBranchSyncCounts(deps.spawner, result));
     } catch (error) {
@@ -866,11 +930,22 @@ export const registerTaskRoutes = (
       }
     }
 
+    let persistedAttachments: TaskPromptAttachment[] = [];
+    if ((parsed.data.attachments ?? []).length > 0) {
+      try {
+        persistedAttachments = await persistTaskPromptAttachments(task.id, parsed.data.attachments);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Image attachments could not be stored.";
+        return reply.status(400).send({ message });
+      }
+    }
+
     await deps.taskStore.appendMessage(task.id, {
       role: "user",
       action,
       content: parsed.data.content,
-      contextEntries: parsed.data.contextEntries ?? []
+      contextEntries: parsed.data.contextEntries ?? [],
+      attachments: persistedAttachments
     });
 
     if (action === "comment") {
@@ -880,7 +955,8 @@ export const registerTaskRoutes = (
 
     const accepted = await deps.scheduler.triggerAction(task.id, action, {
       content: parsed.data.content,
-      contextEntries: parsed.data.contextEntries ?? []
+      contextEntries: parsed.data.contextEntries ?? [],
+      ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
     });
     if (!accepted) {
       return reply.status(409).send({ message: "Task execution could not be started" });

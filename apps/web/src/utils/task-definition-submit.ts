@@ -56,6 +56,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
     title: definition.title,
     repoId: definition.repoId,
     prompt: definition.prompt,
+    attachments: definition.sourceType === "blank" ? definition.attachments : undefined,
     taskType: definition.taskType,
     startMode: definition.startMode ?? "run_now",
     provider: definition.provider,

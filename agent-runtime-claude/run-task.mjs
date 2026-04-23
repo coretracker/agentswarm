@@ -90,25 +90,43 @@ const buildPrompt = () => {
           entry.content.trim().length > 0
       )
     : [];
+  const attachments = Array.isArray(manifest.attachments)
+    ? manifest.attachments.filter(
+        (attachment) =>
+          attachment &&
+          typeof attachment === "object" &&
+          typeof attachment.name === "string" &&
+          typeof attachment.absolutePath === "string" &&
+          attachment.name.trim().length > 0 &&
+          attachment.absolutePath.trim().length > 0
+      )
+    : [];
 
   if (rawContent.length === 0) {
     throw new Error("Task prompt is empty");
   }
 
-  return contextEntries.length > 0
-    ? [
-        "Selected task history context:",
-        "",
-        ...contextEntries.flatMap((entry, index) => [
-          `[Context ${index + 1}] ${entry.label.trim()}`,
-          entry.content.trim(),
-          ""
-        ]),
-        "Current user request:",
-        "",
-        rawContent
-      ].join("\n")
-    : rawContent;
+  const promptSections = [];
+  if (contextEntries.length > 0) {
+    promptSections.push(
+      "Selected task history context:",
+      "",
+      ...contextEntries.flatMap((entry, index) => [
+        `[Context ${index + 1}] ${entry.label.trim()}`,
+        entry.content.trim(),
+        ""
+      ])
+    );
+  }
+  if (attachments.length > 0) {
+    promptSections.push(
+      "Reference Images:",
+      ...attachments.map((attachment) => `- ${attachment.absolutePath.trim()} (${attachment.name.trim()})`),
+      ""
+    );
+  }
+  promptSections.push("Current user request:", "", rawContent);
+  return promptSections.join("\n");
 };
 
 const mcpTools = providerConfigPath

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import type { TaskSourceType, TaskStartMode, TaskType } from "@agentswarm/shared-types";
 import { Button, Flex, Form, Space, Typography, message } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
+import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
 import {
   TaskDefinitionFields,
@@ -22,6 +23,7 @@ export function TaskCreatePage() {
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
   const selectedStartMode = (Form.useWatch("startMode", form) as TaskStartMode | undefined) ?? "prepare_workspace";
+  const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const isIssueSource = selectedSourceType === "issue";
   const isPullRequestSource = selectedSourceType === "pull_request";
   const isBlankOrIssueInteractivePrep =
@@ -44,11 +46,15 @@ export function TaskCreatePage() {
   const handleSubmit = async (values: TaskDefinitionFormValues) => {
     setSubmitting(true);
     try {
-      const definition = buildTaskDefinitionInput(values);
+      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
+      const definition = buildTaskDefinitionInput(values, encodedAttachments);
       const task = await createTaskFromDefinition(definition);
 
       messageApi.success(startMessageForDefinition(definition));
+      setPromptImageFiles([]);
       router.push(`/tasks/${task.id}`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to create task");
     } finally {
       setSubmitting(false);
     }
@@ -81,7 +87,7 @@ export function TaskCreatePage() {
             </Space>
           </Flex>
 
-          <TaskDefinitionFields form={form} />
+          <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
         </Flex>
       </Form>
     </>

@@ -250,6 +250,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
+  getTaskMessageAttachmentUrl: (taskId: string, messageId: string, attachmentId: string) =>
+    buildApiUrl(`/tasks/${taskId}/messages/${messageId}/attachments/${attachmentId}`),
   listTaskMessages: (id: string) => request<TaskMessage[]>(`/tasks/${id}/messages`),
   updateTaskMessage: (taskId: string, messageId: string, input: UpdateTaskMessageInput) =>
     request<TaskMessage>(`/tasks/${taskId}/messages/${messageId}`, {

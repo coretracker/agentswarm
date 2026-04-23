@@ -39,6 +39,10 @@ import { reconcileTaskStatusWithPendingCheckpoint, resolveTaskReadyStatus } from
 import { buildTaskCommitSubject, formatCommitSubject } from "../lib/task-commit-subject.js";
 import { parsePostflightConfig, postflightAppliesToTask, type PostflightConfig } from "../lib/postflight-config.js";
 import {
+  resolveTaskPromptAttachmentRoot,
+  resolveTaskPromptAttachmentServerPath
+} from "../lib/task-prompt-attachments.js";
+import {
   normalizeSafeWorkspaceRelativePath,
   readSafeWorkspaceFileBuffer,
   resolveSafeWorkspaceFilePath
@@ -93,6 +97,13 @@ interface RuntimeManifest {
   repoProfile: string;
   content: string;
   contextEntries: TaskContextEntry[];
+  attachments: Array<{
+    id: string;
+    name: string;
+    mimeType: string;
+    sizeBytes: number;
+    absolutePath: string;
+  }>;
   baseBranch: string;
   repoDefaultBranch: string;
   branchStrategy: Task["branchStrategy"];
@@ -2970,11 +2981,13 @@ export class SpawnerService {
     const payloadDir = this.resolveRuntimePayloadDir(task.id);
     const workspacePath = this.resolveWorkspacePath(task.id);
     const askWorkspaceRoot = this.resolveAskWorkspaceRoot(task.id);
+    const promptAttachmentRoot = resolveTaskPromptAttachmentRoot(task.id);
     const taskStateRootPath = resolveTaskStateRootPaths(task.id).serverPath;
     const legacyCodexStatePath = resolveTaskProviderStatePaths(task.id, "codex").legacyServerPath;
     const legacyClaudeStatePath = resolveTaskProviderStatePaths(task.id, "claude").legacyServerPath;
     await rm(payloadDir, { recursive: true, force: true });
     await rm(askWorkspaceRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(promptAttachmentRoot, { recursive: true, force: true }).catch(() => undefined);
     const repoCachePath = this.resolveRepoCachePath(task);
     await this.withRepoLock(repoCachePath, async () => {
       const repoExists = await access(path.join(repoCachePath, ".git"))
@@ -3666,12 +3679,28 @@ export class SpawnerService {
         typeof input === "string"
           ? {
               content: input,
-              contextEntries: [] as TaskContextEntry[]
+              contextEntries: [] as TaskContextEntry[],
+              attachments: []
             }
           : {
               content: input?.content ?? "",
-              contextEntries: input?.contextEntries ?? []
+              contextEntries: input?.contextEntries ?? [],
+              attachments: input?.attachments ?? []
             };
+      const manifestAttachments = normalizedInput.attachments.map((attachment) => {
+        const absolutePath = resolveTaskPromptAttachmentServerPath(task.id, attachment.relativePath);
+        if (!absolutePath) {
+          throw new Error(`Prompt attachment path is invalid for ${attachment.name}.`);
+        }
+
+        return {
+          id: attachment.id,
+          name: attachment.name,
+          mimeType: attachment.mimeType,
+          sizeBytes: attachment.sizeBytes,
+          absolutePath
+        };
+      });
       const manifest: RuntimeManifest = {
         taskId: task.id,
         provider: task.provider,
@@ -3683,6 +3712,7 @@ export class SpawnerService {
         repoProfile,
         content: normalizedInput.content,
         contextEntries: normalizedInput.contextEntries,
+        attachments: manifestAttachments,
         baseBranch: task.baseBranch,
         repoDefaultBranch: task.repoDefaultBranch,
         branchStrategy: task.branchStrategy,
