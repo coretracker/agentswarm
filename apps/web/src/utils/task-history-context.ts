@@ -110,6 +110,15 @@ function buildNestedContextSummary(entries: TaskContextEntry[] | undefined): str
   return entries.map((entry) => `${entry.label}:\n${entry.content}`).join("\n\n");
 }
 
+function buildAttachmentSummary(message: TaskMessage): string | null {
+  const attachments = message.attachments ?? [];
+  if (attachments.length === 0) {
+    return null;
+  }
+
+  return attachments.map((attachment) => attachment.name).join("\n");
+}
+
 function finalizeContext(key: string, kind: TaskContextEntry["kind"], label: string, content: string): SerializedTaskHistoryContextEntry {
   const normalizedContent = truncate(content.trim(), TASK_CONTEXT_ENTRY_MAX_CONTENT_LENGTH);
   return {
@@ -132,18 +141,21 @@ function serializeMessageEntry(key: string, message: TaskMessage): SerializedTas
   }
   labelParts.push("message");
   const nestedContextSummary = buildNestedContextSummary(message.contextEntries);
-  const content = nestedContextSummary
-    ? joinSections([
-        {
-          title: "Message",
-          content: message.content
-        },
-        {
-          title: "Additional context",
-          content: nestedContextSummary
-        }
-      ])
-    : message.content;
+  const attachmentSummary = buildAttachmentSummary(message);
+  const content = joinSections([
+    {
+      title: "Message",
+      content: message.content
+    },
+    {
+      title: "Images",
+      content: attachmentSummary
+    },
+    {
+      title: "Additional context",
+      content: nestedContextSummary
+    }
+  ]);
 
   return finalizeContext(key, "message", `${labelParts.join(" ")} · ${toUtcLabel(message.createdAt)}`, content);
 }

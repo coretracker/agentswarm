@@ -161,6 +161,15 @@ test("serializes persisted additional context on user messages", () => {
     role: "user",
     action: "ask",
     content: "What changed since the last run?",
+    attachments: [
+      {
+        id: "att-1",
+        name: "settings-screen.png",
+        mimeType: "image/png",
+        sizeBytes: 1024,
+        relativePath: "att-1-settings-screen.png"
+      }
+    ],
     contextEntries: [
       {
         kind: "run",
@@ -184,6 +193,7 @@ test("serializes persisted additional context on user messages", () => {
   assert.ok(entry);
   const serialized = serializeTaskHistoryContextEntry(entry!);
   assert.match(serialized.entry.content, /Message:\nWhat changed since the last run\?/);
+  assert.match(serialized.entry.content, /Images:\nsettings-screen\.png/);
   assert.match(serialized.entry.content, /Additional context:\nBuild run · Succeeded · 2026-03-24 15:45:00 UTC:/);
   assert.match(serialized.entry.content, /Summary:\nImplemented the previous fix\./);
   assert.match(serialized.entry.content, /Checkpoint · Pending · 2026-03-24 15:46:00 UTC:/);

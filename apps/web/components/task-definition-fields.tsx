@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { FormInstance } from "antd";
 import type {
   AgentProvider,
+  CreateTaskPromptAttachmentInput,
   GitHubBranchReference,
   GitHubIssueReference,
   GitHubPullRequestReference,
@@ -17,14 +18,16 @@ import type {
   TaskType
 } from "@agentswarm/shared-types";
 import { getAgentProviderLabel, getDefaultModelForProvider, getEffortOptionsForProvider, getModelsForProvider } from "@agentswarm/shared-types";
-import { Alert, Button, Card, Checkbox, Col, Flex, Form, Input, Row, Select, Space, Typography } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Flex, Form, Input, Row, Select, Space, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useSettings } from "../src/hooks/useSettings";
 import { useSnippets } from "../src/hooks/useSnippets";
+import { type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { insertSnippetContent } from "../src/utils/snippets";
 import { useAuth } from "./auth-provider";
+import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
 
 export type TaskDefinitionFormValues = {
   sourceType?: TaskSourceType;
@@ -46,6 +49,8 @@ export type TaskDefinitionFormValues = {
 export interface TaskDefinitionFieldsProps {
   form: FormInstance<TaskDefinitionFormValues>;
   syncSettingsDefaults?: boolean;
+  promptImageFiles?: SelectedTaskPromptImageFile[];
+  onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
 }
 
 const providerOptions = (
@@ -98,13 +103,17 @@ export function buildBlankAutoTaskTitle(params: {
   return `${kind} · ${repo} · ${branch} · ${model}`;
 }
 
-export const buildTaskDefinitionInput = (values: TaskDefinitionFormValues): TaskDefinitionInput => {
+export const buildTaskDefinitionInput = (
+  values: TaskDefinitionFormValues,
+  promptAttachments: CreateTaskPromptAttachmentInput[] = []
+): TaskDefinitionInput => {
   if (values.sourceType === "blank") {
     return {
       sourceType: "blank",
       title: values.title?.trim() ?? "",
       repoId: values.repoId ?? "",
       prompt: values.prompt?.trim() ?? "",
+      ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
       startMode: values.startMode ?? "run_now",
       taskType: values.taskType ?? "build",
       provider: values.provider ?? "codex",
@@ -145,7 +154,9 @@ export const buildTaskDefinitionInput = (values: TaskDefinitionFormValues): Task
 
 export function TaskDefinitionFields({
   form,
-  syncSettingsDefaults = true
+  syncSettingsDefaults = true,
+  promptImageFiles = [],
+  onPromptImageFilesChange
 }: TaskDefinitionFieldsProps) {
   const { can, session } = useAuth();
   const { repositories } = useRepositories();
@@ -396,6 +407,17 @@ export function TaskDefinitionFields({
   const promptPanelTitle = isBlankSource ? (effectiveTaskType === "ask" ? "Question" : "Prompt") : "Imported Context";
   const requirePromptForBlank = selectedStartMode === "run_now";
   const disableBlankPromptInput = isBlankSource && selectedStartMode === "prepare_workspace";
+  const canAttachPromptImages = isBlankSource && selectedStartMode === "run_now";
+
+  useEffect(() => {
+    if (selectedSourceType === "blank") {
+      return;
+    }
+
+    if ((promptImageFiles?.length ?? 0) > 0) {
+      onPromptImageFilesChange?.([]);
+    }
+  }, [onPromptImageFilesChange, promptImageFiles?.length, selectedSourceType]);
 
   const renderPromptPanel = (repository: Repository | null) => {
     if (isBlankSource) {
@@ -483,6 +505,12 @@ export function TaskDefinitionFields({
                       ? "Describe the goal, constraints, and expected outcome in your prompt."
                       : "Optional — add a goal now or open Interactive after the workspace is prepared."
                 }
+              />
+              <TaskPromptAttachmentsInput
+                files={promptImageFiles}
+                onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
+                onError={(errorMessage) => void message.error(errorMessage)}
+                disabled={!canAttachPromptImages || !onPromptImageFilesChange}
               />
             </Flex>
           </Form.Item>

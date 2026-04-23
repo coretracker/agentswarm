@@ -1,4 +1,4 @@
-import type { Task, TaskAction, TaskStartMode } from "@agentswarm/shared-types";
+import type { Task, TaskAction, TaskExecutionInput, TaskStartMode } from "@agentswarm/shared-types";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
@@ -31,7 +31,8 @@ export const getTriggerActionForNewTask = (task: Pick<Task, "taskType">): TaskAc
 export async function applyTaskStartMode(
   task: Task,
   startMode: TaskStartMode | undefined,
-  deps: { taskStore: TaskStore; scheduler: SchedulerService; spawner: SpawnerService }
+  deps: { taskStore: TaskStore; scheduler: SchedulerService; spawner: SpawnerService },
+  input?: TaskExecutionInput
 ): Promise<Task> {
   const mode = startMode ?? "run_now";
   if (mode === "idle") {
@@ -42,7 +43,7 @@ export async function applyTaskStartMode(
     return (await deps.taskStore.getTask(task.id)) ?? task;
   }
   const action = getTriggerActionForNewTask(task);
-  const accepted = await deps.scheduler.triggerAction(task.id, action);
+  const accepted = await deps.scheduler.triggerAction(task.id, action, input);
   if (!accepted) {
     throw new Error("Task execution could not be started");
   }

@@ -17,6 +17,20 @@ interface TaskDeletedPayload {
 
 const MAX_LOG_LINES = 400;
 
+function mergeTaskPreservingBranchSyncCounts(current: Task | null, next: Task): Task {
+  if (!current || current.id !== next.id) {
+    return next;
+  }
+
+  return {
+    ...current,
+    ...next,
+    logs: next.logs.length > 0 ? next.logs : current.logs,
+    pullCount: next.pullCount ?? current.pullCount,
+    pushCount: next.pushCount ?? current.pushCount
+  };
+}
+
 export const useTask = (taskId: string) => {
   const socket = useSocket();
   const [task, setTask] = useState<Task | null>(null);
@@ -39,7 +53,7 @@ export const useTask = (taskId: string) => {
           return null;
         }
 
-        setTask(item);
+        setTask((current) => mergeTaskPreservingBranchSyncCounts(current, item));
         setLoading(false);
         return item;
       } catch {
@@ -82,13 +96,7 @@ export const useTask = (taskId: string) => {
       }
 
       setTask((current) =>
-        current
-          ? {
-              ...current,
-              ...nextTask,
-              logs: nextTask.logs.length > 0 ? nextTask.logs : current.logs
-            }
-          : nextTask
+        mergeTaskPreservingBranchSyncCounts(current, nextTask)
       );
 
       void refetch();

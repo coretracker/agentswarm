@@ -22,6 +22,7 @@ import {
   type TaskContextEntry,
   type TaskMessageAction,
   type TaskMessage,
+  type TaskPromptAttachment,
   type TaskLiveDiff,
   type TaskRun,
   type AgentProvider,
@@ -80,12 +81,18 @@ import { useTaskRuns } from "../src/hooks/useTaskRuns";
 import { useTaskChangeProposals } from "../src/hooks/useTaskChangeProposals";
 import { useSettings } from "../src/hooks/useSettings";
 import { isImageDiffPath, normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
+import {
+  encodeTaskPromptImageFiles,
+  formatAttachmentSize,
+  type SelectedTaskPromptImageFile
+} from "../src/utils/task-prompt-attachments";
 import { insertSnippetContent } from "../src/utils/snippets";
 import { serializeTaskHistoryContextEntry } from "../src/utils/task-history-context";
 import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
 import { TaskDiffOpenAiPanel } from "./task-diff-openai-panel";
+import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
 import { TaskTerminalTranscriptView } from "./task-terminal-transcript-view";
 import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
@@ -573,6 +580,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const selectedChatActionRef = useRef(false);
   const diffCompareBaseSyncedTaskIdRef = useRef<string | null>(null);
   const [selectedSnippetId, setSelectedSnippetId] = useState<string | null>(null);
+  const [selectedPromptImageFiles, setSelectedPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const [pushPreview, setPushPreview] = useState<TaskPushPreview | null>(null);
   const [pushPreviewLoading, setPushPreviewLoading] = useState(false);
   const [pushCommitMessage, setPushCommitMessage] = useState("");
@@ -587,7 +595,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
-  const [checkpointCommitMessages, setCheckpointCommitMessages] = useState<Record<string, string>>({});
+  const [applyCheckpointModalProposal, setApplyCheckpointModalProposal] = useState<TaskChangeProposal | null>(null);
+  const [applyCheckpointCommitMessage, setApplyCheckpointCommitMessage] = useState("");
   const [killTerminalConfirmOpen, setKillTerminalConfirmOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [commentEditModalOpen, setCommentEditModalOpen] = useState(false);
@@ -657,6 +666,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setInteractiveTerminalStatus(null);
     setGitTerminalStatus(null);
     setInteractiveTerminalLaunchPending(false);
+    setSelectedPromptImageFiles([]);
+    setApplyCheckpointModalProposal(null);
+    setApplyCheckpointCommitMessage("");
     setTaskPageVisible(false);
     initialBottomScrollStateRef.current = null;
   }, [taskId]);
@@ -911,21 +923,43 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     let cancelled = false;
-    void api
-      .getTaskBranchSyncCounts(task.id)
-      .then((counts) => {
-        if (cancelled) {
-          return;
-        }
+    const refreshBranchSyncCounts = () => {
+      if (cancelled || document.visibilityState === "hidden") {
+        return;
+      }
 
-        setTask((current) => (current && current.id === task.id ? { ...current, ...counts } : current));
-      })
-      .catch(() => undefined);
+      void api
+        .getTaskBranchSyncCounts(task.id)
+        .then((counts) => {
+          if (cancelled) {
+            return;
+          }
+
+          setTask((current) => (current && current.id === task.id ? { ...current, ...counts } : current));
+        })
+        .catch(() => undefined);
+    };
+
+    refreshBranchSyncCounts();
+    const intervalId = window.setInterval(refreshBranchSyncCounts, 5000);
+    const onFocus = () => {
+      refreshBranchSyncCounts();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshBranchSyncCounts();
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [activeMainTab, hasDiffTab, liveDiffRefreshKey, setTask, task?.id]);
+  }, [activeMainTab, hasDiffTab, liveDiffRefreshKey, setTask, task?.activeInteractiveSession, task?.id, task?.status, task?.updatedAt]);
 
   useEffect(() => {
     if (providerInputOptions.some((option) => option.value === providerInput)) {
@@ -1609,6 +1643,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     selectedChatAction !== "comment" && (!!pendingChangeProposal || ((isQueued || isActive) && !parallelAskAllowed));
   const chatDisabled = chatClosed || interactiveTerminalRunning || autoRunStartBlocked;
   const chatInputDisabled = chatClosed || interactiveTerminalRunning || interactiveComposerSelected || postflightComposerSelected;
+  const canAttachPromptImages = selectedChatAction === "build" || selectedChatAction === "ask";
+  const promptImageAttachmentDisabled = chatClosed || interactiveTerminalRunning || !canAttachPromptImages;
   const draftActionLabel = taskActionLabel[selectedChatAction].toLowerCase();
   const chatPlaceholder = (() => {
     if (interactiveTerminalRunning) {
@@ -1630,6 +1666,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
     if (selectedChatAction === "comment") {
       return "Add a comment to the task history";
+    }
+    if (selectedPromptImageFiles.length > 0 && selectedChatAction === "ask" && providerInput === "claude") {
+      return "Ask a repository question. Claude will receive the selected image file paths in the prompt.";
+    }
+    if (selectedPromptImageFiles.length > 0 && selectedChatAction === "build" && providerInput === "claude") {
+      return "Describe the next implementation change for this branch. Claude will receive the selected image file paths in the prompt.";
     }
     if (pendingChangeProposal) {
       return `Draft the next ${draftActionLabel} while you review the pending checkpoint. Start is available again after you apply or reject it.`;
@@ -1813,13 +1855,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   };
   const composerHasChangesToClear =
     !!selectedSnippetId ||
+    selectedPromptImageFiles.length > 0 ||
     selectedContextEntryKeys.length > 0 ||
     !!chatInput.trim() ||
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
     modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider));
   const composerClearDisabled = interactiveTerminalRunning || !composerHasChangesToClear;
-  const chatSubmitDisabled = chatDisabled || (selectedChatActionRequiresPrompt && chatInput.trim().length === 0);
+  const chatSubmitDisabled =
+    chatDisabled ||
+    (selectedChatActionRequiresPrompt && chatInput.trim().length === 0) ||
+    (selectedPromptImageFiles.length > 0 && !canAttachPromptImages);
   const chatSubmitLabel =
     selectedChatAction === "comment" ? "Add Comment" : selectedChatAction === "postflight" ? "Run Postflight" : "Start";
   const handleClearSelectedContext = () => {
@@ -1827,6 +1873,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   };
   const handleConfirmClearComposer = () => {
     setSelectedSnippetId(null);
+    setSelectedPromptImageFiles([]);
     setChatInput("");
     handleClearSelectedContext();
     if (task) {
@@ -1834,6 +1881,99 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setProviderInput(nextProvider);
       setModelInput(currentTaskModelOverride || getDefaultModelForProvider(nextProvider));
       setProviderProfileInput(currentTaskProviderProfile);
+    }
+  };
+  const handleSubmitComposer = async () => {
+    if (!task || chatSubmitDisabled) {
+      return;
+    }
+
+    if (selectedChatAction === "interactive") {
+      setSubmitting("message");
+      try {
+        await handleStartInteractiveTerminalWindow();
+      } finally {
+        setSubmitting(null);
+      }
+      return;
+    }
+
+    if (selectedChatAction === "postflight") {
+      if (configDirty && canEditTask && !isArchived) {
+        try {
+          await handleSaveConfig({ notify: false });
+        } catch (error) {
+          showTaskActionError(error, "Execution config could not be updated");
+          return;
+        }
+      }
+
+      setSubmitting("message");
+      try {
+        const updatedTask = await api.runTaskPostflight(task.id);
+        setTask((current) =>
+          current
+            ? {
+                ...current,
+                ...updatedTask,
+                logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+              }
+            : updatedTask
+        );
+        messageApi.success("Postflight started");
+      } catch (error) {
+        showTaskActionError(error, "Postflight could not be started");
+      } finally {
+        setSubmitting(null);
+      }
+      return;
+    }
+
+    if (chatInput.trim().length === 0) {
+      return;
+    }
+
+    if (configDirty && canEditTask && !isArchived) {
+      try {
+        await handleSaveConfig({ notify: false });
+      } catch (error) {
+        showTaskActionError(error, "Execution config could not be updated");
+        return;
+      }
+    }
+    setSubmitting("message");
+    try {
+      const encodedAttachments = canAttachPromptImages ? await encodeTaskPromptImageFiles(selectedPromptImageFiles) : [];
+      const contextEntries =
+        selectedChatAction === "comment" ? undefined : selectedContextEntries.map((entry) => entry.entry);
+      const updatedTask = await api.createTaskMessage(task.id, {
+        content: chatInput.trim(),
+        action: selectedChatAction,
+        contextEntries,
+        ...(encodedAttachments.length > 0 ? { attachments: encodedAttachments } : {})
+      });
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      setChatInput("");
+      setSelectedPromptImageFiles([]);
+      messageApi.success(
+        selectedChatAction === "comment"
+          ? "Comment added to history"
+          : parallelAskAllowed && selectedChatAction === "ask"
+            ? "Ask started from history"
+            : `${taskActionLabel[selectedChatAction]} queued from history`
+      );
+    } catch (error) {
+      showTaskActionError(error, "Task execution could not be started");
+    } finally {
+      setSubmitting(null);
     }
   };
   const handleDeleteTask = async () => {
@@ -2746,11 +2886,32 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         autoSize={{ minRows: 4, maxRows: 14 }}
         value={chatInput}
         onChange={(event) => setChatInput(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing || event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
+            return;
+          }
+
+          event.preventDefault();
+          void handleSubmitComposer();
+        }}
         placeholder={chatPlaceholder}
         disabled={chatInputDisabled}
         style={{ resize: "none" }}
       />
       {selectedContextPanel}
+      {canAttachPromptImages || selectedPromptImageFiles.length > 0 ? (
+        <>
+          <Divider style={{ margin: 0 }} />
+          <TaskPromptAttachmentsInput
+            files={selectedPromptImageFiles}
+            onChange={setSelectedPromptImageFiles}
+            onError={(errorMessage) => void messageApi.error(errorMessage)}
+            disabled={promptImageAttachmentDisabled}
+            layout="toolbar"
+          />
+          <Divider style={{ margin: 0 }} />
+        </>
+      ) : null}
 	      <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
 	        <Flex align="flex-end" gap={12} wrap="wrap" style={{ flex: "1 1 0", minWidth: 0 }}>
 	          <div
@@ -2826,102 +2987,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 type="primary"
                 loading={submitting === "message"}
                 disabled={chatSubmitDisabled}
-                onClick={async () => {
-                  if (!task) {
-                    return;
-                  }
-
-                  if (selectedChatAction === "interactive") {
-                    setSubmitting("message");
-                    try {
-                      await handleStartInteractiveTerminalWindow();
-                    } finally {
-                      setSubmitting(null);
-                    }
-                    return;
-                  }
-
-                  if (selectedChatAction === "postflight") {
-                    if (configDirty && canEditTask && !isArchived) {
-                      try {
-                        await handleSaveConfig({ notify: false });
-                      } catch (error) {
-                        showTaskActionError(error, "Execution config could not be updated");
-                        return;
-                      }
-                    }
-
-                    setSubmitting("message");
-                    try {
-                      const updatedTask = await api.runTaskPostflight(task.id);
-                      setTask((current) =>
-                        current
-                          ? {
-                              ...current,
-                              ...updatedTask,
-                              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
-                            }
-                          : updatedTask
-                      );
-                      messageApi.success("Postflight started");
-                    } catch (error) {
-                      showTaskActionError(error, "Postflight could not be started");
-                    } finally {
-                      setSubmitting(null);
-                    }
-                    return;
-                  }
-
-                  if (chatInput.trim().length === 0) {
-                    return;
-                  }
-
-                  if (configDirty && canEditTask && !isArchived) {
-                    try {
-                      await handleSaveConfig({ notify: false });
-                    } catch (error) {
-                      showTaskActionError(error, "Execution config could not be updated");
-                      return;
-                    }
-                  }
-                  setSubmitting("message");
-                  try {
-                    const contextEntries =
-                      selectedChatAction === "comment" ? undefined : selectedContextEntries.map((entry) => entry.entry);
-                    const updatedTask = await api.createTaskMessage(task.id, {
-                      content: chatInput.trim(),
-                      action: selectedChatAction,
-                      contextEntries
-                    });
-                    setTask((current) =>
-                      current
-                        ? {
-                            ...current,
-                            ...updatedTask,
-                            logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
-                          }
-                        : updatedTask
-                    );
-                    setChatInput("");
-                    messageApi.success(
-                      selectedChatAction === "comment"
-                        ? "Comment added to history"
-                        : parallelAskAllowed && selectedChatAction === "ask"
-                          ? "Ask started from history"
-                          : `${taskActionLabel[selectedChatAction]} queued from history`
-                    );
-                  } catch (error) {
-                    showTaskActionError(error, "Task execution could not be started");
-                  } finally {
-                    setSubmitting(null);
-                  }
-                }}
+                onClick={() => void handleSubmitComposer()}
               >
                 {chatSubmitLabel}
               </Button>
 	              <Popconfirm
 	                title="Clear composer?"
-	                description="This will clear the message input, selected context, and reset the AI settings to this task's defaults."
+	                description="This will clear the message input, selected context, selected reference images, and reset the AI settings to this task's defaults."
 	                okText="Clear"
 	                cancelText="Cancel"
                 okButtonProps={{ danger: true }}
@@ -2976,24 +3048,36 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   };
 
-  const handleApplyCheckpoint = async (proposal: TaskChangeProposal) => {
+  const openApplyCheckpointModal = (proposal: TaskChangeProposal) => {
+    setApplyCheckpointModalProposal(proposal);
+    setApplyCheckpointCommitMessage("");
+  };
+
+  const closeApplyCheckpointModal = () => {
+    if (proposalBusy?.kind === "apply") {
+      return;
+    }
+
+    setApplyCheckpointModalProposal(null);
+    setApplyCheckpointCommitMessage("");
+  };
+
+  const handleApplyCheckpoint = async () => {
+    const proposal = applyCheckpointModalProposal;
     if (!task) {
+      return;
+    }
+    if (!proposal) {
       return;
     }
     const canReapplyReverted = proposal.status === "reverted";
     setProposalBusy({ id: proposal.id, kind: "apply" });
     try {
-      const commitMessage = checkpointCommitMessages[proposal.id]?.trim() ?? "";
+      const commitMessage = applyCheckpointCommitMessage.trim();
       const updated = await api.applyTaskChangeProposal(task.id, proposal.id, commitMessage ? { commitMessage } : undefined);
       syncTaskAfterCheckpointMutation(updated);
-      setCheckpointCommitMessages((current) => {
-        if (!(proposal.id in current)) {
-          return current;
-        }
-        const next = { ...current };
-        delete next[proposal.id];
-        return next;
-      });
+      setApplyCheckpointModalProposal(null);
+      setApplyCheckpointCommitMessage("");
       messageApi.success(canReapplyReverted ? "Checkpoint re-applied" : "Checkpoint applied");
       setLiveDiffRefreshKey((k) => k + 1);
       refetchChangeProposals();
@@ -3177,12 +3261,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                           }
                         >
                           <span>
-                            <Button
+                              <Button
                               type="primary"
                               size="small"
                               disabled={checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending}
                               loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "apply"}
-                              onClick={() => void handleApplyCheckpoint(proposal)}
+                              onClick={() => openApplyCheckpointModal(proposal)}
                             >
                               {canReapplyReverted ? "Apply again" : "Apply"}
                             </Button>
@@ -3247,29 +3331,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               ) : null,
             children: (
               <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                {showCheckpointApply ? (
-                  <>
-                    <Space direction="vertical" size={8} style={{ width: "100%" }}>
-                      <Typography.Text type="secondary">
-                        Optional commit message. AgentSwarm uses it whenever this apply action creates a local commit. Leave it blank to use the generated subject.
-                      </Typography.Text>
-                      <Input.TextArea
-                        autoSize={{ minRows: 2, maxRows: 4 }}
-                        maxLength={200}
-                        placeholder="feat(task): describe the applied change"
-                        value={checkpointCommitMessages[proposal.id] ?? ""}
-                        onChange={(event) =>
-                          setCheckpointCommitMessages((current) => ({
-                            ...current,
-                            [proposal.id]: event.target.value
-                          }))
-                        }
-                        disabled={checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending || proposalBusy?.id === proposal.id}
-                      />
-                    </Space>
-                    <Divider style={{ margin: 0 }} />
-                  </>
-                ) : null}
                 {renderParsedDiff(proposal.diff, "No diff text.", {
                   collapseFiles: true,
                   taskId: proposal.taskId,
@@ -3371,6 +3432,70 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   };
 
+  const renderPersistedMessageAttachments = (message: TaskMessage, collapseKey: string) => {
+    const attachments = message.attachments ?? [];
+    if (attachments.length === 0) {
+      return null;
+    }
+
+    return (
+      <Collapse
+        size="small"
+        items={[
+          {
+            key: `${collapseKey}-attachments`,
+            label: `Attachments (${attachments.length})`,
+            children: (
+              <Flex gap={12} wrap>
+                {attachments.map((attachment: TaskPromptAttachment) => {
+                  const src = api.getTaskMessageAttachmentUrl(message.taskId, message.id, attachment.id);
+                  return (
+                    <a
+                      key={attachment.id}
+                      href={src}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{
+                        display: "block",
+                        width: 180,
+                        textDecoration: "none",
+                        color: "inherit"
+                      }}
+                    >
+                      <Card size="small" bodyStyle={{ padding: 10 }}>
+                        <Flex vertical gap={8}>
+                          <img
+                            src={src}
+                            alt={attachment.name}
+                            style={{
+                              width: "100%",
+                              height: 110,
+                              objectFit: "cover",
+                              borderRadius: 8,
+                              border: `1px solid ${token.colorBorderSecondary}`
+                            }}
+                          />
+                          <div>
+                            <Typography.Text strong ellipsis={{ tooltip: attachment.name }} style={{ display: "block" }}>
+                              {attachment.name}
+                            </Typography.Text>
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                              {formatAttachmentSize(attachment.sizeBytes)}
+                            </Typography.Text>
+                          </div>
+                        </Flex>
+                      </Card>
+                    </a>
+                  );
+                })}
+              </Flex>
+            )
+          }
+        ]}
+      />
+    );
+  };
+
   const renderRawMessageEntry = (entryKey: string, entryMessage: TaskMessage) => {
     if (entryMessage.role === "system") {
       return (
@@ -3441,6 +3566,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   {entryMessage.content}
                 </ReactMarkdown>
               </div>
+              {renderPersistedMessageAttachments(entryMessage, entryKey)}
               {renderPersistedMessageContext(entryMessage, entryKey)}
             </Flex>
           ) : (
@@ -3458,6 +3584,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   {entryMessage.content}
                 </ReactMarkdown>
               </ExpandableMessageContent>
+              {renderPersistedMessageAttachments(entryMessage, entryKey)}
             </>
           )}
         </Card>
@@ -3906,6 +4033,38 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           disabled={submitting === "editComment"}
           style={{ resize: "vertical" }}
         />
+      </Modal>
+      <Modal
+        title={applyCheckpointModalProposal?.status === "reverted" ? "Apply Checkpoint Again" : "Apply Checkpoint"}
+        open={applyCheckpointModalProposal !== null}
+        onCancel={closeApplyCheckpointModal}
+        destroyOnClose
+        onOk={() => void handleApplyCheckpoint()}
+        okText={applyCheckpointModalProposal?.status === "reverted" ? "Apply Again" : "Apply"}
+        confirmLoading={
+          applyCheckpointModalProposal !== null &&
+          proposalBusy?.id === applyCheckpointModalProposal.id &&
+          proposalBusy.kind === "apply"
+        }
+      >
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            Optional commit message. AgentSwarm uses it whenever this apply action creates a local commit. Leave it blank to use the generated subject.
+          </Typography.Paragraph>
+          <Input.TextArea
+            autoFocus
+            autoSize={{ minRows: 3, maxRows: 5 }}
+            maxLength={200}
+            placeholder="feat(task): describe the applied change"
+            value={applyCheckpointCommitMessage}
+            onChange={(event) => setApplyCheckpointCommitMessage(event.target.value)}
+            disabled={
+              applyCheckpointModalProposal !== null &&
+              proposalBusy?.id === applyCheckpointModalProposal.id &&
+              proposalBusy.kind === "apply"
+            }
+          />
+        </Space>
       </Modal>
       <Modal
         title="Squash Merge Branch"

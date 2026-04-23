@@ -81,6 +81,9 @@ export const TASK_CONTEXT_ENTRY_MAX_COUNT = 8;
 export const TASK_CONTEXT_ENTRY_MAX_LABEL_LENGTH = 160;
 export const TASK_CONTEXT_ENTRY_MAX_CONTENT_LENGTH = 2_500;
 export const TASK_CONTEXT_TOTAL_MAX_CHARS = 12_000;
+export const TASK_PROMPT_ATTACHMENT_MAX_COUNT = 6;
+export const TASK_PROMPT_ATTACHMENT_MAX_SIZE_BYTES = 6 * 1024 * 1024;
+export const TASK_PROMPT_ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
 /** @deprecated Use ProviderProfile instead. Kept for Redis migration in task-store. */
 export type TaskReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type TaskComplexity = "trivial" | "normal" | "complex";
@@ -406,6 +409,20 @@ export interface TaskMergePreview {
   suggestedCommitMessage: string;
 }
 
+export interface TaskPromptAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  relativePath: string;
+}
+
+export interface CreateTaskPromptAttachmentInput {
+  name: string;
+  mimeType: string;
+  dataBase64: string;
+}
+
 export interface TaskMessage {
   id: string;
   taskId: string;
@@ -414,6 +431,8 @@ export interface TaskMessage {
   action: TaskMessageAction | null;
   /** Optional saved context entries that were attached when the user submitted this message. */
   contextEntries?: TaskContextEntry[];
+  /** Optional saved image attachments that were attached when the user submitted this message. */
+  attachments?: TaskPromptAttachment[];
   /** Present for interactive terminal lifecycle messages so history can address the terminal session. */
   sessionId?: string | null;
   createdAt: string;
@@ -428,6 +447,7 @@ export interface TaskContextEntry {
 export interface TaskExecutionInput {
   content: string;
   contextEntries?: TaskContextEntry[];
+  attachments?: TaskPromptAttachment[];
 }
 
 export interface TaskRun {
@@ -573,6 +593,7 @@ export interface CreateTaskInput {
   title: string;
   repoId: string;
   prompt: string;
+  attachments?: CreateTaskPromptAttachmentInput[];
   taskType?: TaskType;
   /** Default `run_now`. `prepare_workspace` clones/checks out only (no agent run). `idle` is accepted for API compatibility but not offered in the UI. */
   startMode?: TaskStartMode;
@@ -592,6 +613,7 @@ export interface BlankTaskDefinitionInput {
   title: string;
   repoId: string;
   prompt: string;
+  attachments?: CreateTaskPromptAttachmentInput[];
   taskType: TaskType;
   startMode?: TaskStartMode;
   provider: AgentProvider;
@@ -692,7 +714,10 @@ export interface UpdateTaskTitleInput {
   title: string;
 }
 
-export interface CreateTaskMessageInput extends TaskExecutionInput {
+export interface CreateTaskMessageInput {
+  content: string;
+  contextEntries?: TaskContextEntry[];
+  attachments?: CreateTaskPromptAttachmentInput[];
   action?: TaskMessageAction;
 }
 

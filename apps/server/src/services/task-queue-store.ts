@@ -1,5 +1,6 @@
 import type Redis from "ioredis";
-import type { TaskAction, TaskContextEntry, TaskExecutionInput } from "@agentswarm/shared-types";
+import type { TaskAction, TaskContextEntry, TaskExecutionInput, TaskPromptAttachment } from "@agentswarm/shared-types";
+import { normalizeTaskPromptAttachment } from "../lib/task-prompt-attachments.js";
 
 const TASK_QUEUE_KEY = "agentswarm:queue";
 
@@ -38,7 +39,7 @@ const normalizeQueueEntryInput = (input: unknown): TaskExecutionInput | undefine
     return undefined;
   }
 
-  const value = input as Partial<TaskExecutionInput> & { contextEntries?: unknown };
+  const value = input as Partial<TaskExecutionInput> & { contextEntries?: unknown; attachments?: unknown };
   if (typeof value.content !== "string") {
     return undefined;
   }
@@ -46,10 +47,14 @@ const normalizeQueueEntryInput = (input: unknown): TaskExecutionInput | undefine
   const contextEntries = Array.isArray(value.contextEntries)
     ? value.contextEntries.map(normalizeTaskContextEntry).filter((entry): entry is TaskContextEntry => entry !== null)
     : [];
+  const attachments = Array.isArray(value.attachments)
+    ? value.attachments.map(normalizeTaskPromptAttachment).filter((attachment): attachment is TaskPromptAttachment => attachment !== null)
+    : [];
 
   return {
     content: value.content,
-    contextEntries
+    contextEntries,
+    ...(attachments.length > 0 ? { attachments } : {})
   };
 };
 

@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { Task, TaskSourceType } from "@agentswarm/shared-types";
 import { App, Button, Form, Modal } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
+import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
 import {
   TaskDefinitionFields,
@@ -23,6 +24,7 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
   const { can } = useAuth();
   const [form] = Form.useForm<TaskDefinitionFormValues>();
   const [submitting, setSubmitting] = useState(false);
+  const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const canCreateAnyTaskMode = can("task:build") || can("task:ask") || can("task:interactive");
 
@@ -32,17 +34,20 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
     }
 
     form.resetFields();
+    setPromptImageFiles([]);
     onClose();
   };
 
   const handleSubmit = async (values: TaskDefinitionFormValues) => {
     setSubmitting(true);
     try {
-      const definition = buildTaskDefinitionInput(values);
+      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
+      const definition = buildTaskDefinitionInput(values, encodedAttachments);
       const task = await createTaskFromDefinition(definition);
       onCreated?.(task);
       message.success(startMessageForDefinition(definition));
       form.resetFields();
+      setPromptImageFiles([]);
       onClose();
     } catch (error) {
       message.error(error instanceof Error ? error.message : "Failed to create task");
@@ -92,7 +97,7 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
         initialValues={getTaskDefinitionInitialValues()}
         onFinish={handleSubmit}
       >
-        <TaskDefinitionFields form={form} />
+        <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
       </Form>
     </Modal>
   );

@@ -25,7 +25,7 @@ import { registerSnippetRoutes } from "./routes/snippets.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
 
 const bootstrap = async (): Promise<void> => {
-  const app = Fastify({ logger: true });
+  const app = Fastify({ logger: true, bodyLimit: 35 * 1024 * 1024 });
   await app.register(cookie);
   app.decorateRequest("auth", null);
   await app.register(cors, {
