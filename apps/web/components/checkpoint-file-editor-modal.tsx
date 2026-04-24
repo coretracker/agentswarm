@@ -31,8 +31,8 @@ export interface CheckpointFileEditorModalProps {
   onSaved?: () => void;
 }
 
-const MonacoDiffEditor = dynamic(
-  () => import("@monaco-editor/react").then((mod) => mod.DiffEditor),
+const MonacoEditor = dynamic(
+  () => import("@monaco-editor/react").then((mod) => mod.Editor),
   { ssr: false }
 );
 
@@ -108,7 +108,6 @@ export function CheckpointFileEditorModal({
   const [selectedFilePath, setSelectedFilePath] = useState("");
   const [files, setFiles] = useState<Record<string, EditableFileState>>({});
   const sessionIdRef = useRef(0);
-  const diffChangeSubscriptionRef = useRef<{ dispose: () => void } | null>(null);
 
   const filePathsKey = useMemo(() => filePaths.join("\n"), [filePaths]);
 
@@ -223,14 +222,6 @@ export function CheckpointFileEditorModal({
     };
   }, [open, selectedDirty, selectedFile.saving]);
 
-  useEffect(
-    () => () => {
-      diffChangeSubscriptionRef.current?.dispose();
-      diffChangeSubscriptionRef.current = null;
-    },
-    []
-  );
-
   const handleSaveSelectedFile = async (): Promise<void> => {
     if (!taskId || !selectedFilePath || !selectedIsText || !selectedDirty || selectedFile.saving) {
       return;
@@ -268,6 +259,7 @@ export function CheckpointFileEditorModal({
       }));
       messageApi.success(`${selectedFilePath} saved`);
       onSaved?.();
+      onCancel();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not save workspace file.";
       setFiles((current) => ({
@@ -327,9 +319,6 @@ export function CheckpointFileEditorModal({
         }
         onCancel={requestCancel}
         footer={[
-          <Button key="cancel" onClick={requestCancel}>
-            Close
-          </Button>,
           <Button
             key="save"
             type="primary"
@@ -337,7 +326,7 @@ export function CheckpointFileEditorModal({
             disabled={!selectedDirty || !selectedIsText}
             loading={selectedFile.saving}
           >
-            Save Current File
+            Save
           </Button>
         ]}
         styles={{ body: { paddingTop: 12 } }}
@@ -380,38 +369,32 @@ export function CheckpointFileEditorModal({
               }
             />
           ) : (
-            <MonacoDiffEditor
+            <MonacoEditor
               key={selectedFilePath}
               height="56vh"
               theme={darkTheme ? "vs-dark" : "vs"}
               language={toMonacoLanguage(selectedLanguage)}
-              original={selectedFile.originalContent}
-              modified={selectedDraft}
-              onMount={(editorInstance) => {
-                diffChangeSubscriptionRef.current?.dispose();
-                const modifiedEditor = editorInstance.getModifiedEditor();
-                diffChangeSubscriptionRef.current = modifiedEditor.onDidChangeModelContent(() => {
-                  const value = modifiedEditor.getValue();
-                  setFiles((current) => ({
-                    ...current,
-                    [selectedFilePath]: {
-                      ...(current[selectedFilePath] ?? makeEmptyFileState()),
-                      preview: current[selectedFilePath]?.preview ?? selectedPreview,
-                      loaded: true,
-                      draftContent: value ?? "",
-                      originalContent: current[selectedFilePath]?.originalContent ?? "",
-                      newlineStyle: current[selectedFilePath]?.newlineStyle ?? "lf",
-                      error: null,
-                      saving: current[selectedFilePath]?.saving ?? false,
-                      loading: false
-                    }
-                  }));
-                });
+              value={selectedDraft}
+              onChange={(value) => {
+                const nextValue = value ?? "";
+                setFiles((current) => ({
+                  ...current,
+                  [selectedFilePath]: {
+                    ...(current[selectedFilePath] ?? makeEmptyFileState()),
+                    preview: current[selectedFilePath]?.preview ?? selectedPreview,
+                    loaded: true,
+                    draftContent: nextValue,
+                    originalContent: current[selectedFilePath]?.originalContent ?? "",
+                    newlineStyle: current[selectedFilePath]?.newlineStyle ?? "lf",
+                    error: null,
+                    saving: current[selectedFilePath]?.saving ?? false,
+                    loading: false
+                  }
+                }));
               }}
               options={{
                 automaticLayout: true,
                 minimap: { enabled: false },
-                renderSideBySide: false,
                 scrollBeyondLastLine: false,
                 fontSize: 13,
                 wordWrap: "off"
