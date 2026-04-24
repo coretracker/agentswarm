@@ -23,7 +23,7 @@ import { env } from "../config/env.js";
 import type { AuthService } from "./auth.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
-import type { TaskStore } from "../services/task-store.js";
+import type { TaskMetadata, TaskStore } from "../services/task-store.js";
 import { canUserAccessTask } from "./task-ownership.js";
 import { resolveWorkspaceGitRuntimeMounts } from "./git-runtime-mounts.js";
 import {
@@ -181,7 +181,7 @@ function resolveGitTerminalRuntimeConfig(
   };
 }
 
-function resolveInteractiveTerminalModel(task: Task): string {
+function resolveInteractiveTerminalModel(task: Pick<TaskMetadata, "provider" | "providerProfile" | "modelOverride">): string {
   const configured = task.modelOverride?.trim();
   if (configured) {
     return configured;
@@ -191,7 +191,7 @@ function resolveInteractiveTerminalModel(task: Task): string {
 }
 
 function resolveInteractiveTerminalRuntimeConfig(
-  task: Task,
+  task: Pick<TaskMetadata, "provider" | "providerProfile" | "modelOverride">,
   settings: InteractiveRuntimeSettings,
   credentials: InteractiveRuntimeCredentials
 ): InteractiveTerminalRuntimeConfig {
@@ -390,7 +390,7 @@ export async function getTaskInteractiveTerminalStatus(
   taskId: string,
   mode: TaskTerminalSessionMode = "interactive"
 ): Promise<TaskInteractiveTerminalStatusPayload> {
-  const task = await taskStore.getTask(taskId);
+  const task = await taskStore.getTaskMetadata(taskId);
   if (!task) {
     return { available: false, reason: "Task not found." };
   }

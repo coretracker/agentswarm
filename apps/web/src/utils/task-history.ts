@@ -61,6 +61,7 @@ export const INTERACTIVE_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMes
 export const INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("interactive");
 export const INTERACTIVE_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("interactive").replace(/\.$/, "");
 export const GIT_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("git");
+export const LEGACY_GIT_TERMINAL_START_MESSAGE = "Git terminal session started.";
 export const GIT_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("git");
 export const GIT_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("git").replace(/\.$/, "");
 
@@ -89,7 +90,11 @@ function isAssistantSummaryMessage(message: TaskMessage): message is TaskMessage
 function isInteractiveTerminalStartMessage(message: TaskMessage): boolean {
   return (
     message.role === "system" &&
-    (message.content === INTERACTIVE_TERMINAL_START_MESSAGE || message.content === GIT_TERMINAL_START_MESSAGE)
+    (
+      message.content === INTERACTIVE_TERMINAL_START_MESSAGE ||
+      message.content === GIT_TERMINAL_START_MESSAGE ||
+      message.content === LEGACY_GIT_TERMINAL_START_MESSAGE
+    )
   );
 }
 

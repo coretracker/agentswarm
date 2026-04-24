@@ -32,6 +32,7 @@ import type {
   MergeTaskInput,
   ApplyTaskChangeProposalInput,
   UpdateTaskMessageInput,
+  UpdateTaskWorkspaceFileInput,
   TaskRun,
   TaskChangeProposal,
   TaskInteractiveTerminalTranscript,
@@ -245,6 +246,11 @@ export const api = {
     }
     return request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file?${params.toString()}`);
   },
+  updateTaskWorkspaceFile: (id: string, input: UpdateTaskWorkspaceFileInput) =>
+    request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file`, {
+      method: "PUT",
+      body: JSON.stringify(input)
+    }),
   openAiDiffAssist: (taskId: string, input: OpenAiDiffAssistInput) =>
     request<OpenAiDiffAssistResult>(`/tasks/${taskId}/openai/diff-assist`, {
       method: "POST",

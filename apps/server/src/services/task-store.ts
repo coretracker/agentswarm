@@ -183,16 +183,32 @@ export interface TaskActiveInteractiveSession {
   mode: TaskTerminalSessionMode;
 }
 
+export type TaskMetadata = Pick<
+  Task,
+  | "id"
+  | "ownerUserId"
+  | "status"
+  | "hasPendingCheckpoint"
+  | "activeInteractiveSession"
+  | "activeTerminalSessionMode"
+  | "provider"
+  | "providerProfile"
+  | "modelOverride"
+>;
+
 export type CreateTaskChangeProposalInput = Omit<TaskChangeProposal, "resolvedAt" | "revertedAt"> & {
   resolvedAt?: null;
   revertedAt?: null;
 };
 
-export type UpdateTaskChangeProposalUpdates = Partial<Pick<TaskChangeProposal, "toRef">>;
+export type UpdateTaskChangeProposalUpdates = Partial<
+  Pick<TaskChangeProposal, "toRef" | "diff" | "diffStat" | "changedFiles" | "diffTruncated">
+>;
 
 export interface TaskStore {
   createTask(input: CreateTaskInput, repository: Repository, ownerUserId: string): Promise<Task>;
   getTask(taskId: string): Promise<Task | null>;
+  getTaskMetadata(taskId: string): Promise<TaskMetadata | null>;
   listTasks(options?: ListTasksOptions): Promise<Task[]>;
   patchTask(taskId: string, patch: Partial<Omit<Task, "id" | "createdAt">>): Promise<Task | null>;
   updateResultArtifacts(taskId: string, resultMarkdown: string): Promise<Task | null>;
@@ -483,6 +499,25 @@ export class RedisTaskStore implements TaskStore {
     }
 
     return this.hydrateTask(task);
+  }
+
+  async getTaskMetadata(taskId: string): Promise<TaskMetadata | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    return {
+      id: task.id,
+      ownerUserId: task.ownerUserId,
+      status: task.status,
+      hasPendingCheckpoint: task.hasPendingCheckpoint,
+      activeInteractiveSession: task.activeInteractiveSession,
+      activeTerminalSessionMode: task.activeTerminalSessionMode,
+      provider: task.provider,
+      providerProfile: task.providerProfile,
+      modelOverride: task.modelOverride
+    };
   }
 
   async listTasks(options: ListTasksOptions = {}): Promise<Task[]> {
@@ -1207,7 +1242,7 @@ export class RedisTaskStore implements TaskStore {
     proposalId: string,
     status: TaskChangeProposalStatus,
     taskId: string,
-    updates?: Partial<Pick<TaskChangeProposal, "toRef">>
+    updates?: UpdateTaskChangeProposalUpdates
   ): Promise<TaskChangeProposal | null> {
     const existing = await this.getChangeProposal(proposalId);
     if (!existing || existing.taskId !== taskId) {
@@ -1573,6 +1608,25 @@ export class PostgresTaskStore implements TaskStore {
     }
 
     return this.hydrateTask(task);
+  }
+
+  async getTaskMetadata(taskId: string): Promise<TaskMetadata | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    return {
+      id: task.id,
+      ownerUserId: task.ownerUserId,
+      status: task.status,
+      hasPendingCheckpoint: task.hasPendingCheckpoint,
+      activeInteractiveSession: task.activeInteractiveSession,
+      activeTerminalSessionMode: task.activeTerminalSessionMode,
+      provider: task.provider,
+      providerProfile: task.providerProfile,
+      modelOverride: task.modelOverride
+    };
   }
 
   async listTasks(options: ListTasksOptions = {}): Promise<Task[]> {

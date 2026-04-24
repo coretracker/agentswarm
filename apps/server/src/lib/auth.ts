@@ -169,20 +169,20 @@ export const createAuthService = ({
       case "task:deleted":
         return event.payload.ownerUserId ?? null;
       case "task:log": {
-        const task = await taskStore.getTask(event.payload.taskId);
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
         return task?.ownerUserId ?? null;
       }
       case "task:message":
       case "task:message_updated": {
-        const task = await taskStore.getTask(event.payload.taskId);
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
         return task?.ownerUserId ?? null;
       }
       case "task:run_updated": {
-        const task = await taskStore.getTask(event.payload.taskId);
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
         return task?.ownerUserId ?? null;
       }
       case "task:change_proposal": {
-        const task = await taskStore.getTask(event.payload.taskId);
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
         return task?.ownerUserId ?? null;
       }
       default:

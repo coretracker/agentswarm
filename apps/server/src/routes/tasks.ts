@@ -1,6 +1,8 @@
+import path from "node:path";
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
+  getCheckpointMutationBlockedReason,
   isActiveTaskStatus,
   TASK_PROMPT_ATTACHMENT_MAX_COUNT,
   TASK_CONTEXT_ENTRY_MAX_CONTENT_LENGTH,
@@ -32,6 +34,8 @@ import {
   requireTaskExecutionConfigAccess
 } from "../lib/task-capability-access.js";
 import { canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
+import { writeSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
+import { env } from "../config/env.js";
 
 const taskStartModeSchema = z.enum(["run_now", "prepare_workspace", "idle"]);
 
@@ -155,6 +159,11 @@ const workspaceFileQuerySchema = z.object({
     .max(255)
     .regex(/^[A-Za-z0-9_-]+$/, "Invalid execution id.")
     .optional()
+});
+
+const updateWorkspaceFileSchema = z.object({
+  path: z.string().trim().min(1).max(4096),
+  content: z.string().max(8 * 1024 * 1024)
 });
 
 const listTasksQuerySchema = z.object({
@@ -447,6 +456,58 @@ export const registerTaskRoutes = (
         const message = error instanceof Error ? error.message : "Could not preview workspace file.";
         return reply.status(413).send({ message });
       }
+    }
+  );
+
+  app.put<{ Params: { id: string } }>(
+    "/tasks/:id/workspace-file",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const parsed = updateWorkspaceFileSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const checkpointBlocked = getCheckpointMutationBlockedReason(task.status);
+      if (checkpointBlocked) {
+        return reply.status(409).send({ message: checkpointBlocked });
+      }
+
+      if (await deps.taskStore.getActiveInteractiveSession(task.id)) {
+        return reply.status(409).send({ message: "Close the terminal session before editing files." });
+      }
+
+      const preview = await deps.spawner.getTaskWorkspaceFilePreview(task, parsed.data.path, null, null);
+      if (preview === null) {
+        return reply.status(404).send({ message: "Workspace file not found or is outside the task workspace." });
+      }
+
+      if (preview.kind !== "text") {
+        return reply.status(409).send({ message: "Only text files can be edited in this modal." });
+      }
+
+      const saved = await writeSafeWorkspaceFile(path.join(env.TASK_WORKSPACE_ROOT, task.id), parsed.data.path, parsed.data.content);
+      if (!saved) {
+        return reply.status(404).send({ message: "Workspace file could not be updated." });
+      }
+
+      const refreshed = await deps.spawner.getTaskWorkspaceFilePreview(task, parsed.data.path, null, null);
+      if (refreshed === null) {
+        return reply.status(404).send({ message: "Workspace file could not be reloaded after saving." });
+      }
+
+      await deps.spawner.refreshPendingChangeProposalPreview(task).catch(() => undefined);
+
+      return reply.send(refreshed);
     }
   );
 

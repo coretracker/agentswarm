@@ -2237,6 +2237,39 @@ export class SpawnerService {
     };
   }
 
+  async refreshPendingChangeProposalPreview(task: Task): Promise<TaskChangeProposal | null> {
+    const proposals = await this.taskStore.listChangeProposals(task.id);
+    const proposal = proposals.find((item) => item.status === "pending") ?? null;
+    if (!proposal) {
+      return null;
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const exists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      return null;
+    }
+
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const { githubToken, gitUsername } = runtimeCredentials;
+    const { diff, diffStat, changedFiles, diffTruncated, toRef } = await this.collectWorkingTreeDiffSinceRef(
+      workspacePath,
+      proposal.fromRef,
+      githubToken,
+      gitUsername
+    );
+
+    return this.taskStore.updateChangeProposalStatus(proposal.id, "pending", task.id, {
+      toRef,
+      diff,
+      diffStat,
+      changedFiles,
+      diffTruncated
+    });
+  }
+
   async createBuildRunChangeProposal(task: Task, runId: string, workspacePath: string): Promise<void> {
     const run = await this.taskStore.getRun(runId);
     if (!run || run.taskId !== task.id) {

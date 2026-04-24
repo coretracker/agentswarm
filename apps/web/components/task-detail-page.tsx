@@ -94,6 +94,7 @@ import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff
 import { TaskDiffOpenAiPanel } from "./task-diff-openai-panel";
 import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
 import { TaskTerminalTranscriptView } from "./task-terminal-transcript-view";
+import { CheckpointFileEditorModal } from "./checkpoint-file-editor-modal";
 import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 
@@ -202,6 +203,11 @@ interface WorkspaceFilePreviewState {
   error: string | null;
 }
 
+interface CheckpointEditorModalState {
+  proposal: TaskChangeProposal;
+  initialFilePath: string | null;
+}
+
 function checkpointStatusLabel(status: TaskChangeProposal["status"]): string {
   switch (status) {
     case "pending":
@@ -237,7 +243,9 @@ function changeProposalSourceLabel(sourceType: TaskChangeProposal["sourceType"])
 }
 
 function getTerminalSessionModeFromMessage(message: Pick<TaskMessage, "content">): TaskTerminalSessionMode {
-  return message.content.startsWith("Git terminal") ? "git" : "interactive";
+  return message.content.startsWith("Git terminal") || message.content.startsWith("Terminal session")
+    ? "git"
+    : "interactive";
 }
 
 function getTaskWorkingLabel(task: Pick<Task, "status" | "activeInteractiveSession" | "activeTerminalSessionMode">): string {
@@ -298,6 +306,20 @@ interface ParsedDiffRenderOptions {
   taskId?: string;
   previewRefs?: TaskDiffPreviewRefs | null;
   previewUnavailableMessage?: string;
+  renderFileActions?: (file: FileData) => ReactNode;
+}
+
+function renderDiffFileActions(file: FileData, renderFileActions?: (file: FileData) => ReactNode): ReactNode {
+  if (!renderFileActions) {
+    return null;
+  }
+
+  const actions = renderFileActions(file);
+  if (!actions) {
+    return null;
+  }
+
+  return <span onClick={(event) => event.stopPropagation()}>{actions}</span>;
 }
 
 function renderParsedDiff(diffText: string, emptyMessage: string, options?: ParsedDiffRenderOptions): ReactNode {
@@ -332,6 +354,7 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: Pars
                 {
                   key: "file",
                   label: file.newPath || file.oldPath || "Changed file",
+                  extra: renderDiffFileActions(file, options?.renderFileActions),
                   children: file.hunks.length > 0 ? (
                     <Diff viewType="unified" diffType={file.type} hunks={file.hunks}>
                       {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
@@ -370,6 +393,7 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: Pars
               key={`${file.oldRevision}-${file.newRevision}-${file.oldPath}-${file.newPath}`}
               size="small"
               title={file.newPath || file.oldPath || "Changed file"}
+              extra={renderDiffFileActions(file, options?.renderFileActions)}
             >
               <Diff viewType="unified" diffType={file.type} hunks={file.hunks}>
                 {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
@@ -403,6 +427,11 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: Pars
       </Card>
     );
   }
+}
+
+function resolveCheckpointEditableFilePath(file: FileData, changedFiles: string[]): string | null {
+  const candidates = [file.newPath, file.oldPath].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  return candidates.find((candidate) => changedFiles.includes(candidate)) ?? null;
 }
 
 function getGitHubRepositoryBaseUrl(repoUrl: string): string | null {
@@ -597,6 +626,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
   const [applyCheckpointModalProposal, setApplyCheckpointModalProposal] = useState<TaskChangeProposal | null>(null);
   const [applyCheckpointCommitMessage, setApplyCheckpointCommitMessage] = useState("");
+  const [editCheckpointModalState, setEditCheckpointModalState] = useState<CheckpointEditorModalState | null>(null);
   const [killTerminalConfirmOpen, setKillTerminalConfirmOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [commentEditModalOpen, setCommentEditModalOpen] = useState(false);
@@ -669,6 +699,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setSelectedPromptImageFiles([]);
     setApplyCheckpointModalProposal(null);
     setApplyCheckpointCommitMessage("");
+    setEditCheckpointModalState(null);
     setTaskPageVisible(false);
     initialBottomScrollStateRef.current = null;
   }, [taskId]);
@@ -2652,35 +2683,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const diffContent = hasDiffTab ? (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       {task ? (
-        <Card size="small">
-          <Flex vertical gap={12}>
-            {gitTerminalStatus?.reason ? (
-              <Alert
-                type={gitTerminalAvailable ? "info" : "warning"}
-                showIcon
-                message={
-                  activeTerminalMode === "git"
-                    ? "Terminal is active"
-                    : "Terminal status"
-                }
-                description={gitTerminalStatus.reason}
-              />
-            ) : null}
-            <Space wrap>
-              {canKillInteractiveTerminal ? (
-                <Button danger onClick={() => setKillTerminalConfirmOpen(true)}>
-                  Stop Session
-                </Button>
-              ) : null}
-              {renderPullTaskButton()}
-              {renderPushTaskButton()}
-              {renderGitHubDiffTargetButton()}
-              {renderMoreActionsButton()}
-            </Space>
-          </Flex>
-        </Card>
-      ) : null}
-      {task ? (
         <Card size="small" styles={{ body: { paddingBottom: 12 } }}>
           <Segmented
             value={diffLiveKind}
@@ -3059,6 +3061,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   ) : null;
 
   const syncTaskAfterCheckpointMutation = (updatedTask: Task) => {
+    setEditCheckpointModalState(null);
     setTask((current) =>
       current
         ? {
@@ -3074,6 +3077,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setApplyCheckpointCommitMessage("");
   };
 
+  const openCheckpointFileEditorModal = (proposal: TaskChangeProposal, initialFilePath?: string | null) => {
+    setEditCheckpointModalState({
+      proposal,
+      initialFilePath: initialFilePath && proposal.changedFiles.includes(initialFilePath) ? initialFilePath : null
+    });
+  };
+
   const closeApplyCheckpointModal = () => {
     if (proposalBusy?.kind === "apply") {
       return;
@@ -3081,6 +3091,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
     setApplyCheckpointModalProposal(null);
     setApplyCheckpointCommitMessage("");
+  };
+
+  const closeCheckpointFileEditorModal = () => {
+    setEditCheckpointModalState(null);
+  };
+
+  const handleCheckpointFileSaved = () => {
+    refetchChangeProposals();
+    setLiveDiffRefreshKey((current) => current + 1);
   };
 
   const handleApplyCheckpoint = async () => {
@@ -3256,6 +3275,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       diffTrimmed.length > 0 &&
       diffTrimmed !== "(no changes)";
     const showCheckpointApply = (proposal.status === "pending" || canReapplyReverted) && canEditTask && task && !isArchived;
+    const showCheckpointEditor = proposal.status === "pending" && canEditTask && task && !isArchived && proposal.changedFiles.length > 0;
     const blockOlderCheckpointWhilePending = !!pendingChangeProposal && proposal.id !== pendingChangeProposal.id;
     const olderCheckpointPendingTooltip = "Apply or reject the current pending checkpoint first.";
 
@@ -3364,7 +3384,26 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                       proposal.status !== "reverted" &&
                       (proposal.sourceType === "interactive_session" ||
                         (proposal.sourceType === "build_run" && proposal.status === "pending"))
-                  }
+                  },
+                  renderFileActions:
+                    showCheckpointEditor && !checkpointDiffActionsBlocked && !blockOlderCheckpointWhilePending
+                      ? (file) => {
+                          const editableFilePath = resolveCheckpointEditableFilePath(file, proposal.changedFiles);
+                          if (!editableFilePath) {
+                            return null;
+                          }
+
+                          return (
+                            <Button
+                              size="small"
+                              icon={<EditOutlined />}
+                              onClick={() => openCheckpointFileEditorModal(proposal, editableFilePath)}
+                            >
+                              Edit
+                            </Button>
+                          );
+                        }
+                      : undefined
                 })}
               </Space>
             )
@@ -4197,6 +4236,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           workspaceFilePreviewRequestIdRef.current += 1;
           setWorkspaceFilePreview((current) => ({ ...current, open: false }));
         }}
+      />
+      <CheckpointFileEditorModal
+        open={editCheckpointModalState !== null}
+        taskId={taskId}
+        filePaths={
+          editCheckpointModalState?.initialFilePath
+            ? [editCheckpointModalState.initialFilePath]
+            : (editCheckpointModalState?.proposal.changedFiles ?? [])
+        }
+        initialFilePath={editCheckpointModalState?.initialFilePath ?? null}
+        onCancel={closeCheckpointFileEditorModal}
+        onSaved={handleCheckpointFileSaved}
       />
       <Flex vertical gap={16} style={{ width: "100%", paddingBottom: 16 }}>
         {loading ? (

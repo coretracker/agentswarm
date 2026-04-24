@@ -725,6 +725,11 @@ export interface UpdateTaskMessageInput {
   content: string;
 }
 
+export interface UpdateTaskWorkspaceFileInput {
+  path: string;
+  content: string;
+}
+
 export interface MergeTaskInput {
   targetBranch: string;
   commitMessage?: string;
@@ -794,7 +799,7 @@ export const getTaskTerminalSessionSentenceLabel = (mode: TaskTerminalSessionMod
   mode === "git" ? "Git terminal" : "Interactive terminal";
 
 export const getTaskTerminalSessionStartMessage = (mode: TaskTerminalSessionMode): string =>
-  `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
+  mode === "git" ? "Terminal session started." : `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
 
 export const getTaskTerminalSessionEndMessage = (mode: TaskTerminalSessionMode): string =>
   `${getTaskTerminalSessionSentenceLabel(mode)} session ended.`;

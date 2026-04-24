@@ -572,7 +572,7 @@ const languageByExtension: Array<[string, string]> = [
   [".md", "md"]
 ];
 
-function detectCodeLanguage(filePath: string): string {
+export function detectCodeLanguage(filePath: string): string {
   const normalized = filePath.trim().toLowerCase();
   for (const [extension, language] of languageByExtension) {
     if (normalized.endsWith(extension)) {
@@ -580,6 +580,10 @@ function detectCodeLanguage(filePath: string): string {
     }
   }
   return "text";
+}
+
+export function getCodeLanguageLabel(language: string): string {
+  return (languageConfigs[language] ?? defaultLanguageConfig).label;
 }
 
 function isIdentifierStart(char: string): boolean {
@@ -690,7 +694,7 @@ function tokenizeLine(line: string, language: string): HighlightToken[] {
   return compactHighlightTokens(tokens);
 }
 
-function renderHighlightedLine(line: string, language: string): ReactNode {
+export function renderHighlightedLine(line: string, language: string): ReactNode {
   const tokens = tokenizeLine(line, language);
   if (tokens.length === 0) {
     return " ";
@@ -719,7 +723,7 @@ export function WorkspaceFilePreviewModal({
   const { mode } = useThemeMode();
   const darkTheme = isDarkAppTheme(mode);
   const language = useMemo(() => detectCodeLanguage(filePath), [filePath]);
-  const languageLabel = (languageConfigs[language] ?? defaultLanguageConfig).label;
+  const languageLabel = getCodeLanguageLabel(language);
   const lines = useMemo(() => (kind === "text" && content.length > 0 ? content.split(/\r?\n/) : [""]), [content, kind]);
   const imageSrc = useMemo(() => {
     if (kind !== "image" || encoding !== "base64" || !mimeType || !content) {
