@@ -1,12 +1,13 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Flex, Modal, Select, Space, Spin, Tag, Typography, message } from "antd";
 import type { TaskWorkspaceFilePreview } from "@agentswarm/shared-types";
 import { api } from "../src/api/client";
 import { isDarkAppTheme } from "../src/theme/antd-theme";
 import { useThemeMode } from "./theme-provider";
-import { detectCodeLanguage, getCodeLanguageLabel, renderHighlightedLine } from "./workspace-file-preview-modal";
+import { detectCodeLanguage, getCodeLanguageLabel } from "./workspace-file-preview-modal";
 
 type NewlineStyle = "lf" | "crlf";
 
@@ -30,7 +31,10 @@ export interface CheckpointFileEditorModalProps {
   onSaved?: () => void;
 }
 
-const monoFontFamily = "SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace";
+const MonacoDiffEditor = dynamic(
+  () => import("@monaco-editor/react").then((mod) => mod.DiffEditor),
+  { ssr: false }
+);
 
 function normalizeEditorContent(value: string): string {
   return value.replace(/\r\n?/g, "\n");
@@ -57,185 +61,37 @@ function makeEmptyFileState(): EditableFileState {
   };
 }
 
-function getFileLines(value: string): string[] {
-  return value.length > 0 ? value.split("\n") : [""];
-}
-
-function buildLineNumberStyles(darkTheme: boolean): {
-  surfaceBorder: string;
-  surfaceBackground: string;
-  gutterBorder: string;
-  gutterBackground: string;
-  alternateRowBackground: string;
-} {
-  return {
-    surfaceBorder: darkTheme ? "rgba(255, 255, 255, 0.08)" : "#d9e2db",
-    surfaceBackground: darkTheme ? "rgba(255, 255, 255, 0.03)" : "#f6f8f6",
-    gutterBorder: darkTheme ? "rgba(255, 255, 255, 0.08)" : "#e5ebe7",
-    gutterBackground: darkTheme ? "rgba(255, 255, 255, 0.04)" : "rgba(0, 0, 0, 0.02)",
-    alternateRowBackground: darkTheme ? "rgba(255, 255, 255, 0.02)" : "rgba(0, 0, 0, 0.015)"
-  };
-}
-
-function LineNumberedTextarea({
-  value,
-  onChange,
-  darkTheme,
-  filePath,
-  language
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  darkTheme: boolean;
-  filePath: string;
-  language: string;
-}) {
-  const styles = buildLineNumberStyles(darkTheme);
-  const lines = useMemo(() => getFileLines(value), [value]);
-  const gutterWidth = Math.max(56, String(lines.length || 1).length * 10 + 24);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const gutterRef = useRef<HTMLDivElement | null>(null);
-  const backdropContentRef = useRef<HTMLDivElement | null>(null);
-
-  const syncScroll = () => {
-    if (!textareaRef.current) {
-      return;
-    }
-
-    if (gutterRef.current) {
-      gutterRef.current.scrollTop = textareaRef.current.scrollTop;
-    }
-    if (backdropContentRef.current) {
-      backdropContentRef.current.style.transform = `translate(${-textareaRef.current.scrollLeft}px, ${-textareaRef.current.scrollTop}px)`;
-    }
-  };
-
-  useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.scrollTop = 0;
-      textareaRef.current.scrollLeft = 0;
-    }
-    syncScroll();
-  }, [filePath]);
-
-  return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: `${gutterWidth}px minmax(0, 1fr)`,
-        height: "56vh",
-        border: `1px solid ${styles.surfaceBorder}`,
-        borderRadius: 10,
-        background: styles.surfaceBackground,
-        overflow: "hidden"
-      }}
-    >
-      <div
-        ref={gutterRef}
-        style={{
-          overflow: "hidden",
-          borderRight: `1px solid ${styles.gutterBorder}`,
-          background: styles.gutterBackground
-        }}
-      >
-        <div
-          style={{
-            fontFamily: monoFontFamily,
-            fontSize: 13,
-            lineHeight: 1.65
-          }}
-        >
-          {lines.map((_, index) => {
-            const lineNumber = index + 1;
-            return (
-              <div
-                key={`editor-line-${lineNumber}`}
-                style={{
-                  padding: "0 12px 0 8px",
-                  textAlign: "right",
-                  userSelect: "none",
-                  color: "#8c8c8c",
-                  background: lineNumber % 2 === 0 ? styles.alternateRowBackground : "transparent"
-                }}
-              >
-                {lineNumber}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-      <div style={{ position: "relative", height: "100%", overflow: "hidden" }}>
-        <div
-          aria-hidden
-          style={{
-            position: "absolute",
-            inset: 0,
-            overflow: "hidden",
-            pointerEvents: "none"
-          }}
-        >
-          <div
-            ref={backdropContentRef}
-            style={{
-              minWidth: "100%",
-              padding: "0 16px",
-              fontFamily: monoFontFamily,
-              fontSize: 13,
-              lineHeight: 1.65,
-              whiteSpace: "pre",
-              userSelect: "none",
-              willChange: "transform"
-            }}
-          >
-            {lines.map((lineText, index) => {
-              const lineNumber = index + 1;
-              return (
-                <div
-                  key={`highlight-line-${lineNumber}-${lineText.length}`}
-                  style={{
-                    minHeight: "1.65em",
-                    background: lineNumber % 2 === 0 ? styles.alternateRowBackground : "transparent"
-                  }}
-                >
-                  {renderHighlightedLine(lineText, language)}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        <textarea
-          ref={textareaRef}
-          value={value}
-          spellCheck={false}
-          wrap="off"
-          onChange={(event) => onChange(event.target.value)}
-          onScroll={syncScroll}
-          style={{
-            position: "absolute",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            margin: 0,
-            padding: "0 16px",
-            border: "none",
-            outline: "none",
-            resize: "none",
-            background: "transparent",
-            color: "transparent",
-            caretColor: darkTheme ? "rgba(255,255,255,0.92)" : "#1f1f1f",
-            WebkitTextFillColor: "transparent",
-            fontFamily: monoFontFamily,
-            fontSize: 13,
-            lineHeight: 1.65,
-            whiteSpace: "pre",
-            overflow: "auto",
-            tabSize: 2,
-            zIndex: 1
-          }}
-        />
-      </div>
-    </div>
-  );
+function toMonacoLanguage(language: string): string {
+  switch (language) {
+    case "ts":
+      return "typescript";
+    case "tsx":
+      return "typescript";
+    case "js":
+      return "javascript";
+    case "jsx":
+      return "javascript";
+    case "py":
+      return "python";
+    case "rb":
+      return "ruby";
+    case "kt":
+      return "kotlin";
+    case "rs":
+      return "rust";
+    case "yml":
+      return "yaml";
+    case "bash":
+      return "shell";
+    case "sh":
+      return "shell";
+    case "md":
+      return "markdown";
+    case "text":
+      return "plaintext";
+    default:
+      return language;
+  }
 }
 
 export function CheckpointFileEditorModal({
@@ -252,6 +108,7 @@ export function CheckpointFileEditorModal({
   const [selectedFilePath, setSelectedFilePath] = useState("");
   const [files, setFiles] = useState<Record<string, EditableFileState>>({});
   const sessionIdRef = useRef(0);
+  const diffChangeSubscriptionRef = useRef<{ dispose: () => void } | null>(null);
 
   const filePathsKey = useMemo(() => filePaths.join("\n"), [filePaths]);
 
@@ -365,6 +222,14 @@ export function CheckpointFileEditorModal({
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [open, selectedDirty, selectedFile.saving]);
+
+  useEffect(
+    () => () => {
+      diffChangeSubscriptionRef.current?.dispose();
+      diffChangeSubscriptionRef.current = null;
+    },
+    []
+  );
 
   const handleSaveSelectedFile = async (): Promise<void> => {
     if (!taskId || !selectedFilePath || !selectedIsText || !selectedDirty || selectedFile.saving) {
@@ -515,27 +380,42 @@ export function CheckpointFileEditorModal({
               }
             />
           ) : (
-            <LineNumberedTextarea
-              value={selectedDraft}
-              filePath={selectedFilePath}
-              language={selectedLanguage}
-              onChange={(nextValue) => {
-                setFiles((current) => ({
-                  ...current,
-                  [selectedFilePath]: {
-                    ...(current[selectedFilePath] ?? makeEmptyFileState()),
-                    preview: selectedPreview,
-                    loaded: true,
-                    draftContent: nextValue,
-                    originalContent: current[selectedFilePath]?.originalContent ?? "",
-                    newlineStyle: current[selectedFilePath]?.newlineStyle ?? "lf",
-                    error: null,
-                    saving: current[selectedFilePath]?.saving ?? false,
-                    loading: false
-                  }
-                }));
+            <MonacoDiffEditor
+              key={selectedFilePath}
+              height="56vh"
+              theme={darkTheme ? "vs-dark" : "vs"}
+              language={toMonacoLanguage(selectedLanguage)}
+              original={selectedFile.originalContent}
+              modified={selectedDraft}
+              onMount={(editorInstance) => {
+                diffChangeSubscriptionRef.current?.dispose();
+                const modifiedEditor = editorInstance.getModifiedEditor();
+                diffChangeSubscriptionRef.current = modifiedEditor.onDidChangeModelContent(() => {
+                  const value = modifiedEditor.getValue();
+                  setFiles((current) => ({
+                    ...current,
+                    [selectedFilePath]: {
+                      ...(current[selectedFilePath] ?? makeEmptyFileState()),
+                      preview: current[selectedFilePath]?.preview ?? selectedPreview,
+                      loaded: true,
+                      draftContent: value ?? "",
+                      originalContent: current[selectedFilePath]?.originalContent ?? "",
+                      newlineStyle: current[selectedFilePath]?.newlineStyle ?? "lf",
+                      error: null,
+                      saving: current[selectedFilePath]?.saving ?? false,
+                      loading: false
+                    }
+                  }));
+                });
               }}
-              darkTheme={darkTheme}
+              options={{
+                automaticLayout: true,
+                minimap: { enabled: false },
+                renderSideBySide: false,
+                scrollBeyondLastLine: false,
+                fontSize: 13,
+                wordWrap: "off"
+              }}
             />
           )}
         </Flex>
