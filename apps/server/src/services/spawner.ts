@@ -54,6 +54,7 @@ import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.j
 import type { TaskStore } from "./task-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { UserStore } from "./user-store.js";
+import type { RepositoryStore } from "./repository-store.js";
 
 const ansiPattern = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\))/g;
 
@@ -194,7 +195,8 @@ export class SpawnerService {
   constructor(
     private readonly taskStore: TaskStore,
     private readonly settingsStore: SettingsStore,
-    private readonly userStore: UserStore
+    private readonly userStore: UserStore,
+    private readonly repositoryStore: Pick<RepositoryStore, "getRepository">
   ) {}
 
   private formatExecutionLabel(command: string, args: string[]): string {
@@ -3628,10 +3630,12 @@ export class SpawnerService {
 
   async runTask(task: Task, action: TaskAction, input?: TaskExecutionInput | string): Promise<void> {
     this.cancelRequestedTaskIds.delete(task.id);
-    const [settings, runtimeCredentials] = await Promise.all([
+    const [settings, runtimeCredentials, repository] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials()
+      this.settingsStore.getRuntimeCredentials(),
+      this.repositoryStore.getRepository(task.repoId)
     ]);
+    const repositoryEnvVars = repository?.envVars ?? [];
     const providerDefinition = getProviderRuntimeDefinition(task.provider);
     const missingCredentialMessage = providerDefinition.getMissingCredentialMessage(runtimeCredentials);
     if (missingCredentialMessage) {
@@ -3844,6 +3848,9 @@ export class SpawnerService {
       }
       for (const [name, value] of Object.entries(runtimeMcpEnv)) {
         args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
+      }
+      for (const { key, value } of repositoryEnvVars) {
+        args.splice(args.length - 1, 0, "-e", `${key}=${value}`);
       }
 
       await appendRunLog(`Spawner: launching ${task.provider} container for branch ${branchName}.`);

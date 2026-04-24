@@ -1,4 +1,5 @@
 import type { GitCommitIdentity } from "./task-git-identity.js";
+import type { RepositoryEnvVar } from "@agentswarm/shared-types";
 
 export function buildInteractiveWorkspaceGitEnvEntries(
   workspacePath: string,
@@ -53,4 +54,14 @@ export function buildGitTerminalEnvEntries(options: {
   }
 
   return envEntries;
+}
+
+export function buildGitTerminalDockerEnvEntries(options: {
+  runtimeEnvEntries: Array<[string, string]>;
+  repositoryEnvVars?: RepositoryEnvVar[] | null;
+}): Array<[string, string]> {
+  return [
+    ...options.runtimeEnvEntries,
+    ...(options.repositoryEnvVars ?? []).map(({ key, value }) => [key, value] as [string, string])
+  ];
 }

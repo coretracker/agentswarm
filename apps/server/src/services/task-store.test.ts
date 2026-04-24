@@ -160,6 +160,7 @@ const repository: Repository = {
   name: "Repo",
   url: "https://github.com/example/repo.git",
   defaultBranch: "main",
+  envVars: [],
   webhookUrl: null,
   webhookEnabled: false,
   webhookSecretConfigured: false,

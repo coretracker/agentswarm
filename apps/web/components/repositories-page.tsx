@@ -11,6 +11,7 @@ type RepositoryFormValues = {
   name: string;
   url: string;
   defaultBranch: string;
+  envVars: Array<{ key: string; value: string }>;
   webhookEnabled: boolean;
   webhookUrl: string;
   webhookSecret: string;
@@ -35,6 +36,7 @@ export function RepositoriesPage() {
       name: "",
       url: "",
       defaultBranch: "develop",
+      envVars: [],
       webhookEnabled: false,
       webhookUrl: "",
       webhookSecret: "",
@@ -49,6 +51,7 @@ export function RepositoriesPage() {
       name: repository.name,
       url: repository.url,
       defaultBranch: repository.defaultBranch,
+      envVars: repository.envVars ?? [],
       webhookEnabled: repository.webhookEnabled,
       webhookUrl: repository.webhookUrl ?? "",
       webhookSecret: "",
@@ -84,6 +87,10 @@ export function RepositoriesPage() {
               { title: "Name", dataIndex: "name" },
               { title: "URL", dataIndex: "url" },
               { title: "Default Branch", dataIndex: "defaultBranch" },
+              {
+                title: "Env Vars",
+                render: (_, repository) => <Typography.Text>{(repository.envVars ?? []).length}</Typography.Text>
+              },
               {
                 title: "Webhook",
                 render: (_, repository) => {
@@ -132,17 +139,24 @@ export function RepositoriesPage() {
         </Card>
       </Space>
 
-      <Modal open={open} title={editing ? "Edit Repository" : "Add Repository"} footer={null} onCancel={() => setOpen(false)}>
+      <Modal open={open} title={editing ? "Edit Repository" : "Add Repository"} footer={null} width={920} onCancel={() => setOpen(false)}>
         <Form
           form={form}
           layout="vertical"
           onFinish={async (values) => {
             setSubmitting(true);
             try {
+              const envVars = (values.envVars ?? [])
+                .map((entry) => ({
+                  key: entry.key.trim(),
+                  value: typeof entry.value === "string" ? entry.value : ""
+                }))
+                .filter((entry) => entry.key.length > 0);
               const payload = {
                 name: values.name,
                 url: values.url,
                 defaultBranch: values.defaultBranch,
+                envVars,
                 webhookEnabled: values.webhookEnabled,
                 webhookUrl: values.webhookUrl.trim().length > 0 ? values.webhookUrl.trim() : null,
                 ...(values.webhookSecret.trim().length > 0 ? { webhookSecret: values.webhookSecret.trim() } : {}),
@@ -170,6 +184,67 @@ export function RepositoriesPage() {
           <Form.Item name="defaultBranch" label="Default Branch" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
+          <Form.List
+            name="envVars"
+            rules={[
+              {
+                validator: async (_, value: RepositoryFormValues["envVars"]) => {
+                  const seen = new Set<string>();
+                  for (const entry of value ?? []) {
+                    const key = typeof entry?.key === "string" ? entry.key.trim() : "";
+                    if (!key) {
+                      continue;
+                    }
+                    if (seen.has(key)) {
+                      throw new Error(`Duplicate variable name: ${key}`);
+                    }
+                    seen.add(key);
+                  }
+                }
+              }
+            ]}
+          >
+            {(fields, { add, remove }, { errors }) => (
+              <Flex vertical gap={8} style={{ marginBottom: 16 }}>
+                <Typography.Text strong>Environment Variables</Typography.Text>
+                <Typography.Text type="secondary">
+                  Repository variables are injected into interactive, automatic, and terminal runs for tasks from this repository.
+                </Typography.Text>
+                {fields.map((field) => (
+                  <Flex key={field.key} gap={8} align="flex-start">
+                    <Form.Item
+                      {...field}
+                      name={[field.name, "key"]}
+                      style={{ flex: 1, marginBottom: 0 }}
+                      rules={[
+                        { required: true, whitespace: true, message: "Name is required." },
+                        { max: 128, message: "Name must be 128 characters or fewer." },
+                        {
+                          pattern: /^[A-Za-z_][A-Za-z0-9_]*$/,
+                          message: "Name must match /^[A-Za-z_][A-Za-z0-9_]*$/."
+                        }
+                      ]}
+                    >
+                      <Input placeholder="NAME" autoComplete="off" />
+                    </Form.Item>
+                    <Form.Item
+                      {...field}
+                      name={[field.name, "value"]}
+                      style={{ flex: 2, marginBottom: 0 }}
+                      rules={[{ max: 8192, message: "Value must be 8192 characters or fewer." }]}
+                    >
+                      <Input placeholder="value" autoComplete="off" />
+                    </Form.Item>
+                    <Button danger onClick={() => remove(field.name)}>
+                      Remove
+                    </Button>
+                  </Flex>
+                ))}
+                <Button onClick={() => add({ key: "", value: "" })}>Add variable</Button>
+                <Form.ErrorList errors={errors} />
+              </Flex>
+            )}
+          </Form.List>
           <Form.Item name="webhookEnabled" label="Enable Webhooks" valuePropName="checked">
             <Switch />
           </Form.Item>

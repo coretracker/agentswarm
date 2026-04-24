@@ -1,18 +1,61 @@
 import { nanoid } from "nanoid";
 import type Redis from "ioredis";
 import type { Pool } from "pg";
-import type { CreateRepositoryInput, Repository, UpdateRepositoryInput } from "@agentswarm/shared-types";
+import type { CreateRepositoryInput, Repository, RepositoryEnvVar, UpdateRepositoryInput } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
 import { HttpError } from "../lib/http-error.js";
 
 const REPO_KEY_PREFIX = "agentswarm:repo:";
 const REPO_IDS_KEY = "agentswarm:repo_ids";
+const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
+const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
+const REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH = 8192;
 
 const nowIso = (): string => new Date().toISOString();
 type StoredRepository = Omit<Repository, "webhookSecretConfigured"> & {
   webhookSecret: string | null;
   webhookSecretConfigured?: boolean;
 } & Record<string, unknown>;
+
+const normalizeRepositoryEnvVars = (value: unknown): RepositoryEnvVar[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const envVars: RepositoryEnvVar[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+
+    const rawKey = (entry as Record<string, unknown>).key;
+    const key = typeof rawKey === "string" ? rawKey.trim() : "";
+    if (
+      !key ||
+      key.length > REPOSITORY_ENV_VAR_KEY_MAX_LENGTH ||
+      !REPOSITORY_ENV_VAR_KEY_PATTERN.test(key) ||
+      seen.has(key)
+    ) {
+      continue;
+    }
+
+    const rawValue = (entry as Record<string, unknown>).value;
+    const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
+    if (normalizedValue.length > REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH) {
+      continue;
+    }
+
+    envVars.push({ key, value: normalizedValue });
+    seen.add(key);
+    if (envVars.length >= REPOSITORY_ENV_VAR_MAX_COUNT) {
+      break;
+    }
+  }
+
+  return envVars;
+};
 
 export interface RepositoryWebhookTarget {
   repository: Repository;
@@ -71,11 +114,13 @@ export class RedisRepositoryStore implements RepositoryStore {
     const webhookSecret = this.normalizeWebhookSecret(repository.webhookSecret);
     const webhookUrl = this.normalizeWebhookUrl(repository.webhookUrl as string | null | undefined);
     const webhookEnabled = repository.webhookEnabled === true;
+    const envVars = normalizeRepositoryEnvVars(repository.envVars);
     return {
       ...repository,
       name: String(repository.name ?? "").trim(),
       url: String(repository.url ?? "").trim(),
       defaultBranch: String(repository.defaultBranch ?? "").trim() || "develop",
+      envVars,
       webhookUrl,
       webhookEnabled,
       webhookSecret,
@@ -94,6 +139,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       name: normalized.name,
       url: normalized.url,
       defaultBranch: normalized.defaultBranch,
+      envVars: normalized.envVars,
       webhookUrl: normalized.webhookUrl,
       webhookEnabled: normalized.webhookEnabled,
       webhookSecretConfigured: Boolean(normalized.webhookSecret),
@@ -119,6 +165,7 @@ export class RedisRepositoryStore implements RepositoryStore {
     const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
     const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
     const webhookEnabled = input.webhookEnabled === true;
+    const envVars = normalizeRepositoryEnvVars(input.envVars);
     this.assertValidWebhookConfiguration({
       webhookEnabled,
       webhookUrl,
@@ -130,6 +177,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       name: input.name.trim(),
       url: input.url.trim(),
       defaultBranch: input.defaultBranch?.trim() || "develop",
+      envVars,
       webhookUrl,
       webhookEnabled,
       webhookSecret,
@@ -199,6 +247,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
     const nextWebhookEnabled =
       input.webhookEnabled !== undefined ? input.webhookEnabled === true : current.webhookEnabled;
+    const nextEnvVars = input.envVars !== undefined ? normalizeRepositoryEnvVars(input.envVars) : current.envVars;
 
     this.assertValidWebhookConfiguration({
       webhookEnabled: nextWebhookEnabled,
@@ -211,6 +260,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       name: input.name?.trim() || current.name,
       url: input.url?.trim() || current.url,
       defaultBranch: input.defaultBranch?.trim() || current.defaultBranch,
+      envVars: nextEnvVars,
       webhookUrl: nextWebhookUrl,
       webhookEnabled: nextWebhookEnabled,
       webhookSecret: nextWebhookSecret,
@@ -311,6 +361,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       name: String(row.name ?? "").trim(),
       url: String(row.url ?? "").trim(),
       defaultBranch: String(row.default_branch ?? "").trim() || "develop",
+      envVars: normalizeRepositoryEnvVars(row.env_vars),
       webhookUrl: typeof row.webhook_url === "string" && row.webhook_url.trim().length > 0 ? row.webhook_url.trim() : null,
       webhookEnabled: row.webhook_enabled === true,
       webhookSecretConfigured: typeof row.webhook_secret === "string" && row.webhook_secret.trim().length > 0,
@@ -334,6 +385,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
     const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
     const webhookEnabled = input.webhookEnabled === true;
+    const envVars = normalizeRepositoryEnvVars(input.envVars);
     this.assertValidWebhookConfiguration({
       webhookEnabled,
       webhookUrl,
@@ -345,6 +397,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       name: input.name.trim(),
       url: input.url.trim(),
       defaultBranch: input.defaultBranch?.trim() || "develop",
+      envVars,
       webhookUrl,
       webhookEnabled,
       webhookSecretConfigured: Boolean(webhookSecret),
@@ -362,6 +415,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           name,
           url,
           default_branch,
+          env_vars,
           webhook_url,
           webhook_enabled,
           webhook_secret,
@@ -371,13 +425,14 @@ export class PostgresRepositoryStore implements RepositoryStore {
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
       `,
       [
         repository.id,
         repository.name,
         repository.url,
         repository.defaultBranch,
+        JSON.stringify(repository.envVars),
         repository.webhookUrl,
         repository.webhookEnabled,
         webhookSecret,
@@ -421,6 +476,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
     const nextWebhookEnabled =
       input.webhookEnabled !== undefined ? input.webhookEnabled === true : current.webhookEnabled;
+    const nextEnvVars = input.envVars !== undefined ? normalizeRepositoryEnvVars(input.envVars) : current.envVars;
 
     this.assertValidWebhookConfiguration({
       webhookEnabled: nextWebhookEnabled,
@@ -433,6 +489,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       name: input.name?.trim() || current.name,
       url: input.url?.trim() || current.url,
       defaultBranch: input.defaultBranch?.trim() || current.defaultBranch,
+      envVars: nextEnvVars,
       webhookUrl: nextWebhookUrl,
       webhookEnabled: nextWebhookEnabled,
       webhookSecretConfigured: Boolean(nextWebhookSecret),
@@ -446,14 +503,15 @@ export class PostgresRepositoryStore implements RepositoryStore {
           name = $2,
           url = $3,
           default_branch = $4,
-          webhook_url = $5,
-          webhook_enabled = $6,
-          webhook_secret = $7,
-          webhook_last_attempt_at = $8,
-          webhook_last_status = $9,
-          webhook_last_error = $10,
-          created_at = $11,
-          updated_at = $12
+          env_vars = $5::jsonb,
+          webhook_url = $6,
+          webhook_enabled = $7,
+          webhook_secret = $8,
+          webhook_last_attempt_at = $9,
+          webhook_last_status = $10,
+          webhook_last_error = $11,
+          created_at = $12,
+          updated_at = $13
         WHERE id = $1
       `,
       [
@@ -461,6 +519,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
         next.name,
         next.url,
         next.defaultBranch,
+        JSON.stringify(next.envVars),
         next.webhookUrl,
         next.webhookEnabled,
         nextWebhookSecret,
@@ -523,14 +582,15 @@ export class PostgresRepositoryStore implements RepositoryStore {
           name = $2,
           url = $3,
           default_branch = $4,
-          webhook_url = $5,
-          webhook_enabled = $6,
-          webhook_secret = $7,
-          webhook_last_attempt_at = $8,
-          webhook_last_status = $9,
-          webhook_last_error = $10,
-          created_at = $11,
-          updated_at = $12
+          env_vars = $5::jsonb,
+          webhook_url = $6,
+          webhook_enabled = $7,
+          webhook_secret = $8,
+          webhook_last_attempt_at = $9,
+          webhook_last_status = $10,
+          webhook_last_error = $11,
+          created_at = $12,
+          updated_at = $13
         WHERE id = $1
       `,
       [
@@ -538,6 +598,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
         next.name,
         next.url,
         next.defaultBranch,
+        JSON.stringify(next.envVars),
         next.webhookUrl,
         next.webhookEnabled,
         webhookSecret,

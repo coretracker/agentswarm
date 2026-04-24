@@ -4,10 +4,48 @@ import type { AuthService } from "../lib/auth.js";
 import { sendHttpError } from "../lib/http-error.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 
+const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
+const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
+const REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH = 8192;
+
+const repositoryEnvVarsSchema = z
+  .array(
+    z.object({
+      key: z
+        .string()
+        .trim()
+        .min(1)
+        .max(REPOSITORY_ENV_VAR_KEY_MAX_LENGTH)
+        .regex(REPOSITORY_ENV_VAR_KEY_PATTERN, "Variable names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
+      value: z.string().max(REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH)
+    })
+  )
+  .max(REPOSITORY_ENV_VAR_MAX_COUNT)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const key = entries[index]?.key;
+      if (!key) {
+        continue;
+      }
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "key"],
+          message: `Duplicate variable name: ${key}`
+        });
+      } else {
+        seen.add(key);
+      }
+    }
+  });
+
 const createRepositorySchema = z.object({
   name: z.string().min(1),
   url: z.string().min(1),
   defaultBranch: z.string().min(1).optional(),
+  envVars: repositoryEnvVarsSchema.optional(),
   webhookUrl: z.string().trim().url().nullable().optional(),
   webhookEnabled: z.boolean().optional(),
   webhookSecret: z.string().trim().min(1).optional()

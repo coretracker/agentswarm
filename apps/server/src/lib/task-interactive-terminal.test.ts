@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { buildGitTerminalEnvEntries } from "./task-interactive-terminal-git-env.js";
+import { buildGitTerminalDockerEnvEntries, buildGitTerminalEnvEntries } from "./task-interactive-terminal-git-env.js";
 import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
@@ -77,5 +77,27 @@ describe("buildGitTerminalEnvEntries", () => {
     assert.equal(env.GIT_AUTHOR_EMAIL, undefined);
     assert.equal(env.GIT_COMMITTER_NAME, undefined);
     assert.equal(env.GIT_COMMITTER_EMAIL, undefined);
+  });
+});
+
+describe("buildGitTerminalDockerEnvEntries", () => {
+  it("appends repository variables to git terminal runtime env entries", () => {
+    const envEntries = buildGitTerminalDockerEnvEntries({
+      runtimeEnvEntries: [
+        ["TERM", "xterm-256color"],
+        ["TASK_INTERACTIVE_WORKSPACE", "/workspace"]
+      ],
+      repositoryEnvVars: [
+        { key: "FOO", value: "bar" },
+        { key: "EMPTY_OK", value: "" }
+      ]
+    });
+
+    assert.deepEqual(envEntries, [
+      ["TERM", "xterm-256color"],
+      ["TASK_INTERACTIVE_WORKSPACE", "/workspace"],
+      ["FOO", "bar"],
+      ["EMPTY_OK", ""]
+    ]);
   });
 });

@@ -274,11 +274,17 @@ export interface UpdateUserInput {
   roleIds?: string[];
 }
 
+export interface RepositoryEnvVar {
+  key: string;
+  value: string;
+}
+
 export interface Repository {
   id: string;
   name: string;
   url: string;
   defaultBranch: string;
+  envVars: RepositoryEnvVar[];
   webhookUrl: string | null;
   webhookEnabled: boolean;
   webhookSecretConfigured: boolean;
@@ -574,6 +580,7 @@ export interface CreateRepositoryInput {
   name: string;
   url: string;
   defaultBranch?: string;
+  envVars?: RepositoryEnvVar[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
@@ -583,6 +590,7 @@ export interface UpdateRepositoryInput {
   name?: string;
   url?: string;
   defaultBranch?: string;
+  envVars?: RepositoryEnvVar[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;

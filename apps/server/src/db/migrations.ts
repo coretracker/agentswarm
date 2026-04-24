@@ -175,5 +175,12 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         transcript_data jsonb NOT NULL
       );
     `
+  },
+  {
+    id: "20260424_01_repository_env_vars",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS env_vars jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
   }
 ];

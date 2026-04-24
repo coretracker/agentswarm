@@ -24,6 +24,7 @@ import type { AuthService } from "./auth.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskMetadata, TaskStore } from "../services/task-store.js";
+import type { RepositoryStore } from "../services/repository-store.js";
 import { canUserAccessTask } from "./task-ownership.js";
 import { resolveWorkspaceGitRuntimeMounts } from "./git-runtime-mounts.js";
 import {
@@ -35,7 +36,11 @@ import {
 import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
 import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
 import { resolveTaskGitCommitIdentity, type GitCommitIdentity } from "./task-git-identity.js";
-import { buildGitTerminalEnvEntries, buildInteractiveWorkspaceGitEnvEntries } from "./task-interactive-terminal-git-env.js";
+import {
+  buildGitTerminalDockerEnvEntries,
+  buildGitTerminalEnvEntries,
+  buildInteractiveWorkspaceGitEnvEntries
+} from "./task-interactive-terminal-git-env.js";
 import type { UserStore } from "../services/user-store.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
@@ -311,6 +316,7 @@ export interface TaskInteractiveTerminalDeps {
   settingsStore: SettingsStore;
   spawner: SpawnerService;
   userStore: Pick<UserStore, "getUser">;
+  repositoryStore: Pick<RepositoryStore, "getRepository">;
 }
 
 interface ActiveInteractiveTerminalController {
@@ -594,12 +600,13 @@ async function initializeTaskInteractiveTerminalWebSocket(
     const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
     if (mode === "git") {
-      const [credentials, gitIdentity] = await Promise.all([
+      const [credentials, gitIdentity, repository] = await Promise.all([
         deps.settingsStore.getRuntimeCredentials(),
         resolveTaskGitCommitIdentity(task, deps.userStore, {
           name: env.GIT_USER_NAME,
           email: env.GIT_USER_EMAIL
-        })
+        }),
+        deps.repositoryStore.getRepository(task.repoId)
       ]);
       const runtime = resolveGitTerminalRuntimeConfig(credentials, gitIdentity);
       if (!runtime.ok) {
@@ -608,7 +615,10 @@ async function initializeTaskInteractiveTerminalWebSocket(
 
       const sessionName = `aswgit-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
       const dockerEnv: string[] = [];
-      for (const [name, value] of runtime.envEntries) {
+      for (const [name, value] of buildGitTerminalDockerEnvEntries({
+        runtimeEnvEntries: runtime.envEntries,
+        repositoryEnvVars: repository?.envVars
+      })) {
         dockerEnv.push("-e", `${name}=${value}`);
       }
       dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
@@ -651,9 +661,10 @@ async function initializeTaskInteractiveTerminalWebSocket(
       return;
     }
 
-    const [credentials, settings] = await Promise.all([
+    const [credentials, settings, repository] = await Promise.all([
       deps.settingsStore.getRuntimeCredentials(),
-      deps.settingsStore.getSettings()
+      deps.settingsStore.getSettings(),
+      deps.repositoryStore.getRepository(task.repoId)
     ]);
     const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
     if (!runtime.ok) {
@@ -670,6 +681,9 @@ async function initializeTaskInteractiveTerminalWebSocket(
     const dockerEnv: string[] = [];
     for (const [name, value] of runtime.envEntries) {
       dockerEnv.push("-e", `${name}=${value}`);
+    }
+    for (const { key, value } of repository?.envVars ?? []) {
+      dockerEnv.push("-e", `${key}=${value}`);
     }
     dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
 

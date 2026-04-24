@@ -149,6 +149,7 @@ const baseRepository = (): Repository => ({
   name: "Repo",
   url: "https://github.com/example/repo.git",
   defaultBranch: "main",
+  envVars: [],
   webhookUrl: "https://example.com/webhook",
   webhookEnabled: true,
   webhookSecretConfigured: true,

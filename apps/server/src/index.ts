@@ -64,7 +64,7 @@ const bootstrap = async (): Promise<void> => {
     cookieName: env.AUTH_COOKIE_NAME,
     taskStore
   });
-  const spawner = new SpawnerService(taskStore, settingsStore, userStore);
+  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
   const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
   const githubImportService = new GitHubImportService(settingsStore);
   const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
@@ -93,7 +93,8 @@ const bootstrap = async (): Promise<void> => {
     taskStore,
     settingsStore,
     spawner,
-    userStore
+    userStore,
+    repositoryStore
   });
 
   const io = new SocketIOServer(app.server, {

@@ -65,6 +65,7 @@ interface RepositoryRecord extends JsonRecord {
   name: string;
   url: string;
   defaultBranch?: string;
+  envVars?: unknown[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string | null;
@@ -127,6 +128,30 @@ const trimString = (value: unknown): string | null => {
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+};
+
+const repositoryEnvVarArray = (value: unknown): Array<{ key: string; value: string }> => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized: Array<{ key: string; value: string }> = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const rawKey = (entry as Record<string, unknown>).key;
+    const key = typeof rawKey === "string" ? rawKey.trim() : "";
+    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || seen.has(key)) {
+      continue;
+    }
+    const rawValue = (entry as Record<string, unknown>).value;
+    const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
+    normalized.push({ key, value: normalizedValue });
+    seen.add(key);
+  }
+  return normalized;
 };
 
 const stringArray = (value: unknown): string[] =>
@@ -389,6 +414,7 @@ const main = async (): Promise<void> => {
               name,
               url,
               default_branch,
+              env_vars,
               webhook_url,
               webhook_enabled,
               webhook_secret,
@@ -398,13 +424,14 @@ const main = async (): Promise<void> => {
               created_at,
               updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
           `,
           [
             repository.id,
             String(repository.name ?? "").trim(),
             String(repository.url ?? "").trim(),
             trimString(repository.defaultBranch) ?? "develop",
+            JSON.stringify(repositoryEnvVarArray(repository.envVars)),
             trimString(repository.webhookUrl),
             repository.webhookEnabled === true,
             trimString(repository.webhookSecret),
