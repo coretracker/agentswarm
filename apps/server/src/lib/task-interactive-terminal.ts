@@ -442,7 +442,7 @@ export async function getTaskInteractiveTerminalStatus(
     };
   }
 
-  if (await taskStore.hasPendingChangeProposal(taskId)) {
+  if (mode !== "git" && await taskStore.hasPendingChangeProposal(taskId)) {
     return { available: false, reason: "Apply or reject the pending checkpoint before opening a terminal." };
   }
 

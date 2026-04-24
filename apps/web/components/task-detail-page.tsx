@@ -104,14 +104,14 @@ const runStatusColor: Record<TaskRun["status"], string> = {
   cancelled: "default"
 };
 
-type ComposerAction = TaskMessageAction | "interactive" | "postflight";
+type ComposerAction = TaskMessageAction | "interactive" | "terminal";
 
 const taskActionLabel: Record<ComposerAction | TaskAction, string> = {
   build: "Build",
   ask: "Ask",
   comment: "Comment",
   interactive: "Interactive",
-  postflight: "Postflight"
+  terminal: "Terminal"
 };
 
 const taskContextKindLabel: Record<TaskContextEntry["kind"], string> = {
@@ -136,20 +136,20 @@ function getAllowedComposerActions(
   const actions: ComposerAction[] = [];
   if (canBuildTasks) {
     actions.push("build");
-    actions.push("postflight");
   }
   if (canAskTasks) {
     actions.push("ask");
   }
   if (canUseInteractiveTerminal) {
     actions.push("interactive");
+    actions.push("terminal");
   }
   actions.push("comment");
   return actions;
 }
 
 function getDefaultComposerAction(task: Task | null, allowedActions: ComposerAction[]): ComposerAction {
-  const defaultAction = allowedActions.find((action) => action !== "comment" && action !== "interactive" && action !== "postflight") ?? "comment";
+  const defaultAction = allowedActions.find((action) => action !== "comment" && action !== "interactive" && action !== "terminal") ?? "comment";
 
   if (!task) {
     return defaultAction;
@@ -1589,7 +1589,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   );
   const githubDiffTarget =
     task && !githubPullRequestLookupPending ? getGitHubDiffTarget(task, existingGitHubPullRequest) : null;
-  const chatActionLabel = taskActionLabel[selectedChatAction];
   const hasReadOnlyTaskAccess = !canEditTask;
   const pendingChangeProposal = useMemo(
     () => changeProposals.find((p) => p.status === "pending") ?? null,
@@ -1635,14 +1634,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     : "Working";
   const canKillInteractiveTerminal = canEditTask && canUseInteractiveTerminal && !!task && !isArchived && interactiveTerminalRunning;
   const interactiveComposerSelected = selectedChatAction === "interactive";
-  const postflightComposerSelected = selectedChatAction === "postflight";
-  const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive" && selectedChatAction !== "postflight";
+  const terminalComposerSelected = selectedChatAction === "terminal";
+  const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive" && selectedChatAction !== "terminal";
   const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived";
   const parallelAskAllowed = selectedChatAction === "ask" && (task?.status === "building" || task?.status === "asking");
   const autoRunStartBlocked =
     selectedChatAction !== "comment" && (!!pendingChangeProposal || ((isQueued || isActive) && !parallelAskAllowed));
   const chatDisabled = chatClosed || interactiveTerminalRunning || autoRunStartBlocked;
-  const chatInputDisabled = chatClosed || interactiveTerminalRunning || interactiveComposerSelected || postflightComposerSelected;
+  const chatInputDisabled = chatClosed || interactiveTerminalRunning || interactiveComposerSelected || terminalComposerSelected;
   const canAttachPromptImages = selectedChatAction === "build" || selectedChatAction === "ask";
   const promptImageAttachmentDisabled = chatClosed || interactiveTerminalRunning || !canAttachPromptImages;
   const draftActionLabel = taskActionLabel[selectedChatAction].toLowerCase();
@@ -1661,8 +1660,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (selectedChatAction === "interactive") {
       return "Interactive terminal does not need a prompt. Press Start to open the live session in a new window.";
     }
-    if (selectedChatAction === "postflight") {
-      return "Postflight does not need a prompt. Press Run Postflight to execute .agentswarm/postflight.yml in the current workspace.";
+    if (selectedChatAction === "terminal") {
+      return "Terminal does not need a prompt. Press Start to open the task workspace terminal in a new window.";
     }
     if (selectedChatAction === "comment") {
       return "Add a comment to the task history";
@@ -1862,12 +1861,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     providerProfileInput !== currentTaskProviderProfile ||
     modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider));
   const composerClearDisabled = interactiveTerminalRunning || !composerHasChangesToClear;
+  const terminalSubmitDisabled =
+    chatClosed ||
+    interactiveTerminalRunning ||
+    interactiveTerminalLaunchPending ||
+    !gitTerminalAvailable;
   const chatSubmitDisabled =
-    chatDisabled ||
-    (selectedChatActionRequiresPrompt && chatInput.trim().length === 0) ||
-    (selectedPromptImageFiles.length > 0 && !canAttachPromptImages);
-  const chatSubmitLabel =
-    selectedChatAction === "comment" ? "Add Comment" : selectedChatAction === "postflight" ? "Run Postflight" : "Start";
+    selectedChatAction === "terminal"
+      ? terminalSubmitDisabled
+      : chatDisabled ||
+          (selectedChatActionRequiresPrompt && chatInput.trim().length === 0) ||
+          (selectedPromptImageFiles.length > 0 && !canAttachPromptImages);
+  const chatSubmitLabel = selectedChatAction === "comment" ? "Add Comment" : "Start";
   const handleClearSelectedContext = () => {
     setSelectedContextEntryKeys([]);
   };
@@ -1898,31 +1903,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
-    if (selectedChatAction === "postflight") {
-      if (configDirty && canEditTask && !isArchived) {
-        try {
-          await handleSaveConfig({ notify: false });
-        } catch (error) {
-          showTaskActionError(error, "Execution config could not be updated");
-          return;
-        }
-      }
-
+    if (selectedChatAction === "terminal") {
       setSubmitting("message");
       try {
-        const updatedTask = await api.runTaskPostflight(task.id);
-        setTask((current) =>
-          current
-            ? {
-                ...current,
-                ...updatedTask,
-                logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
-              }
-            : updatedTask
-        );
-        messageApi.success("Postflight started");
-      } catch (error) {
-        showTaskActionError(error, "Postflight could not be started");
+        await handleStartInteractiveTerminalWindow("git");
       } finally {
         setSubmitting(null);
       }
@@ -2493,10 +2477,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         canDelete ? { key: "delete", label: "Delete Task", danger: true } : null
       ].filter(Boolean)
     : [];
-  const hasMoreActions = moreActionItems.length > 0;
   const hasExecutionButtons = canCancel;
   const hasGitHubDiffTargetAction = githubPullRequestLookupPending || Boolean(githubDiffTarget);
-  const hasManagementButtons = hasMoreActions;
   const contextContent = (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Card size="small">
@@ -2581,16 +2563,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         </span>
       </Tooltip>
     ) : null;
-  const renderMergeTaskButton = () =>
-    canMerge ? (
-      <Tooltip title={mergeBlockedReason}>
-        <span style={{ display: "inline-block" }}>
-          <Button onClick={() => setMergeModalOpen(true)} loading={submitting === "merge"} disabled={!!mergeBlockedReason}>
-            Merge
-          </Button>
-        </span>
-      </Tooltip>
-    ) : null;
   const renderGitHubDiffTargetButton = () => {
     if (githubPullRequestLookupPending) {
       return (
@@ -2610,40 +2582,91 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </Button>
     );
   };
+  const dropdownMoreActionItems = [
+    ...(canMerge
+      ? [
+          {
+            key: "merge",
+            label: "Merge",
+            disabled: !!mergeBlockedReason
+          }
+        ]
+      : []),
+    ...moreActionItems
+  ];
+  const hasDropdownMoreActions = dropdownMoreActionItems.length > 0;
+  const renderMoreActionsButton = () =>
+    hasDropdownMoreActions ? (
+      <Dropdown
+        menu={{
+          items: dropdownMoreActionItems,
+          onClick: ({ key }) => {
+            if (key === "merge") {
+              setMergeModalOpen(true);
+              return;
+            }
+
+            if (key === "refreshDiff") {
+              setLiveDiffRefreshKey((k) => k + 1);
+              return;
+            }
+
+            if (key === "killInteractiveTerminal") {
+              setKillTerminalConfirmOpen(true);
+              return;
+            }
+
+            if (key === "continue") {
+              openFollowUp("continue");
+              return;
+            }
+
+            if (key === "pin") {
+              void handleTogglePin();
+              return;
+            }
+
+            if (key === "archive") {
+              Modal.confirm({
+                title: "Archive task?",
+                content: "Archived tasks become read-only and cannot be restarted.",
+                okText: "Archive",
+                onOk: handleArchiveTask
+              });
+              return;
+            }
+
+            if (key === "delete") {
+              setDeleteConfirmOpen(true);
+            }
+          }
+        }}
+        trigger={["click"]}
+      >
+        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "killTerminal" || submitting === "merge"}>
+          More
+        </Button>
+      </Dropdown>
+    ) : null;
 
   const diffContent = hasDiffTab ? (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       {task ? (
-        <Card size="small" title="Git Session">
+        <Card size="small">
           <Flex vertical gap={12}>
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              Open a popup terminal in this task workspace for manual git commands like status, commit, pull, push, and merge.
-            </Typography.Paragraph>
             {gitTerminalStatus?.reason ? (
               <Alert
                 type={gitTerminalAvailable ? "info" : "warning"}
                 showIcon
                 message={
                   activeTerminalMode === "git"
-                    ? "Git session is active"
-                    : "Git session status"
+                    ? "Terminal is active"
+                    : "Terminal status"
                 }
                 description={gitTerminalStatus.reason}
               />
             ) : null}
             <Space wrap>
-              <Button
-                type="primary"
-                onClick={() => void handleStartInteractiveTerminalWindow("git")}
-                disabled={
-                  !canEditTask ||
-                  isArchived ||
-                  interactiveTerminalLaunchPending ||
-                  !gitTerminalAvailable
-                }
-              >
-                Start Git Session
-              </Button>
               {canKillInteractiveTerminal ? (
                 <Button danger onClick={() => setKillTerminalConfirmOpen(true)}>
                   Stop Session
@@ -2651,8 +2674,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               ) : null}
               {renderPullTaskButton()}
               {renderPushTaskButton()}
-              {renderMergeTaskButton()}
               {renderGitHubDiffTargetButton()}
+              {renderMoreActionsButton()}
             </Space>
           </Flex>
         </Card>
@@ -2924,7 +2947,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 	              AI Settings
 	            </Button>
 	          </div>
-	          {!interactiveComposerSelected ? (
+	          {!interactiveComposerSelected && !terminalComposerSelected ? (
 	            <div
               style={{
                 minWidth: 260,
@@ -2948,8 +2971,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                     snippets.length === 0 ||
                     !canEditTask ||
                     isArchived ||
-                    interactiveTerminalRunning ||
-                    postflightComposerSelected
+                    interactiveTerminalRunning
                   }
                   options={snippets.map((snippet) => ({
                     label: snippet.name,
@@ -2958,7 +2980,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 />
                 <Button
                   onClick={handleInsertSelectedSnippet}
-                  disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning || postflightComposerSelected}
+                  disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning}
                 >
                   Insert
                 </Button>
@@ -2967,7 +2989,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           ) : null}
         </Flex>
         <Flex align="center" gap={12} wrap="wrap" style={{ flexShrink: 0 }}>
-          <Typography.Text type="secondary">Next run: {chatActionLabel}</Typography.Text>
           <Flex align="center" gap={12} wrap="wrap">
             <Space.Compact size="middle">
               <Select
@@ -3004,7 +3025,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 <Button disabled={composerClearDisabled}>Clear</Button>
               </Popconfirm>
             </Space.Compact>
-            {canPull || canPush || canMerge || hasGitHubDiffTargetAction ? (
+            {canPull || canPush || hasGitHubDiffTargetAction || hasDropdownMoreActions ? (
               <Space
                 size={8}
                 wrap
@@ -3016,8 +3037,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               >
                 {renderPullTaskButton()}
                 {renderPushTaskButton()}
-                {renderMergeTaskButton()}
                 {renderGitHubDiffTargetButton()}
+                {renderMoreActionsButton()}
               </Space>
             ) : null}
           </Flex>
@@ -3164,7 +3185,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       style={{
         padding: "14px 16px",
         background: "#0b0f14",
-        borderRadius: 8
+        borderRadius: 8,
+        maxHeight: 600,
+        overflow: "scroll"
       }}
     >
       <pre
@@ -3912,7 +3935,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               type="warning"
               showIcon
               message="Pending checkpoint"
-              description="Apply or reject the workspace changes from this run before starting a new build, opening a terminal, or using Git push/pull. Use the Git tab to commit and push after you apply."
+              description="Apply or reject the workspace changes from this run before starting a new build or using Git push/pull. You can still open Terminal to inspect the workspace."
             />
           ) : null}
           {chatTimelineBlock}
@@ -4246,59 +4269,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                         </Space>
                       ) : null}
 
-                      {hasExecutionButtons && hasManagementButtons ? <Divider type="vertical" style={{ marginInline: 2 }} /> : null}
-
-                      {hasManagementButtons ? (
-                        <Space wrap size={8}>
-                          {hasMoreActions ? (
-                            <Dropdown
-                              menu={{
-                                items: moreActionItems,
-                                onClick: ({ key }) => {
-                                  if (key === "refreshDiff") {
-                                    setLiveDiffRefreshKey((k) => k + 1);
-                                    return;
-                                  }
-
-                                  if (key === "killInteractiveTerminal") {
-                                    setKillTerminalConfirmOpen(true);
-                                    return;
-                                  }
-
-                                  if (key === "continue") {
-                                    openFollowUp("continue");
-                                    return;
-                                  }
-
-                                  if (key === "pin") {
-                                    void handleTogglePin();
-                                    return;
-                                  }
-
-                                  if (key === "archive") {
-                                    Modal.confirm({
-                                      title: "Archive task?",
-                                      content: "Archived tasks become read-only and cannot be restarted.",
-                                      okText: "Archive",
-                                      onOk: handleArchiveTask
-                                    });
-                                    return;
-                                  }
-
-                                  if (key === "delete") {
-                                    setDeleteConfirmOpen(true);
-                                  }
-                                }
-                              }}
-                              trigger={["click"]}
-                            >
-                              <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "killTerminal"}>
-                                More
-                              </Button>
-                            </Dropdown>
-                          ) : null}
-                        </Space>
-                      ) : null}
                     </Space>
                   </Flex>
                   {isArchived ? (
