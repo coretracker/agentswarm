@@ -2905,6 +2905,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     </Card>
   ) : null;
 
+  const aiSettingsSummary = useMemo(
+    () =>
+      [
+        providerOptions.find((option) => option.value === providerInput)?.label ?? getAgentProviderLabel(providerInput),
+        allowedProviderModels.find((option) => option.value === modelInput)?.label ?? modelInput,
+        getProviderProfileLabel(providerProfileInput)
+      ].join(" · "),
+    [allowedProviderModels, modelInput, providerInput, providerProfileInput]
+  );
+
   const chatComposer = (
     <Flex vertical gap={12}>
       <Input.TextArea
@@ -2937,31 +2947,31 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Divider style={{ margin: 0 }} />
         </>
       ) : null}
-	      <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
-	        <Flex align="flex-end" gap={12} wrap="wrap" style={{ flex: "1 1 0", minWidth: 0 }}>
-	          <div
-	            style={{
-	              display: "flex",
-	              flexDirection: "column"
-	            }}
-	          >
-	            <Button style={{ alignSelf: "flex-start" }} onClick={() => setAiSettingsModalOpen(true)}>
-	              AI Settings
-	            </Button>
-	          </div>
-	          {!interactiveComposerSelected && !terminalComposerSelected ? (
-	            <div
+      <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
+        <Flex align="flex-end" gap={12} wrap="wrap" style={{ flex: "1 1 0", minWidth: 0 }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column"
+            }}
+          >
+            <Button style={{ alignSelf: "flex-start" }} onClick={() => setAiSettingsModalOpen(true)}>
+              AI Settings
+            </Button>
+          </div>
+          {!interactiveComposerSelected && !terminalComposerSelected ? (
+            <div
               style={{
                 minWidth: 260,
                 maxWidth: 420,
-	                display: "flex",
-	                flexDirection: "column"
-	              }}
-	            >
-	              <Flex gap={8}>
-	                <Select
-	                  showSearch
-	                  style={{ minWidth: 180, flex: 1 }}
+                display: "flex",
+                flexDirection: "column"
+              }}
+            >
+              <Flex gap={8}>
+                <Select
+                  showSearch
+                  style={{ minWidth: 180, flex: 1 }}
                   placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
                   value={selectedSnippetId}
                   onChange={(value) => setSelectedSnippetId(value)}
@@ -3014,11 +3024,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               >
                 {chatSubmitLabel}
               </Button>
-	              <Popconfirm
-	                title="Clear composer?"
-	                description="This will clear the message input, selected context, selected reference images, and reset the AI settings to this task's defaults."
-	                okText="Clear"
-	                cancelText="Cancel"
+              <Popconfirm
+                title="Clear composer?"
+                description="This will clear the message input, selected context, selected reference images, and reset the AI settings to this task's defaults."
+                okText="Clear"
+                cancelText="Cancel"
                 okButtonProps={{ danger: true }}
                 placement="top"
                 disabled={composerClearDisabled}
@@ -3046,7 +3056,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </Flex>
         </Flex>
       </Flex>
-      {isActive ? <Typography.Text type="secondary">Changes apply to the next run.</Typography.Text> : null}
+      <Divider style={{ margin: "8px 0 0" }} />
+      <Typography.Text type="secondary" style={{ display: "block", textAlign: "left" }}>
+        {`Current: ${aiSettingsSummary}`}
+      </Typography.Text>
+      {isActive ? <Typography.Text type="secondary">Settings will be applied on next run.</Typography.Text> : null}
     </Flex>
   );
 
