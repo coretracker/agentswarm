@@ -546,6 +546,10 @@ function ExpandableMessageContent({ children, fadeColor }: { children: ReactNode
 export function TaskDetailPage({ taskId }: { taskId: string }) {
   const router = useRouter();
   const { token } = antTheme.useToken();
+  const historyCardHeadStyle: CSSProperties = {
+    background: token.colorFillSecondary,
+    borderBottom: `1px solid ${token.colorBorderSecondary}`
+  };
   const { can, canAll, session } = useAuth();
   const { settings } = useSettings();
   const { task, setTask, loading, refetch: refetchTask } = useTask(taskId);
@@ -3764,6 +3768,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         key={entryKey}
         size="small"
         style={getHistoryContextCardStyle(entryKey)}
+        headStyle={historyCardHeadStyle}
         title={
           <Space wrap>
             <Tag color={runStatusColor[entry.run.status]}>{entry.run.status}</Tag>
@@ -3840,6 +3845,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         key={entryKey}
         size="small"
         style={getHistoryContextCardStyle(entryKey)}
+        headStyle={historyCardHeadStyle}
         title={
           <Space wrap>
             <Tag color="green">{terminalLabel}</Tag>
