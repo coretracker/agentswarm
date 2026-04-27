@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   getAgentProviderLabel,
   getDefaultModelForProvider,
@@ -813,6 +813,23 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         : updatedTask
     );
   };
+  const refreshBranchSyncCounts = useCallback(async (taskIdOverride?: string): Promise<void> => {
+    const targetTaskId = taskIdOverride ?? task?.id;
+    if (!targetTaskId) {
+      return;
+    }
+
+    try {
+      const counts = await api.getTaskBranchSyncCounts(targetTaskId);
+      setTask((current) => (current && current.id === targetTaskId ? { ...current, ...counts } : current));
+    } catch {
+      // Ignore refresh failures; user actions can still proceed with explicit pull/push operations.
+    }
+  }, [setTask, task?.id]);
+  const triggerGitRefresh = useCallback((): void => {
+    setLiveDiffRefreshKey((k) => k + 1);
+    void refreshBranchSyncCounts();
+  }, [refreshBranchSyncCounts]);
   const showTaskActionError = (error: unknown, fallback: string): void => {
     const nextMessage = error instanceof Error ? error.message : fallback;
     if (nextMessage === "Close the terminal session before continuing.") {
@@ -960,48 +977,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   }, [task?.id, task?.repoDefaultBranch]);
 
   useEffect(() => {
-    if (activeMainTab !== "diff" || !hasDiffTab || !task?.id) {
+    if (!task?.id || !hasBranchForSync) {
       return;
     }
 
-    let cancelled = false;
-    const refreshBranchSyncCounts = () => {
-      if (cancelled || document.visibilityState === "hidden") {
-        return;
-      }
-
-      void api
-        .getTaskBranchSyncCounts(task.id)
-        .then((counts) => {
-          if (cancelled) {
-            return;
-          }
-
-          setTask((current) => (current && current.id === task.id ? { ...current, ...counts } : current));
-        })
-        .catch(() => undefined);
-    };
-
-    refreshBranchSyncCounts();
-    const intervalId = window.setInterval(refreshBranchSyncCounts, 5000);
-    const onFocus = () => {
-      refreshBranchSyncCounts();
-    };
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        refreshBranchSyncCounts();
-      }
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [activeMainTab, hasDiffTab, liveDiffRefreshKey, setTask, task?.activeInteractiveSession, task?.id, task?.status, task?.updatedAt]);
+    void refreshBranchSyncCounts(task.id);
+  }, [hasBranchForSync, refreshBranchSyncCounts, task?.id, task?.updatedAt]);
 
   useEffect(() => {
     if (providerInputOptions.some((option) => option.value === providerInput)) {
@@ -1494,11 +1475,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     };
 
     void loadLiveDiff();
-    const timer = window.setInterval(() => void loadLiveDiff(), 5000);
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
     };
   }, [
     activeMainTab,
@@ -2483,6 +2462,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const moreActionItems = task
     ? [
+        hasBranchForSync ? { key: "refreshGitStatus", label: "Refresh Git Status" } : null,
         canRequestLiveDiff ? { key: "refreshDiff", label: "Refresh Diff" } : null,
         canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Session", danger: true } : null,
         canEditTask && !isArchived ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
@@ -2571,7 +2551,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           pendingChangeProposal
             ? "Apply or reject the pending checkpoint before pushing."
             : pushNothingToPush
-              ? "Nothing to push — commit local changes or wait for the status refresh."
+              ? "Nothing to push — commit local changes or refresh Git status."
               : undefined
         }
       >
@@ -2626,7 +2606,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             }
 
             if (key === "refreshDiff") {
-              setLiveDiffRefreshKey((k) => k + 1);
+              triggerGitRefresh();
+              return;
+            }
+
+            if (key === "refreshGitStatus") {
+              void refreshBranchSyncCounts();
               return;
             }
 
@@ -2761,7 +2746,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               size="small"
               title="Commits"
               extra={
-                <Button type="link" size="small" onClick={() => setLiveDiffRefreshKey((k) => k + 1)} style={{ padding: 0 }}>
+                <Button type="link" size="small" onClick={triggerGitRefresh} style={{ padding: 0 }}>
                   Refresh
                 </Button>
               }

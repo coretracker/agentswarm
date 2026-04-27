@@ -1085,16 +1085,18 @@ export const registerTaskRoutes = (
     const pushed = await deps.spawner.pushTaskBranch(task, {
       commitMessage: parsed.data.commitMessage
     });
+    const pushedRefreshed = await deps.taskStore.patchTask(pushed.id, {});
+    const pushedTask = pushedRefreshed ?? pushed;
     const pushedBranchName =
-      pushed.branchStrategy === "work_on_branch" ? pushed.baseBranch : pushed.branchName ?? task.branchName ?? task.baseBranch;
+      pushedTask.branchStrategy === "work_on_branch" ? pushedTask.baseBranch : pushedTask.branchName ?? task.branchName ?? task.baseBranch;
     if (pushedBranchName) {
       await deps.taskStore.publishTaskPushedEvent({
-        taskId: pushed.id,
+        taskId: pushedTask.id,
         branchName: pushedBranchName,
         commitMessage: parsed.data.commitMessage?.trim() || null
       });
     }
-    return reply.send(await withBranchSyncCounts(deps.spawner, pushed));
+    return reply.send(await withBranchSyncCounts(deps.spawner, pushedTask));
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/pull", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
@@ -1113,7 +1115,8 @@ export const registerTaskRoutes = (
     }
 
     const pulled = await deps.spawner.pullTaskBranch(task);
-    return reply.send(await withBranchSyncCounts(deps.spawner, pulled));
+    const pulledRefreshed = await deps.taskStore.patchTask(pulled.id, {});
+    return reply.send(await withBranchSyncCounts(deps.spawner, pulledRefreshed ?? pulled));
   });
 
   app.get<{ Params: { id: string }; Querystring: { targetBranch: string } }>(
