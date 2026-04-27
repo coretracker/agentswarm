@@ -17,6 +17,7 @@ import {
 } from "@agentswarm/shared-types";
 import { HttpError } from "../lib/http-error.js";
 import { type PostgresQueryable, withPostgresTransaction } from "../lib/postgres.js";
+import type { RepositoryStore } from "./repository-store.js";
 import { SYSTEM_ADMIN_ROLE_ID, type RoleStore } from "./role-store.js";
 
 const USER_KEY_PREFIX = "agentswarm:user:";
@@ -40,6 +41,7 @@ export interface StoredUserRecord {
   email: string;
   active: boolean;
   roleIds: string[];
+  repositoryIds: string[];
   passwordHash: string;
   passwordSalt: string;
   lastLoginAt: string | null;
@@ -101,7 +103,8 @@ export interface UserStore {
 export class RedisUserStore implements UserStore {
   constructor(
     private readonly redis: Redis,
-    private readonly roleStore: RoleStore
+    private readonly roleStore: RoleStore,
+    private readonly repositoryStore: RepositoryStore
   ) {}
 
   private userKey(userId: string): string {
@@ -119,6 +122,7 @@ export class RedisUserStore implements UserStore {
       email: normalizeUserEmail(user.email),
       active: user.active !== false,
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
+      repositoryIds: Array.from(new Set((user.repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean))),
       lastLoginAt: user.lastLoginAt ?? null
     };
   }
@@ -169,6 +173,21 @@ export class RedisUserStore implements UserStore {
     return uniqueRoleIds;
   }
 
+  private async normalizeRepositoryIds(repositoryIds: string[] | undefined): Promise<string[]> {
+    const uniqueRepositoryIds = Array.from(new Set((repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean)));
+    if (uniqueRepositoryIds.length === 0) {
+      return [];
+    }
+
+    const repositories = await Promise.all(uniqueRepositoryIds.map((repositoryId) => this.repositoryStore.getRepository(repositoryId)));
+    const missingRepositoryId = uniqueRepositoryIds.find((repositoryId, index) => !repositories[index]);
+    if (missingRepositoryId) {
+      throw new HttpError(400, `Unknown repository: ${missingRepositoryId}`);
+    }
+
+    return uniqueRepositoryIds;
+  }
+
   private buildRoleRefs(roles: Role[]): UserRoleRef[] {
     return roles.map((role) => ({
       id: role.id,
@@ -185,6 +204,7 @@ export class RedisUserStore implements UserStore {
       email: user.email,
       active: user.active,
       roles: this.buildRoleRefs(roles),
+      repositoryIds: user.repositoryIds,
       lastLoginAt: user.lastLoginAt,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt
@@ -373,7 +393,10 @@ export class RedisUserStore implements UserStore {
       throw new HttpError(409, "A user with that email already exists");
     }
 
-    const roleIds = await this.normalizeRoleIds(input.roleIds);
+    const [roleIds, repositoryIds] = await Promise.all([
+      this.normalizeRoleIds(input.roleIds),
+      this.normalizeRepositoryIds(input.repositoryIds)
+    ]);
     const timestamp = nowIso();
     const passwordState = await hashPassword(password);
     const user: StoredUserRecord = {
@@ -382,6 +405,7 @@ export class RedisUserStore implements UserStore {
       email,
       active: input.active !== false,
       roleIds,
+      repositoryIds,
       passwordHash: passwordState.passwordHash,
       passwordSalt: passwordState.passwordSalt,
       lastLoginAt: null,
@@ -416,7 +440,10 @@ export class RedisUserStore implements UserStore {
       }
     }
 
-    const nextRoleIds = input.roleIds === undefined ? current.roleIds : await this.normalizeRoleIds(input.roleIds);
+    const [nextRoleIds, nextRepositoryIds] = await Promise.all([
+      input.roleIds === undefined ? Promise.resolve(current.roleIds) : this.normalizeRoleIds(input.roleIds),
+      input.repositoryIds === undefined ? Promise.resolve(current.repositoryIds) : this.normalizeRepositoryIds(input.repositoryIds)
+    ]);
     const nextActive = input.active ?? current.active;
     await this.assertAdminUserStillExists(current, nextRoleIds, nextActive);
 
@@ -439,6 +466,7 @@ export class RedisUserStore implements UserStore {
       email: nextEmail,
       active: nextActive,
       roleIds: nextRoleIds,
+      repositoryIds: nextRepositoryIds,
       passwordHash,
       passwordSalt,
       updatedAt: nowIso()
@@ -487,16 +515,18 @@ export class RedisUserStore implements UserStore {
 export class PostgresUserStore implements UserStore {
   constructor(
     private readonly pool: Pool,
-    private readonly roleStore: RoleStore
+    private readonly roleStore: RoleStore,
+    private readonly repositoryStore: RepositoryStore
   ) {}
 
-  private mapUserRow(row: Record<string, unknown>, roleIds: string[]): StoredUserRecord {
+  private mapUserRow(row: Record<string, unknown>, roleIds: string[], repositoryIds: string[]): StoredUserRecord {
     return this.normalizeStoredUser({
       id: String(row.id),
       name: String(row.name ?? ""),
       email: String(row.email ?? ""),
       active: row.active !== false,
       roleIds,
+      repositoryIds,
       passwordHash: String(row.password_hash ?? ""),
       passwordSalt: String(row.password_salt ?? ""),
       lastLoginAt: typeof row.last_login_at === "string" ? row.last_login_at : null,
@@ -512,6 +542,7 @@ export class PostgresUserStore implements UserStore {
       email: normalizeUserEmail(user.email),
       active: user.active !== false,
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
+      repositoryIds: Array.from(new Set((user.repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean))),
       lastLoginAt: user.lastLoginAt ?? null
     };
   }
@@ -537,6 +568,27 @@ export class PostgresUserStore implements UserStore {
     return roleIdsByUser;
   }
 
+  private async getRepositoryIdsForUsers(
+    userIds: string[],
+    db: PostgresQueryable = this.pool
+  ): Promise<Map<string, string[]>> {
+    if (userIds.length === 0) {
+      return new Map();
+    }
+
+    const result = await db.query<{ user_id: string; repository_id: string }>(
+      "SELECT user_id, repository_id FROM user_repositories WHERE user_id = ANY($1::text[]) ORDER BY repository_id ASC",
+      [userIds]
+    );
+    const repositoryIdsByUser = new Map<string, string[]>();
+    for (const row of result.rows) {
+      const repositoryIds = repositoryIdsByUser.get(row.user_id) ?? [];
+      repositoryIds.push(row.repository_id);
+      repositoryIdsByUser.set(row.user_id, repositoryIds);
+    }
+    return repositoryIdsByUser;
+  }
+
   private async getStoredUsers(userIds: string[], db: PostgresQueryable = this.pool): Promise<StoredUserRecord[]> {
     if (userIds.length === 0) {
       return [];
@@ -544,10 +596,11 @@ export class PostgresUserStore implements UserStore {
 
     const result = await db.query("SELECT * FROM users WHERE id = ANY($1::text[])", [userIds]);
     const roleIdsByUser = await this.getRoleIdsForUsers(userIds, db);
+    const repositoryIdsByUser = await this.getRepositoryIdsForUsers(userIds, db);
     const usersById = new Map<string, StoredUserRecord>();
     for (const row of result.rows) {
       const userId = String(row.id);
-      usersById.set(userId, this.mapUserRow(row, roleIdsByUser.get(userId) ?? []));
+      usersById.set(userId, this.mapUserRow(row, roleIdsByUser.get(userId) ?? [], repositoryIdsByUser.get(userId) ?? []));
     }
 
     return userIds.flatMap((userId) => {
@@ -576,6 +629,21 @@ export class PostgresUserStore implements UserStore {
     return uniqueRoleIds;
   }
 
+  private async normalizeRepositoryIds(repositoryIds: string[] | undefined): Promise<string[]> {
+    const uniqueRepositoryIds = Array.from(new Set((repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean)));
+    if (uniqueRepositoryIds.length === 0) {
+      return [];
+    }
+
+    const repositories = await Promise.all(uniqueRepositoryIds.map((repositoryId) => this.repositoryStore.getRepository(repositoryId)));
+    const missingRepositoryId = uniqueRepositoryIds.find((repositoryId, index) => !repositories[index]);
+    if (missingRepositoryId) {
+      throw new HttpError(400, `Unknown repository: ${missingRepositoryId}`);
+    }
+
+    return uniqueRepositoryIds;
+  }
+
   private buildRoleRefs(roles: Role[]): UserRoleRef[] {
     return roles.map((role) => ({
       id: role.id,
@@ -592,6 +660,7 @@ export class PostgresUserStore implements UserStore {
       email: user.email,
       active: user.active,
       roles: this.buildRoleRefs(roles),
+      repositoryIds: user.repositoryIds,
       lastLoginAt: user.lastLoginAt,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt
@@ -673,6 +742,7 @@ export class PostgresUserStore implements UserStore {
       ]
     );
     await db.query("DELETE FROM user_roles WHERE user_id = $1", [nextUser.id]);
+    await db.query("DELETE FROM user_repositories WHERE user_id = $1", [nextUser.id]);
     if (nextUser.roleIds.length > 0) {
       await db.query(
         `
@@ -682,6 +752,17 @@ export class PostgresUserStore implements UserStore {
           ON CONFLICT DO NOTHING
         `,
         [nextUser.id, nextUser.roleIds]
+      );
+    }
+    if (nextUser.repositoryIds.length > 0) {
+      await db.query(
+        `
+          INSERT INTO user_repositories (user_id, repository_id)
+          SELECT $1, repository_id
+          FROM unnest($2::text[]) AS repository_id
+          ON CONFLICT DO NOTHING
+        `,
+        [nextUser.id, nextUser.repositoryIds]
       );
     }
   }
@@ -853,7 +934,10 @@ export class PostgresUserStore implements UserStore {
       throw new HttpError(409, "A user with that email already exists");
     }
 
-    const roleIds = await this.normalizeRoleIds(input.roleIds);
+    const [roleIds, repositoryIds] = await Promise.all([
+      this.normalizeRoleIds(input.roleIds),
+      this.normalizeRepositoryIds(input.repositoryIds)
+    ]);
     const timestamp = nowIso();
     const passwordState = await hashPassword(password);
     const user: StoredUserRecord = {
@@ -862,6 +946,7 @@ export class PostgresUserStore implements UserStore {
       email,
       active: input.active !== false,
       roleIds,
+      repositoryIds,
       passwordHash: passwordState.passwordHash,
       passwordSalt: passwordState.passwordSalt,
       lastLoginAt: null,
@@ -899,7 +984,10 @@ export class PostgresUserStore implements UserStore {
       }
     }
 
-    const nextRoleIds = input.roleIds === undefined ? current.roleIds : await this.normalizeRoleIds(input.roleIds);
+    const [nextRoleIds, nextRepositoryIds] = await Promise.all([
+      input.roleIds === undefined ? Promise.resolve(current.roleIds) : this.normalizeRoleIds(input.roleIds),
+      input.repositoryIds === undefined ? Promise.resolve(current.repositoryIds) : this.normalizeRepositoryIds(input.repositoryIds)
+    ]);
     const nextActive = input.active ?? current.active;
     await this.assertAdminUserStillExists(current, nextRoleIds, nextActive);
 
@@ -922,6 +1010,7 @@ export class PostgresUserStore implements UserStore {
       email: nextEmail,
       active: nextActive,
       roleIds: nextRoleIds,
+      repositoryIds: nextRepositoryIds,
       passwordHash,
       passwordSalt,
       updatedAt: nowIso()

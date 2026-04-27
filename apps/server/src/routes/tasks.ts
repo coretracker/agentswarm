@@ -33,7 +33,7 @@ import {
   requireTaskCapabilityAccess,
   requireTaskExecutionConfigAccess
 } from "../lib/task-capability-access.js";
-import { canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
+import { canUserAccessRepository, canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
 import { writeSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
 import { env } from "../config/env.js";
 
@@ -692,7 +692,7 @@ export const registerTaskRoutes = (
     }
 
     const repository = await deps.repositoryStore.getRepository(parsed.data.repoId);
-    if (!repository) {
+    if (!repository || !canUserAccessRepository(request.auth?.user, parsed.data.repoId)) {
       return reply.status(404).send({ message: "Repository not found" });
     }
 

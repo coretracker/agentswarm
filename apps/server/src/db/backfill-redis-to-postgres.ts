@@ -53,6 +53,7 @@ interface UserRecord extends JsonRecord {
   email: string;
   active?: boolean;
   roleIds?: string[];
+  repositoryIds?: string[];
   passwordHash: string;
   passwordSalt: string;
   lastLoginAt?: string | null;
@@ -318,6 +319,7 @@ const main = async (): Promise<void> => {
           task_interactive_terminal_transcripts,
           task_runs,
           tasks,
+          user_repositories,
           user_roles,
           users,
           roles,
@@ -442,6 +444,12 @@ const main = async (): Promise<void> => {
             repository.updatedAt
           ]
         );
+      }
+
+      for (const user of users) {
+        for (const repositoryId of stringArray(user.repositoryIds)) {
+          await client.query("INSERT INTO user_repositories (user_id, repository_id) VALUES ($1, $2)", [user.id, repositoryId]);
+        }
       }
 
       for (const snippet of snippets) {

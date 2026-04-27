@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
@@ -8,6 +8,7 @@ import type { TaskStore } from "../services/task-store.js";
 import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
 import { applyTaskStartMode } from "../lib/task-start-mode.js";
 import { requireTaskCapabilityAccess, requireTaskExecutionConfigAccess } from "../lib/task-capability-access.js";
+import { canUserAccessRepository } from "../lib/task-ownership.js";
 import { withBranchSyncCounts } from "./tasks.js";
 
 const issueImportSchema = z.object({
@@ -48,6 +49,20 @@ export const registerImportRoutes = (
     auth: AuthService;
   }
 ): void => {
+  const getAccessibleRepository = async (
+    repoId: string,
+    request: FastifyRequest,
+    reply: FastifyReply
+  ) => {
+    const repository = await deps.repositoryStore.getRepository(repoId);
+    if (!repository || !canUserAccessRepository(request.auth?.user, repoId)) {
+      await reply.status(404).send({ message: "Repository not found" });
+      return null;
+    }
+
+    return repository;
+  };
+
   app.get<{ Querystring: { repoId: string } }>("/imports/github/issues", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
     const repoId = String(request.query.repoId ?? "").trim();
     if (!repoId) {
@@ -55,9 +70,9 @@ export const registerImportRoutes = (
     }
 
     try {
-      const repository = await deps.repositoryStore.getRepository(repoId);
+      const repository = await getAccessibleRepository(repoId, request, reply);
       if (!repository) {
-        return reply.status(404).send({ message: "Repository not found" });
+        return;
       }
 
       const issues = await deps.githubImportService.listOpenIssues(repository);
@@ -78,9 +93,9 @@ export const registerImportRoutes = (
     }
 
     try {
-      const repository = await deps.repositoryStore.getRepository(repoId);
+      const repository = await getAccessibleRepository(repoId, request, reply);
       if (!repository) {
-        return reply.status(404).send({ message: "Repository not found" });
+        return;
       }
 
       const pullRequests = await deps.githubImportService.listOpenPullRequests(repository);
@@ -101,9 +116,9 @@ export const registerImportRoutes = (
     }
 
     try {
-      const repository = await deps.repositoryStore.getRepository(repoId);
+      const repository = await getAccessibleRepository(repoId, request, reply);
       if (!repository) {
-        return reply.status(404).send({ message: "Repository not found" });
+        return;
       }
 
       const branches = await deps.githubImportService.listBranches(repository);
@@ -124,9 +139,9 @@ export const registerImportRoutes = (
     }
 
     try {
-      const repository = await deps.repositoryStore.getRepository(parsed.data.repoId);
+      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
       if (!repository) {
-        return reply.status(404).send({ message: "Repository not found" });
+        return;
       }
 
       const { startMode, ...issueRest } = parsed.data;
@@ -183,9 +198,9 @@ export const registerImportRoutes = (
     }
 
     try {
-      const repository = await deps.repositoryStore.getRepository(parsed.data.repoId);
+      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
       if (!repository) {
-        return reply.status(404).send({ message: "Repository not found" });
+        return;
       }
 
       if (!requireTaskCapabilityAccess(request, reply, { taskType: "build", startMode: "run_now" })) {

@@ -218,6 +218,7 @@ export interface User {
   email: string;
   active: boolean;
   roles: UserRoleRef[];
+  repositoryIds: string[];
   lastLoginAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -264,6 +265,7 @@ export interface CreateUserInput {
   password: string;
   active?: boolean;
   roleIds?: string[];
+  repositoryIds?: string[];
 }
 
 export interface UpdateUserInput {
@@ -272,6 +274,7 @@ export interface UpdateUserInput {
   password?: string;
   active?: boolean;
   roleIds?: string[];
+  repositoryIds?: string[];
 }
 
 export interface RepositoryEnvVar {

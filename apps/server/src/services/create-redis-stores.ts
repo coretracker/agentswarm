@@ -33,7 +33,7 @@ export const createRedisStores = (
   const repositoryStore = new RedisRepositoryStore(redisClients.command, eventBus);
   const credentialStore = new RedisCredentialStore(redisClients.command);
   const roleStore = new RedisRoleStore(redisClients.command);
-  const userStore = new RedisUserStore(redisClients.command, roleStore);
+  const userStore = new RedisUserStore(redisClients.command, roleStore, repositoryStore);
   const sessionStore = new RedisSessionStore(redisClients.command, sessionTtlDays);
   const settingsStore = new RedisSettingsStore(redisClients.command, eventBus, credentialStore);
 

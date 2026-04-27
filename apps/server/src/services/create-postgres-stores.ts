@@ -26,7 +26,7 @@ export const createPostgresStores = (
   const repositoryStore = new PostgresRepositoryStore(pool, eventBus);
   const credentialStore = new PostgresCredentialStore(pool);
   const roleStore = new PostgresRoleStore(pool);
-  const userStore = new PostgresUserStore(pool, roleStore);
+  const userStore = new PostgresUserStore(pool, roleStore, repositoryStore);
   const sessionStore = new RedisSessionStore(redisClients.command, sessionTtlDays);
   const settingsStore = new PostgresSettingsStore(pool, eventBus, credentialStore);
 

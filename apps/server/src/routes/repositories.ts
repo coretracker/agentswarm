@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import type { AuthService } from "../lib/auth.js";
 import { sendHttpError } from "../lib/http-error.js";
+import { canUserAccessRepository } from "../lib/task-ownership.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 
 const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -62,7 +63,10 @@ export const registerRepositoryRoutes = (
     auth: AuthService;
   }
 ): void => {
-  app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async () => deps.repositoryStore.listRepositories());
+  app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async (request) => {
+    const repositories = await deps.repositoryStore.listRepositories();
+    return repositories.filter((repository) => canUserAccessRepository(request.auth?.user, repository.id));
+  });
 
   app.post("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:create"]) }, async (request, reply) => {
     const parsed = createRepositorySchema.safeParse(request.body);
@@ -89,6 +93,11 @@ export const registerRepositoryRoutes = (
     }
 
     try {
+      const current = await deps.repositoryStore.getRepository(request.params.id);
+      if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+        return reply.status(404).send({ message: "Repository not found" });
+      }
+
       const updated = await deps.repositoryStore.updateRepository(request.params.id, parsed.data);
       if (!updated) {
         return reply.status(404).send({ message: "Repository not found" });
@@ -105,6 +114,11 @@ export const registerRepositoryRoutes = (
   });
 
   app.delete<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:delete"]) }, async (request, reply) => {
+    const current = await deps.repositoryStore.getRepository(request.params.id);
+    if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
     const deleted = await deps.repositoryStore.deleteRepository(request.params.id);
     if (!deleted) {
       return reply.status(404).send({ message: "Repository not found" });

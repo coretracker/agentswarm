@@ -182,5 +182,17 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS env_vars jsonb NOT NULL DEFAULT '[]'::jsonb;
     `
+  },
+  {
+    id: "20260427_01_user_repository_assignments",
+    sql: `
+      CREATE TABLE IF NOT EXISTS user_repositories (
+        user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        repository_id text NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+        PRIMARY KEY (user_id, repository_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS user_repositories_repository_id_idx ON user_repositories(repository_id);
+    `
   }
 ];

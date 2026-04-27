@@ -66,8 +66,8 @@ export const createAppStores = ({
     ? new PostgresRepositoryStore(requirePool(pool, "repositoryStore"), eventBus)
     : new RedisRepositoryStore(redisClients.command, eventBus);
   const userStore = backends.userStore === "postgres"
-    ? new PostgresUserStore(requirePool(pool, "userStore"), roleStore)
-    : new RedisUserStore(redisClients.command, roleStore);
+    ? new PostgresUserStore(requirePool(pool, "userStore"), roleStore, repositoryStore)
+    : new RedisUserStore(redisClients.command, roleStore, repositoryStore);
   const settingsStore = backends.settingsStore === "postgres"
     ? new PostgresSettingsStore(requirePool(pool, "settingsStore"), eventBus, credentialStore)
     : new RedisSettingsStore(redisClients.command, eventBus, credentialStore);

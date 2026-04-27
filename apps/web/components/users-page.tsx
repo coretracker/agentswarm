@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Role, User } from "@agentswarm/shared-types";
+import type { Repository, Role, User } from "@agentswarm/shared-types";
 import {
   App,
   Button,
@@ -29,7 +29,10 @@ interface UserFormValues {
   password?: string;
   active: boolean;
   roleIds: string[];
+  repositoryIds: string[];
 }
+
+const SYSTEM_ADMIN_ROLE_ID = "admin";
 
 export function UsersPage() {
   const { message } = App.useApp();
@@ -37,6 +40,7 @@ export function UsersPage() {
   const [form] = Form.useForm<UserFormValues>();
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
+  const [repositories, setRepositories] = useState<Repository[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -47,16 +51,19 @@ export function UsersPage() {
   const canDeleteUsers = can("user:delete");
   const canReadRoles = can("settings:read");
   const canEditRoles = can("settings:edit");
+  const canReadRepositories = can("repo:list");
 
   const loadUsers = async () => {
     setLoading(true);
     try {
-      const [nextUsers, nextRoles] = await Promise.all([
+      const [nextUsers, nextRoles, nextRepositories] = await Promise.all([
         api.listUsers(),
-        canReadRoles ? api.listRoles().catch(() => []) : Promise.resolve([])
+        canReadRoles ? api.listRoles().catch(() => []) : Promise.resolve([]),
+        canEditRoles && canReadRepositories ? api.listRepositories().catch(() => []) : Promise.resolve([])
       ]);
       setUsers(nextUsers);
       setRoles(nextRoles);
+      setRepositories(nextRepositories);
     } finally {
       setLoading(false);
     }
@@ -64,7 +71,7 @@ export function UsersPage() {
 
   useEffect(() => {
     void loadUsers();
-  }, [canReadRoles]);
+  }, [canEditRoles, canReadRepositories, canReadRoles]);
 
   const openCreateModal = () => {
     setEditingUser(null);
@@ -73,7 +80,8 @@ export function UsersPage() {
       email: "",
       password: "",
       active: true,
-      roleIds: []
+      roleIds: [],
+      repositoryIds: []
     });
     setModalOpen(true);
   };
@@ -85,12 +93,15 @@ export function UsersPage() {
       email: user.email,
       password: "",
       active: user.active,
-      roleIds: user.roles.map((role) => role.id)
+      roleIds: user.roles.map((role) => role.id),
+      repositoryIds: user.repositoryIds ?? []
     });
     setModalOpen(true);
   };
 
   const currentUserId = session?.user.id ?? null;
+  const selectedRoleIds = Form.useWatch("roleIds", form) ?? [];
+  const adminRoleSelected = selectedRoleIds.includes(SYSTEM_ADMIN_ROLE_ID);
 
   return (
     <>
@@ -207,7 +218,8 @@ export function UsersPage() {
                   email: values.email,
                   password: values.password?.trim() || undefined,
                   active: values.active,
-                  roleIds: canEditRoles ? values.roleIds : undefined
+                  roleIds: canEditRoles ? values.roleIds : undefined,
+                  repositoryIds: canEditRoles ? values.repositoryIds : undefined
                 });
                 message.success("User updated");
               } else {
@@ -216,7 +228,8 @@ export function UsersPage() {
                   email: values.email,
                   password: values.password?.trim() || "",
                   active: values.active,
-                  roleIds: canEditRoles ? values.roleIds : undefined
+                  roleIds: canEditRoles ? values.roleIds : undefined,
+                  repositoryIds: canEditRoles ? values.repositoryIds : undefined
                 });
                 message.success("User created");
               }
@@ -259,6 +272,23 @@ export function UsersPage() {
                 options={roles.map((role) => ({
                   label: role.name,
                   value: role.id
+                }))}
+              />
+            </Form.Item>
+          ) : null}
+          {canEditRoles ? (
+            <Form.Item
+              name="repositoryIds"
+              label="Repositories"
+              extra={adminRoleSelected ? "All repositories (via Admin role)." : "Choose repositories this user can access."}
+            >
+              <Select
+                mode="multiple"
+                disabled={adminRoleSelected}
+                placeholder={adminRoleSelected ? "All repositories (via Admin role)" : "Select repositories"}
+                options={repositories.map((repository) => ({
+                  label: repository.name,
+                  value: repository.id
                 }))}
               />
             </Form.Item>

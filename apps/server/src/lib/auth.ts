@@ -5,7 +5,7 @@ import type { Server as SocketIOServer, Socket } from "socket.io";
 import type { SessionStore } from "../services/session-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { UserStore } from "../services/user-store.js";
-import { canUserAccessTask } from "./task-ownership.js";
+import { canUserAccessRepository, canUserAccessTask } from "./task-ownership.js";
 
 const realtimeScopesByEventType: Record<RealtimeEvent["type"], PermissionScope[]> = {
   "task:created": ["task:list", "task:read"],
@@ -190,6 +190,17 @@ export const createAuthService = ({
     }
   };
 
+  const resolveRepositoryId = (event: RealtimeEvent): string | null => {
+    switch (event.type) {
+      case "repository:created":
+      case "repository:updated":
+      case "repository:deleted":
+        return typeof event.payload.id === "string" ? event.payload.id : null;
+      default:
+        return null;
+    }
+  };
+
   return {
     requireAuth,
     requireAllScopes,
@@ -278,6 +289,27 @@ export const createAuthService = ({
           }
 
           if (!canUserAccessTask(auth.user, { ownerUserId })) {
+            continue;
+          }
+
+          socket.emit(event.type, event.payload);
+        }
+        return;
+      }
+
+      if (event.type.startsWith("repository:")) {
+        const repositoryId = resolveRepositoryId(event);
+        if (!repositoryId) {
+          return;
+        }
+
+        for (const socket of io.sockets.sockets.values()) {
+          const auth = socket.data.auth as RequestAuthContext | undefined;
+          if (!auth || !hasAllScopes(auth.scopes, requiredScopes)) {
+            continue;
+          }
+
+          if (!canUserAccessRepository(auth.user, repositoryId)) {
             continue;
           }
 

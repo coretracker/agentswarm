@@ -11,7 +11,8 @@ const createUserSchema = z.object({
   email: z.string().trim().email(),
   password: z.string().min(1),
   active: z.boolean().optional(),
-  roleIds: z.array(z.string().trim().min(1)).optional()
+  roleIds: z.array(z.string().trim().min(1)).optional(),
+  repositoryIds: z.array(z.string().trim().min(1)).optional()
 });
 
 const updateUserSchema = z.object({
@@ -19,7 +20,8 @@ const updateUserSchema = z.object({
   email: z.string().trim().email().optional(),
   password: z.string().min(1).optional(),
   active: z.boolean().optional(),
-  roleIds: z.array(z.string().trim().min(1)).optional()
+  roleIds: z.array(z.string().trim().min(1)).optional(),
+  repositoryIds: z.array(z.string().trim().min(1)).optional()
 });
 
 export const registerUserRoutes = (
@@ -55,8 +57,11 @@ export const registerUserRoutes = (
         return reply.status(400).send({ message: parsed.error.message });
       }
 
-      if (parsed.data.roleIds !== undefined && !request.auth!.scopes.has("settings:edit")) {
-        return reply.status(403).send({ message: "Role assignment requires settings:edit" });
+      if (
+        (parsed.data.roleIds !== undefined || parsed.data.repositoryIds !== undefined) &&
+        !request.auth!.scopes.has("settings:edit")
+      ) {
+        return reply.status(403).send({ message: "Role or repository assignment requires settings:edit" });
       }
 
       try {
@@ -82,8 +87,11 @@ export const registerUserRoutes = (
         return reply.status(400).send({ message: parsed.error.message });
       }
 
-      if (parsed.data.roleIds !== undefined && !request.auth!.scopes.has("settings:edit")) {
-        return reply.status(403).send({ message: "Role assignment requires settings:edit" });
+      if (
+        (parsed.data.roleIds !== undefined || parsed.data.repositoryIds !== undefined) &&
+        !request.auth!.scopes.has("settings:edit")
+      ) {
+        return reply.status(403).send({ message: "Role or repository assignment requires settings:edit" });
       }
 
       if (parsed.data.active === false && request.params.id === request.auth!.user.id) {
@@ -96,7 +104,7 @@ export const registerUserRoutes = (
           return reply.status(404).send({ message: "User not found" });
         }
 
-        if (parsed.data.active === false || parsed.data.roleIds !== undefined) {
+        if (parsed.data.active === false || parsed.data.roleIds !== undefined || parsed.data.repositoryIds !== undefined) {
           await deps.sessionStore.deleteSessionsForUser(user.id);
         }
 
