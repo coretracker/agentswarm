@@ -771,12 +771,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const allowedEffortOptions = getEffortOptionsForProvider(providerInput).filter(
     (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
   );
-  const canContinueOnBranch =
-    canCreateFollowUp &&
-    !isArchived &&
-    isImplementationTask &&
-    !!task?.branchName &&
-    (task.status === "awaiting_review" || task.status === "open" || task.status === "done");
   const currentTaskProvider = task?.provider ?? "codex";
   const currentTaskProviderProfile = task?.providerProfile ?? "high";
   const currentTaskModelOverride = task?.modelOverride ?? "";
@@ -1833,10 +1827,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     };
   }, [hasActiveTerminalHistoryEntry, loading, messagesLoading, runsLoading, task?.id]);
 
-  const openFollowUp = (mode: FollowUpMode) => {
-    followUpForm.setFieldsValue({ title: "", prompt: "" });
-    setFollowUpMode(mode);
-  };
   const handleInsertSelectedSnippet = () => {
     if (!selectedSnippetId) {
       return;
@@ -2510,11 +2500,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const moreActionItems = task
     ? [
         hasBranchForSync ? { key: "refreshGitStatus", label: "Refresh Git Status" } : null,
-        canRequestLiveDiff ? { key: "refreshDiff", label: "Refresh Diff" } : null,
         canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Session", danger: true } : null,
         canChangeTaskState ? { key: "changeState", label: "Change State" } : null,
         canEditTask && !isArchived ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
-        canContinueOnBranch ? { key: "continue", label: "Continue On Branch" } : null,
         canArchive ? { key: "archive", label: "Archive Task", danger: true } : null,
         canDelete ? { key: "delete", label: "Delete Task", danger: true } : null
       ].filter(Boolean)
@@ -2653,11 +2641,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               return;
             }
 
-            if (key === "refreshDiff") {
-              triggerGitRefresh();
-              return;
-            }
-
             if (key === "refreshGitStatus") {
               void refreshBranchSyncCounts();
               return;
@@ -2670,11 +2653,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
             if (key === "changeState") {
               openTaskStateModal();
-              return;
-            }
-
-            if (key === "continue") {
-              openFollowUp("continue");
               return;
             }
 
