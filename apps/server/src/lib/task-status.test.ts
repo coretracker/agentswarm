@@ -23,6 +23,10 @@ describe("normalizeTaskLifecycleStatus", () => {
     assert.equal(normalizeTaskLifecycleStatus("accepted", "build", false), "open");
   });
 
+  it("preserves explicit done state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("done", "build", false), "done");
+  });
+
   it("preserves queued and active statuses", () => {
     assert.equal(normalizeTaskLifecycleStatus("build_queued", "build", false), "build_queued");
     assert.equal(normalizeTaskLifecycleStatus("asking", "ask", false), "asking");
@@ -35,9 +39,13 @@ describe("reconcileTaskStatusWithPendingCheckpoint", () => {
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("open", true), "awaiting_review");
   });
 
-  it("returns review and legacy-ready states to open when no checkpoint is pending", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("awaiting_review", false), "open");
+  it("returns legacy-ready states to open when no checkpoint is pending", () => {
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("accepted", false), "open");
+  });
+
+  it("preserves explicit review and done states when no checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("awaiting_review", false), "awaiting_review");
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("done", false), "done");
   });
 
   it("keeps archived tasks unchanged", () => {

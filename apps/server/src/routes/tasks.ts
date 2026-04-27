@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   getCheckpointMutationBlockedReason,
   isActiveTaskStatus,
+  isQueuedTaskStatus,
   TASK_PROMPT_ATTACHMENT_MAX_COUNT,
   type Task,
   type TaskAction,
@@ -84,6 +85,10 @@ const updateTaskPinSchema = z.object({
 
 const updateTaskTitleSchema = z.object({
   title: z.string().trim().min(1).max(500)
+});
+
+const updateTaskStateSchema = z.object({
+  status: z.enum(["open", "awaiting_review", "done"])
 });
 
 const applyTaskChangeProposalSchema = z.object({
@@ -930,6 +935,40 @@ export const registerTaskRoutes = (
     return reply.send(updated);
   });
 
+  app.patch<{ Params: { id: string } }>("/tasks/:id/state", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateTaskStateSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    if (isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {
+      return reply.status(409).send({ message: "Task state cannot be changed while the task is queued or running" });
+    }
+
+    if (task.status === parsed.data.status) {
+      return reply.send(await withBranchSyncCounts(deps.spawner, task));
+    }
+
+    const updated = await deps.taskStore.setStatus(task.id, parsed.data.status, {
+      enqueued: false,
+      errorMessage: null
+    });
+    if (!updated) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    return reply.send(await withBranchSyncCounts(deps.spawner, updated));
+  });
+
   app.post<{ Params: { id: string } }>("/tasks/:id/messages", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const parsed = createTaskMessageSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -1208,8 +1247,8 @@ export const registerTaskRoutes = (
     }
 
     const canPublishBuild =
-      task.taskType === "build" && (task.status === "awaiting_review" || task.status === "open" || task.status === "failed");
-    const canAcceptAsk = task.taskType === "ask" && task.status === "open" && Boolean(task.resultMarkdown?.trim());
+      task.taskType === "build" && (task.status === "awaiting_review" || task.status === "open" || task.status === "done" || task.status === "failed");
+    const canAcceptAsk = task.taskType === "ask" && (task.status === "open" || task.status === "done") && Boolean(task.resultMarkdown?.trim());
     if (!canPublishBuild && !canAcceptAsk) {
       return reply.status(409).send({ message: "Only ready task results can be accepted" });
     }

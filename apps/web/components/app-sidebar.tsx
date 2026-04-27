@@ -63,7 +63,7 @@ function getStatusAccentColor(task: Task, token: ReturnType<typeof antTheme.useT
     return token.colorWarning;
   }
 
-  if (task.status === "open") {
+  if (task.status === "open" || task.status === "done") {
     return token.colorSuccess;
   }
 

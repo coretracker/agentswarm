@@ -67,6 +67,7 @@ export type TaskStatus =
   | "asking"
   | "open"
   | "awaiting_review"
+  | "done"
   | "completed"
   | "answered"
   | "accepted"
@@ -711,6 +712,10 @@ export interface UpdateTaskTitleInput {
   title: string;
 }
 
+export interface UpdateTaskStateInput {
+  status: Extract<TaskStatus, "open" | "awaiting_review" | "done">;
+}
+
 export interface CreateTaskMessageInput {
   content: string;
   attachments?: CreateTaskPromptAttachmentInput[];
@@ -825,6 +830,7 @@ export const getTaskStatusLabel = (status: TaskStatus): string =>
     asking: "Answering",
     open: "Open",
     awaiting_review: "Awaiting Review",
+    done: "Done",
     completed: "Completed",
     answered: "Answered",
     accepted: "Accepted",

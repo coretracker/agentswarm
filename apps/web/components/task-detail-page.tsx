@@ -494,6 +494,12 @@ function getGitHubDiffTarget(task: Task, existingPullRequest?: GitHubPullRequest
 }
 
 type FollowUpMode = "continue" | null;
+type EditableTaskState = Extract<Task["status"], "open" | "awaiting_review" | "done">;
+const taskStateOptions: Array<{ value: EditableTaskState; label: string }> = [
+  { value: "open", label: "Open" },
+  { value: "awaiting_review", label: "In Review" },
+  { value: "done", label: "Done" }
+];
 
 function ExpandableMessageContent({ children, fadeColor }: { children: ReactNode; fadeColor: string }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -610,6 +616,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "continue"
     | "message"
     | "pin"
+    | "state"
     | "renameTitle"
     | "editComment"
   >(null);
@@ -631,6 +638,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [mergePreviewError, setMergePreviewError] = useState<string | null>(null);
   const [mergeCommitMessage, setMergeCommitMessage] = useState("");
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
+  const [taskStateModalOpen, setTaskStateModalOpen] = useState(false);
+  const [taskStateDraft, setTaskStateDraft] = useState<EditableTaskState>("open");
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
   const [applyCheckpointModalProposal, setApplyCheckpointModalProposal] = useState<TaskChangeProposal | null>(null);
@@ -711,6 +720,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setApplyCheckpointCommitMessage("");
     setApplyCheckpointCommitMessageGenerating(false);
     setEditCheckpointModalState(null);
+    setTaskStateModalOpen(false);
+    setTaskStateDraft("open");
     setTaskPageVisible(false);
     initialBottomScrollStateRef.current = null;
   }, [taskId]);
@@ -747,6 +758,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const pushCount = task?.pushCount ?? 0;
   const canDelete = canDeleteTask && !!task && !isActive;
   const canArchive = canEditTask && !!task && !isActive && !isArchived;
+  const canChangeTaskState = canEditTask && !!task && !isArchived && !isQueued && !isActive;
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
   const roleAllowedModels = session?.user.allowedModels ?? [];
   const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
@@ -764,7 +776,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     !isArchived &&
     isImplementationTask &&
     !!task?.branchName &&
-    (task.status === "awaiting_review" || task.status === "open");
+    (task.status === "awaiting_review" || task.status === "open" || task.status === "done");
   const currentTaskProvider = task?.provider ?? "codex";
   const currentTaskProviderProfile = task?.providerProfile ?? "high";
   const currentTaskModelOverride = task?.modelOverride ?? "";
@@ -2088,6 +2100,41 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
+  const openTaskStateModal = () => {
+    if (!task) {
+      return;
+    }
+
+    const currentState: EditableTaskState =
+      task.status === "awaiting_review" || task.status === "done"
+        ? task.status
+        : "open";
+    setTaskStateDraft(currentState);
+    setTaskStateModalOpen(true);
+  };
+  const closeTaskStateModal = () => {
+    if (submitting === "state") {
+      return;
+    }
+    setTaskStateModalOpen(false);
+  };
+  const confirmTaskStateChange = async () => {
+    if (!task || !canChangeTaskState) {
+      return;
+    }
+
+    setSubmitting("state");
+    try {
+      const updatedTask = await api.updateTaskState(task.id, { status: taskStateDraft });
+      applyUpdatedTask(updatedTask);
+      setTaskStateModalOpen(false);
+      messageApi.success(`Task set to ${getTaskStatusLabel(updatedTask.status)}`);
+    } catch (error) {
+      showTaskActionError(error, "Failed to update task state");
+    } finally {
+      setSubmitting((current) => (current === "state" ? null : current));
+    }
+  };
   const loadPushPreview = async () => {
     if (!task) {
       return;
@@ -2465,6 +2512,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         hasBranchForSync ? { key: "refreshGitStatus", label: "Refresh Git Status" } : null,
         canRequestLiveDiff ? { key: "refreshDiff", label: "Refresh Diff" } : null,
         canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Session", danger: true } : null,
+        canChangeTaskState ? { key: "changeState", label: "Change State" } : null,
         canEditTask && !isArchived ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
         canContinueOnBranch ? { key: "continue", label: "Continue On Branch" } : null,
         canArchive ? { key: "archive", label: "Archive Task", danger: true } : null,
@@ -2620,6 +2668,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               return;
             }
 
+            if (key === "changeState") {
+              openTaskStateModal();
+              return;
+            }
+
             if (key === "continue") {
               openFollowUp("continue");
               return;
@@ -2647,7 +2700,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }}
         trigger={["click"]}
       >
-        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "killTerminal" || submitting === "merge"}>
+        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "killTerminal" || submitting === "merge" || submitting === "state"}>
           More
         </Button>
       </Dropdown>
@@ -3964,6 +4017,29 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             />
           </div>
         </Flex>
+      </Modal>
+      <Modal
+        title="Change State"
+        open={taskStateModalOpen}
+        onCancel={closeTaskStateModal}
+        destroyOnClose
+        onOk={() => void confirmTaskStateChange()}
+        okText="Save"
+        confirmLoading={submitting === "state"}
+        okButtonProps={{ disabled: !canChangeTaskState }}
+      >
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            Pick the state shown for this task. This does not archive it.
+          </Typography.Paragraph>
+          <Select
+            value={taskStateDraft}
+            options={taskStateOptions}
+            style={{ width: "100%" }}
+            onChange={(value) => setTaskStateDraft(value as EditableTaskState)}
+            disabled={submitting === "state" || !canChangeTaskState}
+          />
+        </Space>
       </Modal>
       <Modal
         title="Rename task"

@@ -7,14 +7,6 @@ import {
   type TaskStatus
 } from "@agentswarm/shared-types";
 
-const readyLikeStatuses = new Set<TaskStatus | "completed" | "answered" | "accepted">([
-  "open",
-  "awaiting_review",
-  "completed",
-  "answered",
-  "accepted"
-]);
-
 export const resolveTaskReadyStatus = (hasPendingCheckpoint: boolean): TaskStatus =>
   hasPendingCheckpoint ? "awaiting_review" : "open";
 
@@ -30,7 +22,7 @@ export const reconcileTaskStatusWithPendingCheckpoint = (
     return "awaiting_review";
   }
 
-  if (readyLikeStatuses.has(status)) {
+  if (status === "completed" || status === "answered" || status === "accepted") {
     return "open";
   }
 
@@ -50,6 +42,7 @@ export const normalizeTaskLifecycleStatus = (
     status === "asking" ||
     status === "open" ||
     status === "awaiting_review" ||
+    status === "done" ||
     status === "completed" ||
     status === "answered" ||
     status === "accepted" ||

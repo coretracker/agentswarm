@@ -66,6 +66,7 @@ const currentTaskStatuses = new Set<TaskStatus>([
   "asking",
   "open",
   "awaiting_review",
+  "done",
   "completed",
   "answered",
   "accepted",
