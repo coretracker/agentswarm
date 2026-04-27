@@ -123,7 +123,8 @@ function normalizeAiCommitSubject(raw: string): string {
     .replace(/^'+|'+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  return cleaned.slice(0, 200);
+  const withoutConventionalPrefix = cleaned.replace(/^[a-z]+(?:\([^)]+\))?!?:\s*/i, "").trim();
+  return (withoutConventionalPrefix || cleaned).slice(0, 200);
 }
 
 const taskActionLabel: Record<ComposerAction | TaskAction, string> = {
@@ -3102,7 +3103,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         filePath,
         selectedSnippet: diffSnippet,
         userPrompt:
-          "Generate one git commit subject line based on these changes. Use conventional commit style when appropriate. Return only the subject line with no quotes, bullets, markdown, or explanation."
+          "Generate one git commit subject line based on these changes. Do not use conventional commit prefixes (for example: feat:, feat(scope):, fix:, chore:). Return only a plain subject line with no quotes, bullets, markdown, or explanation."
       });
       const candidate = normalizeAiCommitSubject(response.text);
       if (!candidate) {
