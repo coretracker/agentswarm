@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import type { AuthService } from "../lib/auth.js";
 import { sendHttpError } from "../lib/http-error.js";
-import { canUserAccessRepository, isAdminUser } from "../lib/task-ownership.js";
+import { canUserAccessRepository } from "../lib/task-ownership.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { UserStore } from "../services/user-store.js";
 
@@ -79,7 +79,7 @@ export const registerRepositoryRoutes = (
     try {
       const repository = await deps.repositoryStore.createRepository(parsed.data);
       const authUser = request.auth?.user;
-      if (authUser && !isAdminUser(authUser)) {
+      if (authUser) {
         const creator = await deps.userStore.getUser(authUser.id);
         if (creator) {
           const resolvedRepositoryIds = await Promise.all(
