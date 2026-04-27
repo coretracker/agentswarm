@@ -49,6 +49,7 @@ const INTERACTIVE_WS_PING_INTERVAL_MS = 25_000;
 const INTERACTIVE_TRANSCRIPT_LIMIT = 2_000_000;
 const INTERACTIVE_EXIT_WAIT_MS = 1_500;
 const INTERACTIVE_TERMINAL_CLOSE_CODE = 1012;
+const PROVIDER_SESSION_ID_FILE = "agentswarm-session-id.txt";
 
 function normalizeTerminalSessionMode(value: string | null | undefined): TaskTerminalSessionMode {
   return value === "git" ? "git" : "interactive";
@@ -84,7 +85,6 @@ function shellSingleQuote(value: string): string {
 
 function buildCodexStartScript(configB64: string, model: string, reasoningEffort: string): string {
   const codexArgs = [
-    "exec codex",
     "--dangerously-bypass-approvals-and-sandbox",
     '-C "$TASK_INTERACTIVE_WORKSPACE"',
     "-m",
@@ -99,7 +99,11 @@ function buildCodexStartScript(configB64: string, model: string, reasoningEffort
     "mkdir -p ~/.codex",
     `printf '%s' ${shellSingleQuote(configB64)} | base64 -d > ~/.codex/config.toml`,
     'printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file',
-    codexArgs.join(" "),
+    `SESSION_FILE="$HOME/.codex/${PROVIDER_SESSION_ID_FILE}"`,
+    'SESSION_ID=""',
+    'if [ -f "$SESSION_FILE" ]; then IFS= read -r SESSION_ID < "$SESSION_FILE" || true; fi',
+    `if [ -n "$SESSION_ID" ]; then exec codex resume ${codexArgs.join(" ")} "$SESSION_ID"; fi`,
+    `exec codex ${codexArgs.join(" ")}`,
   ].join(" && ");
 }
 
@@ -126,7 +130,11 @@ function buildClaudeStartScript(model: string, settingsJson: string): string {
     'if [ ! -x "$CLAUDE_BIN" ]; then CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"; fi',
     'if [ -z "$CLAUDE_BIN" ] || [ ! -x "$CLAUDE_BIN" ]; then echo "Claude CLI not found in image." >&2; exit 127; fi',
     'cd "$TASK_INTERACTIVE_WORKSPACE"',
+    `SESSION_FILE="$HOME/.claude/${PROVIDER_SESSION_ID_FILE}"`,
+    'SESSION_ID=""',
+    'if [ -f "$SESSION_FILE" ]; then IFS= read -r SESSION_ID < "$SESSION_FILE" || true; fi',
     "sleep 1",
+    `if [ -n "$SESSION_ID" ]; then exec "$CLAUDE_BIN" --resume "$SESSION_ID" ${claudeArgs.join(" ")}; fi`,
     `exec "$CLAUDE_BIN" ${claudeArgs.join(" ")}`
   ].join(" && ");
 }
