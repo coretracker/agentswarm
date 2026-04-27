@@ -1959,8 +1959,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     try {
       await api.deleteTask(task.id);
       setDeleteConfirmOpen(false);
-      setRedirectingToTaskList(true);
-      messageApi.success("Task deleted");
+      router.replace("/tasks");
     } catch (error) {
       showTaskActionError(error, "Failed to delete task");
     } finally {
