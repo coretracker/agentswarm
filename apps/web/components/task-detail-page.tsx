@@ -70,6 +70,7 @@ import { ArrowRightOutlined, CopyOutlined, EditOutlined, LoadingOutlined, MoreOu
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
+import { Highlight, themes, type Language } from "prism-react-renderer";
 import { Diff, Hunk, type FileData } from "react-diff-view";
 import remarkGfm from "remark-gfm";
 import { api, ApiError, type TaskInteractiveTerminalStatus } from "../src/api/client";
@@ -1582,7 +1583,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       );
     },
     code: ({ children, className }: { children?: React.ReactNode; className?: string }) => {
-      const language = className?.replace("language-", "").trim().toLowerCase();
+      const language = className ? className.replace("language-", "").trim().toLowerCase() : undefined;
       const codeValue = (Array.isArray(children) ? children.join("") : String(children ?? "")).replace(/\n$/, "");
 
       if (language === "diff" || codeValue.startsWith("diff --git")) {
@@ -1591,9 +1592,37 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
       if (className) {
         return (
-          <pre style={{ margin: 0, padding: 12, overflow: "auto", background: "rgba(0,0,0,0.02)", borderRadius: 8 }}>
-            <code className={className}>{children}</code>
-          </pre>
+          <Highlight
+            code={codeValue}
+            language={(language ?? "text") as Language}
+            theme={themes.github}
+          >
+            {({ className: highlightClassName, style, tokens, getLineProps, getTokenProps }) => {
+              const combinedClassName = [highlightClassName, className].filter(Boolean).join(" ").trim();
+
+              return (
+                <pre
+                  className={combinedClassName || undefined}
+                  style={{
+                    ...(style ?? {}),
+                    margin: 0,
+                    padding: 12,
+                    overflow: "auto",
+                    borderRadius: 8,
+                    background: style?.backgroundColor ?? "rgba(0,0,0,0.02)"
+                  }}
+                >
+                  {tokens.map((line, i) => (
+                    <div key={i} {...getLineProps({ line, key: i })}>
+                      {line.map((token, key) => (
+                        <span key={key} {...getTokenProps({ token, key })} />
+                      ))}
+                    </div>
+                  ))}
+                </pre>
+              );
+            }}
+          </Highlight>
         );
       }
 
