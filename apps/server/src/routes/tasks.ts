@@ -5,10 +5,6 @@ import {
   getCheckpointMutationBlockedReason,
   isActiveTaskStatus,
   TASK_PROMPT_ATTACHMENT_MAX_COUNT,
-  TASK_CONTEXT_ENTRY_MAX_CONTENT_LENGTH,
-  TASK_CONTEXT_ENTRY_MAX_COUNT,
-  TASK_CONTEXT_ENTRY_MAX_LABEL_LENGTH,
-  TASK_CONTEXT_TOTAL_MAX_CHARS,
   type Task,
   type TaskAction,
   type TaskPromptAttachment,
@@ -94,29 +90,11 @@ const applyTaskChangeProposalSchema = z.object({
   commitMessage: z.string().trim().min(1).max(200).optional()
 });
 
-const taskContextEntrySchema = z.object({
-  kind: z.enum(["message", "run", "proposal", "terminal_session"]),
-  label: z.string().trim().min(1).max(TASK_CONTEXT_ENTRY_MAX_LABEL_LENGTH),
-  content: z.string().trim().min(1).max(TASK_CONTEXT_ENTRY_MAX_CONTENT_LENGTH)
+const createTaskMessageSchema = z.object({
+  content: z.string().trim().min(1),
+  action: z.enum(["build", "ask", "comment"]).optional(),
+  attachments: z.array(taskPromptAttachmentInputSchema).max(TASK_PROMPT_ATTACHMENT_MAX_COUNT).optional()
 });
-
-const createTaskMessageSchema = z
-  .object({
-    content: z.string().trim().min(1),
-    action: z.enum(["build", "ask", "comment"]).optional(),
-    contextEntries: z.array(taskContextEntrySchema).max(TASK_CONTEXT_ENTRY_MAX_COUNT).optional(),
-    attachments: z.array(taskPromptAttachmentInputSchema).max(TASK_PROMPT_ATTACHMENT_MAX_COUNT).optional()
-  })
-  .superRefine((data, ctx) => {
-    const totalContextChars = (data.contextEntries ?? []).reduce((sum, entry) => sum + entry.label.length + entry.content.length, 0);
-    if (totalContextChars > TASK_CONTEXT_TOTAL_MAX_CHARS) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `Selected context is too large. Keep it under ${TASK_CONTEXT_TOTAL_MAX_CHARS.toLocaleString()} characters.`,
-        path: ["contextEntries"]
-      });
-    }
-  });
 
 const updateTaskMessageSchema = z.object({
   content: z.string().trim().min(1)
@@ -742,7 +720,6 @@ export const registerTaskRoutes = (
         spawner: deps.spawner
       }, {
         content: createPayload.prompt.trim(),
-        contextEntries: [],
         ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
       });
       return reply.status(201).send(await withBranchSyncCounts(deps.spawner, result));
@@ -1005,7 +982,6 @@ export const registerTaskRoutes = (
       role: "user",
       action,
       content: parsed.data.content,
-      contextEntries: parsed.data.contextEntries ?? [],
       attachments: persistedAttachments
     });
 
@@ -1016,7 +992,6 @@ export const registerTaskRoutes = (
 
     const accepted = await deps.scheduler.triggerAction(task.id, action, {
       content: parsed.data.content,
-      contextEntries: parsed.data.contextEntries ?? [],
       ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
     });
     if (!accepted) {

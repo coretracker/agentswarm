@@ -76,11 +76,6 @@ export type TaskStatus =
 
 export type TaskAction = "build" | "ask";
 export type TaskMessageAction = TaskAction | "comment";
-export type TaskContextEntryKind = "message" | "run" | "proposal" | "terminal_session";
-export const TASK_CONTEXT_ENTRY_MAX_COUNT = 8;
-export const TASK_CONTEXT_ENTRY_MAX_LABEL_LENGTH = 160;
-export const TASK_CONTEXT_ENTRY_MAX_CONTENT_LENGTH = 2_500;
-export const TASK_CONTEXT_TOTAL_MAX_CHARS = 12_000;
 export const TASK_PROMPT_ATTACHMENT_MAX_COUNT = 6;
 export const TASK_PROMPT_ATTACHMENT_MAX_SIZE_BYTES = 6 * 1024 * 1024;
 export const TASK_PROMPT_ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
@@ -438,8 +433,6 @@ export interface TaskMessage {
   role: TaskMessageRole;
   content: string;
   action: TaskMessageAction | null;
-  /** Optional saved context entries that were attached when the user submitted this message. */
-  contextEntries?: TaskContextEntry[];
   /** Optional saved image attachments that were attached when the user submitted this message. */
   attachments?: TaskPromptAttachment[];
   /** Present for interactive terminal lifecycle messages so history can address the terminal session. */
@@ -447,15 +440,8 @@ export interface TaskMessage {
   createdAt: string;
 }
 
-export interface TaskContextEntry {
-  kind: TaskContextEntryKind;
-  label: string;
-  content: string;
-}
-
 export interface TaskExecutionInput {
   content: string;
-  contextEntries?: TaskContextEntry[];
   attachments?: TaskPromptAttachment[];
 }
 
@@ -727,7 +713,6 @@ export interface UpdateTaskTitleInput {
 
 export interface CreateTaskMessageInput {
   content: string;
-  contextEntries?: TaskContextEntry[];
   attachments?: CreateTaskPromptAttachmentInput[];
   action?: TaskMessageAction;
 }

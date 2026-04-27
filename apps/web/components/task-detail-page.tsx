@@ -15,11 +15,8 @@ import {
   getModelsForProvider,
   isActiveTaskStatus,
   isTaskWorking,
-  TASK_CONTEXT_ENTRY_MAX_COUNT,
-  TASK_CONTEXT_TOTAL_MAX_CHARS,
   type Task,
   type TaskAction,
-  type TaskContextEntry,
   type TaskMessageAction,
   type TaskMessage,
   type TaskPromptAttachment,
@@ -88,7 +85,6 @@ import {
   type SelectedTaskPromptImageFile
 } from "../src/utils/task-prompt-attachments";
 import { insertSnippetContent } from "../src/utils/snippets";
-import { serializeTaskHistoryContextEntry } from "../src/utils/task-history-context";
 import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
@@ -114,20 +110,6 @@ const taskActionLabel: Record<ComposerAction | TaskAction, string> = {
   comment: "Comment",
   interactive: "Interactive",
   terminal: "Terminal"
-};
-
-const taskContextKindLabel: Record<TaskContextEntry["kind"], string> = {
-  message: "Message",
-  run: "Run",
-  proposal: "Checkpoint",
-  terminal_session: "Terminal"
-};
-
-const taskContextKindColor: Record<TaskContextEntry["kind"], string> = {
-  message: "default",
-  run: "blue",
-  proposal: "gold",
-  terminal_session: "green"
 };
 
 function getAllowedComposerActions(
@@ -581,7 +563,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [diffBranchesLoading, setDiffBranchesLoading] = useState(false);
   const [followUpForm] = Form.useForm();
   const [chatInput, setChatInput] = useState("");
-  const [selectedContextEntryKeys, setSelectedContextEntryKeys] = useState<string[]>([]);
   const [providerInput, setProviderInput] = useState<AgentProvider>("codex");
   const [providerProfileInput, setProviderProfileInput] = useState<ProviderProfile>("high");
   const [modelInput, setModelInput] = useState<string>("gpt-5.4");
@@ -1777,29 +1758,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     () => chatTimeline,
     [chatTimeline]
   );
-  const serializedContextEntriesByKey = useMemo(
-    () => new Map(historicalChatTimeline.map((entry) => {
-      const serialized = serializeTaskHistoryContextEntry(entry);
-      return [serialized.key, serialized] as const;
-    })),
-    [historicalChatTimeline]
-  );
-  const selectedContextEntries = useMemo(
-    () =>
-      selectedContextEntryKeys
-        .map((key) => serializedContextEntriesByKey.get(key) ?? null)
-        .filter((entry): entry is NonNullable<typeof entry> => entry !== null),
-    [selectedContextEntryKeys, serializedContextEntriesByKey]
-  );
-  const selectedContextSize = useMemo(
-    () => selectedContextEntries.reduce((sum, entry) => sum + entry.size, 0),
-    [selectedContextEntries]
-  );
   const hasActiveTerminalHistoryEntry = activeTerminalHistoryEntry !== null;
-
-  useEffect(() => {
-    setSelectedContextEntryKeys((current) => current.filter((key) => serializedContextEntriesByKey.has(key)));
-  }, [serializedContextEntriesByKey]);
 
   useEffect(() => {
     if (interactiveTerminalRunning) {
@@ -1862,31 +1821,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     followUpForm.setFieldsValue({ title: "", prompt: "" });
     setFollowUpMode(mode);
   };
-  const handleToggleHistoryContext = (entryKey: string) => {
-    const serialized = serializedContextEntriesByKey.get(entryKey);
-    if (!serialized) {
-      return;
-    }
-
-    setSelectedContextEntryKeys((current) => {
-      if (current.includes(entryKey)) {
-        return current.filter((key) => key !== entryKey);
-      }
-
-      if (current.length >= TASK_CONTEXT_ENTRY_MAX_COUNT) {
-        messageApi.error(`You can add up to ${TASK_CONTEXT_ENTRY_MAX_COUNT} history items to context.`);
-        return current;
-      }
-
-      const nextSize = current.reduce((sum, key) => sum + (serializedContextEntriesByKey.get(key)?.size ?? 0), 0) + serialized.size;
-      if (nextSize > TASK_CONTEXT_TOTAL_MAX_CHARS) {
-        messageApi.error(`Selected context is full. Keep it under ${TASK_CONTEXT_TOTAL_MAX_CHARS.toLocaleString()} characters.`);
-        return current;
-      }
-
-      return [...current, entryKey];
-    });
-  };
   const handleInsertSelectedSnippet = () => {
     if (!selectedSnippetId) {
       return;
@@ -1919,7 +1853,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const composerHasChangesToClear =
     !!selectedSnippetId ||
     selectedPromptImageFiles.length > 0 ||
-    selectedContextEntryKeys.length > 0 ||
     !!chatInput.trim() ||
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
@@ -1937,14 +1870,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           (selectedChatActionRequiresPrompt && chatInput.trim().length === 0) ||
           (selectedPromptImageFiles.length > 0 && !canAttachPromptImages);
   const chatSubmitLabel = selectedChatAction === "comment" ? "Add Comment" : "Start";
-  const handleClearSelectedContext = () => {
-    setSelectedContextEntryKeys([]);
-  };
   const handleConfirmClearComposer = () => {
     setSelectedSnippetId(null);
     setSelectedPromptImageFiles([]);
     setChatInput("");
-    handleClearSelectedContext();
     if (task) {
       const nextProvider = currentTaskProvider;
       setProviderInput(nextProvider);
@@ -1992,12 +1921,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setSubmitting("message");
     try {
       const encodedAttachments = canAttachPromptImages ? await encodeTaskPromptImageFiles(selectedPromptImageFiles) : [];
-      const contextEntries =
-        selectedChatAction === "comment" ? undefined : selectedContextEntries.map((entry) => entry.entry);
       const updatedTask = await api.createTaskMessage(task.id, {
         content: chatInput.trim(),
         action: selectedChatAction,
-        contextEntries,
         ...(encodedAttachments.length > 0 ? { attachments: encodedAttachments } : {})
       });
       setTask((current) =>
@@ -2886,58 +2812,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     </Space>
   ) : null;
 
-  const selectedContextPanel = selectedContextEntries.length > 0 ? (
-    <Card
-      size="small"
-      bodyStyle={{ padding: "12px 14px" }}
-      style={{ background: token.colorInfoBg, borderColor: token.colorInfoBorder }}
-    >
-      <Flex vertical gap={10}>
-        <Flex justify="space-between" align="center" gap={12} wrap="wrap">
-          <Typography.Text strong>Selected context</Typography.Text>
-          <Space size={8} wrap>
-            <Typography.Text type="secondary">
-              {selectedContextEntries.length}/{TASK_CONTEXT_ENTRY_MAX_COUNT} items · {selectedContextSize.toLocaleString()}/
-              {TASK_CONTEXT_TOTAL_MAX_CHARS.toLocaleString()} chars
-            </Typography.Text>
-            <Button size="small" onClick={handleClearSelectedContext}>
-              Clear
-            </Button>
-          </Space>
-        </Flex>
-        <Space direction="vertical" size={8} style={{ width: "100%" }}>
-          {selectedContextEntries.map((contextEntry) => (
-            <Flex
-              key={contextEntry.key}
-              justify="space-between"
-              align="flex-start"
-              gap={12}
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                borderRadius: 8,
-                border: `1px solid ${token.colorBorderSecondary}`,
-                background: token.colorBgContainer
-              }}
-            >
-              <Flex vertical gap={2} style={{ minWidth: 0 }}>
-                <Typography.Text strong ellipsis={{ tooltip: contextEntry.label }}>
-                  {contextEntry.label}
-                </Typography.Text>
-                <Typography.Text type="secondary" style={{ whiteSpace: "pre-wrap" }}>
-                  {contextEntry.preview}
-                </Typography.Text>
-              </Flex>
-              <Button size="small" type="text" onClick={() => handleToggleHistoryContext(contextEntry.key)}>
-                Remove
-              </Button>
-            </Flex>
-          ))}
-        </Space>
-      </Flex>
-    </Card>
-  ) : null;
-
   const aiSettingsSummary = useMemo(
     () =>
       [
@@ -2966,7 +2840,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         disabled={chatInputDisabled}
         style={{ resize: "none" }}
       />
-      {selectedContextPanel}
       {canAttachPromptImages || selectedPromptImageFiles.length > 0 ? (
         <>
           <Divider style={{ margin: 0 }} />
@@ -3059,7 +2932,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               </Button>
               <Popconfirm
                 title="Clear composer?"
-                description="This will clear the message input, selected context, selected reference images, and reset the AI settings to this task's defaults."
+                description="This will clear the message input, selected reference images, and reset the AI settings to this task's defaults."
                 okText="Clear"
                 cancelText="Cancel"
                 okButtonProps={{ danger: true }}
@@ -3482,64 +3355,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     </span>
   );
 
-  const renderHistoryContextToggleButton = (entryKey: string) => {
-    const selected = selectedContextEntryKeys.includes(entryKey);
-    return (
-      <span onClick={(event) => event.stopPropagation()}>
-        <Button size="small" disabled={!canEditTask || isArchived} onClick={() => handleToggleHistoryContext(entryKey)}>
-          {selected ? "Remove from context" : "Add to context"}
-        </Button>
-      </span>
-    );
-  };
-
-  const getHistoryContextCardStyle = (entryKey: string, baseStyle?: CSSProperties): CSSProperties => {
-    const selected = selectedContextEntryKeys.includes(entryKey);
-    return {
-      ...baseStyle,
-      borderInlineStart: selected ? `4px solid ${token.colorInfo}` : baseStyle?.borderInlineStart,
-      transition: "border-color 0.2s ease, border-inline-start-color 0.2s ease"
-    };
-  };
-
-  const renderPersistedMessageContext = (message: TaskMessage, collapseKey: string) => {
-    const contextEntries = message.contextEntries ?? [];
-    if (message.role !== "user" || contextEntries.length === 0) {
-      return null;
-    }
-
-    const contextCollapseItems = contextEntries.map((contextEntry, index) => ({
-      key: `${collapseKey}-context-${index}`,
-      label: (
-        <Space wrap size={8}>
-          <Tag color={taskContextKindColor[contextEntry.kind]} style={{ marginInlineEnd: 0 }}>
-            {taskContextKindLabel[contextEntry.kind]}
-          </Tag>
-          <Typography.Text strong>{contextEntry.label}</Typography.Text>
-        </Space>
-      ),
-      children: (
-        <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}>
-          {contextEntry.content}
-        </Typography.Paragraph>
-      )
-    }));
-
-    return (
-      <Collapse
-        size="small"
-        items={[
-          {
-            key: `${collapseKey}-context`,
-            label: `Additional context (${contextEntries.length})`,
-            children: (
-              <Collapse size="small" defaultActiveKey={[]} items={contextCollapseItems} />
-            )
-          }
-        ]}
-      />
-    );
-  };
+  const getHistoryContextCardStyle = (_entryKey: string, baseStyle?: CSSProperties): CSSProperties => ({
+    ...baseStyle
+  });
 
   const renderPersistedMessageAttachments = (message: TaskMessage, collapseKey: string) => {
     const attachments = message.attachments ?? [];
@@ -3623,7 +3441,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   <Tag color="default" style={{ marginInlineEnd: 0 }}>
                     system
                   </Tag>
-                  {renderHistoryContextToggleButton(entryKey)}
                   <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
                 </Space>
               </Flex>
@@ -3661,7 +3478,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                     {entryMessage.role}
                   </Tag>
                   {entryMessage.action ? <Tag style={{ marginInlineEnd: 0 }}>{taskActionLabel[entryMessage.action]}</Tag> : null}
-                  {renderHistoryContextToggleButton(entryKey)}
                   <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
                 </Space>
                 {canEditCommentMessage ? (
@@ -3676,7 +3492,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 </ReactMarkdown>
               </div>
               {renderPersistedMessageAttachments(entryMessage, entryKey)}
-              {renderPersistedMessageContext(entryMessage, entryKey)}
             </Flex>
           ) : (
             <>
@@ -3684,7 +3499,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 <Space wrap size={8}>
                   <Tag color="blue">assistant</Tag>
                   {entryMessage.action ? <Tag>{taskActionLabel[entryMessage.action]}</Tag> : null}
-                  {renderHistoryContextToggleButton(entryKey)}
                 </Space>
                 <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
               </Flex>
@@ -3717,7 +3531,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Tag>{changeProposalSourceLabel(proposal.sourceType)}</Tag>
               <Tag color={checkpointStatusColor(proposal.status)}>{checkpointStatusLabel(proposal.status)}</Tag>
               {proposal.diffTruncated ? <Tag>Truncated preview</Tag> : null}
-              {renderHistoryContextToggleButton(entryKey)}
             </Space>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {dayjs(proposal.createdAt).format("YYYY-MM-DD HH:mm:ss")}
@@ -3755,7 +3568,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Tag color={runStatusColor[run.status]}>{run.status}</Tag>
               <Tag>{taskActionLabel[run.action]}</Tag>
               <Tag>{getAgentProviderLabel(run.provider)}</Tag>
-              {renderHistoryContextToggleButton(entryKey)}
             </Space>
             <Typography.Text type="secondary">
               {dayjs(run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(run.startedAt, run.finishedAt)}
@@ -3805,7 +3617,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Tag>{getAgentProviderLabel(entry.run.provider)}</Tag>
             {entry.proposal ? <Tag color={checkpointStatusColor(entry.proposal.status)}>{checkpointStatusLabel(entry.proposal.status)}</Tag> : null}
             {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
-            {renderHistoryContextToggleButton(entryKey)}
           </Space>
         }
         extra={
@@ -3820,7 +3631,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               {promptText}
             </ReactMarkdown>
           </div>
-          {entry.promptMessage ? renderPersistedMessageContext(entry.promptMessage, entryKey) : null}
           {renderRunErrorNotice(entry.run)}
           {renderRunLogsCollapse(entry.run)}
           <Collapse
@@ -3880,7 +3690,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Tag color="green">{terminalLabel}</Tag>
             {terminalStatusTag ? <Tag color={terminalStatusTag.color}>{terminalStatusTag.label}</Tag> : null}
             {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
-            {renderHistoryContextToggleButton(entryKey)}
           </Space>
         }
         extra={

@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { SchedulerService } from "./scheduler.js";
 
 describe("SchedulerService.triggerAction", () => {
-  it("allows open tasks to queue a new action with structured context", async () => {
+  it("allows open tasks to queue a new action with execution input", async () => {
     let markedQueued = false;
     let queuedEntry: unknown = null;
     let patchedTask: unknown = null;
@@ -37,14 +37,7 @@ describe("SchedulerService.triggerAction", () => {
 
     const scheduler = new SchedulerService(taskStore as never, taskQueueStore as never, settingsStore as never, {} as never);
     const accepted = await scheduler.triggerAction("task-1", "build", {
-      content: "next step",
-      contextEntries: [
-        {
-          kind: "run",
-          label: "Build run · Succeeded · 2026-04-01 10:00:00 UTC",
-          content: "Summary:\nImplemented the previous step."
-        }
-      ]
+      content: "next step"
     });
 
     assert.equal(accepted, true);
@@ -54,14 +47,7 @@ describe("SchedulerService.triggerAction", () => {
       reason: "manual",
       action: "build",
       input: {
-        content: "next step",
-        contextEntries: [
-          {
-            kind: "run",
-            label: "Build run · Succeeded · 2026-04-01 10:00:00 UTC",
-            content: "Summary:\nImplemented the previous step."
-          }
-        ]
+        content: "next step"
       }
     });
     assert.deepEqual(patchedTask, { enqueued: true });

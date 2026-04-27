@@ -17,7 +17,6 @@ import {
   type McpServerConfig,
   type Task,
   type TaskChangeProposal,
-  type TaskContextEntry,
   type TaskExecutionInput,
   type TaskLiveDiff,
   type TaskAction,
@@ -97,7 +96,6 @@ interface RuntimeManifest {
   executionSummary: string;
   repoProfile: string;
   content: string;
-  contextEntries: TaskContextEntry[];
   attachments: Array<{
     id: string;
     name: string;
@@ -3716,12 +3714,10 @@ export class SpawnerService {
         typeof input === "string"
           ? {
               content: input,
-              contextEntries: [] as TaskContextEntry[],
               attachments: []
             }
           : {
               content: input?.content ?? "",
-              contextEntries: input?.contextEntries ?? [],
               attachments: input?.attachments ?? []
             };
       const manifestAttachments = normalizedInput.attachments.map((attachment) => {
@@ -3748,7 +3744,6 @@ export class SpawnerService {
         executionSummary: task.executionSummary,
         repoProfile,
         content: normalizedInput.content,
-        contextEntries: normalizedInput.contextEntries,
         attachments: manifestAttachments,
         baseBranch: task.baseBranch,
         repoDefaultBranch: task.repoDefaultBranch,

@@ -96,17 +96,6 @@ const buildPrompt = () => {
   const rawContent = typeof manifest.content === "string" && manifest.content.trim().length > 0
     ? manifest.content.trim()
     : (typeof manifest.prompt === "string" ? manifest.prompt.trim() : "");
-  const contextEntries = Array.isArray(manifest.contextEntries)
-    ? manifest.contextEntries.filter(
-        (entry) =>
-          entry &&
-          typeof entry === "object" &&
-          typeof entry.label === "string" &&
-          typeof entry.content === "string" &&
-          entry.label.trim().length > 0 &&
-          entry.content.trim().length > 0
-      )
-    : [];
   const attachments = Array.isArray(manifest.attachments)
     ? manifest.attachments.filter(
         (attachment) =>
@@ -124,17 +113,6 @@ const buildPrompt = () => {
   }
 
   const promptSections = [];
-  if (contextEntries.length > 0) {
-    promptSections.push(
-      "Selected task history context:",
-      "",
-      ...contextEntries.flatMap((entry, index) => [
-        `[Context ${index + 1}] ${entry.label.trim()}`,
-        entry.content.trim(),
-        ""
-      ])
-    );
-  }
   if (attachments.length > 0) {
     promptSections.push(
       "Reference Images:",

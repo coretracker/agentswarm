@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { CreateTaskInput, Repository, TaskContextEntry } from "@agentswarm/shared-types";
+import type { CreateTaskInput, Repository } from "@agentswarm/shared-types";
 import { RedisTaskStore } from "./task-store.js";
 
 class FakeRedis {
@@ -179,7 +179,7 @@ const createTaskInput: CreateTaskInput = {
 };
 
 describe("TaskStore.appendMessage", () => {
-  it("persists context entries on user messages", async () => {
+  it("persists user messages", async () => {
     const redis = new FakeRedis();
     const publishedEvents: unknown[] = [];
     const taskStore = new RedisTaskStore(redis as never, {
@@ -188,25 +188,16 @@ describe("TaskStore.appendMessage", () => {
       }
     } as never);
     const task = await taskStore.createTask(createTaskInput, repository, "user-1");
-    const contextEntries: TaskContextEntry[] = [
-      {
-        kind: "run",
-        label: "Build run · Succeeded · 2026-04-08 10:00:00 UTC",
-        content: "Summary:\nApplied the previous change."
-      }
-    ];
-
     await taskStore.appendMessage(task.id, {
       role: "user",
       action: "ask",
-      content: "What changed?",
-      contextEntries
+      content: "What changed?"
     });
 
     const messages = await taskStore.listMessages(task.id);
     assert.equal(messages.length, 2);
-    assert.deepEqual(messages[1]?.contextEntries, contextEntries);
-    assert.equal((messages[1]?.contextEntries ?? []).length, 1);
+    assert.equal(messages[1]?.content, "What changed?");
+    assert.equal(messages[1]?.action, "ask");
     assert.equal(publishedEvents.length, 3);
   });
 });

@@ -9,7 +9,6 @@ import {
   type Repository,
   type Task,
   type TaskAction,
-  type TaskContextEntry,
   type TaskMessage,
   type TaskPromptAttachment,
   type TaskReasoningEffort,
@@ -91,32 +90,7 @@ const normalizeTaskMessageAction = (action: string | null | undefined): TaskMess
   return null;
 };
 
-const normalizeTaskContextEntry = (value: unknown): TaskContextEntry | null => {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const entry = value as Partial<TaskContextEntry>;
-  if (
-    (entry.kind !== "message" && entry.kind !== "run" && entry.kind !== "proposal" && entry.kind !== "terminal_session") ||
-    typeof entry.label !== "string" ||
-    typeof entry.content !== "string"
-  ) {
-    return null;
-  }
-
-  return {
-    kind: entry.kind,
-    label: entry.label,
-    content: entry.content
-  };
-};
-
 const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
-  const rawContextEntries = (message as TaskMessage & { contextEntries?: unknown }).contextEntries;
-  const contextEntries = Array.isArray(rawContextEntries)
-    ? rawContextEntries.map(normalizeTaskContextEntry).filter((entry): entry is TaskContextEntry => entry !== null)
-    : [];
   const rawAttachments = (message as TaskMessage & { attachments?: unknown }).attachments;
   const attachments = Array.isArray(rawAttachments)
     ? rawAttachments.map(normalizeTaskPromptAttachment).filter((attachment): attachment is TaskPromptAttachment => attachment !== null)
@@ -126,7 +100,6 @@ const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
   return {
     ...message,
     action: normalizeTaskMessageAction(message.action),
-    ...(contextEntries.length > 0 ? { contextEntries } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
     ...(sessionId !== null || "sessionId" in message ? { sessionId } : {})
   };
@@ -157,7 +130,6 @@ export interface AppendTaskMessageInput {
   role: TaskMessage["role"];
   content: string;
   action?: TaskMessage["action"];
-  contextEntries?: TaskContextEntry[];
   attachments?: TaskPromptAttachment[];
   sessionId?: string | null;
 }
@@ -758,9 +730,6 @@ export class RedisTaskStore implements TaskStore {
       return null;
     }
 
-    const contextEntries = (input.contextEntries ?? [])
-      .map((entry) => normalizeTaskContextEntry(entry))
-      .filter((entry): entry is TaskContextEntry => entry !== null);
     const attachments = (input.attachments ?? [])
       .map((attachment) => normalizeTaskPromptAttachment(attachment))
       .filter((attachment): attachment is TaskPromptAttachment => attachment !== null);
@@ -771,7 +740,6 @@ export class RedisTaskStore implements TaskStore {
       role: input.role,
       content: input.content,
       action: input.action ?? null,
-      ...(contextEntries.length > 0 ? { contextEntries } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(input.sessionId !== undefined ? { sessionId: input.sessionId ?? null } : {}),
       createdAt: nowIso()
@@ -1825,9 +1793,6 @@ export class PostgresTaskStore implements TaskStore {
       return null;
     }
 
-    const contextEntries = (input.contextEntries ?? [])
-      .map((entry) => normalizeTaskContextEntry(entry))
-      .filter((entry): entry is TaskContextEntry => entry !== null);
     const attachments = (input.attachments ?? [])
       .map((attachment) => normalizeTaskPromptAttachment(attachment))
       .filter((attachment): attachment is TaskPromptAttachment => attachment !== null);
@@ -1838,7 +1803,6 @@ export class PostgresTaskStore implements TaskStore {
       role: input.role,
       content: input.content,
       action: input.action ?? null,
-      ...(contextEntries.length > 0 ? { contextEntries } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(input.sessionId !== undefined ? { sessionId: input.sessionId ?? null } : {}),
       createdAt: nowIso()

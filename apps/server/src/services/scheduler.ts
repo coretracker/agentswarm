@@ -7,8 +7,7 @@ import { CancelledTaskError, SpawnerService } from "./spawner.js";
 const normalizeExecutionInput = (input?: TaskExecutionInput | string): TaskExecutionInput | undefined =>
   typeof input === "string"
     ? {
-        content: input,
-        contextEntries: []
+        content: input
       }
     : input;
 
