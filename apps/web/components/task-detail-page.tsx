@@ -104,6 +104,28 @@ const runStatusColor: Record<TaskRun["status"], string> = {
 
 type ComposerAction = TaskMessageAction | "interactive" | "terminal";
 
+const OPENAI_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
+const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
+const OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS = 48_000;
+
+function normalizeAiCommitSubject(raw: string): string {
+  const firstLine = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) {
+    return "";
+  }
+  const cleaned = firstLine
+    .replace(/^[-*]\s+/, "")
+    .replace(/^`+|`+$/g, "")
+    .replace(/^"+|"+$/g, "")
+    .replace(/^'+|'+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.slice(0, 200);
+}
+
 const taskActionLabel: Record<ComposerAction | TaskAction, string> = {
   build: "Build",
   ask: "Ask",
@@ -612,6 +634,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
   const [applyCheckpointModalProposal, setApplyCheckpointModalProposal] = useState<TaskChangeProposal | null>(null);
   const [applyCheckpointCommitMessage, setApplyCheckpointCommitMessage] = useState("");
+  const [applyCheckpointCommitMessageGenerating, setApplyCheckpointCommitMessageGenerating] = useState(false);
   const [editCheckpointModalState, setEditCheckpointModalState] = useState<CheckpointEditorModalState | null>(null);
   const [killTerminalConfirmOpen, setKillTerminalConfirmOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -685,6 +708,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setSelectedPromptImageFiles([]);
     setApplyCheckpointModalProposal(null);
     setApplyCheckpointCommitMessage("");
+    setApplyCheckpointCommitMessageGenerating(false);
     setEditCheckpointModalState(null);
     setTaskPageVisible(false);
     initialBottomScrollStateRef.current = null;
@@ -2510,6 +2534,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     pushPreview &&
       (pushPreview.hasUncommittedChanges || pushPreview.unpushedCommitSubjects.length > 0)
   );
+  const applyCheckpointApplying =
+    applyCheckpointModalProposal !== null &&
+    proposalBusy?.id === applyCheckpointModalProposal.id &&
+    proposalBusy.kind === "apply";
+  const applyCheckpointFooterBusy = applyCheckpointApplying || applyCheckpointCommitMessageGenerating;
   const pushNothingToPush = Boolean(pushPreview) && pushCount === 0 && !pushPreviewHasPushableChanges;
   const pushPrimaryDisabled = submitting === "push" || pushPreviewLoading || pushNothingToPush;
   const mergeBlockedReason =
@@ -2994,6 +3023,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const openApplyCheckpointModal = (proposal: TaskChangeProposal) => {
     setApplyCheckpointModalProposal(proposal);
     setApplyCheckpointCommitMessage("");
+    setApplyCheckpointCommitMessageGenerating(false);
   };
 
   const openCheckpointFileEditorModal = (proposal: TaskChangeProposal, initialFilePath?: string | null) => {
@@ -3010,6 +3040,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
     setApplyCheckpointModalProposal(null);
     setApplyCheckpointCommitMessage("");
+    setApplyCheckpointCommitMessageGenerating(false);
   };
 
   const closeCheckpointFileEditorModal = () => {
@@ -3044,6 +3075,45 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       showTaskActionError(error, "Could not apply checkpoint");
     } finally {
       setProposalBusy(null);
+    }
+  };
+
+  const handleGenerateApplyCheckpointCommitMessage = async () => {
+    const proposal = applyCheckpointModalProposal;
+    if (!task || !proposal) {
+      return;
+    }
+    const filePath = proposal.changedFiles[0];
+    if (!filePath) {
+      messageApi.warning("No changed file is available for this checkpoint.");
+      return;
+    }
+    const diffSnippet = proposal.diff.slice(0, OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS);
+    if (!diffSnippet.trim() || diffSnippet.trim() === "(no changes)") {
+      messageApi.warning("No diff content is available for this checkpoint.");
+      return;
+    }
+
+    setApplyCheckpointCommitMessageGenerating(true);
+    try {
+      const response = await api.openAiDiffAssist(task.id, {
+        model: OPENAI_COMMIT_MESSAGE_MODEL,
+        providerProfile: OPENAI_COMMIT_MESSAGE_PROFILE,
+        filePath,
+        selectedSnippet: diffSnippet,
+        userPrompt:
+          "Generate one git commit subject line based on these changes. Use conventional commit style when appropriate. Return only the subject line with no quotes, bullets, markdown, or explanation."
+      });
+      const candidate = normalizeAiCommitSubject(response.text);
+      if (!candidate) {
+        messageApi.warning("Model returned an empty commit message.");
+        return;
+      }
+      setApplyCheckpointCommitMessage(candidate);
+    } catch (error) {
+      showTaskActionError(error, "Could not generate commit message");
+    } finally {
+      setApplyCheckpointCommitMessageGenerating(false);
     }
   };
 
@@ -3958,17 +4028,23 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         open={applyCheckpointModalProposal !== null}
         onCancel={closeApplyCheckpointModal}
         destroyOnClose
-        onOk={() => void handleApplyCheckpoint()}
-        okText={applyCheckpointModalProposal?.status === "reverted" ? "Apply Again" : "Apply"}
-        confirmLoading={
-          applyCheckpointModalProposal !== null &&
-          proposalBusy?.id === applyCheckpointModalProposal.id &&
-          proposalBusy.kind === "apply"
+        footer={
+          <Flex justify="flex-end" gap={12}>
+            <Button onClick={closeApplyCheckpointModal} disabled={applyCheckpointFooterBusy}>
+              Cancel
+            </Button>
+            <Button onClick={() => void handleGenerateApplyCheckpointCommitMessage()} loading={applyCheckpointCommitMessageGenerating} disabled={applyCheckpointApplying}>
+              Magic
+            </Button>
+            <Button type="primary" onClick={() => void handleApplyCheckpoint()} loading={applyCheckpointApplying} disabled={applyCheckpointCommitMessageGenerating}>
+              {applyCheckpointModalProposal?.status === "reverted" ? "Apply Again" : "Apply"}
+            </Button>
+          </Flex>
         }
       >
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            Optional commit message. AgentSwarm uses it whenever this apply action creates a local commit. Leave it blank to use the generated subject.
+            Optional commit message. Click Magic to draft one with {OPENAI_COMMIT_MESSAGE_MODEL}, or leave blank to use AgentSwarm's generated subject on apply.
           </Typography.Paragraph>
           <Input.TextArea
             autoFocus
@@ -3978,9 +4054,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             value={applyCheckpointCommitMessage}
             onChange={(event) => setApplyCheckpointCommitMessage(event.target.value)}
             disabled={
-              applyCheckpointModalProposal !== null &&
-              proposalBusy?.id === applyCheckpointModalProposal.id &&
-              proposalBusy.kind === "apply"
+              (applyCheckpointModalProposal !== null &&
+                proposalBusy?.id === applyCheckpointModalProposal.id &&
+                proposalBusy.kind === "apply") ||
+              applyCheckpointCommitMessageGenerating
             }
           />
         </Space>
