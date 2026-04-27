@@ -7,6 +7,8 @@ import { HttpError } from "../lib/http-error.js";
 
 const REPO_KEY_PREFIX = "agentswarm:repo:";
 const REPO_IDS_KEY = "agentswarm:repo_ids";
+const USER_KEY_PREFIX = "agentswarm:user:";
+const USER_IDS_KEY = "agentswarm:user_ids";
 const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
 const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
@@ -84,6 +86,70 @@ export class RedisRepositoryStore implements RepositoryStore {
 
   private repoKey(repoId: string): string {
     return `${REPO_KEY_PREFIX}${repoId}`;
+  }
+
+  private userKey(userId: string): string {
+    return `${USER_KEY_PREFIX}${userId}`;
+  }
+
+  private normalizeUserRepositoryIds(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        value
+          .filter((entry): entry is string => typeof entry === "string")
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+      )
+    );
+  }
+
+  private async buildRepositoryRemovalUserUpdates(repositoryId: string): Promise<Array<{ userKey: string; userPayload: string }>> {
+    const userIds = await this.redis.smembers(USER_IDS_KEY);
+    if (userIds.length === 0) {
+      return [];
+    }
+
+    const lookupPipeline = this.redis.pipeline();
+    for (const userId of userIds) {
+      lookupPipeline.get(this.userKey(userId));
+    }
+    const lookupResults = await lookupPipeline.exec();
+
+    const updates: Array<{ userKey: string; userPayload: string }> = [];
+    for (let index = 0; index < userIds.length; index += 1) {
+      const raw = lookupResults?.[index]?.[1];
+      if (typeof raw !== "string") {
+        continue;
+      }
+
+      let parsedUser: Record<string, unknown>;
+      try {
+        parsedUser = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+
+      const repositoryIds = this.normalizeUserRepositoryIds(parsedUser.repositoryIds);
+      if (!repositoryIds.includes(repositoryId)) {
+        continue;
+      }
+
+      const nextRepositoryIds = repositoryIds.filter((entry) => entry !== repositoryId);
+      updates.push({
+        userKey: this.userKey(userIds[index]!),
+        userPayload: JSON.stringify({
+          ...parsedUser,
+          repositoryIds: nextRepositoryIds,
+          updatedAt: nowIso()
+        })
+      });
+    }
+
+    return updates;
   }
 
   private normalizeWebhookUrl(url: string | null | undefined): string | null {
@@ -319,7 +385,12 @@ export class RedisRepositoryStore implements RepositoryStore {
       return false;
     }
 
-    await this.redis.multi().del(this.repoKey(repositoryId)).srem(REPO_IDS_KEY, repositoryId).exec();
+    const userUpdates = await this.buildRepositoryRemovalUserUpdates(repositoryId);
+    const transaction = this.redis.multi();
+    for (const userUpdate of userUpdates) {
+      transaction.set(userUpdate.userKey, userUpdate.userPayload);
+    }
+    await transaction.del(this.repoKey(repositoryId)).srem(REPO_IDS_KEY, repositoryId).exec();
     await this.eventBus.publish({ type: "repository:deleted", payload: { id: repositoryId } });
     return true;
   }

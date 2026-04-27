@@ -81,7 +81,7 @@ const bootstrap = async (): Promise<void> => {
   registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
   registerTaskRoutes(app, { taskStore, taskQueueStore, repositoryStore, scheduler, spawner, settingsStore, auth });
   registerSnippetRoutes(app, { snippetStore, auth });
-  registerRepositoryRoutes(app, { repositoryStore, auth });
+  registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
   registerImportRoutes(app, { githubImportService, repositoryStore, taskStore, scheduler, spawner, auth });
 

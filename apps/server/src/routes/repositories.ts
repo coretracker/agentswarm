@@ -2,8 +2,9 @@ import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import type { AuthService } from "../lib/auth.js";
 import { sendHttpError } from "../lib/http-error.js";
-import { canUserAccessRepository } from "../lib/task-ownership.js";
+import { canUserAccessRepository, isAdminUser } from "../lib/task-ownership.js";
 import type { RepositoryStore } from "../services/repository-store.js";
+import type { UserStore } from "../services/user-store.js";
 
 const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
@@ -61,6 +62,7 @@ export const registerRepositoryRoutes = (
   deps: {
     repositoryStore: RepositoryStore;
     auth: AuthService;
+    userStore: UserStore;
   }
 ): void => {
   app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async (request) => {
@@ -76,6 +78,24 @@ export const registerRepositoryRoutes = (
 
     try {
       const repository = await deps.repositoryStore.createRepository(parsed.data);
+      const authUser = request.auth?.user;
+      if (authUser && !isAdminUser(authUser)) {
+        const creator = await deps.userStore.getUser(authUser.id);
+        if (creator) {
+          const resolvedRepositoryIds = await Promise.all(
+            creator.repositoryIds.map(async (repositoryId) =>
+              (await deps.repositoryStore.getRepository(repositoryId)) ? repositoryId : null
+            )
+          );
+          const nextRepositoryIds = resolvedRepositoryIds.filter((repositoryId): repositoryId is string => Boolean(repositoryId));
+          if (!nextRepositoryIds.includes(repository.id)) {
+            nextRepositoryIds.push(repository.id);
+          }
+          await deps.userStore.updateUser(creator.id, {
+            repositoryIds: nextRepositoryIds
+          });
+        }
+      }
       return reply.status(201).send(repository);
     } catch (error) {
       const sent = sendHttpError(reply, error);

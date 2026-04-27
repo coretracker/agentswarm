@@ -157,10 +157,14 @@ const repositoryEnvVarArray = (value: unknown): Array<{ key: string; value: stri
 
 const stringArray = (value: unknown): string[] =>
   Array.isArray(value)
-    ? value
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
+    ? Array.from(
+        new Set(
+          value
+            .filter((entry): entry is string => typeof entry === "string")
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+        )
+      )
     : [];
 
 const loadRoles = async (redis: Redis): Promise<RoleRecord[]> => {
@@ -307,6 +311,8 @@ const main = async (): Promise<void> => {
       loadTaskSnapshots(redis),
       redis.get(BOOTSTRAP_ADMIN_MARKER_KEY)
     ]);
+    const repositoryIds = new Set(repositories.map((repository) => repository.id));
+    let skippedUserRepositoryAssignments = 0;
 
     await withPostgresTransaction(postgresPool, async (client) => {
       await client.query(`
@@ -448,6 +454,10 @@ const main = async (): Promise<void> => {
 
       for (const user of users) {
         for (const repositoryId of stringArray(user.repositoryIds)) {
+          if (!repositoryIds.has(repositoryId)) {
+            skippedUserRepositoryAssignments += 1;
+            continue;
+          }
           await client.query("INSERT INTO user_repositories (user_id, repository_id) VALUES ($1, $2)", [user.id, repositoryId]);
         }
       }
@@ -612,6 +622,7 @@ const main = async (): Promise<void> => {
           roles: roles.length,
           users: users.length,
           repositories: repositories.length,
+          skippedUserRepositoryAssignments,
           snippets: snippets.length,
           tasks: taskSnapshots.length
         },

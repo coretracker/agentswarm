@@ -201,6 +201,46 @@ export const createAuthService = ({
     }
   };
 
+  const getSocketSessionToken = (socket: Socket): string | null => {
+    if (typeof socket.data.sessionToken === "string" && socket.data.sessionToken.trim().length > 0) {
+      return socket.data.sessionToken.trim();
+    }
+
+    const auth = socket.data.auth as RequestAuthContext | undefined;
+    if (typeof auth?.sessionToken === "string" && auth.sessionToken.trim().length > 0) {
+      return auth.sessionToken.trim();
+    }
+
+    return null;
+  };
+
+  const revalidateSocketAuth = async (
+    socket: Socket,
+    authCache: Map<string, Promise<RequestAuthContext | null>>
+  ): Promise<RequestAuthContext | null> => {
+    const sessionToken = getSocketSessionToken(socket);
+    if (!sessionToken) {
+      socket.disconnect(true);
+      return null;
+    }
+
+    let authPromise = authCache.get(sessionToken);
+    if (!authPromise) {
+      authPromise = buildAuthContext(sessionToken);
+      authCache.set(sessionToken, authPromise);
+    }
+
+    const auth = await authPromise;
+    if (!auth) {
+      socket.disconnect(true);
+      return null;
+    }
+
+    socket.data.sessionToken = sessionToken;
+    socket.data.auth = auth;
+    return auth;
+  };
+
   return {
     requireAuth,
     requireAllScopes,
@@ -256,6 +296,7 @@ export const createAuthService = ({
             return next(new Error("Unauthorized"));
           }
 
+          socket.data.sessionToken = auth.sessionToken;
           socket.data.auth = auth;
           return next();
         } catch (error) {
@@ -280,50 +321,29 @@ export const createAuthService = ({
         return;
       }
 
-      if (event.type.startsWith("task:")) {
-        const ownerUserId = await resolveTaskOwnerUserId(event);
-        for (const socket of io.sockets.sockets.values()) {
-          const auth = socket.data.auth as RequestAuthContext | undefined;
-          if (!auth || !hasAllScopes(auth.scopes, requiredScopes)) {
-            continue;
-          }
-
-          if (!canUserAccessTask(auth.user, { ownerUserId })) {
-            continue;
-          }
-
-          socket.emit(event.type, event.payload);
-        }
+      const taskOwnerUserId = event.type.startsWith("task:") ? await resolveTaskOwnerUserId(event) : null;
+      const repositoryId = event.type.startsWith("repository:") ? resolveRepositoryId(event) : null;
+      if (event.type.startsWith("repository:") && !repositoryId) {
         return;
       }
 
-      if (event.type.startsWith("repository:")) {
-        const repositoryId = resolveRepositoryId(event);
-        if (!repositoryId) {
-          return;
+      const authCache = new Map<string, Promise<RequestAuthContext | null>>();
+      for (const socket of io.sockets.sockets.values()) {
+        const auth = await revalidateSocketAuth(socket, authCache);
+        if (!auth || !hasAllScopes(auth.scopes, requiredScopes)) {
+          continue;
         }
 
-        for (const socket of io.sockets.sockets.values()) {
-          const auth = socket.data.auth as RequestAuthContext | undefined;
-          if (!auth || !hasAllScopes(auth.scopes, requiredScopes)) {
-            continue;
-          }
-
-          if (!canUserAccessRepository(auth.user, repositoryId)) {
-            continue;
-          }
-
-          socket.emit(event.type, event.payload);
+        if (event.type.startsWith("task:") && !canUserAccessTask(auth.user, { ownerUserId: taskOwnerUserId })) {
+          continue;
         }
-        return;
-      }
 
-      let emitter = io.to(scopeRoom(requiredScopes[0]));
-      for (const scope of requiredScopes.slice(1)) {
-        emitter = emitter.to(scopeRoom(scope));
-      }
+        if (repositoryId && !canUserAccessRepository(auth.user, repositoryId)) {
+          continue;
+        }
 
-      emitter.emit(event.type, event.payload);
+        socket.emit(event.type, event.payload);
+      }
     }
   };
 };
