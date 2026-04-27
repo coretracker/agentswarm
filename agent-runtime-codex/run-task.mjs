@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
@@ -27,6 +27,113 @@ const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
 const codexDir = configuredStatePath && configuredStatePath.length > 0 ? configuredStatePath : path.join("/root", ".codex");
 const homeDir = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : path.dirname(codexDir);
 const lastMessageFile = path.join(path.dirname(manifest.resultJsonPath), "codex-last-message.txt");
+const sessionIdFile = path.join(codexDir, "agentswarm-session-id.txt");
+
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const isSessionId = (value) => typeof value === "string" && SESSION_ID_PATTERN.test(value.trim());
+
+const readPersistedSessionId = async () => {
+  const raw = await readFile(sessionIdFile, "utf8").catch(() => "");
+  const candidate = raw.trim();
+  return isSessionId(candidate) ? candidate : null;
+};
+
+const writePersistedSessionId = async (sessionId) => {
+  if (!isSessionId(sessionId)) {
+    return;
+  }
+
+  await writeFile(sessionIdFile, `${sessionId.trim()}\n`, "utf8");
+};
+
+const listRolloutFiles = async (sessionsRoot) => {
+  const pending = [sessionsRoot];
+  const files = [];
+
+  while (pending.length > 0) {
+    const currentDir = pending.pop();
+    if (!currentDir) {
+      continue;
+    }
+
+    const entries = await readdir(currentDir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(fullPath);
+        continue;
+      }
+
+      if (entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl")) {
+        files.push(fullPath);
+      }
+    }
+  }
+
+  return files;
+};
+
+const sessionIdFromRolloutFileName = (rolloutPath) => {
+  const match = path.basename(rolloutPath).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
+  return match?.[1] ?? null;
+};
+
+const inferSessionIdFromRolloutFiles = async () => {
+  const sessionsRoot = path.join(codexDir, "sessions");
+  const rolloutFiles = await listRolloutFiles(sessionsRoot);
+  if (rolloutFiles.length === 0) {
+    return null;
+  }
+
+  const withMtime = await Promise.all(
+    rolloutFiles.map(async (rolloutPath) => ({
+      rolloutPath,
+      mtimeMs: (await stat(rolloutPath).catch(() => null))?.mtimeMs ?? 0
+    }))
+  );
+  withMtime.sort((left, right) => right.mtimeMs - left.mtimeMs);
+
+  for (const { rolloutPath } of withMtime) {
+    const candidate = sessionIdFromRolloutFileName(rolloutPath);
+    if (isSessionId(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+};
+
+const extractSessionIdFromJsonEvent = (event) => {
+  if (!event || typeof event !== "object") {
+    return null;
+  }
+
+  const directFields = [event.session_id, event.sessionId, event.thread_id, event.threadId];
+  for (const value of directFields) {
+    if (isSessionId(value)) {
+      return value.trim();
+    }
+  }
+
+  if (event.type === "session_meta" && event.payload && typeof event.payload === "object" && isSessionId(event.payload.id)) {
+    return event.payload.id.trim();
+  }
+
+  return null;
+};
+
+const extractSessionIdFromOutputLine = (line) => {
+  if (!line || !line.trim().startsWith("{")) {
+    return null;
+  }
+
+  try {
+    return extractSessionIdFromJsonEvent(JSON.parse(line));
+  } catch {
+    return null;
+  }
+};
 
 await mkdir(homeDir, { recursive: true });
 await mkdir(codexDir, { recursive: true });
@@ -127,8 +234,12 @@ await new Promise((resolve, reject) => {
 
 const prompt = buildPrompt();
 const isAsk = manifest.action === "ask";
+const persistedSessionId = await readPersistedSessionId();
+let resolvedSessionId = persistedSessionId;
 
-console.log(`[runtime] running codex action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only instruction)" : ""}`);
+console.log(
+  `[runtime] running codex action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only instruction)" : ""} session=${persistedSessionId ?? "new"}`
+);
 const args = [
   "exec",
   "--dangerously-bypass-approvals-and-sandbox",
@@ -146,23 +257,66 @@ if (manifest.resolvedModel) {
 if (manifest.resolvedReasoningEffort) {
   args.push("-c", `model_reasoning_effort=\"${manifest.resolvedReasoningEffort}\"`);
 }
+if (persistedSessionId) {
+  args.push("resume", persistedSessionId);
+}
 for (const attachment of Array.isArray(manifest.attachments) ? manifest.attachments : []) {
   if (typeof attachment?.absolutePath === "string" && attachment.absolutePath.trim().length > 0) {
     args.push("--image", attachment.absolutePath.trim());
   }
 }
-args.push("--", prompt);
+if (persistedSessionId) {
+  args.push(prompt);
+} else {
+  args.push("--", prompt);
+}
 
 const execProc = spawn("codex", args, { env: process.env, cwd: manifest.workspacePath, stdio: ["ignore", "pipe", "pipe"] });
+let stdoutBuffer = "";
+let stderrBuffer = "";
 
 execProc.stdout.on("data", (chunk) => {
+  const text = chunk.toString();
+  stdoutBuffer += text;
+  const lines = stdoutBuffer.split("\n");
+  stdoutBuffer = lines.pop() ?? "";
+  for (const line of lines) {
+    const candidate = extractSessionIdFromOutputLine(line);
+    if (candidate) {
+      resolvedSessionId = candidate;
+    }
+  }
   process.stdout.write(chunk);
 });
-execProc.stderr.on("data", (chunk) => process.stderr.write(chunk));
+execProc.stderr.on("data", (chunk) => {
+  stderrBuffer += chunk.toString();
+  process.stderr.write(chunk);
+});
 await new Promise((resolve, reject) => {
   execProc.on("error", reject);
-  execProc.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`codex exited with code ${code ?? "unknown"}`))));
+  execProc.on("close", (code) => {
+    const trailingSessionId = extractSessionIdFromOutputLine(stdoutBuffer);
+    if (trailingSessionId) {
+      resolvedSessionId = trailingSessionId;
+    }
+
+    if (code === 0) {
+      resolve();
+      return;
+    }
+
+    const stderrTail = stderrBuffer.trim();
+    reject(new Error(`codex exited with code ${code ?? "unknown"}${stderrTail ? `: ${stderrTail}` : ""}`));
+  });
 });
+
+if (!resolvedSessionId) {
+  resolvedSessionId = await inferSessionIdFromRolloutFiles();
+}
+if (resolvedSessionId) {
+  await writePersistedSessionId(resolvedSessionId);
+  console.log(`[runtime] codex session_id=${resolvedSessionId}`);
+}
 
 const summaryMarkdown = (await readFile(lastMessageFile, "utf8").catch(() => "")).trim();
 if (!summaryMarkdown) {
@@ -180,7 +334,8 @@ await writeFile(
       changedFiles: [],
       metadata: {
         provider: manifest.provider,
-        action: manifest.action
+        action: manifest.action,
+        ...(resolvedSessionId ? { sessionId: resolvedSessionId } : {})
       }
     },
     null,

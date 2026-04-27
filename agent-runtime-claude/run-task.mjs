@@ -25,6 +25,23 @@ process.env.ANTHROPIC_API_KEY = anthropicApiKey;
 process.env.GIT_OPTIONAL_LOCKS = "0";
 const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
 const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const isSessionId = (value) => typeof value === "string" && SESSION_ID_PATTERN.test(value.trim());
+
+const readPersistedSessionId = async (sessionIdPath) => {
+  const raw = await readFile(sessionIdPath, "utf8").catch(() => "");
+  const candidate = raw.trim();
+  return isSessionId(candidate) ? candidate : null;
+};
+
+const writePersistedSessionId = async (sessionIdPath, sessionId) => {
+  if (!isSessionId(sessionId)) {
+    return;
+  }
+
+  await writeFile(sessionIdPath, `${sessionId.trim()}\n`, "utf8");
+};
 
 const runCommand = (command, args, options = {}) =>
   new Promise((resolve, reject) => {
@@ -165,9 +182,16 @@ const providerStatePath = configuredStatePath && configuredStatePath.length > 0
   : path.join(runtimeHome, ".claude");
 await mkdir(runtimeHome, { recursive: true });
 await mkdir(providerStatePath, { recursive: true });
+const sessionIdFilePath = path.join(providerStatePath, "agentswarm-session-id.txt");
+const persistedSessionId = await readPersistedSessionId(sessionIdFilePath);
+if (persistedSessionId) {
+  args.push("--resume", persistedSessionId);
+}
 const claudeBinary = await resolveClaudeBinary(runtimeHome);
 
-console.log(`[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only tools)" : ""}`);
+console.log(
+  `[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only tools)" : ""} session=${persistedSessionId ?? "new"}`
+);
 console.log(`[runtime] claude thinking_budget_tokens=${manifest.resolvedThinkingBudgetTokens ?? "default"}`);
 await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(manifest.resultJsonPath)]);
 console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);
@@ -175,6 +199,7 @@ console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);
 let finalMarkdown = "";
 let resultSubtype = null;
 let resultDetails = null;
+let resolvedSessionId = persistedSessionId;
 const assistantLines = [];
 const toolBlocks = new Map();
 let sawPartialAssistantText = false;
@@ -400,8 +425,16 @@ proc.stdout.on("data", (chunk) => {
 
     try {
       const event = JSON.parse(line);
+      const sessionIdCandidate = [event.session_id, event.sessionId, event.event?.session_id, event.event?.sessionId]
+        .find((value) => isSessionId(value));
+      if (sessionIdCandidate) {
+        resolvedSessionId = sessionIdCandidate.trim();
+      }
+
       if (event.type === "system" && event.subtype === "init") {
-        console.log(`[runtime] claude init model=${event.model} permissionMode=${event.permissionMode}`);
+        console.log(
+          `[runtime] claude init model=${event.model} permissionMode=${event.permissionMode} session_id=${resolvedSessionId ?? "unknown"}`
+        );
       } else if (event.type === "stream_event" && event.event) {
         handleRawStreamEvent(event.event);
       } else if (event.type === "assistant") {
@@ -441,6 +474,11 @@ if (!finalMarkdown) {
   throw new Error("Claude completed without producing final markdown output.");
 }
 
+if (resolvedSessionId) {
+  await writePersistedSessionId(sessionIdFilePath, resolvedSessionId);
+  console.log(`[runtime] claude session_id=${resolvedSessionId}`);
+}
+
 await writeFile(manifest.resultMarkdownPath, `${finalMarkdown}\n`, "utf8");
 await writeFile(
   manifest.resultJsonPath,
@@ -452,7 +490,8 @@ await writeFile(
       changedFiles: [],
       metadata: {
         provider: manifest.provider,
-        action: manifest.action
+        action: manifest.action,
+        ...(resolvedSessionId ? { sessionId: resolvedSessionId } : {})
       }
     },
     null,
