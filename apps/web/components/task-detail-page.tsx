@@ -2994,8 +2994,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       <Divider style={{ margin: "8px 0 0" }} />
       <Typography.Text type="secondary" style={{ display: "block", textAlign: "left" }}>
         {`Current: ${aiSettingsSummary}`}
+        {isActive ? " Settings will be applied on next run." : ""}
       </Typography.Text>
-      {isActive ? <Typography.Text type="secondary">Settings will be applied on next run.</Typography.Text> : null}
     </Flex>
   );
 
