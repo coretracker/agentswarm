@@ -32,6 +32,7 @@ import type {
   TaskMessage,
   MergeTaskInput,
   ApplyTaskChangeProposalInput,
+  RevertTaskChangeProposalFileInput,
   UpdateTaskMessageInput,
   UpdateTaskWorkspaceFileInput,
   TaskRun,
@@ -288,6 +289,15 @@ export const api = {
     }),
   revertTaskChangeProposal: (taskId: string, proposalId: string) =>
     request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/revert`, { method: "POST" }),
+  revertTaskChangeProposalFile: (
+    taskId: string,
+    proposalId: string,
+    input: RevertTaskChangeProposalFileInput
+  ) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/revert-file`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
   rejectTaskChangeProposal: (taskId: string, proposalId: string) =>
     request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/reject`, { method: "POST" }),
   createTask: (input: CreateTaskInput) =>

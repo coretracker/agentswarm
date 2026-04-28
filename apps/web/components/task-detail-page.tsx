@@ -64,7 +64,7 @@ import {
   message,
   theme as antTheme
 } from "antd";
-import { ArrowRightOutlined, CopyOutlined, EditOutlined, LoadingOutlined, MoreOutlined, PushpinOutlined } from "@ant-design/icons";
+import { ArrowRightOutlined, CopyOutlined, EditOutlined, LoadingOutlined, MoreOutlined, PushpinOutlined, RollbackOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -629,7 +629,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "renameTitle"
     | "editComment"
   >(null);
-  const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" } | null>(null);
+  const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
   const selectedChatActionRef = useRef(false);
   const diffCompareBaseSyncedTaskIdRef = useRef<string | null>(null);
@@ -3228,6 +3228,37 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     });
   };
 
+  const handleRevertCheckpointFile = (proposal: TaskChangeProposal, filePath: string) => {
+    if (!task) {
+      return;
+    }
+
+    Modal.confirm({
+      title: "Revert this file from the checkpoint?",
+      content: (
+        <span>
+          This restores <Typography.Text code>{filePath}</Typography.Text> to the checkpoint base and keeps other files unchanged.
+        </span>
+      ),
+      okText: "Revert file",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setProposalBusy({ id: proposal.id, kind: "revert_file" });
+        try {
+          const updated = await api.revertTaskChangeProposalFile(task.id, proposal.id, { path: filePath });
+          syncTaskAfterCheckpointMutation(updated);
+          messageApi.success(`Reverted ${filePath}`);
+          setLiveDiffRefreshKey((k) => k + 1);
+          refetchChangeProposals();
+        } catch (error) {
+          showTaskActionError(error, "Could not revert file");
+        } finally {
+          setProposalBusy(null);
+        }
+      }
+    });
+  };
+
   const getNormalizedRunSummary = (run: TaskRun): string | null =>
     run.status === "failed" && run.errorMessage
       ? (() => {
@@ -3438,13 +3469,24 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                           }
 
                           return (
-                            <Button
-                              size="small"
-                              icon={<EditOutlined />}
-                              onClick={() => openCheckpointFileEditorModal(proposal, editableFilePath)}
-                            >
-                              Edit
-                            </Button>
+                            <Space size={6}>
+                              <Button
+                                size="small"
+                                icon={<EditOutlined />}
+                                onClick={() => openCheckpointFileEditorModal(proposal, editableFilePath)}
+                              >
+                                Edit
+                              </Button>
+                              <Button
+                                size="small"
+                                danger
+                                icon={<RollbackOutlined />}
+                                loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "revert_file"}
+                                onClick={() => handleRevertCheckpointFile(proposal, editableFilePath)}
+                              >
+                                Revert
+                              </Button>
+                            </Space>
                           );
                         }
                       : undefined

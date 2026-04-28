@@ -2821,6 +2821,69 @@ export class SpawnerService {
     }
   }
 
+  async revertPendingChangeProposalFile(
+    task: Task,
+    proposalId: string,
+    filePath: string
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    const proposal = await this.taskStore.getChangeProposal(proposalId);
+    if (!proposal || proposal.taskId !== task.id) {
+      return { ok: false, message: "Proposal not found." };
+    }
+    const checkpointBlocked = getCheckpointMutationBlockedReason(task.status);
+    if (checkpointBlocked) {
+      return { ok: false, message: checkpointBlocked };
+    }
+    if (proposal.status !== "pending") {
+      return { ok: false, message: "Only a pending checkpoint supports file-level revert." };
+    }
+
+    const target = this.safeSortedCheckpointPaths([filePath])[0] ?? null;
+    if (!target) {
+      return { ok: false, message: "Invalid file path." };
+    }
+
+    const allowedPaths = new Set(this.safeSortedCheckpointPaths(proposal.changedFiles));
+    if (!allowedPaths.has(target)) {
+      return { ok: false, message: "File is not part of this checkpoint diff." };
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const workspaceExists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!workspaceExists) {
+      return { ok: false, message: "No local workspace exists for this task." };
+    }
+
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const { githubToken, gitUsername } = runtimeCredentials;
+    try {
+      await this.revertCheckpointPathsFromRef(workspacePath, proposal.fromRef, [target], githubToken, gitUsername);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return { ok: false, message: `Could not revert file from checkpoint base: ${detail}` };
+    }
+
+    const refreshed = await this.refreshPendingChangeProposalPreview(task);
+    if (refreshed && refreshed.id === proposalId && refreshed.changedFiles.length === 0) {
+      await this.taskStore.updateChangeProposalStatus(proposalId, "rejected", task.id, {
+        toRef: proposal.fromRef,
+        diff: "(no changes)",
+        diffStat: "—",
+        changedFiles: [],
+        diffTruncated: false
+      });
+      await this.syncTaskReviewStatus(task.id);
+      await this.taskStore.appendLog(task.id, `Checkpoint ${proposalId}: reverted ${target}; no files remain, checkpoint rejected.`);
+      return { ok: true };
+    }
+
+    await this.syncTaskReviewStatus(task.id);
+    await this.taskStore.appendLog(task.id, `Checkpoint ${proposalId}: reverted file ${target} to checkpoint base.`);
+    return { ok: true };
+  }
+
   async revertChangeProposal(task: Task, proposalId: string): Promise<{ ok: true } | { ok: false; message: string }> {
     const proposal = await this.taskStore.getChangeProposal(proposalId);
     if (!proposal || proposal.taskId !== task.id) {

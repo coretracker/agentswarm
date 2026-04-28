@@ -507,6 +507,10 @@ export interface ApplyTaskChangeProposalInput {
   commitMessage?: string;
 }
 
+export interface RevertTaskChangeProposalFileInput {
+  path: string;
+}
+
 export interface TaskInteractiveTerminalTranscript {
   taskId: string;
   sessionId: string;

@@ -97,6 +97,10 @@ const applyTaskChangeProposalSchema = z.object({
   commitMessage: z.string().trim().min(1).max(200).optional()
 });
 
+const revertTaskChangeProposalFileSchema = z.object({
+  path: z.string().trim().min(1).max(4096)
+});
+
 const createTaskMessageSchema = z.object({
   content: z.string().trim().min(1),
   action: z.enum(["build", "ask", "comment"]).optional(),
@@ -583,6 +587,33 @@ export const registerTaskRoutes = (
       }
 
       const result = await deps.spawner.revertChangeProposal(task, request.params.proposalId);
+      if (!result.ok) {
+        return reply.status(409).send({ message: result.message });
+      }
+
+      return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
+    }
+  );
+
+  app.post<{ Params: { id: string; proposalId: string }; Body: { path: string } }>(
+    "/tasks/:id/change-proposals/:proposalId/revert-file",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const parsed = revertTaskChangeProposalFileSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const result = await deps.spawner.revertPendingChangeProposalFile(task, request.params.proposalId, parsed.data.path);
       if (!result.ok) {
         return reply.status(409).send({ message: result.message });
       }
