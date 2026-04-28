@@ -59,7 +59,7 @@ function getStatusAccentColor(task: Task, token: ReturnType<typeof antTheme.useT
     return token.colorError;
   }
 
-  if (task.status === "awaiting_review") {
+  if (task.status === "awaiting_review" || task.status === "in_review") {
     return token.colorWarning;
   }
 

@@ -41,6 +41,7 @@ export const normalizeTaskLifecycleStatus = (
     status === "ask_queued" ||
     status === "asking" ||
     status === "open" ||
+    status === "in_review" ||
     status === "awaiting_review" ||
     status === "done" ||
     status === "completed" ||

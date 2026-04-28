@@ -27,6 +27,10 @@ describe("normalizeTaskLifecycleStatus", () => {
     assert.equal(normalizeTaskLifecycleStatus("done", "build", false), "done");
   });
 
+  it("preserves explicit in_review state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("in_review", "build", false), "in_review");
+  });
+
   it("preserves queued and active statuses", () => {
     assert.equal(normalizeTaskLifecycleStatus("build_queued", "build", false), "build_queued");
     assert.equal(normalizeTaskLifecycleStatus("asking", "ask", false), "asking");
@@ -37,13 +41,15 @@ describe("reconcileTaskStatusWithPendingCheckpoint", () => {
   it("moves idle tasks into review when a checkpoint is pending", () => {
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("failed", true), "awaiting_review");
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("open", true), "awaiting_review");
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", true), "awaiting_review");
   });
 
   it("returns legacy-ready states to open when no checkpoint is pending", () => {
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("accepted", false), "open");
   });
 
-  it("preserves explicit review and done states when no checkpoint is pending", () => {
+  it("preserves explicit review states and done when no checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", false), "in_review");
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("awaiting_review", false), "awaiting_review");
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("done", false), "done");
   });

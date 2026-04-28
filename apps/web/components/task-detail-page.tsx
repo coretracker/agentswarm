@@ -501,10 +501,11 @@ function getGitHubDiffTarget(task: Task, existingPullRequest?: GitHubPullRequest
 }
 
 type FollowUpMode = "continue" | null;
-type EditableTaskState = Extract<Task["status"], "open" | "awaiting_review" | "done">;
+type EditableTaskState = Extract<Task["status"], "open" | "in_review" | "awaiting_review" | "done">;
 const taskStateOptions: Array<{ value: EditableTaskState; label: string }> = [
   { value: "open", label: "Open" },
-  { value: "awaiting_review", label: "In Review" },
+  { value: "in_review", label: "In Review" },
+  { value: "awaiting_review", label: "Awaiting Checkpoint Review" },
   { value: "done", label: "Done" }
 ];
 
@@ -2124,7 +2125,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     const currentState: EditableTaskState =
-      task.status === "awaiting_review" || task.status === "done"
+      task.status === "in_review" || task.status === "awaiting_review" || task.status === "done"
         ? task.status
         : "open";
     setTaskStateDraft(currentState);

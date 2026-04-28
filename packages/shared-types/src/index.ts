@@ -66,6 +66,7 @@ export type TaskStatus =
   | "ask_queued"
   | "asking"
   | "open"
+  | "in_review"
   | "awaiting_review"
   | "done"
   | "completed"
@@ -726,7 +727,7 @@ export interface UpdateTaskTitleInput {
 }
 
 export interface UpdateTaskStateInput {
-  status: Extract<TaskStatus, "open" | "awaiting_review" | "done">;
+  status: Extract<TaskStatus, "open" | "in_review" | "awaiting_review" | "done">;
 }
 
 export interface CreateTaskMessageInput {
@@ -842,6 +843,7 @@ export const getTaskStatusLabel = (status: TaskStatus): string =>
     ask_queued: "Ask Queued",
     asking: "Answering",
     open: "Open",
+    in_review: "In Review",
     awaiting_review: "Awaiting Review",
     done: "Done",
     completed: "Completed",

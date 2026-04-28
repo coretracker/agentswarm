@@ -90,7 +90,7 @@ const updateTaskTitleSchema = z.object({
 });
 
 const updateTaskStateSchema = z.object({
-  status: z.enum(["open", "awaiting_review", "done"])
+  status: z.enum(["open", "in_review", "awaiting_review", "done"])
 });
 
 const applyTaskChangeProposalSchema = z.object({
@@ -1251,7 +1251,8 @@ export const registerTaskRoutes = (
     }
 
     const canPublishBuild =
-      task.taskType === "build" && (task.status === "awaiting_review" || task.status === "open" || task.status === "done" || task.status === "failed");
+      task.taskType === "build" &&
+      (task.status === "in_review" || task.status === "awaiting_review" || task.status === "open" || task.status === "done" || task.status === "failed");
     const canAcceptAsk = task.taskType === "ask" && (task.status === "open" || task.status === "done") && Boolean(task.resultMarkdown?.trim());
     if (!canPublishBuild && !canAcceptAsk) {
       return reply.status(409).send({ message: "Only ready task results can be accepted" });
