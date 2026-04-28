@@ -40,7 +40,7 @@ const menuIconByPath: Record<string, ReactNode> = {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { canAll, loading, logout, refreshSession, session } = useAuth();
+  const { canAll, loading, logout, session, setSessionUser } = useAuth();
   const { mode, setMode } = useThemeMode();
   const contentMaxWidth = 1760;
   const headerHeight = 64;
@@ -118,7 +118,10 @@ export function AppShell({ children }: { children: ReactNode }) {
       });
       setProfileCodexConfigured(next.codexAuthJsonConfigured);
       profileForm.setFieldValue("codexAuthJson", "");
-      await refreshSession();
+      setSessionUser({
+        name: next.name,
+        codexAuthJsonConfigured: next.codexAuthJsonConfigured
+      });
       message.success("Profile updated");
     } catch (error) {
       if (error && typeof error === "object" && "errorFields" in error) {
@@ -136,7 +139,9 @@ export function AppShell({ children }: { children: ReactNode }) {
       const next = await api.updateProfile({ clearCodexAuthJson: true });
       setProfileCodexConfigured(next.codexAuthJsonConfigured);
       profileForm.setFieldValue("codexAuthJson", "");
-      await refreshSession();
+      setSessionUser({
+        codexAuthJsonConfigured: next.codexAuthJsonConfigured
+      });
       message.success("Codex auth.json cleared");
     } catch (error) {
       message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");

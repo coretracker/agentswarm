@@ -8,6 +8,7 @@ interface AuthContextValue {
   session: AuthSession | null;
   loading: boolean;
   refreshSession: () => Promise<AuthSession | null>;
+  setSessionUser: (patch: Partial<AuthSession["user"]>) => void;
   login: (input: LoginInput) => Promise<AuthSession>;
   logout: () => Promise<void>;
   can: (scope: PermissionScope) => boolean;
@@ -53,6 +54,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         session,
         loading,
         refreshSession,
+        setSessionUser: (patch) => {
+          setSession((current) => (current ? { ...current, user: { ...current.user, ...patch } } : current));
+        },
         login: async (input) => {
           const nextSession = await api.login(input);
           setSession(nextSession);
