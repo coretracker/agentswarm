@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { App, Button, Drawer, Flex, Grid, Layout, Menu, Result, Select, Spin, Typography, theme as antTheme } from "antd";
+import { App, Button, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Spin, Typography, message, theme as antTheme } from "antd";
 import {
   CopyOutlined,
   DatabaseOutlined,
@@ -19,6 +19,7 @@ import { useAuth } from "./auth-provider";
 import { TaskBrowserNotifications } from "./task-browser-notifications";
 import { useThemeMode } from "./theme-provider";
 import { appThemeOptions, type AppThemeMode } from "../src/theme/antd-theme";
+import { api } from "../src/api/client";
 import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
@@ -39,7 +40,7 @@ const menuIconByPath: Record<string, ReactNode> = {
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { canAll, loading, logout, session } = useAuth();
+  const { canAll, loading, logout, refreshSession, session } = useAuth();
   const { mode, setMode } = useThemeMode();
   const contentMaxWidth = 1760;
   const headerHeight = 64;
@@ -47,6 +48,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { token } = antTheme.useToken();
   const screens = Grid.useBreakpoint();
   const [loggingOut, setLoggingOut] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileCodexConfigured, setProfileCodexConfigured] = useState(false);
+  const [profileForm] = Form.useForm<{ name: string; codexAuthJson?: string }>();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const publicPath = isPublicPathname(pathname);
   const desktopSidebar = screens.lg ?? false;
@@ -84,6 +90,60 @@ export function AppShell({ children }: { children: ReactNode }) {
   if (loading || !session) {
     return <Spin fullscreen tip="Loading session" />;
   }
+
+  const openProfile = async (): Promise<void> => {
+    setProfileOpen(true);
+    setProfileLoading(true);
+    try {
+      const profile = await api.getProfile();
+      profileForm.setFieldsValue({
+        name: profile.name,
+        codexAuthJson: ""
+      });
+      setProfileCodexConfigured(profile.codexAuthJsonConfigured);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to load profile");
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+
+  const saveProfile = async (): Promise<void> => {
+    try {
+      const values = await profileForm.validateFields();
+      setSavingProfile(true);
+      const next = await api.updateProfile({
+        name: values.name,
+        codexAuthJson: values.codexAuthJson?.trim() || undefined
+      });
+      setProfileCodexConfigured(next.codexAuthJsonConfigured);
+      profileForm.setFieldValue("codexAuthJson", "");
+      await refreshSession();
+      message.success("Profile updated");
+    } catch (error) {
+      if (error && typeof error === "object" && "errorFields" in error) {
+        return;
+      }
+      message.error(error instanceof Error ? error.message : "Failed to update profile");
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const clearCodexAuthJson = async (): Promise<void> => {
+    setSavingProfile(true);
+    try {
+      const next = await api.updateProfile({ clearCodexAuthJson: true });
+      setProfileCodexConfigured(next.codexAuthJsonConfigured);
+      profileForm.setFieldValue("codexAuthJson", "");
+      await refreshSession();
+      message.success("Codex auth.json cleared");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");
+    } finally {
+      setSavingProfile(false);
+    }
+  };
 
   if (isTaskInteractiveFullscreenPath(pathname)) {
     return (
@@ -154,7 +214,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Flex align="center" gap={12}>
               <TaskBrowserNotifications />
               <Flex vertical gap={0} style={{ minWidth: 0 }}>
-                <Typography.Text strong>{`Hi, ${session.user.name || "Administrator"}`}</Typography.Text>
+                <Button type="text" style={{ paddingInline: 6 }} onClick={() => { void openProfile(); }}>
+                  <Typography.Text strong>{`Hi, ${session.user.name || "Administrator"}`}</Typography.Text>
+                </Button>
               </Flex>
               <Select
                 value={mode}
@@ -247,6 +309,39 @@ export function AppShell({ children }: { children: ReactNode }) {
           }}
         />
       </Drawer>
+      <Modal
+        title="Profile"
+        open={profileOpen}
+        onCancel={() => setProfileOpen(false)}
+        onOk={() => {
+          void saveProfile();
+        }}
+        okText="Save"
+        confirmLoading={savingProfile}
+        destroyOnClose
+      >
+        <Spin spinning={profileLoading}>
+          <Form form={profileForm} layout="vertical" initialValues={{ name: session.user.name, codexAuthJson: "" }}>
+            <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
+              <Input />
+            </Form.Item>
+            <Form.Item name="codexAuthJson" label="Codex auth.json">
+              <Input.TextArea
+                autoSize={{ minRows: 6, maxRows: 14 }}
+                placeholder={profileCodexConfigured ? "Configured. Paste new JSON to replace." : "{\"...\": \"...\"}"}
+              />
+            </Form.Item>
+            <Typography.Text type="secondary">
+              Stored write-only and encrypted. Existing value is never returned.
+            </Typography.Text>
+            <div style={{ marginTop: 12 }}>
+              <Button danger onClick={() => { void clearCodexAuthJson(); }} loading={savingProfile}>
+                Clear Codex auth.json
+              </Button>
+            </div>
+          </Form>
+        </Spin>
+      </Modal>
     </>
   );
 

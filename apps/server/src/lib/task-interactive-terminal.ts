@@ -83,22 +83,26 @@ function shellSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
-function buildCodexStartScript(configB64: string, model: string, reasoningEffort: string): string {
+function buildCodexStartScript(configB64: string, model: string, reasoningEffort: string, preferAuthJson: boolean): string {
   const codexArgs = [
     "--dangerously-bypass-approvals-and-sandbox",
     '-C "$TASK_INTERACTIVE_WORKSPACE"',
     "-m",
     shellSingleQuote(model),
     "-c cli_auth_credentials_store=file",
-    "-c forced_login_method=api",
+    ...(preferAuthJson ? [] : ["-c forced_login_method=api"]),
     "-c",
     shellSingleQuote(`model_reasoning_effort="${reasoningEffort}"`)
   ];
 
+  const authBootstrap = preferAuthJson
+    ? 'printf %s "$CODEX_AUTH_JSON_B64" | base64 -d > ~/.codex/auth.json'
+    : 'printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file';
+
   return [
     "mkdir -p ~/.codex",
     `printf '%s' ${shellSingleQuote(configB64)} | base64 -d > ~/.codex/config.toml`,
-    'printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file',
+    authBootstrap,
     `SESSION_FILE="$HOME/.codex/${PROVIDER_SESSION_ID_FILE}"`,
     'SESSION_ID=""',
     'if [ -f "$SESSION_FILE" ]; then IFS= read -r SESSION_ID < "$SESSION_FILE" || true; fi',
@@ -250,12 +254,16 @@ function resolveInteractiveTerminalRuntimeConfig(
   if (!image) {
     return { ok: false, reason: "Interactive Codex is not configured (set CODEX_INTERACTIVE_IMAGE on the server)." };
   }
-  if (!credentials.openaiApiKey) {
-    return { ok: false, reason: "OpenAI API key is not configured in Settings." };
+  if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
+    return { ok: false, reason: "OpenAI API key or profile Codex auth.json is not configured." };
   }
+  const useCodexAuthJson = Boolean(credentials.codexAuthJson);
 
   const envEntries: Array<[string, string]> = [
-    ["OPENAI_API_KEY", credentials.openaiApiKey],
+    ...(credentials.openaiApiKey ? [["OPENAI_API_KEY", credentials.openaiApiKey] as [string, string]] : []),
+    ...(credentials.codexAuthJson
+      ? [["CODEX_AUTH_JSON_B64", Buffer.from(credentials.codexAuthJson, "utf8").toString("base64")] as [string, string]]
+      : []),
     ["TERM", "xterm-256color"],
     ["HOME", "/root"],
     ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
@@ -280,7 +288,8 @@ function resolveInteractiveTerminalRuntimeConfig(
     startScript: buildCodexStartScript(
       Buffer.from(buildCodexUserConfigToml(INTERACTIVE_WORKSPACE_PATH, model), "utf8").toString("base64"),
       model,
-      codexReasoningEffortForProfile(task.providerProfile)
+      codexReasoningEffortForProfile(task.providerProfile),
+      useCodexAuthJson
     )
   };
 }
@@ -402,7 +411,8 @@ export async function getTaskInteractiveTerminalStatus(
   taskStore: TaskStore,
   settingsStore: SettingsStore,
   taskId: string,
-  mode: TaskTerminalSessionMode = "interactive"
+  mode: TaskTerminalSessionMode = "interactive",
+  userId?: string | null
 ): Promise<TaskInteractiveTerminalStatusPayload> {
   const task = await taskStore.getTaskMetadata(taskId);
   if (!task) {
@@ -468,7 +478,7 @@ export async function getTaskInteractiveTerminalStatus(
   }
 
   if (mode === "git") {
-    const credentials = await settingsStore.getRuntimeCredentials();
+    const credentials = await settingsStore.getRuntimeCredentials(userId);
     const runtime = resolveGitTerminalRuntimeConfig(credentials);
     if (!runtime.ok) {
       return { available: false, reason: runtime.reason };
@@ -484,7 +494,7 @@ export async function getTaskInteractiveTerminalStatus(
 
   const [settings, credentials] = await Promise.all([
     settingsStore.getSettings(),
-    settingsStore.getRuntimeCredentials()
+    settingsStore.getRuntimeCredentials(userId)
   ]);
   const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
   if (!runtime.ok) {
@@ -543,7 +553,7 @@ export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, dep
         return;
       }
       wss.handleUpgrade(request, socket, head, (ws) => {
-        void initializeTaskInteractiveTerminalWebSocket(ws, task, deps, terminalMode).catch(() => {
+        void initializeTaskInteractiveTerminalWebSocket(ws, task, deps, terminalMode, auth.user.id).catch(() => {
           sendInteractiveTerminalError(ws, `${getTaskTerminalSessionLabel(terminalMode)} initialization failed.`);
         });
       });
@@ -561,7 +571,8 @@ async function initializeTaskInteractiveTerminalWebSocket(
   ws: WebSocket,
   task: Task,
   deps: TaskInteractiveTerminalDeps,
-  mode: TaskTerminalSessionMode
+  mode: TaskTerminalSessionMode,
+  userId?: string | null
 ): Promise<void> {
   const taskId = task.id;
   const activeInteractiveSession = await deps.taskStore.getActiveInteractiveSession(taskId);
@@ -593,7 +604,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
     return;
   }
 
-  const status = await getTaskInteractiveTerminalStatus(deps.taskStore, deps.settingsStore, taskId, mode);
+  const status = await getTaskInteractiveTerminalStatus(deps.taskStore, deps.settingsStore, taskId, mode, userId);
   if (!status.available) {
     sendInteractiveTerminalError(ws, status.reason ?? `${getTaskTerminalSessionLabel(mode)} is unavailable`);
     return;
@@ -609,7 +620,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
     if (mode === "git") {
       const [credentials, gitIdentity, repository] = await Promise.all([
-        deps.settingsStore.getRuntimeCredentials(),
+        deps.settingsStore.getRuntimeCredentials(userId),
         resolveTaskGitCommitIdentity(task, deps.userStore, {
           name: env.GIT_USER_NAME,
           email: env.GIT_USER_EMAIL
@@ -670,7 +681,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
     }
 
     const [credentials, settings, repository] = await Promise.all([
-      deps.settingsStore.getRuntimeCredentials(),
+      deps.settingsStore.getRuntimeCredentials(userId),
       deps.settingsStore.getSettings(),
       deps.repositoryStore.getRepository(task.repoId)
     ]);

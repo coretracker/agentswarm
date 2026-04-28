@@ -2,6 +2,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AuthSession, PermissionScope, RealtimeEvent } from "@agentswarm/shared-types";
 import type { Server as SocketIOServer, Socket } from "socket.io";
+import type { CredentialStore } from "../services/credential-store.js";
 import type { SessionStore } from "../services/session-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { UserStore } from "../services/user-store.js";
@@ -77,12 +78,14 @@ export const createAuthService = ({
   cookieName,
   sessionStore,
   userStore,
-  taskStore
+  taskStore,
+  credentialStore
 }: {
   cookieName: string;
   sessionStore: SessionStore;
   userStore: UserStore;
   taskStore: TaskStore;
+  credentialStore: CredentialStore;
 }): AuthService => {
   const getRequestToken = (request: FastifyRequest): string | null => {
     const token = request.cookies?.[cookieName];
@@ -104,14 +107,19 @@ export const createAuthService = ({
       await sessionStore.deleteSession(token);
       return null;
     }
+    const codexAuthJsonConfigured = await credentialStore.hasCodexAuthJsonForUser(user.id);
+    const sessionUser = {
+      ...user,
+      codexAuthJsonConfigured
+    };
 
     return {
-      user,
-      scopes: new Set(user.scopes),
+      user: sessionUser,
+      scopes: new Set(sessionUser.scopes),
       sessionToken: token,
       expiresAt: session.expiresAt,
       session: {
-        user,
+        user: sessionUser,
         expiresAt: session.expiresAt
       }
     };
@@ -281,9 +289,13 @@ export const createAuthService = ({
       if (!user) {
         throw new Error("Active session user not found");
       }
+      const codexAuthJsonConfigured = await credentialStore.hasCodexAuthJsonForUser(user.id);
 
       return {
-        user,
+        user: {
+          ...user,
+          codexAuthJsonConfigured
+        },
         expiresAt
       };
     },

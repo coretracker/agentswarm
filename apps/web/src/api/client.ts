@@ -2,6 +2,7 @@
 
 import type {
   AgentProvider,
+  AuthProfile,
   AuthSession,
   CreateRoleInput,
   CreateSnippetInput,
@@ -43,6 +44,7 @@ import type {
   UpdateTaskPinInput,
   UpdateTaskStateInput,
   UpdateTaskTitleInput,
+  UpdateAuthProfileInput,
   UpdateCredentialSettingsInput,
   UpdateTaskConfigInput,
   UpdateRepositoryInput,
@@ -124,6 +126,12 @@ export const api = {
   login: (input: LoginInput) =>
     request<AuthSession>("/auth/login", {
       method: "POST",
+      body: JSON.stringify(input)
+    }),
+  getProfile: () => request<AuthProfile>("/auth/profile"),
+  updateProfile: (input: UpdateAuthProfileInput) =>
+    request<AuthProfile>("/auth/profile", {
+      method: "PATCH",
       body: JSON.stringify(input)
     }),
   logout: () =>

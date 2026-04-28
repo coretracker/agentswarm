@@ -194,11 +194,16 @@ export function TaskDefinitionFields({
   const isImplementationTask = effectiveTaskType === "build";
   const baseBranchLabel = isBlankSource || isIssueSource ? "Base Branch" : undefined;
   const providerMissingCredentials =
-    selectedProvider === "codex" ? !settings?.openaiApiKeyConfigured : !settings?.anthropicApiKeyConfigured;
+    selectedProvider === "codex"
+      ? !(settings?.openaiApiKeyConfigured || session?.user.codexAuthJsonConfigured)
+      : !settings?.anthropicApiKeyConfigured;
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
   const roleAllowedModels = session?.user.allowedModels ?? [];
   const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
-  const providerSelectOptions = providerOptions(Boolean(settings?.openaiApiKeyConfigured), Boolean(settings?.anthropicApiKeyConfigured)).map(
+  const providerSelectOptions = providerOptions(
+    Boolean(settings?.openaiApiKeyConfigured || session?.user.codexAuthJsonConfigured),
+    Boolean(settings?.anthropicApiKeyConfigured)
+  ).map(
     (option) => ({
       ...option,
       disabled: Boolean(option.disabled || (roleAllowedProviders.length > 0 && !roleAllowedProviders.includes(option.value)))
@@ -711,8 +716,12 @@ export function TaskDefinitionFields({
               type="warning"
               showIcon
               style={{ marginBottom: 16 }}
-              message={`${selectedProvider === "codex" ? "OpenAI" : "Anthropic"} credentials are missing`}
-              description="Configure the provider credential in Settings before running this task."
+              message={`${selectedProvider === "codex" ? "Codex" : "Anthropic"} credentials are missing`}
+              description={
+                selectedProvider === "codex"
+                  ? "Configure Codex auth.json in your Profile or set an OpenAI API key in Settings before running this task."
+                  : "Configure the provider credential in Settings before running this task."
+              }
             />
           ) : null}
 

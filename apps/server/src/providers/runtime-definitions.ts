@@ -105,9 +105,12 @@ export const providerRuntimeDefinitions: Record<AgentProvider, ProviderRuntimeDe
     context: path.join(repoRoot, "agent-runtime-codex"),
     configFileName: "codex-config.toml",
     getMissingCredentialMessage: (credentials) =>
-      credentials.openaiApiKey ? null : "OpenAI API key is not configured in Settings.",
+      credentials.openaiApiKey || credentials.codexAuthJson ? null : "OpenAI API key or Codex auth.json is not configured.",
     getRuntimeEnv: (credentials) => ({
       OPENAI_API_KEY: credentials.openaiApiKey ?? undefined,
+      CODEX_AUTH_JSON_B64: credentials.codexAuthJson
+        ? Buffer.from(credentials.codexAuthJson, "utf8").toString("base64")
+        : undefined,
       OPENAI_BASE_URL: credentials.openaiBaseUrl ?? undefined
     }),
     getProviderConfig: serializeCodexMcpConfig,

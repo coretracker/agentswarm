@@ -13,6 +13,7 @@ interface StoredCredentials {
   githubToken: string | null;
   openaiApiKey: string | null;
   anthropicApiKey: string | null;
+  codexAuthJsonByUserId: Record<string, string>;
 }
 
 interface EncryptedPayload {
@@ -26,6 +27,7 @@ export interface RuntimeCredentials {
   githubToken: string | null;
   openaiApiKey: string | null;
   anthropicApiKey: string | null;
+  codexAuthJson?: string | null;
 }
 
 export interface CredentialStatus {
@@ -38,6 +40,9 @@ export interface CredentialStore {
   getCredentials(): Promise<RuntimeCredentials>;
   getCredentialStatus(): Promise<CredentialStatus>;
   updateCredentials(input: UpdateCredentialSettingsInput): Promise<CredentialStatus>;
+  getCodexAuthJsonForUser(userId: string): Promise<string | null>;
+  setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void>;
+  hasCodexAuthJsonForUser(userId: string): Promise<boolean>;
 }
 
 export class RedisCredentialStore implements CredentialStore {
@@ -98,31 +103,69 @@ export class RedisCredentialStore implements CredentialStore {
     return plaintext.toString("utf8");
   }
 
-  async getCredentials(): Promise<RuntimeCredentials> {
+  private normalizeCodexAuthJsonByUserId(value: Record<string, unknown> | undefined): Record<string, string> {
+    const next: Record<string, string> = {};
+    for (const [key, raw] of Object.entries(value ?? {})) {
+      const userId = key.trim();
+      const authJson = typeof raw === "string" ? raw.trim() : "";
+      if (!userId || !authJson) {
+        continue;
+      }
+      next[userId] = authJson;
+    }
+    return next;
+  }
+
+  private async readStoredCredentials(): Promise<StoredCredentials> {
     const raw = await this.redis.get(CREDENTIALS_KEY);
     if (!raw) {
       return {
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        codexAuthJsonByUserId: {}
       };
     }
 
     try {
       const decrypted = await this.decrypt(raw);
-      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials>;
+      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials> & {
+        codexAuthJsonByUserId?: Record<string, unknown>;
+      };
       return {
         githubToken: parsed.githubToken?.trim() || null,
         openaiApiKey: parsed.openaiApiKey?.trim() || null,
-        anthropicApiKey: parsed.anthropicApiKey?.trim() || null
+        anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
+        codexAuthJsonByUserId: this.normalizeCodexAuthJsonByUserId(parsed.codexAuthJsonByUserId)
       };
     } catch {
       return {
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        codexAuthJsonByUserId: {}
       };
     }
+  }
+
+  private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
+    if (!next.githubToken && !next.openaiApiKey && !next.anthropicApiKey && Object.keys(next.codexAuthJsonByUserId).length === 0) {
+      await this.redis.del(CREDENTIALS_KEY);
+      return;
+    }
+
+    const encrypted = await this.encrypt(JSON.stringify(next));
+    await this.redis.set(CREDENTIALS_KEY, encrypted);
+  }
+
+  async getCredentials(): Promise<RuntimeCredentials> {
+    const current = await this.readStoredCredentials();
+    return {
+      githubToken: current.githubToken,
+      openaiApiKey: current.openaiApiKey,
+      anthropicApiKey: current.anthropicApiKey,
+      codexAuthJson: null
+    };
   }
 
   async getCredentialStatus(): Promise<CredentialStatus> {
@@ -135,7 +178,7 @@ export class RedisCredentialStore implements CredentialStore {
   }
 
   async updateCredentials(input: UpdateCredentialSettingsInput): Promise<CredentialStatus> {
-    const current = await this.getCredentials();
+    const current = await this.readStoredCredentials();
     const next: StoredCredentials = {
       githubToken: input.clearGithubToken
         ? null
@@ -151,17 +194,44 @@ export class RedisCredentialStore implements CredentialStore {
         ? null
         : input.anthropicApiKey?.trim()
           ? input.anthropicApiKey.trim()
-          : current.anthropicApiKey
+          : current.anthropicApiKey,
+      codexAuthJsonByUserId: current.codexAuthJsonByUserId
     };
-
-    if (!next.githubToken && !next.openaiApiKey && !next.anthropicApiKey) {
-      await this.redis.del(CREDENTIALS_KEY);
-    } else {
-      const encrypted = await this.encrypt(JSON.stringify(next));
-      await this.redis.set(CREDENTIALS_KEY, encrypted);
-    }
+    await this.writeStoredCredentials(next);
 
     return this.getCredentialStatus();
+  }
+
+  async getCodexAuthJsonForUser(userId: string): Promise<string | null> {
+    const key = userId.trim();
+    if (!key) {
+      return null;
+    }
+    const current = await this.readStoredCredentials();
+    return current.codexAuthJsonByUserId[key]?.trim() || null;
+  }
+
+  async setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void> {
+    const key = userId.trim();
+    if (!key) {
+      return;
+    }
+    const current = await this.readStoredCredentials();
+    const nextByUserId = { ...current.codexAuthJsonByUserId };
+    const normalized = codexAuthJson?.trim() || null;
+    if (normalized) {
+      nextByUserId[key] = normalized;
+    } else {
+      delete nextByUserId[key];
+    }
+    await this.writeStoredCredentials({
+      ...current,
+      codexAuthJsonByUserId: nextByUserId
+    });
+  }
+
+  async hasCodexAuthJsonForUser(userId: string): Promise<boolean> {
+    return Boolean(await this.getCodexAuthJsonForUser(userId));
   }
 }
 
@@ -223,7 +293,20 @@ export class PostgresCredentialStore implements CredentialStore {
     return plaintext.toString("utf8");
   }
 
-  async getCredentials(): Promise<RuntimeCredentials> {
+  private normalizeCodexAuthJsonByUserId(value: Record<string, unknown> | undefined): Record<string, string> {
+    const next: Record<string, string> = {};
+    for (const [key, raw] of Object.entries(value ?? {})) {
+      const userId = key.trim();
+      const authJson = typeof raw === "string" ? raw.trim() : "";
+      if (!userId || !authJson) {
+        continue;
+      }
+      next[userId] = authJson;
+    }
+    return next;
+  }
+
+  private async readStoredCredentials(): Promise<StoredCredentials> {
     const result = await this.pool.query<{ payload_encrypted: string }>(
       "SELECT payload_encrypted FROM credentials WHERE singleton_id = 1"
     );
@@ -233,25 +316,64 @@ export class PostgresCredentialStore implements CredentialStore {
       return {
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        codexAuthJsonByUserId: {}
       };
     }
 
     try {
       const decrypted = await this.decrypt(row.payload_encrypted);
-      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials>;
+      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials> & {
+        codexAuthJsonByUserId?: Record<string, unknown>;
+      };
       return {
         githubToken: parsed.githubToken?.trim() || null,
         openaiApiKey: parsed.openaiApiKey?.trim() || null,
-        anthropicApiKey: parsed.anthropicApiKey?.trim() || null
+        anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
+        codexAuthJsonByUserId: this.normalizeCodexAuthJsonByUserId(parsed.codexAuthJsonByUserId)
       };
     } catch {
       return {
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        codexAuthJsonByUserId: {}
       };
     }
+  }
+
+  private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
+    if (!next.githubToken && !next.openaiApiKey && !next.anthropicApiKey && Object.keys(next.codexAuthJsonByUserId).length === 0) {
+      await this.pool.query("DELETE FROM credentials WHERE singleton_id = 1");
+      return;
+    }
+
+    const encrypted = await this.encrypt(JSON.stringify(next));
+    await this.pool.query(
+      `
+          INSERT INTO credentials (
+            singleton_id,
+            payload_encrypted,
+            updated_at
+          )
+          VALUES (1, $1, $2)
+          ON CONFLICT (singleton_id) DO UPDATE
+          SET
+            payload_encrypted = EXCLUDED.payload_encrypted,
+            updated_at = EXCLUDED.updated_at
+        `,
+      [encrypted, nowIso()]
+    );
+  }
+
+  async getCredentials(): Promise<RuntimeCredentials> {
+    const current = await this.readStoredCredentials();
+    return {
+      githubToken: current.githubToken,
+      openaiApiKey: current.openaiApiKey,
+      anthropicApiKey: current.anthropicApiKey,
+      codexAuthJson: null
+    };
   }
 
   async getCredentialStatus(): Promise<CredentialStatus> {
@@ -264,7 +386,7 @@ export class PostgresCredentialStore implements CredentialStore {
   }
 
   async updateCredentials(input: UpdateCredentialSettingsInput): Promise<CredentialStatus> {
-    const current = await this.getCredentials();
+    const current = await this.readStoredCredentials();
     const next: StoredCredentials = {
       githubToken: input.clearGithubToken
         ? null
@@ -280,30 +402,43 @@ export class PostgresCredentialStore implements CredentialStore {
         ? null
         : input.anthropicApiKey?.trim()
           ? input.anthropicApiKey.trim()
-          : current.anthropicApiKey
+          : current.anthropicApiKey,
+      codexAuthJsonByUserId: current.codexAuthJsonByUserId
     };
-
-    if (!next.githubToken && !next.openaiApiKey && !next.anthropicApiKey) {
-      await this.pool.query("DELETE FROM credentials WHERE singleton_id = 1");
-    } else {
-      const encrypted = await this.encrypt(JSON.stringify(next));
-      await this.pool.query(
-        `
-          INSERT INTO credentials (
-            singleton_id,
-            payload_encrypted,
-            updated_at
-          )
-          VALUES (1, $1, $2)
-          ON CONFLICT (singleton_id) DO UPDATE
-          SET
-            payload_encrypted = EXCLUDED.payload_encrypted,
-            updated_at = EXCLUDED.updated_at
-        `,
-        [encrypted, nowIso()]
-      );
-    }
+    await this.writeStoredCredentials(next);
 
     return this.getCredentialStatus();
+  }
+
+  async getCodexAuthJsonForUser(userId: string): Promise<string | null> {
+    const key = userId.trim();
+    if (!key) {
+      return null;
+    }
+    const current = await this.readStoredCredentials();
+    return current.codexAuthJsonByUserId[key]?.trim() || null;
+  }
+
+  async setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void> {
+    const key = userId.trim();
+    if (!key) {
+      return;
+    }
+    const current = await this.readStoredCredentials();
+    const nextByUserId = { ...current.codexAuthJsonByUserId };
+    const normalized = codexAuthJson?.trim() || null;
+    if (normalized) {
+      nextByUserId[key] = normalized;
+    } else {
+      delete nextByUserId[key];
+    }
+    await this.writeStoredCredentials({
+      ...current,
+      codexAuthJsonByUserId: nextByUserId
+    });
+  }
+
+  async hasCodexAuthJsonForUser(userId: string): Promise<boolean> {
+    return Boolean(await this.getCodexAuthJsonForUser(userId));
   }
 }

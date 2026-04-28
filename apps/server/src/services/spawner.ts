@@ -3630,7 +3630,7 @@ export class SpawnerService {
     this.cancelRequestedTaskIds.delete(task.id);
     const [settings, runtimeCredentials, repository] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials(),
+      this.settingsStore.getRuntimeCredentials(task.ownerUserId),
       this.repositoryStore.getRepository(task.repoId)
     ]);
     const repositoryEnvVars = repository?.envVars ?? [];

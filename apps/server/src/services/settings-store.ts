@@ -138,7 +138,7 @@ export interface SettingsStore {
   getSettings(): Promise<SystemSettings>;
   updateSettings(input: UpdateSettingsInput): Promise<SystemSettings>;
   updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings>;
-  getRuntimeCredentials(): Promise<SettingsRuntimeCredentials>;
+  getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials>;
 }
 
 export class RedisSettingsStore implements SettingsStore {
@@ -235,14 +235,18 @@ export class RedisSettingsStore implements SettingsStore {
     return settings;
   }
 
-  async getRuntimeCredentials(): Promise<SettingsRuntimeCredentials> {
+  async getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials> {
     const [credentials, settings] = await Promise.all([
       this.credentialStore.getCredentials(),
       this.getSettings()
     ]);
+    const codexAuthJson = userId?.trim()
+      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
+      : null;
 
     return {
       ...credentials,
+      codexAuthJson: codexAuthJson || null,
       gitUsername: settings.gitUsername,
       openaiBaseUrl: settings.openaiBaseUrl,
       defaultProvider: settings.defaultProvider
@@ -416,14 +420,18 @@ export class PostgresSettingsStore implements SettingsStore {
     return settings;
   }
 
-  async getRuntimeCredentials(): Promise<SettingsRuntimeCredentials> {
+  async getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials> {
     const [credentials, settings] = await Promise.all([
       this.credentialStore.getCredentials(),
       this.getSettings()
     ]);
+    const codexAuthJson = userId?.trim()
+      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
+      : null;
 
     return {
       ...credentials,
+      codexAuthJson: codexAuthJson || null,
       gitUsername: settings.gitUsername,
       openaiBaseUrl: settings.openaiBaseUrl,
       defaultProvider: settings.defaultProvider

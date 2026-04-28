@@ -254,7 +254,8 @@ export const registerTaskRoutes = (
         deps.taskStore,
         deps.settingsStore,
         task.id,
-        terminalMode
+        terminalMode,
+        request.auth!.user.id
       );
       return reply.send(status);
     },

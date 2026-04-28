@@ -225,11 +225,18 @@ export interface AuthSessionUser extends User {
   allowedProviders: AgentProvider[];
   allowedModels: string[];
   allowedEfforts: ProviderProfile[];
+  codexAuthJsonConfigured?: boolean;
 }
 
 export interface AuthSession {
   user: AuthSessionUser;
   expiresAt: string;
+}
+
+export interface AuthProfile {
+  name: string;
+  email: string;
+  codexAuthJsonConfigured: boolean;
 }
 
 export interface LoginInput {
@@ -859,6 +866,12 @@ export interface UpdateCredentialSettingsInput {
   clearGithubToken?: boolean;
   clearOpenAiApiKey?: boolean;
   clearAnthropicApiKey?: boolean;
+}
+
+export interface UpdateAuthProfileInput {
+  name?: string;
+  codexAuthJson?: string;
+  clearCodexAuthJson?: boolean;
 }
 
 export interface TaskEvent {

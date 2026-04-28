@@ -6,6 +6,10 @@ const manifestPath = process.env.TASK_MANIFEST_FILE;
 const providerConfigPath = process.env.PROVIDER_CONFIG_FILE;
 const openAiApiKey = process.env.OPENAI_API_KEY ?? "";
 const openAiBaseUrl = process.env.OPENAI_BASE_URL ?? "";
+const codexAuthJsonB64 = process.env.CODEX_AUTH_JSON_B64 ?? "";
+const codexAuthJson = codexAuthJsonB64.trim()
+  ? Buffer.from(codexAuthJsonB64, "base64").toString("utf8").trim()
+  : "";
 
 if (!manifestPath) {
   console.error("TASK_MANIFEST_FILE is required");
@@ -15,8 +19,8 @@ if (!providerConfigPath) {
   console.error("PROVIDER_CONFIG_FILE is required");
   process.exit(1);
 }
-if (!openAiApiKey) {
-  console.error("OPENAI_API_KEY is required");
+if (!openAiApiKey && !codexAuthJson) {
+  console.error("OPENAI_API_KEY or CODEX_AUTH_JSON_B64 is required");
   process.exit(1);
 }
 
@@ -139,12 +143,17 @@ await mkdir(homeDir, { recursive: true });
 await mkdir(codexDir, { recursive: true });
 await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
 await writeFile(path.join(codexDir, "config.toml"), providerConfig, "utf8");
+if (codexAuthJson) {
+  await writeFile(path.join(codexDir, "auth.json"), codexAuthJson, "utf8");
+}
 console.log("[runtime] wrote Codex config");
 
 if (openAiBaseUrl) {
   process.env.OPENAI_BASE_URL = openAiBaseUrl;
 }
-process.env.OPENAI_API_KEY = openAiApiKey;
+if (openAiApiKey) {
+  process.env.OPENAI_API_KEY = openAiApiKey;
+}
 process.env.GIT_OPTIONAL_LOCKS = "0";
 process.env.HOME = homeDir;
 
@@ -189,26 +198,28 @@ const buildPrompt = () => {
   return promptBody;
 };
 
-await new Promise((resolve, reject) => {
-  const proc = spawn("codex", ["login", "--with-api-key"], {
-    env: process.env,
-    cwd: manifest.workspacePath,
-    stdio: ["pipe", "pipe", "pipe"]
-  });
-  proc.stdin.write(openAiApiKey);
-  proc.stdin.end();
-  proc.stdout.on("data", (chunk) => process.stdout.write(chunk));
-  proc.stderr.on("data", (chunk) => process.stderr.write(chunk));
-  proc.on("error", reject);
-  proc.on("close", (code) => {
-    if (code === 0) {
-      resolve();
-      return;
-    }
+if (!codexAuthJson) {
+  await new Promise((resolve, reject) => {
+    const proc = spawn("codex", ["login", "--with-api-key"], {
+      env: process.env,
+      cwd: manifest.workspacePath,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    proc.stdin.write(openAiApiKey);
+    proc.stdin.end();
+    proc.stdout.on("data", (chunk) => process.stdout.write(chunk));
+    proc.stderr.on("data", (chunk) => process.stderr.write(chunk));
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
 
-    reject(new Error(`codex login exited with ${code ?? "unknown"}`));
+      reject(new Error(`codex login exited with ${code ?? "unknown"}`));
+    });
   });
-});
+}
 
 const prompt = buildPrompt();
 const isAsk = manifest.action === "ask";
@@ -223,6 +234,8 @@ const args = [
   "--dangerously-bypass-approvals-and-sandbox",
   "-C",
   manifest.workspacePath,
+  "-c",
+  "cli_auth_credentials_store=file",
   "--color",
   "never",
   "--json",
