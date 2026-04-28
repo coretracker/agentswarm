@@ -302,6 +302,7 @@ export interface Repository {
 }
 
 export type TaskTerminalSessionMode = "interactive" | "git";
+export type CodexCredentialSource = "auto" | "profile" | "global";
 
 export interface Task {
   id: string;
@@ -319,6 +320,7 @@ export interface Task {
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride: string | null;
+  codexCredentialSource?: CodexCredentialSource;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
   complexity: TaskComplexity;
@@ -605,6 +607,7 @@ export interface CreateTaskInput {
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
+  codexCredentialSource?: CodexCredentialSource;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
   model?: string;
@@ -683,6 +686,7 @@ export interface CreateTaskFromIssueInput {
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
+  codexCredentialSource?: CodexCredentialSource;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
   model?: string;
@@ -696,6 +700,7 @@ export interface CreateTaskFromPullRequestInput {
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
+  codexCredentialSource?: CodexCredentialSource;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
 }
@@ -708,6 +713,7 @@ export interface UpdateTaskConfigInput {
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride?: string | null;
+  codexCredentialSource?: CodexCredentialSource;
   branchStrategy?: TaskBranchStrategy;
 }
 

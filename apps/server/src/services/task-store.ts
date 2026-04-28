@@ -2,6 +2,7 @@ import { nanoid } from "nanoid";
 import type Redis from "ioredis";
 import type { Pool } from "pg";
 import {
+  type CodexCredentialSource,
   getQueuedStatusForAction,
   type AgentProvider,
   type CreateTaskInput,
@@ -106,6 +107,13 @@ const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
   };
 };
 
+const normalizeCodexCredentialSource = (value: string | null | undefined): CodexCredentialSource => {
+  if (value === "profile" || value === "global") {
+    return value;
+  }
+  return "auto";
+};
+
 export interface ListTasksOptions {
   ownerUserId?: string | null;
   view?: "all" | "active" | "archived";
@@ -167,6 +175,7 @@ export type TaskMetadata = Pick<
   | "provider"
   | "providerProfile"
   | "modelOverride"
+  | "codexCredentialSource"
 >;
 
 export type CreateTaskChangeProposalInput = Omit<TaskChangeProposal, "resolvedAt" | "revertedAt"> & {
@@ -235,6 +244,7 @@ export class RedisTaskStore implements TaskStore {
       provider?: Task["provider"];
       providerProfile?: Task["providerProfile"];
       modelOverride?: string | null;
+      codexCredentialSource?: Task["codexCredentialSource"];
       model?: string | null;
       reasoningEffort?: TaskReasoningEffort | null;
       lastAction?: string | null;
@@ -258,6 +268,7 @@ export class RedisTaskStore implements TaskStore {
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
+      codexCredentialSource: normalizeCodexCredentialSource(legacyTask.codexCredentialSource),
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
@@ -413,6 +424,7 @@ export class RedisTaskStore implements TaskStore {
     const provider = normalizeProvider(input.provider);
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
+    const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
     const initialStatus: TaskStatus =
       startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
@@ -432,6 +444,7 @@ export class RedisTaskStore implements TaskStore {
       provider,
       providerProfile,
       modelOverride,
+      codexCredentialSource,
       baseBranch,
       branchStrategy,
       complexity,
@@ -489,7 +502,8 @@ export class RedisTaskStore implements TaskStore {
       activeTerminalSessionMode: task.activeTerminalSessionMode,
       provider: task.provider,
       providerProfile: task.providerProfile,
-      modelOverride: task.modelOverride
+      modelOverride: task.modelOverride,
+      codexCredentialSource: task.codexCredentialSource
     };
   }
 
@@ -1285,6 +1299,7 @@ export class PostgresTaskStore implements TaskStore {
       provider?: Task["provider"];
       providerProfile?: Task["providerProfile"];
       modelOverride?: string | null;
+      codexCredentialSource?: Task["codexCredentialSource"];
       model?: string | null;
       reasoningEffort?: TaskReasoningEffort | null;
       lastAction?: string | null;
@@ -1307,6 +1322,7 @@ export class PostgresTaskStore implements TaskStore {
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
+      codexCredentialSource: normalizeCodexCredentialSource(legacyTask.codexCredentialSource),
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
@@ -1518,6 +1534,7 @@ export class PostgresTaskStore implements TaskStore {
     const provider = normalizeProvider(input.provider);
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
+    const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
     const initialStatus: TaskStatus =
       startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
@@ -1537,6 +1554,7 @@ export class PostgresTaskStore implements TaskStore {
       provider,
       providerProfile,
       modelOverride,
+      codexCredentialSource,
       baseBranch,
       branchStrategy,
       complexity,
@@ -1594,7 +1612,8 @@ export class PostgresTaskStore implements TaskStore {
       activeTerminalSessionMode: task.activeTerminalSessionMode,
       provider: task.provider,
       providerProfile: task.providerProfile,
-      modelOverride: task.modelOverride
+      modelOverride: task.modelOverride,
+      codexCredentialSource: task.codexCredentialSource
     };
   }
 

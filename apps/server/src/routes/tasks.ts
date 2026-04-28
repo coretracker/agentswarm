@@ -53,6 +53,7 @@ const createTaskSchema = z
     provider: z.enum(["codex", "claude"]).optional(),
     providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
     modelOverride: z.string().trim().min(1).optional(),
+    codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
     baseBranch: z.string().min(1).optional(),
     branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
     model: z.string().min(1).optional(),
@@ -76,6 +77,7 @@ const updateTaskConfigSchema = z.object({
   provider: z.enum(["codex", "claude"]),
   providerProfile: z.enum(["low", "medium", "high", "max"]),
   modelOverride: z.string().trim().nullable().optional(),
+  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
   branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional()
 });
 
@@ -874,6 +876,7 @@ export const registerTaskRoutes = (
       provider: parsed.data.provider,
       providerProfile: parsed.data.providerProfile,
       modelOverride: parsed.data.modelOverride?.trim() || null,
+      codexCredentialSource: parsed.data.codexCredentialSource ?? task.codexCredentialSource,
       branchStrategy: parsed.data.branchStrategy ?? task.branchStrategy,
       branchName:
         (parsed.data.branchStrategy ?? task.branchStrategy) === "work_on_branch"

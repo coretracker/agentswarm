@@ -34,7 +34,8 @@ import {
   type TaskInteractiveTerminalTranscript,
   type TaskTerminalSessionMode,
   type TaskWorkspaceCommit,
-  type TaskWorkspaceFilePreview
+  type TaskWorkspaceFilePreview,
+  type CodexCredentialSource
 } from "@agentswarm/shared-types";
 import {
   Alert,
@@ -192,6 +193,12 @@ function formatRunDuration(startedAt: string, finishedAt: string | null): string
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: "Codex (OpenAI)", value: "codex" },
   { label: getAgentProviderLabel("claude"), value: "claude" }
+];
+
+const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
+  { label: "Auto (Profile then Global)", value: "auto" },
+  { label: "Profile auth.json only", value: "profile" },
+  { label: "Global OpenAI key only", value: "global" }
 ];
 
 interface WorkspaceFilePreviewState {
@@ -595,6 +602,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [providerInput, setProviderInput] = useState<AgentProvider>("codex");
   const [providerProfileInput, setProviderProfileInput] = useState<ProviderProfile>("high");
   const [modelInput, setModelInput] = useState<string>("gpt-5.4");
+  const [codexCredentialSourceInput, setCodexCredentialSourceInput] = useState<CodexCredentialSource>("auto");
   const [branchStrategyInput, setBranchStrategyInput] = useState<TaskBranchStrategy>("feature_branch");
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(providerInput);
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>(null);
@@ -774,16 +782,19 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const currentTaskProvider = task?.provider ?? "codex";
   const currentTaskProviderProfile = task?.providerProfile ?? "high";
   const currentTaskModelOverride = task?.modelOverride ?? "";
+  const currentTaskCodexCredentialSource = task?.codexCredentialSource ?? "auto";
   const interactiveTerminalConfigDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider));
+    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)) ||
+    (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource);
   const currentTaskBranchStrategy = task?.branchStrategy ?? "feature_branch";
   const hasExecutionContext = Boolean(task?.executionSummary?.trim());
   const configDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
     modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)) ||
+    (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource) ||
     (isImplementationTask && branchStrategyInput !== currentTaskBranchStrategy);
 
   const resultStatusText =
@@ -806,6 +817,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setProviderInput(nextTask.provider ?? "codex");
     setProviderProfileInput(nextTask.providerProfile ?? "high");
     setModelInput(nextTask.modelOverride ?? getDefaultModelForProvider(nextTask.provider ?? "codex"));
+    setCodexCredentialSourceInput(nextTask.codexCredentialSource ?? "auto");
     setBranchStrategyInput(nextTask.branchStrategy ?? "feature_branch");
   };
   const applyUpdatedTask = (updatedTask: Task): void => {
@@ -847,6 +859,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     provider,
     providerProfile,
     modelOverride,
+    codexCredentialSource,
     branchStrategy,
     notify = true,
     refreshTaskOnFailure = false
@@ -854,6 +867,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     provider: AgentProvider;
     providerProfile: ProviderProfile;
     modelOverride: string;
+    codexCredentialSource: CodexCredentialSource;
     branchStrategy?: TaskBranchStrategy;
     notify?: boolean;
     refreshTaskOnFailure?: boolean;
@@ -871,6 +885,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         provider,
         providerProfile,
         modelOverride: modelOverride || null,
+        codexCredentialSource,
         branchStrategy
       });
 
@@ -1075,6 +1090,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         provider: providerInput,
         providerProfile: providerProfileInput,
         modelOverride: modelInput,
+        codexCredentialSource: codexCredentialSourceInput,
         branchStrategy: isImplementationTask ? branchStrategyInput : undefined,
         notify: false,
         refreshTaskOnFailure: true
@@ -1097,6 +1113,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     providerInput,
     providerProfileInput,
     modelInput,
+    codexCredentialSourceInput,
     isImplementationTask,
     branchStrategyInput,
     messageApi
@@ -1862,7 +1879,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     !!chatInput.trim() ||
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider));
+    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)) ||
+    (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource);
   const composerClearDisabled = interactiveTerminalRunning || !composerHasChangesToClear;
   const terminalSubmitDisabled =
     chatClosed ||
@@ -1885,6 +1903,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setProviderInput(nextProvider);
       setModelInput(currentTaskModelOverride || getDefaultModelForProvider(nextProvider));
       setProviderProfileInput(currentTaskProviderProfile);
+      setCodexCredentialSourceInput(currentTaskCodexCredentialSource);
     }
   };
   const handleSubmitComposer = async () => {
@@ -2038,6 +2057,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       provider: providerInput,
       providerProfile: providerProfileInput,
       modelOverride: modelInput,
+      codexCredentialSource: codexCredentialSourceInput,
       branchStrategy: isImplementationTask ? branchStrategyInput : undefined,
       notify,
       refreshTaskOnFailure: true
@@ -2522,6 +2542,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Descriptions.Item label="Effort">{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
           <Descriptions.Item label="Last Action">{task?.lastAction ?? "draft"}</Descriptions.Item>
           <Descriptions.Item label="Model">{currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)}</Descriptions.Item>
+          {currentTaskProvider === "codex" ? (
+            <Descriptions.Item label="Codex Credential Source">
+              {codexCredentialSourceOptions.find((option) => option.value === currentTaskCodexCredentialSource)?.label ?? "Auto"}
+            </Descriptions.Item>
+          ) : null}
           <Descriptions.Item label="Status">
             {task ? (
               showWorkingIndicator ? (
@@ -3994,6 +4019,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               disabled={!canEditTask || isArchived || interactiveTerminalRunning}
             />
           </div>
+          <div>
+            <Typography.Text type="secondary">Codex Credential Source</Typography.Text>
+            <Select
+              value={codexCredentialSourceInput}
+              options={codexCredentialSourceOptions}
+              onChange={(value) => setCodexCredentialSourceInput(value)}
+              style={{ width: "100%", marginTop: 6 }}
+              disabled={!canEditTask || isArchived || interactiveTerminalRunning || providerInput !== "codex"}
+            />
+          </div>
         </Flex>
       </Modal>
       <Modal
@@ -4389,7 +4424,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   branchStrategy: "work_on_branch",
                   provider: task.provider,
                   providerProfile: task.providerProfile,
-                  modelOverride: task.modelOverride ?? undefined
+                  modelOverride: task.modelOverride ?? undefined,
+                  codexCredentialSource: task.codexCredentialSource
                 });
                 followUpForm.resetFields();
                 setFollowUpMode(null);

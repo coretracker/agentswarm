@@ -20,6 +20,7 @@ const issueImportSchema = z.object({
   provider: z.enum(["codex", "claude"]).optional(),
   providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
   modelOverride: z.string().trim().min(1).optional(),
+  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
   baseBranch: z.string().trim().min(1).optional(),
   branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
   model: z.string().trim().min(1).optional(),
@@ -34,6 +35,7 @@ const pullRequestImportSchema = z.object({
   provider: z.enum(["codex", "claude"]).optional(),
   providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
   modelOverride: z.string().trim().min(1).optional(),
+  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
   model: z.string().trim().min(1).optional(),
   reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
 });
