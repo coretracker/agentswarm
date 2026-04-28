@@ -22,7 +22,7 @@ export const reconcileTaskStatusWithPendingCheckpoint = (
     return "awaiting_review";
   }
 
-  if (status === "completed" || status === "answered" || status === "accepted") {
+  if (status === "completed" || status === "answered" || status === "accepted" || status === "awaiting_review") {
     return "open";
   }
 

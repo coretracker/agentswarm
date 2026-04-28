@@ -48,10 +48,13 @@ describe("reconcileTaskStatusWithPendingCheckpoint", () => {
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("accepted", false), "open");
   });
 
-  it("preserves explicit review states and done when no checkpoint is pending", () => {
+  it("preserves explicit in_review and done states when no checkpoint is pending", () => {
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", false), "in_review");
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("awaiting_review", false), "awaiting_review");
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("done", false), "done");
+  });
+
+  it("returns awaiting_review to open when no checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("awaiting_review", false), "open");
   });
 
   it("keeps archived tasks unchanged", () => {
