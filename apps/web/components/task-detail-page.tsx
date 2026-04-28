@@ -2899,15 +2899,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     </Space>
   ) : null;
 
-  const aiSettingsSummary = useMemo(
-    () =>
-      [
-        providerOptions.find((option) => option.value === providerInput)?.label ?? getAgentProviderLabel(providerInput),
-        allowedProviderModels.find((option) => option.value === modelInput)?.label ?? modelInput,
-        getProviderProfileLabel(providerProfileInput)
-      ].join(" · "),
-    [allowedProviderModels, modelInput, providerInput, providerProfileInput]
-  );
+  const aiSettingsSummary = [
+    providerOptions.find((option) => option.value === providerInput)?.label ?? getAgentProviderLabel(providerInput),
+    allowedProviderModels.find((option) => option.value === modelInput)?.label ?? modelInput,
+    getProviderProfileLabel(providerProfileInput)
+  ].join(" · ");
 
   const chatComposer = (
     <Flex vertical gap={12}>
