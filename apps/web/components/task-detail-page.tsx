@@ -716,8 +716,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
-    window.location.replace("/tasks");
-  }, [redirectingToTaskList]);
+    router.replace("/tasks");
+  }, [redirectingToTaskList, router]);
 
   useEffect(() => {
     setInteractiveTerminalTranscripts({});
@@ -1984,7 +1984,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setSubmitting("delete");
     setDeleteConfirmOpen(false);
     setIsDeletingTask(true);
-    setRedirectingToTaskList(true);
     try {
       await api.deleteTask(task.id);
       router.replace("/tasks");
