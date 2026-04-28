@@ -673,6 +673,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       }
     >
   >({});
+  const [isDeletingTask, setIsDeletingTask] = useState(false);
   const [redirectingToTaskList, setRedirectingToTaskList] = useState(false);
   const [taskPageVisible, setTaskPageVisible] = useState(false);
   const [workspaceFilePreview, setWorkspaceFilePreview] = useState<WorkspaceFilePreviewState>({
@@ -1981,11 +1982,19 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     setSubmitting("delete");
+    setDeleteConfirmOpen(false);
+    setIsDeletingTask(true);
+    setRedirectingToTaskList(true);
     try {
       await api.deleteTask(task.id);
-      setDeleteConfirmOpen(false);
       router.replace("/tasks");
     } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        router.replace("/tasks");
+        return;
+      }
+      setIsDeletingTask(false);
+      setRedirectingToTaskList(false);
       showTaskActionError(error, "Failed to delete task");
     } finally {
       setSubmitting(null);
@@ -2499,7 +2508,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     void loadPushPreview();
   }, [canPush, task?.id, task?.updatedAt]);
 
-  if (redirectingToTaskList) {
+  if (isDeletingTask) {
+    return (
+      <Flex justify="center" align="center" style={{ minHeight: 240 }}>
+        <Spin size="large" tip="Deleting task..." />
+      </Flex>
+    );
+  }
+
+  if (redirectingToTaskList || (!loading && !task && hadLoadedTaskRef.current)) {
     return (
       <Flex justify="center" align="center" style={{ minHeight: 240 }}>
         <Spin size="large" tip="Returning to tasks..." />
