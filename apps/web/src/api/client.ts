@@ -25,6 +25,7 @@ import type {
   OpenAiDiffAssistInput,
   OpenAiDiffAssistResult,
   TaskLiveDiff,
+  TaskWorkspaceFileSearchResult,
   TaskWorkspaceFileTree,
   TaskWorkspaceFilePreview,
   TaskWorkspaceCommitLog,
@@ -260,6 +261,17 @@ export const api = {
     }
     const query = params.toString();
     return request<TaskWorkspaceFileTree>(`/tasks/${id}/workspace-files${query ? `?${query}` : ""}`);
+  },
+  searchTaskWorkspaceFiles: (id: string, options: { query: string; executionId?: string | null; limit?: number }) => {
+    const params = new URLSearchParams({ q: options.query });
+    const executionId = options.executionId?.trim();
+    if (executionId) {
+      params.set("executionId", executionId);
+    }
+    if (options.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    return request<TaskWorkspaceFileSearchResult>(`/tasks/${id}/workspace-files/search?${params.toString()}`);
   },
   getTaskWorkspaceFile: (id: string, filePath: string, options?: { ref?: string | null; executionId?: string | null }) => {
     const params = new URLSearchParams({ path: filePath });

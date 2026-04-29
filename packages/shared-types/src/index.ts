@@ -407,6 +407,14 @@ export interface TaskWorkspaceFileTree {
   totalCount: number;
 }
 
+export interface TaskWorkspaceFileSearchResult {
+  query: string;
+  results: string[];
+  fetchedAt: string;
+  truncated: boolean;
+  totalCount: number;
+}
+
 export type TaskWorkspaceFilePreviewKind = "text" | "image" | "binary";
 
 export interface TaskWorkspaceFilePreview {

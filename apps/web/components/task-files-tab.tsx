@@ -179,6 +179,7 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
     revealLineInCenter: (lineNumber: number) => void;
     setPosition: (position: { lineNumber: number; column: number }) => void;
   } | null>(null);
+  const searchRequestIdRef = useRef(0);
 
   const loadedDirectoriesRef = useRef<Set<string>>(new Set());
   const loadingDirectoriesRef = useRef<Set<string>>(new Set());
@@ -193,7 +194,10 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
   const [executionId, setExecutionId] = useState<string | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState("");
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
-  const [filterText, setFilterText] = useState("");
+  const [searchText, setSearchText] = useState("");
+  const [fileSearchOptions, setFileSearchOptions] = useState<Array<{ value: string; label: string }>>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchTruncated, setSearchTruncated] = useState(false);
   const [expandedDirectoryKeys, setExpandedDirectoryKeys] = useState<string[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -271,7 +275,11 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
     setExecutionId(null);
     setSelectedFilePath("");
     setSelectedLine(null);
-    setFilterText("");
+    searchRequestIdRef.current += 1;
+    setSearchText("");
+    setFileSearchOptions([]);
+    setSearchLoading(false);
+    setSearchTruncated(false);
     setFileState({
       loading: false,
       preview: null,
@@ -281,6 +289,11 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
   }, [taskId, resetTreeState]);
 
   useEffect(() => {
+    searchRequestIdRef.current += 1;
+    setSearchText("");
+    setFileSearchOptions([]);
+    setSearchLoading(false);
+    setSearchTruncated(false);
     resetTreeState();
   }, [executionId, resetTreeState]);
 
@@ -301,6 +314,54 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
     }
     void loadDirectory("");
   }, [active, loadDirectory, refreshKey]);
+
+  useEffect(() => {
+    const query = searchText.trim();
+    if (query.length === 0) {
+      searchRequestIdRef.current += 1;
+      setFileSearchOptions([]);
+      setSearchLoading(false);
+      setSearchTruncated(false);
+      return;
+    }
+
+    const requestId = searchRequestIdRef.current + 1;
+    searchRequestIdRef.current = requestId;
+    setSearchLoading(true);
+
+    const timer = window.setTimeout(() => {
+      void api
+        .searchTaskWorkspaceFiles(taskId, {
+          query,
+          executionId,
+          limit: 80
+        })
+        .then((result) => {
+          if (searchRequestIdRef.current !== requestId) {
+            return;
+          }
+          setFileSearchOptions(result.results.map((path) => ({ value: path, label: path })));
+          setSearchTruncated(result.truncated);
+        })
+        .catch(() => {
+          if (searchRequestIdRef.current !== requestId) {
+            return;
+          }
+          setFileSearchOptions([]);
+          setSearchTruncated(false);
+        })
+        .finally(() => {
+          if (searchRequestIdRef.current !== requestId) {
+            return;
+          }
+          setSearchLoading(false);
+        });
+    }, 180);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [executionId, searchText, taskId]);
 
   useEffect(() => {
     if (!active || !selectedFilePath) {
@@ -392,35 +453,11 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
   }, [treeEntryKindsByPath]);
 
   const selectedLanguage = detectCodeLanguage(selectedFilePath || "");
-  const treeData = useMemo(
-    () => buildTreeData(treeEntryKindsByPath, filterText, loadingDirectories),
-    [filterText, loadingDirectories, treeEntryKindsByPath]
-  );
-  const fileSearchOptions = useMemo(() => {
-    const query = filterText.trim().toLowerCase();
-    if (!query) {
-      return [] as Array<{ value: string; label: string }>;
-    }
-
-    return Object.entries(treeEntryKindsByPath)
-      .filter(([, kind]) => kind === "file")
-      .map(([path]) => path)
-      .filter((path) => path.toLowerCase().includes(query))
-      .sort((left, right) => {
-        const leftStartsWith = left.toLowerCase().startsWith(query) ? 0 : 1;
-        const rightStartsWith = right.toLowerCase().startsWith(query) ? 0 : 1;
-        if (leftStartsWith !== rightStartsWith) {
-          return leftStartsWith - rightStartsWith;
-        }
-        return left.localeCompare(right, undefined, { sensitivity: "base" });
-      })
-      .slice(0, 80)
-      .map((path) => ({ value: path, label: path }));
-  }, [filterText, treeEntryKindsByPath]);
+  const treeData = useMemo(() => buildTreeData(treeEntryKindsByPath, "", loadingDirectories), [loadingDirectories, treeEntryKindsByPath]);
 
   const openSelectedOrFirstSearchMatch = useCallback(() => {
-    const selectedValue = filterText.trim();
-    const exactMatch = selectedValue && treeEntryKindsByPath[selectedValue] === "file" ? selectedValue : null;
+    const selectedValue = searchText.trim();
+    const exactMatch = selectedValue && fileSearchOptions.some((option) => option.value === selectedValue) ? selectedValue : null;
     const firstMatch = fileSearchOptions[0]?.value ?? null;
     const nextPath = exactMatch ?? firstMatch;
     if (!nextPath) {
@@ -429,8 +466,10 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
 
     setSelectedFilePath(nextPath);
     setSelectedLine(null);
-    setFilterText("");
-  }, [fileSearchOptions, filterText, treeEntryKindsByPath]);
+    setSearchText("");
+    setFileSearchOptions([]);
+    setSearchTruncated(false);
+  }, [fileSearchOptions, searchText]);
 
   const rootLoaded = loadedDirectories.has("");
 
@@ -457,23 +496,29 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
 
         <AutoComplete
           style={{ width: "100%" }}
-          value={filterText}
+          value={searchText}
           options={fileSearchOptions}
-          onSearch={setFilterText}
-          onChange={setFilterText}
+          onSearch={setSearchText}
+          onChange={setSearchText}
+          notFoundContent={searchLoading ? <Spin size="small" /> : null}
           onSelect={(value) => {
             const path = String(value);
             setSelectedFilePath(path);
             setSelectedLine(null);
-            setFilterText("");
+            setSearchText("");
+            setFileSearchOptions([]);
+            setSearchTruncated(false);
           }}
         >
           <Input
-            placeholder="Search file (autocomplete)"
+            placeholder="Search file path"
             allowClear
             onPressEnter={openSelectedOrFirstSearchMatch}
           />
         </AutoComplete>
+        {searchTruncated ? (
+          <Typography.Text type="secondary">Search results truncated. Keep typing to narrow matches.</Typography.Text>
+        ) : null}
 
         {executionId ? (
           <Space wrap size={8}>
@@ -499,7 +544,7 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
             <Spin />
           </Flex>
         ) : rootLoaded && treeData.length === 0 ? (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={filterText.trim() ? "No loaded files match this filter" : "No files found"} />
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No files found" />
         ) : (
           <Tree
             blockNode

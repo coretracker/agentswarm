@@ -25,6 +25,7 @@ import {
   type TaskMergePreview,
   type TaskPushPreview,
   type TaskTerminalSessionMode,
+  type TaskWorkspaceFileSearchResult,
   type TaskWorkspaceFilePreview,
   type TaskWorkspaceFileTree,
   type TaskWorkspaceFileTreeEntry,
@@ -157,6 +158,8 @@ const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
 const WORKSPACE_FILE_PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
 const WORKSPACE_FILE_TREE_DEFAULT_LIMIT = 5_000;
 const WORKSPACE_FILE_TREE_MAX_LIMIT = 20_000;
+const WORKSPACE_FILE_SEARCH_DEFAULT_LIMIT = 50;
+const WORKSPACE_FILE_SEARCH_MAX_LIMIT = 500;
 const SAFE_GIT_PREVIEW_REF_PATTERN = /^[A-Za-z0-9._/-]+(?:[~^][0-9]*)*$/;
 
 function getPreviewMimeType(filePath: string): string | null {
@@ -1316,6 +1319,103 @@ export class SpawnerService {
       fetchedAt: new Date().toISOString(),
       truncated,
       totalCount: entries.length
+    };
+  }
+
+  async searchTaskWorkspaceFiles(
+    task: Task,
+    options: { query: string; executionId?: string | null; limit?: number }
+  ): Promise<TaskWorkspaceFileSearchResult> {
+    const workspacePath = options.executionId ? this.resolveAskWorkspacePath(task.id, options.executionId) : this.resolveWorkspacePath(task.id);
+    const query = options.query.trim().toLowerCase();
+    const safeLimit = Number.isFinite(options.limit)
+      ? Math.max(1, Math.min(WORKSPACE_FILE_SEARCH_MAX_LIMIT, Math.floor(options.limit ?? WORKSPACE_FILE_SEARCH_DEFAULT_LIMIT)))
+      : WORKSPACE_FILE_SEARCH_DEFAULT_LIMIT;
+
+    if (!query) {
+      return {
+        query: options.query,
+        results: [],
+        fetchedAt: new Date().toISOString(),
+        truncated: false,
+        totalCount: 0
+      };
+    }
+
+    const workspaceExists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!workspaceExists) {
+      return {
+        query: options.query,
+        results: [],
+        fetchedAt: new Date().toISOString(),
+        truncated: false,
+        totalCount: 0
+      };
+    }
+
+    const results: string[] = [];
+    const queue: Array<{ absolutePath: string; relativePath: string }> = [{ absolutePath: workspacePath, relativePath: "" }];
+
+    while (queue.length > 0 && results.length < safeLimit) {
+      const current = queue.pop();
+      if (!current) {
+        break;
+      }
+
+      let children: Dirent[];
+      try {
+        children = await readdir(current.absolutePath, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      children.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+      const directoriesToVisit: Array<{ absolutePath: string; relativePath: string }> = [];
+
+      for (const child of children) {
+        if (child.name === ".git") {
+          continue;
+        }
+
+        const relativePath = current.relativePath ? `${current.relativePath}/${child.name}` : child.name;
+        if (child.isDirectory()) {
+          const safeDirectoryPath = resolveSafeWorkspaceFilePath(workspacePath, relativePath);
+          if (!safeDirectoryPath) {
+            continue;
+          }
+          directoriesToVisit.push({
+            absolutePath: safeDirectoryPath,
+            relativePath
+          });
+          continue;
+        }
+
+        if (!child.isFile()) {
+          continue;
+        }
+
+        const candidate = relativePath.toLowerCase();
+        if (candidate.includes(query)) {
+          results.push(relativePath);
+          if (results.length >= safeLimit) {
+            break;
+          }
+        }
+      }
+
+      for (let index = directoriesToVisit.length - 1; index >= 0; index -= 1) {
+        queue.push(directoriesToVisit[index]!);
+      }
+    }
+
+    return {
+      query: options.query,
+      results,
+      fetchedAt: new Date().toISOString(),
+      truncated: results.length >= safeLimit,
+      totalCount: results.length
     };
   }
 

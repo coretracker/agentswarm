@@ -163,6 +163,18 @@ const workspaceFilesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(20_000).optional()
 });
 
+const workspaceFileSearchQuerySchema = z.object({
+  q: z.string().trim().min(1).max(512),
+  executionId: z
+    .string()
+    .trim()
+    .min(1)
+    .max(255)
+    .regex(/^[A-Za-z0-9_-]+$/, "Invalid execution id.")
+    .optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional()
+});
+
 const updateWorkspaceFileSchema = z.object({
   path: z.string().trim().min(1).max(4096),
   content: z.string().max(8 * 1024 * 1024)
@@ -477,6 +489,29 @@ export const registerTaskRoutes = (
         limit: parsed.data.limit
       });
       return reply.send(listing);
+    }
+  );
+
+  app.get<{ Params: { id: string }; Querystring: { q?: string; executionId?: string; limit?: string } }>(
+    "/tasks/:id/workspace-files/search",
+    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
+    async (request, reply) => {
+      const parsed = workspaceFileSearchQuerySchema.safeParse(request.query);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      const result = await deps.spawner.searchTaskWorkspaceFiles(task, {
+        query: parsed.data.q,
+        executionId: parsed.data.executionId ?? null,
+        limit: parsed.data.limit
+      });
+      return reply.send(result);
     }
   );
 
