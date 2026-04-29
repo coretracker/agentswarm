@@ -2846,15 +2846,36 @@ export class SpawnerService {
       throw new Error("Checkpoint has no safe paths to restore from the base ref.");
     }
 
-    try {
-      await this.gitCommand(
-        ["-C", workspacePath, "restore", `--source=${fromRef}`, "--worktree", "--", ...unique],
-        githubToken,
-        gitUsername
-      );
-    } catch {
-      await this.gitCommand(["-C", workspacePath, "checkout", fromRef, "--", ...unique], githubToken, gitUsername);
-      await this.gitCommand(["-C", workspacePath, "reset", "HEAD", "--", ...unique], githubToken, gitUsername);
+    const pathsPresentAtBase: string[] = [];
+    const pathsMissingAtBase: string[] = [];
+
+    for (const rel of unique) {
+      try {
+        await this.gitCommandCapture(["-C", workspacePath, "cat-file", "-e", `${fromRef}:${rel}`], githubToken, gitUsername);
+        pathsPresentAtBase.push(rel);
+      } catch {
+        pathsMissingAtBase.push(rel);
+      }
+    }
+
+    if (pathsPresentAtBase.length > 0) {
+      try {
+        await this.gitCommand(
+          ["-C", workspacePath, "restore", `--source=${fromRef}`, "--worktree", "--", ...pathsPresentAtBase],
+          githubToken,
+          gitUsername
+        );
+      } catch {
+        await this.gitCommand(["-C", workspacePath, "checkout", fromRef, "--", ...pathsPresentAtBase], githubToken, gitUsername);
+        await this.gitCommand(["-C", workspacePath, "reset", "HEAD", "--", ...pathsPresentAtBase], githubToken, gitUsername);
+      }
+    }
+
+    for (const rel of pathsMissingAtBase) {
+      const fullPath = resolveSafeWorkspaceFilePath(workspacePath, rel);
+      if (fullPath) {
+        await rm(fullPath, { recursive: true, force: true }).catch(() => undefined);
+      }
     }
   }
 
