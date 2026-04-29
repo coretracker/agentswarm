@@ -1,47 +1,34 @@
 # Getting Started
 
-This guide walks through the first-time setup for AgentSwarm.
+This guide covers the first-time setup for AgentSwarm.
 
-## Prerequisites
+## 1. What You Need
 
-Before you start, make sure you have:
+Before you begin, make sure you have:
 
 - Docker
 - Docker Compose
-- A GitHub account and token
+- A GitHub token
 - An OpenAI API key
 - Optional: an Anthropic API key if you plan to use Claude tasks
 
-## Credentials Needed
+The first admin login comes from `.env.example` unless you change it.
 
-AgentSwarm uses a few different credentials depending on what you want to do:
+## 2. Start AgentSwarm
 
-- GitHub token: used to connect GitHub and work with repositories, issues, and pull requests
-- OpenAI API key: used for Codex-based tasks
-- Anthropic API key: used for Claude-based tasks
-- First admin login: the default admin account comes from `.env.example` unless you change it
-
-The app stores provider credentials in the Settings UI rather than in `.env`.
-
-## Initialize the Stack
-
-Before the first run, initialize the stack and runtime images:
+Run the setup command once before the first start:
 
 ```bash
 ./agentswarm.sh init
 ```
 
-This is the recommended first command for a fresh setup.
-
-## Start AgentSwarm
-
-After initialization, start the application:
+Then start the app:
 
 ```bash
 ./agentswarm.sh start
 ```
 
-If you need to rebuild images later, use:
+If you need to rebuild the images later, use:
 
 ```bash
 ./agentswarm.sh rebuild
@@ -53,35 +40,34 @@ To stop the stack:
 ./agentswarm.sh stop
 ```
 
-Once the app is running, open:
+When the app is running, open:
 
 - `http://localhost:3217/login`
 
-## Add Credentials
+## 3. Add Credentials
 
-After logging in, go to Settings and add the credentials you need:
+After you log in, open **Settings** and add the credentials AgentSwarm needs for the providers you want to use.
 
-1. Add your GitHub token
-2. Add your OpenAI API key
-3. Add your Anthropic API key if you want Claude support
-4. Save the settings
+- GitHub token for GitHub access, imports, and repository operations
+- OpenAI API key for Codex tasks
+- Anthropic API key for Claude tasks
 
-The UI will show whether each credential is configured.
+Save the settings after adding them. The UI shows which credentials are already configured.
 
-## Add Repositories
+## 4. Add Repositories
 
-Once credentials are in place, go to Repositories and add the repos you want AgentSwarm to manage:
+Open **Repositories** and add the repositories you want AgentSwarm to manage.
 
 1. Open the Repositories page
 2. Add the repository URL
 3. Set the default branch if needed
 4. Save the repository
 
-After that, the repository will be available when creating tasks.
+After this, the repository is available when you create tasks or import work from GitHub.
 
-## Next Steps
+## 5. Next Steps
 
-After setup, you can:
+Once setup is complete, you can:
 
 - create a task from scratch
 - import a task from a GitHub issue
