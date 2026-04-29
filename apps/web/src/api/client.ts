@@ -245,11 +245,15 @@ export const api = {
     const query = params.toString();
     return request<TaskWorkspaceCommitLog>(`/tasks/${id}/workspace-commit-log${query ? `?${query}` : ""}`);
   },
-  getTaskWorkspaceFiles: (id: string, options?: { executionId?: string | null; limit?: number }) => {
+  getTaskWorkspaceFiles: (id: string, options?: { executionId?: string | null; prefix?: string | null; limit?: number }) => {
     const params = new URLSearchParams();
     const executionId = options?.executionId?.trim();
     if (executionId) {
       params.set("executionId", executionId);
+    }
+    const prefix = options?.prefix?.trim();
+    if (prefix) {
+      params.set("prefix", prefix);
     }
     if (options?.limit != null && Number.isFinite(options.limit)) {
       params.set("limit", String(options.limit));

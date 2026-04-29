@@ -397,6 +397,8 @@ export interface TaskWorkspaceFileTreeEntry {
 }
 
 export interface TaskWorkspaceFileTree {
+  /** Directory prefix that was listed; null means workspace root. */
+  prefix: string | null;
   entries: TaskWorkspaceFileTreeEntry[];
   fetchedAt: string;
   truncated: boolean;

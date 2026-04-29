@@ -158,6 +158,7 @@ const workspaceFilesQuerySchema = z.object({
     .max(255)
     .regex(/^[A-Za-z0-9_-]+$/, "Invalid execution id.")
     .optional(),
+  prefix: z.string().trim().min(1).max(4096).optional(),
   limit: z.coerce.number().int().min(1).max(20_000).optional()
 });
 
@@ -427,7 +428,7 @@ export const registerTaskRoutes = (
     }
   );
 
-  app.get<{ Params: { id: string }; Querystring: { executionId?: string; limit?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { executionId?: string; prefix?: string; limit?: string } }>(
     "/tasks/:id/workspace-files",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
     async (request, reply) => {
@@ -443,6 +444,7 @@ export const registerTaskRoutes = (
 
       const listing = await deps.spawner.listTaskWorkspaceFiles(task, {
         executionId: parsed.data.executionId ?? null,
+        prefix: parsed.data.prefix ?? null,
         limit: parsed.data.limit
       });
       return reply.send(listing);

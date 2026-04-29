@@ -1,11 +1,11 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { TaskWorkspaceFilePreview, TaskWorkspaceFileTreeEntry } from "@agentswarm/shared-types";
-import { ReloadOutlined } from "@ant-design/icons";
+import { LoadingOutlined, ReloadOutlined } from "@ant-design/icons";
+import type { TaskWorkspaceFilePreview, TaskWorkspaceFileTreeEntryKind } from "@agentswarm/shared-types";
 import { Alert, Button, Empty, Flex, Input, Space, Spin, Tag, Tree, Typography } from "antd";
 import type { DataNode } from "antd/es/tree";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../src/api/client";
 import { isDarkAppTheme } from "../src/theme/antd-theme";
 import type { WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
@@ -17,18 +17,22 @@ const MonacoEditor = dynamic(
   { ssr: false }
 );
 
-interface MutableTreeNode {
-  key: string;
-  name: string;
-  kind: "file" | "directory";
-  children: Map<string, MutableTreeNode>;
-}
-
 interface TaskFilesTabProps {
   taskId: string;
   active: boolean;
   openTarget?: WorkspaceFileLinkTarget | null;
   onOpenTargetHandled?: () => void;
+}
+
+interface MutableTreeNode {
+  key: string;
+  name: string;
+  kind: TaskWorkspaceFileTreeEntryKind;
+  children: Map<string, MutableTreeNode>;
+}
+
+function normalizeDirectoryPrefix(value?: string | null): string {
+  return (value ?? "").trim().replace(/^\/+|\/+$/g, "");
 }
 
 function toMonacoLanguage(language: string): string {
@@ -72,7 +76,21 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function toTreeData(nodes: Map<string, MutableTreeNode>): DataNode[] {
+function getParentDirectories(filePath: string): string[] {
+  const normalized = normalizeDirectoryPrefix(filePath);
+  if (!normalized) {
+    return [""];
+  }
+
+  const segments = normalized.split("/");
+  const directories = [""];
+  for (let index = 0; index < Math.max(0, segments.length - 1); index += 1) {
+    directories.push(segments.slice(0, index + 1).join("/"));
+  }
+  return directories;
+}
+
+function toTreeData(nodes: Map<string, MutableTreeNode>, loadingDirectories: Set<string>): DataNode[] {
   return Array.from(nodes.values())
     .sort((left, right) => {
       if (left.kind !== right.kind) {
@@ -82,25 +100,35 @@ function toTreeData(nodes: Map<string, MutableTreeNode>): DataNode[] {
     })
     .map((node) => ({
       key: node.key,
-      title: node.name,
+      title:
+        node.kind === "directory" && loadingDirectories.has(node.key) ? (
+          <Space size={6}>
+            <span>{node.name}</span>
+            <LoadingOutlined />
+          </Space>
+        ) : (
+          node.name
+        ),
       isLeaf: node.kind === "file",
-      children: node.kind === "directory" ? toTreeData(node.children) : undefined
+      children: node.kind === "directory" ? toTreeData(node.children, loadingDirectories) : undefined
     }));
 }
 
-function buildTreeData(entries: TaskWorkspaceFileTreeEntry[], query: string): DataNode[] {
+function buildTreeData(
+  entryKindsByPath: Record<string, TaskWorkspaceFileTreeEntryKind>,
+  query: string,
+  loadingDirectories: Set<string>
+): DataNode[] {
   const normalizedQuery = query.trim().toLowerCase();
   const visiblePaths = new Set<string>();
 
+  const entries = Object.entries(entryKindsByPath).map(([path, kind]) => ({ path, kind }));
+
   if (normalizedQuery.length > 0) {
     for (const entry of entries) {
-      if (entry.kind !== "file") {
+      if (entry.kind !== "file" || !entry.path.toLowerCase().includes(normalizedQuery)) {
         continue;
       }
-      if (!entry.path.toLowerCase().includes(normalizedQuery)) {
-        continue;
-      }
-
       const segments = entry.path.split("/");
       for (let index = 0; index < segments.length; index += 1) {
         visiblePaths.add(segments.slice(0, index + 1).join("/"));
@@ -109,8 +137,9 @@ function buildTreeData(entries: TaskWorkspaceFileTreeEntry[], query: string): Da
   }
 
   const root = new Map<string, MutableTreeNode>();
-  const ordered = [...entries].sort((left, right) => left.path.localeCompare(right.path, undefined, { sensitivity: "base" }));
-  for (const entry of ordered) {
+  const orderedEntries = [...entries].sort((left, right) => left.path.localeCompare(right.path, undefined, { sensitivity: "base" }));
+
+  for (const entry of orderedEntries) {
     if (normalizedQuery.length > 0 && !visiblePaths.has(entry.path)) {
       continue;
     }
@@ -121,7 +150,7 @@ function buildTreeData(entries: TaskWorkspaceFileTreeEntry[], query: string): Da
       const name = segments[index] ?? "";
       const key = segments.slice(0, index + 1).join("/");
       const isLeaf = index === segments.length - 1;
-      const kind: "file" | "directory" = isLeaf ? entry.kind : "directory";
+      const kind: TaskWorkspaceFileTreeEntryKind = isLeaf ? entry.kind : "directory";
       const existing = currentLevel.get(name);
 
       if (!existing) {
@@ -136,32 +165,38 @@ function buildTreeData(entries: TaskWorkspaceFileTreeEntry[], query: string): Da
         continue;
       }
 
-      if (existing.kind === "directory" && kind === "file") {
-        existing.kind = "file";
-      }
       currentLevel = existing.children;
     }
   }
 
-  return toTreeData(root);
+  return toTreeData(root, loadingDirectories);
 }
 
 export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }: TaskFilesTabProps) {
   const { mode } = useThemeMode();
   const darkTheme = isDarkAppTheme(mode);
-  const treeRequestIdRef = useRef(0);
-  const fileRequestIdRef = useRef(0);
-  const editorRef = useRef<{ revealLineInCenter: (lineNumber: number) => void; setPosition: (position: { lineNumber: number; column: number }) => void } | null>(null);
+  const editorRef = useRef<{
+    revealLineInCenter: (lineNumber: number) => void;
+    setPosition: (position: { lineNumber: number; column: number }) => void;
+  } | null>(null);
 
-  const [treeLoading, setTreeLoading] = useState(false);
+  const loadedDirectoriesRef = useRef<Set<string>>(new Set());
+  const loadingDirectoriesRef = useRef<Set<string>>(new Set());
+
+  const [treeEntryKindsByPath, setTreeEntryKindsByPath] = useState<Record<string, TaskWorkspaceFileTreeEntryKind>>({});
+  const [loadedDirectories, setLoadedDirectories] = useState<Set<string>>(new Set());
+  const [loadingDirectories, setLoadingDirectories] = useState<Set<string>>(new Set());
   const [treeError, setTreeError] = useState<string | null>(null);
-  const [treeEntries, setTreeEntries] = useState<TaskWorkspaceFileTreeEntry[]>([]);
-  const [treeTruncated, setTreeTruncated] = useState(false);
+  const [truncationNotice, setTruncationNotice] = useState<string | null>(null);
+  const [treeRootLoading, setTreeRootLoading] = useState(false);
+
   const [executionId, setExecutionId] = useState<string | null>(null);
-  const [selectedFilePath, setSelectedFilePath] = useState<string>("");
+  const [selectedFilePath, setSelectedFilePath] = useState("");
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [filterText, setFilterText] = useState("");
+  const [expandedDirectoryKeys, setExpandedDirectoryKeys] = useState<string[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
+
   const [fileState, setFileState] = useState<{
     loading: boolean;
     preview: TaskWorkspaceFilePreview | null;
@@ -172,20 +207,82 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
     error: null
   });
 
+  const resetTreeState = useCallback(() => {
+    loadedDirectoriesRef.current = new Set();
+    loadingDirectoriesRef.current = new Set();
+    setTreeEntryKindsByPath({});
+    setLoadedDirectories(new Set());
+    setLoadingDirectories(new Set());
+    setTreeError(null);
+    setTreeRootLoading(false);
+    setTruncationNotice(null);
+    setExpandedDirectoryKeys([]);
+  }, []);
+
+  const loadDirectory = useCallback(
+    async (prefix?: string | null): Promise<void> => {
+      const normalizedPrefix = normalizeDirectoryPrefix(prefix);
+
+      if (loadedDirectoriesRef.current.has(normalizedPrefix) || loadingDirectoriesRef.current.has(normalizedPrefix)) {
+        return;
+      }
+
+      loadingDirectoriesRef.current.add(normalizedPrefix);
+      setLoadingDirectories(new Set(loadingDirectoriesRef.current));
+      if (normalizedPrefix === "") {
+        setTreeRootLoading(true);
+      }
+
+      try {
+        const result = await api.getTaskWorkspaceFiles(taskId, {
+          executionId,
+          prefix: normalizedPrefix || null,
+          limit: 1000
+        });
+
+        setTreeEntryKindsByPath((current) => {
+          const next = { ...current };
+          for (const entry of result.entries) {
+            next[entry.path] = entry.kind;
+          }
+          return next;
+        });
+
+        loadedDirectoriesRef.current.add(normalizedPrefix);
+        setLoadedDirectories(new Set(loadedDirectoriesRef.current));
+
+        if (result.truncated) {
+          setTruncationNotice(`Directory ${result.prefix ?? "/"} was truncated to the first ${result.totalCount.toLocaleString()} items.`);
+        }
+      } catch (error) {
+        setTreeError(error instanceof Error ? error.message : "Could not load workspace files.");
+      } finally {
+        loadingDirectoriesRef.current.delete(normalizedPrefix);
+        setLoadingDirectories(new Set(loadingDirectoriesRef.current));
+        if (normalizedPrefix === "") {
+          setTreeRootLoading(false);
+        }
+      }
+    },
+    [executionId, taskId]
+  );
+
   useEffect(() => {
     setExecutionId(null);
     setSelectedFilePath("");
     setSelectedLine(null);
-    setTreeEntries([]);
+    setFilterText("");
     setFileState({
       loading: false,
       preview: null,
       error: null
     });
-    setTreeError(null);
-    setTreeTruncated(false);
-    setFilterText("");
-  }, [taskId]);
+    resetTreeState();
+  }, [taskId, resetTreeState]);
+
+  useEffect(() => {
+    resetTreeState();
+  }, [executionId, resetTreeState]);
 
   useEffect(() => {
     if (!openTarget || openTarget.taskId !== taskId) {
@@ -198,51 +295,34 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
     onOpenTargetHandled?.();
   }, [onOpenTargetHandled, openTarget, taskId]);
 
-  const loadTree = useCallback(async () => {
-    const requestId = treeRequestIdRef.current + 1;
-    treeRequestIdRef.current = requestId;
-
-    setTreeLoading(true);
-    setTreeError(null);
-    try {
-      const result = await api.getTaskWorkspaceFiles(taskId, {
-        executionId,
-        limit: 5000
-      });
-      if (treeRequestIdRef.current !== requestId) {
-        return;
-      }
-
-      const files = result.entries.filter((entry) => entry.kind === "file");
-      setTreeEntries(result.entries);
-      setTreeTruncated(result.truncated);
-      setSelectedFilePath((current) => {
-        if (current && files.some((entry) => entry.path === current)) {
-          return current;
-        }
-        return files[0]?.path ?? "";
-      });
-    } catch (error) {
-      if (treeRequestIdRef.current !== requestId) {
-        return;
-      }
-      setTreeEntries([]);
-      setTreeTruncated(false);
-      setTreeError(error instanceof Error ? error.message : "Could not load workspace files.");
-      setSelectedFilePath("");
-    } finally {
-      if (treeRequestIdRef.current === requestId) {
-        setTreeLoading(false);
-      }
-    }
-  }, [executionId, taskId]);
-
   useEffect(() => {
     if (!active) {
       return;
     }
-    void loadTree();
-  }, [active, loadTree, refreshKey]);
+    void loadDirectory("");
+  }, [active, loadDirectory, refreshKey]);
+
+  useEffect(() => {
+    if (!active || !selectedFilePath) {
+      return;
+    }
+
+    const parents = getParentDirectories(selectedFilePath);
+    void (async () => {
+      for (const directory of parents) {
+        await loadDirectory(directory);
+      }
+      setExpandedDirectoryKeys((current) => {
+        const merged = new Set(current);
+        for (const parent of parents) {
+          if (parent) {
+            merged.add(parent);
+          }
+        }
+        return Array.from(merged);
+      });
+    })();
+  }, [active, loadDirectory, selectedFilePath]);
 
   useEffect(() => {
     if (!selectedFilePath) {
@@ -254,8 +334,7 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
       return;
     }
 
-    const requestId = fileRequestIdRef.current + 1;
-    fileRequestIdRef.current = requestId;
+    let cancelled = false;
     setFileState((current) => ({
       ...current,
       loading: true,
@@ -265,7 +344,7 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
     void api
       .getTaskWorkspaceFile(taskId, selectedFilePath, { executionId })
       .then((preview) => {
-        if (fileRequestIdRef.current !== requestId) {
+        if (cancelled) {
           return;
         }
         setFileState({
@@ -275,7 +354,7 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
         });
       })
       .catch((error) => {
-        if (fileRequestIdRef.current !== requestId) {
+        if (cancelled) {
           return;
         }
         setFileState({
@@ -284,6 +363,10 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
           error: error instanceof Error ? error.message : "Could not open workspace file."
         });
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [executionId, selectedFilePath, taskId]);
 
   useEffect(() => {
@@ -294,8 +377,27 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
     editorRef.current?.setPosition({ lineNumber: selectedLine, column: 1 });
   }, [fileState.preview, selectedLine]);
 
+  useEffect(() => {
+    const filePaths = Object.entries(treeEntryKindsByPath)
+      .filter(([, kind]) => kind === "file")
+      .map(([path]) => path)
+      .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+
+    setSelectedFilePath((current) => {
+      if (current && treeEntryKindsByPath[current] === "file") {
+        return current;
+      }
+      return current || filePaths[0] || "";
+    });
+  }, [treeEntryKindsByPath]);
+
   const selectedLanguage = detectCodeLanguage(selectedFilePath || "");
-  const treeData = useMemo(() => buildTreeData(treeEntries, filterText), [filterText, treeEntries]);
+  const treeData = useMemo(
+    () => buildTreeData(treeEntryKindsByPath, filterText, loadingDirectories),
+    [filterText, loadingDirectories, treeEntryKindsByPath]
+  );
+
+  const rootLoaded = loadedDirectories.has("");
 
   return (
     <Flex gap={12} style={{ width: "100%", minHeight: "64vh", alignItems: "stretch" }}>
@@ -317,12 +419,14 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
             Refresh
           </Button>
         </Flex>
+
         <Input
-          placeholder="Filter files"
+          placeholder="Filter loaded files"
           value={filterText}
           onChange={(event) => setFilterText(event.target.value)}
           allowClear
         />
+
         {executionId ? (
           <Space wrap size={8}>
             <Tag color="cyan">Execution {executionId}</Tag>
@@ -337,31 +441,45 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
             </Button>
           </Space>
         ) : null}
-        {treeTruncated ? (
-          <Alert
-            type="info"
-            showIcon
-            message="File list truncated to first 5,000 entries."
-          />
-        ) : null}
-        {treeLoading ? (
+
+        {truncationNotice ? <Alert type="info" showIcon message={truncationNotice} /> : null}
+
+        {treeError ? (
+          <Alert type="error" showIcon message="Could not load files" description={treeError} />
+        ) : treeRootLoading && !rootLoaded ? (
           <Flex justify="center" style={{ paddingTop: 32 }}>
             <Spin />
           </Flex>
-        ) : treeError ? (
-          <Alert type="error" showIcon message="Could not load files" description={treeError} />
-        ) : treeData.length === 0 ? (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No files found" />
+        ) : rootLoaded && treeData.length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={filterText.trim() ? "No loaded files match this filter" : "No files found"} />
         ) : (
           <Tree
             blockNode
             showLine
             height={560}
+            expandedKeys={expandedDirectoryKeys}
             selectedKeys={selectedFilePath ? [selectedFilePath] : []}
             treeData={treeData}
+            onExpand={(keys, info) => {
+              const nextExpanded = (keys as Array<string | number>).map((key) => String(key));
+              setExpandedDirectoryKeys(nextExpanded);
+              if (info.expanded && !info.node.isLeaf) {
+                void loadDirectory(String(info.node.key));
+              }
+            }}
             onSelect={(keys, info) => {
               const key = String(keys[0] ?? "");
-              if (!key || !info.node.isLeaf) {
+              if (!key) {
+                return;
+              }
+              if (!info.node.isLeaf) {
+                setExpandedDirectoryKeys((current) => {
+                  if (current.includes(key)) {
+                    return current.filter((item) => item !== key);
+                  }
+                  return [...current, key];
+                });
+                void loadDirectory(key);
                 return;
               }
               setSelectedFilePath(key);

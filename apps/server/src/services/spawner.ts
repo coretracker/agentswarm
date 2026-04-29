@@ -1230,12 +1230,13 @@ export class SpawnerService {
 
   async listTaskWorkspaceFiles(
     task: Task,
-    options?: { executionId?: string | null; limit?: number }
+    options?: { executionId?: string | null; prefix?: string | null; limit?: number }
   ): Promise<TaskWorkspaceFileTree> {
     const workspacePath = options?.executionId ? this.resolveAskWorkspacePath(task.id, options.executionId) : this.resolveWorkspacePath(task.id);
     const safeLimit = Number.isFinite(options?.limit)
       ? Math.max(1, Math.min(WORKSPACE_FILE_TREE_MAX_LIMIT, Math.floor(options?.limit ?? WORKSPACE_FILE_TREE_DEFAULT_LIMIT)))
       : WORKSPACE_FILE_TREE_DEFAULT_LIMIT;
+    const normalizedPrefix = options?.prefix?.trim() ? normalizeSafeWorkspaceRelativePath(options.prefix) : "";
 
     const workspaceExists = await access(workspacePath)
       .then(() => true)
@@ -1243,6 +1244,7 @@ export class SpawnerService {
 
     if (!workspaceExists) {
       return {
+        prefix: normalizedPrefix || null,
         entries: [],
         fetchedAt: new Date().toISOString(),
         truncated: false,
@@ -1250,78 +1252,66 @@ export class SpawnerService {
       };
     }
 
+    if (options?.prefix?.trim() && !normalizedPrefix) {
+      return {
+        prefix: null,
+        entries: [],
+        fetchedAt: new Date().toISOString(),
+        truncated: false,
+        totalCount: 0
+      };
+    }
+
+    const targetPath = normalizedPrefix ? resolveSafeWorkspaceFilePath(workspacePath, normalizedPrefix) : workspacePath;
+    if (!targetPath) {
+      return {
+        prefix: normalizedPrefix || null,
+        entries: [],
+        fetchedAt: new Date().toISOString(),
+        truncated: false,
+        totalCount: 0
+      };
+    }
+
+    let children: Dirent[];
+    try {
+      children = await readdir(targetPath, { withFileTypes: true });
+    } catch {
+      return {
+        prefix: normalizedPrefix || null,
+        entries: [],
+        fetchedAt: new Date().toISOString(),
+        truncated: false,
+        totalCount: 0
+      };
+    }
+
+    children.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
     const entries: TaskWorkspaceFileTreeEntry[] = [];
-    const queue: Array<{ absolutePath: string; relativePath: string }> = [{ absolutePath: workspacePath, relativePath: "" }];
     let truncated = false;
-
-    while (queue.length > 0 && !truncated) {
-      const current = queue.pop();
-      if (!current) {
-        break;
+    for (const child of children) {
+      if (child.name === ".git") {
+        continue;
       }
-
-      let children: Dirent[];
-      try {
-        children = await readdir(current.absolutePath, { withFileTypes: true });
-      } catch {
+      if (!child.isDirectory() && !child.isFile()) {
         continue;
       }
 
-      children.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
-      const directoriesToVisit: Array<{ absolutePath: string; relativePath: string }> = [];
+      const relativePath = normalizedPrefix ? `${normalizedPrefix}/${child.name}` : child.name;
+      entries.push({
+        path: relativePath,
+        name: child.name,
+        kind: child.isDirectory() ? "directory" : "file"
+      });
 
-      for (const child of children) {
-        if (child.name === ".git") {
-          continue;
-        }
-
-        const relativePath = current.relativePath ? `${current.relativePath}/${child.name}` : child.name;
-        if (child.isDirectory()) {
-          entries.push({
-            path: relativePath,
-            name: child.name,
-            kind: "directory"
-          });
-
-          if (entries.length >= safeLimit) {
-            truncated = true;
-            break;
-          }
-
-          const safeDirectoryPath = resolveSafeWorkspaceFilePath(workspacePath, relativePath);
-          if (!safeDirectoryPath) {
-            continue;
-          }
-
-          directoriesToVisit.push({
-            absolutePath: safeDirectoryPath,
-            relativePath
-          });
-          continue;
-        }
-
-        if (!child.isFile()) {
-          continue;
-        }
-
-        entries.push({
-          path: relativePath,
-          name: child.name,
-          kind: "file"
-        });
-
-        if (entries.length >= safeLimit) {
-          truncated = true;
-          break;
-        }
-      }
-
-      for (let index = directoriesToVisit.length - 1; index >= 0; index -= 1) {
-        queue.push(directoriesToVisit[index]!);
+      if (entries.length >= safeLimit) {
+        truncated = true;
+        break;
       }
     }
 
     return {
+      prefix: normalizedPrefix || null,
       entries,
       fetchedAt: new Date().toISOString(),
       truncated,
