@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { LoadingOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { TaskWorkspaceFilePreview, TaskWorkspaceFileTreeEntryKind } from "@agentswarm/shared-types";
-import { Alert, Button, Empty, Flex, Input, Space, Spin, Tag, Tree, Typography } from "antd";
+import { Alert, AutoComplete, Button, Empty, Flex, Input, Space, Spin, Tag, Tree, Typography } from "antd";
 import type { DataNode } from "antd/es/tree";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../src/api/client";
@@ -396,6 +396,41 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
     () => buildTreeData(treeEntryKindsByPath, filterText, loadingDirectories),
     [filterText, loadingDirectories, treeEntryKindsByPath]
   );
+  const fileSearchOptions = useMemo(() => {
+    const query = filterText.trim().toLowerCase();
+    if (!query) {
+      return [] as Array<{ value: string; label: string }>;
+    }
+
+    return Object.entries(treeEntryKindsByPath)
+      .filter(([, kind]) => kind === "file")
+      .map(([path]) => path)
+      .filter((path) => path.toLowerCase().includes(query))
+      .sort((left, right) => {
+        const leftStartsWith = left.toLowerCase().startsWith(query) ? 0 : 1;
+        const rightStartsWith = right.toLowerCase().startsWith(query) ? 0 : 1;
+        if (leftStartsWith !== rightStartsWith) {
+          return leftStartsWith - rightStartsWith;
+        }
+        return left.localeCompare(right, undefined, { sensitivity: "base" });
+      })
+      .slice(0, 80)
+      .map((path) => ({ value: path, label: path }));
+  }, [filterText, treeEntryKindsByPath]);
+
+  const openSelectedOrFirstSearchMatch = useCallback(() => {
+    const selectedValue = filterText.trim();
+    const exactMatch = selectedValue && treeEntryKindsByPath[selectedValue] === "file" ? selectedValue : null;
+    const firstMatch = fileSearchOptions[0]?.value ?? null;
+    const nextPath = exactMatch ?? firstMatch;
+    if (!nextPath) {
+      return;
+    }
+
+    setSelectedFilePath(nextPath);
+    setSelectedLine(null);
+    setFilterText("");
+  }, [fileSearchOptions, filterText, treeEntryKindsByPath]);
 
   const rootLoaded = loadedDirectories.has("");
 
@@ -420,12 +455,25 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
           </Button>
         </Flex>
 
-        <Input
-          placeholder="Filter loaded files"
+        <AutoComplete
+          style={{ width: "100%" }}
           value={filterText}
-          onChange={(event) => setFilterText(event.target.value)}
-          allowClear
-        />
+          options={fileSearchOptions}
+          onSearch={setFilterText}
+          onChange={setFilterText}
+          onSelect={(value) => {
+            const path = String(value);
+            setSelectedFilePath(path);
+            setSelectedLine(null);
+            setFilterText("");
+          }}
+        >
+          <Input
+            placeholder="Search file (autocomplete)"
+            allowClear
+            onPressEnter={openSelectedOrFirstSearchMatch}
+          />
+        </AutoComplete>
 
         {executionId ? (
           <Space wrap size={8}>
