@@ -84,7 +84,7 @@ const bootstrap = async (): Promise<void> => {
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
-  registerImportRoutes(app, { githubImportService, repositoryStore, taskStore, scheduler, spawner, auth });
+  registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, scheduler, spawner, auth });
 
   app.get("/health", async () => ({ ok: true }));
 

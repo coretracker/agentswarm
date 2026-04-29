@@ -33,6 +33,7 @@ import {
 import { canUserAccessRepository, canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
 import { writeSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
 import { env } from "../config/env.js";
+import { normalizeProvider } from "../lib/provider-config.js";
 
 const taskStartModeSchema = z.enum(["run_now", "prepare_workspace", "idle"]);
 
@@ -173,6 +174,34 @@ const listTasksQuerySchema = z.object({
 });
 
 const archivedTaskReadOnlyMessage = "Archived tasks are read-only";
+
+const applyCreateDefaultsFromSettings = <
+  T extends {
+    provider?: "codex" | "claude";
+    providerProfile?: "low" | "medium" | "high" | "max";
+    modelOverride?: string;
+    model?: string;
+  }
+>(
+  payload: T,
+  settings: Awaited<ReturnType<SettingsStore["getSettings"]>>
+): T => {
+  const provider = normalizeProvider(payload.provider ?? settings.defaultProvider);
+  const providerProfile =
+    payload.providerProfile ??
+    (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort);
+  const hasLegacyModel = Boolean(payload.model?.trim());
+  const modelOverride =
+    payload.modelOverride ??
+    (hasLegacyModel ? undefined : provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel);
+
+  return {
+    ...payload,
+    provider,
+    providerProfile,
+    modelOverride
+  };
+};
 
 export const withBranchSyncCounts = async (spawner: SpawnerService, task: Task): Promise<Task> => {
   const { pullCount, pushCount } = await spawner.getTaskBranchSyncCounts(task);
@@ -748,7 +777,9 @@ export const registerTaskRoutes = (
       return reply.status(404).send({ message: "Repository not found" });
     }
 
-    const { startMode, attachments: attachmentUploads = [], ...createPayload } = parsed.data;
+    const { startMode, attachments: attachmentUploads = [], ...rawCreatePayload } = parsed.data;
+    const settings = await deps.settingsStore.getSettings();
+    const createPayload = applyCreateDefaultsFromSettings(rawCreatePayload, settings);
     if (attachmentUploads.length > 0 && startMode !== "run_now") {
       return reply.status(400).send({ message: "Image attachments are only supported when start mode is Run now." });
     }

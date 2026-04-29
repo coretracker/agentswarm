@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
+import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
@@ -10,6 +11,7 @@ import { applyTaskStartMode } from "../lib/task-start-mode.js";
 import { requireTaskCapabilityAccess, requireTaskExecutionConfigAccess } from "../lib/task-capability-access.js";
 import { canUserAccessRepository } from "../lib/task-ownership.js";
 import { withBranchSyncCounts } from "./tasks.js";
+import { normalizeProvider } from "../lib/provider-config.js";
 
 const issueImportSchema = z.object({
   repoId: z.string().min(1),
@@ -40,11 +42,40 @@ const pullRequestImportSchema = z.object({
   reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
 });
 
+const applyCreateDefaultsFromSettings = <
+  T extends {
+    provider?: "codex" | "claude";
+    providerProfile?: "low" | "medium" | "high" | "max";
+    modelOverride?: string;
+    model?: string;
+  }
+>(
+  payload: T,
+  settings: Awaited<ReturnType<SettingsStore["getSettings"]>>
+): T => {
+  const provider = normalizeProvider(payload.provider ?? settings.defaultProvider);
+  const providerProfile =
+    payload.providerProfile ??
+    (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort);
+  const hasLegacyModel = Boolean(payload.model?.trim());
+  const modelOverride =
+    payload.modelOverride ??
+    (hasLegacyModel ? undefined : provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel);
+
+  return {
+    ...payload,
+    provider,
+    providerProfile,
+    modelOverride
+  };
+};
+
 export const registerImportRoutes = (
   app: FastifyInstance,
   deps: {
     githubImportService: GitHubImportService;
     repositoryStore: RepositoryStore;
+    settingsStore: SettingsStore;
     taskStore: TaskStore;
     scheduler: SchedulerService;
     spawner: SpawnerService;
@@ -146,7 +177,9 @@ export const registerImportRoutes = (
         return;
       }
 
-      const { startMode, ...issueRest } = parsed.data;
+      const { startMode, ...rawIssueRest } = parsed.data;
+      const settings = await deps.settingsStore.getSettings();
+      const issueRest = applyCreateDefaultsFromSettings(rawIssueRest, settings);
       if (
         !requireTaskCapabilityAccess(request, reply, {
           taskType: issueRest.taskType ?? "build",
@@ -208,11 +241,13 @@ export const registerImportRoutes = (
       if (!requireTaskCapabilityAccess(request, reply, { taskType: "build", startMode: "run_now" })) {
         return;
       }
-      if (!requireTaskExecutionConfigAccess(request, reply, parsed.data)) {
+      const settings = await deps.settingsStore.getSettings();
+      const createPayload = applyCreateDefaultsFromSettings(parsed.data, settings);
+      if (!requireTaskExecutionConfigAccess(request, reply, createPayload)) {
         return;
       }
 
-      const taskInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, parsed.data);
+      const taskInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, createPayload);
       const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
       try {
         const started = await applyTaskStartMode(task, "run_now", {

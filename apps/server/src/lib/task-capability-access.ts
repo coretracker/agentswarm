@@ -48,7 +48,9 @@ export const requireTaskCapabilityAccess = (
     reply,
     getRequiredTaskCapabilityScopes(input),
     input.startMode === "prepare_workspace"
-      ? "Interactive terminal access is not permitted for this role."
+      ? input.taskType === "ask"
+        ? "Ask + interactive workspace access is not permitted for this role."
+        : "Build + interactive workspace access is not permitted for this role."
       : input.taskType === "ask"
         ? "Ask access is not permitted for this role."
         : "Build access is not permitted for this role."
