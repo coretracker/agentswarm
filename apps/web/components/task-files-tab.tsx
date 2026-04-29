@@ -483,8 +483,7 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
           minWidth: 280,
           border: "1px solid rgba(128, 128, 128, 0.22)",
           borderRadius: 8,
-          padding: 12,
-          overflow: "hidden"
+          padding: 12
         }}
       >
         <Flex justify="space-between" align="center" gap={8}>

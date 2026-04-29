@@ -23,9 +23,7 @@ import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useSettings } from "../src/hooks/useSettings";
-import { useSnippets } from "../src/hooks/useSnippets";
 import { type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
-import { insertSnippetContent } from "../src/utils/snippets";
 import { useAuth } from "./auth-provider";
 import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
 
@@ -169,10 +167,7 @@ export function TaskDefinitionFields({
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
   const canUseInteractiveTerminal = can("task:interactive");
-  const canUseSnippets = can("snippet:list");
   const canRunAutomatedTask = canBuildTasks || canAskTasks;
-  const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
-  const [selectedSnippetId, setSelectedSnippetId] = useState<string | null>(null);
 
   const selectedRepoId = Form.useWatch("repoId", form);
   const selectedModel = Form.useWatch("model", form);
@@ -426,7 +421,6 @@ export function TaskDefinitionFields({
 
   const renderPromptPanel = (repository: Repository | null) => {
     if (isBlankSource) {
-      const selectedSnippet = snippets.find((snippet) => snippet.id === selectedSnippetId) ?? null;
       return (
         <>
           <Form.Item
@@ -464,37 +458,6 @@ export function TaskDefinitionFields({
             style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
           >
             <Flex vertical gap={12} style={{ flex: 1 }}>
-              {canUseSnippets ? (
-                <Flex gap={8} wrap>
-                  <Select
-                    showSearch
-                    style={{ minWidth: 280, flex: 1 }}
-                    placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
-                    value={selectedSnippetId}
-                    onChange={(value) => setSelectedSnippetId(value)}
-                    optionFilterProp="label"
-                    allowClear
-                    loading={snippetsLoading}
-                    disabled={disableBlankPromptInput || snippetsLoading || snippets.length === 0}
-                    options={snippets.map((snippet) => ({
-                      label: snippet.name,
-                      value: snippet.id
-                    }))}
-                  />
-                  <Button
-                    onClick={() => {
-                      if (!selectedSnippet) {
-                        return;
-                      }
-                      form.setFieldValue("prompt", insertSnippetContent(form.getFieldValue("prompt"), selectedSnippet.content));
-                      setSelectedSnippetId(null);
-                    }}
-                    disabled={disableBlankPromptInput || !selectedSnippet}
-                  >
-                    Insert Snippet
-                  </Button>
-                </Flex>
-              ) : null}
               <Input.TextArea
                 autoSize={{ minRows: 12, maxRows: 28 }}
                 style={{ resize: "none" }}
