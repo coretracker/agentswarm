@@ -48,7 +48,7 @@ When the app is running, open:
 
 After you log in, open **Settings** and add the credentials AgentSwarm needs for the providers you want to use.
 
-- GitHub token for GitHub access, imports, and repository operations
+- GitHub token for GitHub access, imports, and repository operations; it must have repository permissions and be authorized for the repo you want AgentSwarm to check out
 - OpenAI API key for Codex tasks
 - Anthropic API key for Claude tasks
 
@@ -64,6 +64,8 @@ Open **Repositories** and add the repositories you want AgentSwarm to manage.
 4. Save the repository
 
 After this, the repository is available when you create tasks or import work from GitHub.
+
+If the token does not include that repository, AgentSwarm will not be able to clone or check it out.
 
 ## 5. Next Steps
 
