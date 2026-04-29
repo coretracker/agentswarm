@@ -388,6 +388,21 @@ export interface TaskWorkspaceCommitLog {
   message: string | null;
 }
 
+export type TaskWorkspaceFileTreeEntryKind = "file" | "directory";
+
+export interface TaskWorkspaceFileTreeEntry {
+  path: string;
+  name: string;
+  kind: TaskWorkspaceFileTreeEntryKind;
+}
+
+export interface TaskWorkspaceFileTree {
+  entries: TaskWorkspaceFileTreeEntry[];
+  fetchedAt: string;
+  truncated: boolean;
+  totalCount: number;
+}
+
 export type TaskWorkspaceFilePreviewKind = "text" | "image" | "binary";
 
 export interface TaskWorkspaceFilePreview {

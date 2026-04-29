@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { nanoid } from "nanoid";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -25,6 +26,8 @@ import {
   type TaskPushPreview,
   type TaskTerminalSessionMode,
   type TaskWorkspaceFilePreview,
+  type TaskWorkspaceFileTree,
+  type TaskWorkspaceFileTreeEntry,
   type TaskWorkspaceCommit,
   type TaskWorkspaceCommitLog
 } from "@agentswarm/shared-types";
@@ -152,6 +155,8 @@ const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
 };
 
 const WORKSPACE_FILE_PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
+const WORKSPACE_FILE_TREE_DEFAULT_LIMIT = 5_000;
+const WORKSPACE_FILE_TREE_MAX_LIMIT = 20_000;
 const SAFE_GIT_PREVIEW_REF_PATTERN = /^[A-Za-z0-9._/-]+(?:[~^][0-9]*)*$/;
 
 function getPreviewMimeType(filePath: string): string | null {
@@ -1221,6 +1226,107 @@ export class SpawnerService {
     } catch {
       return null;
     }
+  }
+
+  async listTaskWorkspaceFiles(
+    task: Task,
+    options?: { executionId?: string | null; limit?: number }
+  ): Promise<TaskWorkspaceFileTree> {
+    const workspacePath = options?.executionId ? this.resolveAskWorkspacePath(task.id, options.executionId) : this.resolveWorkspacePath(task.id);
+    const safeLimit = Number.isFinite(options?.limit)
+      ? Math.max(1, Math.min(WORKSPACE_FILE_TREE_MAX_LIMIT, Math.floor(options?.limit ?? WORKSPACE_FILE_TREE_DEFAULT_LIMIT)))
+      : WORKSPACE_FILE_TREE_DEFAULT_LIMIT;
+
+    const workspaceExists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+
+    if (!workspaceExists) {
+      return {
+        entries: [],
+        fetchedAt: new Date().toISOString(),
+        truncated: false,
+        totalCount: 0
+      };
+    }
+
+    const entries: TaskWorkspaceFileTreeEntry[] = [];
+    const queue: Array<{ absolutePath: string; relativePath: string }> = [{ absolutePath: workspacePath, relativePath: "" }];
+    let truncated = false;
+
+    while (queue.length > 0 && !truncated) {
+      const current = queue.pop();
+      if (!current) {
+        break;
+      }
+
+      let children: Dirent[];
+      try {
+        children = await readdir(current.absolutePath, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      children.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+      const directoriesToVisit: Array<{ absolutePath: string; relativePath: string }> = [];
+
+      for (const child of children) {
+        if (child.name === ".git") {
+          continue;
+        }
+
+        const relativePath = current.relativePath ? `${current.relativePath}/${child.name}` : child.name;
+        if (child.isDirectory()) {
+          entries.push({
+            path: relativePath,
+            name: child.name,
+            kind: "directory"
+          });
+
+          if (entries.length >= safeLimit) {
+            truncated = true;
+            break;
+          }
+
+          const safeDirectoryPath = resolveSafeWorkspaceFilePath(workspacePath, relativePath);
+          if (!safeDirectoryPath) {
+            continue;
+          }
+
+          directoriesToVisit.push({
+            absolutePath: safeDirectoryPath,
+            relativePath
+          });
+          continue;
+        }
+
+        if (!child.isFile()) {
+          continue;
+        }
+
+        entries.push({
+          path: relativePath,
+          name: child.name,
+          kind: "file"
+        });
+
+        if (entries.length >= safeLimit) {
+          truncated = true;
+          break;
+        }
+      }
+
+      for (let index = directoriesToVisit.length - 1; index >= 0; index -= 1) {
+        queue.push(directoriesToVisit[index]!);
+      }
+    }
+
+    return {
+      entries,
+      fetchedAt: new Date().toISOString(),
+      truncated,
+      totalCount: entries.length
+    };
   }
 
   async getTaskWorkspaceFilePreview(
