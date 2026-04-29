@@ -3944,7 +3944,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       label: "Files",
       children: (
         <TaskFilesTab
-          taskId={task.id}
+          taskId={taskId}
           active={activeMainTab === "files"}
           openTarget={filesTabOpenTarget}
           onOpenTargetHandled={() => setFilesTabOpenTarget(null)}
