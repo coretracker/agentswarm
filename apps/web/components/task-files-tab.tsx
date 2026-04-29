@@ -481,6 +481,7 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
         style={{
           width: 360,
           minWidth: 280,
+          minHeight: "64vh",
           border: "1px solid rgba(128, 128, 128, 0.22)",
           borderRadius: 8,
           padding: 12
@@ -545,39 +546,40 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
         ) : rootLoaded && treeData.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No files found" />
         ) : (
-          <Tree
-            blockNode
-            showLine
-            height={560}
-            expandedKeys={expandedDirectoryKeys}
-            selectedKeys={selectedFilePath ? [selectedFilePath] : []}
-            treeData={treeData}
-            onExpand={(keys, info) => {
-              const nextExpanded = (keys as Array<string | number>).map((key) => String(key));
-              setExpandedDirectoryKeys(nextExpanded);
-              if (info.expanded && !info.node.isLeaf) {
-                void loadDirectory(String(info.node.key));
-              }
-            }}
-            onSelect={(keys, info) => {
-              const key = String(keys[0] ?? "");
-              if (!key) {
-                return;
-              }
-              if (!info.node.isLeaf) {
-                setExpandedDirectoryKeys((current) => {
-                  if (current.includes(key)) {
-                    return current.filter((item) => item !== key);
-                  }
-                  return [...current, key];
-                });
-                void loadDirectory(key);
-                return;
-              }
-              setSelectedFilePath(key);
-              setSelectedLine(null);
-            }}
-          />
+          <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+            <Tree
+              blockNode
+              showLine
+              expandedKeys={expandedDirectoryKeys}
+              selectedKeys={selectedFilePath ? [selectedFilePath] : []}
+              treeData={treeData}
+              onExpand={(keys, info) => {
+                const nextExpanded = (keys as Array<string | number>).map((key) => String(key));
+                setExpandedDirectoryKeys(nextExpanded);
+                if (info.expanded && !info.node.isLeaf) {
+                  void loadDirectory(String(info.node.key));
+                }
+              }}
+              onSelect={(keys, info) => {
+                const key = String(keys[0] ?? "");
+                if (!key) {
+                  return;
+                }
+                if (!info.node.isLeaf) {
+                  setExpandedDirectoryKeys((current) => {
+                    if (current.includes(key)) {
+                      return current.filter((item) => item !== key);
+                    }
+                    return [...current, key];
+                  });
+                  void loadDirectory(key);
+                  return;
+                }
+                setSelectedFilePath(key);
+                setSelectedLine(null);
+              }}
+            />
+          </div>
         )}
       </Flex>
 
