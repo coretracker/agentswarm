@@ -163,7 +163,9 @@ export const getTaskCapabilityScopeForTaskAction = (action: TaskAction): TaskCap
   action === "ask" ? "task:ask" : "task:build";
 
 export const getRequiredTaskCapabilityScopes = (input: { taskType?: TaskType; startMode?: TaskStartMode }): TaskCapabilityScope[] =>
-  input.startMode === "prepare_workspace" ? ["task:interactive"] : [getTaskCapabilityScopeForTaskType(input.taskType ?? "build")];
+  input.startMode === "prepare_workspace"
+    ? ["task:interactive", getTaskCapabilityScopeForTaskType(input.taskType ?? "build")]
+    : [getTaskCapabilityScopeForTaskType(input.taskType ?? "build")];
 
 export const hasRequiredTaskCapabilities = (
   grantedScopes: Iterable<PermissionScope>,
