@@ -34,6 +34,7 @@ import {
   type TaskInteractiveTerminalTranscript,
   type TaskTerminalSessionMode,
   type TaskWorkspaceCommit,
+  type TaskWorkspaceFilePreview,
   type CodexCredentialSource
 } from "@agentswarm/shared-types";
 import {
@@ -93,6 +94,7 @@ import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
 import { TaskTerminalTranscriptView } from "./task-terminal-transcript-view";
 import { CheckpointFileEditorModal } from "./checkpoint-file-editor-modal";
 import { TaskFilesTab } from "./task-files-tab";
+import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 
 const runStatusColor: Record<TaskRun["status"], string> = {
@@ -199,6 +201,21 @@ const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentia
   { label: "Profile auth.json only", value: "profile" },
   { label: "Global OpenAI key only", value: "global" }
 ];
+
+interface WorkspaceFilePreviewState {
+  open: boolean;
+  loading: boolean;
+  taskId: string;
+  executionId: string | null;
+  filePath: string;
+  kind: TaskWorkspaceFilePreview["kind"];
+  mimeType: string | null;
+  encoding: TaskWorkspaceFilePreview["encoding"];
+  content: string;
+  sizeBytes: number;
+  line: number | null;
+  error: string | null;
+}
 
 interface CheckpointEditorModalState {
   proposal: TaskChangeProposal;
@@ -661,6 +678,21 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [isDeletingTask, setIsDeletingTask] = useState(false);
   const [redirectingToTaskList, setRedirectingToTaskList] = useState(false);
   const [taskPageVisible, setTaskPageVisible] = useState(false);
+  const [workspaceFilePreview, setWorkspaceFilePreview] = useState<WorkspaceFilePreviewState>({
+    open: false,
+    loading: false,
+    taskId: "",
+    executionId: null,
+    filePath: "",
+    kind: "text",
+    mimeType: null,
+    encoding: "utf8",
+    content: "",
+    sizeBytes: 0,
+    line: null,
+    error: null
+  });
+  const workspaceFilePreviewRequestIdRef = useRef(0);
   const [filesTabOpenTarget, setFilesTabOpenTarget] = useState<WorkspaceFileLinkTarget | null>(null);
   const executionConfigAutosaveTimeoutRef = useRef<number | null>(null);
   const executionConfigSaveRequestIdRef = useRef(0);
@@ -700,6 +732,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setApplyCheckpointCommitMessage("");
     setApplyCheckpointCommitMessageGenerating(false);
     setEditCheckpointModalState(null);
+    workspaceFilePreviewRequestIdRef.current += 1;
+    setWorkspaceFilePreview((current) => ({ ...current, open: false }));
     setTaskStateModalOpen(false);
     setTaskStateDraft("open");
     setTaskPageVisible(false);
@@ -1972,8 +2006,56 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
   };
   const openWorkspaceFilePreview = (target: WorkspaceFileLinkTarget) => {
-    setFilesTabOpenTarget(target);
-    setActiveMainTab("files");
+    const requestId = workspaceFilePreviewRequestIdRef.current + 1;
+    workspaceFilePreviewRequestIdRef.current = requestId;
+
+    setWorkspaceFilePreview({
+      open: true,
+      loading: true,
+      taskId: target.taskId,
+      executionId: target.executionId,
+      filePath: target.filePath,
+      kind: "text",
+      mimeType: null,
+      encoding: "utf8",
+      content: "",
+      sizeBytes: 0,
+      line: target.line,
+      error: null
+    });
+
+    void api
+      .getTaskWorkspaceFile(target.taskId, target.filePath, { executionId: target.executionId })
+      .then((result: TaskWorkspaceFilePreview) => {
+        if (workspaceFilePreviewRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        setWorkspaceFilePreview((current) => ({
+          ...current,
+          open: true,
+          loading: false,
+          filePath: result.path,
+          kind: result.kind,
+          mimeType: result.mimeType,
+          encoding: result.encoding,
+          content: result.content,
+          sizeBytes: result.sizeBytes,
+          error: null
+        }));
+      })
+      .catch((error) => {
+        if (workspaceFilePreviewRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        setWorkspaceFilePreview((current) => ({
+          ...current,
+          open: true,
+          loading: false,
+          error: error instanceof Error ? error.message : "Could not open workspace file."
+        }));
+      });
   };
   const handleSaveConfig = async ({ notify = true }: { notify?: boolean } = {}) => {
     if (!task || !canEditTask || isArchived || !configDirty) {
@@ -4220,6 +4302,22 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           ) : null}
         </Space>
       </Modal>
+      <WorkspaceFilePreviewModal
+        open={workspaceFilePreview.open}
+        loading={workspaceFilePreview.loading}
+        filePath={workspaceFilePreview.filePath}
+        kind={workspaceFilePreview.kind}
+        mimeType={workspaceFilePreview.mimeType}
+        encoding={workspaceFilePreview.encoding}
+        content={workspaceFilePreview.content}
+        sizeBytes={workspaceFilePreview.sizeBytes}
+        line={workspaceFilePreview.line}
+        error={workspaceFilePreview.error}
+        onCancel={() => {
+          workspaceFilePreviewRequestIdRef.current += 1;
+          setWorkspaceFilePreview((current) => ({ ...current, open: false }));
+        }}
+      />
       <CheckpointFileEditorModal
         open={editCheckpointModalState !== null}
         taskId={taskId}
