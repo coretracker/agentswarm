@@ -2732,9 +2732,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     ) : null;
 
   const diffContent = hasDiffTab ? (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+    <Flex vertical gap={16} style={{ width: "100%", height: "71vh", maxHeight: "71vh", minHeight: 0 }}>
       {task ? (
-        <Card size="small" styles={{ body: { paddingBottom: 12 } }}>
+        <Card size="small" style={{ flexShrink: 0 }} styles={{ body: { paddingBottom: 12 } }}>
           <Segmented
             value={diffLiveKind}
             onChange={(value) => setDiffLiveKind(value as "compare" | "commits")}
@@ -2818,7 +2818,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         />
       ) : null}
       {task ? (
-        <Flex gap={16} align="flex-start" style={{ width: "100%" }} wrap="wrap">
+        <Flex gap={16} align="stretch" style={{ width: "100%", flex: 1, minHeight: 0 }}>
           {diffLiveKind === "commits" ? (
             <Card
               size="small"
@@ -2828,8 +2828,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   Refresh
                 </Button>
               }
-              style={{ width: "100%", maxWidth: 360, flex: "0 1 320px" }}
-              styles={{ body: { padding: 0, maxHeight: 480, overflow: "auto" } }}
+              style={{ width: "100%", maxWidth: 360, flex: "0 0 320px", height: "100%", minHeight: 0, display: "flex", flexDirection: "column" }}
+              styles={{ body: { padding: 0, flex: 1, minHeight: 0, overflow: "auto" } }}
             >
               {commitLogLoading ? (
                 <div style={{ padding: 24, textAlign: "center" }}>
@@ -2872,7 +2872,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               )}
             </Card>
           ) : null}
-          <div style={{ flex: "1 1 400px", minWidth: 0 }}>
+          <div style={{ flex: "1 1 400px", minWidth: 0, height: "100%", minHeight: 0, overflow: "auto" }}>
             <TaskDiffOpenAiPanel
               diffText={renderedDiff}
               emptyMessage={
@@ -2901,7 +2901,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </div>
         </Flex>
       ) : null}
-    </Space>
+    </Flex>
   ) : null;
 
   const aiSettingsSummary = [
