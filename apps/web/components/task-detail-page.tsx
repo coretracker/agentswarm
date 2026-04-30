@@ -3040,8 +3040,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const aiSettingsSummary = [
     providerOptions.find((option) => option.value === providerInput)?.label ?? getAgentProviderLabel(providerInput),
     allowedProviderModels.find((option) => option.value === modelInput)?.label ?? modelInput,
-    getProviderProfileLabel(providerProfileInput)
-  ].join(" · ");
+    getProviderProfileLabel(providerProfileInput),
+    providerInput === "codex"
+      ? `Credential: ${codexCredentialSourceOptions.find((option) => option.value === codexCredentialSourceInput)?.label ?? "Auto"}`
+      : null
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
 
   const chatComposer = (
     <Flex vertical gap={12}>
