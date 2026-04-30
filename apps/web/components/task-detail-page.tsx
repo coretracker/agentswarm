@@ -4424,7 +4424,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   <Card bordered={false}>
                     <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff" | "files")} items={mainTabItems} />
                   </Card>
-                  <div ref={bottomScrollAnchorRef} style={{ height: 40, width: "100%", flexShrink: 0 }} />
+                  <div ref={bottomScrollAnchorRef} aria-hidden="true" style={{ height: 0, width: "100%", flexShrink: 0 }} />
                 </Flex>
               </Flex>
             </div>
