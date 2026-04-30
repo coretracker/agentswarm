@@ -32,6 +32,7 @@ export type TaskDefinitionFormValues = {
   title?: string;
   repoId?: string;
   prompt?: string;
+  notes?: string;
   startMode?: TaskStartMode;
   taskType?: TaskType;
   provider?: AgentProvider;
@@ -111,6 +112,7 @@ export const buildTaskDefinitionInput = (
       title: values.title?.trim() ?? "",
       repoId: values.repoId ?? "",
       prompt: values.prompt?.trim() ?? "",
+      notes: values.notes?.trim() ?? "",
       ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
       startMode: values.startMode ?? "run_now",
       taskType: values.taskType ?? "build",
@@ -126,6 +128,7 @@ export const buildTaskDefinitionInput = (
     return {
       sourceType: "issue",
       title: values.title?.trim() || undefined,
+      notes: values.notes?.trim() || undefined,
       repoId: values.repoId ?? "",
       issueNumber: values.issueNumber ?? 0,
       includeComments: values.includeComments ?? true,
@@ -142,6 +145,7 @@ export const buildTaskDefinitionInput = (
   return {
     sourceType: "pull_request",
     title: values.title?.trim() || undefined,
+    notes: values.notes?.trim() || undefined,
     repoId: values.repoId ?? "",
     pullRequestNumber: values.pullRequestNumber ?? 0,
     provider: values.provider ?? "codex",
@@ -482,6 +486,22 @@ export function TaskDefinitionFields({
               />
             </Flex>
           </Form.Item>
+          <Form.Item
+            name="notes"
+            label="Notes (Markdown)"
+            extra={
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Optional. These notes are shown in the task Info tab below current configuration.
+              </Typography.Text>
+            }
+            style={{ marginTop: 16, marginBottom: 0 }}
+          >
+            <Input.TextArea
+              autoSize={{ minRows: 6, maxRows: 16 }}
+              style={{ resize: "none" }}
+              placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
+            />
+          </Form.Item>
         </>
       );
     }
@@ -513,6 +533,22 @@ export function TaskDefinitionFields({
               }
             />
           ) : null}
+          <Form.Item
+            name="notes"
+            label="Notes (Markdown)"
+            extra={
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Optional. These notes are shown in the task Info tab below current configuration.
+              </Typography.Text>
+            }
+            style={{ marginBottom: 0 }}
+          >
+            <Input.TextArea
+              autoSize={{ minRows: 6, maxRows: 16 }}
+              style={{ resize: "none" }}
+              placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
+            />
+          </Form.Item>
         </Flex>
       );
     }
@@ -545,9 +581,25 @@ export function TaskDefinitionFields({
                   {selectedPullRequest.baseBranch} {"->"} {selectedPullRequest.headBranch}
                 </Typography.Text>
               </Space>
-            }
+              }
+            />
+          ) : null}
+        <Form.Item
+          name="notes"
+          label="Notes (Markdown)"
+          extra={
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Optional. These notes are shown in the task Info tab below current configuration.
+            </Typography.Text>
+          }
+          style={{ marginBottom: 0 }}
+        >
+          <Input.TextArea
+            autoSize={{ minRows: 6, maxRows: 16 }}
+            style={{ resize: "none" }}
+            placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
           />
-        ) : null}
+        </Form.Item>
       </Flex>
     );
   };

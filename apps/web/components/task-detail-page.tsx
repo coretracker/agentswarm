@@ -642,6 +642,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "assign"
     | "state"
     | "renameTitle"
+    | "notes"
     | "editComment"
   >(null);
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
@@ -669,6 +670,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [taskStateDraft, setTaskStateDraft] = useState<EditableTaskState>("open");
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
+  const [notesModalOpen, setNotesModalOpen] = useState(false);
+  const [notesDraft, setNotesDraft] = useState("");
   const [applyCheckpointModalProposal, setApplyCheckpointModalProposal] = useState<TaskChangeProposal | null>(null);
   const [applyCheckpointCommitMessage, setApplyCheckpointCommitMessage] = useState("");
   const [applyCheckpointCommitMessageGenerating, setApplyCheckpointCommitMessageGenerating] = useState(false);
@@ -753,6 +756,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setWorkspaceFilePreview((current) => ({ ...current, open: false }));
     setTaskStateModalOpen(false);
     setTaskStateDraft("open");
+    setNotesModalOpen(false);
+    setNotesDraft("");
     setTaskPageVisible(false);
     setFilesTabOpenTarget(null);
     initialBottomScrollStateRef.current = null;
@@ -2289,6 +2294,46 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
   };
 
+  const openNotesEditModal = () => {
+    if (!task) {
+      return;
+    }
+    setNotesDraft(task.notes ?? "");
+    setNotesModalOpen(true);
+  };
+
+  const closeNotesEditModal = () => {
+    if (submitting === "notes") {
+      return;
+    }
+    setNotesModalOpen(false);
+  };
+
+  const confirmTaskNotesUpdate = async () => {
+    if (!task) {
+      return;
+    }
+
+    const nextNotes = notesDraft.trim();
+    const currentNotes = (task.notes ?? "").trim();
+    if (nextNotes === currentNotes) {
+      setNotesModalOpen(false);
+      return;
+    }
+
+    setSubmitting("notes");
+    try {
+      const updatedTask = await api.updateTaskNotes(task.id, { notes: nextNotes });
+      applyUpdatedTask(updatedTask);
+      messageApi.success(nextNotes ? "Notes updated" : "Notes cleared");
+      setNotesModalOpen(false);
+    } catch (error) {
+      showTaskActionError(error, "Failed to update notes");
+    } finally {
+      setSubmitting((current) => (current === "notes" ? null : current));
+    }
+  };
+
   const openCommentEditModal = (comment: TaskMessage) => {
     setEditingComment(comment);
     setCommentEditDraft(comment.content);
@@ -2664,6 +2709,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const hasExecutionButtons = canCancel;
   const hasGitHubDiffTargetAction = githubPullRequestLookupPending || Boolean(githubDiffTarget);
   const assigneeLabel = task?.ownerUserId ? (assigneeNameById.get(task.ownerUserId) ?? task.ownerUserId) : "Unassigned";
+  const taskNotes = (task?.notes ?? "").trim();
   const contextContent = (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Card size="small">
@@ -2716,6 +2762,27 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             )}
           </Descriptions.Item>
         </Descriptions>
+      </Card>
+      <Card
+        size="small"
+        title={
+          <Flex justify="space-between" align="center" gap={12}>
+            <Typography.Text strong>Notes</Typography.Text>
+            {canEditTask && !isArchived ? (
+              <Button size="small" icon={<EditOutlined />} onClick={openNotesEditModal}>
+                Edit
+              </Button>
+            ) : null}
+          </Flex>
+        }
+      >
+        {taskNotes ? (
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            {taskNotes}
+          </ReactMarkdown>
+        ) : (
+          <Typography.Text type="secondary">No notes added.</Typography.Text>
+        )}
       </Card>
     </Space>
   );
@@ -4330,6 +4397,24 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         />
       </Modal>
       <Modal
+        title="Edit notes"
+        open={notesModalOpen}
+        onCancel={closeNotesEditModal}
+        destroyOnClose
+        onOk={() => void confirmTaskNotesUpdate()}
+        okText="Save"
+        confirmLoading={submitting === "notes"}
+      >
+        <Input.TextArea
+          value={notesDraft}
+          onChange={(event) => setNotesDraft(event.target.value)}
+          rows={12}
+          placeholder="Write notes in markdown..."
+          disabled={submitting === "notes"}
+          style={{ resize: "vertical" }}
+        />
+      </Modal>
+      <Modal
         title="Edit comment"
         open={commentEditModalOpen}
         onCancel={closeCommentEditModal}
@@ -4670,13 +4755,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Form
             form={followUpForm}
             layout="vertical"
-            onFinish={async (values: { title: string; prompt: string }) => {
+            onFinish={async (values: { title: string; prompt: string; notes?: string }) => {
               setSubmitting("continue");
               try {
                 const normalizedPrompt = values.prompt.trim();
+                const normalizedNotes = values.notes?.trim() ?? "";
                 const nextTask = await api.createTask({
                   title: values.title.trim(),
                   prompt: normalizedPrompt,
+                  notes: normalizedNotes,
                   taskType: "build",
                   repoId: task.repoId,
                   baseBranch: followUpBranch,
@@ -4718,6 +4805,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 <Input.TextArea
                   autoSize={{ minRows: 6, maxRows: 18 }}
                   placeholder="Describe the new problem to solve on this branch."
+                  style={{ resize: "none" }}
+                />
+              </Form.Item>
+              <Form.Item name="notes" label="Notes (Markdown)">
+                <Input.TextArea
+                  autoSize={{ minRows: 4, maxRows: 12 }}
+                  placeholder="Optional markdown notes for this follow-up task."
                   style={{ resize: "none" }}
                 />
               </Form.Item>

@@ -252,6 +252,7 @@ export class RedisTaskStore implements TaskStore {
       // Legacy field kept for migration of stored tasks created before the prompt refactor.
       requirements?: string;
       prompt?: string;
+      notes?: string;
     };
     const normalizedTask: Task = {
       ...legacyTask,
@@ -276,7 +277,8 @@ export class RedisTaskStore implements TaskStore {
       resultMarkdown: legacyTask.resultMarkdown ?? null,
       lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
       // Prefer the new prompt field; fall back to legacy requirements for older tasks.
-      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim()
+      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim(),
+      notes: (legacyTask.notes ?? "").trim()
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
     return {
@@ -419,6 +421,7 @@ export class RedisTaskStore implements TaskStore {
     const startMode: TaskStartMode = input.startMode ?? "run_now";
     const prompt =
       promptRaw.length > 0 ? promptRaw : startMode === "prepare_workspace" ? "" : "(No prompt provided.)";
+    const notes = (input.notes ?? "").trim();
     const complexity = classifyTaskComplexity(title, prompt);
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
@@ -452,6 +455,7 @@ export class RedisTaskStore implements TaskStore {
       branchName: branchStrategy === "work_on_branch" ? baseBranch : null,
       workspaceBaseRef: null,
       prompt,
+      notes,
       resultMarkdown: null,
       executionSummary: buildExecutionSummaryFromPrompt(title, prompt),
       branchDiff: null,
@@ -1306,6 +1310,7 @@ export class PostgresTaskStore implements TaskStore {
       lastAction?: string | null;
       requirements?: string;
       prompt?: string;
+      notes?: string;
     };
     const normalizedTask: Task = {
       ...legacyTask,
@@ -1329,7 +1334,8 @@ export class PostgresTaskStore implements TaskStore {
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
       resultMarkdown: legacyTask.resultMarkdown ?? null,
       lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
-      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim()
+      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim(),
+      notes: (legacyTask.notes ?? "").trim()
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
     return {
@@ -1529,6 +1535,7 @@ export class PostgresTaskStore implements TaskStore {
     const startMode: TaskStartMode = input.startMode ?? "run_now";
     const prompt =
       promptRaw.length > 0 ? promptRaw : startMode === "prepare_workspace" ? "" : "(No prompt provided.)";
+    const notes = (input.notes ?? "").trim();
     const complexity = classifyTaskComplexity(title, prompt);
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
@@ -1562,6 +1569,7 @@ export class PostgresTaskStore implements TaskStore {
       branchName: branchStrategy === "work_on_branch" ? baseBranch : null,
       workspaceBaseRef: null,
       prompt,
+      notes,
       resultMarkdown: null,
       executionSummary: buildExecutionSummaryFromPrompt(title, prompt),
       branchDiff: null,

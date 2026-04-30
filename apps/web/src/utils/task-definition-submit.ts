@@ -30,6 +30,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
       repoId: definition.repoId,
       issueNumber: definition.issueNumber,
       includeComments: definition.includeComments,
+      notes: definition.notes,
       taskType: definition.taskType,
       title: definition.title,
       provider: definition.provider,
@@ -45,6 +46,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
     return api.createTaskFromPullRequest({
       repoId: definition.repoId,
       pullRequestNumber: definition.pullRequestNumber,
+      notes: definition.notes,
       title: definition.title,
       provider: definition.provider,
       providerProfile: definition.providerProfile,
@@ -56,6 +58,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
     title: definition.title,
     repoId: definition.repoId,
     prompt: definition.prompt,
+    notes: definition.notes,
     attachments: definition.sourceType === "blank" ? definition.attachments : undefined,
     taskType: definition.taskType,
     startMode: definition.startMode ?? "run_now",

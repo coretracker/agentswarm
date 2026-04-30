@@ -18,6 +18,7 @@ const issueImportSchema = z.object({
   repoId: z.string().min(1),
   issueNumber: z.coerce.number().int().positive(),
   includeComments: z.boolean().optional(),
+  notes: z.string().max(40_000).optional(),
   taskType: z.enum(["build", "ask"]).optional(),
   title: z.string().trim().optional(),
   provider: z.enum(["codex", "claude"]).optional(),
@@ -34,6 +35,7 @@ const issueImportSchema = z.object({
 const pullRequestImportSchema = z.object({
   repoId: z.string().min(1),
   pullRequestNumber: z.coerce.number().int().positive(),
+  notes: z.string().max(40_000).optional(),
   title: z.string().trim().optional(),
   provider: z.enum(["codex", "claude"]).optional(),
   providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),

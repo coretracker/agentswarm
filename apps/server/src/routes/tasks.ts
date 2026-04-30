@@ -49,6 +49,7 @@ const createTaskSchema = z
     title: z.string().min(1),
     repoId: z.string().min(1),
     prompt: z.string().default(""),
+    notes: z.string().max(40_000).optional(),
     attachments: z.array(taskPromptAttachmentInputSchema).max(TASK_PROMPT_ATTACHMENT_MAX_COUNT).optional(),
     startMode: taskStartModeSchema.optional().default("run_now"),
     taskType: z.enum(["build", "ask"]).optional(),
@@ -89,6 +90,10 @@ const updateTaskPinSchema = z.object({
 
 const updateTaskTitleSchema = z.object({
   title: z.string().trim().min(1).max(500)
+});
+
+const updateTaskNotesSchema = z.object({
+  notes: z.string().max(40_000)
 });
 
 const updateTaskStateSchema = z.object({
@@ -872,6 +877,7 @@ export const registerTaskRoutes = (
       {
         ...createPayload,
         prompt: createPayload.prompt.trim(),
+        notes: createPayload.notes?.trim() ?? "",
         startMode
       },
       repository,
@@ -1111,6 +1117,28 @@ export const registerTaskRoutes = (
       title,
       complexity,
       executionSummary
+    });
+
+    return reply.send(updated);
+  });
+
+  app.patch<{ Params: { id: string } }>("/tasks/:id/notes", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateTaskNotesSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    const updated = await deps.taskStore.patchTask(task.id, {
+      notes: parsed.data.notes.trim()
     });
 
     return reply.send(updated);

@@ -331,6 +331,7 @@ export interface Task {
   branchName: string | null;
   workspaceBaseRef: string | null;
   prompt: string;
+  notes?: string;
   resultMarkdown: string | null;
   executionSummary: string;
   branchDiff: string | null;
@@ -633,6 +634,7 @@ export interface CreateTaskInput {
   title: string;
   repoId: string;
   prompt: string;
+  notes?: string;
   attachments?: CreateTaskPromptAttachmentInput[];
   taskType?: TaskType;
   /** Default `run_now`. `prepare_workspace` clones/checks out only (no agent run). `idle` is accepted for API compatibility but not offered in the UI. */
@@ -654,6 +656,7 @@ export interface BlankTaskDefinitionInput {
   title: string;
   repoId: string;
   prompt: string;
+  notes?: string;
   attachments?: CreateTaskPromptAttachmentInput[];
   taskType: TaskType;
   startMode?: TaskStartMode;
@@ -667,6 +670,7 @@ export interface BlankTaskDefinitionInput {
 export interface IssueTaskDefinitionInput {
   sourceType: "issue";
   title?: string;
+  notes?: string;
   repoId: string;
   issueNumber: number;
   includeComments: boolean;
@@ -682,6 +686,7 @@ export interface IssueTaskDefinitionInput {
 export interface PullRequestTaskDefinitionInput {
   sourceType: "pull_request";
   title?: string;
+  notes?: string;
   repoId: string;
   pullRequestNumber: number;
   provider: AgentProvider;
@@ -713,6 +718,7 @@ export interface CreateTaskFromIssueInput {
   repoId: string;
   issueNumber: number;
   includeComments?: boolean;
+  notes?: string;
   taskType?: Extract<TaskType, "build" | "ask">;
   startMode?: TaskStartMode;
   title?: string;
@@ -730,6 +736,7 @@ export interface CreateTaskFromPullRequestInput {
   repoId: string;
   pullRequestNumber: number;
   title?: string;
+  notes?: string;
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
@@ -756,6 +763,10 @@ export interface UpdateTaskPinInput {
 
 export interface UpdateTaskTitleInput {
   title: string;
+}
+
+export interface UpdateTaskNotesInput {
+  notes: string;
 }
 
 export interface UpdateTaskStateInput {
