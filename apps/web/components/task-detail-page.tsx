@@ -634,6 +634,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [messageApi, contextHolder] = message.useMessage();
   const selectedChatActionRef = useRef(false);
   const diffCompareBaseSyncedTaskIdRef = useRef<string | null>(null);
+  const applyCheckpointAutoMagicProposalIdRef = useRef<string | null>(null);
   const [selectedSnippetId, setSelectedSnippetId] = useState<string | null>(null);
   const [selectedPromptImageFiles, setSelectedPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const [pushPreview, setPushPreview] = useState<TaskPushPreview | null>(null);
@@ -3176,6 +3177,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setApplyCheckpointCommitMessageGenerating(false);
     }
   };
+
+  useEffect(() => {
+    if (!applyCheckpointModalProposal) {
+      applyCheckpointAutoMagicProposalIdRef.current = null;
+      return;
+    }
+
+    if (applyCheckpointAutoMagicProposalIdRef.current === applyCheckpointModalProposal.id) {
+      return;
+    }
+
+    applyCheckpointAutoMagicProposalIdRef.current = applyCheckpointModalProposal.id;
+    void handleGenerateApplyCheckpointCommitMessage();
+  }, [applyCheckpointModalProposal?.id]);
 
   const handleRejectCheckpoint = (proposal: TaskChangeProposal) => {
     if (!task) {
