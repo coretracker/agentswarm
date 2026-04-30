@@ -5,7 +5,7 @@ import { LoadingOutlined, ReloadOutlined } from "@ant-design/icons";
 import type { TaskWorkspaceFilePreview, TaskWorkspaceFileTreeEntryKind } from "@agentswarm/shared-types";
 import { Alert, AutoComplete, Button, Empty, Flex, Input, Space, Spin, Tag, Tree, Typography } from "antd";
 import type { DataNode } from "antd/es/tree";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../src/api/client";
 import { isDarkAppTheme } from "../src/theme/antd-theme";
 import type { WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
@@ -175,7 +175,6 @@ function buildTreeData(
 export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }: TaskFilesTabProps) {
   const { mode } = useThemeMode();
   const darkTheme = isDarkAppTheme(mode);
-  const containerRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<{
     revealLineInCenter: (lineNumber: number) => void;
     setPosition: (position: { lineNumber: number; column: number }) => void;
@@ -201,7 +200,6 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
   const [searchTruncated, setSearchTruncated] = useState(false);
   const [expandedDirectoryKeys, setExpandedDirectoryKeys] = useState<string[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [availableHeight, setAvailableHeight] = useState<number | null>(null);
 
   const [fileState, setFileState] = useState<{
     loading: boolean;
@@ -225,33 +223,6 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
     setExpandedDirectoryKeys([]);
   }, []);
 
-  useLayoutEffect(() => {
-    const updateAvailableHeight = (): void => {
-      const element = containerRef.current;
-      if (!element) {
-        return;
-      }
-
-      const rect = element.getBoundingClientRect();
-      const nextHeight = Math.max(0, Math.floor(window.innerHeight - rect.top - 40));
-      setAvailableHeight((current) => (current === nextHeight ? current : nextHeight));
-    };
-
-    updateAvailableHeight();
-
-    const resizeObserver = new ResizeObserver(updateAvailableHeight);
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current);
-    }
-    window.addEventListener("resize", updateAvailableHeight);
-    window.addEventListener("scroll", updateAvailableHeight, true);
-
-    return () => {
-      resizeObserver.disconnect();
-      window.removeEventListener("resize", updateAvailableHeight);
-      window.removeEventListener("scroll", updateAvailableHeight, true);
-    };
-  }, [active]);
 
   const loadDirectory = useCallback(
     async (prefix?: string | null): Promise<void> => {
@@ -502,120 +473,119 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
   }, [fileSearchOptions, searchText]);
 
   const rootLoaded = loadedDirectories.has("");
-  const filesTabHeight = availableHeight ?? "calc(100vh - 220px)";
+  const filesTabHeight = "71vh";
 
   return (
-    <div ref={containerRef} style={{ width: "100%", height: filesTabHeight, maxHeight: filesTabHeight, minHeight: 0 }}>
-      <Flex gap={12} style={{ width: "100%", height: "100%", minHeight: 0, alignItems: "stretch" }}>
+    <div style={{ width: "100%", height: filesTabHeight, maxHeight: filesTabHeight, minHeight: 0 }}>
+      <Flex
+        gap={12}
+        style={{ width: "100%", height: "100%", maxHeight: "100%", minHeight: 0, alignItems: "stretch" }}
+      >
         <Flex
           vertical
-        gap={10}
-        style={{
-          width: 360,
-          minWidth: 280,
-          height: "100%",
-          minHeight: 0,
-          border: "1px solid rgba(128, 128, 128, 0.22)",
-          borderRadius: 8,
-          padding: 12,
-          boxSizing: "border-box"
-        }}
-      >
-        <Flex justify="space-between" align="center" gap={8}>
-          <Typography.Text strong>Workspace Files</Typography.Text>
-          <Button size="small" icon={<ReloadOutlined />} onClick={() => setRefreshKey((current) => current + 1)}>
-            Refresh
-          </Button>
-        </Flex>
-
-        <AutoComplete
-          style={{ width: "100%" }}
-          value={searchText}
-          options={fileSearchOptions}
-          onSearch={setSearchText}
-          onChange={setSearchText}
-          notFoundContent={searchLoading ? <Spin size="small" /> : null}
-          onSelect={(value) => {
-            const path = String(value);
-            setSelectedFilePath(path);
-            setSelectedLine(null);
-            setSearchText("");
-            setFileSearchOptions([]);
-            setSearchTruncated(false);
+          gap={10}
+          style={{
+            width: 360,
+            minWidth: 280,
+            height: "100%",
+            minHeight: 0,
+            border: "1px solid rgba(128, 128, 128, 0.22)",
+            borderRadius: 8,
+            padding: 12,
+            boxSizing: "border-box"
           }}
         >
-          <Input
-            placeholder="Search file path"
-            allowClear
-            onPressEnter={openSelectedOrFirstSearchMatch}
-          />
-        </AutoComplete>
-        {searchTruncated ? (
-          <Typography.Text type="secondary">Search results truncated. Keep typing to narrow matches.</Typography.Text>
-        ) : null}
-
-        {executionId ? (
-          <Space wrap size={8}>
-            <Tag color="cyan">Execution {executionId}</Tag>
-            <Button
-              size="small"
-              onClick={() => {
-                setExecutionId(null);
-                setSelectedLine(null);
-              }}
-            >
-              Use Current Task Workspace
+          <Flex justify="space-between" align="center" gap={8}>
+            <Typography.Text strong>Workspace Files</Typography.Text>
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => setRefreshKey((current) => current + 1)}>
+              Refresh
             </Button>
-          </Space>
-        ) : null}
-
-        {truncationNotice ? <Alert type="info" showIcon message={truncationNotice} /> : null}
-
-        {treeError ? (
-          <Alert type="error" showIcon message="Could not load files" description={treeError} />
-        ) : treeRootLoading && !rootLoaded ? (
-          <Flex justify="center" style={{ paddingTop: 32 }}>
-            <Spin />
           </Flex>
-        ) : rootLoaded && treeData.length === 0 ? (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No files found" />
-        ) : (
+
+          <AutoComplete
+            style={{ width: "100%" }}
+            value={searchText}
+            options={fileSearchOptions}
+            onSearch={setSearchText}
+            onChange={setSearchText}
+            notFoundContent={searchLoading ? <Spin size="small" /> : null}
+            onSelect={(value) => {
+              const path = String(value);
+              setSelectedFilePath(path);
+              setSelectedLine(null);
+              setSearchText("");
+              setFileSearchOptions([]);
+              setSearchTruncated(false);
+            }}
+          >
+            <Input placeholder="Search file path" allowClear onPressEnter={openSelectedOrFirstSearchMatch} />
+          </AutoComplete>
+          {searchTruncated ? (
+            <Typography.Text type="secondary">Search results truncated. Keep typing to narrow matches.</Typography.Text>
+          ) : null}
+
+          {executionId ? (
+            <Space wrap size={8}>
+              <Tag color="cyan">Execution {executionId}</Tag>
+              <Button
+                size="small"
+                onClick={() => {
+                  setExecutionId(null);
+                  setSelectedLine(null);
+                }}
+              >
+                Use Current Task Workspace
+              </Button>
+            </Space>
+          ) : null}
+
+          {truncationNotice ? <Alert type="info" showIcon message={truncationNotice} /> : null}
+
           <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-            <Tree
-              blockNode
-              showLine
-              expandedKeys={expandedDirectoryKeys}
-              selectedKeys={selectedFilePath ? [selectedFilePath] : []}
-              treeData={treeData}
-              onExpand={(keys, info) => {
-                const nextExpanded = (keys as Array<string | number>).map((key) => String(key));
-                setExpandedDirectoryKeys(nextExpanded);
-                if (info.expanded && !info.node.isLeaf) {
-                  void loadDirectory(String(info.node.key));
-                }
-              }}
-              onSelect={(keys, info) => {
-                const key = String(keys[0] ?? "");
-                if (!key) {
-                  return;
-                }
-                if (!info.node.isLeaf) {
-                  setExpandedDirectoryKeys((current) => {
-                    if (current.includes(key)) {
-                      return current.filter((item) => item !== key);
-                    }
-                    return [...current, key];
-                  });
-                  void loadDirectory(key);
-                  return;
-                }
-                setSelectedFilePath(key);
-                setSelectedLine(null);
-              }}
-            />
+            {treeError ? (
+              <Alert type="error" showIcon message="Could not load files" description={treeError} />
+            ) : treeRootLoading && !rootLoaded ? (
+              <Flex justify="center" style={{ paddingTop: 32 }}>
+                <Spin />
+              </Flex>
+            ) : rootLoaded && treeData.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No files found" />
+            ) : (
+              <Tree
+                blockNode
+                showLine
+                expandedKeys={expandedDirectoryKeys}
+                selectedKeys={selectedFilePath ? [selectedFilePath] : []}
+                treeData={treeData}
+                onExpand={(keys, info) => {
+                  const nextExpanded = (keys as Array<string | number>).map((key) => String(key));
+                  setExpandedDirectoryKeys(nextExpanded);
+                  if (info.expanded && !info.node.isLeaf) {
+                    void loadDirectory(String(info.node.key));
+                  }
+                }}
+                onSelect={(keys, info) => {
+                  const key = String(keys[0] ?? "");
+                  if (!key) {
+                    return;
+                  }
+                  if (!info.node.isLeaf) {
+                    setExpandedDirectoryKeys((current) => {
+                      if (current.includes(key)) {
+                        return current.filter((item) => item !== key);
+                      }
+                      return [...current, key];
+                    });
+                    void loadDirectory(key);
+                    return;
+                  }
+                  setSelectedFilePath(key);
+                  setSelectedLine(null);
+                }}
+              />
+            )}
           </div>
-        )}
-      </Flex>
+        </Flex>
 
         <Flex
           vertical
@@ -632,57 +602,57 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
           }}
         >
           <Space wrap size={8}>
-          <Typography.Text strong>{selectedFilePath || "Select a file"}</Typography.Text>
-          {selectedFilePath ? <Tag>{getCodeLanguageLabel(selectedLanguage)}</Tag> : null}
-          {fileState.preview ? <Tag>{formatBytes(fileState.preview.sizeBytes)}</Tag> : null}
-          {selectedLine ? <Tag color="blue">Line {selectedLine}</Tag> : null}
-        </Space>
+            <Typography.Text strong>{selectedFilePath || "Select a file"}</Typography.Text>
+            {selectedFilePath ? <Tag>{getCodeLanguageLabel(selectedLanguage)}</Tag> : null}
+            {fileState.preview ? <Tag>{formatBytes(fileState.preview.sizeBytes)}</Tag> : null}
+            {selectedLine ? <Tag color="blue">Line {selectedLine}</Tag> : null}
+          </Space>
 
-        <div style={{ flex: 1, minHeight: 0 }}>
-          {!selectedFilePath ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Choose a file from the tree to view it." />
-          ) : fileState.loading ? (
-            <Flex justify="center" align="center" style={{ height: "100%" }}>
-              <Spin />
-            </Flex>
-          ) : fileState.error ? (
-            <Alert type="error" showIcon message="Could not load file" description={fileState.error} />
-          ) : !fileState.preview ? (
-            <Alert type="warning" showIcon message="File preview unavailable." />
-          ) : fileState.preview.kind !== "text" ? (
-            <Alert
-              type="info"
-              showIcon
-              message="Only text files are shown in this editor"
-              description={
-                fileState.preview.kind === "image"
-                  ? "This file is an image. Use task history links if you need image preview."
-                  : "This file is binary. Text preview is not available."
-              }
-            />
-          ) : (
-            <MonacoEditor
-              key={`${executionId ?? "workspace"}:${fileState.preview.path}`}
-              path={fileState.preview.path}
-              height="100%"
-              theme={darkTheme ? "vs-dark" : "vs"}
-              language={toMonacoLanguage(selectedLanguage)}
-              value={fileState.preview.content}
-              onMount={(editor) => {
-                editorRef.current = editor;
-              }}
-              options={{
-                readOnly: true,
-                automaticLayout: true,
-                minimap: { enabled: false },
-                scrollBeyondLastLine: false,
-                fontSize: 13,
-                wordWrap: "off"
-              }}
-            />
-          )}
-        </div>
-      </Flex>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            {!selectedFilePath ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Choose a file from the tree to view it." />
+            ) : fileState.loading ? (
+              <Flex justify="center" align="center" style={{ height: "100%" }}>
+                <Spin />
+              </Flex>
+            ) : fileState.error ? (
+              <Alert type="error" showIcon message="Could not load file" description={fileState.error} />
+            ) : !fileState.preview ? (
+              <Alert type="warning" showIcon message="File preview unavailable." />
+            ) : fileState.preview.kind !== "text" ? (
+              <Alert
+                type="info"
+                showIcon
+                message="Only text files are shown in this editor"
+                description={
+                  fileState.preview.kind === "image"
+                    ? "This file is an image. Use task history links if you need image preview."
+                    : "This file is binary. Text preview is not available."
+                }
+              />
+            ) : (
+              <MonacoEditor
+                key={`${executionId ?? "workspace"}:${fileState.preview.path}`}
+                path={fileState.preview.path}
+                height="100%"
+                theme={darkTheme ? "vs-dark" : "vs"}
+                language={toMonacoLanguage(selectedLanguage)}
+                value={fileState.preview.content}
+                onMount={(editor) => {
+                  editorRef.current = editor;
+                }}
+                options={{
+                  readOnly: true,
+                  automaticLayout: true,
+                  minimap: { enabled: false },
+                  scrollBeyondLastLine: false,
+                  fontSize: 13,
+                  wordWrap: "off"
+                }}
+              />
+            )}
+          </div>
+        </Flex>
       </Flex>
     </div>
   );
