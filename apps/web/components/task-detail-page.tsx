@@ -2584,32 +2584,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     void loadPushPreview();
   }, [canPush, task?.id, task?.updatedAt]);
 
-  if (isDeletingTask) {
-    return (
-      <Flex justify="center" align="center" style={{ minHeight: 240 }}>
-        <Spin size="large" tip="Deleting task..." />
-      </Flex>
-    );
-  }
-
-  if (redirectingToTaskList || (!loading && !task && hadLoadedTaskRef.current)) {
-    return (
-      <Flex justify="center" align="center" style={{ minHeight: 240 }}>
-        <Spin size="large" tip="Returning to tasks..." />
-      </Flex>
-    );
-  }
-
-  if (!loading && !task) {
-    return (
-      <Alert
-        type="error"
-        message="Task not found"
-        description="The task may have been deleted or the page was opened before task state loaded."
-      />
-    );
-  }
-
   const moreActionItems = task
     ? [
         hasBranchForSync ? { key: "refreshGitStatus", label: "Refresh Git Status" } : null,
@@ -3262,6 +3236,32 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     applyCheckpointAutoMagicProposalIdRef.current = applyCheckpointModalProposal.id;
     void handleGenerateApplyCheckpointCommitMessage();
   }, [applyCheckpointModalProposal?.id]);
+
+  if (isDeletingTask) {
+    return (
+      <Flex justify="center" align="center" style={{ minHeight: 240 }}>
+        <Spin size="large" tip="Deleting task..." />
+      </Flex>
+    );
+  }
+
+  if (redirectingToTaskList || (!loading && !task && hadLoadedTaskRef.current)) {
+    return (
+      <Flex justify="center" align="center" style={{ minHeight: 240 }}>
+        <Spin size="large" tip="Returning to tasks..." />
+      </Flex>
+    );
+  }
+
+  if (!loading && !task) {
+    return (
+      <Alert
+        type="error"
+        message="Task not found"
+        description="The task may have been deleted or the page was opened before task state loaded."
+      />
+    );
+  }
 
   const handleRejectCheckpoint = (proposal: TaskChangeProposal) => {
     if (!task) {
