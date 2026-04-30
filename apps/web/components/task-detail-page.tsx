@@ -35,7 +35,8 @@ import {
   type TaskTerminalSessionMode,
   type TaskWorkspaceCommit,
   type TaskWorkspaceFilePreview,
-  type CodexCredentialSource
+  type CodexCredentialSource,
+  type User
 } from "@agentswarm/shared-types";
 import {
   Alert,
@@ -109,6 +110,7 @@ type ComposerAction = TaskMessageAction | "interactive" | "terminal";
 const OPENAI_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
 const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
 const OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS = 48_000;
+const SYSTEM_ADMIN_ROLE_ID = "admin";
 
 function normalizeAiCommitSubject(raw: string): string {
   const firstLine = raw
@@ -608,6 +610,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [selectedCommitSha, setSelectedCommitSha] = useState<string | null>(null);
   const [diffBranches, setDiffBranches] = useState<GitHubBranchReference[]>([]);
   const [diffBranchesLoading, setDiffBranchesLoading] = useState(false);
+  const [assignableUsers, setAssignableUsers] = useState<User[]>([]);
+  const [assignableUsersLoading, setAssignableUsersLoading] = useState(false);
   const [followUpForm] = Form.useForm();
   const [chatInput, setChatInput] = useState("");
   const [providerInput, setProviderInput] = useState<AgentProvider>("codex");
@@ -635,6 +639,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "continue"
     | "message"
     | "pin"
+    | "assign"
     | "state"
     | "renameTitle"
     | "editComment"
@@ -763,6 +768,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canAskTasks = can("task:ask");
   const canUseInteractiveTerminal = can("task:interactive");
   const canDeleteTask = can("task:delete");
+  const canListUsers = can("user:list");
+  const isAdminTaskUser = Boolean(session?.user.roles.some((role) => role.id === SYSTEM_ADMIN_ROLE_ID));
   const canCreateFollowUp = canAll(["task:create", "repo:list"]) && canBuildTasks;
   const isQueued = task?.status === "build_queued" || task?.status === "ask_queued";
   const isActive = task ? isActiveTaskStatus(task.status) : false;
@@ -786,6 +793,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canDelete = canDeleteTask && !!task && !isActive;
   const canArchive = canEditTask && !!task && !isActive && !isArchived;
   const canChangeTaskState = canEditTask && !!task && !isArchived && !isQueued && !isActive;
+  const canAssignTask = canEditTask && canListUsers && isAdminTaskUser && !!task && !isArchived;
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
   const roleAllowedModels = session?.user.allowedModels ?? [];
   const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
@@ -873,6 +881,65 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
     messageApi.error(nextMessage);
+  };
+  const assigneeNameById = useMemo(() => {
+    return new Map(assignableUsers.map((user) => [user.id, user.name]));
+  }, [assignableUsers]);
+  useEffect(() => {
+    if (!canAssignTask) {
+      setAssignableUsers([]);
+      setAssignableUsersLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setAssignableUsersLoading(true);
+    void api
+      .listUsers()
+      .then((users) => {
+        if (cancelled) {
+          return;
+        }
+        const activeUsers = users
+          .filter((user) => user.active)
+          .sort((left, right) => left.name.localeCompare(right.name));
+        setAssignableUsers(activeUsers);
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setAssignableUsers([]);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAssignableUsersLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canAssignTask]);
+  const handleAssignTask = async (nextOwnerUserId: string): Promise<void> => {
+    if (!task || !canAssignTask) {
+      return;
+    }
+
+    if (nextOwnerUserId === task.ownerUserId) {
+      return;
+    }
+
+    setSubmitting("assign");
+    try {
+      const updatedTask = await api.updateTaskAssignee(task.id, { ownerUserId: nextOwnerUserId });
+      applyUpdatedTask(updatedTask);
+      messageApi.success(`Task assigned to ${assigneeNameById.get(nextOwnerUserId) ?? "selected user"}`);
+    } catch (error) {
+      showTaskActionError(error, "Failed to assign task");
+    } finally {
+      setSubmitting((current) => (current === "assign" ? null : current));
+    }
   };
   const persistTaskConfig = async ({
     provider,
@@ -2596,12 +2663,31 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     : [];
   const hasExecutionButtons = canCancel;
   const hasGitHubDiffTargetAction = githubPullRequestLookupPending || Boolean(githubDiffTarget);
+  const assigneeLabel = task?.ownerUserId ? (assigneeNameById.get(task.ownerUserId) ?? task.ownerUserId) : "Unassigned";
   const contextContent = (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Card size="small">
         <Descriptions column={2} size="small">
           <Descriptions.Item label="Repository">{task?.repoName}</Descriptions.Item>
           <Descriptions.Item label="Creator">{task?.creatorName ?? (task?.ownerUserId ? task.ownerUserId : "System")}</Descriptions.Item>
+          <Descriptions.Item label="Assignee">
+            {canAssignTask ? (
+              <Select
+                value={task?.ownerUserId ?? undefined}
+                placeholder={assignableUsersLoading ? "Loading users..." : "Select user"}
+                options={assignableUsers.map((user) => ({
+                  label: user.name,
+                  value: user.id
+                }))}
+                loading={assignableUsersLoading}
+                disabled={assignableUsersLoading || submitting === "assign"}
+                onChange={(value) => void handleAssignTask(value)}
+                style={{ minWidth: 220 }}
+              />
+            ) : (
+              assigneeLabel
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label={baseBranchLabel}>{task?.baseBranch}</Descriptions.Item>
           {hasBranch ? <Descriptions.Item label="Branch Strategy">{task ? getTaskBranchStrategyLabel(task.branchStrategy) : ""}</Descriptions.Item> : null}
           {hasBranch ? <Descriptions.Item label="Target Branch">{task?.branchName ?? "(pending)"}</Descriptions.Item> : null}

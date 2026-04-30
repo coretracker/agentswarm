@@ -762,6 +762,10 @@ export interface UpdateTaskStateInput {
   status: Extract<TaskStatus, "open" | "in_review" | "awaiting_review" | "done">;
 }
 
+export interface UpdateTaskAssigneeInput {
+  ownerUserId: string;
+}
+
 export interface CreateTaskMessageInput {
   content: string;
   attachments?: CreateTaskPromptAttachmentInput[];

@@ -95,6 +95,10 @@ const updateTaskStateSchema = z.object({
   status: z.enum(["open", "in_review", "awaiting_review", "done"])
 });
 
+const updateTaskAssigneeSchema = z.object({
+  ownerUserId: z.string().trim().min(1)
+});
+
 const applyTaskChangeProposalSchema = z.object({
   commitMessage: z.string().trim().min(1).max(200).optional()
 });
@@ -1144,6 +1148,51 @@ export const registerTaskRoutes = (
     }
 
     return reply.send(await withBranchSyncCounts(deps.spawner, updated));
+  });
+
+  app.patch<{ Params: { id: string } }>("/tasks/:id/assignee", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateTaskAssigneeSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (!isAdminUser(request.auth?.user)) {
+      return reply.status(403).send({ message: "Only admins can reassign tasks." });
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    const nextOwnerUserId = parsed.data.ownerUserId.trim();
+    if (nextOwnerUserId === task.ownerUserId) {
+      return reply.send(await withTaskCreatorName(deps.userStore, task));
+    }
+
+    const targetUser = await deps.userStore.getUser(nextOwnerUserId);
+    if (!targetUser) {
+      return reply.status(404).send({ message: "Assignee user not found" });
+    }
+    if (!targetUser.active) {
+      return reply.status(409).send({ message: "Cannot assign tasks to inactive users." });
+    }
+
+    const taskWithCreator = await withTaskCreatorName(deps.userStore, task);
+    const updated = await deps.taskStore.patchTask(task.id, {
+      ownerUserId: targetUser.id,
+      creatorName: taskWithCreator.creatorName ?? null
+    });
+    if (!updated) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    await deps.taskStore.appendLog(task.id, `Task assigned to ${targetUser.name} by ${request.auth!.user.name}.`);
+    return reply.send(await withTaskCreatorName(deps.userStore, updated));
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/messages", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {

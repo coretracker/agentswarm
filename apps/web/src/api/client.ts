@@ -45,6 +45,7 @@ import type {
   UpdateRoleInput,
   UpdateSnippetInput,
   UpdateTaskPinInput,
+  UpdateTaskAssigneeInput,
   UpdateTaskStateInput,
   UpdateTaskTitleInput,
   UpdateAuthProfileInput,
@@ -410,6 +411,11 @@ export const api = {
     }),
   updateTaskState: (id: string, input: UpdateTaskStateInput) =>
     request<Task>(`/tasks/${id}/state`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskAssignee: (id: string, input: UpdateTaskAssigneeInput) =>
+    request<Task>(`/tasks/${id}/assignee`, {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
