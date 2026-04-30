@@ -14,6 +14,7 @@ import {
 import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
+import type { UserStore } from "../services/user-store.js";
 import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
 import { applyTaskStartMode, getTriggerActionForNewTask } from "../lib/task-start-mode.js";
 import { executeOpenAiDiffAssist } from "../services/openai-diff-assist-service.js";
@@ -224,6 +225,36 @@ export const withBranchSyncCounts = async (spawner: SpawnerService, task: Task):
   };
 };
 
+export const withTaskCreatorName = async (
+  userStore: UserStore,
+  task: Task,
+  creatorNameCache: Map<string, string | null> = new Map()
+): Promise<Task> => {
+  if (task.creatorName !== undefined) {
+    return task;
+  }
+
+  const ownerUserId = task.ownerUserId?.trim() ?? "";
+  if (!ownerUserId) {
+    return {
+      ...task,
+      creatorName: null
+    };
+  }
+
+  let creatorName = creatorNameCache.get(ownerUserId);
+  if (creatorName === undefined) {
+    const creator = await userStore.getUser(ownerUserId);
+    creatorName = creator?.name ?? null;
+    creatorNameCache.set(ownerUserId, creatorName);
+  }
+
+  return {
+    ...task,
+    creatorName
+  };
+};
+
 const getChatActionForTask = (task: Task): TaskAction => {
   return task.taskType === "ask" ? "ask" : "build";
 };
@@ -249,6 +280,7 @@ export const registerTaskRoutes = (
     taskStore: TaskStore;
     taskQueueStore: TaskQueueStore;
     repositoryStore: RepositoryStore;
+    userStore: UserStore;
     scheduler: SchedulerService;
     spawner: SpawnerService;
     settingsStore: SettingsStore;
@@ -265,11 +297,13 @@ export const registerTaskRoutes = (
       }
 
       const userId = request.auth?.user.id ?? null;
-      return deps.taskStore.listTasks({
+      const creatorNameCache = new Map<string, string | null>();
+      const tasks = await deps.taskStore.listTasks({
         ownerUserId: isAdminUser(request.auth?.user) ? null : userId,
         view: parsed.data.view ?? "all",
         limit: parsed.data.limit
       });
+      return Promise.all(tasks.map((task) => withTaskCreatorName(deps.userStore, task, creatorNameCache)));
     }
   );
 
@@ -279,7 +313,7 @@ export const registerTaskRoutes = (
       return;
     }
 
-    return task;
+    return withTaskCreatorName(deps.userStore, task);
   });
 
   app.get<{ Params: { id: string } }>(
@@ -839,22 +873,29 @@ export const registerTaskRoutes = (
       repository,
       request.auth!.user.id
     );
+    const taskWithCreator = await deps.taskStore.patchTask(task.id, {
+      creatorName: request.auth!.user.name
+    });
+    const createdTask = taskWithCreator ?? {
+      ...task,
+      creatorName: request.auth!.user.name
+    };
 
     let persistedAttachments: TaskPromptAttachment[] = [];
     if (attachmentUploads.length > 0) {
       try {
-        persistedAttachments = await persistTaskPromptAttachments(task.id, attachmentUploads);
+        persistedAttachments = await persistTaskPromptAttachments(createdTask.id, attachmentUploads);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Image attachments could not be stored.";
         return reply.status(400).send({ message });
       }
-      const initialMessage = (await deps.taskStore.listMessages(task.id)).at(-1) ?? null;
+      const initialMessage = (await deps.taskStore.listMessages(createdTask.id)).at(-1) ?? null;
       if (initialMessage) {
-        await deps.taskStore.setMessageAttachments(task.id, initialMessage.id, persistedAttachments);
+        await deps.taskStore.setMessageAttachments(createdTask.id, initialMessage.id, persistedAttachments);
       }
     }
     try {
-      const result = await applyTaskStartMode(task, startMode, {
+      const result = await applyTaskStartMode(createdTask, startMode, {
         taskStore: deps.taskStore,
         scheduler: deps.scheduler,
         spawner: deps.spawner
@@ -862,17 +903,17 @@ export const registerTaskRoutes = (
         content: createPayload.prompt.trim(),
         ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
       });
-      return reply.status(201).send(await withBranchSyncCounts(deps.spawner, result));
+      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, result)));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Task follow-up failed";
       if (startMode === "prepare_workspace") {
-        await deps.taskStore.patchTask(task.id, {
+        await deps.taskStore.patchTask(createdTask.id, {
           status: "failed",
           enqueued: false,
           errorMessage: message,
           finishedAt: new Date().toISOString()
         });
-        await deps.taskStore.appendLog(task.id, `Workspace preparation failed: ${message}`);
+        await deps.taskStore.appendLog(createdTask.id, `Workspace preparation failed: ${message}`);
       }
       if (startMode === "run_now") {
         return reply.status(409).send({ message });

@@ -315,6 +315,7 @@ export interface Task {
   activeInteractiveSession?: boolean;
   activeTerminalSessionMode?: TaskTerminalSessionMode | null;
   ownerUserId: string | null;
+  creatorName?: string | null;
   repoId: string;
   repoName: string;
   repoUrl: string;

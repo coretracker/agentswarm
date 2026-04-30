@@ -80,11 +80,11 @@ const bootstrap = async (): Promise<void> => {
   registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore });
   registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
   registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
-  registerTaskRoutes(app, { taskStore, taskQueueStore, repositoryStore, scheduler, spawner, settingsStore, auth });
+  registerTaskRoutes(app, { taskStore, taskQueueStore, repositoryStore, userStore, scheduler, spawner, settingsStore, auth });
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
-  registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, scheduler, spawner, auth });
+  registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, userStore, scheduler, spawner, auth });
 
   app.get("/health", async () => ({ ok: true }));
 

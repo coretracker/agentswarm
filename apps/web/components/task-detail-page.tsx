@@ -2601,6 +2601,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       <Card size="small">
         <Descriptions column={2} size="small">
           <Descriptions.Item label="Repository">{task?.repoName}</Descriptions.Item>
+          <Descriptions.Item label="Creator">{task?.creatorName ?? (task?.ownerUserId ? task.ownerUserId : "System")}</Descriptions.Item>
           <Descriptions.Item label={baseBranchLabel}>{task?.baseBranch}</Descriptions.Item>
           {hasBranch ? <Descriptions.Item label="Branch Strategy">{task ? getTaskBranchStrategyLabel(task.branchStrategy) : ""}</Descriptions.Item> : null}
           {hasBranch ? <Descriptions.Item label="Target Branch">{task?.branchName ?? "(pending)"}</Descriptions.Item> : null}

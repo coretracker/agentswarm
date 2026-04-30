@@ -10,8 +10,9 @@ import { GitHubImportError, type GitHubImportService } from "../services/github-
 import { applyTaskStartMode } from "../lib/task-start-mode.js";
 import { requireTaskCapabilityAccess, requireTaskExecutionConfigAccess } from "../lib/task-capability-access.js";
 import { canUserAccessRepository } from "../lib/task-ownership.js";
-import { withBranchSyncCounts } from "./tasks.js";
+import { withBranchSyncCounts, withTaskCreatorName } from "./tasks.js";
 import { normalizeProvider } from "../lib/provider-config.js";
+import type { UserStore } from "../services/user-store.js";
 
 const issueImportSchema = z.object({
   repoId: z.string().min(1),
@@ -77,6 +78,7 @@ export const registerImportRoutes = (
     repositoryStore: RepositoryStore;
     settingsStore: SettingsStore;
     taskStore: TaskStore;
+    userStore: UserStore;
     scheduler: SchedulerService;
     spawner: SpawnerService;
     auth: AuthService;
@@ -194,23 +196,30 @@ export const registerImportRoutes = (
 
       const taskInput = await deps.githubImportService.buildTaskInputFromIssue(repository, { ...issueRest, startMode });
       const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
+      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
+        creatorName: request.auth!.user.name
+      });
+      const createdTask = taskWithCreator ?? {
+        ...task,
+        creatorName: request.auth!.user.name
+      };
       try {
-        const result = await applyTaskStartMode(task, startMode, {
+        const result = await applyTaskStartMode(createdTask, startMode, {
           taskStore: deps.taskStore,
           scheduler: deps.scheduler,
           spawner: deps.spawner
         });
-        return reply.status(201).send(await withBranchSyncCounts(deps.spawner, result));
+        return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, result)));
       } catch (error) {
         const message = error instanceof Error ? error.message : "Imported task follow-up failed";
         if (startMode === "prepare_workspace") {
-          await deps.taskStore.patchTask(task.id, {
+          await deps.taskStore.patchTask(createdTask.id, {
             status: "failed",
             enqueued: false,
             errorMessage: message,
             finishedAt: new Date().toISOString()
           });
-          await deps.taskStore.appendLog(task.id, `Workspace preparation failed: ${message}`);
+          await deps.taskStore.appendLog(createdTask.id, `Workspace preparation failed: ${message}`);
         }
         if (startMode === "run_now") {
           return reply.status(409).send({ message });
@@ -249,13 +258,20 @@ export const registerImportRoutes = (
 
       const taskInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, createPayload);
       const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
+      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
+        creatorName: request.auth!.user.name
+      });
+      const createdTask = taskWithCreator ?? {
+        ...task,
+        creatorName: request.auth!.user.name
+      };
       try {
-        const started = await applyTaskStartMode(task, "run_now", {
+        const started = await applyTaskStartMode(createdTask, "run_now", {
           taskStore: deps.taskStore,
           scheduler: deps.scheduler,
           spawner: deps.spawner
         });
-        return reply.status(201).send(await withBranchSyncCounts(deps.spawner, started));
+        return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, started)));
       } catch (error) {
         const message = error instanceof Error ? error.message : "Imported task execution could not be started";
         return reply.status(409).send({ message });
