@@ -2763,27 +2763,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </Descriptions.Item>
         </Descriptions>
       </Card>
-      <Card
-        size="small"
-        title={
-          <Flex justify="space-between" align="center" gap={12}>
-            <Typography.Text strong>Notes</Typography.Text>
-            {canEditTask && !isArchived ? (
-              <Button size="small" icon={<EditOutlined />} onClick={openNotesEditModal}>
-                Edit
-              </Button>
-            ) : null}
-          </Flex>
-        }
-      >
-        {taskNotes ? (
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-            {taskNotes}
-          </ReactMarkdown>
-        ) : (
-          <Typography.Text type="secondary">No notes added.</Typography.Text>
-        )}
-      </Card>
     </Space>
   );
 
@@ -3133,6 +3112,30 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         disabled={chatInputDisabled}
         style={{ resize: "none" }}
       />
+      {task ? (
+        <Card
+          size="small"
+          styles={{ body: { padding: 12 } }}
+          title={
+            <Flex justify="space-between" align="center" gap={12}>
+              <Typography.Text strong>Notes</Typography.Text>
+              {canEditTask && !isArchived ? (
+                <Button size="small" icon={<EditOutlined />} onClick={openNotesEditModal}>
+                  Edit
+                </Button>
+              ) : null}
+            </Flex>
+          }
+        >
+          {taskNotes ? (
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {taskNotes}
+            </ReactMarkdown>
+          ) : (
+            <Typography.Text type="secondary">No notes added.</Typography.Text>
+          )}
+        </Card>
+      ) : null}
       {canAttachPromptImages || selectedPromptImageFiles.length > 0 ? (
         <>
           <Divider style={{ margin: 0 }} />
