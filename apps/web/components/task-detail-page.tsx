@@ -448,6 +448,15 @@ function resolveCheckpointEditableFilePath(file: FileData, changedFiles: string[
   return candidates.find((candidate) => changedFiles.includes(candidate)) ?? null;
 }
 
+function getFirstDiffFilePath(diffText: string): string | null {
+  try {
+    const file = parseRenderableDiff(diffText).find((item) => item.newPath || item.oldPath);
+    return file?.newPath || file?.oldPath || null;
+  } catch {
+    return null;
+  }
+}
+
 function getGitHubRepositoryBaseUrl(repoUrl: string): string | null {
   const httpsMatch = repoUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
   if (httpsMatch) {
@@ -635,6 +644,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const selectedChatActionRef = useRef(false);
   const diffCompareBaseSyncedTaskIdRef = useRef<string | null>(null);
   const applyCheckpointAutoMagicProposalIdRef = useRef<string | null>(null);
+  const mergeAutoMagicTargetRef = useRef<string | null>(null);
   const [selectedSnippetId, setSelectedSnippetId] = useState<string | null>(null);
   const [selectedPromptImageFiles, setSelectedPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const [pushPreview, setPushPreview] = useState<TaskPushPreview | null>(null);
@@ -648,6 +658,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [mergePreviewLoading, setMergePreviewLoading] = useState(false);
   const [mergePreviewError, setMergePreviewError] = useState<string | null>(null);
   const [mergeCommitMessage, setMergeCommitMessage] = useState("");
+  const [mergeCommitMessageGenerating, setMergeCommitMessageGenerating] = useState(false);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
   const [taskStateModalOpen, setTaskStateModalOpen] = useState(false);
   const [taskStateDraft, setTaskStateDraft] = useState<EditableTaskState>("open");
@@ -2328,6 +2339,65 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       }
     });
   };
+  const handleGenerateMergeCommitMessage = async () => {
+    if (!task || !mergeTargetBranch || !mergePreview?.mergeable) {
+      return;
+    }
+
+    const diffSnippetSource = (task.branchDiff?.trim() ? task.branchDiff : renderedDiff).trim();
+    if (!diffSnippetSource || diffSnippetSource === "(no changes)") {
+      messageApi.warning("No diff content is available for this merge.");
+      return;
+    }
+
+    const filePath = getFirstDiffFilePath(diffSnippetSource);
+    if (!filePath) {
+      messageApi.warning("No changed file is available for this merge.");
+      return;
+    }
+
+    setMergeCommitMessageGenerating(true);
+    try {
+      const response = await api.openAiDiffAssist(task.id, {
+        model: OPENAI_COMMIT_MESSAGE_MODEL,
+        providerProfile: OPENAI_COMMIT_MESSAGE_PROFILE,
+        filePath,
+        selectedSnippet: diffSnippetSource.slice(0, OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS),
+        userPrompt:
+          `Generate one git squash merge commit subject line for merging ${mergePreview.sourceBranch} into ${mergePreview.targetBranch} based on these changes. Do not use conventional commit prefixes (for example: feat:, feat(scope):, fix:, chore:). Return only a plain subject line with no quotes, bullets, markdown, or explanation.`
+      });
+      const candidate = normalizeAiCommitSubject(response.text);
+      if (!candidate) {
+        messageApi.warning("Model returned an empty commit message.");
+        return;
+      }
+      setMergeCommitMessage(candidate.slice(0, 72));
+    } catch (error) {
+      showTaskActionError(error, "Could not generate merge commit message");
+    } finally {
+      setMergeCommitMessageGenerating(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!mergeModalOpen) {
+      mergeAutoMagicTargetRef.current = null;
+      return;
+    }
+
+    if (!task?.id || !mergeTargetBranch || !mergePreview?.mergeable || mergePreviewLoading) {
+      return;
+    }
+
+    const autoMagicKey = `${task.id}:${mergeTargetBranch}`;
+    if (mergeAutoMagicTargetRef.current === autoMagicKey) {
+      return;
+    }
+
+    mergeAutoMagicTargetRef.current = autoMagicKey;
+    void handleGenerateMergeCommitMessage();
+  }, [mergeModalOpen, mergePreview?.mergeable, mergePreviewLoading, mergeTargetBranch, task?.id]);
+
   const handlePullTask = async () => {
     if (!task) {
       return;
@@ -2604,6 +2674,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     proposalBusy?.id === applyCheckpointModalProposal.id &&
     proposalBusy.kind === "apply";
   const applyCheckpointFooterBusy = applyCheckpointApplying || applyCheckpointCommitMessageGenerating;
+  const mergeFooterBusy = submitting === "merge" || mergeCommitMessageGenerating;
   const pushNothingToPush = Boolean(pushPreview) && pushCount === 0 && !pushPreviewHasPushableChanges;
   const pushPrimaryDisabled = submitting === "push" || pushPreviewLoading || pushNothingToPush;
   const mergeBlockedReason =
@@ -4228,7 +4299,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         title="Squash Merge Branch"
         open={mergeModalOpen}
         onCancel={() => {
-          if (submitting === "merge") {
+          if (mergeFooterBusy) {
             return;
           }
 
@@ -4244,7 +4315,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Flex justify="flex-end" gap={12}>
             <Button
               onClick={() => {
-                if (submitting === "merge") {
+                if (mergeFooterBusy) {
                   return;
                 }
 
@@ -4259,10 +4330,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               Cancel
             </Button>
             <Button
+              onClick={() => void handleGenerateMergeCommitMessage()}
+              loading={mergeCommitMessageGenerating}
+              disabled={!mergePreview?.mergeable || mergePreviewLoading || submitting === "merge" || !mergeTargetBranch}
+            >
+              Magic
+            </Button>
+            <Button
               type="primary"
               onClick={() => void handleMergeTask()}
               loading={submitting === "merge"}
-              disabled={!mergePreview?.mergeable || mergePreviewLoading || !mergeTargetBranch || !mergeCommitMessage.trim()}
+              disabled={!mergePreview?.mergeable || mergePreviewLoading || mergeCommitMessageGenerating || !mergeTargetBranch || !mergeCommitMessage.trim()}
             >
               Squash Merge
             </Button>
@@ -4281,6 +4359,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 loading={mergeBranchesLoading}
                 value={mergeTargetBranch}
                 onChange={(value) => setMergeTargetBranch(value ?? undefined)}
+                disabled={mergeFooterBusy}
                 optionFilterProp="label"
                 options={mergeBranches.map((branch) => ({
                   label: branch.isDefault ? `${branch.name} (repo default)` : branch.name,
@@ -4294,6 +4373,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 onChange={(event) => setMergeCommitMessage(event.target.value)}
                 placeholder="feat(agentswarm): update files"
                 maxLength={72}
+                disabled={mergeFooterBusy}
               />
             </Form.Item>
           </Form>
