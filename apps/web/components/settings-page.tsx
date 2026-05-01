@@ -71,6 +71,8 @@ interface CredentialForm {
   githubToken?: string;
   openaiApiKey?: string;
   anthropicApiKey?: string;
+  slackBotToken?: string;
+  slackSigningSecret?: string;
 }
 
 interface RoleFormValues {
@@ -82,7 +84,7 @@ interface RoleFormValues {
   allowedEfforts: ProviderProfile[];
 }
 
-type ClearCredentialTarget = "github" | "openai" | "anthropic";
+type ClearCredentialTarget = "github" | "openai" | "anthropic" | "slackBot" | "slackSigningSecret";
 
 const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
   { label: "stdio", value: "stdio" },
@@ -242,6 +244,22 @@ export function SettingsPage() {
         return;
       }
 
+      if (target === "slackBot") {
+        const nextSettings = await api.updateCredentials({ clearSlackBotToken: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["slackBotToken"]);
+        message.success("Slack bot token cleared");
+        return;
+      }
+
+      if (target === "slackSigningSecret") {
+        const nextSettings = await api.updateCredentials({ clearSlackSigningSecret: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["slackSigningSecret"]);
+        message.success("Slack signing secret cleared");
+        return;
+      }
+
       const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
       setSettings(nextSettings);
       credentialForm.resetFields(["anthropicApiKey"]);
@@ -254,6 +272,16 @@ export function SettingsPage() {
 
       if (target === "openai") {
         message.error(error instanceof Error ? error.message : "Failed to clear OpenAI API key");
+        return;
+      }
+
+      if (target === "slackBot") {
+        message.error(error instanceof Error ? error.message : "Failed to clear Slack bot token");
+        return;
+      }
+
+      if (target === "slackSigningSecret") {
+        message.error(error instanceof Error ? error.message : "Failed to clear Slack signing secret");
         return;
       }
 
@@ -553,6 +581,12 @@ export function SettingsPage() {
                 <Tag color={settings.anthropicApiKeyConfigured ? "green" : "default"}>
                   Anthropic API Key (Claude, experimental) {settings.anthropicApiKeyConfigured ? "Configured" : "Missing"}
                 </Tag>
+                <Tag color={settings.slackBotTokenConfigured ? "green" : "default"}>
+                  Slack Bot Token {settings.slackBotTokenConfigured ? "Configured" : "Missing"}
+                </Tag>
+                <Tag color={settings.slackSigningSecretConfigured ? "green" : "default"}>
+                  Slack Signing Secret {settings.slackSigningSecretConfigured ? "Configured" : "Missing"}
+                </Tag>
               </Space>
             ) : null
           }
@@ -574,7 +608,9 @@ export function SettingsPage() {
                 const nextSettings = await api.updateCredentials({
                   githubToken: values.githubToken?.trim() || undefined,
                   openaiApiKey: values.openaiApiKey?.trim() || undefined,
-                  anthropicApiKey: values.anthropicApiKey?.trim() || undefined
+                  anthropicApiKey: values.anthropicApiKey?.trim() || undefined,
+                  slackBotToken: values.slackBotToken?.trim() || undefined,
+                  slackSigningSecret: values.slackSigningSecret?.trim() || undefined
                 });
                 credentialForm.resetFields();
                 setSettings(nextSettings);
@@ -598,6 +634,22 @@ export function SettingsPage() {
               extra="Used for Claude Code (experimental) runs only."
             >
               <Input.Password placeholder={settings?.anthropicApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-ant-..."} />
+            </Form.Item>
+            <Form.Item
+              name="slackBotToken"
+              label="Slack Bot Token"
+              extra="Used by the Slack app to post messages and respond to slash commands."
+            >
+              <Input.Password placeholder={settings?.slackBotTokenConfigured ? "Configured. Enter a new token to replace it." : "xoxb-..."} />
+            </Form.Item>
+            <Form.Item
+              name="slackSigningSecret"
+              label="Slack Signing Secret"
+              extra="Used to verify incoming Slack requests."
+            >
+              <Input.Password
+                placeholder={settings?.slackSigningSecretConfigured ? "Configured. Enter a new secret to replace it." : "paste Slack signing secret"}
+              />
             </Form.Item>
             <Space wrap>
               <Button type="primary" htmlType="submit" loading={savingCredentials} disabled={!canEditSettings}>
@@ -643,6 +695,34 @@ export function SettingsPage() {
               >
                 <Button danger loading={savingCredentials} disabled={!canEditSettings}>
                   Clear Anthropic API Key
+                </Button>
+              </Popconfirm>
+              <Popconfirm
+                title="Clear Slack bot token?"
+                description="This removes the stored Slack bot token from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
+                disabled={!canEditSettings}
+                onConfirm={() => handleClearCredential("slackBot")}
+              >
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear Slack Bot Token
+                </Button>
+              </Popconfirm>
+              <Popconfirm
+                title="Clear Slack signing secret?"
+                description="This removes the stored Slack signing secret from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
+                disabled={!canEditSettings}
+                onConfirm={() => handleClearCredential("slackSigningSecret")}
+              >
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear Slack Signing Secret
                 </Button>
               </Popconfirm>
             </Space>
