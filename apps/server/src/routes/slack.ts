@@ -4,7 +4,8 @@ import { z } from "zod";
 import { env } from "../config/env.js";
 import { applyTaskStartMode } from "../lib/task-start-mode.js";
 import { canUserAccessRepository, canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
-import { getTaskStatusLabel, type TaskStartMode, type TaskType } from "@agentswarm/shared-types";
+import { getTaskStatusLabel, type AgentProvider, type CodexCredentialSource, type ProviderProfile, type TaskStartMode, type TaskType } from "@agentswarm/shared-types";
+import { normalizeProvider } from "../lib/provider-config.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
@@ -32,6 +33,10 @@ type SlackParsedCommand =
       prompt: string;
       taskType: TaskType;
       startMode: TaskStartMode;
+      provider: AgentProvider | null;
+      providerProfile: ProviderProfile | null;
+      modelOverride: string | null;
+      codexCredentialSource: CodexCredentialSource | null;
     };
 
 const slackCommandBodySchema = z.object({
@@ -107,19 +112,28 @@ const parseSlackCommandText = (text: string): SlackParsedCommand => {
       : lower.startsWith("create ")
         ? stripLeadingCommandWord(trimmed, "create")
         : "";
-    const tokenPattern = /(^|\s)(repo|repoId|title|prompt|type|mode)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s]+))/gi;
+    const tokenPattern =
+      /(^|\s)(repo|repoId|title|prompt|type|mode|provider|model|effort|credentials|codexCredentialSource|providerProfile|profile|reasoningEffort)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s]+))/gi;
     const extracted: {
       repoId: string | null;
       title: string | null;
       prompt: string | null;
       taskType: TaskType;
       startMode: TaskStartMode;
+      provider: AgentProvider | null;
+      providerProfile: ProviderProfile | null;
+      modelOverride: string | null;
+      codexCredentialSource: CodexCredentialSource | null;
     } = {
       repoId: null,
       title: null,
       prompt: null,
       taskType: "build",
-      startMode: "run_now"
+      startMode: "run_now",
+      provider: null,
+      providerProfile: null,
+      modelOverride: null,
+      codexCredentialSource: null
     };
 
     const stripped = payloadText.replace(tokenPattern, (_match, prefix: string, key: string, doubleQuoted: string, singleQuoted: string, bare: string) => {
@@ -142,6 +156,39 @@ const parseSlackCommandText = (text: string): SlackParsedCommand => {
           extracted.startMode =
             value === "idle" || value === "prepare_workspace" ? value : "run_now";
           break;
+        case "provider":
+          extracted.provider = value === "claude" || value === "codex" ? value : null;
+          break;
+        case "model":
+          extracted.modelOverride = value;
+          break;
+        case "effort":
+        case "providerprofile":
+        case "profile":
+          extracted.providerProfile =
+            value === "low" || value === "medium" || value === "high" || value === "max"
+              ? value
+              : value === "minimal"
+                ? "low"
+                : value === "xhigh"
+                  ? "high"
+                  : null;
+          break;
+        case "credentials":
+        case "codexcredentialsource":
+          extracted.codexCredentialSource =
+            value === "auto" || value === "profile" || value === "global" ? value : null;
+          break;
+        case "reasoningeffort":
+          extracted.providerProfile =
+            value === "minimal" || value === "low"
+              ? "low"
+              : value === "medium"
+                ? "medium"
+                : value === "high" || value === "xhigh"
+                  ? "high"
+                  : null;
+          break;
       }
 
       return prefix || " ";
@@ -158,7 +205,11 @@ const parseSlackCommandText = (text: string): SlackParsedCommand => {
       title: extracted.title,
       prompt: extracted.prompt ?? "",
       taskType: extracted.taskType,
-      startMode: extracted.startMode
+      startMode: extracted.startMode,
+      provider: extracted.provider,
+      providerProfile: extracted.providerProfile,
+      modelOverride: extracted.modelOverride,
+      codexCredentialSource: extracted.codexCredentialSource
     };
   }
 
@@ -254,7 +305,7 @@ const postSlackResponse = async (responseUrl: string, text: string): Promise<voi
 
 const buildHelpMessage = (): string => {
   return [
-    "Use `/agentswarm new repo=<repoId> prompt=<task description> [title=<short title>] [type=build|ask] [mode=run_now|prepare_workspace|idle]`.",
+    "Use `/agentswarm new repo=<repoId> prompt=<task description> [title=<short title>] [type=build|ask] [mode=run_now|prepare_workspace|idle] [provider=codex|claude] [model=<model>] [effort=low|medium|high|max] [credentials=auto|profile|global]`.",
     "Use `/agentswarm task <id>` to inspect a task you can access.",
     "If you have exactly one repository assigned in AgentSwarm, `repo=<repoId>` can be omitted."
   ].join("\n");
@@ -409,9 +460,11 @@ export const registerSlackRoutes = (
 
         const title = normalizeWhitespace(command.title ?? "") || summarizePrompt(prompt) || "Slack task";
         const settings = await deps.settingsStore.getSettings();
-        const provider = settings.defaultProvider;
-        const providerProfile = provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort;
-        const modelOverride = provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel;
+        const provider = normalizeProvider(command.provider ?? settings.defaultProvider);
+        const providerProfile =
+          command.providerProfile ??
+          (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort);
+        const modelOverride = command.modelOverride?.trim() || (provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel);
 
         const createdTask = await deps.taskStore.createTask(
           {
@@ -422,6 +475,7 @@ export const registerSlackRoutes = (
             provider,
             providerProfile,
             modelOverride,
+            codexCredentialSource: command.codexCredentialSource ?? undefined,
             startMode: command.startMode
           },
           repository,
