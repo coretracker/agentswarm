@@ -19,6 +19,7 @@ import { registerRoleRoutes } from "./routes/roles.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerUserRoutes } from "./routes/users.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
+import { registerSlackRoutes } from "./routes/slack.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerImportRoutes } from "./routes/imports.js";
 import { registerSnippetRoutes } from "./routes/snippets.js";
@@ -28,6 +29,19 @@ const bootstrap = async (): Promise<void> => {
   const app = Fastify({ logger: true, bodyLimit: 35 * 1024 * 1024 });
   await app.register(cookie);
   app.decorateRequest("auth", null);
+  app.addContentTypeParser(/^application\/x-www-form-urlencoded(?:;.*)?$/i, { parseAs: "buffer" }, (request, payload, done) => {
+    try {
+      const rawBody = payload.toString("utf8");
+      request.rawBody = rawBody;
+      const parsed: Record<string, string> = {};
+      for (const [key, value] of new URLSearchParams(rawBody).entries()) {
+        parsed[key] = value;
+      }
+      done(null, parsed);
+    } catch (error) {
+      done(error as Error);
+    }
+  });
   await app.register(cors, {
     origin: env.CORS_ORIGIN,
     credentials: true
@@ -84,6 +98,7 @@ const bootstrap = async (): Promise<void> => {
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
+  registerSlackRoutes(app, { settingsStore, userStore, repositoryStore, taskStore, scheduler, spawner });
   registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, userStore, scheduler, spawner, auth });
 
   app.get("/health", async () => ({ ok: true }));

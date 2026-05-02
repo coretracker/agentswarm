@@ -91,6 +91,7 @@ export interface UserStore {
   ensureDefaultAdminUser(input: BootstrapAdminInput): Promise<User>;
   listUsers(): Promise<User[]>;
   getUser(userId: string): Promise<User | null>;
+  getUserByEmail(email: string): Promise<User | null>;
   getAuthSessionUser(userId: string): Promise<AuthSessionUser | null>;
   authenticate(email: string, password: string): Promise<User | null>;
   createUser(input: CreateUserInput): Promise<User>;
@@ -313,6 +314,25 @@ export class RedisUserStore implements UserStore {
   }
 
   async getUser(userId: string): Promise<User | null> {
+    const user = await this.getStoredUser(userId);
+    if (!user) {
+      return null;
+    }
+
+    return this.sanitizeUser(user);
+  }
+
+  async getUserByEmail(email: string): Promise<User | null> {
+    const normalizedEmail = normalizeUserEmail(email);
+    if (!normalizedEmail) {
+      return null;
+    }
+
+    const userId = await this.redis.get(this.userEmailKey(normalizedEmail));
+    if (!userId) {
+      return null;
+    }
+
     const user = await this.getStoredUser(userId);
     if (!user) {
       return null;
@@ -851,6 +871,26 @@ export class PostgresUserStore implements UserStore {
   }
 
   async getUser(userId: string): Promise<User | null> {
+    const user = await this.getStoredUser(userId);
+    if (!user) {
+      return null;
+    }
+
+    return this.sanitizeUser(user);
+  }
+
+  async getUserByEmail(email: string): Promise<User | null> {
+    const normalizedEmail = normalizeUserEmail(email);
+    if (!normalizedEmail) {
+      return null;
+    }
+
+    const result = await this.pool.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [normalizedEmail]);
+    const userId = result.rows[0]?.id ?? null;
+    if (!userId) {
+      return null;
+    }
+
     const user = await this.getStoredUser(userId);
     if (!user) {
       return null;
