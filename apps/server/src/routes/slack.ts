@@ -235,6 +235,23 @@ const fetchSlackUserEmail = async (botToken: string, slackUserId: string): Promi
   return email ?? null;
 };
 
+const postSlackResponse = async (responseUrl: string, text: string): Promise<void> => {
+  const response = await fetch(responseUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      response_type: "ephemeral",
+      text
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Slack response delivery failed with HTTP ${response.status}`);
+  }
+};
+
 const buildHelpMessage = (): string => {
   return [
     "Use `/agentswarm new repo=<repoId> prompt=<task description> [title=<short title>] [type=build|ask] [mode=run_now|prepare_workspace|idle]`.",
@@ -305,136 +322,150 @@ export const registerSlackRoutes = (
       });
     }
 
-    const slackEmail = await fetchSlackUserEmail(runtimeCredentials.slackBotToken, parsedBody.user_id);
-    if (!slackEmail) {
-      return reply.send({
+    if (!parsedBody.response_url) {
+      return reply.status(400).send({
         response_type: "ephemeral",
-        text: "Could not read the Slack user's email address."
+        text: "Missing Slack response URL."
       });
     }
 
-    const matchedUser = await deps.userStore.getUserByEmail(slackEmail);
-    if (!matchedUser || !matchedUser.active) {
-      return reply.send({
-        response_type: "ephemeral",
-        text: buildNotFoundMessage()
-      });
-    }
-
-    const command = parseSlackCommandText(parsedBody.text ?? "");
-    if (command.kind === "help") {
-      return reply.send({
-        response_type: "ephemeral",
-        text: buildHelpMessage()
-      });
-    }
-
-    if (command.kind === "task") {
-      const task = await deps.taskStore.getTask(command.taskId);
-      if (!task || !canUserAccessTask(matchedUser, task)) {
-        return reply.send({
-          response_type: "ephemeral",
-          text: "Task not found or not accessible."
-        });
-      }
-
-      return reply.send({
-        response_type: "ephemeral",
-        text: formatTaskDetails(task, buildTaskLink(task.id))
-      });
-    }
-
-    const accessibleRepositories = matchedUser.repositoryIds ?? [];
-    let repositoryId = command.repoId?.trim() ?? "";
-    if (!repositoryId) {
-      if (accessibleRepositories.length !== 1) {
-        const repositoryCandidates = isAdminUser(matchedUser)
-          ? await deps.repositoryStore.listRepositories()
-          : await Promise.all(
-              accessibleRepositories.map(async (repoId) => {
-                const repository = await deps.repositoryStore.getRepository(repoId);
-                return repository;
-              })
-            );
-        const repoNames = repositoryCandidates
-          .filter((repository): repository is NonNullable<typeof repository> => Boolean(repository))
-          .map((repository) => `${repository.name} (${repository.id})`);
-
-        return reply.send({
-          response_type: "ephemeral",
-          text:
-            repoNames.length > 0
-              ? `Pick a repository with \`repo=<repoId>\`. Accessible repositories: ${repoNames.join(", ")}`
-              : "Pick a repository with `repo=<repoId>`. No repositories are currently assigned to your AgentSwarm account."
-        });
-      }
-
-      repositoryId = accessibleRepositories[0]!;
-    }
-
-    const repository = await deps.repositoryStore.getRepository(repositoryId);
-    if (!repository || !canUserAccessRepository(matchedUser, repository.id)) {
-      return reply.send({
-        response_type: "ephemeral",
-        text: "That repository is not available to your AgentSwarm account."
-      });
-    }
-
-    const prompt = normalizeWhitespace(command.prompt);
-    if (command.startMode === "run_now" && prompt.length === 0) {
-      return reply.send({
-        response_type: "ephemeral",
-        text: "Provide `prompt=<task description>` for a new task."
-      });
-    }
-
-    const title = normalizeWhitespace(command.title ?? "") || summarizePrompt(prompt) || "Slack task";
-    const settings = await deps.settingsStore.getSettings();
-    const provider = settings.defaultProvider;
-    const providerProfile = provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort;
-    const modelOverride = provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel;
-
-    const createdTask = await deps.taskStore.createTask(
-      {
-        title,
-        repoId: repository.id,
-        prompt,
-        taskType: command.taskType,
-        provider,
-        providerProfile,
-        modelOverride,
-        startMode: command.startMode
-      },
-      repository,
-      matchedUser.id
-    );
-
-    const startedTask = await applyTaskStartMode(
-      createdTask,
-      command.startMode,
-      {
-        taskStore: deps.taskStore,
-        scheduler: deps.scheduler,
-        spawner: deps.spawner
-      },
-      prompt.length > 0 ? { content: prompt } : undefined
-    ).catch(async (error: unknown) => {
-      const message = error instanceof Error ? error.message : "Task follow-up failed";
-      await deps.taskStore.appendLog(createdTask.id, `Slack task start failed: ${message}`);
-      return (await deps.taskStore.getTask(createdTask.id)) ?? createdTask;
+    const responseUrl = parsedBody.response_url;
+    const responseText = "AgentSwarm verarbeitet deinen Befehl. Die Antwort folgt gleich.";
+    void reply.send({
+      response_type: "ephemeral",
+      text: responseText
     });
 
-    const link = buildTaskLink(startedTask.id);
-    return reply.send({
-      response_type: "ephemeral",
-      text: [
-        `Created task: ${startedTask.title}`,
-        `Id: ${startedTask.id}`,
-        `Status: ${getTaskStatusLabel(startedTask.status)}`,
-        link ? `Open: ${link}` : null
-      ]
-        .filter((line): line is string => Boolean(line))
-        .join("\n")
+    const processing = async (): Promise<void> => {
+      try {
+        const slackEmail = await fetchSlackUserEmail(runtimeCredentials.slackBotToken, parsedBody.user_id);
+        if (!slackEmail) {
+          await postSlackResponse(responseUrl, "Could not read the Slack user's email address.");
+          return;
+        }
+
+        const matchedUser = await deps.userStore.getUserByEmail(slackEmail);
+        if (!matchedUser || !matchedUser.active) {
+          await postSlackResponse(responseUrl, buildNotFoundMessage());
+          return;
+        }
+
+        const command = parseSlackCommandText(parsedBody.text ?? "");
+        if (command.kind === "help") {
+          await postSlackResponse(responseUrl, buildHelpMessage());
+          return;
+        }
+
+        if (command.kind === "task") {
+          const task = await deps.taskStore.getTask(command.taskId);
+          if (!task || !canUserAccessTask(matchedUser, task)) {
+            await postSlackResponse(responseUrl, "Task not found or not accessible.");
+            return;
+          }
+
+          await postSlackResponse(responseUrl, formatTaskDetails(task, buildTaskLink(task.id)));
+          return;
+        }
+
+        const accessibleRepositories = matchedUser.repositoryIds ?? [];
+        let repositoryId = command.repoId?.trim() ?? "";
+        if (!repositoryId) {
+          if (accessibleRepositories.length !== 1) {
+            const repositoryCandidates = isAdminUser(matchedUser)
+              ? await deps.repositoryStore.listRepositories()
+              : await Promise.all(
+                  accessibleRepositories.map(async (repoId) => {
+                    const repository = await deps.repositoryStore.getRepository(repoId);
+                    return repository;
+                  })
+                );
+            const repoNames = repositoryCandidates
+              .filter((repository): repository is NonNullable<typeof repository> => Boolean(repository))
+              .map((repository) => `${repository.name} (${repository.id})`);
+
+            await postSlackResponse(
+              responseUrl,
+              repoNames.length > 0
+                ? `Pick a repository with \`repo=<repoId>\`. Accessible repositories: ${repoNames.join(", ")}`
+                : "Pick a repository with `repo=<repoId>`. No repositories are currently assigned to your AgentSwarm account."
+            );
+            return;
+          }
+
+          repositoryId = accessibleRepositories[0]!;
+        }
+
+        const repository = await deps.repositoryStore.getRepository(repositoryId);
+        if (!repository || !canUserAccessRepository(matchedUser, repository.id)) {
+          await postSlackResponse(responseUrl, "That repository is not available to your AgentSwarm account.");
+          return;
+        }
+
+        const prompt = normalizeWhitespace(command.prompt);
+        if (command.startMode === "run_now" && prompt.length === 0) {
+          await postSlackResponse(responseUrl, "Provide `prompt=<task description>` for a new task.");
+          return;
+        }
+
+        const title = normalizeWhitespace(command.title ?? "") || summarizePrompt(prompt) || "Slack task";
+        const settings = await deps.settingsStore.getSettings();
+        const provider = settings.defaultProvider;
+        const providerProfile = provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort;
+        const modelOverride = provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel;
+
+        const createdTask = await deps.taskStore.createTask(
+          {
+            title,
+            repoId: repository.id,
+            prompt,
+            taskType: command.taskType,
+            provider,
+            providerProfile,
+            modelOverride,
+            startMode: command.startMode
+          },
+          repository,
+          matchedUser.id
+        );
+
+        const startedTask = await applyTaskStartMode(
+          createdTask,
+          command.startMode,
+          {
+            taskStore: deps.taskStore,
+            scheduler: deps.scheduler,
+            spawner: deps.spawner
+          },
+          prompt.length > 0 ? { content: prompt } : undefined
+        ).catch(async (error: unknown) => {
+          const message = error instanceof Error ? error.message : "Task follow-up failed";
+          await deps.taskStore.appendLog(createdTask.id, `Slack task start failed: ${message}`);
+          return (await deps.taskStore.getTask(createdTask.id)) ?? createdTask;
+        });
+
+        const link = buildTaskLink(startedTask.id);
+        await postSlackResponse(
+          responseUrl,
+          [
+            `Created task: ${startedTask.title}`,
+            `Id: ${startedTask.id}`,
+            `Status: ${getTaskStatusLabel(startedTask.status)}`,
+            link ? `Open: ${link}` : null
+          ]
+            .filter((line): line is string => Boolean(line))
+            .join("\n")
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Slack command failed";
+        request.log.error({ error }, "Slack command processing failed");
+        await postSlackResponse(responseUrl, message).catch((postError) => {
+          request.log.error({ error: postError }, "Failed to deliver Slack error response");
+        });
+      }
+    };
+
+    setImmediate(() => {
+      void processing();
     });
   });
 };
