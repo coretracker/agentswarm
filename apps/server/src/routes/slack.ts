@@ -642,7 +642,7 @@ const buildHelpMessage = (): string => {
   return [
     "Use `/agentswarm new` to open the task form. Optional prefills: `repo=<repoId> prompt=<task description> [title=<short title>] [type=build|ask] [mode=run_now|prepare_workspace|idle] [provider=codex|claude] [model=<model>] [effort=low|medium|high|max] [credentials=auto|profile|global]`.",
     "Use `/agentswarm task <id>` to inspect a task you can access.",
-    "In the task thread, use `build` or `ask` to switch task mode, `config taskType=build provider=claude model=... effort=...`, `accept`, `reject`, `archive`, or `delete`.",
+    "In the task thread, use `build` or `ask` to run follow-ups, `build mode` / `ask mode` to switch task mode, `config taskType=build provider=claude model=... effort=...`, `accept`, `reject`, `archive`, or `delete`.",
     "If you have exactly one repository assigned in AgentSwarm, `repo=<repoId>` can be omitted."
   ].join("\n");
 };

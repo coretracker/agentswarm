@@ -132,19 +132,11 @@ const formatTaskRootMessage = (task: Task): string =>
     `*Task:* ${buildTaskLink(task.id) ?? task.id}`,
     "",
     "Reply in this thread with a prompt to continue.",
-    "Use `build` or `ask` to switch task mode, `config taskType=build provider=claude model=... effort=...`, `accept`, `reject`, `archive`, or `delete`."
+    "Use `build` or `ask` to run follow-ups, `build mode` / `ask mode` to switch task mode, `config taskType=build provider=claude model=... effort=...`, `accept`, `reject`, `archive`, or `delete`."
   ].join("\n");
-
-const formatTaskStatusMessage = (task: Task): string =>
-  [
-    `*Status:* ${getTaskStatusLabel(task.status)}`
-  ]
-    .filter((line): line is string => Boolean(line))
-    .join("\n");
 
 const formatTaskRunSummary = (task: Task, summary: string | null, errorMessage: string | null): string =>
   [
-    "*Final result*",
     summary?.trim() ? truncateText(summary.trim(), 1400) : null,
     errorMessage?.trim() ? `*Error:* ${truncateText(errorMessage.trim(), 1200)}` : null,
     buildTaskLink(task.id) ? `<${buildTaskLink(task.id)}|Open task>` : null
@@ -249,10 +241,10 @@ const parseThreadCommand = (text: string):
   if (lower === "reject" || lower === "reject changes" || lower === "decline" || lower === "decline changes") {
     return { kind: "reject" };
   }
-  if (lower === "build" || lower === "build mode" || lower === "switch to build mode" || lower === "set build mode" || lower === "use build mode") {
+  if (lower === "build mode" || lower === "switch to build mode" || lower === "set build mode" || lower === "use build mode") {
     return { kind: "mode", taskType: "build" };
   }
-  if (lower === "ask" || lower === "ask mode" || lower === "switch to ask mode" || lower === "set ask mode" || lower === "use ask mode") {
+  if (lower === "ask mode" || lower === "switch to ask mode" || lower === "set ask mode" || lower === "use ask mode") {
     return { kind: "mode", taskType: "ask" };
   }
   if (lower === "build" || lower.startsWith("build ")) {
@@ -522,27 +514,36 @@ export class SlackTaskWorkflowService {
       return;
     }
 
+    const explicitActionCommand = command.kind === "ask" || command.kind === "build";
     const defaultAction: TaskAction = task.taskType === "ask" ? "ask" : "build";
     const action: TaskAction = command.kind === "prompt" ? defaultAction : command.kind === "ask" ? "ask" : "build";
     const promptContent = normalizeWhitespace(command.content || text);
+    const hasPromptContent = promptContent.length > 0;
     const taskIsIdle = task.status === "open" || task.status === "done" || task.status === "answered" || task.status === "accepted";
     const canParallelAsk = action === "ask" && (task.status === "building" || task.status === "asking");
-    const messageAction = promptContent && (taskIsIdle || canParallelAsk) ? action : "comment";
+    const canTriggerNow = taskIsIdle || canParallelAsk;
+    const shouldTriggerAction = (explicitActionCommand || hasPromptContent) && canTriggerNow;
+    const messageAction = shouldTriggerAction ? action : "comment";
+    const messageContent = hasPromptContent ? promptContent : `Slack ${action} follow-up.`;
 
     const message = await this.taskStore.appendMessage(task.id, {
       role: "user",
       action: messageAction,
-      content: promptContent,
-      ...(messageAction !== "comment" && promptContent ? { } : {})
+      content: messageContent,
+      ...(messageAction !== "comment" && hasPromptContent ? { } : {})
     });
     this.ignoredSlackMessageIds.add(message.id);
 
     if (messageAction === "comment") {
-      await this.postThreadMessage(task.id, `${matchedUser.name}: ${truncateText(promptContent, 1200)}`);
+      if (explicitActionCommand && !canTriggerNow) {
+        await this.postThreadMessage(task.id, `Could not start ${action}. The task may already be running.`);
+        return;
+      }
+      await this.postThreadMessage(task.id, `${matchedUser.name}: ${truncateText(messageContent, 1200)}`);
       return;
     }
 
-    const accepted = await this.scheduler.triggerAction(task.id, action, promptContent || undefined);
+    const accepted = await this.scheduler.triggerAction(task.id, action, hasPromptContent ? promptContent : undefined);
     if (!accepted) {
       await this.postThreadMessage(task.id, `Could not start ${action}. The task may already be running.`);
       return;
@@ -557,12 +558,11 @@ export class SlackTaskWorkflowService {
       return;
     }
 
-    if (thread.lastKnownStatus === task.status && task.status !== "archived") {
+    if (thread.lastKnownStatus === task.status) {
       return;
     }
 
     await this.threadStore.updateStatus(task.id, task.status);
-    await this.postThreadMessage(task.id, formatTaskStatusMessage(task));
   }
 
   private async handleRunUpdate(run: TaskRun): Promise<void> {
