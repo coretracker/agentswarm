@@ -9,6 +9,7 @@ import {
   type TaskAction,
   type TaskChangeProposal,
   type TaskMessage,
+  type TaskRun,
   type User
 } from "@agentswarm/shared-types";
 import type { SchedulerService } from "./scheduler.js";
@@ -136,17 +137,14 @@ const formatTaskRootMessage = (task: Task): string =>
 
 const formatTaskStatusMessage = (task: Task): string =>
   [
-    `*${task.title}*`,
-    `*Status:* ${getTaskStatusLabel(task.status)}`,
-    task.resultMarkdown?.trim() ? truncateText(task.resultMarkdown.trim(), 1200) : null,
-    buildTaskLink(task.id) ? `<${buildTaskLink(task.id)}|Open task>` : null
+    `*Status:* ${getTaskStatusLabel(task.status)}`
   ]
     .filter((line): line is string => Boolean(line))
     .join("\n");
 
 const formatTaskRunSummary = (task: Task, summary: string | null, errorMessage: string | null): string =>
   [
-    `*${task.title}*`,
+    "*Final result*",
     summary?.trim() ? truncateText(summary.trim(), 1400) : null,
     errorMessage?.trim() ? `*Error:* ${truncateText(errorMessage.trim(), 1200)}` : null,
     buildTaskLink(task.id) ? `<${buildTaskLink(task.id)}|Open task>` : null
@@ -290,6 +288,7 @@ const formatChangeProposalMessage = (proposal: TaskChangeProposal): string =>
 
 export class SlackTaskWorkflowService {
   private readonly ignoredSlackMessageIds = new Set<string>();
+  private readonly postedRunFinalSummaryIds = new Set<string>();
 
   constructor(
     private readonly app: FastifyInstance,
@@ -523,10 +522,12 @@ export class SlackTaskWorkflowService {
       return;
     }
 
-    const action: TaskAction = command.kind === "ask" ? "ask" : "build";
+    const defaultAction: TaskAction = task.taskType === "ask" ? "ask" : "build";
+    const action: TaskAction = command.kind === "prompt" ? defaultAction : command.kind === "ask" ? "ask" : "build";
     const promptContent = normalizeWhitespace(command.content || text);
     const taskIsIdle = task.status === "open" || task.status === "done" || task.status === "answered" || task.status === "accepted";
-    const messageAction = promptContent && taskIsIdle ? action : "comment";
+    const canParallelAsk = action === "ask" && (task.status === "building" || task.status === "asking");
+    const messageAction = promptContent && (taskIsIdle || canParallelAsk) ? action : "comment";
 
     const message = await this.taskStore.appendMessage(task.id, {
       role: "user",
@@ -564,13 +565,19 @@ export class SlackTaskWorkflowService {
     await this.postThreadMessage(task.id, formatTaskStatusMessage(task));
   }
 
-  private async handleRunUpdate(run: { taskId: string; summary: string | null; errorMessage: string | null; finishedAt: string | null }): Promise<void> {
+  private async handleRunUpdate(run: TaskRun): Promise<void> {
     const thread = await this.threadStore.getByTaskId(run.taskId);
     if (!thread) {
       return;
     }
 
-    if (!run.summary && !run.errorMessage && !run.finishedAt) {
+    if (!run.finishedAt) {
+      return;
+    }
+    if (this.postedRunFinalSummaryIds.has(run.id)) {
+      return;
+    }
+    if (!run.summary && !run.errorMessage) {
       return;
     }
 
@@ -579,6 +586,7 @@ export class SlackTaskWorkflowService {
       return;
     }
 
+    this.postedRunFinalSummaryIds.add(run.id);
     await this.postThreadMessage(task.id, formatTaskRunSummary(task, run.summary, run.errorMessage));
   }
 
@@ -598,8 +606,6 @@ export class SlackTaskWorkflowService {
     }
 
     if (message.role === "assistant") {
-      const label = message.action === "ask" ? "Ask result" : "Build result";
-      await this.postThreadMessage(message.taskId, `${label}: ${content}`);
       return;
     }
 
