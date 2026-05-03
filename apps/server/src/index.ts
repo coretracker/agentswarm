@@ -15,6 +15,8 @@ import { SpawnerService } from "./services/spawner.js";
 import { SchedulerService } from "./services/scheduler.js";
 import { GitHubImportService } from "./services/github-import-service.js";
 import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
+import { SlackThreadStore } from "./services/slack-thread-store.js";
+import { SlackTaskWorkflowService } from "./services/slack-task-workflow-service.js";
 import { registerRoleRoutes } from "./routes/roles.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerUserRoutes } from "./routes/users.js";
@@ -84,7 +86,18 @@ const bootstrap = async (): Promise<void> => {
   const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
   const githubImportService = new GitHubImportService(settingsStore);
   const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
-  const slackSocketModeService = new SlackSocketModeService(app, settingsStore);
+  const slackThreadStore = new SlackThreadStore(redisClients.command);
+  const slackTaskWorkflowService = new SlackTaskWorkflowService(
+    app,
+    settingsStore,
+    taskStore,
+    taskQueueStore,
+    scheduler,
+    spawner,
+    userStore,
+    slackThreadStore
+  );
+  const slackSocketModeService = new SlackSocketModeService(app, settingsStore, slackTaskWorkflowService);
 
   await roleStore.ensureDefaultAdminRole();
   await userStore.ensureDefaultAdminUser({
@@ -100,7 +113,15 @@ const bootstrap = async (): Promise<void> => {
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
-  registerSlackRoutes(app, { settingsStore, userStore, repositoryStore, taskStore, scheduler, spawner });
+  registerSlackRoutes(app, {
+    settingsStore,
+    userStore,
+    repositoryStore,
+    taskStore,
+    scheduler,
+    spawner,
+    workflowService: slackTaskWorkflowService
+  });
   registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, userStore, scheduler, spawner, auth });
 
   app.get("/health", async () => ({ ok: true }));
@@ -135,6 +156,9 @@ const bootstrap = async (): Promise<void> => {
     try {
       const event = JSON.parse(message) as RealtimeEvent;
       void webhookDeliveryService.handleRealtimeEvent(event);
+      void slackTaskWorkflowService.handleRealtimeEvent(event).catch((error) => {
+        app.log.error({ error }, "Failed to process Slack task workflow event");
+      });
       void auth.emitScopedRealtimeEvent(io, event);
       if (event.type === "settings:updated") {
         void slackSocketModeService.sync();

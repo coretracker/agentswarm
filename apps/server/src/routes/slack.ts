@@ -9,6 +9,7 @@ import { normalizeProvider } from "../lib/provider-config.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
+import type { SlackTaskWorkflowService } from "../services/slack-task-workflow-service.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { UserStore } from "../services/user-store.js";
@@ -641,6 +642,7 @@ const buildHelpMessage = (): string => {
   return [
     "Use `/agentswarm new` to open the task form. Optional prefills: `repo=<repoId> prompt=<task description> [title=<short title>] [type=build|ask] [mode=run_now|prepare_workspace|idle] [provider=codex|claude] [model=<model>] [effort=low|medium|high|max] [credentials=auto|profile|global]`.",
     "Use `/agentswarm task <id>` to inspect a task you can access.",
+    "In the task thread, use `build` or `ask` to switch task mode, `config taskType=build provider=claude model=... effort=...`, `accept`, `reject`, `archive`, or `delete`.",
     "If you have exactly one repository assigned in AgentSwarm, `repo=<repoId>` can be omitted."
   ].join("\n");
 };
@@ -674,6 +676,7 @@ export const registerSlackRoutes = (
     taskStore: TaskStore;
     scheduler: SchedulerService;
     spawner: SpawnerService;
+    workflowService: SlackTaskWorkflowService;
   }
 ): void => {
   app.post<{ Body: SlackCommandBody | Record<string, string> }>("/slack/commands", async (request, reply) => {
@@ -1016,6 +1019,10 @@ export const registerSlackRoutes = (
             repository,
             matchedUser.id
           );
+
+          await deps.workflowService.createTaskThread(createdTask, metadata.channelId ?? "").catch((error) => {
+            request.log.warn({ error }, "Failed to create Slack task thread");
+          });
 
           const startedTask = await applyTaskStartMode(
             createdTask,
