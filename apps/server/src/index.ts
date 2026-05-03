@@ -24,6 +24,7 @@ import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerImportRoutes } from "./routes/imports.js";
 import { registerSnippetRoutes } from "./routes/snippets.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
+import { SlackSocketModeService } from "./services/slack-socket-mode-service.js";
 
 const bootstrap = async (): Promise<void> => {
   const app = Fastify({ logger: true, bodyLimit: 35 * 1024 * 1024 });
@@ -83,6 +84,7 @@ const bootstrap = async (): Promise<void> => {
   const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
   const githubImportService = new GitHubImportService(settingsStore);
   const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
+  const slackSocketModeService = new SlackSocketModeService(app, settingsStore);
 
   await roleStore.ensureDefaultAdminRole();
   await userStore.ensureDefaultAdminUser({
@@ -113,6 +115,8 @@ const bootstrap = async (): Promise<void> => {
     repositoryStore
   });
 
+  await slackSocketModeService.sync();
+
   const io = new SocketIOServer(app.server, {
     cors: {
       origin: env.CORS_ORIGIN,
@@ -132,6 +136,9 @@ const bootstrap = async (): Promise<void> => {
       const event = JSON.parse(message) as RealtimeEvent;
       void webhookDeliveryService.handleRealtimeEvent(event);
       void auth.emitScopedRealtimeEvent(io, event);
+      if (event.type === "settings:updated") {
+        void slackSocketModeService.sync();
+      }
     } catch (error) {
       app.log.error({ error }, "Failed to parse event message");
     }
@@ -143,6 +150,7 @@ const bootstrap = async (): Promise<void> => {
   const close = async (): Promise<void> => {
     scheduler.stop();
     webhookDeliveryService.stop();
+    await slackSocketModeService.stop();
     io.close();
     await Promise.all([
       ...(postgresPool ? [postgresPool.end()] : []),

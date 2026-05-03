@@ -83,11 +83,13 @@ const updateCredentialsSchema = z.object({
   anthropicApiKey: z.string().trim().min(1).optional(),
   slackBotToken: z.string().trim().min(1).optional(),
   slackSigningSecret: z.string().trim().min(1).optional(),
+  slackSocketModeToken: z.string().trim().min(1).optional(),
   clearGithubToken: z.boolean().optional(),
   clearOpenAiApiKey: z.boolean().optional(),
   clearAnthropicApiKey: z.boolean().optional(),
   clearSlackBotToken: z.boolean().optional(),
-  clearSlackSigningSecret: z.boolean().optional()
+  clearSlackSigningSecret: z.boolean().optional(),
+  clearSlackSocketModeToken: z.boolean().optional()
 });
 
 export const registerSettingsRoutes = (

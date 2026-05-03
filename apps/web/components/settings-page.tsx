@@ -73,6 +73,7 @@ interface CredentialForm {
   anthropicApiKey?: string;
   slackBotToken?: string;
   slackSigningSecret?: string;
+  slackSocketModeToken?: string;
 }
 
 interface RoleFormValues {
@@ -84,7 +85,7 @@ interface RoleFormValues {
   allowedEfforts: ProviderProfile[];
 }
 
-type ClearCredentialTarget = "github" | "openai" | "anthropic" | "slackBot" | "slackSigningSecret";
+type ClearCredentialTarget = "github" | "openai" | "anthropic" | "slackBot" | "slackSigningSecret" | "slackSocketModeToken";
 
 const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
   { label: "stdio", value: "stdio" },
@@ -260,6 +261,14 @@ export function SettingsPage() {
         return;
       }
 
+      if (target === "slackSocketModeToken") {
+        const nextSettings = await api.updateCredentials({ clearSlackSocketModeToken: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["slackSocketModeToken"]);
+        message.success("Slack Socket Mode token cleared");
+        return;
+      }
+
       const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
       setSettings(nextSettings);
       credentialForm.resetFields(["anthropicApiKey"]);
@@ -282,6 +291,11 @@ export function SettingsPage() {
 
       if (target === "slackSigningSecret") {
         message.error(error instanceof Error ? error.message : "Failed to clear Slack signing secret");
+        return;
+      }
+
+      if (target === "slackSocketModeToken") {
+        message.error(error instanceof Error ? error.message : "Failed to clear Slack Socket Mode token");
         return;
       }
 
@@ -587,6 +601,9 @@ export function SettingsPage() {
                 <Tag color={settings.slackSigningSecretConfigured ? "green" : "default"}>
                   Slack Signing Secret {settings.slackSigningSecretConfigured ? "Configured" : "Missing"}
                 </Tag>
+                <Tag color={settings.slackSocketModeTokenConfigured ? "green" : "default"}>
+                  Slack Socket Mode Token {settings.slackSocketModeTokenConfigured ? "Configured" : "Missing"}
+                </Tag>
               </Space>
             ) : null
           }
@@ -610,7 +627,8 @@ export function SettingsPage() {
                   openaiApiKey: values.openaiApiKey?.trim() || undefined,
                   anthropicApiKey: values.anthropicApiKey?.trim() || undefined,
                   slackBotToken: values.slackBotToken?.trim() || undefined,
-                  slackSigningSecret: values.slackSigningSecret?.trim() || undefined
+                  slackSigningSecret: values.slackSigningSecret?.trim() || undefined,
+                  slackSocketModeToken: values.slackSocketModeToken?.trim() || undefined
                 });
                 credentialForm.resetFields();
                 setSettings(nextSettings);
@@ -649,6 +667,15 @@ export function SettingsPage() {
             >
               <Input.Password
                 placeholder={settings?.slackSigningSecretConfigured ? "Configured. Enter a new secret to replace it." : "paste Slack signing secret"}
+              />
+            </Form.Item>
+            <Form.Item
+              name="slackSocketModeToken"
+              label="Slack Socket Mode Token"
+              extra="Used to connect Slack Socket Mode when you do not want public request URLs."
+            >
+              <Input.Password
+                placeholder={settings?.slackSocketModeTokenConfigured ? "Configured. Enter a new token to replace it." : "xapp-..."}
               />
             </Form.Item>
             <Space wrap>
@@ -723,6 +750,20 @@ export function SettingsPage() {
               >
                 <Button danger loading={savingCredentials} disabled={!canEditSettings}>
                   Clear Slack Signing Secret
+                </Button>
+              </Popconfirm>
+              <Popconfirm
+                title="Clear Slack Socket Mode token?"
+                description="This removes the stored Slack Socket Mode token from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
+                disabled={!canEditSettings}
+                onConfirm={() => handleClearCredential("slackSocketModeToken")}
+              >
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear Slack Socket Mode Token
                 </Button>
               </Popconfirm>
             </Space>

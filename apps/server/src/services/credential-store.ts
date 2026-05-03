@@ -15,6 +15,7 @@ interface StoredCredentials {
   anthropicApiKey: string | null;
   slackBotToken: string | null;
   slackSigningSecret: string | null;
+  slackSocketModeToken: string | null;
   codexAuthJsonByUserId: Record<string, string>;
 }
 
@@ -31,6 +32,7 @@ export interface RuntimeCredentials {
   anthropicApiKey: string | null;
   slackBotToken: string | null;
   slackSigningSecret: string | null;
+  slackSocketModeToken: string | null;
   codexAuthJson?: string | null;
 }
 
@@ -40,6 +42,7 @@ export interface CredentialStatus {
   anthropicApiKeyConfigured: boolean;
   slackBotTokenConfigured: boolean;
   slackSigningSecretConfigured: boolean;
+  slackSocketModeTokenConfigured: boolean;
 }
 
 export interface CredentialStore {
@@ -131,6 +134,7 @@ export class RedisCredentialStore implements CredentialStore {
         anthropicApiKey: null,
         slackBotToken: null,
         slackSigningSecret: null,
+        slackSocketModeToken: null,
         codexAuthJsonByUserId: {}
       };
     }
@@ -146,6 +150,7 @@ export class RedisCredentialStore implements CredentialStore {
         anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
         slackBotToken: parsed.slackBotToken?.trim() || null,
         slackSigningSecret: parsed.slackSigningSecret?.trim() || null,
+        slackSocketModeToken: parsed.slackSocketModeToken?.trim() || null,
         codexAuthJsonByUserId: this.normalizeCodexAuthJsonByUserId(parsed.codexAuthJsonByUserId)
       };
     } catch {
@@ -155,6 +160,7 @@ export class RedisCredentialStore implements CredentialStore {
         anthropicApiKey: null,
         slackBotToken: null,
         slackSigningSecret: null,
+        slackSocketModeToken: null,
         codexAuthJsonByUserId: {}
       };
     }
@@ -167,6 +173,7 @@ export class RedisCredentialStore implements CredentialStore {
       !next.anthropicApiKey &&
       !next.slackBotToken &&
       !next.slackSigningSecret &&
+      !next.slackSocketModeToken &&
       Object.keys(next.codexAuthJsonByUserId).length === 0
     ) {
       await this.redis.del(CREDENTIALS_KEY);
@@ -185,6 +192,7 @@ export class RedisCredentialStore implements CredentialStore {
       anthropicApiKey: current.anthropicApiKey,
       slackBotToken: current.slackBotToken,
       slackSigningSecret: current.slackSigningSecret,
+      slackSocketModeToken: current.slackSocketModeToken,
       codexAuthJson: null
     };
   }
@@ -196,7 +204,8 @@ export class RedisCredentialStore implements CredentialStore {
       openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
       anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey),
       slackBotTokenConfigured: Boolean(credentials.slackBotToken),
-      slackSigningSecretConfigured: Boolean(credentials.slackSigningSecret)
+      slackSigningSecretConfigured: Boolean(credentials.slackSigningSecret),
+      slackSocketModeTokenConfigured: Boolean(credentials.slackSocketModeToken)
     };
   }
 
@@ -228,6 +237,11 @@ export class RedisCredentialStore implements CredentialStore {
         : input.slackSigningSecret?.trim()
           ? input.slackSigningSecret.trim()
           : current.slackSigningSecret,
+      slackSocketModeToken: input.clearSlackSocketModeToken
+        ? null
+        : input.slackSocketModeToken?.trim()
+          ? input.slackSocketModeToken.trim()
+          : current.slackSocketModeToken,
       codexAuthJsonByUserId: current.codexAuthJsonByUserId
     };
     await this.writeStoredCredentials(next);
@@ -352,6 +366,7 @@ export class PostgresCredentialStore implements CredentialStore {
         anthropicApiKey: null,
         slackBotToken: null,
         slackSigningSecret: null,
+        slackSocketModeToken: null,
         codexAuthJsonByUserId: {}
       };
     }
@@ -367,6 +382,7 @@ export class PostgresCredentialStore implements CredentialStore {
         anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
         slackBotToken: parsed.slackBotToken?.trim() || null,
         slackSigningSecret: parsed.slackSigningSecret?.trim() || null,
+        slackSocketModeToken: parsed.slackSocketModeToken?.trim() || null,
         codexAuthJsonByUserId: this.normalizeCodexAuthJsonByUserId(parsed.codexAuthJsonByUserId)
       };
     } catch {
@@ -388,6 +404,7 @@ export class PostgresCredentialStore implements CredentialStore {
       !next.anthropicApiKey &&
       !next.slackBotToken &&
       !next.slackSigningSecret &&
+      !next.slackSocketModeToken &&
       Object.keys(next.codexAuthJsonByUserId).length === 0
     ) {
       await this.pool.query("DELETE FROM credentials WHERE singleton_id = 1");
@@ -420,6 +437,7 @@ export class PostgresCredentialStore implements CredentialStore {
       anthropicApiKey: current.anthropicApiKey,
       slackBotToken: current.slackBotToken,
       slackSigningSecret: current.slackSigningSecret,
+      slackSocketModeToken: current.slackSocketModeToken,
       codexAuthJson: null
     };
   }
@@ -431,7 +449,8 @@ export class PostgresCredentialStore implements CredentialStore {
       openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
       anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey),
       slackBotTokenConfigured: Boolean(credentials.slackBotToken),
-      slackSigningSecretConfigured: Boolean(credentials.slackSigningSecret)
+      slackSigningSecretConfigured: Boolean(credentials.slackSigningSecret),
+      slackSocketModeTokenConfigured: Boolean(credentials.slackSocketModeToken)
     };
   }
 
@@ -463,6 +482,11 @@ export class PostgresCredentialStore implements CredentialStore {
         : input.slackSigningSecret?.trim()
           ? input.slackSigningSecret.trim()
           : current.slackSigningSecret,
+      slackSocketModeToken: input.clearSlackSocketModeToken
+        ? null
+        : input.slackSocketModeToken?.trim()
+          ? input.slackSocketModeToken.trim()
+          : current.slackSocketModeToken,
       codexAuthJsonByUserId: current.codexAuthJsonByUserId
     };
     await this.writeStoredCredentials(next);

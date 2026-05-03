@@ -46,6 +46,7 @@ const defaultSettings: SystemSettings = {
   anthropicApiKeyConfigured: false,
   slackBotTokenConfigured: false,
   slackSigningSecretConfigured: false,
+  slackSocketModeTokenConfigured: false,
   codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.4",
   codexDefaultEffort: DEFAULT_CODEX_EFFORT,
   claudeDefaultModel: defaultModelForProvider("claude", DEFAULT_CLAUDE_EFFORT) ?? "claude-sonnet-4-5",

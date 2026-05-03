@@ -604,6 +604,7 @@ export interface SystemSettings {
   anthropicApiKeyConfigured: boolean;
   slackBotTokenConfigured: boolean;
   slackSigningSecretConfigured: boolean;
+  slackSocketModeTokenConfigured: boolean;
   codexDefaultModel: string;
   codexDefaultEffort: ProviderProfile;
   claudeDefaultModel: string;
@@ -922,11 +923,13 @@ export interface UpdateCredentialSettingsInput {
   anthropicApiKey?: string;
   slackBotToken?: string;
   slackSigningSecret?: string;
+  slackSocketModeToken?: string;
   clearGithubToken?: boolean;
   clearOpenAiApiKey?: boolean;
   clearAnthropicApiKey?: boolean;
   clearSlackBotToken?: boolean;
   clearSlackSigningSecret?: boolean;
+  clearSlackSocketModeToken?: boolean;
 }
 
 export interface UpdateAuthProfileInput {
