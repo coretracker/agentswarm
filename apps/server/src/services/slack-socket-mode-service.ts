@@ -115,6 +115,20 @@ const parseResponsePayload = (body: string): unknown | null => {
   }
 };
 
+const summarizeEnvelope = (event: SlackSocketModeEnvelope): Record<string, unknown> => {
+  const payload = getEnvelopeRecord(event.payload);
+  const body = getEnvelopeRecord(event.body);
+  const bodyPayload = body ? getEnvelopeRecord(body.payload) : null;
+  const eventPayload = payload ?? bodyPayload ?? body;
+  const nestedEvent = eventPayload ? getEnvelopeRecord(eventPayload.event) : null;
+
+  return {
+    payloadType: typeof eventPayload?.type === "string" ? eventPayload.type : null,
+    eventType: typeof nestedEvent?.type === "string" ? nestedEvent.type : null,
+    eventSubtype: typeof nestedEvent?.subtype === "string" ? nestedEvent.subtype : null
+  };
+};
+
 export class SlackSocketModeService {
   private client: SocketModeClient | null = null;
   private syncInFlight: Promise<void> | null = null;
@@ -165,12 +179,15 @@ export class SlackSocketModeService {
         on: (event: string, listener: (...args: any[]) => void) => void;
       };
       registerEvent.on("slash_commands", (event: SlackSocketModeEnvelope) => {
+        void this.writeSlackEventLog("socket_mode:envelope:slash_commands", summarizeEnvelope(event));
         void this.handleSlashCommand(event, signingSecret);
       });
       registerEvent.on("interactive", (event: SlackSocketModeEnvelope) => {
+        void this.writeSlackEventLog("socket_mode:envelope:interactive", summarizeEnvelope(event));
         void this.handleInteractive(event, signingSecret);
       });
       registerEvent.on("events_api", (event: SlackSocketModeEnvelope) => {
+        void this.writeSlackEventLog("socket_mode:envelope:events_api", summarizeEnvelope(event));
         void this.handleEventsApi(event);
       });
       registerEvent.on("error", (error: unknown) => {
