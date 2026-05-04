@@ -33,7 +33,12 @@ import {
   codexReasoningEffortForProfile,
   defaultModelForProvider
 } from "./provider-config.js";
-import { collectMcpServerEnvEntries, serializeClaudeMcpConfig, serializeCodexMcpConfig } from "./mcp-config.js";
+import {
+  collectMcpServerEnvEntries,
+  collectMissingMcpServerBearerTokenEnvVars,
+  serializeClaudeMcpConfig,
+  serializeCodexMcpConfig
+} from "./mcp-config.js";
 import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
 import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
 import { resolveTaskGitCommitIdentity, type GitCommitIdentity } from "./task-git-identity.js";
@@ -85,7 +90,13 @@ function shellSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
-function buildCodexStartScript(configB64: string, model: string, reasoningEffort: string, preferAuthJson: boolean): string {
+function buildCodexStartScript(
+  configB64: string,
+  model: string,
+  reasoningEffort: string,
+  preferAuthJson: boolean,
+  missingMcpBearerEnvVars: string[]
+): string {
   const codexArgs = [
     "--dangerously-bypass-approvals-and-sandbox",
     '-C "$TASK_INTERACTIVE_WORKSPACE"',
@@ -102,6 +113,13 @@ function buildCodexStartScript(configB64: string, model: string, reasoningEffort
     : 'printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file';
 
   return [
+    ...(missingMcpBearerEnvVars.length > 0
+      ? [
+          `echo ${shellSingleQuote(
+            `[agentswarm] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
+          )} >&2`
+        ]
+      : []),
     "mkdir -p ~/.codex",
     `printf '%s' ${shellSingleQuote(configB64)} | base64 -d > ~/.codex/config.toml`,
     authBootstrap,
@@ -120,7 +138,12 @@ function buildClaudeSettingsJson(): string {
   });
 }
 
-function buildClaudeStartScript(model: string, settingsJson: string, mcpConfigB64: string): string {
+function buildClaudeStartScript(
+  model: string,
+  settingsJson: string,
+  mcpConfigB64: string,
+  missingMcpBearerEnvVars: string[]
+): string {
   const claudeArgs = [
     "--model",
     shellSingleQuote(model),
@@ -131,6 +154,13 @@ function buildClaudeStartScript(model: string, settingsJson: string, mcpConfigB6
   ];
 
   return [
+    ...(missingMcpBearerEnvVars.length > 0
+      ? [
+          `echo ${shellSingleQuote(
+            `[agentswarm] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
+          )} >&2`
+        ]
+      : []),
     'mkdir -p "$HOME/.claude" "$HOME/.local/bin"',
     'if [ ! -x "$HOME/.local/bin/claude" ] && [ -x "/opt/claude-code/.local/bin/claude" ]; then ln -sf "/opt/claude-code/.local/bin/claude" "$HOME/.local/bin/claude"; fi',
     'CLAUDE_BIN="$HOME/.local/bin/claude"',
@@ -218,6 +248,7 @@ function resolveInteractiveTerminalRuntimeConfig(
   credentials: InteractiveRuntimeCredentials
 ): InteractiveTerminalRuntimeConfig {
   const model = resolveInteractiveTerminalModel(task);
+  const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(settings.mcpServers);
 
   if (task.provider === "claude") {
     const image = env.CLAUDE_INTERACTIVE_IMAGE?.trim();
@@ -255,7 +286,8 @@ function resolveInteractiveTerminalRuntimeConfig(
       startScript: buildClaudeStartScript(
         model,
         buildClaudeSettingsJson(),
-        Buffer.from(serializeClaudeMcpConfig(settings.mcpServers), "utf8").toString("base64")
+        Buffer.from(serializeClaudeMcpConfig(settings.mcpServers), "utf8").toString("base64"),
+        missingMcpBearerEnvVars
       )
     };
   }
@@ -307,7 +339,8 @@ function resolveInteractiveTerminalRuntimeConfig(
       ).toString("base64"),
       model,
       codexReasoningEffortForProfile(task.providerProfile),
-      useCodexAuthJson
+      useCodexAuthJson,
+      missingMcpBearerEnvVars
     )
   };
 }

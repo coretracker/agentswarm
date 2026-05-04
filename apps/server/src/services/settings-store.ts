@@ -81,6 +81,16 @@ const normalizeMcpServerName = (value: string | undefined): string =>
 const normalizeMcpServerArgs = (value: string[] | undefined): string[] =>
   (value ?? []).map((item) => item.trim()).filter(Boolean);
 
+const MCP_BEARER_TOKEN_ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+const normalizeMcpBearerTokenEnvVar = (value: string | null | undefined): string | null => {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed || !MCP_BEARER_TOKEN_ENV_VAR_PATTERN.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+};
+
 const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerConfig[] => {
   const normalized: McpServerConfig[] = [];
   const seenNames = new Set<string>();
@@ -107,7 +117,7 @@ const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerCon
       normalized.push({
         ...baseServer,
         url,
-        bearerTokenEnvVar: server.bearerTokenEnvVar?.trim() || null
+        bearerTokenEnvVar: normalizeMcpBearerTokenEnvVar(server.bearerTokenEnvVar)
       });
     } else {
       const command = server.command?.trim() || null;

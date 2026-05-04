@@ -58,7 +58,14 @@ const mcpServerSchema = z.discriminatedUnion("transport", [
     enabled: z.boolean(),
     transport: z.literal("http"),
     url: z.string().trim().url(),
-    bearerTokenEnvVar: z.string().trim().min(1).max(120).nullable().optional()
+    bearerTokenEnvVar: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
+      .nullable()
+      .optional()
   })
 ]);
 

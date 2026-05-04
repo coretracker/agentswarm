@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  collectMissingMcpServerBearerTokenEnvVars,
   collectMcpServerEnvEntries,
   serializeClaudeMcpConfig,
   serializeCodexMcpConfig
@@ -120,5 +121,59 @@ describe("collectMcpServerEnvEntries", () => {
     );
 
     assert.deepEqual(envEntries, [["MCP_TOKEN", "secret"]]);
+  });
+
+  it("ignores invalid bearer token env var names", () => {
+    const envEntries = collectMcpServerEnvEntries(
+      [
+        {
+          name: "remote",
+          enabled: true,
+          transport: "http",
+          url: "https://example.com/mcp",
+          bearerTokenEnvVar: "invalid-token-name"
+        }
+      ],
+      {
+        "invalid-token-name": "secret"
+      }
+    );
+
+    assert.deepEqual(envEntries, []);
+  });
+});
+
+describe("collectMissingMcpServerBearerTokenEnvVars", () => {
+  it("returns missing runtime env vars for enabled servers", () => {
+    const missing = collectMissingMcpServerBearerTokenEnvVars(
+      [
+        {
+          name: "remote-a",
+          enabled: true,
+          transport: "http",
+          url: "https://example.com/a",
+          bearerTokenEnvVar: "TOKEN_A"
+        },
+        {
+          name: "remote-b",
+          enabled: true,
+          transport: "http",
+          url: "https://example.com/b",
+          bearerTokenEnvVar: "TOKEN_B"
+        },
+        {
+          name: "disabled",
+          enabled: false,
+          transport: "http",
+          url: "https://example.com/disabled",
+          bearerTokenEnvVar: "TOKEN_DISABLED"
+        }
+      ],
+      {
+        TOKEN_A: "present"
+      }
+    );
+
+    assert.deepEqual(missing, ["TOKEN_B"]);
   });
 });

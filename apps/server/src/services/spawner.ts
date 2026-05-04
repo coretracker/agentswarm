@@ -41,7 +41,7 @@ import { installManagedGitHooks } from "../lib/managed-git-hooks.js";
 import { reconcileTaskStatusWithPendingCheckpoint, resolveTaskReadyStatus } from "../lib/task-status.js";
 import { buildTaskCommitSubject, formatCommitSubject } from "../lib/task-commit-subject.js";
 import { parsePostflightConfig, postflightAppliesToTask, type PostflightConfig } from "../lib/postflight-config.js";
-import { collectMcpServerEnvEntries } from "../lib/mcp-config.js";
+import { collectMcpServerEnvEntries, collectMissingMcpServerBearerTokenEnvVars } from "../lib/mcp-config.js";
 import {
   resolveTaskPromptAttachmentRoot,
   resolveTaskPromptAttachmentServerPath
@@ -3993,6 +3993,7 @@ export class SpawnerService {
         await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
       }
       const runtimeMcpEnv = this.collectRuntimeMcpEnv(settings.mcpServers);
+      const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(settings.mcpServers, process.env);
       const providerConfigPath = path.join(payloadDir, providerDefinition.configFileName);
       const resultMarkdownPath = path.join(payloadDir, "result.md");
       const resultJsonPath = path.join(payloadDir, "result.json");
@@ -4066,6 +4067,11 @@ export class SpawnerService {
       await appendRunLog(
         `Spawner: runtime config includes provider=${task.provider}, profile=${task.providerProfile}, and ${settings.mcpServers.length} MCP server${settings.mcpServers.length === 1 ? "" : "s"}.`
       );
+      if (missingMcpBearerEnvVars.length > 0) {
+        await appendRunLog(
+          `Spawner: warning - missing MCP bearer token env var${missingMcpBearerEnvVars.length === 1 ? "" : "s"}: ${missingMcpBearerEnvVars.join(", ")}`
+        );
+      }
 
       this.ensureTaskNotCancelled(task.id);
 

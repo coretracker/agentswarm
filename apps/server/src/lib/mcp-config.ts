@@ -1,8 +1,17 @@
 import type { McpServerConfig } from "@agentswarm/shared-types";
 
 const tomlString = (value: string): string => JSON.stringify(value);
+const ENV_VAR_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const enabledMcpServers = (servers: McpServerConfig[]): McpServerConfig[] => servers.filter((server) => server.enabled);
+
+const validEnvVarName = (value: string): string | null => {
+  const trimmed = value.trim();
+  if (!trimmed || !ENV_VAR_NAME_PATTERN.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+};
 
 export function serializeCodexMcpConfig(servers: McpServerConfig[]): string {
   const enabledServers = enabledMcpServers(servers);
@@ -82,7 +91,7 @@ export function collectMcpServerEnvEntries(
   const envEntries: Array<[string, string]> = [];
 
   for (const server of enabledMcpServers(servers)) {
-    const envVarName = server.bearerTokenEnvVar?.trim();
+    const envVarName = server.bearerTokenEnvVar ? validEnvVarName(server.bearerTokenEnvVar) : null;
     if (!envVarName) {
       continue;
     }
@@ -94,4 +103,25 @@ export function collectMcpServerEnvEntries(
   }
 
   return envEntries;
+}
+
+export function collectMissingMcpServerBearerTokenEnvVars(
+  servers: McpServerConfig[],
+  runtimeEnv: NodeJS.ProcessEnv = process.env
+): string[] {
+  const missing = new Set<string>();
+
+  for (const server of enabledMcpServers(servers)) {
+    const envVarName = server.bearerTokenEnvVar ? validEnvVarName(server.bearerTokenEnvVar) : null;
+    if (!envVarName) {
+      continue;
+    }
+
+    const value = runtimeEnv[envVarName];
+    if (typeof value !== "string" || value.length === 0) {
+      missing.add(envVarName);
+    }
+  }
+
+  return [...missing];
 }

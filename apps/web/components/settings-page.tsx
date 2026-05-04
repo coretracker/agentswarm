@@ -486,7 +486,26 @@ export function SettingsPage() {
                                   <Form.Item name={[field.name, "url"]} label="URL" rules={[{ required: true, whitespace: true }]}>
                                     <Input placeholder="https://example.com/mcp" />
                                   </Form.Item>
-                                  <Form.Item name={[field.name, "bearerTokenEnvVar"]} label="Bearer Token Env Var">
+                                  <Form.Item
+                                    name={[field.name, "bearerTokenEnvVar"]}
+                                    label="Bearer Token Env Var"
+                                    extra="Environment variable name available to the server process (for example MCP_TOKEN)."
+                                    rules={[
+                                      {
+                                        validator: (_rule, value?: string) => {
+                                          if (!value || value.trim().length === 0) {
+                                            return Promise.resolve();
+                                          }
+
+                                          return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.trim())
+                                            ? Promise.resolve()
+                                            : Promise.reject(
+                                                new Error("Use a valid environment variable name (letters, numbers, underscore).")
+                                              );
+                                        }
+                                      }
+                                    ]}
+                                  >
                                     <Input placeholder="MY_MCP_TOKEN" />
                                   </Form.Item>
                                 </>
