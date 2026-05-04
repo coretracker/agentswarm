@@ -5,11 +5,12 @@ import type { SettingsStore } from "./settings-store.js";
 import type { SlackTaskWorkflowService } from "./slack-task-workflow-service.js";
 
 type SlackSocketModeEnvelope = {
+  payload?: Record<string, unknown>;
   body?: Record<string, unknown>;
   ack: (payload?: unknown) => Promise<void>;
 };
 
-type SlackSocketModeEventsApiBody = {
+type SlackSocketModeEventsApiPayload = {
   type?: string;
   event?: {
     type?: string;
@@ -21,6 +22,26 @@ type SlackSocketModeEventsApiBody = {
     bot_id?: string;
     subtype?: string;
   };
+};
+
+const getEnvelopeRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+
+const getEventsApiPayload = (event: SlackSocketModeEnvelope): SlackSocketModeEventsApiPayload | null => {
+  const payloadRecord = getEnvelopeRecord(event.payload);
+  if (payloadRecord) {
+    return payloadRecord as SlackSocketModeEventsApiPayload;
+  }
+
+  const bodyRecord = getEnvelopeRecord(event.body);
+  if (!bodyRecord) {
+    return null;
+  }
+  const nestedPayload = getEnvelopeRecord(bodyRecord.payload);
+  if (nestedPayload) {
+    return nestedPayload as SlackSocketModeEventsApiPayload;
+  }
+  return bodyRecord as SlackSocketModeEventsApiPayload;
 };
 
 const SLACK_SIGNATURE_VERSION = "v0";
@@ -214,11 +235,12 @@ export class SlackSocketModeService {
 
   private async handleEventsApi(event: SlackSocketModeEnvelope): Promise<void> {
     try {
-      const body = event.body as SlackSocketModeEventsApiBody | undefined;
       await event.ack({});
 
-      const slackEvent = body?.event;
+      const payload = getEventsApiPayload(event);
+      const slackEvent = payload?.event;
       if (!slackEvent || slackEvent.type !== "message") {
+        this.app.log.debug({ payloadType: payload?.type }, "Ignored Slack events_api event");
         return;
       }
 
