@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { FormInstance } from "antd";
 import type {
   AgentProvider,
+  CodexCredentialSource,
   CreateTaskPromptAttachmentInput,
   GitHubBranchReference,
   GitHubIssueReference,
@@ -38,6 +39,7 @@ export type TaskDefinitionFormValues = {
   provider?: AgentProvider;
   model?: string;
   providerProfile?: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
   issueNumber?: number;
@@ -60,6 +62,12 @@ const providerOptions = (
   { label: getAgentProviderLabel("claude"), value: "claude", disabled: !hasAnthropic }
 ];
 
+const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
+  { label: "Auto (Profile then Global)", value: "auto" },
+  { label: "Profile auth.json only", value: "profile" },
+  { label: "Global OpenAI key only", value: "global" }
+];
+
 const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSettings | null): string =>
   provider === "claude"
     ? settings?.claudeDefaultModel ?? getDefaultModelForProvider(provider)
@@ -76,6 +84,7 @@ export const getTaskDefinitionInitialValues = (settings?: SystemSettings | null)
     provider,
     model: getProviderDefaultModel(provider, settings),
     providerProfile: getProviderDefaultProfile(provider, settings),
+    codexCredentialSource: "auto",
     branchStrategy: "feature_branch",
     includeComments: true,
     startMode: "prepare_workspace"
@@ -106,6 +115,9 @@ export const buildTaskDefinitionInput = (
   values: TaskDefinitionFormValues,
   promptAttachments: CreateTaskPromptAttachmentInput[] = []
 ): TaskDefinitionInput => {
+  const provider = values.provider ?? "codex";
+  const codexCredentialSource = provider === "codex" ? (values.codexCredentialSource ?? "auto") : undefined;
+
   if (values.sourceType === "blank") {
     return {
       sourceType: "blank",
@@ -116,9 +128,10 @@ export const buildTaskDefinitionInput = (
       ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
       startMode: values.startMode ?? "run_now",
       taskType: values.taskType ?? "build",
-      provider: values.provider ?? "codex",
+      provider,
       model: values.model?.trim() ?? "",
       providerProfile: values.providerProfile ?? "high",
+      ...(codexCredentialSource ? { codexCredentialSource } : {}),
       baseBranch: values.baseBranch?.trim() ?? "",
       branchStrategy: values.branchStrategy ?? "feature_branch"
     };
@@ -134,9 +147,10 @@ export const buildTaskDefinitionInput = (
       includeComments: values.includeComments ?? true,
       startMode: values.startMode ?? "run_now",
       taskType: values.taskType === "build" || values.taskType === "ask" ? values.taskType : "build",
-      provider: values.provider ?? "codex",
+      provider,
       model: values.model?.trim() ?? "",
       providerProfile: values.providerProfile ?? "high",
+      ...(codexCredentialSource ? { codexCredentialSource } : {}),
       baseBranch: values.baseBranch?.trim() ?? "",
       branchStrategy: values.branchStrategy ?? "feature_branch"
     };
@@ -148,9 +162,10 @@ export const buildTaskDefinitionInput = (
     notes: values.notes?.trim() || undefined,
     repoId: values.repoId ?? "",
     pullRequestNumber: values.pullRequestNumber ?? 0,
-    provider: values.provider ?? "codex",
+    provider,
     model: values.model?.trim() ?? "",
-    providerProfile: values.providerProfile ?? "high"
+    providerProfile: values.providerProfile ?? "high",
+    ...(codexCredentialSource ? { codexCredentialSource } : {})
   };
 };
 
@@ -307,6 +322,17 @@ export function TaskDefinitionFields({
     }
     form.setFieldValue("providerProfile", allowedEffortOptions[0]?.value);
   }, [allowedEffortOptions, form]);
+
+  useEffect(() => {
+    if (selectedProvider !== "codex") {
+      return;
+    }
+    const current = form.getFieldValue("codexCredentialSource") as CodexCredentialSource | undefined;
+    if (current === "auto" || current === "profile" || current === "global") {
+      return;
+    }
+    form.setFieldValue("codexCredentialSource", "auto");
+  }, [form, selectedProvider]);
 
   useEffect(() => {
     if (selectedSourceType !== "blank") {
@@ -725,6 +751,12 @@ export function TaskDefinitionFields({
           <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
             <Select options={allowedEffortOptions} />
           </Form.Item>
+
+          {selectedProvider === "codex" ? (
+            <Form.Item name="codexCredentialSource" label="Codex Credential Source" rules={[{ required: true }]}>
+              <Select options={codexCredentialSourceOptions} />
+            </Form.Item>
+          ) : null}
 
           {providerMissingCredentials ? (
             <Alert

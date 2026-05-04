@@ -36,6 +36,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
       provider: definition.provider,
       providerProfile: definition.providerProfile,
       modelOverride: definition.model || undefined,
+      codexCredentialSource: definition.codexCredentialSource,
       baseBranch: definition.baseBranch,
       branchStrategy: definition.branchStrategy,
       startMode: definition.startMode ?? "run_now"
@@ -50,7 +51,8 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
       title: definition.title,
       provider: definition.provider,
       providerProfile: definition.providerProfile,
-      modelOverride: definition.model || undefined
+      modelOverride: definition.model || undefined,
+      codexCredentialSource: definition.codexCredentialSource
     });
   }
 
@@ -65,6 +67,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
     provider: definition.provider,
     providerProfile: definition.providerProfile,
     modelOverride: definition.model || undefined,
+    codexCredentialSource: definition.codexCredentialSource,
     baseBranch: definition.baseBranch,
     branchStrategy: definition.branchStrategy
   });

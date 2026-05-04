@@ -663,6 +663,7 @@ export interface BlankTaskDefinitionInput {
   provider: AgentProvider;
   model: string;
   providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
 }
@@ -679,6 +680,7 @@ export interface IssueTaskDefinitionInput {
   provider: AgentProvider;
   model: string;
   providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
 }
@@ -692,6 +694,7 @@ export interface PullRequestTaskDefinitionInput {
   provider: AgentProvider;
   model: string;
   providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
 }
 
 export type TaskDefinitionInput = BlankTaskDefinitionInput | IssueTaskDefinitionInput | PullRequestTaskDefinitionInput;
