@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { open, type FileHandle } from "node:fs/promises";
+import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import type { AgentProvider } from "@agentswarm/shared-types";
 import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
@@ -100,7 +102,40 @@ export const registerSettingsRoutes = (
     auth: AuthService;
   }
 ): void => {
+  const slackLogPath = process.env.SLACK_EVENT_LOG_PATH?.trim() || path.resolve(process.cwd(), "logs", "slack-events.log");
+  const slackLogMaxBytes = 200 * 1024;
+
   app.get("/settings", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => deps.settingsStore.getSettings());
+
+  app.get("/settings/slack-logs", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => {
+    let handle: FileHandle | null = null;
+    try {
+      handle = await open(slackLogPath, "r");
+      const stats = await handle.stat();
+      const bytesToRead = Math.min(stats.size, slackLogMaxBytes);
+      const buffer = Buffer.alloc(bytesToRead);
+
+      if (bytesToRead > 0) {
+        await handle.read(buffer, 0, bytesToRead, stats.size - bytesToRead);
+      }
+
+      return {
+        path: slackLogPath,
+        exists: true,
+        truncated: stats.size > bytesToRead,
+        content: buffer.toString("utf8")
+      };
+    } catch {
+      return {
+        path: slackLogPath,
+        exists: false,
+        truncated: false,
+        content: ""
+      };
+    } finally {
+      await handle?.close();
+    }
+  });
 
   app.get("/settings/models", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async (request, reply) => {
     const providerParam = (request.query as Record<string, string>).provider as AgentProvider | undefined;

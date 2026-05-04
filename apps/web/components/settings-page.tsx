@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type {
   AgentProvider,
   DataStoreBackend,
@@ -35,11 +35,12 @@ import {
   Space,
   Switch,
   Table,
+  Tabs,
   Tag,
   Tooltip,
   Typography
 } from "antd";
-import { api } from "../src/api/client";
+import { api, type SlackLogsResponse } from "../src/api/client";
 import { useSettings } from "../src/hooks/useSettings";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useAuth } from "./auth-provider";
@@ -170,7 +171,11 @@ export function SettingsPage() {
   const [savingRole, setSavingRole] = useState(false);
   const [roleModalOpen, setRoleModalOpen] = useState(false);
   const [editingRole, setEditingRole] = useState<Role | null>(null);
+  const [activeTab, setActiveTab] = useState<"general" | "slackLogs">("general");
+  const [slackLogs, setSlackLogs] = useState<SlackLogsResponse | null>(null);
+  const [slackLogsLoading, setSlackLogsLoading] = useState(false);
   const canEditSettings = can("settings:edit");
+  const canReadSettings = can("settings:read");
   const { models: codexModels, loading: codexModelsLoading } = useProviderModels("codex");
   const { models: claudeModels, loading: claudeModelsLoading } = useProviderModels("claude");
   const allModelOptions = Array.from(
@@ -214,6 +219,17 @@ export function SettingsPage() {
     }
   };
 
+  const loadSlackLogs = useCallback(async (): Promise<void> => {
+    setSlackLogsLoading(true);
+    try {
+      setSlackLogs(await api.getSlackLogs());
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to load Slack logs");
+    } finally {
+      setSlackLogsLoading(false);
+    }
+  }, [message]);
+
   useEffect(() => {
     if (!settings) {
       return;
@@ -225,6 +241,13 @@ export function SettingsPage() {
   useEffect(() => {
     void loadRoles();
   }, []);
+
+  useEffect(() => {
+    if (!canReadSettings || activeTab !== "slackLogs" || slackLogsLoading || slackLogs) {
+      return;
+    }
+    void loadSlackLogs();
+  }, [activeTab, canReadSettings, loadSlackLogs, slackLogs, slackLogsLoading]);
 
   const handleClearCredential = async (target: ClearCredentialTarget): Promise<void> => {
     setSavingCredentials(true);
@@ -317,16 +340,27 @@ export function SettingsPage() {
           </Typography.Text>
         </Flex>
 
-        {!canEditSettings ? (
-          <Alert
-            type="info"
-            showIcon
-            message="Read-only access"
-            description="This account can view system configuration and roles, but it cannot change them."
-          />
-        ) : null}
+        <Tabs
+          activeKey={activeTab}
+          onChange={(value) => setActiveTab(value as "general" | "slackLogs")}
+          items={[
+            { key: "general", label: "General" },
+            { key: "slackLogs", label: "Slack Logs" }
+          ]}
+        />
 
-        <Card bordered={false} loading={loading} title="Data Stores">
+        {activeTab === "general" ? (
+          <>
+            {!canEditSettings ? (
+              <Alert
+                type="info"
+                showIcon
+                message="Read-only access"
+                description="This account can view system configuration and roles, but it cannot change them."
+              />
+            ) : null}
+
+            <Card bordered={false} loading={loading} title="Data Stores">
           <Space direction="vertical" size={16} style={{ width: "100%" }}>
             <Alert
               type="info"
@@ -877,6 +911,41 @@ export function SettingsPage() {
             ]}
           />
         </Card>
+          </>
+        ) : (
+          <Card
+            bordered={false}
+            title="Slack Event Logs"
+            extra={
+              <Button onClick={() => void loadSlackLogs()} loading={slackLogsLoading} disabled={!canReadSettings}>
+                Refresh
+              </Button>
+            }
+          >
+            {!canReadSettings ? (
+              <Alert
+                type="warning"
+                showIcon
+                message="Missing permission"
+                description="This account needs settings:read to view Slack logs."
+              />
+            ) : (
+              <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                <Typography.Text type="secondary">
+                  {slackLogs?.exists
+                    ? `Showing ${slackLogs.truncated ? "tail of " : ""}${slackLogs.path}`
+                    : `No log file found at ${slackLogs?.path ?? "logs/slack-events.log"}`}
+                </Typography.Text>
+                <Input.TextArea
+                  readOnly
+                  value={slackLogs?.content ?? ""}
+                  rows={26}
+                  placeholder={slackLogsLoading ? "Loading logs..." : "No logs available yet."}
+                />
+              </Space>
+            )}
+          </Card>
+        )}
       </Space>
 
       <Modal

@@ -65,6 +65,13 @@ export interface ProviderModelsResponse {
   source: "api" | "static";
 }
 
+export interface SlackLogsResponse {
+  path: string;
+  exists: boolean;
+  truncated: boolean;
+  content: string;
+}
+
 export interface TaskInteractiveTerminalStatus {
   available: boolean;
   reason?: string;
@@ -441,6 +448,7 @@ export const api = {
       method: "DELETE"
     }),
   getSettings: () => request<SystemSettings>("/settings"),
+  getSlackLogs: () => request<SlackLogsResponse>("/settings/slack-logs"),
   listModels: (provider: AgentProvider) =>
     request<ProviderModelsResponse>(`/settings/models?provider=${encodeURIComponent(provider)}`),
   updateSettings: (input: UpdateSettingsInput) =>
