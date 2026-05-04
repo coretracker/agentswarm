@@ -2780,7 +2780,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     applyCheckpointModalProposal !== null &&
     proposalBusy?.id === applyCheckpointModalProposal.id &&
     proposalBusy.kind === "apply";
-  const applyCheckpointFooterBusy = applyCheckpointApplying || applyCheckpointCommitMessageGenerating;
+  const applyCheckpointApplyingOrPushing = applyCheckpointApplying || submitting === "push";
+  const applyCheckpointFooterBusy = applyCheckpointApplyingOrPushing || applyCheckpointCommitMessageGenerating;
   const mergeFooterBusy = submitting === "merge" || mergeCommitMessageGenerating;
   const pushNothingToPush = Boolean(pushPreview) && pushCount === 0 && !pushPreviewHasPushableChanges;
   const pushPrimaryDisabled = submitting === "push" || pushPreviewLoading || pushNothingToPush;
@@ -3343,6 +3344,54 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       showTaskActionError(error, "Could not apply checkpoint");
     } finally {
       setProposalBusy(null);
+    }
+  };
+
+  const handleApplyCheckpointAndPush = async () => {
+    const proposal = applyCheckpointModalProposal;
+    if (!task) {
+      return;
+    }
+    if (!proposal) {
+      return;
+    }
+
+    const canReapplyReverted = proposal.status === "reverted";
+    let applied = false;
+    setProposalBusy({ id: proposal.id, kind: "apply" });
+    setSubmitting("push");
+    try {
+      const commitMessage = applyCheckpointCommitMessage.trim();
+      const updatedAfterApply = await api.applyTaskChangeProposal(task.id, proposal.id, commitMessage ? { commitMessage } : undefined);
+      applied = true;
+      syncTaskAfterCheckpointMutation(updatedAfterApply);
+      setApplyCheckpointModalProposal(null);
+      setApplyCheckpointCommitMessage("");
+      setLiveDiffRefreshKey((k) => k + 1);
+      refetchChangeProposals();
+
+      const updatedAfterPush = await api.pushTask(task.id);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedAfterPush,
+              logs: updatedAfterPush.logs.length > 0 ? updatedAfterPush.logs : current.logs
+            }
+          : updatedAfterPush
+      );
+      messageApi.success(canReapplyReverted ? "Checkpoint re-applied and pushed" : "Checkpoint applied and pushed");
+      void loadPushPreview();
+      setLiveDiffRefreshKey((k) => k + 1);
+    } catch (error) {
+      if (applied) {
+        showTaskActionError(error, "Checkpoint applied but push failed");
+      } else {
+        showTaskActionError(error, "Could not apply checkpoint");
+      }
+    } finally {
+      setProposalBusy(null);
+      setSubmitting((current) => (current === "push" ? null : current));
     }
   };
 
@@ -4446,8 +4495,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Button onClick={closeApplyCheckpointModal} disabled={applyCheckpointFooterBusy}>
               Cancel
             </Button>
-            <Button onClick={() => void handleGenerateApplyCheckpointCommitMessage()} loading={applyCheckpointCommitMessageGenerating} disabled={applyCheckpointApplying}>
+            <Button onClick={() => void handleGenerateApplyCheckpointCommitMessage()} loading={applyCheckpointCommitMessageGenerating} disabled={applyCheckpointApplyingOrPushing}>
               Magic
+            </Button>
+            <Button onClick={() => void handleApplyCheckpointAndPush()} loading={submitting === "push"} disabled={applyCheckpointApplying || applyCheckpointCommitMessageGenerating}>
+              {applyCheckpointModalProposal?.status === "reverted" ? "Apply Again & Push" : "Apply & Push"}
             </Button>
             <Button type="primary" onClick={() => void handleApplyCheckpoint()} loading={applyCheckpointApplying} disabled={applyCheckpointCommitMessageGenerating}>
               {applyCheckpointModalProposal?.status === "reverted" ? "Apply Again" : "Apply"}
