@@ -1,10 +1,9 @@
 import { createHmac } from "node:crypto";
-import { appendFile, mkdir } from "node:fs/promises";
-import path from "node:path";
 import { SocketModeClient } from "@slack/socket-mode";
 import type { FastifyInstance } from "fastify";
 import type { SettingsStore } from "./settings-store.js";
 import type { SlackTaskWorkflowService } from "./slack-task-workflow-service.js";
+import { appendSlackEventLog } from "../lib/slack-event-log.js";
 
 type SlackSocketModeEnvelope = {
   payload?: Record<string, unknown>;
@@ -82,16 +81,6 @@ const normalizeSlackMessageEvent = (rawEvent: NonNullable<SlackSocketModeEventsA
 };
 
 const SLACK_SIGNATURE_VERSION = "v0";
-const SLACK_EVENT_LOG_PATH = process.env.SLACK_EVENT_LOG_PATH?.trim() || path.resolve(process.cwd(), "logs", "slack-events.log");
-let slackEventLogReady: Promise<void> | null = null;
-
-const ensureSlackEventLogDir = (): Promise<void> => {
-  if (slackEventLogReady) {
-    return slackEventLogReady;
-  }
-  slackEventLogReady = mkdir(path.dirname(SLACK_EVENT_LOG_PATH), { recursive: true }).catch(() => undefined);
-  return slackEventLogReady;
-};
 
 const summarizeSlackMessageEvent = (event: SlackSocketModeMessageEvent): Record<string, unknown> => ({
   channel: event.channel ?? null,
@@ -139,16 +128,7 @@ export class SlackSocketModeService {
   ) {}
 
   private async writeSlackEventLog(kind: string, data: Record<string, unknown>): Promise<void> {
-    try {
-      await ensureSlackEventLogDir();
-      await appendFile(
-        SLACK_EVENT_LOG_PATH,
-        `${new Date().toISOString()} ${kind} ${JSON.stringify(data)}\n`,
-        "utf8"
-      );
-    } catch {
-      // Never break runtime flow due to debug logging failure.
-    }
+    await appendSlackEventLog(kind, data);
   }
 
   async sync(): Promise<void> {

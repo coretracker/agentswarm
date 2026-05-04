@@ -1,10 +1,10 @@
 import { z } from "zod";
 import { open, type FileHandle } from "node:fs/promises";
-import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import type { AgentProvider } from "@agentswarm/shared-types";
 import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
+import { resolveSlackEventLogPath } from "../lib/slack-event-log.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
 
@@ -102,7 +102,7 @@ export const registerSettingsRoutes = (
     auth: AuthService;
   }
 ): void => {
-  const slackLogPath = process.env.SLACK_EVENT_LOG_PATH?.trim() || path.resolve(process.cwd(), "logs", "slack-events.log");
+  const slackLogPath = resolveSlackEventLogPath();
   const slackLogMaxBytes = 200 * 1024;
 
   app.get("/settings", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => deps.settingsStore.getSettings());

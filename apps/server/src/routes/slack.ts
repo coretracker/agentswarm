@@ -4,6 +4,7 @@ import { z } from "zod";
 import { env } from "../config/env.js";
 import { applyTaskStartMode } from "../lib/task-start-mode.js";
 import { canUserAccessRepository, canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
+import { appendSlackEventLog } from "../lib/slack-event-log.js";
 import { getTaskStatusLabel, type AgentProvider, type CodexCredentialSource, type ProviderProfile, type TaskStartMode, type TaskType } from "@agentswarm/shared-types";
 import { normalizeProvider } from "../lib/provider-config.js";
 import type { RepositoryStore } from "../services/repository-store.js";
@@ -682,6 +683,7 @@ export const registerSlackRoutes = (
   app.post<{ Body: SlackCommandBody | Record<string, string> }>("/slack/commands", async (request, reply) => {
     const runtimeCredentials = await deps.settingsStore.getRuntimeCredentials();
     if (!runtimeCredentials.slackBotToken || !runtimeCredentials.slackSigningSecret) {
+      void appendSlackEventLog("slash_command:missing_credentials", {});
       return reply.status(503).send({
         response_type: "ephemeral",
         text: "Slack integration is not configured in AgentSwarm Settings."
@@ -689,6 +691,7 @@ export const registerSlackRoutes = (
     }
 
     if (!verifySlackSignature(runtimeCredentials.slackSigningSecret, request)) {
+      void appendSlackEventLog("slash_command:invalid_signature", {});
       return reply.status(401).send({
         response_type: "ephemeral",
         text: "Invalid Slack signature."
@@ -697,11 +700,22 @@ export const registerSlackRoutes = (
 
     const parsedBody = parseSlackRequest(request.body);
     if (!parsedBody) {
+      void appendSlackEventLog("slash_command:invalid_payload", {
+        bodyKeys: request.body && typeof request.body === "object" ? Object.keys(request.body as Record<string, unknown>) : null
+      });
       return reply.status(400).send({
         response_type: "ephemeral",
         text: "Invalid Slack command payload."
       });
     }
+
+    void appendSlackEventLog("slash_command", {
+      command: parsedBody.command,
+      userId: parsedBody.user_id,
+      teamId: parsedBody.team_id ?? null,
+      channelId: parsedBody.channel_id ?? null,
+      textPreview: (parsedBody.text ?? "").slice(0, 200)
+    });
 
     if (parsedBody.command !== "/agentswarm") {
       return reply.status(400).send({
@@ -861,6 +875,7 @@ export const registerSlackRoutes = (
   app.post<{ Body: SlackInteractionBody | Record<string, string> }>("/slack/interactions", async (request, reply) => {
     const runtimeCredentials = await deps.settingsStore.getRuntimeCredentials();
     if (!runtimeCredentials.slackBotToken || !runtimeCredentials.slackSigningSecret) {
+      void appendSlackEventLog("interaction:missing_credentials", {});
       return reply.status(503).send({
         response_action: "errors",
         errors: {},
@@ -869,6 +884,7 @@ export const registerSlackRoutes = (
     }
 
     if (!verifySlackSignature(runtimeCredentials.slackSigningSecret, request)) {
+      void appendSlackEventLog("interaction:invalid_signature", {});
       return reply.status(401).send({
         response_action: "errors",
         errors: {},
@@ -878,6 +894,9 @@ export const registerSlackRoutes = (
 
     const parsedBody = slackInteractionBodySchema.safeParse(request.body);
     if (!parsedBody.success) {
+      void appendSlackEventLog("interaction:invalid_payload", {
+        bodyKeys: request.body && typeof request.body === "object" ? Object.keys(request.body as Record<string, unknown>) : null
+      });
       return reply.status(400).send({
         response_action: "errors",
         errors: {},
@@ -889,12 +908,19 @@ export const registerSlackRoutes = (
     try {
       payload = JSON.parse(parsedBody.data.payload) as SlackInteractionPayload;
     } catch {
+      void appendSlackEventLog("interaction:invalid_json", {});
       return reply.status(400).send({
         response_action: "errors",
         errors: {},
         text: "Invalid Slack interaction payload."
       });
     }
+
+    void appendSlackEventLog("interaction", {
+      type: payload.type ?? null,
+      callbackId: payload.view?.callback_id ?? null,
+      userId: payload.user?.id ?? null
+    });
 
     if (payload.type !== "view_submission" || payload.view?.callback_id !== SLACK_NEW_TASK_CALLBACK_ID) {
       return reply.status(400).send({
