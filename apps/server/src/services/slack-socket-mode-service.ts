@@ -1,4 +1,6 @@
 import { createHmac } from "node:crypto";
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 import { SocketModeClient } from "@slack/socket-mode";
 import type { FastifyInstance } from "fastify";
 import type { SettingsStore } from "./settings-store.js";
@@ -80,6 +82,25 @@ const normalizeSlackMessageEvent = (rawEvent: NonNullable<SlackSocketModeEventsA
 };
 
 const SLACK_SIGNATURE_VERSION = "v0";
+const SLACK_EVENT_LOG_PATH = process.env.SLACK_EVENT_LOG_PATH?.trim() || path.resolve(process.cwd(), "logs", "slack-events.log");
+let slackEventLogReady: Promise<void> | null = null;
+
+const ensureSlackEventLogDir = (): Promise<void> => {
+  if (slackEventLogReady) {
+    return slackEventLogReady;
+  }
+  slackEventLogReady = mkdir(path.dirname(SLACK_EVENT_LOG_PATH), { recursive: true }).catch(() => undefined);
+  return slackEventLogReady;
+};
+
+const summarizeSlackMessageEvent = (event: SlackSocketModeMessageEvent): Record<string, unknown> => ({
+  channel: event.channel ?? null,
+  threadTs: event.thread_ts ?? null,
+  ts: event.ts ?? null,
+  user: event.user ?? null,
+  subtype: event.subtype ?? null,
+  textPreview: typeof event.text === "string" ? event.text.slice(0, 200) : null
+});
 
 const signSlackRequest = (signingSecret: string, timestamp: string, rawBody: string): string =>
   `${SLACK_SIGNATURE_VERSION}=${createHmac("sha256", signingSecret).update(`${SLACK_SIGNATURE_VERSION}:${timestamp}:${rawBody}`).digest("hex")}`;
@@ -116,6 +137,19 @@ export class SlackSocketModeService {
     private readonly settingsStore: SettingsStore,
     private readonly workflowService: SlackTaskWorkflowService
   ) {}
+
+  private async writeSlackEventLog(kind: string, data: Record<string, unknown>): Promise<void> {
+    try {
+      await ensureSlackEventLogDir();
+      await appendFile(
+        SLACK_EVENT_LOG_PATH,
+        `${new Date().toISOString()} ${kind} ${JSON.stringify(data)}\n`,
+        "utf8"
+      );
+    } catch {
+      // Never break runtime flow due to debug logging failure.
+    }
+  }
 
   async sync(): Promise<void> {
     if (this.syncInFlight) {
@@ -275,20 +309,32 @@ export class SlackSocketModeService {
       const payload = getEventsApiPayload(event);
       const slackEvent = payload?.event;
       if (!slackEvent) {
+        await this.writeSlackEventLog("events_api:ignored:no_event", { payloadType: payload?.type ?? null });
         this.app.log.debug({ payloadType: payload?.type }, "Ignored Slack events_api event");
         return;
       }
 
       const normalizedMessage = normalizeSlackMessageEvent(slackEvent);
       if (!normalizedMessage) {
+        await this.writeSlackEventLog("events_api:ignored:non_message", {
+          eventType: slackEvent.type ?? null,
+          subtype: slackEvent.subtype ?? null
+        });
         this.app.log.debug({ eventType: slackEvent.type, subtype: slackEvent.subtype }, "Ignored non-message Slack event");
         return;
       }
 
+      await this.writeSlackEventLog("events_api:message", summarizeSlackMessageEvent(normalizedMessage));
       void this.workflowService.handleSlackMessageEvent(normalizedMessage).catch((error) => {
+        void this.writeSlackEventLog("events_api:workflow_error", {
+          message: error instanceof Error ? error.message : String(error)
+        });
         this.app.log.error({ error }, "Failed to process Slack events_api message");
       });
     } catch (error) {
+      await this.writeSlackEventLog("events_api:handler_error", {
+        message: error instanceof Error ? error.message : String(error)
+      });
       this.app.log.error({ error }, "Failed to process Slack events_api payload");
     }
   }
