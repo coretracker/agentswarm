@@ -41,6 +41,7 @@ import { installManagedGitHooks } from "../lib/managed-git-hooks.js";
 import { reconcileTaskStatusWithPendingCheckpoint, resolveTaskReadyStatus } from "../lib/task-status.js";
 import { buildTaskCommitSubject, formatCommitSubject } from "../lib/task-commit-subject.js";
 import { parsePostflightConfig, postflightAppliesToTask, type PostflightConfig } from "../lib/postflight-config.js";
+import { collectMcpServerEnvEntries } from "../lib/mcp-config.js";
 import {
   resolveTaskPromptAttachmentRoot,
   resolveTaskPromptAttachmentServerPath
@@ -2165,21 +2166,7 @@ export class SpawnerService {
   }
 
   private collectRuntimeMcpEnv(servers: McpServerConfig[]): Record<string, string> {
-    const envMap: Record<string, string> = {};
-
-    for (const server of servers) {
-      const envVarName = server.transport === "http" ? server.bearerTokenEnvVar?.trim() : "";
-      if (!envVarName) {
-        continue;
-      }
-
-      const value = process.env[envVarName];
-      if (value) {
-        envMap[envVarName] = value;
-      }
-    }
-
-    return envMap;
+    return Object.fromEntries(collectMcpServerEnvEntries(servers, process.env));
   }
 
   private async collectChangedFiles(workspacePath: string, startRef: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string[]> {

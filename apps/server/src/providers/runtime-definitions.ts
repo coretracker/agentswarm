@@ -7,81 +7,9 @@ import {
   codexReasoningEffortForProfile,
   defaultModelForProvider
 } from "../lib/provider-config.js";
+import { serializeClaudeMcpConfig, serializeCodexMcpConfig } from "../lib/mcp-config.js";
 import type { RuntimeCredentials } from "../services/credential-store.js";
-
-const tomlString = (value: string): string => JSON.stringify(value);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
-
-const serializeCodexMcpConfig = (servers: McpServerConfig[]): string => {
-  const enabledServers = servers.filter((server) => server.enabled);
-  if (enabledServers.length === 0) {
-    return "";
-  }
-
-  const lines: string[] = [];
-  for (const server of enabledServers) {
-    lines.push(`[mcp_servers.${server.name}]`);
-    if (server.transport === "http") {
-      if (!server.url) {
-        continue;
-      }
-      lines.push(`url = ${tomlString(server.url)}`);
-      if (server.bearerTokenEnvVar) {
-        lines.push(`bearer_token_env_var = ${tomlString(server.bearerTokenEnvVar)}`);
-      }
-    } else {
-      if (!server.command) {
-        continue;
-      }
-      lines.push(`command = ${tomlString(server.command)}`);
-      if ((server.args ?? []).length > 0) {
-        lines.push(`args = [${(server.args ?? []).map(tomlString).join(", ")}]`);
-      }
-    }
-    lines.push("");
-  }
-
-  return `${lines.join("\n").trim()}\n`;
-};
-
-const serializeClaudeMcpConfig = (servers: McpServerConfig[]): string => {
-  const enabledServers = servers.filter((server) => server.enabled);
-  const mcpServers: Record<string, Record<string, unknown>> = {};
-
-  for (const server of enabledServers) {
-    if (server.transport === "http") {
-      if (!server.url) {
-        continue;
-      }
-
-      mcpServers[server.name] = {
-        type: "http",
-        url: server.url,
-        ...(server.bearerTokenEnvVar
-          ? {
-              headers: {
-                Authorization: `Bearer \${${server.bearerTokenEnvVar}}`
-              }
-            }
-          : {})
-      };
-      continue;
-    }
-
-    if (!server.command) {
-      continue;
-    }
-
-    mcpServers[server.name] = {
-      type: "stdio",
-      command: server.command,
-      args: server.args ?? [],
-      env: {}
-    };
-  }
-
-  return JSON.stringify({ mcpServers }, null, 2);
-};
 
 export interface ProviderRuntimeDefinition {
   provider: AgentProvider;

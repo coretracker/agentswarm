@@ -33,6 +33,7 @@ import {
   codexReasoningEffortForProfile,
   defaultModelForProvider
 } from "./provider-config.js";
+import { collectMcpServerEnvEntries, serializeClaudeMcpConfig, serializeCodexMcpConfig } from "./mcp-config.js";
 import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
 import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
 import { resolveTaskGitCommitIdentity, type GitCommitIdentity } from "./task-git-identity.js";
@@ -55,7 +56,7 @@ function normalizeTerminalSessionMode(value: string | null | undefined): TaskTer
   return value === "git" ? "git" : "interactive";
 }
 
-function buildCodexUserConfigToml(workspacePath: string, model: string): string {
+function buildCodexUserConfigToml(workspacePath: string, model: string, mcpConfig: string): string {
   const pathSafe = workspacePath.replace(/"/g, "");
   const modelSafe = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   const modelTomlKey = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -76,7 +77,8 @@ show_tooltips = false
 
 [tui.model_availability_nux]
 "${modelTomlKey}" = 1
-`;
+
+${mcpConfig}`;
 }
 
 function shellSingleQuote(value: string): string {
@@ -118,12 +120,14 @@ function buildClaudeSettingsJson(): string {
   });
 }
 
-function buildClaudeStartScript(model: string, settingsJson: string): string {
+function buildClaudeStartScript(model: string, settingsJson: string, mcpConfigB64: string): string {
   const claudeArgs = [
     "--model",
     shellSingleQuote(model),
     "--settings",
-    shellSingleQuote(settingsJson)
+    shellSingleQuote(settingsJson),
+    "--mcp-config",
+    '"$HOME/.claude/mcp-config.json"'
   ];
 
   return [
@@ -133,6 +137,7 @@ function buildClaudeStartScript(model: string, settingsJson: string): string {
     'if [ ! -x "$CLAUDE_BIN" ] && [ -x "/opt/claude-code/.local/bin/claude" ]; then CLAUDE_BIN="/opt/claude-code/.local/bin/claude"; fi',
     'if [ ! -x "$CLAUDE_BIN" ]; then CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"; fi',
     'if [ -z "$CLAUDE_BIN" ] || [ ! -x "$CLAUDE_BIN" ]; then echo "Claude CLI not found in image." >&2; exit 127; fi',
+    `printf '%s' ${shellSingleQuote(mcpConfigB64)} | base64 -d > "$HOME/.claude/mcp-config.json"`,
     'cd "$TASK_INTERACTIVE_WORKSPACE"',
     `SESSION_FILE="$HOME/.claude/${PROVIDER_SESSION_ID_FILE}"`,
     'SESSION_ID=""',
@@ -244,9 +249,14 @@ function resolveInteractiveTerminalRuntimeConfig(
         ["HOME", "/home/claude"],
         ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
         ...(typeof thinkingBudgetTokens === "number" ? [["MAX_THINKING_TOKENS", String(thinkingBudgetTokens)] as [string, string]] : []),
+        ...collectMcpServerEnvEntries(settings.mcpServers),
         ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
       ],
-      startScript: buildClaudeStartScript(model, buildClaudeSettingsJson())
+      startScript: buildClaudeStartScript(
+        model,
+        buildClaudeSettingsJson(),
+        Buffer.from(serializeClaudeMcpConfig(settings.mcpServers), "utf8").toString("base64")
+      )
     };
   }
 
@@ -268,6 +278,7 @@ function resolveInteractiveTerminalRuntimeConfig(
     ["HOME", "/root"],
     ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
     ["CODEX_TRUST_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
+    ...collectMcpServerEnvEntries(settings.mcpServers),
     ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
   ];
   if (settings.openaiBaseUrl?.trim()) {
@@ -286,7 +297,14 @@ function resolveInteractiveTerminalRuntimeConfig(
     },
     envEntries,
     startScript: buildCodexStartScript(
-      Buffer.from(buildCodexUserConfigToml(INTERACTIVE_WORKSPACE_PATH, model), "utf8").toString("base64"),
+      Buffer.from(
+        buildCodexUserConfigToml(
+          INTERACTIVE_WORKSPACE_PATH,
+          model,
+          serializeCodexMcpConfig(settings.mcpServers)
+        ),
+        "utf8"
+      ).toString("base64"),
       model,
       codexReasoningEffortForProfile(task.providerProfile),
       useCodexAuthJson
