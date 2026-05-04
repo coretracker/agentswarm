@@ -21,7 +21,27 @@ type SlackSocketModeEventsApiPayload = {
     user?: string;
     bot_id?: string;
     subtype?: string;
+    message?: {
+      type?: string;
+      channel?: string;
+      thread_ts?: string;
+      ts?: string;
+      text?: string;
+      user?: string;
+      bot_id?: string;
+      subtype?: string;
+    };
   };
+};
+
+type SlackSocketModeMessageEvent = {
+  channel?: string;
+  thread_ts?: string;
+  ts?: string;
+  text?: string;
+  user?: string;
+  bot_id?: string;
+  subtype?: string;
 };
 
 const getEnvelopeRecord = (value: unknown): Record<string, unknown> | null =>
@@ -42,6 +62,21 @@ const getEventsApiPayload = (event: SlackSocketModeEnvelope): SlackSocketModeEve
     return nestedPayload as SlackSocketModeEventsApiPayload;
   }
   return bodyRecord as SlackSocketModeEventsApiPayload;
+};
+
+const normalizeSlackMessageEvent = (rawEvent: NonNullable<SlackSocketModeEventsApiPayload["event"]>): SlackSocketModeMessageEvent | null => {
+  if (rawEvent.type !== "message") {
+    return null;
+  }
+
+  if (rawEvent.subtype === "message_replied" && rawEvent.message && rawEvent.message.type === "message") {
+    return {
+      ...rawEvent.message,
+      channel: rawEvent.channel ?? rawEvent.message.channel
+    };
+  }
+
+  return rawEvent as SlackSocketModeMessageEvent;
 };
 
 const SLACK_SIGNATURE_VERSION = "v0";
@@ -239,12 +274,18 @@ export class SlackSocketModeService {
 
       const payload = getEventsApiPayload(event);
       const slackEvent = payload?.event;
-      if (!slackEvent || slackEvent.type !== "message") {
+      if (!slackEvent) {
         this.app.log.debug({ payloadType: payload?.type }, "Ignored Slack events_api event");
         return;
       }
 
-      void this.workflowService.handleSlackMessageEvent(slackEvent).catch((error) => {
+      const normalizedMessage = normalizeSlackMessageEvent(slackEvent);
+      if (!normalizedMessage) {
+        this.app.log.debug({ eventType: slackEvent.type, subtype: slackEvent.subtype }, "Ignored non-message Slack event");
+        return;
+      }
+
+      void this.workflowService.handleSlackMessageEvent(normalizedMessage).catch((error) => {
         this.app.log.error({ error }, "Failed to process Slack events_api message");
       });
     } catch (error) {
