@@ -408,6 +408,10 @@ export class SlackTaskWorkflowService {
     }
 
     if (!matchedUser) {
+      await this.postThreadMessage(
+        task.id,
+        "Message ignored: no matching active AgentSwarm account was found for this Slack user, or the user cannot access this task."
+      );
       return;
     }
 
