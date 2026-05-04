@@ -141,13 +141,20 @@ export class SlackSocketModeService {
       const appToken = runtimeCredentials.slackSocketModeToken?.trim() || null;
       const botToken = runtimeCredentials.slackBotToken?.trim() || null;
       const signingSecret = runtimeCredentials.slackSigningSecret?.trim() || null;
+      await this.writeSlackEventLog("socket_mode:sync", {
+        hasAppToken: Boolean(appToken),
+        hasBotToken: Boolean(botToken),
+        hasSigningSecret: Boolean(signingSecret)
+      });
 
       if (!appToken || !botToken || !signingSecret) {
+        await this.writeSlackEventLog("socket_mode:disabled_missing_credentials", {});
         await this.stop();
         return;
       }
 
       if (this.client && this.activeAppToken === appToken && this.activeSigningSecret === signingSecret) {
+        await this.writeSlackEventLog("socket_mode:already_active", {});
         return;
       }
 
@@ -174,8 +181,12 @@ export class SlackSocketModeService {
       this.client = client;
       this.activeAppToken = appToken;
       this.activeSigningSecret = signingSecret;
+      await this.writeSlackEventLog("socket_mode:started", {});
       this.app.log.info("Slack Socket Mode client started");
     })().catch((error) => {
+      void this.writeSlackEventLog("socket_mode:start_error", {
+        message: error instanceof Error ? error.message : String(error)
+      });
       this.app.log.error({ error }, "Failed to start Slack Socket Mode client");
     }).finally(() => {
       this.syncInFlight = null;
