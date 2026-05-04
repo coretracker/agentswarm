@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import type { AgentProvider } from "@agentswarm/shared-types";
 import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
-import { resolveSlackEventLogPath } from "../lib/slack-event-log.js";
+import { getSlackEventLogLastError, resolveSlackEventLogPath } from "../lib/slack-event-log.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
 
@@ -123,14 +123,16 @@ export const registerSettingsRoutes = (
         path: slackLogPath,
         exists: true,
         truncated: stats.size > bytesToRead,
-        content: buffer.toString("utf8")
+        content: buffer.toString("utf8"),
+        lastError: getSlackEventLogLastError()
       };
     } catch {
       return {
         path: slackLogPath,
         exists: false,
         truncated: false,
-        content: ""
+        content: "",
+        lastError: getSlackEventLogLastError()
       };
     } finally {
       await handle?.close();

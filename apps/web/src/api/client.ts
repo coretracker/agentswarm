@@ -70,6 +70,7 @@ export interface SlackLogsResponse {
   exists: boolean;
   truncated: boolean;
   content: string;
+  lastError?: string | null;
 }
 
 export interface TaskInteractiveTerminalStatus {

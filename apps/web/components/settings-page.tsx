@@ -931,6 +931,14 @@ export function SettingsPage() {
               />
             ) : (
               <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                {slackLogs?.lastError ? (
+                  <Alert
+                    type="error"
+                    showIcon
+                    message="Last Slack log write error"
+                    description={slackLogs.lastError}
+                  />
+                ) : null}
                 <Typography.Text type="secondary">
                   {slackLogs?.exists
                     ? `Showing ${slackLogs.truncated ? "tail of " : ""}${slackLogs.path}`
