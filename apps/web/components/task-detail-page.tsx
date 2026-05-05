@@ -4311,9 +4311,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               }
             }}
           >
-            <Divider plain style={{ margin: 0 }}>
-              Load more
-            </Divider>
+            <Divider plain>Load more</Divider>
           </Button>
         </Flex>
       ) : hasMoreHistory ? (
@@ -4329,9 +4327,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               }
             }}
           >
-            <Divider plain style={{ margin: 0 }}>
-              Load more
-            </Divider>
+            <Divider plain>Load more</Divider>
           </Button>
         </Flex>
       ) : null}
