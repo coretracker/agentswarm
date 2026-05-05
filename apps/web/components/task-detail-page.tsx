@@ -112,6 +112,8 @@ const OPENAI_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
 const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
 const OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS = 48_000;
 const SYSTEM_ADMIN_ROLE_ID = "admin";
+const HISTORY_INITIAL_VISIBLE_COUNT = 5;
+const HISTORY_LOAD_MORE_COUNT = 10;
 
 const NotesMarkdownEditor = dynamic(
   () => import("./notes-markdown-editor").then((mod) => mod.NotesMarkdownEditor),
@@ -707,6 +709,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [isDeletingTask, setIsDeletingTask] = useState(false);
   const [redirectingToTaskList, setRedirectingToTaskList] = useState(false);
   const [taskPageVisible, setTaskPageVisible] = useState(false);
+  const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_INITIAL_VISIBLE_COUNT);
   const [workspaceFilePreview, setWorkspaceFilePreview] = useState<WorkspaceFilePreviewState>({
     open: false,
     loading: false,
@@ -767,6 +770,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setTaskStateDraft("open");
     setNotesEditing(false);
     setNotesDraft("");
+    setVisibleHistoryCount(HISTORY_INITIAL_VISIBLE_COUNT);
     setTaskPageVisible(false);
     setFilesTabOpenTarget(null);
     initialBottomScrollStateRef.current = null;
@@ -1885,6 +1889,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     () => chatTimeline,
     [chatTimeline]
   );
+  const visibleHistoryStartIndex = Math.max(0, historicalChatTimeline.length - visibleHistoryCount);
+  const hiddenHistoryCount = visibleHistoryStartIndex;
+  const visibleChatHistoryTimeline = historicalChatTimeline.slice(visibleHistoryStartIndex);
   const hasActiveTerminalHistoryEntry = activeTerminalHistoryEntry !== null;
 
   useEffect(() => {
@@ -4256,7 +4263,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   };
   const chatTimelineBlock = historicalChatTimeline.length > 0 ? (
     <Flex vertical gap={12} style={{ width: "100%" }}>
-      {historicalChatTimeline.map((entry) => {
+      {hiddenHistoryCount > 0 ? (
+        <Flex justify="center">
+          <Button type="link" onClick={() => setVisibleHistoryCount((current) => current + HISTORY_LOAD_MORE_COUNT)}>
+            {`--- Load ${Math.min(HISTORY_LOAD_MORE_COUNT, hiddenHistoryCount)} more items ---`}
+          </Button>
+        </Flex>
+      ) : null}
+      {visibleChatHistoryTimeline.map((entry) => {
         if (entry.kind === "message") {
           return renderRawMessageEntry(entry.key, entry.message);
         }
