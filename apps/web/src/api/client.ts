@@ -84,6 +84,17 @@ export interface ListTasksOptions {
   limit?: number;
 }
 
+export interface HistoryPageOptions {
+  before?: string | null;
+  beforeId?: string | null;
+  limit?: number;
+}
+
+export interface HistoryPageResult<T> {
+  items: T[];
+  hasMore: boolean;
+}
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -299,14 +310,59 @@ export const api = {
     }),
   getTaskMessageAttachmentUrl: (taskId: string, messageId: string, attachmentId: string) =>
     buildApiUrl(`/tasks/${taskId}/messages/${messageId}/attachments/${attachmentId}`),
-  listTaskMessages: (id: string) => request<TaskMessage[]>(`/tasks/${id}/messages`),
+  listTaskMessages: (id: string, options?: HistoryPageOptions) => {
+    const params = new URLSearchParams();
+    const before = options?.before?.trim();
+    if (before) {
+      params.set("before", before);
+    }
+    const beforeId = options?.beforeId?.trim();
+    if (beforeId) {
+      params.set("beforeId", beforeId);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<HistoryPageResult<TaskMessage>>(`/tasks/${id}/messages${query ? `?${query}` : ""}`);
+  },
   updateTaskMessage: (taskId: string, messageId: string, input: UpdateTaskMessageInput) =>
     request<TaskMessage>(`/tasks/${taskId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
-  listTaskRuns: (id: string) => request<TaskRun[]>(`/tasks/${id}/runs`),
-  listTaskChangeProposals: (id: string) => request<TaskChangeProposal[]>(`/tasks/${id}/change-proposals`),
+  listTaskRuns: (id: string, options?: HistoryPageOptions) => {
+    const params = new URLSearchParams();
+    const before = options?.before?.trim();
+    if (before) {
+      params.set("before", before);
+    }
+    const beforeId = options?.beforeId?.trim();
+    if (beforeId) {
+      params.set("beforeId", beforeId);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<HistoryPageResult<TaskRun>>(`/tasks/${id}/runs${query ? `?${query}` : ""}`);
+  },
+  listTaskChangeProposals: (id: string, options?: HistoryPageOptions) => {
+    const params = new URLSearchParams();
+    const before = options?.before?.trim();
+    if (before) {
+      params.set("before", before);
+    }
+    const beforeId = options?.beforeId?.trim();
+    if (beforeId) {
+      params.set("beforeId", beforeId);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<HistoryPageResult<TaskChangeProposal>>(`/tasks/${id}/change-proposals${query ? `?${query}` : ""}`);
+  },
   applyTaskChangeProposal: (taskId: string, proposalId: string, input?: ApplyTaskChangeProposalInput) =>
     request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/apply`, {
       method: "POST",

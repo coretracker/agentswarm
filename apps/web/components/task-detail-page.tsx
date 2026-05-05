@@ -601,10 +601,27 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     messages: taskMessages,
     setMessages: setTaskMessages,
     loading: messagesLoading,
-    refetch: refetchTaskMessages
+    loadingMore: messagesLoadingMore,
+    hasMore: messagesHasMore,
+    refetch: refetchTaskMessages,
+    loadMore: loadMoreMessages
   } = useTaskMessages(taskId);
-  const { runs: taskRuns, loading: runsLoading, refetch: refetchTaskRuns } = useTaskRuns(taskId);
-  const { proposals: changeProposals, refetch: refetchChangeProposals } = useTaskChangeProposals(taskId);
+  const {
+    runs: taskRuns,
+    loading: runsLoading,
+    loadingMore: runsLoadingMore,
+    hasMore: runsHasMore,
+    refetch: refetchTaskRuns,
+    loadMore: loadMoreRuns
+  } = useTaskRuns(taskId);
+  const {
+    proposals: changeProposals,
+    loading: proposalsLoading,
+    loadingMore: proposalsLoadingMore,
+    hasMore: proposalsHasMore,
+    refetch: refetchChangeProposals,
+    loadMore: loadMoreProposals
+  } = useTaskChangeProposals(taskId);
   const canUseSnippets = can("snippet:list");
   const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
   const [liveDiff, setLiveDiff] = useState<TaskLiveDiff | null>(null);
@@ -1893,6 +1910,24 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const hiddenHistoryCount = visibleHistoryStartIndex;
   const visibleChatHistoryTimeline = historicalChatTimeline.slice(visibleHistoryStartIndex);
   const hasActiveTerminalHistoryEntry = activeTerminalHistoryEntry !== null;
+  const hasMoreHistory = messagesHasMore || runsHasMore || proposalsHasMore;
+  const historyLoadingMore = messagesLoadingMore || runsLoadingMore || proposalsLoadingMore;
+  const loadMoreHistoryFromNetwork = useCallback(async () => {
+    const [moreMessages, moreRuns, moreProposals] = await Promise.all([
+      messagesHasMore ? loadMoreMessages() : Promise.resolve([]),
+      runsHasMore ? loadMoreRuns() : Promise.resolve([]),
+      proposalsHasMore ? loadMoreProposals() : Promise.resolve([])
+    ]);
+    return moreMessages.length + moreRuns.length + moreProposals.length;
+  }, [loadMoreMessages, loadMoreProposals, loadMoreRuns, messagesHasMore, proposalsHasMore, runsHasMore]);
+
+  useEffect(() => {
+    if (visibleHistoryCount <= historicalChatTimeline.length || !hasMoreHistory || historyLoadingMore) {
+      return;
+    }
+
+    void loadMoreHistoryFromNetwork();
+  }, [hasMoreHistory, historicalChatTimeline.length, historyLoadingMore, loadMoreHistoryFromNetwork, visibleHistoryCount]);
 
   useEffect(() => {
     if (interactiveTerminalRunning) {
@@ -1901,7 +1936,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   }, [interactiveTerminalRunning]);
 
   useLayoutEffect(() => {
-    if (!task?.id || loading || messagesLoading || runsLoading) {
+    if (!task?.id || loading || messagesLoading || runsLoading || proposalsLoading) {
       return;
     }
 
@@ -1949,7 +1984,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       window.clearTimeout(timeoutId);
       window.clearTimeout(revealTimeoutId);
     };
-  }, [hasActiveTerminalHistoryEntry, loading, messagesLoading, runsLoading, task?.id]);
+  }, [hasActiveTerminalHistoryEntry, loading, messagesLoading, proposalsLoading, runsLoading, task?.id]);
 
   const handleInsertSelectedSnippet = () => {
     if (!selectedSnippetId) {
@@ -4265,8 +4300,34 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     <Flex vertical gap={12} style={{ width: "100%" }}>
       {hiddenHistoryCount > 0 ? (
         <Flex justify="center">
-          <Button type="link" onClick={() => setVisibleHistoryCount((current) => current + HISTORY_LOAD_MORE_COUNT)}>
+          <Button
+            type="link"
+            loading={historyLoadingMore}
+            disabled={historyLoadingMore}
+            onClick={() => {
+              setVisibleHistoryCount((current) => current + HISTORY_LOAD_MORE_COUNT);
+              if (hiddenHistoryCount < HISTORY_LOAD_MORE_COUNT && hasMoreHistory && !historyLoadingMore) {
+                void loadMoreHistoryFromNetwork();
+              }
+            }}
+          >
             {`--- Load ${Math.min(HISTORY_LOAD_MORE_COUNT, hiddenHistoryCount)} more items ---`}
+          </Button>
+        </Flex>
+      ) : hasMoreHistory ? (
+        <Flex justify="center">
+          <Button
+            type="link"
+            loading={historyLoadingMore}
+            disabled={historyLoadingMore}
+            onClick={() => {
+              setVisibleHistoryCount((current) => current + HISTORY_LOAD_MORE_COUNT);
+              if (!historyLoadingMore) {
+                void loadMoreHistoryFromNetwork();
+              }
+            }}
+          >
+            {`--- Load ${HISTORY_LOAD_MORE_COUNT} more items ---`}
           </Button>
         </Flex>
       ) : null}
@@ -4294,7 +4355,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const chatHistoryEmptyState =
     !isPreparingWorkspace && historicalChatTimeline.length === 0 ? (
-      <Empty description={messagesLoading || runsLoading ? "Loading history..." : "No history yet."} image={Empty.PRESENTED_IMAGE_SIMPLE} />
+      <Empty
+        description={messagesLoading || runsLoading || proposalsLoading ? "Loading history..." : "No history yet."}
+        image={Empty.PRESENTED_IMAGE_SIMPLE}
+      />
     ) : null;
 
   const taskRevealStyle: CSSProperties = {

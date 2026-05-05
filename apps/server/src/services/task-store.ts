@@ -53,8 +53,38 @@ const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "agentswarm:task_interac
 const TASK_IDS_KEY = "agentswarm:task_ids";
 const MAX_LOG_LINES = 400;
 const MAX_MESSAGES = 200;
+const DEFAULT_HISTORY_PAGE_LIMIT = 25;
+const MAX_HISTORY_PAGE_LIMIT = 100;
 
 const nowIso = (): string => new Date().toISOString();
+
+const clampHistoryPageLimit = (raw: number | null | undefined): number => {
+  if (!Number.isFinite(raw)) {
+    return DEFAULT_HISTORY_PAGE_LIMIT;
+  }
+  return Math.max(1, Math.min(MAX_HISTORY_PAGE_LIMIT, Math.floor(raw as number)));
+};
+
+const paginateByTimestamp = <T extends { id: string }>(
+  input: T[],
+  options: ListTaskHistoryPageOptions | undefined,
+  getTimestamp: (item: T) => string
+): ListTaskHistoryPageResult<T> => {
+  const before = options?.before ?? null;
+  const beforeId = options?.beforeId ?? null;
+  const limit = clampHistoryPageLimit(options?.limit);
+  const filtered = before
+    ? input.filter((item) => {
+        const timestamp = getTimestamp(item);
+        return timestamp < before || (timestamp === before && beforeId !== null && item.id < beforeId);
+      })
+    : input;
+  const start = Math.max(0, filtered.length - (limit + 1));
+  const pageSlice = filtered.slice(start);
+  const hasMore = pageSlice.length > limit;
+  const items = hasMore ? pageSlice.slice(1) : pageSlice;
+  return { items, hasMore };
+};
 
 const getInitialAction = (task: { taskType: Task["taskType"] }): TaskAction => (task.taskType === "ask" ? "ask" : "build");
 
@@ -144,6 +174,17 @@ export interface AppendTaskMessageInput {
   sessionId?: string | null;
 }
 
+export interface ListTaskHistoryPageOptions {
+  before?: string | null;
+  beforeId?: string | null;
+  limit?: number;
+}
+
+export interface ListTaskHistoryPageResult<T> {
+  items: T[];
+  hasMore: boolean;
+}
+
 export interface TaskPushedEventInput {
   taskId: string;
   branchName: string;
@@ -198,7 +239,9 @@ export interface TaskStore {
   appendLog(taskId: string, line: string): Promise<void>;
   appendLogForRun(taskId: string, line: string, runId: string | null): Promise<void>;
   listMessages(taskId: string): Promise<TaskMessage[]>;
+  listMessagesPage(taskId: string, options?: ListTaskHistoryPageOptions): Promise<ListTaskHistoryPageResult<TaskMessage>>;
   listRuns(taskId: string): Promise<TaskRun[]>;
+  listRunsPage(taskId: string, options?: ListTaskHistoryPageOptions): Promise<ListTaskHistoryPageResult<TaskRun>>;
   getRun(runId: string): Promise<TaskRun | null>;
   createRun(taskId: string, input: CreateTaskRunInput): Promise<TaskRun | null>;
   updateRun(runId: string, patch: UpdateTaskRunPatch): Promise<TaskRun | null>;
@@ -218,6 +261,10 @@ export interface TaskStore {
   saveInteractiveTerminalTranscript(taskId: string, sessionId: string, content: string, truncated: boolean): Promise<void>;
   getInteractiveTerminalTranscript(taskId: string, sessionId: string): Promise<TaskInteractiveTerminalTranscript | null>;
   listChangeProposals(taskId: string): Promise<TaskChangeProposal[]>;
+  listChangeProposalsPage(
+    taskId: string,
+    options?: ListTaskHistoryPageOptions
+  ): Promise<ListTaskHistoryPageResult<TaskChangeProposal>>;
   getChangeProposal(proposalId: string): Promise<TaskChangeProposal | null>;
   getLatestAppliedChangeProposalId(taskId: string): Promise<string | null>;
   createChangeProposal(input: CreateTaskChangeProposalInput): Promise<TaskChangeProposal | null>;
@@ -635,8 +682,13 @@ export class RedisTaskStore implements TaskStore {
   }
 
   async listMessages(taskId: string): Promise<TaskMessage[]> {
+    const page = await this.listMessagesPage(taskId);
+    return page.items;
+  }
+
+  async listMessagesPage(taskId: string, options?: ListTaskHistoryPageOptions): Promise<ListTaskHistoryPageResult<TaskMessage>> {
     const rawMessages = await this.redis.lrange(this.taskMessageKey(taskId), 0, -1);
-    return rawMessages.flatMap((raw) => {
+    const messages = rawMessages.flatMap((raw) => {
       try {
         const parsed = JSON.parse(raw) as TaskMessage;
         return normalizeTaskMessage(parsed);
@@ -644,12 +696,18 @@ export class RedisTaskStore implements TaskStore {
         return [];
       }
     });
+    return paginateByTimestamp(messages, options, (message) => message.createdAt);
   }
 
   async listRuns(taskId: string): Promise<TaskRun[]> {
+    const page = await this.listRunsPage(taskId);
+    return page.items;
+  }
+
+  async listRunsPage(taskId: string, options?: ListTaskHistoryPageOptions): Promise<ListTaskHistoryPageResult<TaskRun>> {
     const runIds = await this.redis.lrange(this.taskRunIdsKey(taskId), 0, -1);
     if (runIds.length === 0) {
-      return [];
+      return { items: [], hasMore: false };
     }
 
     const runs = await Promise.all(
@@ -659,7 +717,8 @@ export class RedisTaskStore implements TaskStore {
       })
     );
 
-    return runs.filter((run): run is TaskRun => !!run).sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+    const sortedRuns = runs.filter((run): run is TaskRun => !!run).sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+    return paginateByTimestamp(sortedRuns, options, (run) => run.startedAt);
   }
 
   async getRun(runId: string): Promise<TaskRun | null> {
@@ -1136,9 +1195,17 @@ export class RedisTaskStore implements TaskStore {
   }
 
   async listChangeProposals(taskId: string): Promise<TaskChangeProposal[]> {
+    const page = await this.listChangeProposalsPage(taskId);
+    return page.items;
+  }
+
+  async listChangeProposalsPage(
+    taskId: string,
+    options?: ListTaskHistoryPageOptions
+  ): Promise<ListTaskHistoryPageResult<TaskChangeProposal>> {
     const ids = await this.redis.lrange(this.taskChangeProposalIdsKey(taskId), 0, -1);
     if (ids.length === 0) {
-      return [];
+      return { items: [], hasMore: false };
     }
     const pipeline = this.redis.pipeline();
     for (const id of ids) {
@@ -1158,7 +1225,8 @@ export class RedisTaskStore implements TaskStore {
         /* skip */
       }
     }
-    return proposals.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const sortedProposals = proposals.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return paginateByTimestamp(sortedProposals, options, (proposal) => proposal.createdAt);
   }
 
   async getChangeProposal(proposalId: string): Promise<TaskChangeProposal | null> {
@@ -1733,26 +1801,75 @@ export class PostgresTaskStore implements TaskStore {
   }
 
   async listMessages(taskId: string): Promise<TaskMessage[]> {
-    const result = await this.pool.query("SELECT message_data FROM task_messages WHERE task_id = $1 ORDER BY position ASC", [taskId]);
-    return result.rows.flatMap((row) => {
-      try {
-        const parsed = parseJsonColumn<TaskMessage>(row.message_data);
-        return normalizeTaskMessage(parsed);
-      } catch {
-        return [];
+    const page = await this.listMessagesPage(taskId);
+    return page.items;
+  }
+
+  async listMessagesPage(taskId: string, options?: ListTaskHistoryPageOptions): Promise<ListTaskHistoryPageResult<TaskMessage>> {
+    const limit = clampHistoryPageLimit(options?.limit);
+    const values: unknown[] = [taskId];
+    let whereSql = "WHERE task_id = $1";
+    if (options?.before) {
+      values.push(options.before);
+      if (options.beforeId) {
+        values.push(options.beforeId);
+        whereSql += ` AND (created_at < $${values.length - 1} OR (created_at = $${values.length - 1} AND message_id < $${values.length}))`;
+      } else {
+        whereSql += ` AND created_at < $${values.length}`;
       }
-    });
+    }
+    values.push(limit + 1);
+    const result = await this.pool.query(
+      `SELECT message_data FROM task_messages ${whereSql} ORDER BY created_at DESC, message_id DESC LIMIT $${values.length}`,
+      values
+    );
+    const hasMore = result.rows.length > limit;
+    const rows = hasMore ? result.rows.slice(0, limit) : result.rows;
+    const items = rows
+      .flatMap((row) => {
+        try {
+          const parsed = parseJsonColumn<TaskMessage>(row.message_data);
+          return normalizeTaskMessage(parsed);
+        } catch {
+          return [];
+        }
+      })
+      .reverse();
+    return { items, hasMore };
   }
 
   async listRuns(taskId: string): Promise<TaskRun[]> {
-    const result = await this.pool.query("SELECT run_data FROM task_runs WHERE task_id = $1 ORDER BY started_at ASC, id ASC", [taskId]);
+    const page = await this.listRunsPage(taskId);
+    return page.items;
+  }
+
+  async listRunsPage(taskId: string, options?: ListTaskHistoryPageOptions): Promise<ListTaskHistoryPageResult<TaskRun>> {
+    const limit = clampHistoryPageLimit(options?.limit);
+    const values: unknown[] = [taskId];
+    let whereSql = "WHERE task_id = $1";
+    if (options?.before) {
+      values.push(options.before);
+      if (options.beforeId) {
+        values.push(options.beforeId);
+        whereSql += ` AND (started_at < $${values.length - 1} OR (started_at = $${values.length - 1} AND id < $${values.length}))`;
+      } else {
+        whereSql += ` AND started_at < $${values.length}`;
+      }
+    }
+    values.push(limit + 1);
+    const result = await this.pool.query(
+      `SELECT run_data FROM task_runs ${whereSql} ORDER BY started_at DESC, id DESC LIMIT $${values.length}`,
+      values
+    );
+    const hasMore = result.rows.length > limit;
+    const rows = hasMore ? result.rows.slice(0, limit) : result.rows;
     const runs = await Promise.all(
-      result.rows.map(async (row) => {
+      rows.map(async (row) => {
         const run = this.mapRunRow(row);
         return this.hydrateRun(run);
       })
     );
-    return runs;
+    return { items: runs.reverse(), hasMore };
   }
 
   async getRun(runId: string): Promise<TaskRun | null> {
@@ -2147,19 +2264,42 @@ export class PostgresTaskStore implements TaskStore {
   }
 
   async listChangeProposals(taskId: string): Promise<TaskChangeProposal[]> {
+    const page = await this.listChangeProposalsPage(taskId);
+    return page.items;
+  }
+
+  async listChangeProposalsPage(
+    taskId: string,
+    options?: ListTaskHistoryPageOptions
+  ): Promise<ListTaskHistoryPageResult<TaskChangeProposal>> {
+    const limit = clampHistoryPageLimit(options?.limit);
+    const values: unknown[] = [taskId];
+    let whereSql = "WHERE task_id = $1";
+    if (options?.before) {
+      values.push(options.before);
+      if (options.beforeId) {
+        values.push(options.beforeId);
+        whereSql += ` AND (created_at < $${values.length - 1} OR (created_at = $${values.length - 1} AND id < $${values.length}))`;
+      } else {
+        whereSql += ` AND created_at < $${values.length}`;
+      }
+    }
+    values.push(limit + 1);
     const result = await this.pool.query(
-      "SELECT proposal_data FROM task_change_proposals WHERE task_id = $1 ORDER BY created_at ASC, id ASC",
-      [taskId]
+      `SELECT proposal_data FROM task_change_proposals ${whereSql} ORDER BY created_at DESC, id DESC LIMIT $${values.length}`,
+      values
     );
+    const hasMore = result.rows.length > limit;
+    const rows = hasMore ? result.rows.slice(0, limit) : result.rows;
     const proposals: TaskChangeProposal[] = [];
-    for (const row of result.rows) {
+    for (const row of rows) {
       try {
         proposals.push(this.normalizeStoredProposal(parseJsonColumn<TaskChangeProposal>(row.proposal_data)));
       } catch {
         /* skip */
       }
     }
-    return proposals;
+    return { items: proposals.reverse(), hasMore };
   }
 
   async getChangeProposal(proposalId: string): Promise<TaskChangeProposal | null> {

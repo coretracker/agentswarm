@@ -195,6 +195,17 @@ const listTasksQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).optional()
 });
 
+const historyPageQuerySchema = z.object({
+  before: z
+    .string()
+    .trim()
+    .min(1)
+    .refine((value) => Number.isFinite(Date.parse(value)), "Invalid before cursor.")
+    .optional(),
+  beforeId: z.string().trim().min(1).max(255).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional()
+});
+
 const archivedTaskReadOnlyMessage = "Archived tasks are read-only";
 
 const applyCreateDefaultsFromSettings = <
@@ -420,14 +431,23 @@ export const registerTaskRoutes = (
     }
   );
 
-  app.get<{ Params: { id: string } }>("/tasks/:id/messages", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
-    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
-    if (!task) {
-      return;
-    }
+  app.get<{ Params: { id: string }; Querystring: { before?: string; beforeId?: string; limit?: string } }>(
+    "/tasks/:id/messages",
+    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
+    async (request, reply) => {
+      const parsedQuery = historyPageQuerySchema.safeParse(request.query);
+      if (!parsedQuery.success) {
+        return reply.status(400).send({ message: parsedQuery.error.message });
+      }
 
-    return deps.taskStore.listMessages(task.id);
-  });
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      return reply.send(await deps.taskStore.listMessagesPage(task.id, parsedQuery.data));
+    }
+  );
 
   app.get<{ Params: { id: string; messageId: string; attachmentId: string } }>(
     "/tasks/:id/messages/:messageId/attachments/:attachmentId",
@@ -461,14 +481,23 @@ export const registerTaskRoutes = (
     }
   );
 
-  app.get<{ Params: { id: string } }>("/tasks/:id/runs", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
-    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
-    if (!task) {
-      return;
-    }
+  app.get<{ Params: { id: string }; Querystring: { before?: string; beforeId?: string; limit?: string } }>(
+    "/tasks/:id/runs",
+    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
+    async (request, reply) => {
+      const parsedQuery = historyPageQuerySchema.safeParse(request.query);
+      if (!parsedQuery.success) {
+        return reply.status(400).send({ message: parsedQuery.error.message });
+      }
 
-    return deps.taskStore.listRuns(task.id);
-  });
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      return reply.send(await deps.taskStore.listRunsPage(task.id, parsedQuery.data));
+    }
+  );
 
   app.get<{ Params: { id: string }; Querystring: { base?: string; kind?: string; commit?: string } }>(
     "/tasks/:id/live-diff",
@@ -643,16 +672,21 @@ export const registerTaskRoutes = (
     }
   );
 
-  app.get<{ Params: { id: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { before?: string; beforeId?: string; limit?: string } }>(
     "/tasks/:id/change-proposals",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
     async (request, reply) => {
+      const parsedQuery = historyPageQuerySchema.safeParse(request.query);
+      if (!parsedQuery.success) {
+        return reply.status(400).send({ message: parsedQuery.error.message });
+      }
+
       const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
       if (!task) {
         return;
       }
 
-      return reply.send(await deps.taskStore.listChangeProposals(task.id));
+      return reply.send(await deps.taskStore.listChangeProposalsPage(task.id, parsedQuery.data));
     }
   );
 
