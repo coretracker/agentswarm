@@ -679,7 +679,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [taskStateDraft, setTaskStateDraft] = useState<EditableTaskState>("open");
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
-  const [notesModalOpen, setNotesModalOpen] = useState(false);
+  const [notesEditing, setNotesEditing] = useState(false);
   const [notesDraft, setNotesDraft] = useState("");
   const [applyCheckpointModalProposal, setApplyCheckpointModalProposal] = useState<TaskChangeProposal | null>(null);
   const [applyCheckpointCommitMessage, setApplyCheckpointCommitMessage] = useState("");
@@ -765,7 +765,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setWorkspaceFilePreview((current) => ({ ...current, open: false }));
     setTaskStateModalOpen(false);
     setTaskStateDraft("open");
-    setNotesModalOpen(false);
+    setNotesEditing(false);
     setNotesDraft("");
     setTaskPageVisible(false);
     setFilesTabOpenTarget(null);
@@ -2303,19 +2303,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
   };
 
-  const openNotesEditModal = () => {
+  const startNotesInlineEdit = () => {
     if (!task) {
       return;
     }
     setNotesDraft(task.notes ?? "");
-    setNotesModalOpen(true);
+    setNotesEditing(true);
   };
 
-  const closeNotesEditModal = () => {
+  const cancelNotesInlineEdit = () => {
     if (submitting === "notes") {
       return;
     }
-    setNotesModalOpen(false);
+    setNotesEditing(false);
+    setNotesDraft(task?.notes ?? "");
   };
 
   const confirmTaskNotesUpdate = async () => {
@@ -2326,7 +2327,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     const nextNotes = notesDraft.trim();
     const currentNotes = (task.notes ?? "").trim();
     if (nextNotes === currentNotes) {
-      setNotesModalOpen(false);
+      setNotesEditing(false);
       return;
     }
 
@@ -2335,7 +2336,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       const updatedTask = await api.updateTaskNotes(task.id, { notes: nextNotes });
       applyUpdatedTask(updatedTask);
       messageApi.success(nextNotes ? "Notes updated" : "Notes cleared");
-      setNotesModalOpen(false);
+      setNotesEditing(false);
     } catch (error) {
       showTaskActionError(error, "Failed to update notes");
     } finally {
@@ -3256,15 +3257,27 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           title={
             <Flex justify="space-between" align="center" gap={12}>
               <Typography.Text strong>Notes</Typography.Text>
-              {canEditTask && !isArchived ? (
-                <Button size="small" icon={<EditOutlined />} onClick={openNotesEditModal}>
+              {canEditTask && !isArchived && !notesEditing ? (
+                <Button size="small" icon={<EditOutlined />} onClick={startNotesInlineEdit}>
                   Edit
                 </Button>
               ) : null}
             </Flex>
           }
         >
-          {taskNotes ? (
+          {notesEditing && canEditTask && !isArchived ? (
+            <Flex vertical gap={12}>
+              <NotesMarkdownEditor value={notesDraft} onChange={setNotesDraft} disabled={submitting === "notes"} />
+              <Flex justify="flex-end" gap={8}>
+                <Button onClick={cancelNotesInlineEdit} disabled={submitting === "notes"}>
+                  Cancel
+                </Button>
+                <Button type="primary" onClick={() => void confirmTaskNotesUpdate()} loading={submitting === "notes"}>
+                  Save
+                </Button>
+              </Flex>
+            </Flex>
+          ) : taskNotes ? (
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
               {taskNotes}
             </ReactMarkdown>
@@ -4456,19 +4469,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           showCount
           disabled={submitting === "renameTitle"}
         />
-      </Modal>
-      <Modal
-        title="Edit notes"
-        open={notesModalOpen}
-        onCancel={closeNotesEditModal}
-        width="min(980px, calc(100vw - 32px))"
-        destroyOnClose
-        onOk={() => void confirmTaskNotesUpdate()}
-        okText="Save"
-        confirmLoading={submitting === "notes"}
-        styles={{ body: { maxHeight: "calc(100vh - 280px)", overflowY: "auto" } }}
-      >
-        <NotesMarkdownEditor value={notesDraft} onChange={setNotesDraft} disabled={submitting === "notes"} />
       </Modal>
       <Modal
         title="Edit comment"
