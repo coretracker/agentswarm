@@ -1,3 +1,5 @@
+@import "@mdxeditor/editor/style.css";
+
 :root {
   color-scheme: light;
   --app-body-bg: #f4f8f5;
@@ -696,4 +698,14 @@ html[data-theme="forge-light"] .diff-decoration-content,
 html[data-theme="forge-light"] .diff-widget-content {
   background: rgba(255, 252, 249, 0.94);
   color: #6d584b;
+}
+
+.task-notes-mdx-editor {
+  border: 1px solid var(--ant-colorBorder, rgba(5, 5, 5, 0.12));
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.task-notes-mdx-editor-content {
+  min-height: 380px;
 }

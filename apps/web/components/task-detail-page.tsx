@@ -67,6 +67,7 @@ import {
 } from "antd";
 import { ArrowRightOutlined, CopyOutlined, EditOutlined, LoadingOutlined, MoreOutlined, PushpinOutlined, RollbackOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import { Highlight, themes, type Language } from "prism-react-renderer";
@@ -111,6 +112,14 @@ const OPENAI_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
 const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
 const OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS = 48_000;
 const SYSTEM_ADMIN_ROLE_ID = "admin";
+
+const NotesMarkdownEditor = dynamic(
+  () => import("./notes-markdown-editor").then((mod) => mod.NotesMarkdownEditor),
+  {
+    ssr: false,
+    loading: () => <Skeleton active title={false} paragraph={{ rows: 8 }} />
+  }
+);
 
 function normalizeAiCommitSubject(raw: string): string {
   const firstLine = raw
@@ -4459,14 +4468,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         confirmLoading={submitting === "notes"}
         styles={{ body: { maxHeight: "calc(100vh - 280px)", overflowY: "auto" } }}
       >
-        <Input.TextArea
-          value={notesDraft}
-          onChange={(event) => setNotesDraft(event.target.value)}
-          autoSize={{ minRows: 14, maxRows: 28 }}
-          placeholder="Write notes in markdown..."
-          disabled={submitting === "notes"}
-          style={{ resize: "vertical" }}
-        />
+        <NotesMarkdownEditor value={notesDraft} onChange={setNotesDraft} disabled={submitting === "notes"} />
       </Modal>
       <Modal
         title="Edit comment"
