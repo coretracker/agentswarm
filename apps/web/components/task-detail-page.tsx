@@ -4452,15 +4452,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         title="Edit notes"
         open={notesModalOpen}
         onCancel={closeNotesEditModal}
+        width="min(980px, calc(100vw - 32px))"
         destroyOnClose
         onOk={() => void confirmTaskNotesUpdate()}
         okText="Save"
         confirmLoading={submitting === "notes"}
+        styles={{ body: { maxHeight: "calc(100vh - 280px)", overflowY: "auto" } }}
       >
         <Input.TextArea
           value={notesDraft}
           onChange={(event) => setNotesDraft(event.target.value)}
-          rows={12}
+          autoSize={{ minRows: 14, maxRows: 28 }}
           placeholder="Write notes in markdown..."
           disabled={submitting === "notes"}
           style={{ resize: "vertical" }}
