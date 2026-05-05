@@ -4311,7 +4311,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               }
             }}
           >
-            {`--- Load ${Math.min(HISTORY_LOAD_MORE_COUNT, hiddenHistoryCount)} more items ---`}
+            <Divider plain style={{ margin: 0 }}>
+              Load more
+            </Divider>
           </Button>
         </Flex>
       ) : hasMoreHistory ? (
@@ -4327,7 +4329,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               }
             }}
           >
-            {`--- Load ${HISTORY_LOAD_MORE_COUNT} more items ---`}
+            <Divider plain style={{ margin: 0 }}>
+              Load more
+            </Divider>
           </Button>
         </Flex>
       ) : null}
