@@ -2831,6 +2831,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const hasGitHubDiffTargetAction = githubPullRequestLookupPending || Boolean(githubDiffTarget);
   const assigneeLabel = task?.ownerUserId ? (assigneeNameById.get(task.ownerUserId) ?? task.ownerUserId) : "Unassigned";
   const taskNotes = (task?.notes ?? "").trim();
+  const notesCollapsePanelKey = "task-notes";
   const contextContent = (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Card size="small">
@@ -3362,45 +3363,48 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         {isActive ? " Settings will be applied on next run." : ""}
       </Typography.Text>
       {task ? (
-        <Card
+        <Collapse
           size="small"
-          styles={{ body: { padding: 12 } }}
-          title={
-            <Flex justify="space-between" align="center" gap={12}>
-              <Typography.Text strong>Notes</Typography.Text>
-              <Space size={8}>
-                <Button size="small" onClick={() => setNotesCollapsed((current) => !current)} disabled={notesEditing}>
-                  {notesCollapsed ? "Expand" : "Collapse"}
-                </Button>
-                {canEditTask && !isArchived && !notesEditing ? (
-                  <Button size="small" icon={<EditOutlined />} onClick={startNotesInlineEdit}>
-                    Edit
-                  </Button>
-                ) : null}
-              </Space>
-            </Flex>
-          }
-        >
-          {notesCollapsed ? null : notesEditing && canEditTask && !isArchived ? (
-            <Flex vertical gap={12}>
-              <NotesMarkdownEditor value={notesDraft} onChange={setNotesDraft} disabled={submitting === "notes"} />
-              <Flex justify="flex-end" gap={8}>
-                <Button onClick={cancelNotesInlineEdit} disabled={submitting === "notes"}>
-                  Cancel
-                </Button>
-                <Button type="primary" onClick={() => void confirmTaskNotesUpdate()} loading={submitting === "notes"}>
-                  Save
-                </Button>
-              </Flex>
-            </Flex>
-          ) : taskNotes ? (
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-              {taskNotes}
-            </ReactMarkdown>
-          ) : (
-            <Typography.Text type="secondary">No notes added.</Typography.Text>
-          )}
-        </Card>
+          activeKey={notesCollapsed ? [] : [notesCollapsePanelKey]}
+          onChange={(keys) => {
+            const activeKeys = Array.isArray(keys) ? keys : keys ? [keys] : [];
+            setNotesCollapsed(!activeKeys.includes(notesCollapsePanelKey));
+          }}
+          items={[
+            {
+              key: notesCollapsePanelKey,
+              label: "Notes",
+              extra:
+                canEditTask && !isArchived && !notesEditing ? (
+                  <span onClick={(event) => event.stopPropagation()}>
+                    <Button size="small" icon={<EditOutlined />} onClick={startNotesInlineEdit}>
+                      Edit
+                    </Button>
+                  </span>
+                ) : null,
+              children:
+                notesEditing && canEditTask && !isArchived ? (
+                  <Flex vertical gap={12}>
+                    <NotesMarkdownEditor value={notesDraft} onChange={setNotesDraft} disabled={submitting === "notes"} />
+                    <Flex justify="flex-end" gap={8}>
+                      <Button onClick={cancelNotesInlineEdit} disabled={submitting === "notes"}>
+                        Cancel
+                      </Button>
+                      <Button type="primary" onClick={() => void confirmTaskNotesUpdate()} loading={submitting === "notes"}>
+                        Save
+                      </Button>
+                    </Flex>
+                  </Flex>
+                ) : taskNotes ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    {taskNotes}
+                  </ReactMarkdown>
+                ) : (
+                  <Typography.Text type="secondary">No notes added.</Typography.Text>
+                )
+            }
+          ]}
+        />
       ) : null}
     </Flex>
   );
