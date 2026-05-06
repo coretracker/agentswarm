@@ -53,6 +53,7 @@ import {
   Mentions,
   List,
   Modal,
+  Pagination,
   Popconfirm,
   Segmented,
   Skeleton,
@@ -113,8 +114,7 @@ const OPENAI_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
 const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
 const OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS = 48_000;
 const SYSTEM_ADMIN_ROLE_ID = "admin";
-const HISTORY_INITIAL_VISIBLE_COUNT = 5;
-const HISTORY_LOAD_MORE_COUNT = 10;
+const HISTORY_PAGE_SIZE = 5;
 const getNotesCollapseStorageKey = (taskId: string): string => `agentswarm:task:${taskId}:notesCollapsed`;
 const getComposerDraftStorageKey = (taskId: string): string => `agentswarm:task:${taskId}:composerDraft`;
 
@@ -731,7 +731,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [isDeletingTask, setIsDeletingTask] = useState(false);
   const [redirectingToTaskList, setRedirectingToTaskList] = useState(false);
   const [taskPageVisible, setTaskPageVisible] = useState(false);
-  const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_INITIAL_VISIBLE_COUNT);
+  const [historyPage, setHistoryPage] = useState(1);
   const [fileMentionOptions, setFileMentionOptions] = useState<Array<{ value: string; label: string }>>([]);
   const [fileMentionLoading, setFileMentionLoading] = useState(false);
   const [workspaceFilePreview, setWorkspaceFilePreview] = useState<WorkspaceFilePreviewState>({
@@ -796,7 +796,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setTaskStateDraft("open");
     setNotesEditing(false);
     setNotesDraft("");
-    setVisibleHistoryCount(HISTORY_INITIAL_VISIBLE_COUNT);
+    setHistoryPage(1);
     fileMentionSearchRequestIdRef.current += 1;
     if (fileMentionSearchTimerRef.current !== null) {
       window.clearTimeout(fileMentionSearchTimerRef.current);
@@ -2003,12 +2003,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     () => chatTimeline,
     [chatTimeline]
   );
-  const visibleHistoryStartIndex = Math.max(0, historicalChatTimeline.length - visibleHistoryCount);
-  const hiddenHistoryCount = visibleHistoryStartIndex;
-  const visibleChatHistoryTimeline = historicalChatTimeline.slice(visibleHistoryStartIndex);
+  const historyTotalCount = historicalChatTimeline.length;
+  const loadedHistoryPageCount = Math.max(1, Math.ceil(Math.max(0, historyTotalCount) / HISTORY_PAGE_SIZE));
   const hasActiveTerminalHistoryEntry = activeTerminalHistoryEntry !== null;
   const hasMoreHistory = messagesHasMore || runsHasMore || proposalsHasMore;
   const historyLoadingMore = messagesLoadingMore || runsLoadingMore || proposalsLoadingMore;
+  const historyPageCount = hasMoreHistory ? loadedHistoryPageCount + 1 : loadedHistoryPageCount;
+  const normalizedHistoryPage = Math.max(1, Math.min(historyPage, historyPageCount));
+  const visibleHistoryEndIndex = Math.max(0, historyTotalCount - (normalizedHistoryPage - 1) * HISTORY_PAGE_SIZE);
+  const visibleHistoryStartIndex = Math.max(0, visibleHistoryEndIndex - HISTORY_PAGE_SIZE);
+  const visibleChatHistoryTimeline = historicalChatTimeline.slice(visibleHistoryStartIndex, visibleHistoryEndIndex);
   const loadMoreHistoryFromNetwork = useCallback(async () => {
     const [moreMessages, moreRuns, moreProposals] = await Promise.all([
       messagesHasMore ? loadMoreMessages() : Promise.resolve([]),
@@ -2019,12 +2023,21 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   }, [loadMoreMessages, loadMoreProposals, loadMoreRuns, messagesHasMore, proposalsHasMore, runsHasMore]);
 
   useEffect(() => {
-    if (visibleHistoryCount <= historicalChatTimeline.length || !hasMoreHistory || historyLoadingMore) {
+    const neededCount = normalizedHistoryPage * HISTORY_PAGE_SIZE;
+    if (neededCount <= historicalChatTimeline.length || !hasMoreHistory || historyLoadingMore) {
       return;
     }
 
     void loadMoreHistoryFromNetwork();
-  }, [hasMoreHistory, historicalChatTimeline.length, historyLoadingMore, loadMoreHistoryFromNetwork, visibleHistoryCount]);
+  }, [hasMoreHistory, historicalChatTimeline.length, historyLoadingMore, loadMoreHistoryFromNetwork, normalizedHistoryPage]);
+
+  useEffect(() => {
+    if (historyPage === normalizedHistoryPage) {
+      return;
+    }
+
+    setHistoryPage(normalizedHistoryPage);
+  }, [historyPage, normalizedHistoryPage]);
 
   useEffect(() => {
     if (interactiveTerminalRunning) {
@@ -2201,6 +2214,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       );
       setChatInput("");
       setSelectedPromptImageFiles([]);
+      setHistoryPage(1);
+      window.requestAnimationFrame(() => {
+        bottomScrollAnchorRef.current?.scrollIntoView({
+          block: "end",
+          inline: "nearest",
+          behavior: "auto"
+        });
+      });
       messageApi.success(
         selectedChatAction === "comment"
           ? "Comment added to history"
@@ -4455,41 +4476,26 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </Card>
     );
   };
+  const renderHistoryPaginationControl = () =>
+    historyTotalCount > 0 || hasMoreHistory ? (
+      <Flex justify="center">
+        <Pagination
+          size="small"
+          current={normalizedHistoryPage}
+          pageSize={HISTORY_PAGE_SIZE}
+          total={historyPageCount * HISTORY_PAGE_SIZE}
+          showSizeChanger={false}
+          showQuickJumper={false}
+          disabled={historyLoadingMore}
+          onChange={(page) => {
+            setHistoryPage(page);
+          }}
+        />
+      </Flex>
+    ) : null;
+
   const chatTimelineBlock = historicalChatTimeline.length > 0 ? (
     <Flex vertical gap={12} style={{ width: "100%" }}>
-      {hiddenHistoryCount > 0 ? (
-        <Flex justify="center">
-          <Button
-            type="link"
-            loading={historyLoadingMore}
-            disabled={historyLoadingMore}
-            onClick={() => {
-              setVisibleHistoryCount((current) => current + HISTORY_LOAD_MORE_COUNT);
-              if (hiddenHistoryCount < HISTORY_LOAD_MORE_COUNT && hasMoreHistory && !historyLoadingMore) {
-                void loadMoreHistoryFromNetwork();
-              }
-            }}
-          >
-            <Divider plain>Load more</Divider>
-          </Button>
-        </Flex>
-      ) : hasMoreHistory ? (
-        <Flex justify="center">
-          <Button
-            type="link"
-            loading={historyLoadingMore}
-            disabled={historyLoadingMore}
-            onClick={() => {
-              setVisibleHistoryCount((current) => current + HISTORY_LOAD_MORE_COUNT);
-              if (!historyLoadingMore) {
-                void loadMoreHistoryFromNetwork();
-              }
-            }}
-          >
-            <Divider plain>Load more</Divider>
-          </Button>
-        </Flex>
-      ) : null}
       {visibleChatHistoryTimeline.map((entry) => {
         if (entry.kind === "message") {
           return renderRawMessageEntry(entry.key, entry.message);
@@ -4562,7 +4568,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               description="Apply or reject the workspace changes from this run before starting a new build or using Git push/pull. You can still open Terminal to inspect the workspace."
             />
           ) : null}
+          {renderHistoryPaginationControl()}
           {chatTimelineBlock}
+          {renderHistoryPaginationControl()}
           {chatHistoryEmptyState}
           {!isPreparingWorkspace ? chatComposer : null}
         </Space>
