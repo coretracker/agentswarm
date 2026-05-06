@@ -804,11 +804,19 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     try {
-      setNotesCollapsed(window.localStorage.getItem(getNotesCollapseStorageKey(taskId)) === "1");
+      const stored = window.localStorage.getItem(getNotesCollapseStorageKey(taskId));
+      if (stored === "1") {
+        setNotesCollapsed(true);
+        return;
+      }
+
+      const hasNotes = (task?.notes ?? "").trim().length > 0;
+      setNotesCollapsed(!hasNotes);
     } catch {
-      setNotesCollapsed(false);
+      const hasNotes = (task?.notes ?? "").trim().length > 0;
+      setNotesCollapsed(!hasNotes);
     }
-  }, [taskId]);
+  }, [task?.notes, taskId]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
