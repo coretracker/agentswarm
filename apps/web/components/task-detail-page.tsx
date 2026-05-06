@@ -50,6 +50,7 @@ import {
   Flex,
   Form,
   Input,
+  Mentions,
   List,
   Modal,
   Popconfirm,
@@ -731,6 +732,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [redirectingToTaskList, setRedirectingToTaskList] = useState(false);
   const [taskPageVisible, setTaskPageVisible] = useState(false);
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_INITIAL_VISIBLE_COUNT);
+  const [fileMentionOptions, setFileMentionOptions] = useState<Array<{ value: string; label: string }>>([]);
+  const [fileMentionLoading, setFileMentionLoading] = useState(false);
   const [workspaceFilePreview, setWorkspaceFilePreview] = useState<WorkspaceFilePreviewState>({
     open: false,
     loading: false,
@@ -749,6 +752,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [filesTabOpenTarget, setFilesTabOpenTarget] = useState<WorkspaceFileLinkTarget | null>(null);
   const executionConfigAutosaveTimeoutRef = useRef<number | null>(null);
   const executionConfigSaveRequestIdRef = useRef(0);
+  const fileMentionSearchRequestIdRef = useRef(0);
+  const fileMentionSearchTimerRef = useRef<number | null>(null);
   const bottomScrollAnchorRef = useRef<HTMLDivElement | null>(null);
   const initialBottomScrollStateRef = useRef<{ taskId: string; scrolledWithTerminal: boolean } | null>(null);
 
@@ -792,10 +797,26 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setNotesEditing(false);
     setNotesDraft("");
     setVisibleHistoryCount(HISTORY_INITIAL_VISIBLE_COUNT);
+    fileMentionSearchRequestIdRef.current += 1;
+    if (fileMentionSearchTimerRef.current !== null) {
+      window.clearTimeout(fileMentionSearchTimerRef.current);
+      fileMentionSearchTimerRef.current = null;
+    }
+    setFileMentionOptions([]);
+    setFileMentionLoading(false);
     setTaskPageVisible(false);
     setFilesTabOpenTarget(null);
     initialBottomScrollStateRef.current = null;
   }, [taskId]);
+
+  useEffect(() => {
+    return () => {
+      if (fileMentionSearchTimerRef.current !== null) {
+        window.clearTimeout(fileMentionSearchTimerRef.current);
+        fileMentionSearchTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -3227,10 +3248,60 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const chatComposer = (
     <Flex vertical gap={12}>
-      <Input.TextArea
+      <Mentions
         autoSize={{ minRows: 4, maxRows: 14 }}
+        prefix="@"
         value={chatInput}
-        onChange={(event) => setChatInput(event.target.value)}
+        onChange={(value) => setChatInput(value)}
+        options={fileMentionOptions}
+        filterOption={false}
+        notFoundContent={fileMentionLoading ? <Spin size="small" /> : "No files found"}
+        onSearch={(searchText, mentionPrefix) => {
+          if (mentionPrefix !== "@") {
+            return;
+          }
+
+          const query = searchText.trim();
+          if (fileMentionSearchTimerRef.current !== null) {
+            window.clearTimeout(fileMentionSearchTimerRef.current);
+            fileMentionSearchTimerRef.current = null;
+          }
+
+          if (query.length === 0) {
+            fileMentionSearchRequestIdRef.current += 1;
+            setFileMentionOptions([]);
+            setFileMentionLoading(false);
+            return;
+          }
+
+          const requestId = fileMentionSearchRequestIdRef.current + 1;
+          fileMentionSearchRequestIdRef.current = requestId;
+          setFileMentionLoading(true);
+
+          fileMentionSearchTimerRef.current = window.setTimeout(() => {
+            void api
+              .searchTaskWorkspaceFiles(taskId, { query, limit: 40 })
+              .then((result) => {
+                if (fileMentionSearchRequestIdRef.current !== requestId) {
+                  return;
+                }
+
+                setFileMentionOptions(result.results.map((path) => ({ value: path, label: path })));
+              })
+              .catch(() => {
+                if (fileMentionSearchRequestIdRef.current !== requestId) {
+                  return;
+                }
+                setFileMentionOptions([]);
+              })
+              .finally(() => {
+                if (fileMentionSearchRequestIdRef.current !== requestId) {
+                  return;
+                }
+                setFileMentionLoading(false);
+              });
+          }, 180);
+        }}
         onKeyDown={(event) => {
           if (event.nativeEvent.isComposing || event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
             return;
