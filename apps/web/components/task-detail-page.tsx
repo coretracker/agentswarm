@@ -114,6 +114,8 @@ const OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS = 48_000;
 const SYSTEM_ADMIN_ROLE_ID = "admin";
 const HISTORY_INITIAL_VISIBLE_COUNT = 5;
 const HISTORY_LOAD_MORE_COUNT = 10;
+const getNotesCollapseStorageKey = (taskId: string): string => `agentswarm:task:${taskId}:notesCollapsed`;
+const getComposerDraftStorageKey = (taskId: string): string => `agentswarm:task:${taskId}:composerDraft`;
 
 const NotesMarkdownEditor = dynamic(
   () => import("./notes-markdown-editor").then((mod) => mod.NotesMarkdownEditor),
@@ -642,6 +644,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [assignableUsersLoading, setAssignableUsersLoading] = useState(false);
   const [followUpForm] = Form.useForm();
   const [chatInput, setChatInput] = useState("");
+  const [chatInputDraftReady, setChatInputDraftReady] = useState(false);
   const [providerInput, setProviderInput] = useState<AgentProvider>("codex");
   const [providerProfileInput, setProviderProfileInput] = useState<ProviderProfile>("high");
   const [modelInput, setModelInput] = useState<string>("gpt-5.4");
@@ -699,6 +702,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
   const [notesEditing, setNotesEditing] = useState(false);
+  const [notesCollapsed, setNotesCollapsed] = useState(false);
   const [notesDraft, setNotesDraft] = useState("");
   const [applyCheckpointModalProposal, setApplyCheckpointModalProposal] = useState<TaskChangeProposal | null>(null);
   const [applyCheckpointCommitMessage, setApplyCheckpointCommitMessage] = useState("");
@@ -792,6 +796,70 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setFilesTabOpenTarget(null);
     initialBottomScrollStateRef.current = null;
   }, [taskId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      setNotesCollapsed(false);
+      return;
+    }
+
+    try {
+      setNotesCollapsed(window.localStorage.getItem(getNotesCollapseStorageKey(taskId)) === "1");
+    } catch {
+      setNotesCollapsed(false);
+    }
+  }, [taskId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      if (notesCollapsed) {
+        window.localStorage.setItem(getNotesCollapseStorageKey(taskId), "1");
+      } else {
+        window.localStorage.removeItem(getNotesCollapseStorageKey(taskId));
+      }
+    } catch {
+      // Ignore localStorage write errors.
+    }
+  }, [notesCollapsed, taskId]);
+
+  useEffect(() => {
+    setChatInputDraftReady(false);
+
+    if (typeof window === "undefined") {
+      setChatInput("");
+      setChatInputDraftReady(true);
+      return;
+    }
+
+    try {
+      const storedDraft = window.localStorage.getItem(getComposerDraftStorageKey(taskId));
+      setChatInput(storedDraft ?? "");
+    } catch {
+      setChatInput("");
+    } finally {
+      setChatInputDraftReady(true);
+    }
+  }, [taskId]);
+
+  useEffect(() => {
+    if (!chatInputDraftReady || typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      if (chatInput.length === 0) {
+        window.localStorage.removeItem(getComposerDraftStorageKey(taskId));
+      } else {
+        window.localStorage.setItem(getComposerDraftStorageKey(taskId), chatInput);
+      }
+    } catch {
+      // Ignore localStorage write errors.
+    }
+  }, [chatInput, chatInputDraftReady, taskId]);
 
   const taskType = task?.taskType ?? "build";
   const isBuildTask = taskType === "build";
@@ -2349,6 +2417,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (!task) {
       return;
     }
+    setNotesCollapsed(false);
     setNotesDraft(task.notes ?? "");
     setNotesEditing(true);
   };
@@ -3299,15 +3368,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           title={
             <Flex justify="space-between" align="center" gap={12}>
               <Typography.Text strong>Notes</Typography.Text>
-              {canEditTask && !isArchived && !notesEditing ? (
-                <Button size="small" icon={<EditOutlined />} onClick={startNotesInlineEdit}>
-                  Edit
+              <Space size={8}>
+                <Button size="small" onClick={() => setNotesCollapsed((current) => !current)} disabled={notesEditing}>
+                  {notesCollapsed ? "Expand" : "Collapse"}
                 </Button>
-              ) : null}
+                {canEditTask && !isArchived && !notesEditing ? (
+                  <Button size="small" icon={<EditOutlined />} onClick={startNotesInlineEdit}>
+                    Edit
+                  </Button>
+                ) : null}
+              </Space>
             </Flex>
           }
         >
-          {notesEditing && canEditTask && !isArchived ? (
+          {notesCollapsed ? null : notesEditing && canEditTask && !isArchived ? (
             <Flex vertical gap={12}>
               <NotesMarkdownEditor value={notesDraft} onChange={setNotesDraft} disabled={submitting === "notes"} />
               <Flex justify="flex-end" gap={8}>
