@@ -3453,26 +3453,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             {
               key: notesCollapsePanelKey,
               label: "Notes",
-              extra:
-                canEditTask && !isArchived && !notesEditing ? (
-                  <span onClick={(event) => event.stopPropagation()}>
+              extra: (
+                <span onClick={(event) => event.stopPropagation()}>
+                  {notesEditing && canEditTask && !isArchived ? (
+                    <Space size={8}>
+                      <Button size="small" onClick={cancelNotesInlineEdit} disabled={submitting === "notes"}>
+                        Cancel
+                      </Button>
+                      <Button size="small" type="primary" onClick={() => void confirmTaskNotesUpdate()} loading={submitting === "notes"}>
+                        Save
+                      </Button>
+                    </Space>
+                  ) : canEditTask && !isArchived ? (
                     <Button size="small" icon={<EditOutlined />} onClick={startNotesInlineEdit}>
                       Edit
                     </Button>
-                  </span>
-                ) : null,
+                  ) : null}
+                </span>
+              ),
               children:
                 notesEditing && canEditTask && !isArchived ? (
                   <Flex vertical gap={12}>
                     <NotesMarkdownEditor value={notesDraft} onChange={setNotesDraft} disabled={submitting === "notes"} />
-                    <Flex justify="flex-end" gap={8}>
-                      <Button onClick={cancelNotesInlineEdit} disabled={submitting === "notes"}>
-                        Cancel
-                      </Button>
-                      <Button type="primary" onClick={() => void confirmTaskNotesUpdate()} loading={submitting === "notes"}>
-                        Save
-                      </Button>
-                    </Flex>
                   </Flex>
                 ) : taskNotes ? (
                   <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
