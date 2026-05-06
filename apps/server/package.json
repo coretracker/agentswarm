@@ -10,7 +10,7 @@
     "db:backfill:redis-to-postgres": "tsx src/db/backfill-redis-to-postgres.ts",
     "build": "tsc -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/services/scheduler.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts"
+    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts"
   },
   "dependencies": {
     "@agentswarm/shared-types": "*",

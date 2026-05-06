@@ -59,6 +59,7 @@ import type { TaskStore } from "./task-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { UserStore } from "./user-store.js";
 import type { RepositoryStore } from "./repository-store.js";
+import { RepoSyncManager, type RepoSyncOperation } from "./repo-sync-manager.js";
 
 const ansiPattern = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\))/g;
 
@@ -197,6 +198,7 @@ export class SpawnerService {
   private cancelRequestedTaskIds = new Set<string>();
   private repoLocks = new Map<string, Promise<void>>();
   private gitTargetLocks = new Map<string, Promise<void>>();
+  private readonly repoSyncManager = new RepoSyncManager();
   private executionContextStorage = new AsyncLocalStorage<{ taskId: string; executionId: string }>();
 
   constructor(
@@ -694,11 +696,12 @@ export class SpawnerService {
     task: Task,
     githubToken: string | null | undefined,
     gitUsername: string,
+    operation: RepoSyncOperation,
     fn: (repoPath: string) => Promise<T>
   ): Promise<T> {
     const repoCachePath = this.resolveRepoCachePath(task);
     return this.withRepoLock(repoCachePath, async () => {
-      let managedRepoPath = await this.ensureManagedRepoFresh(task, githubToken, gitUsername);
+      let managedRepoPath = await this.ensureManagedRepoFresh(task, operation, githubToken, gitUsername);
       try {
         return await fn(managedRepoPath);
       } catch (error) {
@@ -707,7 +710,8 @@ export class SpawnerService {
         }
 
         await rm(managedRepoPath, { recursive: true, force: true });
-        managedRepoPath = await this.ensureManagedRepoFresh(task, githubToken, gitUsername);
+        this.repoSyncManager.clear(repoCachePath);
+        managedRepoPath = await this.ensureManagedRepoFresh(task, operation, githubToken, gitUsername);
         return fn(managedRepoPath);
       }
     });
@@ -717,9 +721,10 @@ export class SpawnerService {
     task: Task,
     workspacePath: string,
     githubToken: string | null | undefined,
-    gitUsername: string
+    gitUsername: string,
+    operation: RepoSyncOperation = "status"
   ): Promise<void> {
-    await this.withFreshManagedRepo(task, githubToken, gitUsername, async () => {
+    await this.withFreshManagedRepo(task, githubToken, gitUsername, operation, async () => {
       await this.syncWorkspaceRemoteRefsIfNeeded(task, workspacePath, githubToken, gitUsername);
     });
   }
@@ -1555,7 +1560,12 @@ export class SpawnerService {
     return summary;
   }
 
-  private async ensureManagedRepoFresh(task: Task, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
+  private async ensureManagedRepoFresh(
+    task: Task,
+    operation: RepoSyncOperation,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string> {
     const repoPath = this.resolveRepoCachePath(task);
     await mkdir(path.dirname(repoPath), { recursive: true });
 
@@ -1575,12 +1585,21 @@ export class SpawnerService {
     await this.gitCommand(["-C", repoPath, "remote", "set-url", "origin", task.repoUrl], githubToken, gitUsername).catch(async () => {
       await this.gitCommand(["-C", repoPath, "remote", "add", "origin", task.repoUrl], githubToken, gitUsername);
     });
-    await this.gitCommand(
-      ["-C", repoPath, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"],
-      githubToken,
-      gitUsername
-    );
-    await this.gitCommand(["-C", repoPath, "worktree", "prune"], githubToken, gitUsername).catch(() => undefined);
+
+    const syncDecision = this.repoSyncManager.decide(repoPath, operation);
+    if (!repoExists || syncDecision.shouldFetch) {
+      await this.gitCommand(
+        ["-C", repoPath, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"],
+        githubToken,
+        gitUsername
+      );
+      this.repoSyncManager.markFetched(repoPath);
+    }
+
+    if (!repoExists || syncDecision.shouldPrune) {
+      await this.gitCommand(["-C", repoPath, "worktree", "prune"], githubToken, gitUsername).catch(() => undefined);
+      this.repoSyncManager.markPruned(repoPath);
+    }
 
     return repoPath;
   }
@@ -1623,7 +1642,7 @@ export class SpawnerService {
         return { pullCount: 0, pushCount: 0 };
       }
 
-      await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "status");
 
       let pullCount = 0;
       let pushCount = 0;
@@ -3324,7 +3343,7 @@ export class SpawnerService {
       await this.gitCommand(["-C", workspacePath, "checkout", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     }
 
-    await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "pull");
 
     const remoteRef = `origin/${branchName}`;
     if (!(await this.refExists(workspacePath, remoteRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
@@ -3360,7 +3379,7 @@ export class SpawnerService {
       await this.taskStore.appendLog(task.id, "Spawner: created a local commit from workspace changes before pulling.");
     }
 
-    await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "pull");
     await this.gitCommand(["-C", workspacePath, "rebase", remoteRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
       async (error) => {
         await this.gitCommand(["-C", workspacePath, "rebase", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
@@ -3433,7 +3452,9 @@ export class SpawnerService {
     try {
       await this.gitCommand(["-C", workspacePath, "push", "--no-verify", "-u", "origin", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     } catch {
-      await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(() => undefined);
+      await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "push").catch(
+        () => undefined
+      );
       try {
         await this.gitCommandCapture(
           ["-C", workspacePath, "rev-parse", "--verify", `origin/${branchName}`],
@@ -3487,7 +3508,7 @@ export class SpawnerService {
     }
 
     const repoCachePath = this.resolveRepoCachePath(task);
-    return this.withFreshManagedRepo(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, async (managedRepoPath) => {
+    return this.withFreshManagedRepo(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "merge_preview", async (managedRepoPath) => {
       const sourceRef = `origin/${sourceBranch}`;
       const targetRef = `origin/${normalizedTargetBranch}`;
 
@@ -3577,7 +3598,7 @@ export class SpawnerService {
       await this.pushTaskBranch(task);
     }
 
-    await this.withFreshManagedRepo(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, async (managedRepoPath) => {
+    await this.withFreshManagedRepo(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "merge", async (managedRepoPath) => {
       const defaultRef = `origin/${targetBranchName}`;
       const remoteBranchRef = `origin/${branchName}`;
 
@@ -3692,6 +3713,7 @@ export class SpawnerService {
       workingTask,
       runtimeCredentials.githubToken,
       runtimeCredentials.gitUsername,
+      "workspace_prepare",
       async (managedRepoPath) => ({
         workspace: await this.prepareWorkspace(
           workingTask,
@@ -3960,6 +3982,7 @@ export class SpawnerService {
         task,
         runtimeCredentials.githubToken,
         runtimeCredentials.gitUsername,
+        action === "ask" ? "ask" : "run",
         async (managedRepoPath) => ({
           repoProfile: await this.ensureRepoProfile(
             task,
