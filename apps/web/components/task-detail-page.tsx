@@ -49,6 +49,7 @@ import {
   Dropdown,
   Empty,
   Flex,
+  FloatButton,
   Form,
   Input,
   Mentions,
@@ -4906,17 +4907,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                       ) : null}
                     </Space>
                     <Space wrap size={8} style={{ justifyContent: "flex-end" }}>
-                      <Button
-                        icon={<PushpinOutlined />}
-                        onClick={() => {
-                          if (!task) {
-                            return;
-                          }
-                          setNotesDrawerOpen(true);
-                        }}
-                      >
-                        Notes
-                      </Button>
                       {showWorkingIndicator ? (
                         <Space size={6} align="center" style={{ color: "rgba(0,0,0,0.65)" }}>
                           <Spin size="small" />
@@ -4977,6 +4967,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </div>
         ) : null}
       </Flex>
+      {task ? (
+        <FloatButton
+          icon={<PushpinOutlined />}
+          tooltip="Task Notes"
+          type={taskNotes ? "primary" : "default"}
+          style={{ right: 24, bottom: 24 }}
+          onClick={() => setNotesDrawerOpen(true)}
+        />
+      ) : null}
 
       <Modal
         open={killTerminalConfirmOpen}
