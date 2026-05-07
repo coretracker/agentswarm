@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Repository, Role, User } from "@agentswarm/shared-types";
+import type { AgentResponseStyle, Repository, Role, User } from "@agentswarm/shared-types";
 import {
   App,
   Button,
@@ -28,6 +28,8 @@ interface UserFormValues {
   email: string;
   password?: string;
   active: boolean;
+  agentResponsePreferenceEnabled: boolean;
+  agentResponsePreferenceStyle: AgentResponseStyle | undefined;
   roleIds: string[];
   repositoryIds: string[];
 }
@@ -80,6 +82,8 @@ export function UsersPage() {
       email: "",
       password: "",
       active: true,
+      agentResponsePreferenceEnabled: false,
+      agentResponsePreferenceStyle: undefined,
       roleIds: [],
       repositoryIds: []
     });
@@ -93,6 +97,8 @@ export function UsersPage() {
       email: user.email,
       password: "",
       active: user.active,
+      agentResponsePreferenceEnabled: user.agentResponsePreference.enabled,
+      agentResponsePreferenceStyle: user.agentResponsePreference.style ?? undefined,
       roleIds: user.roles.map((role) => role.id),
       repositoryIds: user.repositoryIds ?? []
     });
@@ -151,6 +157,16 @@ export function UsersPage() {
                       ))}
                     </Space>
                   );
+                }
+              },
+              {
+                title: "Response Style",
+                render: (_, user) => {
+                  if (!user.agentResponsePreference.enabled) {
+                    return <Typography.Text type="secondary">Disabled</Typography.Text>;
+                  }
+
+                  return <Tag>{user.agentResponsePreference.style === "technical" ? "Technical" : "Non-technical"}</Tag>;
                 }
               },
               {
@@ -218,6 +234,10 @@ export function UsersPage() {
                   email: values.email,
                   password: values.password?.trim() || undefined,
                   active: values.active,
+                  agentResponsePreference: {
+                    enabled: values.agentResponsePreferenceEnabled,
+                    style: values.agentResponsePreferenceStyle ?? null
+                  },
                   roleIds: canEditRoles ? values.roleIds : undefined,
                   repositoryIds: canEditRoles ? values.repositoryIds : undefined
                 });
@@ -228,6 +248,10 @@ export function UsersPage() {
                   email: values.email,
                   password: values.password?.trim() || "",
                   active: values.active,
+                  agentResponsePreference: {
+                    enabled: values.agentResponsePreferenceEnabled,
+                    style: values.agentResponsePreferenceStyle ?? null
+                  },
                   roleIds: canEditRoles ? values.roleIds : undefined,
                   repositoryIds: canEditRoles ? values.repositoryIds : undefined
                 });
@@ -264,6 +288,40 @@ export function UsersPage() {
             extra={editingUser?.id === currentUserId ? "Your own account cannot be disabled." : undefined}
           >
             <Switch disabled={editingUser?.id === currentUserId} />
+          </Form.Item>
+          <Form.Item
+            name="agentResponsePreferenceEnabled"
+            label="Tailored Response Style"
+            valuePropName="checked"
+            extra="When enabled, the agent adapts its response style to the selected audience."
+          >
+            <Switch />
+          </Form.Item>
+          <Form.Item
+            noStyle
+            shouldUpdate={(prev, next) => prev.agentResponsePreferenceEnabled !== next.agentResponsePreferenceEnabled}
+          >
+            {({ getFieldValue }) => (
+              <Form.Item
+                name="agentResponsePreferenceStyle"
+                label="Preferred Audience"
+                extra={
+                  getFieldValue("agentResponsePreferenceEnabled")
+                    ? "Technical is more direct. Non-technical uses simpler language."
+                    : "Disabled means the user gets the normal neutral response."
+                }
+              >
+                <Select
+                  disabled={!getFieldValue("agentResponsePreferenceEnabled")}
+                  options={[
+                    { label: "Technical", value: "technical" },
+                    { label: "Non-technical", value: "non_technical" }
+                  ]}
+                  allowClear
+                  placeholder="Select an audience"
+                />
+              </Form.Item>
+            )}
           </Form.Item>
           {canEditRoles ? (
             <Form.Item name="roleIds" label="Roles">

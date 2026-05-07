@@ -12,7 +12,13 @@ const createUserSchema = z.object({
   password: z.string().min(1),
   active: z.boolean().optional(),
   roleIds: z.array(z.string().trim().min(1)).optional(),
-  repositoryIds: z.array(z.string().trim().min(1)).optional()
+  repositoryIds: z.array(z.string().trim().min(1)).optional(),
+  agentResponsePreference: z
+    .object({
+      enabled: z.boolean().optional(),
+      style: z.enum(["technical", "non_technical"]).nullable().optional()
+    })
+    .optional()
 });
 
 const updateUserSchema = z.object({
@@ -21,7 +27,13 @@ const updateUserSchema = z.object({
   password: z.string().min(1).optional(),
   active: z.boolean().optional(),
   roleIds: z.array(z.string().trim().min(1)).optional(),
-  repositoryIds: z.array(z.string().trim().min(1)).optional()
+  repositoryIds: z.array(z.string().trim().min(1)).optional(),
+  agentResponsePreference: z
+    .object({
+      enabled: z.boolean().optional(),
+      style: z.enum(["technical", "non_technical"]).nullable().optional()
+    })
+    .optional()
 });
 
 export const registerUserRoutes = (
@@ -104,7 +116,12 @@ export const registerUserRoutes = (
           return reply.status(404).send({ message: "User not found" });
         }
 
-        if (parsed.data.active === false || parsed.data.roleIds !== undefined || parsed.data.repositoryIds !== undefined) {
+        if (
+          parsed.data.active === false ||
+          parsed.data.roleIds !== undefined ||
+          parsed.data.repositoryIds !== undefined ||
+          parsed.data.agentResponsePreference !== undefined
+        ) {
           await deps.sessionStore.deleteSessionsForUser(user.id);
         }
 

@@ -223,6 +223,7 @@ export interface User {
   name: string;
   email: string;
   active: boolean;
+  agentResponsePreference: AgentResponsePreference;
   roles: UserRoleRef[];
   repositoryIds: string[];
   lastLoginAt: string | null;
@@ -235,7 +236,6 @@ export interface AuthSessionUser extends User {
   allowedProviders: AgentProvider[];
   allowedModels: string[];
   allowedEfforts: ProviderProfile[];
-  agentResponsePreference: AgentResponsePreference;
   codexAuthJsonConfigured?: boolean;
 }
 
