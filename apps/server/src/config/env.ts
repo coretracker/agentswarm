@@ -12,6 +12,7 @@ const envSchema = z.object({
   STORE_BACKEND: storeBackendSchema.default("redis"),
   TASK_STORE_BACKEND: optionalStoreBackendSchema,
   SNIPPET_STORE_BACKEND: optionalStoreBackendSchema,
+  FLOW_STORE_BACKEND: optionalStoreBackendSchema,
   REPOSITORY_STORE_BACKEND: optionalStoreBackendSchema,
   CREDENTIAL_STORE_BACKEND: optionalStoreBackendSchema,
   ROLE_STORE_BACKEND: optionalStoreBackendSchema,
@@ -63,6 +64,7 @@ const taskWorkspaceHostRoot =
 const storeBackends: DurableStoreBackends = {
   taskStore: parsed.TASK_STORE_BACKEND ?? parsed.STORE_BACKEND,
   snippetStore: parsed.SNIPPET_STORE_BACKEND ?? parsed.STORE_BACKEND,
+  flowStore: parsed.FLOW_STORE_BACKEND ?? parsed.STORE_BACKEND,
   repositoryStore: parsed.REPOSITORY_STORE_BACKEND ?? parsed.STORE_BACKEND,
   credentialStore: parsed.CREDENTIAL_STORE_BACKEND ?? parsed.STORE_BACKEND,
   roleStore: parsed.ROLE_STORE_BACKEND ?? parsed.STORE_BACKEND,

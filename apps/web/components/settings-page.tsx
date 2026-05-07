@@ -171,6 +171,7 @@ const buildDataStoreSections = (dataStores?: SystemDataStores): { durable: DataS
     durable: [
       { key: "taskStore", label: "Tasks", backend: dataStores.taskStore, note: "Tasks, runs, messages, logs, proposals, transcripts" },
       { key: "snippetStore", label: "Snippets", backend: dataStores.snippetStore, note: "Prompt and command snippets" },
+      { key: "flowStore", label: "Flows", backend: dataStores.flowStore, note: "Flow definitions and metadata" },
       { key: "repositoryStore", label: "Repositories", backend: dataStores.repositoryStore, note: "Repository metadata and webhook settings" },
       { key: "credentialStore", label: "Credentials", backend: dataStores.credentialStore, note: "Encrypted provider and GitHub credentials" },
       { key: "roleStore", label: "Roles", backend: dataStores.roleStore, note: "RBAC role definitions" },

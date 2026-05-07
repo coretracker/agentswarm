@@ -5,6 +5,7 @@ import type {
   AuthProfile,
   AuthSession,
   CreateRoleInput,
+  CreateFlowInput,
   CreateSnippetInput,
   CreateTaskFromIssueInput,
   CreateTaskFromPullRequestInput,
@@ -19,6 +20,7 @@ import type {
   ProviderModelOption,
   Repository,
   Role,
+  FlowDefinition,
   Snippet,
   SystemSettings,
   Task,
@@ -43,6 +45,7 @@ import type {
   TaskAction,
   TaskTerminalSessionMode,
   UpdateRoleInput,
+  UpdateFlowInput,
   UpdateSnippetInput,
   UpdateTaskPinInput,
   UpdateTaskNotesInput,
@@ -185,6 +188,22 @@ export const api = {
     }),
   deleteRole: (id: string) =>
     request<void>(`/roles/${id}`, {
+      method: "DELETE"
+    }),
+  listFlows: () => request<FlowDefinition[]>("/flows"),
+  getFlow: (id: string) => request<FlowDefinition>(`/flows/${id}`),
+  createFlow: (input: CreateFlowInput) =>
+    request<FlowDefinition>("/flows", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateFlow: (id: string, input: UpdateFlowInput) =>
+    request<FlowDefinition>(`/flows/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteFlow: (id: string) =>
+    request<void>(`/flows/${id}`, {
       method: "DELETE"
     }),
   listSnippets: () => request<Snippet[]>("/snippets"),

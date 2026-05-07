@@ -1,4 +1,5 @@
 import type { CredentialStore } from "./credential-store.js";
+import type { FlowStore } from "./flow-store.js";
 import type { RepositoryStore } from "./repository-store.js";
 import type { RoleStore } from "./role-store.js";
 import type { SessionStore } from "./session-store.js";
@@ -14,6 +15,7 @@ export type SupportedStoreBackend = "redis" | "postgres";
 export interface DurableStoreBackends {
   taskStore: SupportedStoreBackend;
   snippetStore: SupportedStoreBackend;
+  flowStore: SupportedStoreBackend;
   repositoryStore: SupportedStoreBackend;
   credentialStore: SupportedStoreBackend;
   roleStore: SupportedStoreBackend;
@@ -26,6 +28,7 @@ export interface AppStores {
   taskQueueStore: TaskQueueStore;
   webhookDeliveryStore: WebhookDeliveryStore;
   snippetStore: SnippetStore;
+  flowStore: FlowStore;
   repositoryStore: RepositoryStore;
   credentialStore: CredentialStore;
   roleStore: RoleStore;

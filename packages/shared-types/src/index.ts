@@ -132,6 +132,11 @@ export type PermissionScope =
   | "task:ask"
   | "task:interactive"
   | "task:delete"
+  | "flow:list"
+  | "flow:create"
+  | "flow:read"
+  | "flow:edit"
+  | "flow:delete"
   | "snippet:list"
   | "snippet:create"
   | "snippet:read"
@@ -159,6 +164,11 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "task:ask",
   "task:interactive",
   "task:delete",
+  "flow:list",
+  "flow:create",
+  "flow:read",
+  "flow:edit",
+  "flow:delete",
   "snippet:list",
   "snippet:create",
   "snippet:read",
@@ -185,6 +195,7 @@ export interface PermissionScopeGroup {
 
 export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
   { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:interactive", "task:delete"] },
+  { label: "Flows", scopes: ["flow:list", "flow:create", "flow:read", "flow:edit", "flow:delete"] },
   { label: "Snippets", scopes: ["snippet:list", "snippet:create", "snippet:read", "snippet:edit", "snippet:delete"] },
   { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
   { label: "Settings", scopes: ["settings:read", "settings:edit"] },
@@ -622,6 +633,7 @@ export type DataStoreBackend = "redis" | "postgres";
 export interface SystemDataStores {
   taskStore: DataStoreBackend;
   snippetStore: DataStoreBackend;
+  flowStore: DataStoreBackend;
   repositoryStore: DataStoreBackend;
   credentialStore: DataStoreBackend;
   roleStore: DataStoreBackend;
@@ -757,6 +769,27 @@ export interface CreateSnippetInput {
 export interface UpdateSnippetInput {
   name: string;
   content: string;
+}
+
+export interface FlowDefinition {
+  id: string;
+  name: string;
+  description: string;
+  definitionJson: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateFlowInput {
+  name: string;
+  description?: string;
+  definitionJson: string;
+}
+
+export interface UpdateFlowInput {
+  name: string;
+  description?: string;
+  definitionJson: string;
 }
 
 export interface CreateTaskFromIssueInput {

@@ -82,6 +82,17 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
 
       CREATE INDEX IF NOT EXISTS snippets_updated_at_idx ON snippets(updated_at DESC);
 
+      CREATE TABLE IF NOT EXISTS flows (
+        id text PRIMARY KEY,
+        name text NOT NULL,
+        description text NOT NULL,
+        definition_json text NOT NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS flows_updated_at_idx ON flows(updated_at DESC);
+
       CREATE TABLE IF NOT EXISTS system_settings (
         singleton_id smallint PRIMARY KEY CHECK (singleton_id = 1),
         default_provider text NOT NULL,
@@ -208,6 +219,21 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
     sql: `
       ALTER TABLE system_settings
       ADD COLUMN IF NOT EXISTS response_preference_presets jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260507_03_flows_table",
+    sql: `
+      CREATE TABLE IF NOT EXISTS flows (
+        id text PRIMARY KEY,
+        name text NOT NULL,
+        description text NOT NULL DEFAULT '',
+        definition_json text NOT NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS flows_updated_at_idx ON flows(updated_at DESC);
     `
   }
 ];

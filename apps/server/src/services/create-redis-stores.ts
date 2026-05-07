@@ -3,6 +3,8 @@ import type { RedisClients } from "../lib/redis.js";
 import type { AppStores } from "./app-stores.js";
 import type { CredentialStore } from "./credential-store.js";
 import { RedisCredentialStore } from "./credential-store.js";
+import type { FlowStore } from "./flow-store.js";
+import { RedisFlowStore } from "./flow-store.js";
 import type { RepositoryStore } from "./repository-store.js";
 import { RedisRepositoryStore } from "./repository-store.js";
 import type { RoleStore } from "./role-store.js";
@@ -30,6 +32,7 @@ export const createRedisStores = (
   const taskQueueStore = new RedisTaskQueueStore(redisClients.command);
   const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
   const snippetStore = new RedisSnippetStore(redisClients.command, eventBus);
+  const flowStore: FlowStore = new RedisFlowStore(redisClients.command);
   const repositoryStore = new RedisRepositoryStore(redisClients.command, eventBus);
   const credentialStore = new RedisCredentialStore(redisClients.command);
   const roleStore = new RedisRoleStore(redisClients.command);
@@ -42,6 +45,7 @@ export const createRedisStores = (
     taskQueueStore,
     webhookDeliveryStore,
     snippetStore,
+    flowStore,
     repositoryStore,
     credentialStore,
     roleStore,

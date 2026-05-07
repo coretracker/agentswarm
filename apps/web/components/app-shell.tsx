@@ -7,6 +7,7 @@ import {
   DatabaseOutlined,
   LogoutOutlined,
   MenuOutlined,
+  ShareAltOutlined,
   SettingOutlined,
   TeamOutlined,
   UnorderedListOutlined
@@ -40,6 +41,7 @@ import {
 
 const menuIconByPath: Record<string, ReactNode> = {
   "/tasks": <UnorderedListOutlined />,
+  "/flows": <ShareAltOutlined />,
   "/snippets": <CopyOutlined />,
   "/repositories": <DatabaseOutlined />,
   "/settings": <SettingOutlined />,
