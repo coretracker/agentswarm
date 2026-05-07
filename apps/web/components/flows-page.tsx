@@ -3,8 +3,9 @@
 import { useState } from "react";
 import dayjs from "dayjs";
 import type { FlowDefinition } from "@agentswarm/shared-types";
-import { Button, Card, Flex, Form, Input, Modal, Popconfirm, Space, Table, Typography, message } from "antd";
+import { Button, Card, Flex, Form, Input, Modal, Popconfirm, Segmented, Space, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
+import { FlowBuilder, type FlowGraphDefinition, type FlowNodeData } from "./flow-builder";
 import { useFlows } from "../src/hooks/useFlows";
 import { useAuth } from "./auth-provider";
 
@@ -13,6 +14,64 @@ interface FlowFormValues {
   description: string;
   definitionJson: string;
 }
+
+const EMPTY_FLOW_DEFINITION: FlowGraphDefinition = {
+  nodes: [
+    {
+      id: "node-1",
+      position: { x: 120, y: 120 },
+      data: {
+        label: "Start Agent",
+        prompt: "",
+        provider: "codex",
+        model: "gpt-5.4",
+        complexity: "medium"
+      }
+    }
+  ],
+  edges: []
+};
+
+const parseFlowDefinition = (definitionJson: string): FlowGraphDefinition => {
+  try {
+    const parsed = JSON.parse(definitionJson) as Partial<FlowGraphDefinition>;
+    const rawNodes = Array.isArray(parsed.nodes) ? parsed.nodes : [];
+    const rawEdges = Array.isArray(parsed.edges) ? parsed.edges : [];
+    const nodes = rawNodes
+      .filter((node): node is FlowGraphDefinition["nodes"][number] => {
+        return (
+          typeof node === "object" &&
+          node !== null &&
+          typeof node.id === "string" &&
+          typeof node.position?.x === "number" &&
+          typeof node.position?.y === "number"
+        );
+      })
+      .map((node, index) => {
+        const data = node.data as Partial<FlowNodeData> | undefined;
+        return {
+          ...node,
+          data: {
+            label: data?.label ?? `Agent ${index + 1}`,
+            prompt: data?.prompt ?? "",
+            provider: data?.provider === "claude" ? "claude" : "codex",
+            model: data?.model ?? "gpt-5.4",
+            complexity: data?.complexity === "low" || data?.complexity === "high" ? data.complexity : "medium"
+          }
+        };
+      });
+    const edges = rawEdges.filter(
+      (edge): edge is FlowGraphDefinition["edges"][number] =>
+        typeof edge === "object" && edge !== null && typeof edge.id === "string" && typeof edge.source === "string" && typeof edge.target === "string"
+    );
+    if (nodes.length === 0) {
+      return EMPTY_FLOW_DEFINITION;
+    }
+    return { nodes, edges };
+  } catch {
+    return EMPTY_FLOW_DEFINITION;
+  }
+};
 
 const summarizeDefinition = (value: string): string => {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -29,6 +88,8 @@ export function FlowsPage() {
   const [editing, setEditing] = useState<FlowDefinition | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [editorMode, setEditorMode] = useState<"visual" | "json">("visual");
+  const [graphDefinition, setGraphDefinition] = useState<FlowGraphDefinition>(EMPTY_FLOW_DEFINITION);
   const [form] = Form.useForm<FlowFormValues>();
   const [messageApi, contextHolder] = message.useMessage();
   const canCreateFlow = can("flow:create");
@@ -43,7 +104,10 @@ export function FlowsPage() {
 
   const openCreate = () => {
     setEditing(null);
-    form.setFieldsValue({ name: "", description: "", definitionJson: "{\n  \"nodes\": [],\n  \"edges\": []\n}" });
+    const json = JSON.stringify(EMPTY_FLOW_DEFINITION, null, 2);
+    setGraphDefinition(EMPTY_FLOW_DEFINITION);
+    setEditorMode("visual");
+    form.setFieldsValue({ name: "", description: "", definitionJson: json });
     setOpen(true);
   };
 
@@ -54,6 +118,8 @@ export function FlowsPage() {
       description: flow.description,
       definitionJson: flow.definitionJson
     });
+    setGraphDefinition(parseFlowDefinition(flow.definitionJson));
+    setEditorMode("visual");
     setOpen(true);
   };
 
@@ -161,12 +227,20 @@ export function FlowsPage() {
           onFinish={async (values) => {
             setSubmitting(true);
             try {
-              JSON.parse(values.definitionJson);
+              const definitionJson =
+                editorMode === "visual" ? JSON.stringify(graphDefinition, null, 2) : values.definitionJson;
+              JSON.parse(definitionJson);
               if (editing) {
-                await api.updateFlow(editing.id, values);
+                await api.updateFlow(editing.id, {
+                  ...values,
+                  definitionJson
+                });
                 messageApi.success("Flow updated");
               } else {
-                await api.createFlow(values);
+                await api.createFlow({
+                  ...values,
+                  definitionJson
+                });
                 messageApi.success("Flow created");
               }
               closeModal();
@@ -183,24 +257,52 @@ export function FlowsPage() {
           <Form.Item name="description" label="Description">
             <Input.TextArea rows={2} placeholder="Short description of when this flow should be used." />
           </Form.Item>
-          <Form.Item
-            name="definitionJson"
-            label="Definition JSON"
-            rules={[
-              { required: true, message: "Enter flow definition JSON" },
-              {
-                validator: async (_rule, value: string) => {
-                  try {
-                    JSON.parse(value);
-                  } catch {
-                    throw new Error("Definition must be valid JSON");
+          <Flex justify="space-between" align="center" style={{ marginBottom: 12 }}>
+            <Typography.Text strong>Definition</Typography.Text>
+            <Segmented<"visual" | "json">
+              value={editorMode}
+              options={[
+                { label: "Visual", value: "visual" },
+                { label: "JSON", value: "json" }
+              ]}
+              onChange={(mode) => {
+                setEditorMode(mode);
+                if (mode === "json") {
+                  form.setFieldValue("definitionJson", JSON.stringify(graphDefinition, null, 2));
+                } else {
+                  const json = form.getFieldValue("definitionJson") as string;
+                  setGraphDefinition(parseFlowDefinition(json));
+                }
+              }}
+            />
+          </Flex>
+          {editorMode === "visual" ? (
+            <FlowBuilder
+              value={graphDefinition}
+              onChange={(next) => {
+                setGraphDefinition(next);
+                form.setFieldValue("definitionJson", JSON.stringify(next, null, 2));
+              }}
+            />
+          ) : (
+            <Form.Item
+              name="definitionJson"
+              rules={[
+                { required: true, message: "Enter flow definition JSON" },
+                {
+                  validator: async (_rule, value: string) => {
+                    try {
+                      JSON.parse(value);
+                    } catch {
+                      throw new Error("Definition must be valid JSON");
+                    }
                   }
                 }
-              }
-            ]}
-          >
-            <Input.TextArea rows={16} placeholder='{"nodes":[],"edges":[]}' style={{ fontFamily: "monospace" }} />
-          </Form.Item>
+              ]}
+            >
+              <Input.TextArea rows={16} placeholder='{"nodes":[],"edges":[]}' style={{ fontFamily: "monospace" }} />
+            </Form.Item>
+          )}
           <Flex justify="flex-end" gap={8} wrap="wrap">
             <Button onClick={closeModal}>Cancel</Button>
             <Button type="primary" htmlType="submit" loading={submitting}>
