@@ -3,10 +3,12 @@
 import { useEffect, useState } from "react";
 import type {
   AgentProvider,
+  AgentResponseStyle,
   DataStoreBackend,
   McpServerTransport,
   PermissionScope,
   ProviderProfile,
+  ResponsePreferencePreset,
   Role,
   SystemDataStores,
   SystemSettings
@@ -82,6 +84,13 @@ interface RoleFormValues {
   allowedEfforts: ProviderProfile[];
 }
 
+interface ResponsePreferencePresetFormValues {
+  name: string;
+  description: string;
+  enabled: boolean;
+  style: AgentResponseStyle | undefined;
+}
+
 type ClearCredentialTarget = "github" | "openai" | "anthropic";
 
 const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
@@ -107,6 +116,12 @@ interface DataStoreRow {
 }
 
 const summarizeAllowlist = (label: string, values: string[]): string => `${label}: ${values.length === 0 ? "All" : values.join(", ")}`;
+const summarizeResponsePreference = (preset: ResponsePreferencePreset): string => {
+  if (!preset.preference.enabled) {
+    return "Disabled";
+  }
+  return preset.preference.style === "technical" ? "Technical" : "Non-technical";
+};
 
 const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   defaultProvider: settings.defaultProvider,
@@ -160,13 +175,17 @@ export function SettingsPage() {
   const [generalForm] = Form.useForm<GeneralSettingsForm>();
   const [credentialForm] = Form.useForm<CredentialForm>();
   const [roleForm] = Form.useForm<RoleFormValues>();
+  const [responsePreferencePresetForm] = Form.useForm<ResponsePreferencePresetFormValues>();
   const [roles, setRoles] = useState<Role[]>([]);
   const [rolesLoading, setRolesLoading] = useState(true);
   const [savingGeneral, setSavingGeneral] = useState(false);
   const [savingCredentials, setSavingCredentials] = useState(false);
   const [savingRole, setSavingRole] = useState(false);
+  const [savingResponsePreferencePreset, setSavingResponsePreferencePreset] = useState(false);
   const [roleModalOpen, setRoleModalOpen] = useState(false);
   const [editingRole, setEditingRole] = useState<Role | null>(null);
+  const [responsePreferencePresetModalOpen, setResponsePreferencePresetModalOpen] = useState(false);
+  const [editingResponsePreferencePreset, setEditingResponsePreferencePreset] = useState<ResponsePreferencePreset | null>(null);
   const canEditSettings = can("settings:edit");
   const { models: codexModels, loading: codexModelsLoading } = useProviderModels("codex");
   const { models: claudeModels, loading: claudeModelsLoading } = useProviderModels("claude");
@@ -180,6 +199,7 @@ export function SettingsPage() {
       [...getEffortOptionsForProvider("codex"), ...getEffortOptionsForProvider("claude")].map((option) => [option.value, option])
     ).values()
   );
+  const responsePreferencePresets = settings?.responsePreferencePresets ?? [];
   const dataStoreSections = buildDataStoreSections(settings?.dataStores);
   const dataStoreColumns = [
     {
@@ -775,6 +795,105 @@ export function SettingsPage() {
             ]}
           />
         </Card>
+
+        <Card
+          bordered={false}
+          loading={loading}
+          title="Response Preferences"
+          extra={
+            <Button
+              type="primary"
+              disabled={!canEditSettings}
+              onClick={() => {
+                setEditingResponsePreferencePreset(null);
+                responsePreferencePresetForm.setFieldsValue({
+                  name: "",
+                  description: "",
+                  enabled: true,
+                  style: "non_technical"
+                });
+                setResponsePreferencePresetModalOpen(true);
+              }}
+            >
+              Add Response Preference
+            </Button>
+          }
+        >
+          <Table<ResponsePreferencePreset>
+            rowKey="id"
+            pagination={false}
+            dataSource={responsePreferencePresets}
+            columns={[
+              {
+                title: "Name",
+                dataIndex: "name",
+                render: (value: string, preset) => (
+                  <Space>
+                    <Typography.Text strong>{value}</Typography.Text>
+                    {preset.isSystem ? <Tag icon={<LockOutlined />}>System</Tag> : null}
+                  </Space>
+                )
+              },
+              {
+                title: "Description",
+                dataIndex: "description",
+                render: (value: string) => value || <Typography.Text type="secondary">None</Typography.Text>
+              },
+              {
+                title: "Style",
+                render: (_, preset) => summarizeResponsePreference(preset)
+              },
+              {
+                title: "Actions",
+                render: (_, preset) => (
+                  <Space>
+                    <Button
+                      disabled={!canEditSettings || preset.isSystem}
+                      onClick={() => {
+                        setEditingResponsePreferencePreset(preset);
+                        responsePreferencePresetForm.setFieldsValue({
+                          name: preset.name,
+                          description: preset.description,
+                          enabled: preset.preference.enabled,
+                          style: preset.preference.style ?? undefined
+                        });
+                        setResponsePreferencePresetModalOpen(true);
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Popconfirm
+                      title="Delete response preference?"
+                      description={`Delete ${preset.name}?`}
+                      disabled={!canEditSettings || preset.isSystem}
+                      onConfirm={async () => {
+                        if (!settings) {
+                          return;
+                        }
+                        try {
+                          const nextSettings = await api.updateSettings({
+                            responsePreferencePresets: responsePreferencePresets.filter((entry) => entry.id !== preset.id)
+                          });
+                          setSettings(nextSettings);
+                          message.success("Response preference deleted");
+                        } catch (error) {
+                          message.error(error instanceof Error ? error.message : "Failed to delete response preference");
+                        }
+                      }}
+                    >
+                      <Button
+                        danger
+                        disabled={!canEditSettings || preset.isSystem}
+                      >
+                        Delete
+                      </Button>
+                    </Popconfirm>
+                  </Space>
+                )
+              }
+            ]}
+          />
+        </Card>
       </Space>
 
       <Modal
@@ -889,6 +1008,124 @@ export function SettingsPage() {
             style={{ marginTop: 16 }}
           >
             {editingRole ? "Save Role" : "Create Role"}
+          </Button>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={responsePreferencePresetModalOpen}
+        title={editingResponsePreferencePreset ? `Edit Response Preference: ${editingResponsePreferencePreset.name}` : "Add Response Preference"}
+        footer={null}
+        onCancel={() => setResponsePreferencePresetModalOpen(false)}
+        destroyOnHidden
+      >
+        <Form
+          form={responsePreferencePresetForm}
+          layout="vertical"
+          onFinish={async (values) => {
+            if (!settings) {
+              return;
+            }
+
+            setSavingResponsePreferencePreset(true);
+            try {
+              const nextPresets = editingResponsePreferencePreset
+                ? responsePreferencePresets.map((preset) =>
+                    preset.id === editingResponsePreferencePreset.id
+                      ? {
+                          ...preset,
+                          name: values.name,
+                          description: values.description,
+                          preference: {
+                            enabled: values.enabled,
+                            style: values.style ?? null
+                          }
+                        }
+                      : preset
+                  )
+                : [
+                    ...responsePreferencePresets,
+                    {
+                      name: values.name,
+                      description: values.description,
+                      preference: {
+                        enabled: values.enabled,
+                        style: values.style ?? null
+                      }
+                    }
+                  ];
+
+              const nextSettings = await api.updateSettings({
+                responsePreferencePresets: nextPresets
+              });
+              setSettings(nextSettings);
+              setResponsePreferencePresetModalOpen(false);
+              message.success(editingResponsePreferencePreset ? "Response preference updated" : "Response preference created");
+            } catch (error) {
+              message.error(error instanceof Error ? error.message : "Failed to save response preference");
+            } finally {
+              setSavingResponsePreferencePreset(false);
+            }
+          }}
+        >
+          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a name" }]}>
+            <Input disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
+          </Form.Item>
+          <Form.Item name="description" label="Description">
+            <Input.TextArea rows={3} disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
+          </Form.Item>
+          <Form.Item
+            name="enabled"
+            label="Tailored Response Style Enabled"
+            valuePropName="checked"
+            extra="Disabled means this preset behaves like the normal neutral response."
+          >
+            <Switch disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
+          </Form.Item>
+          <Form.Item
+            noStyle
+            shouldUpdate={(prev, next) => prev.enabled !== next.enabled}
+          >
+            {({ getFieldValue }) => (
+              <Form.Item
+                name="style"
+                label="Preferred Audience"
+                rules={[
+                  ({ getFieldValue }) => ({
+                    validator(_, value) {
+                      if (!getFieldValue("enabled") || value) {
+                        return Promise.resolve();
+                      }
+                      return Promise.reject(new Error("Select an audience"));
+                    }
+                  })
+                ]}
+                extra={
+                  getFieldValue("enabled")
+                    ? "Technical is more direct. Non-technical uses simpler language."
+                    : "No tailored style will be applied."
+                }
+              >
+                <Select
+                  disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem || !getFieldValue("enabled")}
+                  options={[
+                    { label: "Technical", value: "technical" },
+                    { label: "Non-technical", value: "non_technical" }
+                  ]}
+                  placeholder="Select an audience"
+                />
+              </Form.Item>
+            )}
+          </Form.Item>
+          <Button
+            type="primary"
+            htmlType="submit"
+            loading={savingResponsePreferencePreset}
+            disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+            block
+            style={{ marginTop: 16 }}
+          >
+            {editingResponsePreferencePreset ? "Save Response Preference" : "Create Response Preference"}
           </Button>
         </Form>
       </Modal>

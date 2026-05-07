@@ -369,6 +369,16 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <Form.Item
                   name="agentResponsePreferenceStyle"
                   label="Preferred Audience"
+                  rules={[
+                    ({ getFieldValue }) => ({
+                      validator(_, value) {
+                        if (!getFieldValue("agentResponsePreferenceEnabled") || value) {
+                          return Promise.resolve();
+                        }
+                        return Promise.reject(new Error("Select an audience"));
+                      }
+                    })
+                  ]}
                   extra={
                     getFieldValue("agentResponsePreferenceEnabled")
                       ? "Technical uses more direct implementation language. Non-technical favors plainer explanations."
@@ -381,7 +391,6 @@ export function AppShell({ children }: { children: ReactNode }) {
                       { label: "Technical", value: "technical" },
                       { label: "Non-technical", value: "non_technical" }
                     ]}
-                    allowClear
                     placeholder="Select an audience"
                   />
                 </Form.Item>

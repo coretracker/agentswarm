@@ -69,10 +69,14 @@ const normalizeAgentResponseStyle = (value: AgentResponseStyle | string | null |
 const normalizeAgentResponsePreference = (
   value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined,
   fallback: AgentResponsePreference = DEFAULT_AGENT_RESPONSE_PREFERENCE
-): AgentResponsePreference => ({
-  enabled: value?.enabled ?? fallback.enabled,
-  style: normalizeAgentResponseStyle(value?.style ?? fallback.style)
-});
+): AgentResponsePreference => {
+  const style = normalizeAgentResponseStyle(value?.style ?? fallback.style);
+  const enabled = value?.enabled ?? fallback.enabled;
+  return {
+    enabled: enabled === true && style !== null,
+    style
+  };
+};
 
 const sortScopes = (scopes: PermissionScope[]): PermissionScope[] =>
   Array.from(new Set(scopes)).sort((left, right) => (scopeOrder.get(left) ?? 0) - (scopeOrder.get(right) ?? 0));

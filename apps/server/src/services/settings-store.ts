@@ -1,10 +1,14 @@
+import { randomUUID } from "node:crypto";
 import type Redis from "ioredis";
 import type { Pool } from "pg";
 import type {
   AgentProvider,
+  type AgentResponsePreference,
   SystemDataStores,
   McpServerConfig,
   ProviderProfile,
+  type ResponsePreferencePreset,
+  type ResponsePreferencePresetInput,
   SystemSettings,
   UpdateCredentialSettingsInput,
   UpdateSettingsInput
@@ -16,9 +20,26 @@ import { defaultModelForProvider } from "../lib/provider-config.js";
 import type { CredentialStore, RuntimeCredentials } from "./credential-store.js";
 
 const SETTINGS_KEY = "agentswarm:settings";
+const SYSTEM_RESPONSE_PREFERENCE_PRESET_ID = "neutral";
 
 const DEFAULT_CODEX_EFFORT: ProviderProfile = "high";
 const DEFAULT_CLAUDE_EFFORT: ProviderProfile = "high";
+const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {
+  enabled: false,
+  style: null
+};
+
+const nowIso = (): string => new Date().toISOString();
+
+const buildSystemResponsePreferencePreset = (): ResponsePreferencePreset => ({
+  id: SYSTEM_RESPONSE_PREFERENCE_PRESET_ID,
+  name: "Neutral",
+  description: "No tailored response style. The agent responds normally.",
+  preference: DEFAULT_AGENT_RESPONSE_PREFERENCE,
+  isSystem: true,
+  createdAt: "2026-05-07T00:00:00.000Z",
+  updatedAt: "2026-05-07T00:00:00.000Z"
+});
 
 const buildSystemDataStores = (): SystemDataStores => ({
   taskStore: env.STORE_BACKENDS.taskStore,
@@ -48,6 +69,7 @@ const defaultSettings: SystemSettings = {
   codexDefaultEffort: DEFAULT_CODEX_EFFORT,
   claudeDefaultModel: defaultModelForProvider("claude", DEFAULT_CLAUDE_EFFORT) ?? "claude-sonnet-4-5",
   claudeDefaultEffort: DEFAULT_CLAUDE_EFFORT,
+  responsePreferencePresets: [buildSystemResponsePreferencePreset()],
   dataStores: buildSystemDataStores()
 };
 
@@ -138,6 +160,62 @@ const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerCon
   return normalized;
 };
 
+const normalizeResponsePreferencePresetName = (value: string | undefined): string =>
+  (value ?? "").trim().replace(/\s+/g, " ");
+
+const normalizeResponsePreferencePresetDescription = (value: string | undefined): string => (value ?? "").trim();
+
+const normalizeAgentResponsePreference = (
+  value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined
+): AgentResponsePreference => {
+  const style = value?.style === "technical" || value?.style === "non_technical" ? value.style : null;
+  return {
+    enabled: value?.enabled === true && style !== null,
+    style
+  };
+};
+
+const normalizeResponsePreferencePresets = (
+  value: ResponsePreferencePresetInput[] | ResponsePreferencePreset[] | undefined
+): ResponsePreferencePreset[] => {
+  const systemPreset = buildSystemResponsePreferencePreset();
+  const presets: ResponsePreferencePreset[] = [];
+  const seenIds = new Set<string>([systemPreset.id]);
+  const seenNames = new Set<string>([systemPreset.name.toLowerCase()]);
+
+  for (const rawPreset of value ?? []) {
+    const presetId = typeof rawPreset.id === "string" && rawPreset.id.trim() ? rawPreset.id.trim() : randomUUID();
+    if (presetId === systemPreset.id || seenIds.has(presetId)) {
+      continue;
+    }
+
+    const name = normalizeResponsePreferencePresetName(rawPreset.name);
+    const normalizedNameKey = name.toLowerCase();
+    if (!name || seenNames.has(normalizedNameKey)) {
+      continue;
+    }
+
+    presets.push({
+      id: presetId,
+      name,
+      description: normalizeResponsePreferencePresetDescription(rawPreset.description),
+      preference: normalizeAgentResponsePreference(rawPreset.preference),
+      isSystem: false,
+      createdAt: "createdAt" in rawPreset && typeof rawPreset.createdAt === "string" ? rawPreset.createdAt : nowIso(),
+      updatedAt: nowIso()
+    });
+    seenIds.add(presetId);
+    seenNames.add(normalizedNameKey);
+  }
+
+  return [systemPreset, ...presets].sort((left, right) => {
+    if (left.isSystem !== right.isSystem) {
+      return left.isSystem ? -1 : 1;
+    }
+    return left.name.localeCompare(right.name);
+  });
+};
+
 export interface SettingsRuntimeCredentials extends RuntimeCredentials {
   gitUsername: string;
   openaiBaseUrl: string | null;
@@ -171,7 +249,12 @@ export class RedisSettingsStore implements SettingsStore {
         branchPrefix: defaultSettings.branchPrefix,
         gitUsername: defaultSettings.gitUsername,
         mcpServers: defaultSettings.mcpServers,
-        openaiBaseUrl: defaultSettings.openaiBaseUrl
+        openaiBaseUrl: defaultSettings.openaiBaseUrl,
+        codexDefaultModel: defaultSettings.codexDefaultModel,
+        codexDefaultEffort: defaultSettings.codexDefaultEffort,
+        claudeDefaultModel: defaultSettings.claudeDefaultModel,
+        claudeDefaultEffort: defaultSettings.claudeDefaultEffort,
+        responsePreferencePresets: defaultSettings.responsePreferencePresets
       };
       await this.redis.set(SETTINGS_KEY, JSON.stringify(baseSettings));
     }
@@ -187,7 +270,8 @@ export class RedisSettingsStore implements SettingsStore {
       codexDefaultModel: parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel,
       codexDefaultEffort: normalizeProviderProfile(parsed.codexDefaultEffort) ?? defaultSettings.codexDefaultEffort,
       claudeDefaultModel: parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(parsed.claudeDefaultEffort) ?? defaultSettings.claudeDefaultEffort
+      claudeDefaultEffort: normalizeProviderProfile(parsed.claudeDefaultEffort) ?? defaultSettings.claudeDefaultEffort,
+      responsePreferencePresets: normalizeResponsePreferencePresets(parsed.responsePreferencePresets)
     };
 
     if (
@@ -198,7 +282,8 @@ export class RedisSettingsStore implements SettingsStore {
       parsed.branchPrefix !== normalizedBase.branchPrefix ||
       parsed.gitUsername !== normalizedBase.gitUsername ||
       JSON.stringify(parsed.mcpServers ?? []) !== JSON.stringify(normalizedBase.mcpServers) ||
-      (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl
+      (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl ||
+      JSON.stringify(parsed.responsePreferencePresets ?? []) !== JSON.stringify(normalizedBase.responsePreferencePresets)
     ) {
       await this.redis.set(SETTINGS_KEY, JSON.stringify(normalizedBase));
     }
@@ -229,7 +314,11 @@ export class RedisSettingsStore implements SettingsStore {
       codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
       codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
       claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort
+      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
+      responsePreferencePresets:
+        input.responsePreferencePresets === undefined
+          ? current.responsePreferencePresets
+          : normalizeResponsePreferencePresets(input.responsePreferencePresets)
     };
 
     await this.redis.set(SETTINGS_KEY, JSON.stringify(nextBase));
@@ -289,9 +378,10 @@ export class PostgresSettingsStore implements SettingsStore {
           codex_default_model,
           codex_default_effort,
           claude_default_model,
-          claude_default_effort
+          claude_default_effort,
+          response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+        VALUES (1, $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
@@ -304,7 +394,8 @@ export class PostgresSettingsStore implements SettingsStore {
         defaultSettings.codexDefaultModel,
         defaultSettings.codexDefaultEffort,
         defaultSettings.claudeDefaultModel,
-        defaultSettings.claudeDefaultEffort
+        defaultSettings.claudeDefaultEffort,
+        JSON.stringify(defaultSettings.responsePreferencePresets)
       ]
     );
   }
@@ -323,7 +414,8 @@ export class PostgresSettingsStore implements SettingsStore {
           codex_default_model,
           codex_default_effort,
           claude_default_model,
-          claude_default_effort
+          claude_default_effort,
+          response_preference_presets
         FROM system_settings
         WHERE singleton_id = 1
       `
@@ -345,7 +437,10 @@ export class PostgresSettingsStore implements SettingsStore {
         typeof row?.claude_default_model === "string" && row.claude_default_model.trim().length > 0
           ? row.claude_default_model.trim()
           : defaultSettings.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(row?.claude_default_effort) ?? defaultSettings.claudeDefaultEffort
+      claudeDefaultEffort: normalizeProviderProfile(row?.claude_default_effort) ?? defaultSettings.claudeDefaultEffort,
+      responsePreferencePresets: normalizeResponsePreferencePresets(
+        Array.isArray(row?.response_preference_presets) ? (row.response_preference_presets as ResponsePreferencePreset[]) : undefined
+      )
     };
 
     const credentialStatus = await this.credentialStore.getCredentialStatus();
@@ -373,7 +468,11 @@ export class PostgresSettingsStore implements SettingsStore {
       codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
       codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
       claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort
+      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
+      responsePreferencePresets:
+        input.responsePreferencePresets === undefined
+          ? current.responsePreferencePresets
+          : normalizeResponsePreferencePresets(input.responsePreferencePresets)
     };
 
     await this.pool.query(
@@ -389,9 +488,10 @@ export class PostgresSettingsStore implements SettingsStore {
           codex_default_model,
           codex_default_effort,
           claude_default_model,
-          claude_default_effort
+          claude_default_effort,
+          response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+        VALUES (1, $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11::jsonb)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
@@ -403,7 +503,8 @@ export class PostgresSettingsStore implements SettingsStore {
           codex_default_model = EXCLUDED.codex_default_model,
           codex_default_effort = EXCLUDED.codex_default_effort,
           claude_default_model = EXCLUDED.claude_default_model,
-          claude_default_effort = EXCLUDED.claude_default_effort
+          claude_default_effort = EXCLUDED.claude_default_effort,
+          response_preference_presets = EXCLUDED.response_preference_presets
       `,
       [
         nextBase.defaultProvider,
@@ -415,7 +516,8 @@ export class PostgresSettingsStore implements SettingsStore {
         nextBase.codexDefaultModel,
         nextBase.codexDefaultEffort,
         nextBase.claudeDefaultModel,
-        nextBase.claudeDefaultEffort
+        nextBase.claudeDefaultEffort,
+        JSON.stringify(nextBase.responsePreferencePresets)
       ]
     );
     const next = await this.getSettings();

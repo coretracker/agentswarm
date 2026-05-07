@@ -6,6 +6,21 @@ import type { RoleStore } from "../services/role-store.js";
 import type { SessionStore } from "../services/session-store.js";
 import type { UserStore } from "../services/user-store.js";
 
+const responsePreferenceSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    style: z.enum(["technical", "non_technical"]).nullable().optional()
+  })
+  .superRefine((value, ctx) => {
+    if (value.enabled === true && !value.style) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Style is required when tailored response style is enabled",
+        path: ["style"]
+      });
+    }
+  });
+
 const createUserSchema = z.object({
   name: z.string().trim().min(1),
   email: z.string().trim().email(),
@@ -13,12 +28,7 @@ const createUserSchema = z.object({
   active: z.boolean().optional(),
   roleIds: z.array(z.string().trim().min(1)).optional(),
   repositoryIds: z.array(z.string().trim().min(1)).optional(),
-  agentResponsePreference: z
-    .object({
-      enabled: z.boolean().optional(),
-      style: z.enum(["technical", "non_technical"]).nullable().optional()
-    })
-    .optional()
+  agentResponsePreference: responsePreferenceSchema.optional()
 });
 
 const updateUserSchema = z.object({
@@ -28,12 +38,7 @@ const updateUserSchema = z.object({
   active: z.boolean().optional(),
   roleIds: z.array(z.string().trim().min(1)).optional(),
   repositoryIds: z.array(z.string().trim().min(1)).optional(),
-  agentResponsePreference: z
-    .object({
-      enabled: z.boolean().optional(),
-      style: z.enum(["technical", "non_technical"]).nullable().optional()
-    })
-    .optional()
+  agentResponsePreference: responsePreferenceSchema.optional()
 });
 
 export const registerUserRoutes = (

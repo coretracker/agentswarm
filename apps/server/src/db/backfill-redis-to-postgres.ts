@@ -490,9 +490,10 @@ const main = async (): Promise<void> => {
               codex_default_model,
               codex_default_effort,
               claude_default_model,
-              claude_default_effort
+              claude_default_effort,
+              response_preference_presets
             )
-            VALUES (1, $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+            VALUES (1, $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11::jsonb)
           `,
           [
             trimString(settings.defaultProvider) ?? "codex",
@@ -504,7 +505,8 @@ const main = async (): Promise<void> => {
             trimString(settings.codexDefaultModel) ?? "gpt-5.4",
             trimString(settings.codexDefaultEffort) ?? "high",
             trimString(settings.claudeDefaultModel) ?? "claude-sonnet-4-5",
-            trimString(settings.claudeDefaultEffort) ?? "high"
+            trimString(settings.claudeDefaultEffort) ?? "high",
+            JSON.stringify(Array.isArray(settings.responsePreferencePresets) ? settings.responsePreferencePresets : [])
           ]
         );
       }

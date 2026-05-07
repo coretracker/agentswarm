@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { AgentResponseStyle, Repository, Role, User } from "@agentswarm/shared-types";
+import type { AgentResponseStyle, Repository, ResponsePreferencePreset, Role, User } from "@agentswarm/shared-types";
 import {
   App,
   Button,
@@ -30,6 +30,7 @@ interface UserFormValues {
   active: boolean;
   agentResponsePreferenceEnabled: boolean;
   agentResponsePreferenceStyle: AgentResponseStyle | undefined;
+  responsePreferencePresetId?: string;
   roleIds: string[];
   repositoryIds: string[];
 }
@@ -43,6 +44,7 @@ export function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [repositories, setRepositories] = useState<Repository[]>([]);
+  const [responsePreferencePresets, setResponsePreferencePresets] = useState<ResponsePreferencePreset[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -52,20 +54,23 @@ export function UsersPage() {
   const canEditUsers = can("user:edit");
   const canDeleteUsers = can("user:delete");
   const canReadRoles = can("settings:read");
+  const canReadSettings = can("settings:read");
   const canEditRoles = can("settings:edit");
   const canReadRepositories = can("repo:list");
 
   const loadUsers = async () => {
     setLoading(true);
     try {
-      const [nextUsers, nextRoles, nextRepositories] = await Promise.all([
+      const [nextUsers, nextRoles, nextRepositories, nextSettings] = await Promise.all([
         api.listUsers(),
         canReadRoles ? api.listRoles().catch(() => []) : Promise.resolve([]),
-        canEditRoles && canReadRepositories ? api.listRepositories().catch(() => []) : Promise.resolve([])
+        canEditRoles && canReadRepositories ? api.listRepositories().catch(() => []) : Promise.resolve([]),
+        canReadSettings ? api.getSettings().catch(() => null) : Promise.resolve(null)
       ]);
       setUsers(nextUsers);
       setRoles(nextRoles);
       setRepositories(nextRepositories);
+      setResponsePreferencePresets(nextSettings?.responsePreferencePresets ?? []);
     } finally {
       setLoading(false);
     }
@@ -73,7 +78,7 @@ export function UsersPage() {
 
   useEffect(() => {
     void loadUsers();
-  }, [canEditRoles, canReadRepositories, canReadRoles]);
+  }, [canEditRoles, canReadRepositories, canReadRoles, canReadSettings]);
 
   const openCreateModal = () => {
     setEditingUser(null);
@@ -84,6 +89,7 @@ export function UsersPage() {
       active: true,
       agentResponsePreferenceEnabled: false,
       agentResponsePreferenceStyle: undefined,
+      responsePreferencePresetId: undefined,
       roleIds: [],
       repositoryIds: []
     });
@@ -99,6 +105,12 @@ export function UsersPage() {
       active: user.active,
       agentResponsePreferenceEnabled: user.agentResponsePreference.enabled,
       agentResponsePreferenceStyle: user.agentResponsePreference.style ?? undefined,
+      responsePreferencePresetId:
+        responsePreferencePresets.find(
+          (preset) =>
+            preset.preference.enabled === user.agentResponsePreference.enabled &&
+            preset.preference.style === user.agentResponsePreference.style
+        )?.id,
       roleIds: user.roles.map((role) => role.id),
       repositoryIds: user.repositoryIds ?? []
     });
@@ -108,6 +120,7 @@ export function UsersPage() {
   const currentUserId = session?.user.id ?? null;
   const selectedRoleIds = Form.useWatch("roleIds", form) ?? [];
   const adminRoleSelected = selectedRoleIds.includes(SYSTEM_ADMIN_ROLE_ID);
+  const selectedResponsePreferencePresetId = Form.useWatch("responsePreferencePresetId", form);
 
   return (
     <>
@@ -290,12 +303,42 @@ export function UsersPage() {
             <Switch disabled={editingUser?.id === currentUserId} />
           </Form.Item>
           <Form.Item
+            name="responsePreferencePresetId"
+            label="Response Preference Preset"
+            extra="Optional shortcut for applying a saved response preference."
+          >
+            <Select
+              allowClear
+              placeholder="Select a preset"
+              options={responsePreferencePresets.map((preset) => ({
+                label: preset.name,
+                value: preset.id
+              }))}
+              onChange={(value) => {
+                const preset = responsePreferencePresets.find((entry) => entry.id === value);
+                if (!preset) {
+                  return;
+                }
+                form.setFieldsValue({
+                  agentResponsePreferenceEnabled: preset.preference.enabled,
+                  agentResponsePreferenceStyle: preset.preference.style ?? undefined
+                });
+              }}
+            />
+          </Form.Item>
+          <Form.Item
             name="agentResponsePreferenceEnabled"
             label="Tailored Response Style"
             valuePropName="checked"
             extra="When enabled, the agent adapts its response style to the selected audience."
           >
-            <Switch />
+            <Switch
+              onChange={() => {
+                if (selectedResponsePreferencePresetId) {
+                  form.setFieldValue("responsePreferencePresetId", undefined);
+                }
+              }}
+            />
           </Form.Item>
           <Form.Item
             noStyle
@@ -305,6 +348,16 @@ export function UsersPage() {
               <Form.Item
                 name="agentResponsePreferenceStyle"
                 label="Preferred Audience"
+                rules={[
+                  ({ getFieldValue }) => ({
+                    validator(_, value) {
+                      if (!getFieldValue("agentResponsePreferenceEnabled") || value) {
+                        return Promise.resolve();
+                      }
+                      return Promise.reject(new Error("Select an audience"));
+                    }
+                  })
+                ]}
                 extra={
                   getFieldValue("agentResponsePreferenceEnabled")
                     ? "Technical is more direct. Non-technical uses simpler language."
@@ -317,8 +370,12 @@ export function UsersPage() {
                     { label: "Technical", value: "technical" },
                     { label: "Non-technical", value: "non_technical" }
                   ]}
-                  allowClear
                   placeholder="Select an audience"
+                  onChange={() => {
+                    if (selectedResponsePreferencePresetId) {
+                      form.setFieldValue("responsePreferencePresetId", undefined);
+                    }
+                  }}
                 />
               </Form.Item>
             )}

@@ -92,6 +92,23 @@ export interface AgentResponsePreference {
   style: AgentResponseStyle | null;
 }
 
+export interface ResponsePreferencePreset {
+  id: string;
+  name: string;
+  description: string;
+  preference: AgentResponsePreference;
+  isSystem: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResponsePreferencePresetInput {
+  id?: string;
+  name: string;
+  description?: string;
+  preference: Partial<AgentResponsePreference>;
+}
+
 export type McpServerTransport = "stdio" | "http";
 export type PermissionScope =
   | "task:list"
@@ -617,6 +634,7 @@ export interface SystemSettings {
   codexDefaultEffort: ProviderProfile;
   claudeDefaultModel: string;
   claudeDefaultEffort: ProviderProfile;
+  responsePreferencePresets: ResponsePreferencePreset[];
   dataStores?: SystemDataStores;
 }
 
@@ -926,6 +944,7 @@ export interface UpdateSettingsInput {
   codexDefaultEffort?: ProviderProfile;
   claudeDefaultModel?: string;
   claudeDefaultEffort?: ProviderProfile;
+  responsePreferencePresets?: ResponsePreferencePresetInput[];
 }
 
 export interface UpdateCredentialSettingsInput {

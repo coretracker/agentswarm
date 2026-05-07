@@ -70,6 +70,26 @@ const mcpServerSchema = z.discriminatedUnion("transport", [
 ]);
 
 const providerProfileEnum = z.enum(["low", "medium", "high", "max"]);
+const responsePreferenceSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    style: z.enum(["technical", "non_technical"]).nullable().optional()
+  })
+  .superRefine((value, ctx) => {
+    if (value.enabled === true && !value.style) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Style is required when tailored response style is enabled",
+        path: ["style"]
+      });
+    }
+  });
+const responsePreferencePresetSchema = z.object({
+  id: z.string().trim().min(1).max(120).optional(),
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).optional(),
+  preference: responsePreferenceSchema
+});
 
 const updateSettingsSchema = z.object({
   defaultProvider: z.enum(["codex", "claude"]).optional(),
@@ -81,7 +101,8 @@ const updateSettingsSchema = z.object({
   codexDefaultModel: z.string().trim().min(1).max(120).optional(),
   codexDefaultEffort: providerProfileEnum.optional(),
   claudeDefaultModel: z.string().trim().min(1).max(120).optional(),
-  claudeDefaultEffort: providerProfileEnum.optional()
+  claudeDefaultEffort: providerProfileEnum.optional(),
+  responsePreferencePresets: z.array(responsePreferencePresetSchema).max(50).optional()
 });
 
 const updateCredentialsSchema = z.object({

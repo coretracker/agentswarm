@@ -10,16 +10,26 @@ const loginSchema = z.object({
   password: z.string().min(1)
 });
 
+const responsePreferenceSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    style: z.enum(["technical", "non_technical"]).nullable().optional()
+  })
+  .superRefine((value, ctx) => {
+    if (value.enabled === true && !value.style) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Style is required when tailored response style is enabled",
+        path: ["style"]
+      });
+    }
+  });
+
 const updateProfileSchema = z.object({
   name: z.string().trim().min(1).optional(),
   codexAuthJson: z.string().min(1).optional(),
   clearCodexAuthJson: z.boolean().optional(),
-  agentResponsePreference: z
-    .object({
-      enabled: z.boolean().optional(),
-      style: z.enum(["technical", "non_technical"]).nullable().optional()
-    })
-    .optional()
+  agentResponsePreference: responsePreferenceSchema.optional()
 });
 
 export const registerAuthRoutes = (

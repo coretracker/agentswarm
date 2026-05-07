@@ -93,7 +93,8 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         codex_default_model text NOT NULL,
         codex_default_effort text NOT NULL,
         claude_default_model text NOT NULL,
-        claude_default_effort text NOT NULL
+        claude_default_effort text NOT NULL,
+        response_preference_presets jsonb NOT NULL DEFAULT '[]'::jsonb
       );
 
       CREATE TABLE IF NOT EXISTS credentials (
@@ -200,6 +201,13 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
     sql: `
       ALTER TABLE users
       ADD COLUMN IF NOT EXISTS agent_response_preference jsonb NOT NULL DEFAULT '{"enabled": false, "style": null}'::jsonb;
+    `
+  },
+  {
+    id: "20260507_02_settings_response_preference_presets",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS response_preference_presets jsonb NOT NULL DEFAULT '[]'::jsonb;
     `
   }
 ];
