@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { App, Button, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Spin, Typography, message, theme as antTheme } from "antd";
+import { App, Button, Card, Divider, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Spin, Typography, message, theme as antTheme } from "antd";
 import {
   CopyOutlined,
   DatabaseOutlined,
@@ -15,6 +15,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { AppLogo } from "./app-logo";
 import { AppSidebar } from "./app-sidebar";
 import { AppFooterNote } from "./app-footer-note";
+import { ResponsePolicyFields } from "./response-policy-fields";
 import { useAuth } from "./auth-provider";
 import { TaskBrowserNotifications } from "./task-browser-notifications";
 import { useThemeMode } from "./theme-provider";
@@ -380,78 +381,15 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
               <Input />
             </Form.Item>
-            <Form.Item name="audience" label="Audience">
-              <Select
-                allowClear
-                placeholder="Neutral"
-                options={[
-                  { label: "Technical", value: "technical" },
-                  { label: "Non-technical", value: "non_technical" },
-                  { label: "Mixed", value: "mixed" }
-                ]}
-              />
-            </Form.Item>
-            <Form.Item name="explanationDepth" label="Explanation Depth">
-              <Select
-                allowClear
-                placeholder="Default"
-                options={[
-                  { label: "Brief", value: "brief" },
-                  { label: "Standard", value: "standard" },
-                  { label: "Detailed", value: "detailed" }
-                ]}
-              />
-            </Form.Item>
-            <Form.Item name="jargonLevel" label="Jargon Level">
-              <Select
-                allowClear
-                placeholder="Default"
-                options={[
-                  { label: "Avoid", value: "avoid" },
-                  { label: "Balanced", value: "balanced" },
-                  { label: "Expert", value: "expert" }
-                ]}
-              />
-            </Form.Item>
-            <Form.Item name="codePreference" label="Code Preference">
-              <Select
-                allowClear
-                placeholder="Default"
-                options={[
-                  { label: "Only When Needed", value: "only_when_needed" },
-                  { label: "Prefer Examples", value: "prefer_examples" },
-                  { label: "Avoid Code", value: "avoid_code" }
-                ]}
-              />
-            </Form.Item>
-            <Form.Item name="clarifyBehavior" label="Clarify Behavior">
-              <Select
-                allowClear
-                placeholder="Default"
-                options={[
-                  { label: "Ask When Ambiguous", value: "ask_when_ambiguous" },
-                  { label: "Make Reasonable Assumptions", value: "make_reasonable_assumptions" }
-                ]}
-              />
-            </Form.Item>
-            <Form.Item name="formattingStyle" label="Formatting Style">
-              <Select
-                allowClear
-                placeholder="Default"
-                options={[
-                  { label: "Direct", value: "direct" },
-                  { label: "Teaching", value: "teaching" },
-                  { label: "Executive", value: "executive" }
-                ]}
-              />
-            </Form.Item>
-            <Form.Item name="extraInstructions" label="Extra Instructions">
-              <Input.TextArea
-                rows={3}
-                maxLength={2000}
-                placeholder="Optional additional response instructions."
-              />
-            </Form.Item>
+            <Divider orientation="left" plain>
+              Response Format Preferences
+            </Divider>
+            <Card size="small">
+              <ResponsePolicyFields />
+            </Card>
+            <Divider orientation="left" plain>
+              Credentials
+            </Divider>
             <Form.Item name="codexAuthJson" label="Codex auth.json">
               <Input.TextArea
                 autoSize={{ minRows: 6, maxRows: 14 }}

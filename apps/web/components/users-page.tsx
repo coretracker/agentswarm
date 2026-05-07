@@ -17,6 +17,7 @@ import {
   App,
   Button,
   Card,
+  Divider,
   Flex,
   Form,
   Input,
@@ -33,6 +34,7 @@ import {
 import dayjs from "dayjs";
 import { api } from "../src/api/client";
 import { useAuth } from "./auth-provider";
+import { ResponsePolicyFields } from "./response-policy-fields";
 
 interface UserFormValues {
   name: string;
@@ -372,85 +374,12 @@ export function UsersPage() {
               }}
             />
           </Form.Item>
-          <Form.Item name="audience" label="Audience">
-            <Select
-              allowClear
-              placeholder="Neutral"
-              options={[
-                { label: "Technical", value: "technical" },
-                { label: "Non-technical", value: "non_technical" },
-                { label: "Mixed", value: "mixed" }
-              ]}
-              onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)}
-            />
-          </Form.Item>
-          <Form.Item name="explanationDepth" label="Explanation Depth">
-            <Select
-              allowClear
-              placeholder="Default"
-              options={[
-                { label: "Brief", value: "brief" },
-                { label: "Standard", value: "standard" },
-                { label: "Detailed", value: "detailed" }
-              ]}
-              onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)}
-            />
-          </Form.Item>
-          <Form.Item name="jargonLevel" label="Jargon Level">
-            <Select
-              allowClear
-              placeholder="Default"
-              options={[
-                { label: "Avoid", value: "avoid" },
-                { label: "Balanced", value: "balanced" },
-                { label: "Expert", value: "expert" }
-              ]}
-              onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)}
-            />
-          </Form.Item>
-          <Form.Item name="codePreference" label="Code Preference">
-            <Select
-              allowClear
-              placeholder="Default"
-              options={[
-                { label: "Only When Needed", value: "only_when_needed" },
-                { label: "Prefer Examples", value: "prefer_examples" },
-                { label: "Avoid Code", value: "avoid_code" }
-              ]}
-              onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)}
-            />
-          </Form.Item>
-          <Form.Item name="clarifyBehavior" label="Clarify Behavior">
-            <Select
-              allowClear
-              placeholder="Default"
-              options={[
-                { label: "Ask When Ambiguous", value: "ask_when_ambiguous" },
-                { label: "Make Reasonable Assumptions", value: "make_reasonable_assumptions" }
-              ]}
-              onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)}
-            />
-          </Form.Item>
-          <Form.Item name="formattingStyle" label="Formatting Style">
-            <Select
-              allowClear
-              placeholder="Default"
-              options={[
-                { label: "Direct", value: "direct" },
-                { label: "Teaching", value: "teaching" },
-                { label: "Executive", value: "executive" }
-              ]}
-              onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)}
-            />
-          </Form.Item>
-          <Form.Item name="extraInstructions" label="Extra Instructions">
-            <Input.TextArea
-              rows={3}
-              maxLength={2000}
-              placeholder="Optional additional response instructions."
-              onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)}
-            />
-          </Form.Item>
+          <Divider orientation="left" plain>
+            Response Format Preferences
+          </Divider>
+          <Card size="small">
+            <ResponsePolicyFields onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)} />
+          </Card>
           {canEditRoles ? (
             <Form.Item name="roleIds" label="Roles">
               <Select
