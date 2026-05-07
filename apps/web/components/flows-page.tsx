@@ -383,13 +383,18 @@ export function FlowsPage() {
             />
           </Flex>
           {editorMode === "visual" ? (
-            <FlowBuilder
-              value={graphDefinition}
-              onChange={(next) => {
-                setGraphDefinition(next);
-                form.setFieldValue("definitionJson", JSON.stringify(next, null, 2));
-              }}
-            />
+            <>
+              <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
+                Guardrails: Start has no incoming edges, End has no outgoing edges.
+              </Typography.Text>
+              <FlowBuilder
+                value={graphDefinition}
+                onChange={(next) => {
+                  setGraphDefinition(next);
+                  form.setFieldValue("definitionJson", JSON.stringify(next, null, 2));
+                }}
+              />
+            </>
           ) : (
             <Form.Item
               name="definitionJson"

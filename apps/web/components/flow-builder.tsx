@@ -15,7 +15,7 @@ import {
   type Node
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Button, Card, Flex, Form, Input, Select, Space, Typography } from "antd";
+import { Button, Card, Flex, Form, Input, Select, Space, Typography, message } from "antd";
 
 export interface FlowNodeData {
   kind: "start" | "agent" | "end";
@@ -59,6 +59,7 @@ interface FlowBuilderProps {
 function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNodeData>(value.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(value.edges);
+  const [messageApi, contextHolder] = message.useMessage();
   const [form] = Form.useForm<FlowNodeData>();
 
   const selectedNode = useMemo(() => nodes.find((node) => node.selected), [nodes]);
@@ -85,6 +86,24 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
   };
 
   const onConnect = (connection: Connection) => {
+    const sourceNode = nodes.find((node) => node.id === connection.source);
+    const targetNode = nodes.find((node) => node.id === connection.target);
+    if (!sourceNode || !targetNode) {
+      messageApi.error("Connection references a missing node.");
+      return;
+    }
+    if (sourceNode.data.kind === "end") {
+      messageApi.warning("End nodes cannot have outgoing connections.");
+      return;
+    }
+    if (targetNode.data.kind === "start") {
+      messageApi.warning("Start nodes cannot have incoming connections.");
+      return;
+    }
+    if (edges.some((edge) => edge.source === connection.source && edge.target === connection.target)) {
+      messageApi.info("This connection already exists.");
+      return;
+    }
     const nextEdges = addEdge(connection, edges);
     setEdges(nextEdges);
     commit(nodes, nextEdges);
@@ -100,8 +119,10 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
   };
 
   return (
-    <Flex gap={12} style={{ height: 520 }}>
-      <Card size="small" style={{ flex: 1, minWidth: 0 }}>
+    <>
+      {contextHolder}
+      <Flex gap={12} style={{ height: 520 }}>
+        <Card size="small" style={{ flex: 1, minWidth: 0 }}>
         <Flex justify="space-between" style={{ marginBottom: 8 }}>
           <Space>
             <Button onClick={() => addNode("start")} disabled={nodes.some((node) => node.data.kind === "start")}>
@@ -160,11 +181,11 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
             <Background />
           </ReactFlow>
         </div>
-      </Card>
+        </Card>
 
-      <Card size="small" title="Node Inspector" style={{ width: 320 }}>
-        {selectedNode ? (
-          <Form form={form} layout="vertical">
+        <Card size="small" title="Node Inspector" style={{ width: 320 }}>
+          {selectedNode ? (
+            <Form form={form} layout="vertical">
             <Form.Item label="Agent Name" name="label">
               <Input onChange={(event) => syncNodeField({ label: event.target.value })} />
             </Form.Item>
@@ -203,12 +224,13 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
                 onChange={(complexity) => syncNodeField({ complexity })}
               />
             </Form.Item>
-          </Form>
-        ) : (
-          <Typography.Text type="secondary">Select a node to edit its settings.</Typography.Text>
-        )}
-      </Card>
-    </Flex>
+            </Form>
+          ) : (
+            <Typography.Text type="secondary">Select a node to edit its settings.</Typography.Text>
+          )}
+        </Card>
+      </Flex>
+    </>
   );
 }
 
