@@ -194,5 +194,12 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
 
       CREATE INDEX IF NOT EXISTS user_repositories_repository_id_idx ON user_repositories(repository_id);
     `
+  },
+  {
+    id: "20260507_01_user_agent_response_preference",
+    sql: `
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS agent_response_preference jsonb NOT NULL DEFAULT '{"enabled": false, "style": null}'::jsonb;
+    `
   }
 ];

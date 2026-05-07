@@ -13,7 +13,13 @@ const loginSchema = z.object({
 const updateProfileSchema = z.object({
   name: z.string().trim().min(1).optional(),
   codexAuthJson: z.string().min(1).optional(),
-  clearCodexAuthJson: z.boolean().optional()
+  clearCodexAuthJson: z.boolean().optional(),
+  agentResponsePreference: z
+    .object({
+      enabled: z.boolean().optional(),
+      style: z.enum(["technical", "non_technical"]).nullable().optional()
+    })
+    .optional()
 });
 
 export const registerAuthRoutes = (
@@ -54,6 +60,7 @@ export const registerAuthRoutes = (
     return {
       name: authUser.name,
       email: authUser.email,
+      agentResponsePreference: authUser.agentResponsePreference,
       codexAuthJsonConfigured: await deps.credentialStore.hasCodexAuthJsonForUser(authUser.id)
     };
   });
@@ -65,8 +72,11 @@ export const registerAuthRoutes = (
     }
 
     const userId = request.auth!.user.id;
-    if (parsed.data.name !== undefined) {
-      const updated = await deps.userStore.updateUser(userId, { name: parsed.data.name });
+    if (parsed.data.name !== undefined || parsed.data.agentResponsePreference !== undefined) {
+      const updated = await deps.userStore.updateUser(userId, {
+        ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+        ...(parsed.data.agentResponsePreference !== undefined ? { agentResponsePreference: parsed.data.agentResponsePreference } : {})
+      });
       if (!updated) {
         return reply.status(404).send({ message: "User not found" });
       }
@@ -89,7 +99,7 @@ export const registerAuthRoutes = (
       }
     }
 
-    const refreshedUser = await deps.userStore.getUser(userId);
+    const refreshedUser = await deps.userStore.getAuthSessionUser(userId);
     if (!refreshedUser) {
       return reply.status(404).send({ message: "User not found" });
     }
@@ -97,6 +107,7 @@ export const registerAuthRoutes = (
     return reply.send({
       name: refreshedUser.name,
       email: refreshedUser.email,
+      agentResponsePreference: refreshedUser.agentResponsePreference,
       codexAuthJsonConfigured: await deps.credentialStore.hasCodexAuthJsonForUser(userId)
     });
   });

@@ -6,6 +6,7 @@ import { nanoid } from "nanoid";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  type AgentResponsePreference,
   getCheckpointMutationBlockedReason,
   getTaskStatusLabel,
   getTaskTerminalSessionEndMessage,
@@ -117,6 +118,7 @@ interface RuntimeManifest {
   resolvedModel: string | null;
   resolvedReasoningEffort?: string;
   resolvedThinkingBudgetTokens?: number;
+  agentResponsePreference: AgentResponsePreference;
   workspacePath: string;
   resultMarkdownPath: string;
   resultJsonPath: string;
@@ -3909,10 +3911,11 @@ export class SpawnerService {
 
   async runTask(task: Task, action: TaskAction, input?: TaskExecutionInput | string): Promise<void> {
     this.cancelRequestedTaskIds.delete(task.id);
-    const [settings, runtimeCredentialsRaw, repository] = await Promise.all([
+    const [settings, runtimeCredentialsRaw, repository, responsePreferenceUser] = await Promise.all([
       this.settingsStore.getSettings(),
       this.settingsStore.getRuntimeCredentials(task.ownerUserId),
-      this.repositoryStore.getRepository(task.repoId)
+      this.repositoryStore.getRepository(task.repoId),
+      task.ownerUserId ? this.userStore.getAuthSessionUser(task.ownerUserId) : Promise.resolve(null)
     ]);
     const runtimeCredentials =
       task.provider === "codex" && task.codexCredentialSource === "global"
@@ -4043,6 +4046,7 @@ export class SpawnerService {
         resolvedModel,
         resolvedReasoningEffort: resolvedProfileSettings.reasoningEffort,
         resolvedThinkingBudgetTokens: resolvedProfileSettings.thinkingBudgetTokens,
+        agentResponsePreference: responsePreferenceUser?.agentResponsePreference ?? { enabled: false, style: null },
         workspacePath: workspace.workspacePath,
         resultMarkdownPath,
         resultJsonPath,

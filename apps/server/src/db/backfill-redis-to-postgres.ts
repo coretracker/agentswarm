@@ -388,19 +388,26 @@ const main = async (): Promise<void> => {
               name,
               email,
               active,
+              agent_response_preference,
               password_hash,
               password_salt,
               last_login_at,
               created_at,
               updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
           `,
           [
             user.id,
             String(user.name ?? "").trim(),
             String(user.email ?? "").trim().toLowerCase(),
             user.active !== false,
+            JSON.stringify(
+              user.agentResponsePreference &&
+                typeof user.agentResponsePreference === "object"
+                ? user.agentResponsePreference
+                : { enabled: false, style: null }
+            ),
             user.passwordHash,
             user.passwordSalt,
             user.lastLoginAt ?? null,

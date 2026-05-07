@@ -85,6 +85,13 @@ export const TASK_PROMPT_ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
 export type TaskReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type TaskComplexity = "trivial" | "normal" | "complex";
 export type TaskBranchStrategy = "feature_branch" | "work_on_branch";
+export type AgentResponseStyle = "technical" | "non_technical";
+
+export interface AgentResponsePreference {
+  enabled: boolean;
+  style: AgentResponseStyle | null;
+}
+
 export type McpServerTransport = "stdio" | "http";
 export type PermissionScope =
   | "task:list"
@@ -228,6 +235,7 @@ export interface AuthSessionUser extends User {
   allowedProviders: AgentProvider[];
   allowedModels: string[];
   allowedEfforts: ProviderProfile[];
+  agentResponsePreference: AgentResponsePreference;
   codexAuthJsonConfigured?: boolean;
 }
 
@@ -239,6 +247,7 @@ export interface AuthSession {
 export interface AuthProfile {
   name: string;
   email: string;
+  agentResponsePreference: AgentResponsePreference;
   codexAuthJsonConfigured: boolean;
 }
 
@@ -272,6 +281,7 @@ export interface CreateUserInput {
   active?: boolean;
   roleIds?: string[];
   repositoryIds?: string[];
+  agentResponsePreference?: Partial<AgentResponsePreference>;
 }
 
 export interface UpdateUserInput {
@@ -281,6 +291,7 @@ export interface UpdateUserInput {
   active?: boolean;
   roleIds?: string[];
   repositoryIds?: string[];
+  agentResponsePreference?: Partial<AgentResponsePreference>;
 }
 
 export interface RepositoryEnvVar {
@@ -930,6 +941,7 @@ export interface UpdateAuthProfileInput {
   name?: string;
   codexAuthJson?: string;
   clearCodexAuthJson?: boolean;
+  agentResponsePreference?: Partial<AgentResponsePreference>;
 }
 
 export interface TaskEvent {

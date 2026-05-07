@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { App, Button, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Spin, Typography, message, theme as antTheme } from "antd";
+import { App, Button, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Spin, Switch, Typography, message, theme as antTheme } from "antd";
 import {
   CopyOutlined,
   DatabaseOutlined,
@@ -20,6 +20,7 @@ import { TaskBrowserNotifications } from "./task-browser-notifications";
 import { useThemeMode } from "./theme-provider";
 import { appThemeOptions, type AppThemeMode } from "../src/theme/antd-theme";
 import { api } from "../src/api/client";
+import type { AgentResponseStyle } from "@agentswarm/shared-types";
 import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
@@ -52,7 +53,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileCodexConfigured, setProfileCodexConfigured] = useState(false);
-  const [profileForm] = Form.useForm<{ name: string; codexAuthJson?: string }>();
+  const [profileForm] = Form.useForm<{
+    name: string;
+    codexAuthJson?: string;
+    agentResponsePreferenceEnabled: boolean;
+    agentResponsePreferenceStyle: AgentResponseStyle | undefined;
+  }>();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const publicPath = isPublicPathname(pathname);
   const desktopSidebar = screens.lg ?? false;
@@ -98,7 +104,9 @@ export function AppShell({ children }: { children: ReactNode }) {
       const profile = await api.getProfile();
       profileForm.setFieldsValue({
         name: profile.name,
-        codexAuthJson: ""
+        codexAuthJson: "",
+        agentResponsePreferenceEnabled: profile.agentResponsePreference.enabled,
+        agentResponsePreferenceStyle: profile.agentResponsePreference.style ?? undefined
       });
       setProfileCodexConfigured(profile.codexAuthJsonConfigured);
     } catch (error) {
@@ -114,12 +122,17 @@ export function AppShell({ children }: { children: ReactNode }) {
       setSavingProfile(true);
       const next = await api.updateProfile({
         name: values.name,
-        codexAuthJson: values.codexAuthJson?.trim() || undefined
+        codexAuthJson: values.codexAuthJson?.trim() || undefined,
+        agentResponsePreference: {
+          enabled: values.agentResponsePreferenceEnabled,
+          style: values.agentResponsePreferenceStyle ?? null
+        }
       });
       setProfileCodexConfigured(next.codexAuthJsonConfigured);
       profileForm.setFieldValue("codexAuthJson", "");
       setSessionUser({
         name: next.name,
+        agentResponsePreference: next.agentResponsePreference,
         codexAuthJsonConfigured: next.codexAuthJsonConfigured
       });
       message.success("Profile updated");
@@ -140,6 +153,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       setProfileCodexConfigured(next.codexAuthJsonConfigured);
       profileForm.setFieldValue("codexAuthJson", "");
       setSessionUser({
+        agentResponsePreference: next.agentResponsePreference,
         codexAuthJsonConfigured: next.codexAuthJsonConfigured
       });
       message.success("Codex auth.json cleared");
@@ -326,9 +340,52 @@ export function AppShell({ children }: { children: ReactNode }) {
         destroyOnClose
       >
         <Spin spinning={profileLoading}>
-          <Form form={profileForm} layout="vertical" initialValues={{ name: session.user.name, codexAuthJson: "" }}>
+          <Form
+            form={profileForm}
+            layout="vertical"
+            initialValues={{
+              name: session.user.name,
+              codexAuthJson: "",
+              agentResponsePreferenceEnabled: session.user.agentResponsePreference.enabled,
+              agentResponsePreferenceStyle: session.user.agentResponsePreference.style ?? undefined
+            }}
+          >
             <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
               <Input />
+            </Form.Item>
+            <Form.Item
+              name="agentResponsePreferenceEnabled"
+              label="Tailored Response Style"
+              valuePropName="checked"
+              extra="When enabled, the agent adapts its tone and detail level to your selected audience."
+            >
+              <Switch checkedChildren="On" unCheckedChildren="Off" />
+            </Form.Item>
+            <Form.Item
+              noStyle
+              shouldUpdate={(prev, next) => prev.agentResponsePreferenceEnabled !== next.agentResponsePreferenceEnabled}
+            >
+              {({ getFieldValue }) => (
+                <Form.Item
+                  name="agentResponsePreferenceStyle"
+                  label="Preferred Audience"
+                  extra={
+                    getFieldValue("agentResponsePreferenceEnabled")
+                      ? "Technical uses more direct implementation language. Non-technical favors plainer explanations."
+                      : "Disabled means the agent responds normally without this audience preference."
+                  }
+                >
+                  <Select
+                    disabled={!getFieldValue("agentResponsePreferenceEnabled")}
+                    options={[
+                      { label: "Technical", value: "technical" },
+                      { label: "Non-technical", value: "non_technical" }
+                    ]}
+                    allowClear
+                    placeholder="Select an audience"
+                  />
+                </Form.Item>
+              )}
             </Form.Item>
             <Form.Item name="codexAuthJson" label="Codex auth.json">
               <Input.TextArea

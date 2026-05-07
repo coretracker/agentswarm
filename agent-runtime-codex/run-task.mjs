@@ -157,6 +157,35 @@ if (openAiApiKey) {
 process.env.GIT_OPTIONAL_LOCKS = "0";
 process.env.HOME = homeDir;
 
+const buildResponsePreferencePreamble = () => {
+  const preference = manifest.agentResponsePreference;
+  if (!preference || preference.enabled !== true) {
+    return "";
+  }
+
+  if (preference.style === "technical") {
+    return [
+      "Response style:",
+      "- The user prefers a technical response.",
+      "- Be direct and precise.",
+      "- Use implementation details and technical terms when they help.",
+      "- Avoid oversimplifying."
+    ].join("\n");
+  }
+
+  if (preference.style === "non_technical") {
+    return [
+      "Response style:",
+      "- The user prefers a non-technical response.",
+      "- Use plain language and avoid unexplained jargon.",
+      "- Focus on outcomes and practical guidance before low-level implementation detail.",
+      "- Only include code or deep technical detail when it is clearly necessary."
+    ].join("\n");
+  }
+
+  return "";
+};
+
 const buildPrompt = () => {
   const rawContent = typeof manifest.content === "string" && manifest.content.trim().length > 0
     ? manifest.content.trim()
@@ -184,6 +213,10 @@ const buildPrompt = () => {
       ...attachments.map((attachment) => `- ${attachment.absolutePath.trim()} (${attachment.name.trim()})`),
       ""
     );
+  }
+  const responsePreferencePreamble = buildResponsePreferencePreamble();
+  if (responsePreferencePreamble) {
+    promptSections.push(responsePreferencePreamble, "");
   }
   promptSections.push("Current user request:", "", rawContent);
   const promptBody = promptSections.join("\n");

@@ -6,6 +6,8 @@ import type { Pool } from "pg";
 import {
   ALL_PERMISSION_SCOPES,
   type AgentProvider,
+  type AgentResponsePreference,
+  type AgentResponseStyle,
   type AuthSessionUser,
   type CreateUserInput,
   type PermissionScope,
@@ -40,6 +42,7 @@ export interface StoredUserRecord {
   name: string;
   email: string;
   active: boolean;
+  agentResponsePreference: AgentResponsePreference;
   roleIds: string[];
   repositoryIds: string[];
   passwordHash: string;
@@ -51,6 +54,25 @@ export interface StoredUserRecord {
 
 const normalizeUserName = (value: string | undefined): string => (value ?? "").trim().replace(/\s+/g, " ");
 const normalizeUserEmail = (value: string | undefined): string => (value ?? "").trim().toLowerCase();
+const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {
+  enabled: false,
+  style: null
+};
+
+const normalizeAgentResponseStyle = (value: AgentResponseStyle | string | null | undefined): AgentResponseStyle | null => {
+  if (value === "technical" || value === "non_technical") {
+    return value;
+  }
+  return null;
+};
+
+const normalizeAgentResponsePreference = (
+  value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined,
+  fallback: AgentResponsePreference = DEFAULT_AGENT_RESPONSE_PREFERENCE
+): AgentResponsePreference => ({
+  enabled: value?.enabled ?? fallback.enabled,
+  style: normalizeAgentResponseStyle(value?.style ?? fallback.style)
+});
 
 const sortScopes = (scopes: PermissionScope[]): PermissionScope[] =>
   Array.from(new Set(scopes)).sort((left, right) => (scopeOrder.get(left) ?? 0) - (scopeOrder.get(right) ?? 0));
@@ -121,6 +143,7 @@ export class RedisUserStore implements UserStore {
       name: normalizeUserName(user.name),
       email: normalizeUserEmail(user.email),
       active: user.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
       repositoryIds: Array.from(new Set((user.repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean))),
       lastLoginAt: user.lastLoginAt ?? null
@@ -337,7 +360,8 @@ export class RedisUserStore implements UserStore {
       scopes,
       allowedProviders,
       allowedModels,
-      allowedEfforts
+      allowedEfforts,
+      agentResponsePreference: user.agentResponsePreference
     };
   }
 
@@ -404,6 +428,7 @@ export class RedisUserStore implements UserStore {
       name,
       email,
       active: input.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
       roleIds,
       repositoryIds,
       passwordHash: passwordState.passwordHash,
@@ -465,6 +490,10 @@ export class RedisUserStore implements UserStore {
       name: nextName,
       email: nextEmail,
       active: nextActive,
+      agentResponsePreference:
+        input.agentResponsePreference === undefined
+          ? current.agentResponsePreference
+          : normalizeAgentResponsePreference(input.agentResponsePreference, current.agentResponsePreference),
       roleIds: nextRoleIds,
       repositoryIds: nextRepositoryIds,
       passwordHash,
@@ -525,6 +554,11 @@ export class PostgresUserStore implements UserStore {
       name: String(row.name ?? ""),
       email: String(row.email ?? ""),
       active: row.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(
+        row.agent_response_preference && typeof row.agent_response_preference === "object"
+          ? (row.agent_response_preference as Partial<AgentResponsePreference>)
+          : undefined
+      ),
       roleIds,
       repositoryIds,
       passwordHash: String(row.password_hash ?? ""),
@@ -541,6 +575,7 @@ export class PostgresUserStore implements UserStore {
       name: normalizeUserName(user.name),
       email: normalizeUserEmail(user.email),
       active: user.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
       repositoryIds: Array.from(new Set((user.repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean))),
       lastLoginAt: user.lastLoginAt ?? null
@@ -711,18 +746,20 @@ export class PostgresUserStore implements UserStore {
           name,
           email,
           active,
+          agent_response_preference,
           password_hash,
           password_salt,
           last_login_at,
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
         ON CONFLICT (id) DO UPDATE
         SET
           name = EXCLUDED.name,
           email = EXCLUDED.email,
           active = EXCLUDED.active,
+          agent_response_preference = EXCLUDED.agent_response_preference,
           password_hash = EXCLUDED.password_hash,
           password_salt = EXCLUDED.password_salt,
           last_login_at = EXCLUDED.last_login_at,
@@ -734,6 +771,7 @@ export class PostgresUserStore implements UserStore {
         nextUser.name,
         nextUser.email,
         nextUser.active,
+        JSON.stringify(nextUser.agentResponsePreference),
         nextUser.passwordHash,
         nextUser.passwordSalt,
         nextUser.lastLoginAt,
@@ -875,7 +913,8 @@ export class PostgresUserStore implements UserStore {
       scopes,
       allowedProviders,
       allowedModels,
-      allowedEfforts
+      allowedEfforts,
+      agentResponsePreference: user.agentResponsePreference
     };
   }
 
@@ -945,6 +984,7 @@ export class PostgresUserStore implements UserStore {
       name,
       email,
       active: input.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
       roleIds,
       repositoryIds,
       passwordHash: passwordState.passwordHash,
@@ -1009,6 +1049,10 @@ export class PostgresUserStore implements UserStore {
       name: nextName,
       email: nextEmail,
       active: nextActive,
+      agentResponsePreference:
+        input.agentResponsePreference === undefined
+          ? current.agentResponsePreference
+          : normalizeAgentResponsePreference(input.agentResponsePreference, current.agentResponsePreference),
       roleIds: nextRoleIds,
       repositoryIds: nextRepositoryIds,
       passwordHash,
