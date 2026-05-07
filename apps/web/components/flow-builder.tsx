@@ -18,6 +18,7 @@ import "@xyflow/react/dist/style.css";
 import { Button, Card, Flex, Form, Input, Select, Space, Typography } from "antd";
 
 export interface FlowNodeData {
+  kind: "start" | "agent" | "end";
   label: string;
   prompt: string;
   provider: "codex" | "claude";
@@ -31,6 +32,7 @@ export interface FlowGraphDefinition {
 }
 
 const DEFAULT_NODE_DATA: FlowNodeData = {
+  kind: "agent",
   label: "Agent Node",
   prompt: "",
   provider: "codex",
@@ -38,12 +40,14 @@ const DEFAULT_NODE_DATA: FlowNodeData = {
   complexity: "medium"
 };
 
-const createNode = (index: number): Node<FlowNodeData> => ({
+const createNode = (index: number, kind: FlowNodeData["kind"] = "agent"): Node<FlowNodeData> => ({
   id: `node-${Date.now()}-${index}`,
   position: { x: 80 + (index % 3) * 240, y: 80 + Math.floor(index / 3) * 160 },
   data: {
     ...DEFAULT_NODE_DATA,
-    label: `Agent ${index + 1}`
+    kind,
+    label: kind === "start" ? "Start" : kind === "end" ? "End" : `Agent ${index + 1}`,
+    prompt: kind === "agent" ? "" : `Flow ${kind} node`
   }
 });
 
@@ -63,8 +67,8 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
     onChange({ nodes: nextNodes, edges: nextEdges });
   };
 
-  const addNode = () => {
-    const nextNodes = [...nodes, createNode(nodes.length)];
+  const addNode = (kind: FlowNodeData["kind"]) => {
+    const nextNodes = [...nodes, createNode(nodes.length, kind)];
     setNodes(nextNodes);
     commit(nextNodes, edges);
   };
@@ -100,7 +104,13 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
       <Card size="small" style={{ flex: 1, minWidth: 0 }}>
         <Flex justify="space-between" style={{ marginBottom: 8 }}>
           <Space>
-            <Button onClick={addNode}>Add Node</Button>
+            <Button onClick={() => addNode("start")} disabled={nodes.some((node) => node.data.kind === "start")}>
+              Add Start
+            </Button>
+            <Button onClick={() => addNode("agent")}>Add Agent</Button>
+            <Button onClick={() => addNode("end")} disabled={nodes.some((node) => node.data.kind === "end")}>
+              Add End
+            </Button>
             <Button danger onClick={deleteSelectedNode} disabled={!selectedNode}>
               Delete Selected
             </Button>
@@ -158,6 +168,16 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
             <Form.Item label="Agent Name" name="label">
               <Input onChange={(event) => syncNodeField({ label: event.target.value })} />
             </Form.Item>
+            <Form.Item label="Node Type" name="kind">
+              <Select
+                options={[
+                  { label: "Start", value: "start" },
+                  { label: "Agent", value: "agent" },
+                  { label: "End", value: "end" }
+                ]}
+                onChange={(kind) => syncNodeField({ kind })}
+              />
+            </Form.Item>
             <Form.Item label="Prompt" name="prompt">
               <Input.TextArea rows={5} onChange={(event) => syncNodeField({ prompt: event.target.value })} />
             </Form.Item>
@@ -199,4 +219,3 @@ export function FlowBuilder(props: FlowBuilderProps) {
     </ReactFlowProvider>
   );
 }
-

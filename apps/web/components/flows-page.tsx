@@ -18,18 +18,46 @@ interface FlowFormValues {
 const EMPTY_FLOW_DEFINITION: FlowGraphDefinition = {
   nodes: [
     {
-      id: "node-1",
-      position: { x: 120, y: 120 },
+      id: "node-start",
+      position: { x: 80, y: 160 },
       data: {
-        label: "Start Agent",
+        kind: "start",
+        label: "Start",
+        prompt: "Flow start node",
+        provider: "codex",
+        model: "gpt-5.4",
+        complexity: "medium"
+      }
+    },
+    {
+      id: "node-agent-1",
+      position: { x: 320, y: 160 },
+      data: {
+        kind: "agent",
+        label: "Agent 1",
         prompt: "",
+        provider: "codex",
+        model: "gpt-5.4",
+        complexity: "medium"
+      }
+    },
+    {
+      id: "node-end",
+      position: { x: 560, y: 160 },
+      data: {
+        kind: "end",
+        label: "End",
+        prompt: "Flow end node",
         provider: "codex",
         model: "gpt-5.4",
         complexity: "medium"
       }
     }
   ],
-  edges: []
+  edges: [
+    { id: "edge-start-agent", source: "node-start", target: "node-agent-1" },
+    { id: "edge-agent-end", source: "node-agent-1", target: "node-end" }
+  ]
 };
 
 const parseFlowDefinition = (definitionJson: string): FlowGraphDefinition => {
@@ -54,6 +82,7 @@ const parseFlowDefinition = (definitionJson: string): FlowGraphDefinition => {
           data: {
             label: data?.label ?? `Agent ${index + 1}`,
             prompt: data?.prompt ?? "",
+            kind: data?.kind === "start" || data?.kind === "end" ? data.kind : "agent",
             provider: data?.provider === "claude" ? "claude" : "codex",
             model: data?.model ?? "gpt-5.4",
             complexity: data?.complexity === "low" || data?.complexity === "high" ? data.complexity : "medium"
@@ -71,6 +100,79 @@ const parseFlowDefinition = (definitionJson: string): FlowGraphDefinition => {
   } catch {
     return EMPTY_FLOW_DEFINITION;
   }
+};
+
+const validateFlowDefinition = (definition: FlowGraphDefinition): string | null => {
+  if (definition.nodes.length === 0) {
+    return "Flow must contain at least one node.";
+  }
+
+  const nodeIds = new Set(definition.nodes.map((node) => node.id));
+  const startNodes = definition.nodes.filter((node) => node.data.kind === "start");
+  const endNodes = definition.nodes.filter((node) => node.data.kind === "end");
+  const agentNodes = definition.nodes.filter((node) => node.data.kind === "agent");
+
+  if (startNodes.length !== 1) {
+    return "Flow must contain exactly one Start node.";
+  }
+
+  if (endNodes.length !== 1) {
+    return "Flow must contain exactly one End node.";
+  }
+
+  if (agentNodes.length === 0) {
+    return "Flow must contain at least one Agent node.";
+  }
+
+  for (const edge of definition.edges) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
+      return "All edges must reference existing nodes.";
+    }
+    if (edge.source === edge.target) {
+      return "Self-loop edges are not allowed in v1.";
+    }
+  }
+
+  const startId = startNodes[0]?.id;
+  const endId = endNodes[0]?.id;
+  if (!startId || !endId) {
+    return "Flow must contain Start and End nodes.";
+  }
+
+  const adjacency = new Map<string, string[]>();
+  for (const node of definition.nodes) {
+    adjacency.set(node.id, []);
+  }
+  for (const edge of definition.edges) {
+    adjacency.get(edge.source)?.push(edge.target);
+  }
+
+  const visited = new Set<string>();
+  const queue = [startId];
+  visited.add(startId);
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+    for (const next of adjacency.get(current) ?? []) {
+      if (!visited.has(next)) {
+        visited.add(next);
+        queue.push(next);
+      }
+    }
+  }
+
+  if (!visited.has(endId)) {
+    return "End node must be reachable from Start node.";
+  }
+
+  const unreachableAgents = agentNodes.filter((node) => !visited.has(node.id));
+  if (unreachableAgents.length > 0) {
+    return "All Agent nodes must be reachable from Start.";
+  }
+
+  return null;
 };
 
 const summarizeDefinition = (value: string): string => {
@@ -229,7 +331,11 @@ export function FlowsPage() {
             try {
               const definitionJson =
                 editorMode === "visual" ? JSON.stringify(graphDefinition, null, 2) : values.definitionJson;
-              JSON.parse(definitionJson);
+              const parsed = parseFlowDefinition(definitionJson);
+              const validationError = validateFlowDefinition(parsed);
+              if (validationError) {
+                throw new Error(validationError);
+              }
               if (editing) {
                 await api.updateFlow(editing.id, {
                   ...values,
