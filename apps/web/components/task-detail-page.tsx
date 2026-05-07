@@ -45,6 +45,7 @@ import {
   Collapse,
   Descriptions,
   Divider,
+  Drawer,
   Dropdown,
   Empty,
   Flex,
@@ -115,7 +116,6 @@ const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
 const OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS = 48_000;
 const SYSTEM_ADMIN_ROLE_ID = "admin";
 const HISTORY_PAGE_SIZE = 5;
-const getNotesCollapseStorageKey = (taskId: string): string => `agentswarm:task:${taskId}:notesCollapsed`;
 const getComposerDraftStorageKey = (taskId: string): string => `agentswarm:task:${taskId}:composerDraft`;
 
 const NotesMarkdownEditor = dynamic(
@@ -703,7 +703,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
   const [notesEditing, setNotesEditing] = useState(false);
-  const [notesCollapsed, setNotesCollapsed] = useState(false);
+  const [notesDrawerOpen, setNotesDrawerOpen] = useState(false);
   const [notesDraft, setNotesDraft] = useState("");
   const [applyCheckpointModalProposal, setApplyCheckpointModalProposal] = useState<TaskChangeProposal | null>(null);
   const [applyCheckpointCommitMessage, setApplyCheckpointCommitMessage] = useState("");
@@ -794,6 +794,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setWorkspaceFilePreview((current) => ({ ...current, open: false }));
     setTaskStateModalOpen(false);
     setTaskStateDraft("open");
+    setNotesDrawerOpen(false);
     setNotesEditing(false);
     setNotesDraft("");
     setHistoryPage(1);
@@ -817,43 +818,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      setNotesCollapsed(false);
-      return;
-    }
-
-    try {
-      const stored = window.localStorage.getItem(getNotesCollapseStorageKey(taskId));
-      if (stored === "1") {
-        setNotesCollapsed(true);
-        return;
-      }
-
-      const hasNotes = (task?.notes ?? "").trim().length > 0;
-      setNotesCollapsed(!hasNotes);
-    } catch {
-      const hasNotes = (task?.notes ?? "").trim().length > 0;
-      setNotesCollapsed(!hasNotes);
-    }
-  }, [task?.notes, taskId]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    try {
-      if (notesCollapsed) {
-        window.localStorage.setItem(getNotesCollapseStorageKey(taskId), "1");
-      } else {
-        window.localStorage.removeItem(getNotesCollapseStorageKey(taskId));
-      }
-    } catch {
-      // Ignore localStorage write errors.
-    }
-  }, [notesCollapsed, taskId]);
 
   useEffect(() => {
     setChatInputDraftReady(false);
@@ -2467,7 +2431,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (!task) {
       return;
     }
-    setNotesCollapsed(false);
+    setNotesDrawerOpen(true);
     setNotesDraft(task.notes ?? "");
     setNotesEditing(true);
   };
@@ -2881,7 +2845,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const hasGitHubDiffTargetAction = githubPullRequestLookupPending || Boolean(githubDiffTarget);
   const assigneeLabel = task?.ownerUserId ? (assigneeNameById.get(task.ownerUserId) ?? task.ownerUserId) : "Unassigned";
   const taskNotes = (task?.notes ?? "").trim();
-  const notesCollapsePanelKey = "task-notes";
   const contextContent = (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Card size="small">
@@ -3461,52 +3424,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         {`Current: ${aiSettingsSummary}`}
         {isActive ? " Settings will be applied on next run." : ""}
       </Typography.Text>
-      {task ? (
-        <Collapse
-          size="small"
-          activeKey={notesCollapsed ? [] : [notesCollapsePanelKey]}
-          onChange={(keys) => {
-            const activeKeys = Array.isArray(keys) ? keys : keys ? [keys] : [];
-            setNotesCollapsed(!activeKeys.includes(notesCollapsePanelKey));
-          }}
-          items={[
-            {
-              key: notesCollapsePanelKey,
-              label: "Notes",
-              extra: (
-                <span onClick={(event) => event.stopPropagation()}>
-                  {notesEditing && canEditTask && !isArchived ? (
-                    <Space size={8}>
-                      <Button size="small" onClick={cancelNotesInlineEdit} disabled={submitting === "notes"}>
-                        Cancel
-                      </Button>
-                      <Button size="small" type="primary" onClick={() => void confirmTaskNotesUpdate()} loading={submitting === "notes"}>
-                        Save
-                      </Button>
-                    </Space>
-                  ) : canEditTask && !isArchived ? (
-                    <Button size="small" icon={<EditOutlined />} onClick={startNotesInlineEdit}>
-                      Edit
-                    </Button>
-                  ) : null}
-                </span>
-              ),
-              children:
-                notesEditing && canEditTask && !isArchived ? (
-                  <Flex vertical gap={12}>
-                    <NotesMarkdownEditor value={notesDraft} onChange={setNotesDraft} disabled={submitting === "notes"} />
-                  </Flex>
-                ) : taskNotes ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                    {taskNotes}
-                  </ReactMarkdown>
-                ) : (
-                  <Typography.Text type="secondary">No notes added.</Typography.Text>
-                )
-            }
-          ]}
-        />
-      ) : null}
     </Flex>
   );
 
@@ -4732,6 +4649,50 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           style={{ resize: "vertical" }}
         />
       </Modal>
+      <Drawer
+        title="Task Notes"
+        placement="right"
+        width={520}
+        open={notesDrawerOpen && !!task}
+        onClose={() => {
+          if (submitting === "notes") {
+            return;
+          }
+          setNotesDrawerOpen(false);
+        }}
+        mask={false}
+        destroyOnClose={false}
+        extra={
+          notesEditing && canEditTask && !isArchived ? (
+            <Space size={8}>
+              <Button size="small" onClick={cancelNotesInlineEdit} disabled={submitting === "notes"}>
+                Cancel
+              </Button>
+              <Button size="small" type="primary" onClick={() => void confirmTaskNotesUpdate()} loading={submitting === "notes"}>
+                Save
+              </Button>
+            </Space>
+          ) : canEditTask && !isArchived ? (
+            <Button size="small" icon={<EditOutlined />} onClick={startNotesInlineEdit}>
+              Edit
+            </Button>
+          ) : null
+        }
+      >
+        {task ? (
+          notesEditing && canEditTask && !isArchived ? (
+            <Flex vertical gap={12}>
+              <NotesMarkdownEditor value={notesDraft} onChange={setNotesDraft} disabled={submitting === "notes"} />
+            </Flex>
+          ) : taskNotes ? (
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {taskNotes}
+            </ReactMarkdown>
+          ) : (
+            <Typography.Text type="secondary">No notes added.</Typography.Text>
+          )
+        ) : null}
+      </Drawer>
       <Modal
         title={applyCheckpointModalProposal?.status === "reverted" ? "Apply Checkpoint Again" : "Apply Checkpoint"}
         open={applyCheckpointModalProposal !== null}
@@ -4945,6 +4906,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                       ) : null}
                     </Space>
                     <Space wrap size={8} style={{ justifyContent: "flex-end" }}>
+                      <Button
+                        icon={<PushpinOutlined />}
+                        onClick={() => {
+                          if (!task) {
+                            return;
+                          }
+                          setNotesDrawerOpen(true);
+                        }}
+                      >
+                        Notes
+                      </Button>
                       {showWorkingIndicator ? (
                         <Space size={6} align="center" style={{ color: "rgba(0,0,0,0.65)" }}>
                           <Spin size="small" />
