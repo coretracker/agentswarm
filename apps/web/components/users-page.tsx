@@ -23,13 +23,15 @@ import dayjs from "dayjs";
 import { api } from "../src/api/client";
 import { useAuth } from "./auth-provider";
 
+type AgentResponsePreferenceOption = AgentResponseStyle | "neutral";
+
 interface UserFormValues {
   name: string;
   email: string;
   password?: string;
   active: boolean;
   agentResponsePreferenceEnabled: boolean;
-  agentResponsePreferenceStyle: AgentResponseStyle | undefined;
+  agentResponsePreferenceStyle: AgentResponsePreferenceOption | undefined;
   responsePreferencePresetId?: string;
   roleIds: string[];
   repositoryIds: string[];
@@ -88,7 +90,7 @@ export function UsersPage() {
       password: "",
       active: true,
       agentResponsePreferenceEnabled: false,
-      agentResponsePreferenceStyle: undefined,
+      agentResponsePreferenceStyle: "neutral",
       responsePreferencePresetId: undefined,
       roleIds: [],
       repositoryIds: []
@@ -104,7 +106,7 @@ export function UsersPage() {
       password: "",
       active: user.active,
       agentResponsePreferenceEnabled: user.agentResponsePreference.enabled,
-      agentResponsePreferenceStyle: user.agentResponsePreference.style ?? undefined,
+      agentResponsePreferenceStyle: user.agentResponsePreference.enabled ? (user.agentResponsePreference.style ?? undefined) : "neutral",
       responsePreferencePresetId:
         responsePreferencePresets.find(
           (preset) =>
@@ -248,8 +250,8 @@ export function UsersPage() {
                   password: values.password?.trim() || undefined,
                   active: values.active,
                   agentResponsePreference: {
-                    enabled: values.agentResponsePreferenceEnabled,
-                    style: values.agentResponsePreferenceStyle ?? null
+                    enabled: values.agentResponsePreferenceEnabled && values.agentResponsePreferenceStyle !== "neutral",
+                    style: values.agentResponsePreferenceStyle === "neutral" ? null : (values.agentResponsePreferenceStyle ?? null)
                   },
                   roleIds: canEditRoles ? values.roleIds : undefined,
                   repositoryIds: canEditRoles ? values.repositoryIds : undefined
@@ -262,8 +264,8 @@ export function UsersPage() {
                   password: values.password?.trim() || "",
                   active: values.active,
                   agentResponsePreference: {
-                    enabled: values.agentResponsePreferenceEnabled,
-                    style: values.agentResponsePreferenceStyle ?? null
+                    enabled: values.agentResponsePreferenceEnabled && values.agentResponsePreferenceStyle !== "neutral",
+                    style: values.agentResponsePreferenceStyle === "neutral" ? null : (values.agentResponsePreferenceStyle ?? null)
                   },
                   roleIds: canEditRoles ? values.roleIds : undefined,
                   repositoryIds: canEditRoles ? values.repositoryIds : undefined
@@ -321,7 +323,7 @@ export function UsersPage() {
                 }
                 form.setFieldsValue({
                   agentResponsePreferenceEnabled: preset.preference.enabled,
-                  agentResponsePreferenceStyle: preset.preference.style ?? undefined
+                  agentResponsePreferenceStyle: preset.preference.enabled ? (preset.preference.style ?? undefined) : "neutral"
                 });
               }}
             />
@@ -333,9 +335,17 @@ export function UsersPage() {
             extra="When enabled, the agent adapts its response style to the selected audience."
           >
             <Switch
-              onChange={() => {
+              onChange={(checked) => {
                 if (selectedResponsePreferencePresetId) {
                   form.setFieldValue("responsePreferencePresetId", undefined);
+                }
+                const currentValue = form.getFieldValue("agentResponsePreferenceStyle");
+                if (!checked) {
+                  form.setFieldValue("agentResponsePreferenceStyle", "neutral");
+                  return;
+                }
+                if (!currentValue || currentValue === "neutral") {
+                  form.setFieldValue("agentResponsePreferenceStyle", "non_technical");
                 }
               }}
             />
@@ -351,7 +361,7 @@ export function UsersPage() {
                 rules={[
                   ({ getFieldValue }) => ({
                     validator(_, value) {
-                      if (!getFieldValue("agentResponsePreferenceEnabled") || value) {
+                      if (!getFieldValue("agentResponsePreferenceEnabled") || (value && value !== "neutral")) {
                         return Promise.resolve();
                       }
                       return Promise.reject(new Error("Select an audience"));
@@ -367,14 +377,16 @@ export function UsersPage() {
                 <Select
                   disabled={!getFieldValue("agentResponsePreferenceEnabled")}
                   options={[
+                    { label: "Neutral", value: "neutral" },
                     { label: "Technical", value: "technical" },
                     { label: "Non-technical", value: "non_technical" }
                   ]}
                   placeholder="Select an audience"
-                  onChange={() => {
+                  onChange={(value) => {
                     if (selectedResponsePreferencePresetId) {
                       form.setFieldValue("responsePreferencePresetId", undefined);
                     }
+                    form.setFieldValue("agentResponsePreferenceEnabled", value !== "neutral");
                   }}
                 />
               </Form.Item>

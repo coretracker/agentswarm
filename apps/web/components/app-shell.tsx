@@ -38,6 +38,8 @@ const menuIconByPath: Record<string, ReactNode> = {
   "/users": <TeamOutlined />
 };
 
+type AgentResponsePreferenceOption = AgentResponseStyle | "neutral";
+
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -57,7 +59,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     name: string;
     codexAuthJson?: string;
     agentResponsePreferenceEnabled: boolean;
-    agentResponsePreferenceStyle: AgentResponseStyle | undefined;
+    agentResponsePreferenceStyle: AgentResponsePreferenceOption | undefined;
   }>();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const publicPath = isPublicPathname(pathname);
@@ -106,7 +108,9 @@ export function AppShell({ children }: { children: ReactNode }) {
         name: profile.name,
         codexAuthJson: "",
         agentResponsePreferenceEnabled: profile.agentResponsePreference.enabled,
-        agentResponsePreferenceStyle: profile.agentResponsePreference.style ?? undefined
+        agentResponsePreferenceStyle: profile.agentResponsePreference.enabled
+          ? (profile.agentResponsePreference.style ?? undefined)
+          : "neutral"
       });
       setProfileCodexConfigured(profile.codexAuthJsonConfigured);
     } catch (error) {
@@ -124,8 +128,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         name: values.name,
         codexAuthJson: values.codexAuthJson?.trim() || undefined,
         agentResponsePreference: {
-          enabled: values.agentResponsePreferenceEnabled,
-          style: values.agentResponsePreferenceStyle ?? null
+          enabled: values.agentResponsePreferenceEnabled && values.agentResponsePreferenceStyle !== "neutral",
+          style: values.agentResponsePreferenceStyle === "neutral" ? null : (values.agentResponsePreferenceStyle ?? null)
         }
       });
       setProfileCodexConfigured(next.codexAuthJsonConfigured);
@@ -347,7 +351,9 @@ export function AppShell({ children }: { children: ReactNode }) {
               name: session.user.name,
               codexAuthJson: "",
               agentResponsePreferenceEnabled: session.user.agentResponsePreference.enabled,
-              agentResponsePreferenceStyle: session.user.agentResponsePreference.style ?? undefined
+              agentResponsePreferenceStyle: session.user.agentResponsePreference.enabled
+                ? (session.user.agentResponsePreference.style ?? undefined)
+                : "neutral"
             }}
           >
             <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
@@ -359,7 +365,21 @@ export function AppShell({ children }: { children: ReactNode }) {
               valuePropName="checked"
               extra="When enabled, the agent adapts its tone and detail level to your selected audience."
             >
-              <Switch checkedChildren="On" unCheckedChildren="Off" />
+              <Switch
+                checkedChildren="On"
+                unCheckedChildren="Off"
+                onChange={(checked) => {
+                  const currentValue = profileForm.getFieldValue("agentResponsePreferenceStyle");
+                  if (!checked) {
+                    profileForm.setFieldValue("agentResponsePreferenceStyle", "neutral");
+                    return;
+                  }
+
+                  if (!currentValue || currentValue === "neutral") {
+                    profileForm.setFieldValue("agentResponsePreferenceStyle", "non_technical");
+                  }
+                }}
+              />
             </Form.Item>
             <Form.Item
               noStyle
@@ -372,7 +392,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   rules={[
                     ({ getFieldValue }) => ({
                       validator(_, value) {
-                        if (!getFieldValue("agentResponsePreferenceEnabled") || value) {
+                        if (!getFieldValue("agentResponsePreferenceEnabled") || (value && value !== "neutral")) {
                           return Promise.resolve();
                         }
                         return Promise.reject(new Error("Select an audience"));
@@ -388,10 +408,14 @@ export function AppShell({ children }: { children: ReactNode }) {
                   <Select
                     disabled={!getFieldValue("agentResponsePreferenceEnabled")}
                     options={[
+                      { label: "Neutral", value: "neutral" },
                       { label: "Technical", value: "technical" },
                       { label: "Non-technical", value: "non_technical" }
                     ]}
                     placeholder="Select an audience"
+                    onChange={(value) => {
+                      profileForm.setFieldValue("agentResponsePreferenceEnabled", value !== "neutral");
+                    }}
                   />
                 </Form.Item>
               )}

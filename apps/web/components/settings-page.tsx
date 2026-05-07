@@ -88,7 +88,7 @@ interface ResponsePreferencePresetFormValues {
   name: string;
   description: string;
   enabled: boolean;
-  style: AgentResponseStyle | undefined;
+  style: AgentResponseStyle | "neutral" | undefined;
 }
 
 type ClearCredentialTarget = "github" | "openai" | "anthropic";
@@ -809,8 +809,8 @@ export function SettingsPage() {
                 responsePreferencePresetForm.setFieldsValue({
                   name: "",
                   description: "",
-                  enabled: true,
-                  style: "non_technical"
+                  enabled: false,
+                  style: "neutral"
                 });
                 setResponsePreferencePresetModalOpen(true);
               }}
@@ -855,7 +855,7 @@ export function SettingsPage() {
                           name: preset.name,
                           description: preset.description,
                           enabled: preset.preference.enabled,
-                          style: preset.preference.style ?? undefined
+                          style: preset.preference.enabled ? (preset.preference.style ?? undefined) : "neutral"
                         });
                         setResponsePreferencePresetModalOpen(true);
                       }}
@@ -1037,8 +1037,8 @@ export function SettingsPage() {
                           name: values.name,
                           description: values.description,
                           preference: {
-                            enabled: values.enabled,
-                            style: values.style ?? null
+                            enabled: values.enabled && values.style !== "neutral",
+                            style: values.style === "neutral" ? null : (values.style ?? null)
                           }
                         }
                       : preset
@@ -1049,8 +1049,8 @@ export function SettingsPage() {
                       name: values.name,
                       description: values.description,
                       preference: {
-                        enabled: values.enabled,
-                        style: values.style ?? null
+                        enabled: values.enabled && values.style !== "neutral",
+                        style: values.style === "neutral" ? null : (values.style ?? null)
                       }
                     }
                   ];
@@ -1080,7 +1080,19 @@ export function SettingsPage() {
             valuePropName="checked"
             extra="Disabled means this preset behaves like the normal neutral response."
           >
-            <Switch disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
+            <Switch
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              onChange={(checked) => {
+                const currentValue = responsePreferencePresetForm.getFieldValue("style");
+                if (!checked) {
+                  responsePreferencePresetForm.setFieldValue("style", "neutral");
+                  return;
+                }
+                if (!currentValue || currentValue === "neutral") {
+                  responsePreferencePresetForm.setFieldValue("style", "non_technical");
+                }
+              }}
+            />
           </Form.Item>
           <Form.Item
             noStyle
@@ -1093,7 +1105,7 @@ export function SettingsPage() {
                 rules={[
                   ({ getFieldValue }) => ({
                     validator(_, value) {
-                      if (!getFieldValue("enabled") || value) {
+                      if (!getFieldValue("enabled") || (value && value !== "neutral")) {
                         return Promise.resolve();
                       }
                       return Promise.reject(new Error("Select an audience"));
@@ -1109,10 +1121,14 @@ export function SettingsPage() {
                 <Select
                   disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem || !getFieldValue("enabled")}
                   options={[
+                    { label: "Neutral", value: "neutral" },
                     { label: "Technical", value: "technical" },
                     { label: "Non-technical", value: "non_technical" }
                   ]}
                   placeholder="Select an audience"
+                  onChange={(value) => {
+                    responsePreferencePresetForm.setFieldValue("enabled", value !== "neutral");
+                  }}
                 />
               </Form.Item>
             )}
