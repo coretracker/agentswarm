@@ -4653,7 +4653,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       <Drawer
         title="Task Notes"
         placement="right"
-        width={520}
+        width="min(1024px, calc(100vw - 32px))"
         open={notesDrawerOpen && !!task}
         onClose={() => {
           if (submitting === "notes") {
