@@ -50,7 +50,6 @@ import {
   Flex,
   Form,
   Input,
-  Layout,
   Mentions,
   List,
   Modal,
@@ -2938,55 +2937,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </Card>
     </Space>
   );
-  const notesSidePanel = task ? (
-    <Card bordered={false} style={{ height: "fit-content" }}>
-      <Collapse
-        size="small"
-        activeKey={notesCollapsed ? [] : [notesCollapsePanelKey]}
-        onChange={(keys) => {
-          const activeKeys = Array.isArray(keys) ? keys : keys ? [keys] : [];
-          setNotesCollapsed(!activeKeys.includes(notesCollapsePanelKey));
-        }}
-        items={[
-          {
-            key: notesCollapsePanelKey,
-            label: "Notes",
-            extra: (
-              <span onClick={(event) => event.stopPropagation()}>
-                {notesEditing && canEditTask && !isArchived ? (
-                  <Space size={8}>
-                    <Button size="small" onClick={cancelNotesInlineEdit} disabled={submitting === "notes"}>
-                      Cancel
-                    </Button>
-                    <Button size="small" type="primary" onClick={() => void confirmTaskNotesUpdate()} loading={submitting === "notes"}>
-                      Save
-                    </Button>
-                  </Space>
-                ) : canEditTask && !isArchived ? (
-                  <Button size="small" icon={<EditOutlined />} onClick={startNotesInlineEdit}>
-                    Edit
-                  </Button>
-                ) : null}
-              </span>
-            ),
-            children:
-              notesEditing && canEditTask && !isArchived ? (
-                <Flex vertical gap={12}>
-                  <NotesMarkdownEditor value={notesDraft} onChange={setNotesDraft} disabled={submitting === "notes"} />
-                </Flex>
-              ) : taskNotes ? (
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                  {taskNotes}
-                </ReactMarkdown>
-              ) : (
-                <Typography.Text type="secondary">No notes added.</Typography.Text>
-              )
-          }
-        ]}
-      />
-    </Card>
-  ) : null;
-
   const diffHeadLabel = liveDiffLoading && !liveDiff
     ? "Loading…"
     : liveDiff?.headBranch
@@ -3511,6 +3461,52 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         {`Current: ${aiSettingsSummary}`}
         {isActive ? " Settings will be applied on next run." : ""}
       </Typography.Text>
+      {task ? (
+        <Collapse
+          size="small"
+          activeKey={notesCollapsed ? [] : [notesCollapsePanelKey]}
+          onChange={(keys) => {
+            const activeKeys = Array.isArray(keys) ? keys : keys ? [keys] : [];
+            setNotesCollapsed(!activeKeys.includes(notesCollapsePanelKey));
+          }}
+          items={[
+            {
+              key: notesCollapsePanelKey,
+              label: "Notes",
+              extra: (
+                <span onClick={(event) => event.stopPropagation()}>
+                  {notesEditing && canEditTask && !isArchived ? (
+                    <Space size={8}>
+                      <Button size="small" onClick={cancelNotesInlineEdit} disabled={submitting === "notes"}>
+                        Cancel
+                      </Button>
+                      <Button size="small" type="primary" onClick={() => void confirmTaskNotesUpdate()} loading={submitting === "notes"}>
+                        Save
+                      </Button>
+                    </Space>
+                  ) : canEditTask && !isArchived ? (
+                    <Button size="small" icon={<EditOutlined />} onClick={startNotesInlineEdit}>
+                      Edit
+                    </Button>
+                  ) : null}
+                </span>
+              ),
+              children:
+                notesEditing && canEditTask && !isArchived ? (
+                  <Flex vertical gap={12}>
+                    <NotesMarkdownEditor value={notesDraft} onChange={setNotesDraft} disabled={submitting === "notes"} />
+                  </Flex>
+                ) : taskNotes ? (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    {taskNotes}
+                  </ReactMarkdown>
+                ) : (
+                  <Typography.Text type="secondary">No notes added.</Typography.Text>
+                )
+            }
+          ]}
+        />
+      ) : null}
     </Flex>
   );
 
@@ -5000,26 +4996,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 </Flex>
 
                 <Flex vertical gap={16}>
-                  <Layout hasSider style={{ background: "transparent", gap: 16, alignItems: "flex-start" }}>
-                    <Layout.Content style={{ minWidth: 0, flex: 1 }}>
-                      <Card bordered={false}>
-                        <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff" | "files")} items={mainTabItems} />
-                      </Card>
-                    </Layout.Content>
-                    <Layout.Sider
-                      width={360}
-                      theme="light"
-                      style={{
-                        background: "transparent",
-                        position: "sticky",
-                        top: 16,
-                        alignSelf: "flex-start",
-                        minWidth: 300
-                      }}
-                    >
-                      {notesSidePanel}
-                    </Layout.Sider>
-                  </Layout>
+                  <Card bordered={false}>
+                    <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff" | "files")} items={mainTabItems} />
+                  </Card>
                   <div ref={bottomScrollAnchorRef} aria-hidden="true" style={{ height: 0, width: "100%", flexShrink: 0 }} />
                 </Flex>
               </Flex>
