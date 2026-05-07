@@ -56,11 +56,11 @@ const normalizeUserName = (value: string | undefined): string => (value ?? "").t
 const normalizeUserEmail = (value: string | undefined): string => (value ?? "").trim().toLowerCase();
 const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
 const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
-const RESPONSE_EXPLANATION_DEPTH = new Set(["brief", "standard", "detailed"]);
+const RESPONSE_EXPLANATION_DEPTH = new Set(["one_line", "brief", "standard", "detailed", "deep_dive"]);
 const RESPONSE_JARGON_LEVEL = new Set(["avoid", "balanced", "expert"]);
 const RESPONSE_CODE_PREFERENCE = new Set(["only_when_needed", "prefer_examples", "avoid_code"]);
 const RESPONSE_CLARIFY_BEHAVIOR = new Set(["ask_when_ambiguous", "make_reasonable_assumptions"]);
-const RESPONSE_FORMATTING_STYLE = new Set(["direct", "teaching", "executive"]);
+const RESPONSE_FORMATTING_STYLE = new Set(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]);
 
 const normalizeAgentResponsePreference = (
   value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined,

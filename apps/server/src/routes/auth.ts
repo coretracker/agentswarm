@@ -13,11 +13,11 @@ const loginSchema = z.object({
 const responsePreferenceSchema = z
   .object({
     audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
-    explanationDepth: z.enum(["brief", "standard", "detailed"]).optional(),
+    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
     jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
     codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
     clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
-    formattingStyle: z.enum(["direct", "teaching", "executive"]).optional(),
+    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
     extraInstructions: z.string().trim().max(2000).optional()
   });
 

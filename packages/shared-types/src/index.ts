@@ -87,11 +87,11 @@ export type TaskComplexity = "trivial" | "normal" | "complex";
 export type TaskBranchStrategy = "feature_branch" | "work_on_branch";
 export type AudienceType = "technical" | "non_technical" | "mixed";
 export type AgentResponseStyle = Extract<AudienceType, "technical" | "non_technical">;
-export type AgentExplanationDepth = "brief" | "standard" | "detailed";
+export type AgentExplanationDepth = "one_line" | "brief" | "standard" | "detailed" | "deep_dive";
 export type AgentJargonLevel = "avoid" | "balanced" | "expert";
 export type AgentCodePreference = "only_when_needed" | "prefer_examples" | "avoid_code";
 export type AgentClarifyBehavior = "ask_when_ambiguous" | "make_reasonable_assumptions";
-export type AgentFormattingStyle = "direct" | "teaching" | "executive";
+export type AgentFormattingStyle = "direct" | "teaching" | "executive" | "step_by_step" | "checklist" | "qa" | "problem_solution";
 
 export interface AgentResponsePolicy {
   audience?: AudienceType;

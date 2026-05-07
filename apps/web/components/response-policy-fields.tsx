@@ -29,9 +29,11 @@ export function ResponsePolicyFields({ onChange }: ResponsePolicyFieldsProps) {
           allowClear
           placeholder="Default"
           options={[
+            { label: "One Line", value: "one_line" },
             { label: "Brief", value: "brief" },
             { label: "Standard", value: "standard" },
-            { label: "Detailed", value: "detailed" }
+            { label: "Detailed", value: "detailed" },
+            { label: "Deep Dive", value: "deep_dive" }
           ]}
           onChange={() => onChange?.()}
         />
@@ -78,7 +80,11 @@ export function ResponsePolicyFields({ onChange }: ResponsePolicyFieldsProps) {
           options={[
             { label: "Direct", value: "direct" },
             { label: "Teaching", value: "teaching" },
-            { label: "Executive", value: "executive" }
+            { label: "Executive", value: "executive" },
+            { label: "Step by Step", value: "step_by_step" },
+            { label: "Checklist", value: "checklist" },
+            { label: "Q&A", value: "qa" },
+            { label: "Problem/Solution", value: "problem_solution" }
           ]}
           onChange={() => onChange?.()}
         />
@@ -94,4 +100,3 @@ export function ResponsePolicyFields({ onChange }: ResponsePolicyFieldsProps) {
     </>
   );
 }
-
