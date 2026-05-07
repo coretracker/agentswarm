@@ -4046,7 +4046,7 @@ export class SpawnerService {
         resolvedModel,
         resolvedReasoningEffort: resolvedProfileSettings.reasoningEffort,
         resolvedThinkingBudgetTokens: resolvedProfileSettings.thinkingBudgetTokens,
-        agentResponsePreference: responsePreferenceUser?.agentResponsePreference ?? { enabled: false, style: null },
+        agentResponsePreference: responsePreferenceUser?.agentResponsePreference ?? {},
         workspacePath: workspace.workspacePath,
         resultMarkdownPath,
         resultJsonPath,

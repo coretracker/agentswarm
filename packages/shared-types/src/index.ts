@@ -85,12 +85,25 @@ export const TASK_PROMPT_ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
 export type TaskReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type TaskComplexity = "trivial" | "normal" | "complex";
 export type TaskBranchStrategy = "feature_branch" | "work_on_branch";
-export type AgentResponseStyle = "technical" | "non_technical";
+export type AudienceType = "technical" | "non_technical" | "mixed";
+export type AgentResponseStyle = Extract<AudienceType, "technical" | "non_technical">;
+export type AgentExplanationDepth = "brief" | "standard" | "detailed";
+export type AgentJargonLevel = "avoid" | "balanced" | "expert";
+export type AgentCodePreference = "only_when_needed" | "prefer_examples" | "avoid_code";
+export type AgentClarifyBehavior = "ask_when_ambiguous" | "make_reasonable_assumptions";
+export type AgentFormattingStyle = "direct" | "teaching" | "executive";
 
-export interface AgentResponsePreference {
-  enabled: boolean;
-  style: AgentResponseStyle | null;
+export interface AgentResponsePolicy {
+  audience?: AudienceType;
+  explanationDepth?: AgentExplanationDepth;
+  jargonLevel?: AgentJargonLevel;
+  codePreference?: AgentCodePreference;
+  clarifyBehavior?: AgentClarifyBehavior;
+  formattingStyle?: AgentFormattingStyle;
+  extraInstructions?: string;
 }
+
+export type AgentResponsePreference = AgentResponsePolicy;
 
 export interface ResponsePreferencePreset {
   id: string;
@@ -106,7 +119,7 @@ export interface ResponsePreferencePresetInput {
   id?: string;
   name: string;
   description?: string;
-  preference: Partial<AgentResponsePreference>;
+  preference: AgentResponsePolicy;
 }
 
 export type McpServerTransport = "stdio" | "http";

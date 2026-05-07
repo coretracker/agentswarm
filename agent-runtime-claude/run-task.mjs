@@ -94,31 +94,43 @@ const resolveClaudeBinary = async (runtimeHome) => {
 
 const buildResponsePreferencePreamble = () => {
   const preference = manifest.agentResponsePreference;
-  if (!preference || preference.enabled !== true) {
+  if (!preference || typeof preference !== "object") {
     return "";
   }
 
-  if (preference.style === "technical") {
-    return [
-      "Response style:",
-      "- The user prefers a technical response.",
-      "- Be direct and precise.",
-      "- Use implementation details and technical terms when they help.",
-      "- Avoid oversimplifying."
-    ].join("\n");
+  const lines = ["Response style:"];
+  if (preference.audience === "technical") {
+    lines.push("- Audience: technical.");
+  } else if (preference.audience === "non_technical") {
+    lines.push("- Audience: non-technical.");
+  } else if (preference.audience === "mixed") {
+    lines.push("- Audience: mixed.");
   }
 
-  if (preference.style === "non_technical") {
-    return [
-      "Response style:",
-      "- The user prefers a non-technical response.",
-      "- Use plain language and avoid unexplained jargon.",
-      "- Focus on outcomes and practical guidance before low-level implementation detail.",
-      "- Only include code or deep technical detail when it is clearly necessary."
-    ].join("\n");
+  if (preference.explanationDepth) {
+    lines.push(`- Explanation depth: ${preference.explanationDepth}.`);
+  }
+  if (preference.jargonLevel) {
+    lines.push(`- Jargon level: ${preference.jargonLevel}.`);
+  }
+  if (preference.codePreference) {
+    lines.push(`- Code preference: ${preference.codePreference}.`);
+  }
+  if (preference.clarifyBehavior) {
+    lines.push(`- Clarification behavior: ${preference.clarifyBehavior}.`);
+  }
+  if (preference.formattingStyle) {
+    lines.push(`- Formatting style: ${preference.formattingStyle}.`);
+  }
+  if (typeof preference.extraInstructions === "string" && preference.extraInstructions.trim()) {
+    lines.push(`- Extra instructions: ${preference.extraInstructions.trim()}`);
   }
 
-  return "";
+  if (lines.length === 1) {
+    return "";
+  }
+
+  return lines.join("\n");
 };
 
 const buildPrompt = () => {

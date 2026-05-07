@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { App, Button, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Spin, Switch, Typography, message, theme as antTheme } from "antd";
+import { App, Button, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Spin, Typography, message, theme as antTheme } from "antd";
 import {
   CopyOutlined,
   DatabaseOutlined,
@@ -20,7 +20,14 @@ import { TaskBrowserNotifications } from "./task-browser-notifications";
 import { useThemeMode } from "./theme-provider";
 import { appThemeOptions, type AppThemeMode } from "../src/theme/antd-theme";
 import { api } from "../src/api/client";
-import type { AgentResponseStyle } from "@agentswarm/shared-types";
+import type {
+  AgentClarifyBehavior,
+  AgentCodePreference,
+  AgentExplanationDepth,
+  AgentFormattingStyle,
+  AgentJargonLevel,
+  AudienceType
+} from "@agentswarm/shared-types";
 import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
@@ -37,8 +44,6 @@ const menuIconByPath: Record<string, ReactNode> = {
   "/settings": <SettingOutlined />,
   "/users": <TeamOutlined />
 };
-
-type AgentResponsePreferenceOption = AgentResponseStyle | "neutral";
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -58,8 +63,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [profileForm] = Form.useForm<{
     name: string;
     codexAuthJson?: string;
-    agentResponsePreferenceEnabled: boolean;
-    agentResponsePreferenceStyle: AgentResponsePreferenceOption | undefined;
+    audience?: AudienceType;
+    explanationDepth?: AgentExplanationDepth;
+    jargonLevel?: AgentJargonLevel;
+    codePreference?: AgentCodePreference;
+    clarifyBehavior?: AgentClarifyBehavior;
+    formattingStyle?: AgentFormattingStyle;
+    extraInstructions?: string;
   }>();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const publicPath = isPublicPathname(pathname);
@@ -107,10 +117,13 @@ export function AppShell({ children }: { children: ReactNode }) {
       profileForm.setFieldsValue({
         name: profile.name,
         codexAuthJson: "",
-        agentResponsePreferenceEnabled: profile.agentResponsePreference.enabled,
-        agentResponsePreferenceStyle: profile.agentResponsePreference.enabled
-          ? (profile.agentResponsePreference.style ?? undefined)
-          : "neutral"
+        audience: profile.agentResponsePreference.audience,
+        explanationDepth: profile.agentResponsePreference.explanationDepth,
+        jargonLevel: profile.agentResponsePreference.jargonLevel,
+        codePreference: profile.agentResponsePreference.codePreference,
+        clarifyBehavior: profile.agentResponsePreference.clarifyBehavior,
+        formattingStyle: profile.agentResponsePreference.formattingStyle,
+        extraInstructions: profile.agentResponsePreference.extraInstructions ?? ""
       });
       setProfileCodexConfigured(profile.codexAuthJsonConfigured);
     } catch (error) {
@@ -128,8 +141,13 @@ export function AppShell({ children }: { children: ReactNode }) {
         name: values.name,
         codexAuthJson: values.codexAuthJson?.trim() || undefined,
         agentResponsePreference: {
-          enabled: values.agentResponsePreferenceEnabled && values.agentResponsePreferenceStyle !== "neutral",
-          style: values.agentResponsePreferenceStyle === "neutral" ? null : (values.agentResponsePreferenceStyle ?? null)
+          audience: values.audience,
+          explanationDepth: values.explanationDepth,
+          jargonLevel: values.jargonLevel,
+          codePreference: values.codePreference,
+          clarifyBehavior: values.clarifyBehavior,
+          formattingStyle: values.formattingStyle,
+          extraInstructions: values.extraInstructions?.trim() || undefined
         }
       });
       setProfileCodexConfigured(next.codexAuthJsonConfigured);
@@ -350,75 +368,89 @@ export function AppShell({ children }: { children: ReactNode }) {
             initialValues={{
               name: session.user.name,
               codexAuthJson: "",
-              agentResponsePreferenceEnabled: session.user.agentResponsePreference.enabled,
-              agentResponsePreferenceStyle: session.user.agentResponsePreference.enabled
-                ? (session.user.agentResponsePreference.style ?? undefined)
-                : "neutral"
+              audience: session.user.agentResponsePreference.audience,
+              explanationDepth: session.user.agentResponsePreference.explanationDepth,
+              jargonLevel: session.user.agentResponsePreference.jargonLevel,
+              codePreference: session.user.agentResponsePreference.codePreference,
+              clarifyBehavior: session.user.agentResponsePreference.clarifyBehavior,
+              formattingStyle: session.user.agentResponsePreference.formattingStyle,
+              extraInstructions: session.user.agentResponsePreference.extraInstructions ?? ""
             }}
           >
             <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
               <Input />
             </Form.Item>
-            <Form.Item
-              name="agentResponsePreferenceEnabled"
-              label="Tailored Response Style"
-              valuePropName="checked"
-              extra="When enabled, the agent adapts its tone and detail level to your selected audience."
-            >
-              <Switch
-                checkedChildren="On"
-                unCheckedChildren="Off"
-                onChange={(checked) => {
-                  const currentValue = profileForm.getFieldValue("agentResponsePreferenceStyle");
-                  if (!checked) {
-                    profileForm.setFieldValue("agentResponsePreferenceStyle", "neutral");
-                    return;
-                  }
-
-                  if (!currentValue || currentValue === "neutral") {
-                    profileForm.setFieldValue("agentResponsePreferenceStyle", "non_technical");
-                  }
-                }}
+            <Form.Item name="audience" label="Audience">
+              <Select
+                allowClear
+                placeholder="Neutral"
+                options={[
+                  { label: "Technical", value: "technical" },
+                  { label: "Non-technical", value: "non_technical" },
+                  { label: "Mixed", value: "mixed" }
+                ]}
               />
             </Form.Item>
-            <Form.Item
-              noStyle
-              shouldUpdate={(prev, next) => prev.agentResponsePreferenceEnabled !== next.agentResponsePreferenceEnabled}
-            >
-              {({ getFieldValue }) => (
-                <Form.Item
-                  name="agentResponsePreferenceStyle"
-                  label="Preferred Audience"
-                  rules={[
-                    ({ getFieldValue }) => ({
-                      validator(_, value) {
-                        if (!getFieldValue("agentResponsePreferenceEnabled") || (value && value !== "neutral")) {
-                          return Promise.resolve();
-                        }
-                        return Promise.reject(new Error("Select an audience"));
-                      }
-                    })
-                  ]}
-                  extra={
-                    getFieldValue("agentResponsePreferenceEnabled")
-                      ? "Technical uses more direct implementation language. Non-technical favors plainer explanations."
-                      : "Disabled means the agent responds normally without this audience preference."
-                  }
-                >
-                  <Select
-                    disabled={!getFieldValue("agentResponsePreferenceEnabled")}
-                    options={[
-                      { label: "Neutral", value: "neutral" },
-                      { label: "Technical", value: "technical" },
-                      { label: "Non-technical", value: "non_technical" }
-                    ]}
-                    placeholder="Select an audience"
-                    onChange={(value) => {
-                      profileForm.setFieldValue("agentResponsePreferenceEnabled", value !== "neutral");
-                    }}
-                  />
-                </Form.Item>
-              )}
+            <Form.Item name="explanationDepth" label="Explanation Depth">
+              <Select
+                allowClear
+                placeholder="Default"
+                options={[
+                  { label: "Brief", value: "brief" },
+                  { label: "Standard", value: "standard" },
+                  { label: "Detailed", value: "detailed" }
+                ]}
+              />
+            </Form.Item>
+            <Form.Item name="jargonLevel" label="Jargon Level">
+              <Select
+                allowClear
+                placeholder="Default"
+                options={[
+                  { label: "Avoid", value: "avoid" },
+                  { label: "Balanced", value: "balanced" },
+                  { label: "Expert", value: "expert" }
+                ]}
+              />
+            </Form.Item>
+            <Form.Item name="codePreference" label="Code Preference">
+              <Select
+                allowClear
+                placeholder="Default"
+                options={[
+                  { label: "Only When Needed", value: "only_when_needed" },
+                  { label: "Prefer Examples", value: "prefer_examples" },
+                  { label: "Avoid Code", value: "avoid_code" }
+                ]}
+              />
+            </Form.Item>
+            <Form.Item name="clarifyBehavior" label="Clarify Behavior">
+              <Select
+                allowClear
+                placeholder="Default"
+                options={[
+                  { label: "Ask When Ambiguous", value: "ask_when_ambiguous" },
+                  { label: "Make Reasonable Assumptions", value: "make_reasonable_assumptions" }
+                ]}
+              />
+            </Form.Item>
+            <Form.Item name="formattingStyle" label="Formatting Style">
+              <Select
+                allowClear
+                placeholder="Default"
+                options={[
+                  { label: "Direct", value: "direct" },
+                  { label: "Teaching", value: "teaching" },
+                  { label: "Executive", value: "executive" }
+                ]}
+              />
+            </Form.Item>
+            <Form.Item name="extraInstructions" label="Extra Instructions">
+              <Input.TextArea
+                rows={3}
+                maxLength={2000}
+                placeholder="Optional additional response instructions."
+              />
             </Form.Item>
             <Form.Item name="codexAuthJson" label="Codex auth.json">
               <Input.TextArea

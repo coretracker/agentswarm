@@ -3,7 +3,12 @@
 import { useEffect, useState } from "react";
 import type {
   AgentProvider,
-  AgentResponseStyle,
+  AgentClarifyBehavior,
+  AgentCodePreference,
+  AgentExplanationDepth,
+  AgentFormattingStyle,
+  AgentJargonLevel,
+  AudienceType,
   DataStoreBackend,
   McpServerTransport,
   PermissionScope,
@@ -87,8 +92,13 @@ interface RoleFormValues {
 interface ResponsePreferencePresetFormValues {
   name: string;
   description: string;
-  enabled: boolean;
-  style: AgentResponseStyle | "neutral" | undefined;
+  audience?: AudienceType;
+  explanationDepth?: AgentExplanationDepth;
+  jargonLevel?: AgentJargonLevel;
+  codePreference?: AgentCodePreference;
+  clarifyBehavior?: AgentClarifyBehavior;
+  formattingStyle?: AgentFormattingStyle;
+  extraInstructions?: string;
 }
 
 type ClearCredentialTarget = "github" | "openai" | "anthropic";
@@ -116,11 +126,19 @@ interface DataStoreRow {
 }
 
 const summarizeAllowlist = (label: string, values: string[]): string => `${label}: ${values.length === 0 ? "All" : values.join(", ")}`;
+const toSentenceValue = (value: string): string => value.replace(/_/g, " ");
 const summarizeResponsePreference = (preset: ResponsePreferencePreset): string => {
-  if (!preset.preference.enabled) {
-    return "Disabled";
+  const parts: string[] = [];
+  if (preset.preference.audience) {
+    parts.push(`Audience: ${toSentenceValue(preset.preference.audience)}`);
   }
-  return preset.preference.style === "technical" ? "Technical" : "Non-technical";
+  if (preset.preference.explanationDepth) {
+    parts.push(`Depth: ${toSentenceValue(preset.preference.explanationDepth)}`);
+  }
+  if (preset.preference.jargonLevel) {
+    parts.push(`Jargon: ${toSentenceValue(preset.preference.jargonLevel)}`);
+  }
+  return parts.length > 0 ? parts.join(" | ") : "Neutral";
 };
 
 const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
@@ -809,8 +827,13 @@ export function SettingsPage() {
                 responsePreferencePresetForm.setFieldsValue({
                   name: "",
                   description: "",
-                  enabled: false,
-                  style: "neutral"
+                  audience: undefined,
+                  explanationDepth: undefined,
+                  jargonLevel: undefined,
+                  codePreference: undefined,
+                  clarifyBehavior: undefined,
+                  formattingStyle: undefined,
+                  extraInstructions: ""
                 });
                 setResponsePreferencePresetModalOpen(true);
               }}
@@ -840,7 +863,7 @@ export function SettingsPage() {
                 render: (value: string) => value || <Typography.Text type="secondary">None</Typography.Text>
               },
               {
-                title: "Style",
+                title: "Policy",
                 render: (_, preset) => summarizeResponsePreference(preset)
               },
               {
@@ -854,8 +877,13 @@ export function SettingsPage() {
                         responsePreferencePresetForm.setFieldsValue({
                           name: preset.name,
                           description: preset.description,
-                          enabled: preset.preference.enabled,
-                          style: preset.preference.enabled ? (preset.preference.style ?? undefined) : "neutral"
+                          audience: preset.preference.audience,
+                          explanationDepth: preset.preference.explanationDepth,
+                          jargonLevel: preset.preference.jargonLevel,
+                          codePreference: preset.preference.codePreference,
+                          clarifyBehavior: preset.preference.clarifyBehavior,
+                          formattingStyle: preset.preference.formattingStyle,
+                          extraInstructions: preset.preference.extraInstructions ?? ""
                         });
                         setResponsePreferencePresetModalOpen(true);
                       }}
@@ -1037,8 +1065,13 @@ export function SettingsPage() {
                           name: values.name,
                           description: values.description,
                           preference: {
-                            enabled: values.enabled && values.style !== "neutral",
-                            style: values.style === "neutral" ? null : (values.style ?? null)
+                            audience: values.audience,
+                            explanationDepth: values.explanationDepth,
+                            jargonLevel: values.jargonLevel,
+                            codePreference: values.codePreference,
+                            clarifyBehavior: values.clarifyBehavior,
+                            formattingStyle: values.formattingStyle,
+                            extraInstructions: values.extraInstructions?.trim() || undefined
                           }
                         }
                       : preset
@@ -1049,8 +1082,13 @@ export function SettingsPage() {
                       name: values.name,
                       description: values.description,
                       preference: {
-                        enabled: values.enabled && values.style !== "neutral",
-                        style: values.style === "neutral" ? null : (values.style ?? null)
+                        audience: values.audience,
+                        explanationDepth: values.explanationDepth,
+                        jargonLevel: values.jargonLevel,
+                        codePreference: values.codePreference,
+                        clarifyBehavior: values.clarifyBehavior,
+                        formattingStyle: values.formattingStyle,
+                        extraInstructions: values.extraInstructions?.trim() || undefined
                       }
                     }
                   ];
@@ -1074,64 +1112,84 @@ export function SettingsPage() {
           <Form.Item name="description" label="Description">
             <Input.TextArea rows={3} disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
           </Form.Item>
-          <Form.Item
-            name="enabled"
-            label="Tailored Response Style Enabled"
-            valuePropName="checked"
-            extra="Disabled means this preset behaves like the normal neutral response."
-          >
-            <Switch
+          <Form.Item name="audience" label="Audience">
+            <Select
               disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              onChange={(checked) => {
-                const currentValue = responsePreferencePresetForm.getFieldValue("style");
-                if (!checked) {
-                  responsePreferencePresetForm.setFieldValue("style", "neutral");
-                  return;
-                }
-                if (!currentValue || currentValue === "neutral") {
-                  responsePreferencePresetForm.setFieldValue("style", "non_technical");
-                }
-              }}
+              allowClear
+              placeholder="Use neutral"
+              options={[
+                { label: "Technical", value: "technical" },
+                { label: "Non-technical", value: "non_technical" },
+                { label: "Mixed", value: "mixed" }
+              ]}
             />
           </Form.Item>
-          <Form.Item
-            noStyle
-            shouldUpdate={(prev, next) => prev.enabled !== next.enabled}
-          >
-            {({ getFieldValue }) => (
-              <Form.Item
-                name="style"
-                label="Preferred Audience"
-                rules={[
-                  ({ getFieldValue }) => ({
-                    validator(_, value) {
-                      if (!getFieldValue("enabled") || (value && value !== "neutral")) {
-                        return Promise.resolve();
-                      }
-                      return Promise.reject(new Error("Select an audience"));
-                    }
-                  })
-                ]}
-                extra={
-                  getFieldValue("enabled")
-                    ? "Technical is more direct. Non-technical uses simpler language."
-                    : "No tailored style will be applied."
-                }
-              >
-                <Select
-                  disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem || !getFieldValue("enabled")}
-                  options={[
-                    { label: "Neutral", value: "neutral" },
-                    { label: "Technical", value: "technical" },
-                    { label: "Non-technical", value: "non_technical" }
-                  ]}
-                  placeholder="Select an audience"
-                  onChange={(value) => {
-                    responsePreferencePresetForm.setFieldValue("enabled", value !== "neutral");
-                  }}
-                />
-              </Form.Item>
-            )}
+          <Form.Item name="explanationDepth" label="Explanation Depth">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default depth"
+              options={[
+                { label: "Brief", value: "brief" },
+                { label: "Standard", value: "standard" },
+                { label: "Detailed", value: "detailed" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="jargonLevel" label="Jargon Level">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default jargon level"
+              options={[
+                { label: "Avoid", value: "avoid" },
+                { label: "Balanced", value: "balanced" },
+                { label: "Expert", value: "expert" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="codePreference" label="Code Preference">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default code preference"
+              options={[
+                { label: "Only When Needed", value: "only_when_needed" },
+                { label: "Prefer Examples", value: "prefer_examples" },
+                { label: "Avoid Code", value: "avoid_code" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="clarifyBehavior" label="Clarify Behavior">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default clarify behavior"
+              options={[
+                { label: "Ask When Ambiguous", value: "ask_when_ambiguous" },
+                { label: "Make Reasonable Assumptions", value: "make_reasonable_assumptions" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="formattingStyle" label="Formatting Style">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default formatting style"
+              options={[
+                { label: "Direct", value: "direct" },
+                { label: "Teaching", value: "teaching" },
+                { label: "Executive", value: "executive" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="extraInstructions" label="Extra Instructions">
+            <Input.TextArea
+              rows={4}
+              maxLength={2000}
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              placeholder="Optional additional response instructions."
+            />
           </Form.Item>
           <Button
             type="primary"

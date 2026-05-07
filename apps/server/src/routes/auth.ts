@@ -12,17 +12,13 @@ const loginSchema = z.object({
 
 const responsePreferenceSchema = z
   .object({
-    enabled: z.boolean().optional(),
-    style: z.enum(["technical", "non_technical"]).nullable().optional()
-  })
-  .superRefine((value, ctx) => {
-    if (value.enabled === true && !value.style) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Style is required when tailored response style is enabled",
-        path: ["style"]
-      });
-    }
+    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
+    explanationDepth: z.enum(["brief", "standard", "detailed"]).optional(),
+    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
+    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
+    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
+    formattingStyle: z.enum(["direct", "teaching", "executive"]).optional(),
+    extraInstructions: z.string().trim().max(2000).optional()
   });
 
 const updateProfileSchema = z.object({

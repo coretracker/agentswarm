@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import type {
   AgentProvider,
   type AgentResponsePreference,
+  type AudienceType,
   SystemDataStores,
   McpServerConfig,
   ProviderProfile,
@@ -24,10 +25,7 @@ const SYSTEM_RESPONSE_PREFERENCE_PRESET_ID = "neutral";
 
 const DEFAULT_CODEX_EFFORT: ProviderProfile = "high";
 const DEFAULT_CLAUDE_EFFORT: ProviderProfile = "high";
-const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {
-  enabled: false,
-  style: null
-};
+const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
 
 const nowIso = (): string => new Date().toISOString();
 
@@ -165,15 +163,47 @@ const normalizeResponsePreferencePresetName = (value: string | undefined): strin
 
 const normalizeResponsePreferencePresetDescription = (value: string | undefined): string => (value ?? "").trim();
 
+const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
+const RESPONSE_EXPLANATION_DEPTH = new Set(["brief", "standard", "detailed"]);
+const RESPONSE_JARGON_LEVEL = new Set(["avoid", "balanced", "expert"]);
+const RESPONSE_CODE_PREFERENCE = new Set(["only_when_needed", "prefer_examples", "avoid_code"]);
+const RESPONSE_CLARIFY_BEHAVIOR = new Set(["ask_when_ambiguous", "make_reasonable_assumptions"]);
+const RESPONSE_FORMATTING_STYLE = new Set(["direct", "teaching", "executive"]);
+
 const normalizeAgentResponsePreference = (
   value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined
-): AgentResponsePreference => {
-  const style = value?.style === "technical" || value?.style === "non_technical" ? value.style : null;
-  return {
-    enabled: value?.enabled === true && style !== null,
-    style
-  };
-};
+): AgentResponsePreference => ({
+  audience: (() => {
+    if (typeof value?.audience === "string" && RESPONSE_AUDIENCES.has(value.audience as AudienceType)) {
+      return value.audience as AudienceType;
+    }
+    if ((value as { style?: string } | undefined)?.style === "technical" || (value as { style?: string } | undefined)?.style === "non_technical") {
+      return (value as { style?: AudienceType }).style;
+    }
+    return undefined;
+  })(),
+  explanationDepth:
+    typeof value?.explanationDepth === "string" && RESPONSE_EXPLANATION_DEPTH.has(value.explanationDepth)
+      ? value.explanationDepth
+      : undefined,
+  jargonLevel:
+    typeof value?.jargonLevel === "string" && RESPONSE_JARGON_LEVEL.has(value.jargonLevel)
+      ? value.jargonLevel
+      : undefined,
+  codePreference:
+    typeof value?.codePreference === "string" && RESPONSE_CODE_PREFERENCE.has(value.codePreference)
+      ? value.codePreference
+      : undefined,
+  clarifyBehavior:
+    typeof value?.clarifyBehavior === "string" && RESPONSE_CLARIFY_BEHAVIOR.has(value.clarifyBehavior)
+      ? value.clarifyBehavior
+      : undefined,
+  formattingStyle:
+    typeof value?.formattingStyle === "string" && RESPONSE_FORMATTING_STYLE.has(value.formattingStyle)
+      ? value.formattingStyle
+      : undefined,
+  extraInstructions: value?.extraInstructions?.trim() || undefined
+});
 
 const normalizeResponsePreferencePresets = (
   value: ResponsePreferencePresetInput[] | ResponsePreferencePreset[] | undefined

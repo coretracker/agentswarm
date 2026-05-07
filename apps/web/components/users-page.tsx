@@ -1,7 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { AgentResponseStyle, Repository, ResponsePreferencePreset, Role, User } from "@agentswarm/shared-types";
+import type {
+  AgentClarifyBehavior,
+  AgentCodePreference,
+  AgentExplanationDepth,
+  AgentFormattingStyle,
+  AgentJargonLevel,
+  AudienceType,
+  Repository,
+  ResponsePreferencePreset,
+  Role,
+  User
+} from "@agentswarm/shared-types";
 import {
   App,
   Button,
@@ -23,15 +34,18 @@ import dayjs from "dayjs";
 import { api } from "../src/api/client";
 import { useAuth } from "./auth-provider";
 
-type AgentResponsePreferenceOption = AgentResponseStyle | "neutral";
-
 interface UserFormValues {
   name: string;
   email: string;
   password?: string;
   active: boolean;
-  agentResponsePreferenceEnabled: boolean;
-  agentResponsePreferenceStyle: AgentResponsePreferenceOption | undefined;
+  audience?: AudienceType;
+  explanationDepth?: AgentExplanationDepth;
+  jargonLevel?: AgentJargonLevel;
+  codePreference?: AgentCodePreference;
+  clarifyBehavior?: AgentClarifyBehavior;
+  formattingStyle?: AgentFormattingStyle;
+  extraInstructions?: string;
   responsePreferencePresetId?: string;
   roleIds: string[];
   repositoryIds: string[];
@@ -59,6 +73,7 @@ export function UsersPage() {
   const canReadSettings = can("settings:read");
   const canEditRoles = can("settings:edit");
   const canReadRepositories = can("repo:list");
+  const formatLabel = (value: string): string => value.replace(/_/g, " ");
 
   const loadUsers = async () => {
     setLoading(true);
@@ -89,8 +104,13 @@ export function UsersPage() {
       email: "",
       password: "",
       active: true,
-      agentResponsePreferenceEnabled: false,
-      agentResponsePreferenceStyle: "neutral",
+      audience: undefined,
+      explanationDepth: undefined,
+      jargonLevel: undefined,
+      codePreference: undefined,
+      clarifyBehavior: undefined,
+      formattingStyle: undefined,
+      extraInstructions: "",
       responsePreferencePresetId: undefined,
       roleIds: [],
       repositoryIds: []
@@ -105,13 +125,23 @@ export function UsersPage() {
       email: user.email,
       password: "",
       active: user.active,
-      agentResponsePreferenceEnabled: user.agentResponsePreference.enabled,
-      agentResponsePreferenceStyle: user.agentResponsePreference.enabled ? (user.agentResponsePreference.style ?? undefined) : "neutral",
+      audience: user.agentResponsePreference.audience,
+      explanationDepth: user.agentResponsePreference.explanationDepth,
+      jargonLevel: user.agentResponsePreference.jargonLevel,
+      codePreference: user.agentResponsePreference.codePreference,
+      clarifyBehavior: user.agentResponsePreference.clarifyBehavior,
+      formattingStyle: user.agentResponsePreference.formattingStyle,
+      extraInstructions: user.agentResponsePreference.extraInstructions ?? "",
       responsePreferencePresetId:
         responsePreferencePresets.find(
           (preset) =>
-            preset.preference.enabled === user.agentResponsePreference.enabled &&
-            preset.preference.style === user.agentResponsePreference.style
+            preset.preference.audience === user.agentResponsePreference.audience &&
+            preset.preference.explanationDepth === user.agentResponsePreference.explanationDepth &&
+            preset.preference.jargonLevel === user.agentResponsePreference.jargonLevel &&
+            preset.preference.codePreference === user.agentResponsePreference.codePreference &&
+            preset.preference.clarifyBehavior === user.agentResponsePreference.clarifyBehavior &&
+            preset.preference.formattingStyle === user.agentResponsePreference.formattingStyle &&
+            (preset.preference.extraInstructions ?? "") === (user.agentResponsePreference.extraInstructions ?? "")
         )?.id,
       roleIds: user.roles.map((role) => role.id),
       repositoryIds: user.repositoryIds ?? []
@@ -122,7 +152,6 @@ export function UsersPage() {
   const currentUserId = session?.user.id ?? null;
   const selectedRoleIds = Form.useWatch("roleIds", form) ?? [];
   const adminRoleSelected = selectedRoleIds.includes(SYSTEM_ADMIN_ROLE_ID);
-  const selectedResponsePreferencePresetId = Form.useWatch("responsePreferencePresetId", form);
 
   return (
     <>
@@ -177,11 +206,11 @@ export function UsersPage() {
               {
                 title: "Response Style",
                 render: (_, user) => {
-                  if (!user.agentResponsePreference.enabled) {
-                    return <Typography.Text type="secondary">Disabled</Typography.Text>;
+                  if (!user.agentResponsePreference.audience) {
+                    return <Typography.Text type="secondary">Neutral</Typography.Text>;
                   }
 
-                  return <Tag>{user.agentResponsePreference.style === "technical" ? "Technical" : "Non-technical"}</Tag>;
+                  return <Tag>{formatLabel(user.agentResponsePreference.audience)}</Tag>;
                 }
               },
               {
@@ -250,8 +279,13 @@ export function UsersPage() {
                   password: values.password?.trim() || undefined,
                   active: values.active,
                   agentResponsePreference: {
-                    enabled: values.agentResponsePreferenceEnabled && values.agentResponsePreferenceStyle !== "neutral",
-                    style: values.agentResponsePreferenceStyle === "neutral" ? null : (values.agentResponsePreferenceStyle ?? null)
+                    audience: values.audience,
+                    explanationDepth: values.explanationDepth,
+                    jargonLevel: values.jargonLevel,
+                    codePreference: values.codePreference,
+                    clarifyBehavior: values.clarifyBehavior,
+                    formattingStyle: values.formattingStyle,
+                    extraInstructions: values.extraInstructions?.trim() || undefined
                   },
                   roleIds: canEditRoles ? values.roleIds : undefined,
                   repositoryIds: canEditRoles ? values.repositoryIds : undefined
@@ -264,8 +298,13 @@ export function UsersPage() {
                   password: values.password?.trim() || "",
                   active: values.active,
                   agentResponsePreference: {
-                    enabled: values.agentResponsePreferenceEnabled && values.agentResponsePreferenceStyle !== "neutral",
-                    style: values.agentResponsePreferenceStyle === "neutral" ? null : (values.agentResponsePreferenceStyle ?? null)
+                    audience: values.audience,
+                    explanationDepth: values.explanationDepth,
+                    jargonLevel: values.jargonLevel,
+                    codePreference: values.codePreference,
+                    clarifyBehavior: values.clarifyBehavior,
+                    formattingStyle: values.formattingStyle,
+                    extraInstructions: values.extraInstructions?.trim() || undefined
                   },
                   roleIds: canEditRoles ? values.roleIds : undefined,
                   repositoryIds: canEditRoles ? values.repositoryIds : undefined
@@ -322,75 +361,95 @@ export function UsersPage() {
                   return;
                 }
                 form.setFieldsValue({
-                  agentResponsePreferenceEnabled: preset.preference.enabled,
-                  agentResponsePreferenceStyle: preset.preference.enabled ? (preset.preference.style ?? undefined) : "neutral"
+                  audience: preset.preference.audience,
+                  explanationDepth: preset.preference.explanationDepth,
+                  jargonLevel: preset.preference.jargonLevel,
+                  codePreference: preset.preference.codePreference,
+                  clarifyBehavior: preset.preference.clarifyBehavior,
+                  formattingStyle: preset.preference.formattingStyle,
+                  extraInstructions: preset.preference.extraInstructions ?? ""
                 });
               }}
             />
           </Form.Item>
-          <Form.Item
-            name="agentResponsePreferenceEnabled"
-            label="Tailored Response Style"
-            valuePropName="checked"
-            extra="When enabled, the agent adapts its response style to the selected audience."
-          >
-            <Switch
-              onChange={(checked) => {
-                if (selectedResponsePreferencePresetId) {
-                  form.setFieldValue("responsePreferencePresetId", undefined);
-                }
-                const currentValue = form.getFieldValue("agentResponsePreferenceStyle");
-                if (!checked) {
-                  form.setFieldValue("agentResponsePreferenceStyle", "neutral");
-                  return;
-                }
-                if (!currentValue || currentValue === "neutral") {
-                  form.setFieldValue("agentResponsePreferenceStyle", "non_technical");
-                }
-              }}
+          <Form.Item name="audience" label="Audience">
+            <Select
+              allowClear
+              placeholder="Neutral"
+              options={[
+                { label: "Technical", value: "technical" },
+                { label: "Non-technical", value: "non_technical" },
+                { label: "Mixed", value: "mixed" }
+              ]}
+              onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)}
             />
           </Form.Item>
-          <Form.Item
-            noStyle
-            shouldUpdate={(prev, next) => prev.agentResponsePreferenceEnabled !== next.agentResponsePreferenceEnabled}
-          >
-            {({ getFieldValue }) => (
-              <Form.Item
-                name="agentResponsePreferenceStyle"
-                label="Preferred Audience"
-                rules={[
-                  ({ getFieldValue }) => ({
-                    validator(_, value) {
-                      if (!getFieldValue("agentResponsePreferenceEnabled") || (value && value !== "neutral")) {
-                        return Promise.resolve();
-                      }
-                      return Promise.reject(new Error("Select an audience"));
-                    }
-                  })
-                ]}
-                extra={
-                  getFieldValue("agentResponsePreferenceEnabled")
-                    ? "Technical is more direct. Non-technical uses simpler language."
-                    : "Disabled means the user gets the normal neutral response."
-                }
-              >
-                <Select
-                  disabled={!getFieldValue("agentResponsePreferenceEnabled")}
-                  options={[
-                    { label: "Neutral", value: "neutral" },
-                    { label: "Technical", value: "technical" },
-                    { label: "Non-technical", value: "non_technical" }
-                  ]}
-                  placeholder="Select an audience"
-                  onChange={(value) => {
-                    if (selectedResponsePreferencePresetId) {
-                      form.setFieldValue("responsePreferencePresetId", undefined);
-                    }
-                    form.setFieldValue("agentResponsePreferenceEnabled", value !== "neutral");
-                  }}
-                />
-              </Form.Item>
-            )}
+          <Form.Item name="explanationDepth" label="Explanation Depth">
+            <Select
+              allowClear
+              placeholder="Default"
+              options={[
+                { label: "Brief", value: "brief" },
+                { label: "Standard", value: "standard" },
+                { label: "Detailed", value: "detailed" }
+              ]}
+              onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)}
+            />
+          </Form.Item>
+          <Form.Item name="jargonLevel" label="Jargon Level">
+            <Select
+              allowClear
+              placeholder="Default"
+              options={[
+                { label: "Avoid", value: "avoid" },
+                { label: "Balanced", value: "balanced" },
+                { label: "Expert", value: "expert" }
+              ]}
+              onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)}
+            />
+          </Form.Item>
+          <Form.Item name="codePreference" label="Code Preference">
+            <Select
+              allowClear
+              placeholder="Default"
+              options={[
+                { label: "Only When Needed", value: "only_when_needed" },
+                { label: "Prefer Examples", value: "prefer_examples" },
+                { label: "Avoid Code", value: "avoid_code" }
+              ]}
+              onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)}
+            />
+          </Form.Item>
+          <Form.Item name="clarifyBehavior" label="Clarify Behavior">
+            <Select
+              allowClear
+              placeholder="Default"
+              options={[
+                { label: "Ask When Ambiguous", value: "ask_when_ambiguous" },
+                { label: "Make Reasonable Assumptions", value: "make_reasonable_assumptions" }
+              ]}
+              onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)}
+            />
+          </Form.Item>
+          <Form.Item name="formattingStyle" label="Formatting Style">
+            <Select
+              allowClear
+              placeholder="Default"
+              options={[
+                { label: "Direct", value: "direct" },
+                { label: "Teaching", value: "teaching" },
+                { label: "Executive", value: "executive" }
+              ]}
+              onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)}
+            />
+          </Form.Item>
+          <Form.Item name="extraInstructions" label="Extra Instructions">
+            <Input.TextArea
+              rows={3}
+              maxLength={2000}
+              placeholder="Optional additional response instructions."
+              onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)}
+            />
           </Form.Item>
           {canEditRoles ? (
             <Form.Item name="roleIds" label="Roles">

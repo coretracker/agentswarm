@@ -7,7 +7,7 @@ import {
   ALL_PERMISSION_SCOPES,
   type AgentProvider,
   type AgentResponsePreference,
-  type AgentResponseStyle,
+  type AudienceType,
   type AuthSessionUser,
   type CreateUserInput,
   type PermissionScope,
@@ -54,29 +54,57 @@ export interface StoredUserRecord {
 
 const normalizeUserName = (value: string | undefined): string => (value ?? "").trim().replace(/\s+/g, " ");
 const normalizeUserEmail = (value: string | undefined): string => (value ?? "").trim().toLowerCase();
-const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {
-  enabled: false,
-  style: null
-};
-
-const normalizeAgentResponseStyle = (value: AgentResponseStyle | string | null | undefined): AgentResponseStyle | null => {
-  if (value === "technical" || value === "non_technical") {
-    return value;
-  }
-  return null;
-};
+const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
+const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
+const RESPONSE_EXPLANATION_DEPTH = new Set(["brief", "standard", "detailed"]);
+const RESPONSE_JARGON_LEVEL = new Set(["avoid", "balanced", "expert"]);
+const RESPONSE_CODE_PREFERENCE = new Set(["only_when_needed", "prefer_examples", "avoid_code"]);
+const RESPONSE_CLARIFY_BEHAVIOR = new Set(["ask_when_ambiguous", "make_reasonable_assumptions"]);
+const RESPONSE_FORMATTING_STYLE = new Set(["direct", "teaching", "executive"]);
 
 const normalizeAgentResponsePreference = (
   value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined,
   fallback: AgentResponsePreference = DEFAULT_AGENT_RESPONSE_PREFERENCE
-): AgentResponsePreference => {
-  const style = normalizeAgentResponseStyle(value?.style ?? fallback.style);
-  const enabled = value?.enabled ?? fallback.enabled;
-  return {
-    enabled: enabled === true && style !== null,
-    style
-  };
-};
+): AgentResponsePreference => ({
+  audience:
+    (() => {
+      const nextAudience = value?.audience ?? fallback.audience;
+      if (typeof nextAudience === "string" && RESPONSE_AUDIENCES.has(nextAudience as AudienceType)) {
+        return nextAudience as AudienceType;
+      }
+      const legacyStyle = (value as { style?: string } | undefined)?.style ?? (fallback as { style?: string } | undefined)?.style;
+      if (legacyStyle === "technical" || legacyStyle === "non_technical") {
+        return legacyStyle;
+      }
+      return undefined;
+    })(),
+  explanationDepth:
+    typeof (value?.explanationDepth ?? fallback.explanationDepth) === "string" &&
+    RESPONSE_EXPLANATION_DEPTH.has((value?.explanationDepth ?? fallback.explanationDepth) as string)
+      ? (value?.explanationDepth ?? fallback.explanationDepth)
+      : undefined,
+  jargonLevel:
+    typeof (value?.jargonLevel ?? fallback.jargonLevel) === "string" &&
+    RESPONSE_JARGON_LEVEL.has((value?.jargonLevel ?? fallback.jargonLevel) as string)
+      ? (value?.jargonLevel ?? fallback.jargonLevel)
+      : undefined,
+  codePreference:
+    typeof (value?.codePreference ?? fallback.codePreference) === "string" &&
+    RESPONSE_CODE_PREFERENCE.has((value?.codePreference ?? fallback.codePreference) as string)
+      ? (value?.codePreference ?? fallback.codePreference)
+      : undefined,
+  clarifyBehavior:
+    typeof (value?.clarifyBehavior ?? fallback.clarifyBehavior) === "string" &&
+    RESPONSE_CLARIFY_BEHAVIOR.has((value?.clarifyBehavior ?? fallback.clarifyBehavior) as string)
+      ? (value?.clarifyBehavior ?? fallback.clarifyBehavior)
+      : undefined,
+  formattingStyle:
+    typeof (value?.formattingStyle ?? fallback.formattingStyle) === "string" &&
+    RESPONSE_FORMATTING_STYLE.has((value?.formattingStyle ?? fallback.formattingStyle) as string)
+      ? (value?.formattingStyle ?? fallback.formattingStyle)
+      : undefined,
+  extraInstructions: (value?.extraInstructions ?? fallback.extraInstructions)?.trim() || undefined
+});
 
 const sortScopes = (scopes: PermissionScope[]): PermissionScope[] =>
   Array.from(new Set(scopes)).sort((left, right) => (scopeOrder.get(left) ?? 0) - (scopeOrder.get(right) ?? 0));
