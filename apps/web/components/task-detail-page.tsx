@@ -50,6 +50,7 @@ import {
   Flex,
   Form,
   Input,
+  Layout,
   Mentions,
   List,
   Modal,
@@ -2938,17 +2939,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     </Space>
   );
   const notesSidePanel = task ? (
-    <Card
-      bordered={false}
-      style={{
-        width: 360,
-        maxWidth: "100%",
-        flex: "0 0 360px",
-        alignSelf: "flex-start",
-        position: "sticky",
-        top: 16
-      }}
-    >
+    <Card bordered={false} style={{ height: "fit-content" }}>
       <Collapse
         size="small"
         activeKey={notesCollapsed ? [] : [notesCollapsePanelKey]}
@@ -5009,12 +5000,26 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 </Flex>
 
                 <Flex vertical gap={16}>
-                  <Flex align="flex-start" gap={16} wrap="wrap">
-                    <Card bordered={false} style={{ flex: "1 1 760px", minWidth: 0 }}>
-                      <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff" | "files")} items={mainTabItems} />
-                    </Card>
-                    {notesSidePanel}
-                  </Flex>
+                  <Layout hasSider style={{ background: "transparent", gap: 16, alignItems: "flex-start" }}>
+                    <Layout.Content style={{ minWidth: 0, flex: 1 }}>
+                      <Card bordered={false}>
+                        <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff" | "files")} items={mainTabItems} />
+                      </Card>
+                    </Layout.Content>
+                    <Layout.Sider
+                      width={360}
+                      theme="light"
+                      style={{
+                        background: "transparent",
+                        position: "sticky",
+                        top: 16,
+                        alignSelf: "flex-start",
+                        minWidth: 300
+                      }}
+                    >
+                      {notesSidePanel}
+                    </Layout.Sider>
+                  </Layout>
                   <div ref={bottomScrollAnchorRef} aria-hidden="true" style={{ height: 0, width: "100%", flexShrink: 0 }} />
                 </Flex>
               </Flex>
