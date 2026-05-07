@@ -4972,7 +4972,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           icon={<PushpinOutlined />}
           tooltip="Task Notes"
           type={taskNotes ? "primary" : "default"}
-          style={{ right: 24, bottom: 24 }}
+          style={{ right: 24, top: 80, bottom: "auto" }}
           onClick={() => setNotesDrawerOpen(true)}
         />
       ) : null}
