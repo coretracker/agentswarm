@@ -45,6 +45,14 @@ export const getRequiredScopesForPathname = (pathname: string): PermissionScope[
     return ["flow:list"];
   }
 
+  if (pathname === "/flows/new") {
+    return ["flow:create"];
+  }
+
+  if (/^\/flows\/[^/]+$/.test(pathname)) {
+    return ["flow:read"];
+  }
+
   if (pathname === "/repositories") {
     return ["repo:list"];
   }
