@@ -6,7 +6,6 @@ import {
   Background,
   Controls,
   Handle,
-  MiniMap,
   Position,
   ReactFlow,
   ReactFlowProvider,
@@ -18,7 +17,7 @@ import {
   type Node
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Button, Card, Flex, Form, Input, Modal, Select, Space, Tag, Typography, message } from "antd";
+import { Button, Card, Flex, Form, Input, Modal, Select, Space, Tag, Typography, message, theme } from "antd";
 
 export type FlowNodeData = Record<string, unknown> & {
   kind: "start" | "agent" | "end";
@@ -47,7 +46,7 @@ const DEFAULT_NODE_DATA: FlowNodeData = {
 
 const createNode = (index: number, kind: FlowNodeData["kind"] = "agent"): Node<FlowNodeData> => ({
   id: `node-${Date.now()}-${index}`,
-  position: { x: 80 + (index % 3) * 240, y: 80 + Math.floor(index / 3) * 160 },
+  position: { x: 120 + (index % 3) * 340, y: 120 + Math.floor(index / 3) * 240 },
   data: {
     ...DEFAULT_NODE_DATA,
     kind,
@@ -62,18 +61,19 @@ interface FlowBuilderProps {
 }
 
 function FlowConfigNode({ data }: NodeProps<Node<FlowNodeData>>) {
+  const { token } = theme.useToken();
   const prompt = typeof data.prompt === "string" ? data.prompt : "";
   const trimmed = prompt.trim();
-  const promptPreview = trimmed.length > 140 ? `${trimmed.slice(0, 140)}...` : trimmed || "No prompt";
+  const promptPreview = trimmed.length > 220 ? `${trimmed.slice(0, 220)}...` : trimmed || "No prompt";
 
   return (
     <div
       style={{
         width: 280,
-        border: "1px solid #d9d9d9",
+        border: `1px solid ${token.colorBorder}`,
         borderRadius: 10,
-        background: "#fff",
-        boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
+        background: token.colorBgContainer,
+        boxShadow: token.boxShadowSecondary,
         padding: 10
       }}
     >
@@ -85,7 +85,7 @@ function FlowConfigNode({ data }: NodeProps<Node<FlowNodeData>>) {
             {String(data.kind ?? "agent").toUpperCase()}
           </Tag>
         </Flex>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12, minHeight: 58, display: "block" }}>
           {promptPreview}
         </Typography.Text>
         <Space size={6} wrap>
@@ -242,9 +242,12 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
               commit(nodes, nextEdges);
             }}
             onConnect={onConnect}
+            defaultViewport={{ x: 0, y: 0, zoom: 0.58 }}
+            minZoom={0.2}
+            maxZoom={1.5}
             fitView
+            fitViewOptions={{ padding: 0.5 }}
           >
-            <MiniMap />
             <Controls />
             <Background />
           </ReactFlow>

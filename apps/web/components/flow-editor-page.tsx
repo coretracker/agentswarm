@@ -17,7 +17,7 @@ const EMPTY_FLOW_DEFINITION: FlowGraphDefinition = {
   nodes: [
     {
       id: "node-start",
-      position: { x: 80, y: 160 },
+      position: { x: 80, y: 220 },
       data: {
         kind: "start",
         label: "Start",
@@ -29,7 +29,7 @@ const EMPTY_FLOW_DEFINITION: FlowGraphDefinition = {
     },
     {
       id: "node-agent-1",
-      position: { x: 320, y: 160 },
+      position: { x: 500, y: 220 },
       data: {
         kind: "agent",
         label: "Agent 1",
@@ -41,7 +41,7 @@ const EMPTY_FLOW_DEFINITION: FlowGraphDefinition = {
     },
     {
       id: "node-end",
-      position: { x: 560, y: 160 },
+      position: { x: 920, y: 220 },
       data: {
         kind: "end",
         label: "End",
