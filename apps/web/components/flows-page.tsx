@@ -77,15 +77,19 @@ const parseFlowDefinition = (definitionJson: string): FlowGraphDefinition => {
       })
       .map((node, index) => {
         const data = node.data as Partial<FlowNodeData> | undefined;
+        const kind: FlowNodeData["kind"] = data?.kind === "start" || data?.kind === "end" ? data.kind : "agent";
+        const provider: FlowNodeData["provider"] = data?.provider === "claude" ? "claude" : "codex";
+        const complexity: FlowNodeData["complexity"] =
+          data?.complexity === "low" || data?.complexity === "high" ? data.complexity : "medium";
         return {
           ...node,
           data: {
             label: data?.label ?? `Agent ${index + 1}`,
             prompt: data?.prompt ?? "",
-            kind: data?.kind === "start" || data?.kind === "end" ? data.kind : "agent",
-            provider: data?.provider === "claude" ? "claude" : "codex",
+            kind,
+            provider,
             model: data?.model ?? "gpt-5.4",
-            complexity: data?.complexity === "low" || data?.complexity === "high" ? data.complexity : "medium"
+            complexity
           }
         };
       });
