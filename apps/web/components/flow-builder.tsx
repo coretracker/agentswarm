@@ -57,7 +57,7 @@ interface FlowBuilderProps {
 }
 
 function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
-  const [nodes, setNodes, onNodesChange] = useNodesState<FlowNodeData>(value.nodes);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>(value.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(value.edges);
   const [messageApi, contextHolder] = message.useMessage();
   const [form] = Form.useForm<FlowNodeData>();
