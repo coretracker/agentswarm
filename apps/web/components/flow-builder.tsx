@@ -17,14 +17,14 @@ import {
 import "@xyflow/react/dist/style.css";
 import { Button, Card, Flex, Form, Input, Select, Space, Typography, message } from "antd";
 
-export interface FlowNodeData {
+export type FlowNodeData = Record<string, unknown> & {
   kind: "start" | "agent" | "end";
   label: string;
   prompt: string;
   provider: "codex" | "claude";
   model: string;
   complexity: "low" | "medium" | "high";
-}
+};
 
 export interface FlowGraphDefinition {
   nodes: Array<Node<FlowNodeData>>;
