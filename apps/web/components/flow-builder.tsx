@@ -172,7 +172,14 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
                 return;
               }
               const typed = node as Node<FlowNodeData>;
-              form.setFieldsValue(typed.data);
+              form.setFieldsValue({
+                kind: typed.data.kind,
+                label: typed.data.label,
+                prompt: typed.data.prompt,
+                provider: typed.data.provider,
+                model: typed.data.model,
+                complexity: typed.data.complexity
+              });
             }}
             fitView
           >
