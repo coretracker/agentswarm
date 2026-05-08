@@ -5,17 +5,20 @@ import {
   addEdge,
   Background,
   Controls,
+  Handle,
   MiniMap,
+  Position,
   ReactFlow,
   ReactFlowProvider,
   useEdgesState,
   useNodesState,
   type Connection,
   type Edge,
+  type NodeProps,
   type Node
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Button, Card, Flex, Form, Input, Select, Space, Typography, message } from "antd";
+import { Button, Card, Flex, Input, Select, Space, Typography, message } from "antd";
 
 export type FlowNodeData = Record<string, unknown> & {
   kind: "start" | "agent" | "end";
@@ -24,6 +27,7 @@ export type FlowNodeData = Record<string, unknown> & {
   provider: "codex" | "claude";
   model: string;
   complexity: "low" | "medium" | "high";
+  onPatch?: (patch: Partial<FlowNodeData>) => void;
 };
 
 export interface FlowGraphDefinition {
@@ -56,13 +60,84 @@ interface FlowBuilderProps {
   onChange: (next: FlowGraphDefinition) => void;
 }
 
+function FlowConfigNode({ data }: NodeProps<Node<FlowNodeData>>) {
+  const disabled = data.kind !== "agent";
+  return (
+    <div
+      style={{
+        width: 260,
+        border: "1px solid #d9d9d9",
+        borderRadius: 10,
+        background: "#fff",
+        boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
+        padding: 10
+      }}
+    >
+      <Handle type="target" position={Position.Left} />
+      <Space direction="vertical" size={8} style={{ width: "100%" }}>
+        <Select
+          size="small"
+          value={data.kind}
+          options={[
+            { label: "Start", value: "start" },
+            { label: "Agent", value: "agent" },
+            { label: "End", value: "end" }
+          ]}
+          onChange={(kind) => data.onPatch?.({ kind })}
+        />
+        <Input
+          size="small"
+          value={data.label}
+          placeholder="Agent name"
+          onChange={(event) => data.onPatch?.({ label: event.target.value })}
+        />
+        <Input.TextArea
+          size="small"
+          value={data.prompt}
+          rows={4}
+          placeholder="Prompt"
+          onChange={(event) => data.onPatch?.({ prompt: event.target.value })}
+        />
+        <Select
+          size="small"
+          value={data.provider}
+          disabled={disabled}
+          options={[
+            { label: "Codex", value: "codex" },
+            { label: "Claude", value: "claude" }
+          ]}
+          onChange={(provider) => data.onPatch?.({ provider })}
+        />
+        <Input
+          size="small"
+          value={data.model}
+          disabled={disabled}
+          placeholder="Model"
+          onChange={(event) => data.onPatch?.({ model: event.target.value })}
+        />
+        <Select
+          size="small"
+          value={data.complexity}
+          disabled={disabled}
+          options={[
+            { label: "Low", value: "low" },
+            { label: "Medium", value: "medium" },
+            { label: "High", value: "high" }
+          ]}
+          onChange={(complexity) => data.onPatch?.({ complexity })}
+        />
+      </Space>
+      <Handle type="source" position={Position.Right} />
+    </div>
+  );
+}
+
 function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>(value.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(value.edges);
   const [messageApi, contextHolder] = message.useMessage();
-  const [form] = Form.useForm<FlowNodeData>();
-
   const selectedNode = useMemo(() => nodes.find((node) => node.selected), [nodes]);
+  const nodeTypes = useMemo(() => ({ flowConfigNode: FlowConfigNode }), []);
 
   const commit = (nextNodes: Array<Node<FlowNodeData>>, nextEdges: Edge[]) => {
     onChange({ nodes: nextNodes, edges: nextEdges });
@@ -83,6 +158,12 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
     setNodes(nextNodes);
     setEdges(nextEdges);
     commit(nextNodes, nextEdges);
+  };
+
+  const syncNodeById = (nodeId: string, patch: Partial<FlowNodeData>) => {
+    const nextNodes = nodes.map((node) => (node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node));
+    setNodes(nextNodes);
+    commit(nextNodes, edges);
   };
 
   const onConnect = (connection: Connection) => {
@@ -109,19 +190,23 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
     commit(nodes, nextEdges);
   };
 
-  const syncNodeField = (patch: Partial<FlowNodeData>) => {
-    if (!selectedNode) {
-      return;
-    }
-    const nextNodes = nodes.map((node) => (node.id === selectedNode.id ? { ...node, data: { ...node.data, ...patch } } : node));
-    setNodes(nextNodes);
-    commit(nextNodes, edges);
-  };
+  const renderedNodes = useMemo(
+    () =>
+      nodes.map((node) => ({
+        ...node,
+        type: "flowConfigNode",
+        data: {
+          ...node.data,
+          onPatch: (patch: Partial<FlowNodeData>) => syncNodeById(node.id, patch)
+        }
+      })),
+    [nodes]
+  );
 
   return (
     <>
       {contextHolder}
-      <Flex gap={12} style={{ height: 520 }}>
+      <Flex gap={12} style={{ height: 620 }}>
         <Card size="small" style={{ flex: 1, minWidth: 0 }}>
         <Flex justify="space-between" style={{ marginBottom: 8 }}>
           <Space>
@@ -136,14 +221,15 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
               Delete Selected
             </Button>
           </Space>
-          <Typography.Text type="secondary">
-            {nodes.length} nodes · {edges.length} edges
-          </Typography.Text>
-        </Flex>
-        <div style={{ width: "100%", height: 450 }}>
+            <Typography.Text type="secondary">
+              {nodes.length} nodes · {edges.length} edges
+            </Typography.Text>
+          </Flex>
+        <div style={{ width: "100%", height: 560 }}>
           <ReactFlow
-            nodes={nodes}
+            nodes={renderedNodes}
             edges={edges}
+            nodeTypes={nodeTypes}
             onNodesChange={(changes) => {
               onNodesChange(changes);
               const nextNodes = nodes.map((node) => {
@@ -165,22 +251,6 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
               commit(nodes, nextEdges);
             }}
             onConnect={onConnect}
-            onSelectionChange={({ nodes: selected }) => {
-              const node = selected[0];
-              if (!node) {
-                form.resetFields();
-                return;
-              }
-              const typed = node as Node<FlowNodeData>;
-              form.setFieldsValue({
-                kind: typed.data.kind,
-                label: typed.data.label,
-                prompt: typed.data.prompt,
-                provider: typed.data.provider,
-                model: typed.data.model,
-                complexity: typed.data.complexity
-              });
-            }}
             fitView
           >
             <MiniMap />
@@ -188,53 +258,6 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
             <Background />
           </ReactFlow>
         </div>
-        </Card>
-
-        <Card size="small" title="Node Inspector" style={{ width: 320 }}>
-          {selectedNode ? (
-            <Form form={form} layout="vertical">
-            <Form.Item label="Agent Name" name="label">
-              <Input onChange={(event) => syncNodeField({ label: event.target.value })} />
-            </Form.Item>
-            <Form.Item label="Node Type" name="kind">
-              <Select
-                options={[
-                  { label: "Start", value: "start" },
-                  { label: "Agent", value: "agent" },
-                  { label: "End", value: "end" }
-                ]}
-                onChange={(kind) => syncNodeField({ kind })}
-              />
-            </Form.Item>
-            <Form.Item label="Prompt" name="prompt">
-              <Input.TextArea rows={5} onChange={(event) => syncNodeField({ prompt: event.target.value })} />
-            </Form.Item>
-            <Form.Item label="Provider" name="provider">
-              <Select
-                options={[
-                  { label: "Codex", value: "codex" },
-                  { label: "Claude", value: "claude" }
-                ]}
-                onChange={(provider) => syncNodeField({ provider })}
-              />
-            </Form.Item>
-            <Form.Item label="Model" name="model">
-              <Input onChange={(event) => syncNodeField({ model: event.target.value })} />
-            </Form.Item>
-            <Form.Item label="Complexity" name="complexity">
-              <Select
-                options={[
-                  { label: "Low", value: "low" },
-                  { label: "Medium", value: "medium" },
-                  { label: "High", value: "high" }
-                ]}
-                onChange={(complexity) => syncNodeField({ complexity })}
-              />
-            </Form.Item>
-            </Form>
-          ) : (
-            <Typography.Text type="secondary">Select a node to edit its settings.</Typography.Text>
-          )}
         </Card>
       </Flex>
     </>
