@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   addEdge,
   Background,
@@ -18,7 +18,7 @@ import {
   type Node
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Button, Card, Flex, Input, Select, Space, Typography, message } from "antd";
+import { Button, Card, Flex, Form, Input, Modal, Select, Space, Tag, Typography, message } from "antd";
 
 export type FlowNodeData = Record<string, unknown> & {
   kind: "start" | "agent" | "end";
@@ -28,6 +28,7 @@ export type FlowNodeData = Record<string, unknown> & {
   model: string;
   complexity: "low" | "medium" | "high";
   onPatch?: (patch: Partial<FlowNodeData>) => void;
+  onEdit?: () => void;
 };
 
 export interface FlowGraphDefinition {
@@ -61,11 +62,14 @@ interface FlowBuilderProps {
 }
 
 function FlowConfigNode({ data }: NodeProps<Node<FlowNodeData>>) {
-  const disabled = data.kind !== "agent";
+  const prompt = typeof data.prompt === "string" ? data.prompt : "";
+  const trimmed = prompt.trim();
+  const promptPreview = trimmed.length > 140 ? `${trimmed.slice(0, 140)}...` : trimmed || "No prompt";
+
   return (
     <div
       style={{
-        width: 260,
+        width: 280,
         border: "1px solid #d9d9d9",
         borderRadius: 10,
         background: "#fff",
@@ -75,57 +79,23 @@ function FlowConfigNode({ data }: NodeProps<Node<FlowNodeData>>) {
     >
       <Handle type="target" position={Position.Left} />
       <Space direction="vertical" size={8} style={{ width: "100%" }}>
-        <Select
-          size="small"
-          value={data.kind}
-          options={[
-            { label: "Start", value: "start" },
-            { label: "Agent", value: "agent" },
-            { label: "End", value: "end" }
-          ]}
-          onChange={(kind) => data.onPatch?.({ kind })}
-        />
-        <Input
-          size="small"
-          value={data.label}
-          placeholder="Agent name"
-          onChange={(event) => data.onPatch?.({ label: event.target.value })}
-        />
-        <Input.TextArea
-          size="small"
-          value={data.prompt}
-          rows={4}
-          placeholder="Prompt"
-          onChange={(event) => data.onPatch?.({ prompt: event.target.value })}
-        />
-        <Select
-          size="small"
-          value={data.provider}
-          disabled={disabled}
-          options={[
-            { label: "Codex", value: "codex" },
-            { label: "Claude", value: "claude" }
-          ]}
-          onChange={(provider) => data.onPatch?.({ provider })}
-        />
-        <Input
-          size="small"
-          value={data.model}
-          disabled={disabled}
-          placeholder="Model"
-          onChange={(event) => data.onPatch?.({ model: event.target.value })}
-        />
-        <Select
-          size="small"
-          value={data.complexity}
-          disabled={disabled}
-          options={[
-            { label: "Low", value: "low" },
-            { label: "Medium", value: "medium" },
-            { label: "High", value: "high" }
-          ]}
-          onChange={(complexity) => data.onPatch?.({ complexity })}
-        />
+        <Flex align="center" justify="space-between" gap={8}>
+          <Typography.Text strong>{String(data.label ?? "Unnamed Node")}</Typography.Text>
+          <Tag color={data.kind === "start" ? "green" : data.kind === "end" ? "red" : "blue"} style={{ margin: 0 }}>
+            {String(data.kind ?? "agent").toUpperCase()}
+          </Tag>
+        </Flex>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {promptPreview}
+        </Typography.Text>
+        <Space size={6} wrap>
+          <Tag style={{ margin: 0 }}>{String(data.provider ?? "codex")}</Tag>
+          <Tag style={{ margin: 0 }}>{String(data.model ?? "gpt-5.4")}</Tag>
+          <Tag style={{ margin: 0 }}>{String(data.complexity ?? "medium")}</Tag>
+        </Space>
+        <Button size="small" onClick={() => data.onEdit?.()}>
+          Edit
+        </Button>
       </Space>
       <Handle type="source" position={Position.Right} />
     </div>
@@ -136,6 +106,9 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>(value.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(value.edges);
   const [messageApi, contextHolder] = message.useMessage();
+  const [editNodeId, setEditNodeId] = useState<string | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editForm] = Form.useForm<FlowNodeData>();
   const selectedNode = useMemo(() => nodes.find((node) => node.selected), [nodes]);
   const nodeTypes = useMemo(() => ({ flowConfigNode: FlowConfigNode }), []);
 
@@ -164,6 +137,23 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
     const nextNodes = nodes.map((node) => (node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node));
     setNodes(nextNodes);
     commit(nextNodes, edges);
+  };
+
+  const openNodeEditor = (nodeId: string) => {
+    const node = nodes.find((item) => item.id === nodeId);
+    if (!node) {
+      return;
+    }
+    setEditNodeId(nodeId);
+    editForm.setFieldsValue({
+      kind: node.data.kind,
+      label: node.data.label,
+      prompt: node.data.prompt,
+      provider: node.data.provider,
+      model: node.data.model,
+      complexity: node.data.complexity
+    });
+    setEditOpen(true);
   };
 
   const onConnect = (connection: Connection) => {
@@ -197,7 +187,8 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
         type: "flowConfigNode",
         data: {
           ...node.data,
-          onPatch: (patch: Partial<FlowNodeData>) => syncNodeById(node.id, patch)
+          onPatch: (patch: Partial<FlowNodeData>) => syncNodeById(node.id, patch),
+          onEdit: () => openNodeEditor(node.id)
         }
       })),
     [nodes]
@@ -260,6 +251,75 @@ function FlowBuilderInner({ value, onChange }: FlowBuilderProps) {
         </div>
         </Card>
       </Flex>
+      <Modal
+        open={editOpen}
+        title="Edit Node"
+        onCancel={() => {
+          setEditOpen(false);
+          setEditNodeId(null);
+          editForm.resetFields();
+        }}
+        onOk={async () => {
+          if (!editNodeId) {
+            return;
+          }
+          try {
+            const values = await editForm.validateFields();
+            syncNodeById(editNodeId, {
+              kind: values.kind,
+              label: values.label,
+              prompt: values.prompt,
+              provider: values.provider,
+              model: values.model,
+              complexity: values.complexity
+            });
+            setEditOpen(false);
+            setEditNodeId(null);
+            editForm.resetFields();
+          } catch {
+            // form handles validation state
+          }
+        }}
+        destroyOnHidden
+      >
+        <Form form={editForm} layout="vertical">
+          <Form.Item label="Node Type" name="kind" rules={[{ required: true, message: "Select a node type" }]}>
+            <Select
+              options={[
+                { label: "Start", value: "start" },
+                { label: "Agent", value: "agent" },
+                { label: "End", value: "end" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item label="Name" name="label" rules={[{ required: true, message: "Enter node name" }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item label="Prompt" name="prompt" rules={[{ required: true, message: "Enter prompt" }]}>
+            <Input.TextArea rows={6} />
+          </Form.Item>
+          <Form.Item label="Provider" name="provider" rules={[{ required: true, message: "Select provider" }]}>
+            <Select
+              options={[
+                { label: "Codex", value: "codex" },
+                { label: "Claude", value: "claude" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item label="Model" name="model" rules={[{ required: true, message: "Enter model" }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item label="Complexity" name="complexity" rules={[{ required: true, message: "Select complexity" }]}>
+            <Select
+              options={[
+                { label: "Low", value: "low" },
+                { label: "Medium", value: "medium" },
+                { label: "High", value: "high" }
+              ]}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
     </>
   );
 }
