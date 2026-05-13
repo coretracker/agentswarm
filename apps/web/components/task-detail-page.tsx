@@ -590,6 +590,83 @@ function ExpandableMessageContent({ children, fadeColor }: { children: ReactNode
   );
 }
 
+function MermaidDiagram({ chart }: { chart: string }) {
+  const [svg, setSvg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const sanitizeMermaid = (raw: string): string => {
+    const withLineBreaks = raw.replace(/\\n/g, "<br/>");
+    return withLineBreaks.replace(/(\b[A-Za-z0-9_]+)\[([^\]]+)\]/g, (_match, nodeId: string, label: string) => {
+      const escapedLabel = label.replace(/"/g, '\\"');
+      return `${nodeId}["${escapedLabel}"]`;
+    });
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const render = async () => {
+      try {
+        const mermaidModule = await import("mermaid");
+        const mermaid = mermaidModule.default;
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict"
+        });
+        try {
+          const graphId = `mermaid-${Math.random().toString(36).slice(2, 10)}`;
+          const rendered = await mermaid.render(graphId, chart);
+          if (!cancelled) {
+            setSvg(rendered.svg);
+            setError(null);
+          }
+          return;
+        } catch {
+          const fallbackSource = sanitizeMermaid(chart);
+          const graphId = `mermaid-sanitized-${Math.random().toString(36).slice(2, 10)}`;
+          const rendered = await mermaid.render(graphId, fallbackSource);
+          if (!cancelled) {
+            setSvg(rendered.svg);
+            setError(null);
+          }
+        }
+      } catch (renderError) {
+        if (!cancelled) {
+          setSvg(null);
+          setError(renderError instanceof Error ? renderError.message : "Failed to render Mermaid diagram.");
+        }
+      }
+    };
+
+    void render();
+    return () => {
+      cancelled = true;
+    };
+  }, [chart]);
+
+  if (error) {
+    return (
+      <Space direction="vertical" style={{ width: "100%" }}>
+        <Alert type="warning" showIcon message="Could not render Mermaid diagram" description={error} />
+        <pre style={{ margin: 0, padding: 12, borderRadius: 8, background: "rgba(0,0,0,0.02)", overflow: "auto" }}>{chart}</pre>
+      </Space>
+    );
+  }
+
+  if (!svg) {
+    return (
+      <Flex justify="center" style={{ padding: "12px 0" }}>
+        <Spin size="small" />
+      </Flex>
+    );
+  }
+
+  return (
+    <div
+      style={{ width: "100%", overflowX: "auto", padding: 8, borderRadius: 8, background: "rgba(0,0,0,0.02)" }}
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  );
+}
+
 export function TaskDetailPage({ taskId }: { taskId: string }) {
   const router = useRouter();
   const { token } = antTheme.useToken();
@@ -1779,6 +1856,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
       if (language === "diff" || codeValue.startsWith("diff --git")) {
         return renderParsedDiff(codeValue, "No diff preview available.");
+      }
+
+      if (language === "mermaid") {
+        return <MermaidDiagram chart={codeValue} />;
       }
 
       if (className) {

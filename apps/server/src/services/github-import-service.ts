@@ -205,7 +205,7 @@ export class GitHubImportService {
     const issue = await this.fetchGitHubJson<GitHubIssue>(`/repos/${owner}/${repo}/issues/${input.issueNumber}`);
 
     if (issue.pull_request) {
-      throw new GitHubImportError("That number belongs to a pull request. Use the PR import flow instead.");
+      throw new GitHubImportError("That number belongs to a pull request. Use the PR import path instead.");
     }
 
     const comments = input.includeComments

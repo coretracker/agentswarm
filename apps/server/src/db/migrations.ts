@@ -209,5 +209,67 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       ALTER TABLE system_settings
       ADD COLUMN IF NOT EXISTS response_preference_presets jsonb NOT NULL DEFAULT '[]'::jsonb;
     `
+  },
+  {
+    id: "20260513_01_cleanup_legacy_flow_data",
+    sql: `
+      UPDATE roles AS r
+      SET scopes = COALESCE(
+        (
+          SELECT jsonb_agg(value ORDER BY value)
+          FROM (
+            SELECT DISTINCT value
+            FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+            WHERE value !~ '^flow:'
+          ) AS deduped
+        ),
+        '[]'::jsonb
+      )
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+        WHERE value ~ '^flow:'
+      );
+
+      UPDATE tasks
+      SET task_data = task_data - 'taskMode' - 'flowId'
+      WHERE task_data ? 'taskMode' OR task_data ? 'flowId';
+
+      UPDATE task_runs
+      SET run_data = run_data - 'flow'
+      WHERE run_data ? 'flow';
+
+      DROP TABLE IF EXISTS flows;
+    `
+  },
+  {
+    id: "20260513_02_cleanup_legacy_preset_scopes",
+    sql: `
+      UPDATE roles AS r
+      SET scopes = COALESCE(
+        (
+          SELECT jsonb_agg(value ORDER BY value)
+          FROM (
+            SELECT DISTINCT
+              CASE value
+                WHEN 'preset:list' THEN 'snippet:list'
+                WHEN 'preset:create' THEN 'snippet:create'
+                WHEN 'preset:read' THEN 'snippet:read'
+                WHEN 'preset:edit' THEN 'snippet:edit'
+                WHEN 'preset:delete' THEN 'snippet:delete'
+                ELSE value
+              END AS value
+            FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+            WHERE value !~ '^preset:' OR value IN ('preset:list', 'preset:create', 'preset:read', 'preset:edit', 'preset:delete')
+          ) AS deduped
+        ),
+        '[]'::jsonb
+      )
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+        WHERE value ~ '^preset:'
+      );
+    `
   }
 ];

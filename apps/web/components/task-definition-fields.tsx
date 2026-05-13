@@ -91,26 +91,6 @@ export const getTaskDefinitionInitialValues = (settings?: SystemSettings | null)
   };
 };
 
-/** Suggested title for blank tasks: "Build · …" or "Interactive · …" — updates until the title field is edited. */
-export function buildBlankAutoTaskTitle(params: {
-  taskType: TaskType;
-  startMode?: TaskStartMode;
-  repoName: string | undefined;
-  branchName: string | undefined;
-  modelLabel: string;
-}): string {
-  const kind =
-    params.startMode === "prepare_workspace"
-      ? "Interactive"
-      : params.taskType === "ask"
-        ? "Ask"
-        : "Build";
-  const repo = params.repoName?.trim() || "Repository";
-  const branch = params.branchName?.trim() || "—";
-  const model = params.modelLabel.trim() || "—";
-  return `${kind} · ${repo} · ${branch} · ${model}`;
-}
-
 export const buildTaskDefinitionInput = (
   values: TaskDefinitionFormValues,
   promptAttachments: CreateTaskPromptAttachmentInput[] = []
@@ -335,37 +315,6 @@ export function TaskDefinitionFields({
   }, [form, selectedProvider]);
 
   useEffect(() => {
-    if (selectedSourceType !== "blank") {
-      return;
-    }
-    if (form.isFieldTouched("title")) {
-      return;
-    }
-    const modelLabel =
-      providerModels.find((option) => option.value === selectedModel)?.label ??
-      (typeof selectedModel === "string" ? selectedModel : "");
-    form.setFieldValue(
-      "title",
-      buildBlankAutoTaskTitle({
-        taskType: selectedTaskType,
-        startMode: selectedStartMode,
-        repoName: selectedRepository?.name,
-        branchName: typeof selectedBaseBranch === "string" ? selectedBaseBranch : undefined,
-        modelLabel
-      })
-    );
-  }, [
-    form,
-    providerModels,
-    selectedBaseBranch,
-    selectedModel,
-    selectedRepository?.name,
-    selectedSourceType,
-    selectedStartMode,
-    selectedTaskType
-  ]);
-
-  useEffect(() => {
     if ((isBlankSource || isIssueSource) && selectedStartMode === "prepare_workspace" && selectedTaskType !== "build") {
       form.setFieldValue("taskType", "build");
     }
@@ -460,11 +409,11 @@ export function TaskDefinitionFields({
             style={{ marginBottom: 16 }}
             extra={
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Suggested from task type, repository, base branch, and model until you edit this field.
+                Choose a short, descriptive task title.
               </Typography.Text>
             }
           >
-            <Input placeholder="Build · my-org/my-repo · main · GPT-5.4" size="large" />
+            <Input placeholder="Your Task Title" size="large" />
           </Form.Item>
           <Form.Item
             name="prompt"

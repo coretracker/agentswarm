@@ -57,14 +57,6 @@ const normalizeAllowedEfforts = (efforts: ProviderProfile[] | string[] | undefin
 const normalizeAllowedModels = (models: string[] | undefined): string[] =>
   Array.from(new Set((models ?? []).map((model) => model.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right));
 
-const LEGACY_SCOPE_ALIASES: Record<string, PermissionScope> = {
-  "preset:list": "snippet:list",
-  "preset:create": "snippet:create",
-  "preset:read": "snippet:read",
-  "preset:edit": "snippet:edit",
-  "preset:delete": "snippet:delete"
-};
-
 const expandLegacyTaskModeScopes = (scopes: string[]): string[] => {
   const expanded = new Set(scopes);
   if (expanded.has("task:create") || expanded.has("task:edit")) {
@@ -84,7 +76,6 @@ const normalizeScopes = (
       (scopes ?? [])
         .map((scope) => String(scope).trim())
         .filter(Boolean)
-        .map((scope) => LEGACY_SCOPE_ALIASES[scope] ?? scope)
     )
   );
   const uniqueScopes = options?.legacyTaskModes ? expandLegacyTaskModeScopes(uniqueScopesRaw) : uniqueScopesRaw;
