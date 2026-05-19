@@ -595,7 +595,7 @@ export class SpawnerService {
     gitUsername = "x-access-token"
   ): Promise<void> {
     const gitPaths = await this.getWorkspaceGitPaths(workspacePath).catch(() => null);
-    if (!gitPaths || gitPaths.usesLinkedWorktree) {
+    if (!gitPaths) {
       return;
     }
 
@@ -1866,15 +1866,15 @@ export class SpawnerService {
       return null;
     }
 
-    if (await this.refExists(workspacePath, trimmed, githubToken, gitUsername)) {
-      return trimmed;
-    }
-
     if (!trimmed.includes("/") && trimmed.toUpperCase() !== "HEAD") {
       const originRef = `origin/${trimmed}`;
       if (await this.refExists(workspacePath, originRef, githubToken, gitUsername)) {
         return originRef;
       }
+    }
+
+    if (await this.refExists(workspacePath, trimmed, githubToken, gitUsername)) {
+      return trimmed;
     }
 
     return null;
@@ -1998,6 +1998,8 @@ export class SpawnerService {
         defaultBaseRef
       };
     }
+
+    await this.syncWorkspaceRemoteRefsIfNeeded(task, workspacePath, token, gitUsername).catch(() => undefined);
 
     const defaultBaseRef = await this.resolveLiveDiffBaseRef(task, workspacePath, token, gitUsername);
     if (!defaultBaseRef) {
