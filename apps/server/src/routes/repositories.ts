@@ -68,6 +68,7 @@ const createRepositorySchema = z.object({
           .optional(),
         task: z.object({
           assigneeEmail: z.string().trim().email().optional(),
+          codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
           taskType: z.enum(["build", "ask"]).optional(),
           startMode: z.enum(["run_now", "prepare_workspace", "idle"]).optional(),
           includeComments: z.boolean().optional(),

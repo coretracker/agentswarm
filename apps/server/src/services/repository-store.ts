@@ -110,6 +110,10 @@ const normalizeGitHubAutomations = (value: unknown): GitHubAutomationRule[] => {
       },
       task: {
         assigneeEmail: typeof taskRaw.assigneeEmail === "string" && taskRaw.assigneeEmail.trim() ? taskRaw.assigneeEmail.trim().toLowerCase() : undefined,
+        codexCredentialSource:
+          taskRaw.codexCredentialSource === "profile" || taskRaw.codexCredentialSource === "global" || taskRaw.codexCredentialSource === "auto"
+            ? taskRaw.codexCredentialSource
+            : undefined,
         taskType: taskRaw.taskType === "ask" ? "ask" : "build",
         startMode: taskRaw.startMode === "prepare_workspace" ? "prepare_workspace" : taskRaw.startMode === "idle" ? "idle" : "run_now",
         includeComments: taskRaw.includeComments === true,

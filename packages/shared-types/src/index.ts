@@ -339,6 +339,7 @@ export interface GitHubAutomationLabelFilter {
 
 export interface GitHubAutomationTaskConfig {
   assigneeEmail?: string;
+  codexCredentialSource?: CodexCredentialSource;
   taskType?: Extract<TaskType, "build" | "ask">;
   startMode?: TaskStartMode;
   includeComments?: boolean;

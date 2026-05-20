@@ -118,6 +118,7 @@ export const registerGitHubWebhookRoutes = (
           provider: rule.task.provider,
           providerProfile: rule.task.providerProfile,
           modelOverride: rule.task.modelOverride ?? undefined,
+          codexCredentialSource: rule.task.codexCredentialSource,
           baseBranch: rule.task.baseBranch,
           branchStrategy: rule.task.branchStrategy
         });
@@ -157,7 +158,8 @@ export const registerGitHubWebhookRoutes = (
           title: rule.task.titleTemplate,
           provider: rule.task.provider,
           providerProfile: rule.task.providerProfile,
-          modelOverride: rule.task.modelOverride ?? undefined
+          modelOverride: rule.task.modelOverride ?? undefined,
+          codexCredentialSource: rule.task.codexCredentialSource
         });
         if (rule.task.snippetId) {
           const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
