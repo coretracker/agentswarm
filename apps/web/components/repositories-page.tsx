@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { GitHubAutomationRule, Repository } from "@agentswarm/shared-types";
 import { Button, Card, Checkbox, Flex, Form, Input, Modal, Popconfirm, Space, Switch, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
+import { buildApiUrl } from "../src/lib/public-url";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useAuth } from "./auth-provider";
 
@@ -49,6 +50,7 @@ export function RepositoriesPage() {
   const canCreateRepository = can("repo:create");
   const canEditRepository = can("repo:edit");
   const canDeleteRepository = can("repo:delete");
+  const githubWebhookUrl = editing ? buildApiUrl(`/webhooks/github/${encodeURIComponent(editing.id)}`) : null;
 
   const openCreate = () => {
     setEditing(null);
@@ -358,6 +360,17 @@ export function RepositoriesPage() {
               <Checkbox>Clear stored GitHub webhook secret</Checkbox>
             </Form.Item>
           ) : null}
+          <Form.Item label="GitHub Webhook URL">
+            {githubWebhookUrl ? (
+              <Typography.Text code copyable>
+                {githubWebhookUrl}
+              </Typography.Text>
+            ) : (
+              <Typography.Text type="secondary">
+                Save this repository first to generate its webhook URL.
+              </Typography.Text>
+            )}
+          </Form.Item>
           <Form.Item
             name="githubAutomationsJson"
             label="GitHub Automations (JSON rules)"
