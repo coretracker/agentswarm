@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Repository } from "@agentswarm/shared-types";
+import type { GitHubAutomationRule, Repository } from "@agentswarm/shared-types";
 import { Button, Card, Checkbox, Flex, Form, Input, Modal, Popconfirm, Space, Switch, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { useRepositories } from "../src/hooks/useRepositories";
@@ -19,6 +19,23 @@ type RepositoryFormValues = {
   githubWebhookSecret: string;
   clearGithubWebhookSecret: boolean;
   githubAutomationsJson: string;
+};
+
+const isGitHubAutomationRule = (value: unknown): value is GitHubAutomationRule => {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.id !== "string" || record.id.trim().length === 0) {
+    return false;
+  }
+  if (typeof record.name !== "string" || record.name.trim().length === 0) {
+    return false;
+  }
+  if (record.trigger !== "issue_opened" && record.trigger !== "pull_request_opened") {
+    return false;
+  }
+  return typeof record.task === "object" && record.task !== null;
 };
 
 export function RepositoriesPage() {
@@ -165,11 +182,14 @@ export function RepositoriesPage() {
                   value: typeof entry.value === "string" ? entry.value : ""
                 }))
                 .filter((entry) => entry.key.length > 0);
-              let githubAutomations: unknown[] = [];
+              let githubAutomations: GitHubAutomationRule[] = [];
               if (values.githubAutomationsJson.trim().length > 0) {
                 const parsed = JSON.parse(values.githubAutomationsJson);
                 if (!Array.isArray(parsed)) {
                   throw new Error("GitHub automations must be a JSON array.");
+                }
+                if (!parsed.every(isGitHubAutomationRule)) {
+                  throw new Error("Each GitHub automation must include id, name, trigger, and task.");
                 }
                 githubAutomations = parsed;
               }
