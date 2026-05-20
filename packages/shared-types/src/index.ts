@@ -338,6 +338,7 @@ export interface GitHubAutomationLabelFilter {
 }
 
 export interface GitHubAutomationTaskConfig {
+  assigneeEmail?: string;
   taskType?: Extract<TaskType, "build" | "ask">;
   startMode?: TaskStartMode;
   includeComments?: boolean;

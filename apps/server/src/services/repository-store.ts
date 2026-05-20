@@ -109,6 +109,7 @@ const normalizeGitHubAutomations = (value: unknown): GitHubAutomationRule[] => {
         labelsNone: normalizeLabels(labelFilterRaw.labelsNone)
       },
       task: {
+        assigneeEmail: typeof taskRaw.assigneeEmail === "string" && taskRaw.assigneeEmail.trim() ? taskRaw.assigneeEmail.trim().toLowerCase() : undefined,
         taskType: taskRaw.taskType === "ask" ? "ask" : "build",
         startMode: taskRaw.startMode === "prepare_workspace" ? "prepare_workspace" : taskRaw.startMode === "idle" ? "idle" : "run_now",
         includeComments: taskRaw.includeComments === true,

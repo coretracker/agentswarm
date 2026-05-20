@@ -50,6 +50,16 @@ const resolveOwnerUserId = async (userStore: UserStore): Promise<string | null> 
   return admin?.id ?? users[0]?.id ?? null;
 };
 
+const resolveAssigneeUserId = async (userStore: UserStore, assigneeEmail: string | undefined): Promise<string | null> => {
+  const normalized = assigneeEmail?.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  const users = await userStore.listUsers();
+  const match = users.find((user) => user.email.trim().toLowerCase() === normalized);
+  return match?.id ?? null;
+};
+
 export const registerGitHubWebhookRoutes = (
   app: FastifyInstance,
   deps: {
@@ -78,8 +88,8 @@ export const registerGitHubWebhookRoutes = (
       return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
     }
 
-    const ownerUserId = await resolveOwnerUserId(deps.userStore);
-    if (!ownerUserId) {
+    const fallbackOwnerUserId = await resolveOwnerUserId(deps.userStore);
+    if (!fallbackOwnerUserId) {
       return reply.status(409).send({ message: "No users are available to own webhook-created tasks." });
     }
 
@@ -117,6 +127,7 @@ export const registerGitHubWebhookRoutes = (
             issueInput.notes = [snippet.content, issueInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
           }
         }
+        const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
         const task = await deps.taskStore.createTask(issueInput, repository, ownerUserId);
         await applyTaskStartMode(task, rule.task.startMode ?? "run_now", {
           taskStore: deps.taskStore,
@@ -154,6 +165,7 @@ export const registerGitHubWebhookRoutes = (
             prInput.notes = [snippet.content, prInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
           }
         }
+        const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
         const task = await deps.taskStore.createTask(prInput, repository, ownerUserId);
         await applyTaskStartMode(task, "run_now", {
           taskStore: deps.taskStore,
