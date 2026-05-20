@@ -50,11 +50,43 @@ const createRepositorySchema = z.object({
   envVars: repositoryEnvVarsSchema.optional(),
   webhookUrl: z.string().trim().url().nullable().optional(),
   webhookEnabled: z.boolean().optional(),
-  webhookSecret: z.string().trim().min(1).optional()
+  webhookSecret: z.string().trim().min(1).optional(),
+  githubWebhookSecret: z.string().trim().min(1).optional(),
+  githubAutomations: z
+    .array(
+      z.object({
+        id: z.string().trim().min(1),
+        name: z.string().trim().min(1).max(160),
+        enabled: z.boolean().optional(),
+        trigger: z.enum(["issue_opened", "pull_request_opened"]),
+        labelFilter: z
+          .object({
+            labelsAny: z.array(z.string().trim().min(1)).optional(),
+            labelsAll: z.array(z.string().trim().min(1)).optional(),
+            labelsNone: z.array(z.string().trim().min(1)).optional()
+          })
+          .optional(),
+        task: z.object({
+          taskType: z.enum(["build", "ask"]).optional(),
+          startMode: z.enum(["run_now", "prepare_workspace", "idle"]).optional(),
+          includeComments: z.boolean().optional(),
+          titleTemplate: z.string().optional(),
+          notes: z.string().optional(),
+          provider: z.enum(["codex", "claude"]).optional(),
+          providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+          modelOverride: z.string().nullable().optional(),
+          baseBranch: z.string().optional(),
+          branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+          snippetId: z.string().optional()
+        })
+      })
+    )
+    .optional()
 });
 
 const updateRepositorySchema = createRepositorySchema.partial().extend({
-  clearWebhookSecret: z.boolean().optional()
+  clearWebhookSecret: z.boolean().optional(),
+  clearGithubWebhookSecret: z.boolean().optional()
 });
 
 export const registerRepositoryRoutes = (

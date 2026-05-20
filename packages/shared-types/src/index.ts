@@ -329,6 +329,39 @@ export interface RepositoryEnvVar {
   value: string;
 }
 
+export type GitHubAutomationTrigger = "issue_opened" | "pull_request_opened";
+
+export interface GitHubAutomationLabelFilter {
+  labelsAny?: string[];
+  labelsAll?: string[];
+  labelsNone?: string[];
+}
+
+export interface GitHubAutomationTaskConfig {
+  taskType?: Extract<TaskType, "build" | "ask">;
+  startMode?: TaskStartMode;
+  includeComments?: boolean;
+  titleTemplate?: string;
+  notes?: string;
+  provider?: AgentProvider;
+  providerProfile?: ProviderProfile;
+  modelOverride?: string | null;
+  baseBranch?: string;
+  branchStrategy?: TaskBranchStrategy;
+  snippetId?: string;
+}
+
+export interface GitHubAutomationRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  trigger: GitHubAutomationTrigger;
+  labelFilter?: GitHubAutomationLabelFilter;
+  task: GitHubAutomationTaskConfig;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Repository {
   id: string;
   name: string;
@@ -341,6 +374,8 @@ export interface Repository {
   webhookLastAttemptAt: string | null;
   webhookLastStatus: "success" | "failed" | null;
   webhookLastError: string | null;
+  githubWebhookSecretConfigured?: boolean;
+  githubAutomations?: GitHubAutomationRule[];
   createdAt: string;
   updatedAt: string;
 }
@@ -659,6 +694,8 @@ export interface CreateRepositoryInput {
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
+  githubWebhookSecret?: string;
+  githubAutomations?: GitHubAutomationRule[];
 }
 
 export interface UpdateRepositoryInput {
@@ -670,6 +707,9 @@ export interface UpdateRepositoryInput {
   webhookEnabled?: boolean;
   webhookSecret?: string;
   clearWebhookSecret?: boolean;
+  githubWebhookSecret?: string;
+  clearGithubWebhookSecret?: boolean;
+  githubAutomations?: GitHubAutomationRule[];
 }
 
 export interface CreateTaskInput {

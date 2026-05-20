@@ -271,5 +271,15 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         WHERE value ~ '^preset:'
       );
     `
+  },
+  {
+    id: "20260520_01_repository_github_automations",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_webhook_secret text NULL;
+
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_automations jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
   }
 ];

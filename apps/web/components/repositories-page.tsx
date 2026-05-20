@@ -16,6 +16,9 @@ type RepositoryFormValues = {
   webhookUrl: string;
   webhookSecret: string;
   clearWebhookSecret: boolean;
+  githubWebhookSecret: string;
+  clearGithubWebhookSecret: boolean;
+  githubAutomationsJson: string;
 };
 
 export function RepositoriesPage() {
@@ -40,7 +43,10 @@ export function RepositoriesPage() {
       webhookEnabled: false,
       webhookUrl: "",
       webhookSecret: "",
-      clearWebhookSecret: false
+      clearWebhookSecret: false,
+      githubWebhookSecret: "",
+      clearGithubWebhookSecret: false,
+      githubAutomationsJson: "[]"
     });
     setOpen(true);
   };
@@ -55,7 +61,10 @@ export function RepositoriesPage() {
       webhookEnabled: repository.webhookEnabled,
       webhookUrl: repository.webhookUrl ?? "",
       webhookSecret: "",
-      clearWebhookSecret: false
+      clearWebhookSecret: false,
+      githubWebhookSecret: "",
+      clearGithubWebhookSecret: false,
+      githubAutomationsJson: JSON.stringify(repository.githubAutomations ?? [], null, 2)
     });
     setOpen(true);
   };
@@ -115,6 +124,10 @@ export function RepositoriesPage() {
                 }
               },
               {
+                title: "Automations",
+                render: (_, repository) => <Typography.Text>{repository.githubAutomations?.length ?? 0}</Typography.Text>
+              },
+              {
                 title: "Actions",
                 render: (_, repository) => (
                   <Space>
@@ -152,6 +165,14 @@ export function RepositoriesPage() {
                   value: typeof entry.value === "string" ? entry.value : ""
                 }))
                 .filter((entry) => entry.key.length > 0);
+              let githubAutomations: unknown[] = [];
+              if (values.githubAutomationsJson.trim().length > 0) {
+                const parsed = JSON.parse(values.githubAutomationsJson);
+                if (!Array.isArray(parsed)) {
+                  throw new Error("GitHub automations must be a JSON array.");
+                }
+                githubAutomations = parsed;
+              }
               const payload = {
                 name: values.name,
                 url: values.url,
@@ -160,7 +181,10 @@ export function RepositoriesPage() {
                 webhookEnabled: values.webhookEnabled,
                 webhookUrl: values.webhookUrl.trim().length > 0 ? values.webhookUrl.trim() : null,
                 ...(values.webhookSecret.trim().length > 0 ? { webhookSecret: values.webhookSecret.trim() } : {}),
-                ...(editing && values.clearWebhookSecret ? { clearWebhookSecret: true } : {})
+                ...(editing && values.clearWebhookSecret ? { clearWebhookSecret: true } : {}),
+                ...(values.githubWebhookSecret.trim().length > 0 ? { githubWebhookSecret: values.githubWebhookSecret.trim() } : {}),
+                ...(editing && values.clearGithubWebhookSecret ? { clearGithubWebhookSecret: true } : {}),
+                githubAutomations
               };
               if (editing) {
                 await api.updateRepository(editing.id, payload);
@@ -303,6 +327,38 @@ export function RepositoriesPage() {
               <Checkbox>Clear stored webhook secret</Checkbox>
             </Form.Item>
           ) : null}
+          <Form.Item
+            name="githubWebhookSecret"
+            label={editing?.githubWebhookSecretConfigured ? "GitHub Webhook Secret (leave blank to keep existing)" : "GitHub Webhook Secret"}
+          >
+            <Input.Password placeholder="Optional but recommended for signature verification" />
+          </Form.Item>
+          {editing?.githubWebhookSecretConfigured ? (
+            <Form.Item name="clearGithubWebhookSecret" valuePropName="checked">
+              <Checkbox>Clear stored GitHub webhook secret</Checkbox>
+            </Form.Item>
+          ) : null}
+          <Form.Item
+            name="githubAutomationsJson"
+            label="GitHub Automations (JSON rules)"
+            rules={[
+              {
+                validator: async (_, value) => {
+                  const text = typeof value === "string" ? value.trim() : "";
+                  if (!text) {
+                    return;
+                  }
+                  const parsed = JSON.parse(text);
+                  if (!Array.isArray(parsed)) {
+                    throw new Error("GitHub automations must be a JSON array.");
+                  }
+                }
+              }
+            ]}
+            extra='Example trigger with label filter: [{"id":"bug-opened","name":"Bug Issue","enabled":true,"trigger":"issue_opened","labelFilter":{"labelsAny":["bug"],"labelsNone":["wip"]},"task":{"taskType":"build","startMode":"run_now"}}]'
+          >
+            <Input.TextArea rows={10} />
+          </Form.Item>
           <Button type="primary" htmlType="submit" loading={submitting}>
             {editing ? "Save Changes" : "Create Repository"}
           </Button>
