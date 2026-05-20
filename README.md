@@ -113,6 +113,88 @@ Leave both empty if you want to use the bundled same-origin `/api` proxy.
 
 These images are used only for in-browser terminal sessions. Automated agent runs use the runtime images built by `./agentswarm.sh rebuild`.
 
+## GitHub Webhooks and Automations
+
+AgentSwarm supports repository-scoped inbound GitHub webhooks that can auto-create tasks from issue or pull request events.
+
+Configure this per repository in the **Repositories** page.
+
+### Webhook URL
+
+For each repository, use:
+
+```text
+https://<your-host>/api/webhooks/github/<repositoryId>
+```
+
+- `repositoryId` is the internal AgentSwarm repository ID.
+- In GitHub webhook settings, use content type `application/json`.
+- Subscribe to at least **Issues** and **Pull requests** events.
+
+### Automation Rules
+
+Rules are configured in `GitHub Automations (JSON rules)` on the repository modal.
+
+Supported triggers:
+
+- `issue_opened`
+- `pull_request_opened`
+
+Label filters:
+
+- `labelsAny`: match if any label is present
+- `labelsAll`: match only if all labels are present
+- `labelsNone`: reject if any label is present
+
+Task config supports:
+
+- `assigneeEmail`
+- `taskType`
+- `startMode`
+- `includeComments` (issue imports)
+- `titleTemplate`
+- `notes`
+- `provider`
+- `providerProfile`
+- `modelOverride`
+- `codexCredentialSource` (`auto`, `profile`, `global`)
+- `baseBranch`
+- `branchStrategy`
+- `snippetId`
+
+Example:
+
+```json
+[
+  {
+    "id": "ai-issue-opened",
+    "name": "AI issue -> build task",
+    "enabled": true,
+    "trigger": "issue_opened",
+    "labelFilter": {
+      "labelsAny": ["ai"],
+      "labelsNone": ["wip"]
+    },
+    "task": {
+      "assigneeEmail": "dev@company.com",
+      "taskType": "build",
+      "startMode": "run_now",
+      "provider": "codex",
+      "providerProfile": "high",
+      "modelOverride": "gpt-5.4",
+      "codexCredentialSource": "profile"
+    }
+  }
+]
+```
+
+### Current Behavior Notes
+
+- Only `issues` with action `opened` are mapped to `issue_opened`.
+- Only `pull_request` with action `opened` are mapped to `pull_request_opened`.
+- If `assigneeEmail` does not match a user, AgentSwarm falls back to the default owner resolution (admin user, else first user).
+- A webhook response `202` means the payload was accepted; matched/created counts depend on rule filters.
+
 ## Postflight
 
 You can add repo-local post-build automation with `.agentswarm/postflight.yml`.
