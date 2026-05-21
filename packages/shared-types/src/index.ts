@@ -787,18 +787,30 @@ export interface Snippet {
   id: string;
   name: string;
   content: string;
+  variables: SnippetVariable[];
   createdAt: string;
   updatedAt: string;
+}
+
+export type SnippetVariableType = "text" | "multiline";
+
+export interface SnippetVariable {
+  name: string;
+  type: SnippetVariableType;
+  title: string;
+  description: string;
 }
 
 export interface CreateSnippetInput {
   name: string;
   content: string;
+  variables?: SnippetVariable[];
 }
 
 export interface UpdateSnippetInput {
   name: string;
   content: string;
+  variables?: SnippetVariable[];
 }
 
 export interface CreateTaskFromIssueInput {

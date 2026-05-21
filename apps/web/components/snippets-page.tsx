@@ -3,8 +3,8 @@
 import { useState } from "react";
 import dayjs from "dayjs";
 import type { Snippet } from "@agentswarm/shared-types";
-import { CopyOutlined } from "@ant-design/icons";
-import { Button, Card, Flex, Form, Input, Modal, Popconfirm, Space, Table, Typography, message } from "antd";
+import { CopyOutlined, MinusCircleOutlined, PlusOutlined } from "@ant-design/icons";
+import { Button, Card, Flex, Form, Input, Modal, Popconfirm, Select, Space, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { useSnippets } from "../src/hooks/useSnippets";
 import { useAuth } from "./auth-provider";
@@ -12,6 +12,12 @@ import { useAuth } from "./auth-provider";
 interface SnippetFormValues {
   name: string;
   content: string;
+  variables: Array<{
+    name: string;
+    type: "text" | "multiline";
+    title: string;
+    description: string;
+  }>;
 }
 
 const summarizeSnippet = (value: string): string => {
@@ -45,13 +51,13 @@ export function SnippetsPage() {
 
   const openCreate = () => {
     setEditing(null);
-    form.setFieldsValue({ name: "", content: "" });
+    form.setFieldsValue({ name: "", content: "", variables: [] });
     setOpen(true);
   };
 
   const openEdit = (snippet: Snippet) => {
     setEditing(snippet);
-    form.setFieldsValue({ name: snippet.name, content: snippet.content });
+    form.setFieldsValue({ name: snippet.name, content: snippet.content, variables: snippet.variables ?? [] });
     setOpen(true);
   };
 
@@ -191,6 +197,73 @@ export function SnippetsPage() {
           <Form.Item name="content" label="Content" rules={[{ required: true, message: "Enter snippet content" }]}>
             <Input.TextArea rows={10} placeholder="Text that should be inserted into prompt fields." />
           </Form.Item>
+          <Form.List
+            name="variables"
+            rules={[
+              {
+                validator: async (_, value: SnippetFormValues["variables"]) => {
+                  const seen = new Set<string>();
+                  for (const entry of value ?? []) {
+                    const name = typeof entry?.name === "string" ? entry.name.trim() : "";
+                    if (!name) {
+                      continue;
+                    }
+                    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+                      throw new Error(`Invalid variable name: ${name}`);
+                    }
+                    if (seen.has(name)) {
+                      throw new Error(`Duplicate variable name: ${name}`);
+                    }
+                    seen.add(name);
+                  }
+                }
+              }
+            ]}
+          >
+            {(fields, { add, remove }, { errors }) => (
+              <Flex vertical gap={8} style={{ marginBottom: 16 }}>
+                <Flex justify="space-between" align="center">
+                  <Typography.Text strong>Variables</Typography.Text>
+                  <Button
+                    size="small"
+                    icon={<PlusOutlined />}
+                    onClick={() => add({ name: "", type: "text", title: "", description: "" })}
+                  >
+                    Add Variable
+                  </Button>
+                </Flex>
+                {fields.map((field) => (
+                  <Card key={field.key} size="small">
+                    <Flex gap={8} align="flex-start">
+                      <Form.Item
+                        name={[field.name, "name"]}
+                        style={{ marginBottom: 8, flex: 1 }}
+                        rules={[{ required: true, message: "Name is required" }]}
+                      >
+                        <Input placeholder="name (used as {{name}})" />
+                      </Form.Item>
+                      <Form.Item name={[field.name, "type"]} style={{ marginBottom: 8, width: 140 }} initialValue="text">
+                        <Select
+                          options={[
+                            { label: "Text", value: "text" },
+                            { label: "Multiline", value: "multiline" }
+                          ]}
+                        />
+                      </Form.Item>
+                      <Button type="text" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)} />
+                    </Flex>
+                    <Form.Item name={[field.name, "title"]} style={{ marginBottom: 8 }}>
+                      <Input placeholder="Title (shown in insert form)" />
+                    </Form.Item>
+                    <Form.Item name={[field.name, "description"]} style={{ marginBottom: 0 }}>
+                      <Input placeholder="Description (helper text in insert form)" />
+                    </Form.Item>
+                  </Card>
+                ))}
+                {errors.length > 0 ? <Typography.Text type="danger">{errors.join(", ")}</Typography.Text> : null}
+              </Flex>
+            )}
+          </Form.List>
           <Flex justify="space-between" gap={8} wrap="wrap">
             <Button
               icon={<CopyOutlined />}

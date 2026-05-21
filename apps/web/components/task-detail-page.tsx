@@ -26,6 +26,7 @@ import {
   type TaskBranchStrategy,
   type ProviderProfile,
   type SystemSettings,
+  type Snippet,
   type GitHubBranchReference,
   type GitHubPullRequestReference,
   type TaskMergePreview,
@@ -91,7 +92,7 @@ import {
   formatAttachmentSize,
   type SelectedTaskPromptImageFile
 } from "../src/utils/task-prompt-attachments";
-import { insertSnippetContent } from "../src/utils/snippets";
+import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
 import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
@@ -111,6 +112,7 @@ const runStatusColor: Record<TaskRun["status"], string> = {
 };
 
 type ComposerAction = TaskMessageAction | "interactive" | "terminal";
+type SnippetVariableFormValues = Record<string, string>;
 
 const OPENAI_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
 const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
@@ -762,6 +764,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const applyCheckpointAutoMagicProposalIdRef = useRef<string | null>(null);
   const mergeAutoMagicTargetRef = useRef<string | null>(null);
   const [selectedSnippetId, setSelectedSnippetId] = useState<string | null>(null);
+  const [snippetVariableModalOpen, setSnippetVariableModalOpen] = useState(false);
+  const [pendingSnippetForInsert, setPendingSnippetForInsert] = useState<Snippet | null>(null);
+  const [snippetVariableForm] = Form.useForm<SnippetVariableFormValues>();
   const [selectedPromptImageFiles, setSelectedPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const [pushPreview, setPushPreview] = useState<TaskPushPreview | null>(null);
   const [pushPreviewLoading, setPushPreviewLoading] = useState(false);
@@ -2153,7 +2158,37 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
+    if ((snippet.variables ?? []).length > 0) {
+      setPendingSnippetForInsert(snippet);
+      snippetVariableForm.resetFields();
+      setSnippetVariableModalOpen(true);
+      return;
+    }
+
     setChatInput((current) => insertSnippetContent(current, snippet.content));
+    setSelectedSnippetId(null);
+  };
+  const handleConfirmSnippetVariableInsert = async () => {
+    if (!pendingSnippetForInsert) {
+      return;
+    }
+
+    try {
+      const values = await snippetVariableForm.validateFields();
+      const rendered = applySnippetVariables(pendingSnippetForInsert.content, pendingSnippetForInsert.variables, values);
+      setChatInput((current) => insertSnippetContent(current, rendered));
+      setSnippetVariableModalOpen(false);
+      setPendingSnippetForInsert(null);
+      snippetVariableForm.resetFields();
+      setSelectedSnippetId(null);
+    } catch {
+      // Form-level validation messages are shown inline.
+    }
+  };
+  const handleCloseSnippetVariableModal = () => {
+    setSnippetVariableModalOpen(false);
+    setPendingSnippetForInsert(null);
+    snippetVariableForm.resetFields();
     setSelectedSnippetId(null);
   };
   const handleProviderInputChange = (value: AgentProvider) => {
@@ -2194,6 +2229,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const chatSubmitLabel = selectedChatAction === "comment" ? "Add Comment" : "Start";
   const handleConfirmClearComposer = () => {
     setSelectedSnippetId(null);
+    setSnippetVariableModalOpen(false);
+    setPendingSnippetForInsert(null);
+    snippetVariableForm.resetFields();
     setSelectedPromptImageFiles([]);
     setChatInput("");
     if (task) {
@@ -4663,6 +4701,32 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             />
           </div>
         </Flex>
+      </Modal>
+      <Modal
+        title={pendingSnippetForInsert ? `Insert Snippet: ${pendingSnippetForInsert.name}` : "Insert Snippet"}
+        open={snippetVariableModalOpen}
+        onCancel={handleCloseSnippetVariableModal}
+        destroyOnClose
+        onOk={() => void handleConfirmSnippetVariableInsert()}
+        okText="Insert"
+      >
+        <Form form={snippetVariableForm} layout="vertical">
+          {(pendingSnippetForInsert?.variables ?? []).map((variable) => (
+            <Form.Item
+              key={variable.name}
+              name={variable.name}
+              label={variable.title.trim() || variable.name}
+              tooltip={variable.description.trim() || undefined}
+              rules={[{ required: true, message: `Enter ${variable.title.trim() || variable.name}` }]}
+            >
+              {variable.type === "multiline" ? (
+                <Input.TextArea rows={4} placeholder={variable.description.trim() || variable.name} />
+              ) : (
+                <Input placeholder={variable.description.trim() || variable.name} />
+              )}
+            </Form.Item>
+          ))}
+        </Form>
       </Modal>
       <Modal
         title="Change State"

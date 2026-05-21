@@ -76,6 +76,7 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         id text PRIMARY KEY,
         name text NOT NULL,
         content text NOT NULL,
+        variables jsonb NOT NULL DEFAULT '[]'::jsonb,
         created_at text NOT NULL,
         updated_at text NOT NULL
       );
@@ -270,6 +271,13 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         FROM jsonb_array_elements_text(r.scopes) AS scope(value)
         WHERE value ~ '^preset:'
       );
+    `
+  },
+  {
+    id: "20260521_01_snippet_variables",
+    sql: `
+      ALTER TABLE snippets
+      ADD COLUMN IF NOT EXISTS variables jsonb NOT NULL DEFAULT '[]'::jsonb;
     `
   },
   {

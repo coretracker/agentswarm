@@ -5,7 +5,18 @@ import type { SnippetStore } from "../services/snippet-store.js";
 
 const snippetSchema = z.object({
   name: z.string().trim().min(1).max(120),
-  content: z.string().trim().min(1).max(20000)
+  content: z.string().trim().min(1).max(20000),
+  variables: z
+    .array(
+      z.object({
+        name: z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(128),
+        type: z.enum(["text", "multiline"]),
+        title: z.string().trim().max(200).default(""),
+        description: z.string().trim().max(200).default("")
+      })
+    )
+    .max(100)
+    .optional()
 });
 
 export const registerSnippetRoutes = (

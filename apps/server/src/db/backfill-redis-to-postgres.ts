@@ -81,6 +81,7 @@ interface SnippetRecord extends JsonRecord {
   id: string;
   name: string;
   content: string;
+  variables?: unknown[];
   createdAt: string;
   updatedAt: string;
 }
@@ -471,8 +472,15 @@ const main = async (): Promise<void> => {
 
       for (const snippet of snippets) {
         await client.query(
-          "INSERT INTO snippets (id, name, content, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
-          [snippet.id, String(snippet.name ?? "").trim(), String(snippet.content ?? "").trim(), snippet.createdAt, snippet.updatedAt]
+          "INSERT INTO snippets (id, name, content, created_at, updated_at, variables) VALUES ($1, $2, $3, $4, $5, $6::jsonb)",
+          [
+            snippet.id,
+            String(snippet.name ?? "").trim(),
+            String(snippet.content ?? "").trim(),
+            snippet.createdAt,
+            snippet.updatedAt,
+            JSON.stringify(Array.isArray(snippet.variables) ? snippet.variables : [])
+          ]
         );
       }
 
