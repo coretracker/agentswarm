@@ -75,7 +75,7 @@ import dayjs from "dayjs";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
-import { Highlight, themes, type Language } from "prism-react-renderer";
+import { Highlight, type Language } from "prism-react-renderer";
 import { Diff, Hunk, type FileData } from "react-diff-view";
 import remarkGfm from "remark-gfm";
 import { api, ApiError, type TaskInteractiveTerminalStatus } from "../src/api/client";
@@ -103,6 +103,8 @@ import { CheckpointFileEditorModal } from "./checkpoint-file-editor-modal";
 import { TaskFilesTab } from "./task-files-tab";
 import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
+import { useThemeMode } from "./theme-provider";
+import { getPrismTheme } from "../src/theme/code-highlighting";
 
 const runStatusColor: Record<TaskRun["status"], string> = {
   running: "processing",
@@ -672,6 +674,8 @@ function MermaidDiagram({ chart }: { chart: string }) {
 export function TaskDetailPage({ taskId }: { taskId: string }) {
   const router = useRouter();
   const { token } = antTheme.useToken();
+  const { mode } = useThemeMode();
+  const prismTheme = useMemo(() => getPrismTheme(mode, token), [mode, token]);
   const historyCardHeadStyle: CSSProperties = {
     background: token.colorFillSecondary,
     borderBottom: `1px solid ${token.colorBorderSecondary}`
@@ -1873,7 +1877,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Highlight
             code={codeValue}
             language={(language ?? "text") as Language}
-            theme={themes.github}
+            theme={prismTheme}
           >
             {({ className: highlightClassName, style, tokens, getLineProps, getTokenProps }) => {
               const combinedClassName = [highlightClassName, className].filter(Boolean).join(" ").trim();

@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
-import { Alert, Modal, Space, Spin, Tag, Typography } from "antd";
+import { Alert, Modal, Space, Spin, Tag, Typography, theme as antTheme } from "antd";
 import { isDarkAppTheme } from "../src/theme/antd-theme";
+import { getCodeTokenStyles } from "../src/theme/code-highlighting";
 import { useThemeMode } from "./theme-provider";
 export type { WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 export { parseWorkspaceFileLink } from "../src/utils/workspace-file-links";
@@ -34,14 +35,6 @@ interface LanguageConfig {
   stringDelimiters: string[];
   keywords: Set<string>;
 }
-
-const tokenStyles: Record<HighlightTokenKind, CSSProperties> = {
-  plain: { color: "#1f1f1f" },
-  comment: { color: "#8c8c8c", fontStyle: "italic" },
-  keyword: { color: "#0958d9", fontWeight: 600 },
-  number: { color: "#d46b08" },
-  string: { color: "#389e0d" }
-};
 
 const defaultLanguageConfig: LanguageConfig = {
   label: "Text",
@@ -694,7 +687,11 @@ function tokenizeLine(line: string, language: string): HighlightToken[] {
   return compactHighlightTokens(tokens);
 }
 
-export function renderHighlightedLine(line: string, language: string): ReactNode {
+export function renderHighlightedLine(
+  line: string,
+  language: string,
+  tokenStyles: Record<HighlightTokenKind, CSSProperties>
+): ReactNode {
   const tokens = tokenizeLine(line, language);
   if (tokens.length === 0) {
     return " ";
@@ -720,8 +717,10 @@ export function WorkspaceFilePreviewModal({
   error,
   onCancel
 }: WorkspaceFilePreviewModalProps) {
+  const { token } = antTheme.useToken();
   const { mode } = useThemeMode();
   const darkTheme = isDarkAppTheme(mode);
+  const tokenStyles = useMemo(() => getCodeTokenStyles(token), [token]);
   const language = useMemo(() => detectCodeLanguage(filePath), [filePath]);
   const languageLabel = getCodeLanguageLabel(language);
   const lines = useMemo(() => (kind === "text" && content.length > 0 ? content.split(/\r?\n/) : [""]), [content, kind]);
@@ -854,7 +853,7 @@ export function WorkspaceFilePreviewModal({
                       overflow: "visible"
                     }}
                   >
-                    {renderHighlightedLine(lineText, language)}
+                    {renderHighlightedLine(lineText, language, tokenStyles)}
                   </pre>
                 </div>
               );
