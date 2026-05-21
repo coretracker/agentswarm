@@ -22,11 +22,17 @@ export const applySnippetVariables = (
   values: Record<string, string>
 ): string => {
   const snippetText = content ?? "";
-  const allowed = new Set((variables ?? []).map((entry) => entry.name));
+  const variablesByName = new Map((variables ?? []).map((entry) => [entry.name, entry]));
   return snippetText.replace(SNIPPET_PLACEHOLDER_PATTERN, (_match, name: string) => {
-    if (!allowed.has(name)) {
+    const variable = variablesByName.get(name);
+    if (!variable) {
       return `{{${name}}}`;
     }
-    return values[name] ?? "";
+    const value = values[name];
+    const selected = typeof value === "string" && value.length > 0 ? value : variable.defaultValue ?? "";
+    if (variable.type === "text") {
+      return selected.split(/\r?\n/u)[0] ?? "";
+    }
+    return selected;
   });
 };

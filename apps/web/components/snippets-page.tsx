@@ -17,6 +17,7 @@ interface SnippetFormValues {
     type: "text" | "multiline";
     title: string;
     description: string;
+    defaultValue: string;
   }>;
 }
 
@@ -227,7 +228,7 @@ export function SnippetsPage() {
                   <Button
                     size="small"
                     icon={<PlusOutlined />}
-                    onClick={() => add({ name: "", type: "text", title: "", description: "" })}
+                    onClick={() => add({ name: "", type: "text", title: "", description: "", defaultValue: "" })}
                   >
                     Add Variable
                   </Button>
@@ -257,6 +258,24 @@ export function SnippetsPage() {
                     </Form.Item>
                     <Form.Item name={[field.name, "description"]} style={{ marginBottom: 0 }}>
                       <Input placeholder="Description (helper text in insert form)" />
+                    </Form.Item>
+                    <Form.Item noStyle shouldUpdate={(prev, next) => {
+                      const prevType = prev?.variables?.[field.name]?.type;
+                      const nextType = next?.variables?.[field.name]?.type;
+                      return prevType !== nextType;
+                    }}>
+                      {({ getFieldValue }) => {
+                        const variableType = getFieldValue(["variables", field.name, "type"]) as "text" | "multiline" | undefined;
+                        return (
+                          <Form.Item name={[field.name, "defaultValue"]} style={{ marginBottom: 0, marginTop: 8 }}>
+                            {variableType === "multiline" ? (
+                              <Input.TextArea rows={2} placeholder="Default value (pre-filled when inserting)" />
+                            ) : (
+                              <Input placeholder="Default value (single line)" />
+                            )}
+                          </Form.Item>
+                        );
+                      }}
                     </Form.Item>
                   </Card>
                 ))}

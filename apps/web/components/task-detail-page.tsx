@@ -2162,6 +2162,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if ((snippet.variables ?? []).length > 0) {
       setPendingSnippetForInsert(snippet);
       snippetVariableForm.resetFields();
+      const defaultValues = Object.fromEntries(
+        (snippet.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""])
+      );
+      snippetVariableForm.setFieldsValue(defaultValues);
       setSnippetVariableModalOpen(true);
       return;
     }

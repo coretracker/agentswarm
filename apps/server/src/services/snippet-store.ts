@@ -10,6 +10,8 @@ const SNIPPET_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SNIPPET_VARIABLE_MAX_COUNT = 100;
 const SNIPPET_VARIABLE_NAME_MAX_LENGTH = 128;
 const SNIPPET_VARIABLE_TEXT_MAX_LENGTH = 200;
+const SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH = 2000;
+const NEWLINE_PATTERN = /\r?\n/u;
 
 const nowIso = (): string => new Date().toISOString();
 const normalizeSnippetVariables = (value: unknown): SnippetVariable[] => {
@@ -33,11 +35,14 @@ const normalizeSnippetVariables = (value: unknown): SnippetVariable[] => {
     const type = record.type === "multiline" ? "multiline" : "text";
     const title = typeof record.title === "string" ? record.title.trim() : "";
     const description = typeof record.description === "string" ? record.description.trim() : "";
+    const defaultValue = typeof record.defaultValue === "string" ? record.defaultValue : "";
+    const normalizedDefaultValue = type === "text" ? (defaultValue.split(NEWLINE_PATTERN)[0] ?? "") : defaultValue;
     variables.push({
       name,
       type,
       title: title.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH),
-      description: description.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH)
+      description: description.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH),
+      defaultValue: normalizedDefaultValue.slice(0, SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH)
     });
     seen.add(name);
     if (variables.length >= SNIPPET_VARIABLE_MAX_COUNT) {

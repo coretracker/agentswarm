@@ -799,6 +799,7 @@ export interface SnippetVariable {
   type: SnippetVariableType;
   title: string;
   description: string;
+  defaultValue: string;
 }
 
 export interface CreateSnippetInput {

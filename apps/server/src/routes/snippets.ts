@@ -8,12 +8,23 @@ const snippetSchema = z.object({
   content: z.string().trim().min(1).max(20000),
   variables: z
     .array(
-      z.object({
-        name: z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(128),
-        type: z.enum(["text", "multiline"]),
-        title: z.string().trim().max(200).default(""),
-        description: z.string().trim().max(200).default("")
-      })
+      z
+        .object({
+          name: z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(128),
+          type: z.enum(["text", "multiline"]),
+          title: z.string().trim().max(200).default(""),
+          description: z.string().trim().max(200).default(""),
+          defaultValue: z.string().max(2000).default("")
+        })
+        .superRefine((value, ctx) => {
+          if (value.type === "text" && /[\r\n]/.test(value.defaultValue)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["defaultValue"],
+              message: "Default value for text variables must be a single line."
+            });
+          }
+        })
     )
     .max(100)
     .optional()
