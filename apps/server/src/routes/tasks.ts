@@ -1,4 +1,5 @@
 import path from "node:path";
+import { rm } from "node:fs/promises";
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
@@ -35,6 +36,7 @@ import { canUserAccessRepository, canUserAccessTask, isAdminUser } from "../lib/
 import { writeSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
 import { env } from "../config/env.js";
 import { normalizeProvider } from "../lib/provider-config.js";
+import { resolveTaskProviderStatePaths } from "../lib/task-provider-state.js";
 
 const taskStartModeSchema = z.enum(["run_now", "prepare_workspace", "idle"]);
 
@@ -207,6 +209,14 @@ const historyPageQuerySchema = z.object({
 });
 
 const archivedTaskReadOnlyMessage = "Archived tasks are read-only";
+const PROVIDER_SESSION_ID_FILE = "agentswarm-session-id.txt";
+
+const clearTaskProviderSessionId = async (taskId: string): Promise<void> => {
+  for (const provider of ["codex", "claude"] as const) {
+    const providerStatePath = resolveTaskProviderStatePaths(taskId, provider).serverPath;
+    await rm(path.join(providerStatePath, PROVIDER_SESSION_ID_FILE), { force: true }).catch(() => undefined);
+  }
+};
 
 const applyCreateDefaultsFromSettings = <
   T extends {
@@ -1007,6 +1017,32 @@ export const registerTaskRoutes = (
 
     const refreshed = await deps.taskStore.getTask(task.id);
     return reply.send(refreshed);
+  });
+
+  app.post<{ Params: { id: string } }>("/tasks/:id/new-session", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
+    if (blocked) {
+      return reply.status(409).send({ message: blocked });
+    }
+
+    if (isActiveTaskStatus(task.status)) {
+      return reply.status(409).send({ message: "Task is already running" });
+    }
+
+    await clearTaskProviderSessionId(task.id);
+    await deps.taskStore.appendLog(task.id, "Session reset requested. Next run starts with a fresh provider session.");
+
+    const refreshed = await deps.taskStore.getTask(task.id);
+    return reply.send(refreshed ?? task);
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/postflight", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {

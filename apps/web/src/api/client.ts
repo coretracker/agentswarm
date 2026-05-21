@@ -230,6 +230,10 @@ export const api = {
     request<Task>(`/tasks/${id}/interactive-terminal/kill`, {
       method: "POST"
     }),
+  resetTaskSession: (id: string) =>
+    request<Task>(`/tasks/${id}/new-session`, {
+      method: "POST"
+    }),
   getTaskLiveDiff: (
     id: string,
     options?: { baseRef?: string | null; diffKind?: "compare" | "working" | "commits"; commitSha?: string | null }

@@ -746,6 +746,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "push"
     | "merge"
     | "archive"
+    | "newSession"
     | "killTerminal"
     | "delete"
     | "continue"
@@ -2840,6 +2841,30 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
+  const handleNewSession = async () => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("newSession");
+    try {
+      const updatedTask = await api.resetTaskSession(task.id);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success("New session will be used on the next run");
+    } catch (error) {
+      showTaskActionError(error, "Failed to start a new session");
+    } finally {
+      setSubmitting(null);
+    }
+  };
   const openInteractiveTerminalWindow = (mode: TaskTerminalSessionMode = "interactive"): void => {
     if (!task) {
       return;
@@ -2954,6 +2979,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const moreActionItems = task
     ? [
         hasBranchForSync ? { key: "refreshGitStatus", label: "Refresh Git Status" } : null,
+        canEditTask && !isArchived ? { key: "newSession", label: "New Session" } : null,
         canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Session", danger: true } : null,
         canChangeTaskState ? { key: "changeState", label: "Change State" } : null,
         canEditTask && !isArchived ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
@@ -3132,6 +3158,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               return;
             }
 
+            if (key === "newSession") {
+              Modal.confirm({
+                title: "Start a new session?",
+                content: "This clears saved conversation memory for this task. The next build/ask starts fresh.",
+                okText: "New Session",
+                onOk: handleNewSession
+              });
+              return;
+            }
+
             if (key === "changeState") {
               openTaskStateModal();
               return;
@@ -3159,7 +3195,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }}
         trigger={["click"]}
       >
-        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "killTerminal" || submitting === "merge" || submitting === "state"}>
+        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "killTerminal" || submitting === "merge" || submitting === "state"}>
           More
         </Button>
       </Dropdown>
