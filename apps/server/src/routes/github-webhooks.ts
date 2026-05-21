@@ -24,20 +24,25 @@ interface GitHubPullRequestLikePayload {
 
 interface GitHubIssueCommentPayload {
   action?: string;
-  issue?: { number?: number };
-  comment?: { id?: number };
+  issue?: { number?: number; labels?: Array<{ name?: string }>; pull_request?: Record<string, unknown> };
+  comment?: { id?: number; body?: string };
+  sender?: { login?: string; type?: string };
 }
 
 interface GitHubReactionPayload {
   action?: string;
   reaction?: { id?: number | null };
   content?: string;
+  issue?: { number?: number; labels?: Array<{ name?: string }>; pull_request?: Record<string, unknown> };
+  comment?: { id?: number; body?: string };
+  sender?: { login?: string; type?: string };
 }
 
 interface GitHubPullRequestReviewCommentPayload {
   action?: string;
-  pull_request?: { number?: number };
-  comment?: { id?: number };
+  pull_request?: { number?: number; labels?: Array<{ name?: string }> };
+  comment?: { id?: number; body?: string };
+  sender?: { login?: string; type?: string };
 }
 
 const ALLOWED_ACTIONS_BY_EVENT: Record<string, Set<string>> = {
@@ -71,6 +76,55 @@ const matchesLabels = (
     return false;
   }
   return true;
+};
+
+type CommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
+
+const BOT_MENTION_TOKEN = "@agent";
+const DEFAULT_ALLOWED_TRIGGERS: CommentTriggerType[] = ["emoji_reaction", "slash_command", "bot_mention"];
+const DEFAULT_ALLOWED_REACTIONS = ["🤖", "robot"];
+const DEFAULT_ALLOWED_COMMANDS = ["/agent run"];
+
+const normalizeLowercaseList = (value: string[] | undefined): string[] =>
+  Array.from(new Set((value ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean)));
+
+const detectCommentTriggerType = (
+  eventType: string,
+  payload: GitHubIssueCommentPayload | GitHubPullRequestReviewCommentPayload | GitHubReactionPayload
+): { triggerType: CommentTriggerType | null; command: string | null } => {
+  if (eventType === "reaction") {
+    return { triggerType: "emoji_reaction", command: null };
+  }
+
+  const body = String(payload.comment?.body ?? "");
+  const lowered = body.toLowerCase();
+  if (lowered.includes(BOT_MENTION_TOKEN)) {
+    return { triggerType: "bot_mention", command: null };
+  }
+  const command = body
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("/"));
+  if (command) {
+    return { triggerType: "slash_command", command };
+  }
+  return { triggerType: null, command: null };
+};
+
+const canActorTrigger = (payload: { sender?: { login?: string; type?: string } }, allowedActorLogins: string[]): boolean => {
+  const actorType = String(payload.sender?.type ?? "").trim().toLowerCase();
+  const actorLogin = String(payload.sender?.login ?? "").trim().toLowerCase();
+  if (!actorLogin) {
+    return false;
+  }
+  // Guardrail against bot/self loops.
+  if (actorType === "bot" || actorLogin.endsWith("[bot]")) {
+    return false;
+  }
+  if (allowedActorLogins.length === 0) {
+    return true;
+  }
+  return allowedActorLogins.includes(actorLogin);
 };
 
 const resolveOwnerUserId = async (userStore: UserStore): Promise<string | null> => {
@@ -317,6 +371,136 @@ export const registerGitHubWebhookRoutes = (
         });
         created += 1;
       }
+      return reply.status(202).send({ accepted: true, matched, created });
+    }
+
+    if (githubEvent === "issue_comment" || githubEvent === "pull_request_review_comment" || githubEvent === "reaction") {
+      const payload = body as GitHubIssueCommentPayload | GitHubPullRequestReviewCommentPayload | GitHubReactionPayload;
+      if (payload.action !== "created") {
+        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+      }
+
+      const { triggerType, command } = detectCommentTriggerType(githubEvent, payload);
+      if (!triggerType) {
+        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+      }
+      const reactionContent = githubEvent === "reaction" ? String(payload.content ?? "").trim().toLowerCase() : null;
+
+      const issueNumber =
+        githubEvent === "pull_request_review_comment"
+          ? (payload as GitHubPullRequestReviewCommentPayload).pull_request?.number
+          : (payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.number;
+      if (!issueNumber) {
+        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+      }
+
+      const isPullRequestConversation =
+        githubEvent === "pull_request_review_comment" ||
+        Boolean((payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.pull_request);
+      const labels = normalizeLabels(
+        isPullRequestConversation
+          ? githubEvent === "pull_request_review_comment"
+            ? (payload as GitHubPullRequestReviewCommentPayload).pull_request?.labels
+            : undefined
+          : (payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.labels
+      );
+      const actorLogin = String(payload.sender?.login ?? "unknown");
+      const actorTimestamp = new Date().toISOString();
+
+      for (const rule of rules) {
+        if (!rule.enabled || rule.automationEnabled !== true) {
+          continue;
+        }
+        if (rule.trigger !== (isPullRequestConversation ? "pull_request_opened" : "issue_opened")) {
+          continue;
+        }
+        if (!matchesLabels(labels, rule.labelFilter)) {
+          continue;
+        }
+
+        const allowedTriggers = (rule.allowedTriggers?.length ? rule.allowedTriggers : DEFAULT_ALLOWED_TRIGGERS).map((entry) => entry.trim());
+        if (!allowedTriggers.includes(triggerType)) {
+          continue;
+        }
+        if (triggerType === "slash_command") {
+          const allowedCommands = (rule.allowedCommands?.length ? rule.allowedCommands : DEFAULT_ALLOWED_COMMANDS).map((entry) => entry.trim().toLowerCase());
+          if (!command || !allowedCommands.includes(command.trim().toLowerCase())) {
+            continue;
+          }
+        }
+        if (triggerType === "emoji_reaction") {
+          const allowedReactions = (rule.allowedReactions?.length ? rule.allowedReactions : DEFAULT_ALLOWED_REACTIONS).map((entry) =>
+            entry.trim().toLowerCase()
+          );
+          if (!reactionContent || !allowedReactions.includes(reactionContent)) {
+            continue;
+          }
+        }
+        const allowedActorLogins = normalizeLowercaseList(rule.allowedActorLogins);
+        if (!canActorTrigger(payload, allowedActorLogins)) {
+          continue;
+        }
+
+        matched += 1;
+        const auditLine = `[GitHub Trigger Audit] actor=@${actorLogin} at=${actorTimestamp} trigger=${triggerType}${command ? ` command=${command}` : ""}`;
+        if (isPullRequestConversation) {
+          const prInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, {
+            repoId: repository.id,
+            pullRequestNumber: issueNumber,
+            notes: [auditLine, rule.task.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n"),
+            title: rule.task.titleTemplate,
+            provider: rule.task.provider,
+            providerProfile: rule.task.providerProfile,
+            modelOverride: rule.task.modelOverride ?? undefined,
+            codexCredentialSource: rule.task.codexCredentialSource
+          });
+          if (rule.task.snippetId) {
+            const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
+            if (snippet) {
+              prInput.notes = [snippet.content, prInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
+            }
+          }
+          const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
+          const task = await deps.taskStore.createTask(prInput, repository, ownerUserId);
+          await applyTaskStartMode(task, "run_now", {
+            taskStore: deps.taskStore,
+            scheduler: deps.scheduler,
+            spawner: deps.spawner
+          });
+          created += 1;
+        } else {
+          const issueInput = await deps.githubImportService.buildTaskInputFromIssue(repository, {
+            repoId: repository.id,
+            issueNumber,
+            includeComments: rule.task.includeComments ?? true,
+            notes: [auditLine, rule.task.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n"),
+            taskType: rule.task.taskType ?? "build",
+            startMode: rule.task.startMode ?? "run_now",
+            title: rule.task.titleTemplate,
+            provider: rule.task.provider,
+            providerProfile: rule.task.providerProfile,
+            modelOverride: rule.task.modelOverride ?? undefined,
+            codexCredentialSource: rule.task.codexCredentialSource,
+            baseBranch: rule.task.baseBranch,
+            branchStrategy: rule.task.branchStrategy
+          });
+          if (rule.task.snippetId) {
+            const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
+            if (snippet) {
+              issueInput.notes = [snippet.content, issueInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
+            }
+          }
+          const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
+          const task = await deps.taskStore.createTask(issueInput, repository, ownerUserId);
+          await applyTaskStartMode(task, rule.task.startMode ?? "run_now", {
+            taskStore: deps.taskStore,
+            scheduler: deps.scheduler,
+            spawner: deps.spawner
+          });
+          created += 1;
+        }
+      }
+
       return reply.status(202).send({ accepted: true, matched, created });
     }
 

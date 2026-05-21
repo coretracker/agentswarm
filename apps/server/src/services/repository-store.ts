@@ -78,6 +78,18 @@ const normalizeLabels = (value: unknown): string[] => {
   return Array.from(new Set(labels));
 };
 
+const normalizeStringList = (value: unknown, options?: { lowercase?: boolean }): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const entries = value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => (options?.lowercase ? entry.toLowerCase() : entry));
+  return Array.from(new Set(entries));
+};
+
 const normalizeGitHubAutomations = (value: unknown): GitHubAutomationRule[] => {
   if (!Array.isArray(value)) {
     return [];
@@ -103,6 +115,13 @@ const normalizeGitHubAutomations = (value: unknown): GitHubAutomationRule[] => {
       name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : id,
       enabled: record.enabled !== false,
       trigger,
+      automationEnabled: record.automationEnabled === true,
+      allowedTriggers: normalizeStringList(record.allowedTriggers).filter((entry): entry is "emoji_reaction" | "slash_command" | "bot_mention" =>
+        entry === "emoji_reaction" || entry === "slash_command" || entry === "bot_mention"
+      ),
+      allowedReactions: normalizeStringList(record.allowedReactions),
+      allowedCommands: normalizeStringList(record.allowedCommands),
+      allowedActorLogins: normalizeStringList(record.allowedActorLogins, { lowercase: true }),
       labelFilter: {
         labelsAny: normalizeLabels(labelFilterRaw.labelsAny),
         labelsAll: normalizeLabels(labelFilterRaw.labelsAll),

@@ -330,6 +330,7 @@ export interface RepositoryEnvVar {
 }
 
 export type GitHubAutomationTrigger = "issue_opened" | "pull_request_opened";
+export type GitHubCommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
 
 export interface GitHubAutomationLabelFilter {
   labelsAny?: string[];
@@ -358,6 +359,11 @@ export interface GitHubAutomationRule {
   name: string;
   enabled: boolean;
   trigger: GitHubAutomationTrigger;
+  automationEnabled?: boolean;
+  allowedTriggers?: GitHubCommentTriggerType[];
+  allowedReactions?: string[];
+  allowedCommands?: string[];
+  allowedActorLogins?: string[];
   labelFilter?: GitHubAutomationLabelFilter;
   task: GitHubAutomationTaskConfig;
   createdAt: string;

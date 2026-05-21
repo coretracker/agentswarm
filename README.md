@@ -162,6 +162,11 @@ Task config supports:
 - `baseBranch`
 - `branchStrategy`
 - `snippetId`
+- `automationEnabled` (must be `true` to allow comment/reaction-triggered automation)
+- `allowedTriggers` (`emoji_reaction`, `slash_command`, `bot_mention`)
+- `allowedReactions` (for emoji trigger, examples: `🤖`, `eyes`, `rocket`)
+- `allowedCommands` (for slash-command trigger, example: `/agent run`)
+- `allowedActorLogins` (optional allow-list of GitHub usernames)
 
 Example:
 
@@ -193,7 +198,9 @@ Example:
 
 - Only `issues` with action `opened` are mapped to `issue_opened`.
 - Only `pull_request` with action `opened` are mapped to `pull_request_opened`.
-- `issue_comment`, `pull_request_review_comment`, and `reaction` webhook events are accepted and deduplicated, but they do not create tasks unless a trigger is added for them.
+- `issue_comment`, `pull_request_review_comment`, and `reaction` can create tasks when rule-level comment automation is enabled and the trigger is allowed.
+- Bot actors are blocked from comment/reaction triggers to prevent self-trigger loops.
+- Triggered tasks include an audit note with actor and timestamp.
 - If `assigneeEmail` does not match a user, AgentSwarm falls back to the default owner resolution (admin user, else first user).
 - A webhook response `202` means the payload was accepted; matched/created counts depend on rule filters.
 
