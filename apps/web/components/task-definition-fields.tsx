@@ -592,6 +592,9 @@ export function TaskDefinitionFields({
                   form.setFieldValue("branchStrategy", "work_on_branch");
                   form.setFieldValue("startMode", "run_now");
                 }
+                if (value === "issue") {
+                  form.setFieldValue("startMode", "run_now");
+                }
 
                 if (value !== "blank") {
                   form.setFieldValue("prompt", undefined);
