@@ -9,6 +9,9 @@ import type { TaskStore } from "../services/task-store.js";
 import type { UserStore } from "../services/user-store.js";
 import { applyTaskStartMode } from "../lib/task-start-mode.js";
 
+const GITHUB_DEDUPE_TTL_MS = 15 * 60 * 1_000;
+const githubEventDedupeCache = new Map<string, number>();
+
 interface GitHubIssueLikePayload {
   action?: string;
   issue?: { number?: number; labels?: Array<{ name?: string }> };
@@ -18,6 +21,32 @@ interface GitHubPullRequestLikePayload {
   action?: string;
   pull_request?: { number?: number; labels?: Array<{ name?: string }> };
 }
+
+interface GitHubIssueCommentPayload {
+  action?: string;
+  issue?: { number?: number };
+  comment?: { id?: number };
+}
+
+interface GitHubReactionPayload {
+  action?: string;
+  reaction?: { id?: number | null };
+  content?: string;
+}
+
+interface GitHubPullRequestReviewCommentPayload {
+  action?: string;
+  pull_request?: { number?: number };
+  comment?: { id?: number };
+}
+
+const ALLOWED_ACTIONS_BY_EVENT: Record<string, Set<string>> = {
+  issues: new Set(["opened", "edited", "closed", "reopened", "labeled", "unlabeled", "assigned", "unassigned"]),
+  pull_request: new Set(["opened", "edited", "closed", "reopened", "synchronize", "labeled", "unlabeled", "ready_for_review", "converted_to_draft"]),
+  issue_comment: new Set(["created", "edited", "deleted"]),
+  pull_request_review_comment: new Set(["created", "edited", "deleted"]),
+  reaction: new Set(["created", "deleted"])
+};
 
 const normalizeLabels = (labels: Array<{ name?: string }> | undefined): Set<string> =>
   new Set((labels ?? []).map((entry) => (entry.name ?? "").trim().toLowerCase()).filter(Boolean));
@@ -60,6 +89,102 @@ const resolveAssigneeUserId = async (userStore: UserStore, assigneeEmail: string
   return match?.id ?? null;
 };
 
+export const isSupportedGitHubEvent = (eventType: string): boolean => Boolean(ALLOWED_ACTIONS_BY_EVENT[eventType]);
+
+export const hasSupportedGitHubAction = (eventType: string, action: string): boolean => {
+  const allowed = ALLOWED_ACTIONS_BY_EVENT[eventType];
+  return Boolean(allowed?.has(action));
+};
+
+export const isValidGitHubEventPayload = (eventType: string, payload: Record<string, unknown>): boolean => {
+  if (eventType === "issues") {
+    const typed = payload as GitHubIssueLikePayload;
+    return Number.isInteger(typed.issue?.number);
+  }
+  if (eventType === "pull_request") {
+    const typed = payload as GitHubPullRequestLikePayload;
+    return Number.isInteger(typed.pull_request?.number);
+  }
+  if (eventType === "issue_comment") {
+    const typed = payload as GitHubIssueCommentPayload;
+    return Number.isInteger(typed.issue?.number) && Number.isInteger(typed.comment?.id);
+  }
+  if (eventType === "pull_request_review_comment") {
+    const typed = payload as GitHubPullRequestReviewCommentPayload;
+    return Number.isInteger(typed.pull_request?.number) && Number.isInteger(typed.comment?.id);
+  }
+  if (eventType === "reaction") {
+    const typed = payload as GitHubReactionPayload;
+    if (!typed.action) {
+      return false;
+    }
+    if (typed.action === "created") {
+      return typeof typed.content === "string" && typed.content.trim().length > 0;
+    }
+    return true;
+  }
+  return false;
+};
+
+const cleanupExpiredGitHubDedupeEntries = (nowMs: number): void => {
+  for (const [key, expiry] of githubEventDedupeCache) {
+    if (expiry <= nowMs) {
+      githubEventDedupeCache.delete(key);
+    }
+  }
+};
+
+export const buildGitHubEventDedupeKey = (
+  repositoryId: string,
+  eventType: string,
+  action: string,
+  payload: Record<string, unknown>,
+  deliveryId: string | null
+): string => {
+  if (deliveryId) {
+    return `delivery:${repositoryId}:${deliveryId}`;
+  }
+  if (eventType === "issues") {
+    const typed = payload as GitHubIssueLikePayload;
+    return `issues:${repositoryId}:${action}:${typed.issue?.number ?? "unknown"}`;
+  }
+  if (eventType === "pull_request") {
+    const typed = payload as GitHubPullRequestLikePayload;
+    return `pull_request:${repositoryId}:${action}:${typed.pull_request?.number ?? "unknown"}`;
+  }
+  if (eventType === "issue_comment") {
+    const typed = payload as GitHubIssueCommentPayload;
+    return `issue_comment:${repositoryId}:${action}:${typed.comment?.id ?? "unknown"}`;
+  }
+  if (eventType === "pull_request_review_comment") {
+    const typed = payload as GitHubPullRequestReviewCommentPayload;
+    return `pull_request_review_comment:${repositoryId}:${action}:${typed.comment?.id ?? "unknown"}`;
+  }
+  if (eventType === "reaction") {
+    const typed = payload as GitHubReactionPayload;
+    return `reaction:${repositoryId}:${action}:${typed.reaction?.id ?? typed.content ?? "unknown"}`;
+  }
+  return `unknown:${repositoryId}:${eventType}:${action}`;
+};
+
+export const isDuplicateGitHubEvent = (
+  repositoryId: string,
+  eventType: string,
+  action: string,
+  payload: Record<string, unknown>,
+  deliveryId: string | null
+): boolean => {
+  const nowMs = Date.now();
+  cleanupExpiredGitHubDedupeEntries(nowMs);
+  const dedupeKey = buildGitHubEventDedupeKey(repositoryId, eventType, action, payload, deliveryId);
+  const existingExpiry = githubEventDedupeCache.get(dedupeKey);
+  if (existingExpiry && existingExpiry > nowMs) {
+    return true;
+  }
+  githubEventDedupeCache.set(dedupeKey, nowMs + GITHUB_DEDUPE_TTL_MS);
+  return false;
+};
+
 export const registerGitHubWebhookRoutes = (
   app: FastifyInstance,
   deps: {
@@ -82,6 +207,22 @@ export const registerGitHubWebhookRoutes = (
 
     const githubEventHeader = request.headers["x-github-event"];
     const githubEvent = (Array.isArray(githubEventHeader) ? githubEventHeader[0] : githubEventHeader) ?? "";
+    const deliveryHeader = request.headers["x-github-delivery"];
+    const githubDeliveryId = ((Array.isArray(deliveryHeader) ? deliveryHeader[0] : deliveryHeader) ?? "").trim() || null;
+    const action = typeof body.action === "string" ? body.action : "";
+
+    if (!isSupportedGitHubEvent(githubEvent)) {
+      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+    }
+    if (!action || !hasSupportedGitHubAction(githubEvent, action)) {
+      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+    }
+    if (!isValidGitHubEventPayload(githubEvent, body)) {
+      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+    }
+    if (isDuplicateGitHubEvent(repository.id, githubEvent, action, body, githubDeliveryId)) {
+      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+    }
 
     const rules = repository.githubAutomations ?? [];
     if (rules.length === 0) {

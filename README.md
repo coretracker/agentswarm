@@ -130,7 +130,7 @@ https://<your-host>/api/webhooks/github/<repositoryId>
 
 - `repositoryId` is the internal AgentSwarm repository ID.
 - In GitHub webhook settings, use content type `application/json`.
-- Subscribe to at least **Issues** and **Pull requests** events.
+- Subscribe to at least **Issues**, **Pull requests**, and **Pull request review comments** events.
 
 ### Automation Rules
 
@@ -193,6 +193,7 @@ Example:
 
 - Only `issues` with action `opened` are mapped to `issue_opened`.
 - Only `pull_request` with action `opened` are mapped to `pull_request_opened`.
+- `issue_comment`, `pull_request_review_comment`, and `reaction` webhook events are accepted and deduplicated, but they do not create tasks unless a trigger is added for them.
 - If `assigneeEmail` does not match a user, AgentSwarm falls back to the default owner resolution (admin user, else first user).
 - A webhook response `202` means the payload was accepted; matched/created counts depend on rule filters.
 
