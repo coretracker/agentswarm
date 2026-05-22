@@ -4736,11 +4736,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           ) : (
             <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={!canEditTask || workspaceNotesSaving} />
           )}
-          {workspaceNotes?.updatedAt ? (
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Last saved: {dayjs(workspaceNotes.updatedAt).format("YYYY-MM-DD HH:mm:ss")}
-            </Typography.Text>
-          ) : null}
         </Flex>
       )
     });
@@ -4930,9 +4925,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               ? "Saving…"
               : workspaceNotesStatus === "error"
                 ? "Save failed. Keep this page open; retrying on next edit."
-                : workspaceNotes?.updatedAt
-                  ? `Saved ${dayjs(workspaceNotes.updatedAt).format("YYYY-MM-DD HH:mm:ss")}`
-                  : "Saved"}
+                : "Saved"}
           </Typography.Text>
           {workspaceNotesLoading ? (
             <Skeleton active title={false} paragraph={{ rows: 10 }} />
