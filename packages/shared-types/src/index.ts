@@ -359,6 +359,7 @@ export interface GitHubAutomationRule {
   name: string;
   enabled: boolean;
   trigger: GitHubAutomationTrigger;
+  syncStatusEnabled?: boolean;
   automationEnabled?: boolean;
   allowedTriggers?: GitHubCommentTriggerType[];
   allowedReactions?: string[];

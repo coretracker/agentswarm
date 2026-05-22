@@ -32,7 +32,7 @@ class MockGitHubOutboundService {
   }
 }
 
-const buildTask = (status: Task["status"]): Task => ({
+const buildTask = (status: Task["status"], overrides: Partial<Task> = {}): Task => ({
   id: "task-1",
   title: "Issue #22",
   pinned: false,
@@ -70,7 +70,8 @@ const buildTask = (status: Task["status"]): Task => ({
   updatedAt: "2026-05-22T00:00:00.000Z",
   startedAt: null,
   finishedAt: null,
-  errorMessage: null
+  errorMessage: null,
+  ...overrides
 });
 
 describe("GitHubStatusSyncService", () => {
@@ -98,7 +99,7 @@ describe("GitHubStatusSyncService", () => {
 
     const createdEvent: RealtimeEvent = { type: "task:created", payload: buildTask("build_queued") };
     const startedEvent: RealtimeEvent = { type: "task:updated", payload: buildTask("building") };
-    const doneEvent: RealtimeEvent = { type: "task:updated", payload: buildTask("done") };
+    const doneEvent: RealtimeEvent = { type: "task:updated", payload: buildTask("done", { resultMarkdown: "## Final summary\nShipped." }) };
 
     await service.handleRealtimeEvent(createdEvent);
     await service.handleRealtimeEvent(startedEvent);
@@ -109,7 +110,7 @@ describe("GitHubStatusSyncService", () => {
     assert.deepEqual(outbound.labels[0]?.add, ["as:in-progress"]);
     assert.deepEqual(outbound.labels[1]?.add, ["as:done"]);
     assert.equal(outbound.comments[0]?.body, "Work started.");
-    assert.equal(outbound.comments[1]?.body, "Work completed.");
+    assert.equal(outbound.comments[1]?.body, "## Final summary\nShipped.");
   });
 
   it("does not post when sync_status_enabled is false", async () => {
@@ -134,6 +135,39 @@ describe("GitHubStatusSyncService", () => {
 
     await service.handleRealtimeEvent({ type: "task:created", payload: buildTask("build_queued") });
     await service.handleRealtimeEvent({ type: "task:updated", payload: buildTask("building") });
+
+    assert.equal(outbound.labels.length, 0);
+    assert.equal(outbound.comments.length, 0);
+  });
+
+  it("does not post when task notes explicitly disable sync", async () => {
+    const repository: Repository = {
+      id: "repo-1",
+      name: "Repo",
+      url: "https://github.com/acme/repo",
+      defaultBranch: "main",
+      syncStatusEnabled: true,
+      envVars: [],
+      webhookUrl: null,
+      webhookEnabled: false,
+      webhookSecretConfigured: false,
+      webhookLastAttemptAt: null,
+      webhookLastStatus: null,
+      webhookLastError: null,
+      createdAt: "2026-05-22T00:00:00.000Z",
+      updatedAt: "2026-05-22T00:00:00.000Z"
+    };
+    const outbound = new MockGitHubOutboundService();
+    const service = new GitHubStatusSyncService(new MockRepositoryStore(repository) as unknown as RepositoryStore, outbound as never);
+
+    await service.handleRealtimeEvent({
+      type: "task:created",
+      payload: buildTask("build_queued", { notes: "<!-- agentswarm:github_sync_status_enabled=false -->" })
+    });
+    await service.handleRealtimeEvent({
+      type: "task:updated",
+      payload: buildTask("building", { notes: "<!-- agentswarm:github_sync_status_enabled=false -->" })
+    });
 
     assert.equal(outbound.labels.length, 0);
     assert.equal(outbound.comments.length, 0);

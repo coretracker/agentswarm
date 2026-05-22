@@ -60,6 +60,7 @@ const createRepositorySchema = z.object({
         name: z.string().trim().min(1).max(160),
         enabled: z.boolean().optional(),
         trigger: z.enum(["issue_opened", "pull_request_opened"]),
+        syncStatusEnabled: z.boolean().optional(),
         automationEnabled: z.boolean().optional(),
         allowedTriggers: z.array(z.enum(["emoji_reaction", "slash_command", "bot_mention"])).optional(),
         allowedReactions: z.array(z.string().trim().min(1)).optional(),

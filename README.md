@@ -141,6 +141,10 @@ Supported triggers:
 - `issue_opened`
 - `pull_request_opened`
 
+Rule-level options:
+
+- `syncStatusEnabled` (default `false`; when `true`, tasks created by that rule publish GitHub status labels/comments, and completion uses the task markdown summary)
+
 Label filters:
 
 - `labelsAny`: match if any label is present
@@ -177,6 +181,7 @@ Example:
     "name": "AI issue -> build task",
     "enabled": true,
     "trigger": "issue_opened",
+    "syncStatusEnabled": true,
     "labelFilter": {
       "labelsAny": ["ai"],
       "labelsNone": ["wip"]

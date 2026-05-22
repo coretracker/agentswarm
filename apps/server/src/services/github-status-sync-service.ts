@@ -1,13 +1,14 @@
 import type { RealtimeEvent, Task, TaskStatus } from "@agentswarm/shared-types";
 import type { RepositoryStore } from "./repository-store.js";
 import type { GitHubOutboundService } from "./github-outbound-service.js";
+import { getGitHubStatusSyncFromNotes } from "../lib/github-status-sync.js";
 
 const STATUS_LABELS = ["as:queued", "as:in-progress", "as:blocked", "as:done"] as const;
 type StatusLabel = (typeof STATUS_LABELS)[number];
 
 type Milestone =
   | { label: "as:in-progress"; comment: "Work started." }
-  | { label: "as:done"; comment: "Work completed." }
+  | { label: "as:done"; comment: string }
   | { label: "as:blocked"; comment: `Work stopped: ${string}.` };
 
 const findGitHubIssueNumber = (task: Task): number | null => {
@@ -28,17 +29,18 @@ const isInProgressStatus = (status: TaskStatus): boolean => status === "preparin
 const isDoneStatus = (status: TaskStatus): boolean =>
   status === "done" || status === "completed" || status === "answered" || status === "accepted";
 
-const toMilestone = (status: TaskStatus): Milestone | null => {
-  if (isInProgressStatus(status)) {
+const toMilestone = (task: Task): Milestone | null => {
+  if (isInProgressStatus(task.status)) {
     return { label: "as:in-progress", comment: "Work started." };
   }
-  if (isDoneStatus(status)) {
-    return { label: "as:done", comment: "Work completed." };
+  if (isDoneStatus(task.status)) {
+    const summary = task.resultMarkdown?.trim() ?? "";
+    return { label: "as:done", comment: summary.length > 0 ? summary : "Work completed." };
   }
-  if (status === "failed") {
+  if (task.status === "failed") {
     return { label: "as:blocked", comment: "Work stopped: task failed." };
   }
-  if (status === "cancelled") {
+  if (task.status === "cancelled") {
     return { label: "as:blocked", comment: "Work stopped: task cancelled." };
   }
   return null;
@@ -92,11 +94,17 @@ export class GitHubStatusSyncService {
     }
 
     const repository = await this.repositoryStore.getRepository(task.repoId);
-    if (!repository || repository.syncStatusEnabled !== true) {
+    if (!repository) {
       return;
     }
 
-    const milestone = toMilestone(task.status);
+    const noteOverride = getGitHubStatusSyncFromNotes(task.notes);
+    const syncEnabled = noteOverride ?? (repository.syncStatusEnabled === true);
+    if (!syncEnabled) {
+      return;
+    }
+
+    const milestone = toMilestone(task);
     if (!milestone) {
       return;
     }

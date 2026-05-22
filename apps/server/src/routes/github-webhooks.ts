@@ -7,6 +7,7 @@ import type { SnippetStore } from "../services/snippet-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { UserStore } from "../services/user-store.js";
+import { withGitHubStatusSyncMarker } from "../lib/github-status-sync.js";
 import { applyTaskStartMode } from "../lib/task-start-mode.js";
 
 const GITHUB_DEDUPE_TTL_MS = 15 * 60 * 1_000;
@@ -323,6 +324,7 @@ export const registerGitHubWebhookRoutes = (
             issueInput.notes = [snippet.content, issueInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
           }
         }
+        issueInput.notes = withGitHubStatusSyncMarker(issueInput.notes, rule.syncStatusEnabled === true);
         const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
         const task = await deps.taskStore.createTask(issueInput, repository, ownerUserId);
         await applyTaskStartMode(task, rule.task.startMode ?? "run_now", {
@@ -362,6 +364,7 @@ export const registerGitHubWebhookRoutes = (
             prInput.notes = [snippet.content, prInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
           }
         }
+        prInput.notes = withGitHubStatusSyncMarker(prInput.notes, rule.syncStatusEnabled === true);
         const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
         const task = await deps.taskStore.createTask(prInput, repository, ownerUserId);
         await applyTaskStartMode(task, "run_now", {
@@ -460,6 +463,7 @@ export const registerGitHubWebhookRoutes = (
               prInput.notes = [snippet.content, prInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
             }
           }
+          prInput.notes = withGitHubStatusSyncMarker(prInput.notes, rule.syncStatusEnabled === true);
           const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
           const task = await deps.taskStore.createTask(prInput, repository, ownerUserId);
           await applyTaskStartMode(task, "run_now", {
@@ -490,6 +494,7 @@ export const registerGitHubWebhookRoutes = (
               issueInput.notes = [snippet.content, issueInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
             }
           }
+          issueInput.notes = withGitHubStatusSyncMarker(issueInput.notes, rule.syncStatusEnabled === true);
           const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
           const task = await deps.taskStore.createTask(issueInput, repository, ownerUserId);
           await applyTaskStartMode(task, rule.task.startMode ?? "run_now", {

@@ -115,6 +115,7 @@ const normalizeGitHubAutomations = (value: unknown): GitHubAutomationRule[] => {
       name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : id,
       enabled: record.enabled !== false,
       trigger,
+      syncStatusEnabled: record.syncStatusEnabled === true,
       automationEnabled: record.automationEnabled === true,
       allowedTriggers: normalizeStringList(record.allowedTriggers).filter((entry): entry is "emoji_reaction" | "slash_command" | "bot_mention" =>
         entry === "emoji_reaction" || entry === "slash_command" || entry === "bot_mention"
