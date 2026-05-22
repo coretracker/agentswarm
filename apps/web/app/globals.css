@@ -703,13 +703,41 @@ html[data-theme="forge-light"] .diff-widget-content {
 .task-notes-mdx-editor {
   border: 0;
   overflow: hidden;
+  color: var(--ant-colorText, inherit);
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar {
+  background: transparent !important;
+  border: 0;
+  color: var(--ant-colorTextSecondary, inherit);
 }
 
 .task-notes-mdx-editor .mdxeditor-toolbar button,
 .task-notes-mdx-editor .mdxeditor-toolbar [role="button"] {
   background: transparent !important;
+  border: 0;
+  color: inherit;
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button:hover,
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"]:hover {
+  background: transparent !important;
+  color: var(--ant-colorText, inherit);
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button[aria-pressed="true"],
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"][aria-pressed="true"] {
+  color: var(--ant-colorPrimary, inherit);
 }
 
 .task-notes-mdx-editor-content {
   min-height: 380px;
+  color: var(--ant-colorText, inherit);
+  background: transparent;
+}
+
+.task-notes-mdx-editor-content > ul,
+.task-notes-mdx-editor-content > ol {
+  margin-inline-start: 0;
+  padding-inline-start: 0;
 }
