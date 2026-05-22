@@ -61,14 +61,21 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
     repoId: definition.repoId,
     prompt: definition.prompt,
     notes: definition.notes,
-    attachments: definition.sourceType === "blank" ? definition.attachments : undefined,
+    attachments: definition.sourceType === "blank" || definition.sourceType === "snippet" ? definition.attachments : undefined,
     taskType: definition.taskType,
-    startMode: definition.startMode ?? "run_now",
+    startMode: definition.sourceType === "snippet" ? "run_now" : (definition.startMode ?? "run_now"),
     provider: definition.provider,
     providerProfile: definition.providerProfile,
     modelOverride: definition.model || undefined,
     codexCredentialSource: definition.codexCredentialSource,
     baseBranch: definition.baseBranch,
-    branchStrategy: definition.branchStrategy
+    branchStrategy: definition.branchStrategy,
+    ...(definition.sourceType === "snippet"
+      ? {
+          task_source: "snippet" as const,
+          snippet_id: definition.snippetId,
+          start_mode_locked: true
+        }
+      : { task_source: "blank" as const })
   });
 };

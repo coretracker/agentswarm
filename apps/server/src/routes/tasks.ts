@@ -62,9 +62,35 @@ const createTaskSchema = z
     baseBranch: z.string().min(1).optional(),
     branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
     model: z.string().min(1).optional(),
-    reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
+    reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
+    task_source: z.enum(["blank", "snippet"]).optional(),
+    snippet_id: z.string().trim().min(1).optional(),
+    start_mode_locked: z.boolean().optional()
   })
   .superRefine((data, ctx) => {
+    if (data.task_source === "snippet") {
+      if (!data.snippet_id) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "snippet_id is required when task_source is snippet",
+          path: ["snippet_id"]
+        });
+      }
+      if (data.start_mode_locked !== true) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "start_mode_locked must be true when task_source is snippet",
+          path: ["start_mode_locked"]
+        });
+      }
+      if (data.startMode !== "run_now") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Snippet tasks must use automatic start mode",
+          path: ["startMode"]
+        });
+      }
+    }
     if (data.startMode === "run_now" && data.prompt.trim().length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

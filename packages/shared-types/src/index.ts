@@ -737,9 +737,12 @@ export interface CreateTaskInput {
   branchStrategy?: TaskBranchStrategy;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
+  task_source?: "blank" | "snippet";
+  snippet_id?: string;
+  start_mode_locked?: boolean;
 }
 
-export type TaskSourceType = "blank" | "issue" | "pull_request";
+export type TaskSourceType = "blank" | "snippet" | "issue" | "pull_request";
 
 export interface BlankTaskDefinitionInput {
   sourceType: "blank";
@@ -787,7 +790,25 @@ export interface PullRequestTaskDefinitionInput {
   codexCredentialSource?: CodexCredentialSource;
 }
 
-export type TaskDefinitionInput = BlankTaskDefinitionInput | IssueTaskDefinitionInput | PullRequestTaskDefinitionInput;
+export interface SnippetTaskDefinitionInput {
+  sourceType: "snippet";
+  title: string;
+  repoId: string;
+  snippetId: string;
+  prompt: string;
+  notes?: string;
+  attachments?: CreateTaskPromptAttachmentInput[];
+  taskType: TaskType;
+  startMode?: TaskStartMode;
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+}
+
+export type TaskDefinitionInput = BlankTaskDefinitionInput | SnippetTaskDefinitionInput | IssueTaskDefinitionInput | PullRequestTaskDefinitionInput;
 
 export interface Snippet {
   id: string;

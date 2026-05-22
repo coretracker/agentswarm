@@ -4,6 +4,8 @@ import { useState } from "react";
 import type { Task, TaskSourceType } from "@agentswarm/shared-types";
 import { App, Button, Form, Modal } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
+import { useSnippets } from "../src/hooks/useSnippets";
+import { trackEvent } from "../src/utils/analytics";
 import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
 import {
@@ -27,6 +29,8 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
   const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const canCreateAnyTaskMode = can("task:build") || can("task:ask") || can("task:interactive");
+  const canUseSnippets = can("snippet:list");
+  const { snippets } = useSnippets(canUseSnippets);
 
   const handleCancel = () => {
     if (submitting) {
@@ -42,7 +46,9 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
     setSubmitting(true);
     try {
       const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
-      const definition = buildTaskDefinitionInput(values, encodedAttachments);
+      const selectedSnippet = snippets.find((snippet) => snippet.id === values.snippetId) ?? null;
+      const definition = buildTaskDefinitionInput(values, encodedAttachments, selectedSnippet?.content, selectedSnippet?.variables ?? []);
+      trackEvent("task_create_submitted", { source: definition.sourceType });
       const task = await createTaskFromDefinition(definition);
       onCreated?.(task);
       message.success(startMessageForDefinition(definition));

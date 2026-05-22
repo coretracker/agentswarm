@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import type { TaskSourceType, TaskStartMode, TaskType } from "@agentswarm/shared-types";
 import { Button, Flex, Form, Space, Typography, message } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
+import { useSnippets } from "../src/hooks/useSnippets";
+import { trackEvent } from "../src/utils/analytics";
 import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
 import {
@@ -29,6 +31,8 @@ export function TaskCreatePage() {
   const isBlankOrIssueInteractivePrep =
     (selectedSourceType === "blank" || selectedSourceType === "issue") && selectedStartMode === "prepare_workspace";
   const canCreateAnyTaskMode = can("task:build") || can("task:ask") || can("task:interactive");
+  const canUseSnippets = can("snippet:list");
+  const { snippets } = useSnippets(canUseSnippets);
 
   const pageTitle =
     selectedSourceType === "issue"
@@ -47,7 +51,9 @@ export function TaskCreatePage() {
     setSubmitting(true);
     try {
       const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
-      const definition = buildTaskDefinitionInput(values, encodedAttachments);
+      const selectedSnippet = snippets.find((snippet) => snippet.id === values.snippetId) ?? null;
+      const definition = buildTaskDefinitionInput(values, encodedAttachments, selectedSnippet?.content, selectedSnippet?.variables ?? []);
+      trackEvent("task_create_submitted", { source: definition.sourceType });
       const task = await createTaskFromDefinition(definition);
 
       messageApi.success(startMessageForDefinition(definition));

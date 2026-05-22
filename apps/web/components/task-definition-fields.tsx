@@ -24,6 +24,9 @@ import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useSettings } from "../src/hooks/useSettings";
+import { useSnippets } from "../src/hooks/useSnippets";
+import { trackEvent } from "../src/utils/analytics";
+import { applySnippetVariables } from "../src/utils/snippets";
 import { type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
 import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
@@ -45,6 +48,8 @@ export type TaskDefinitionFormValues = {
   issueNumber?: number;
   includeComments?: boolean;
   pullRequestNumber?: number;
+  snippetId?: string;
+  snippetVariables?: Record<string, string>;
 };
 
 export interface TaskDefinitionFieldsProps {
@@ -93,7 +98,9 @@ export const getTaskDefinitionInitialValues = (settings?: SystemSettings | null)
 
 export const buildTaskDefinitionInput = (
   values: TaskDefinitionFormValues,
-  promptAttachments: CreateTaskPromptAttachmentInput[] = []
+  promptAttachments: CreateTaskPromptAttachmentInput[] = [],
+  snippetContent?: string,
+  snippetVariablesDefinition: Array<{ name: string; type: "text" | "multiline"; defaultValue: string }> = []
 ): TaskDefinitionInput => {
   const provider = values.provider ?? "codex";
   const codexCredentialSource = provider === "codex" ? (values.codexCredentialSource ?? "auto") : undefined;
@@ -136,6 +143,27 @@ export const buildTaskDefinitionInput = (
     };
   }
 
+  if (values.sourceType === "snippet") {
+    const renderedPrompt = applySnippetVariables(snippetContent ?? "", snippetVariablesDefinition, values.snippetVariables ?? {});
+    return {
+      sourceType: "snippet",
+      title: values.title?.trim() ?? "",
+      repoId: values.repoId ?? "",
+      snippetId: values.snippetId ?? "",
+      prompt: renderedPrompt.trim(),
+      notes: values.notes?.trim() ?? "",
+      ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
+      startMode: "run_now",
+      taskType: values.taskType ?? "build",
+      provider,
+      model: values.model?.trim() ?? "",
+      providerProfile: values.providerProfile ?? "high",
+      ...(codexCredentialSource ? { codexCredentialSource } : {}),
+      baseBranch: values.baseBranch?.trim() ?? "",
+      branchStrategy: values.branchStrategy ?? "feature_branch"
+    };
+  }
+
   return {
     sourceType: "pull_request",
     title: values.title?.trim() || undefined,
@@ -167,6 +195,7 @@ export function TaskDefinitionFields({
   const canAskTasks = can("task:ask");
   const canUseInteractiveTerminal = can("task:interactive");
   const canRunAutomatedTask = canBuildTasks || canAskTasks;
+  const canUseSnippets = can("snippet:list");
 
   const selectedRepoId = Form.useWatch("repoId", form);
   const selectedModel = Form.useWatch("model", form);
@@ -177,16 +206,20 @@ export function TaskDefinitionFields({
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
   const selectedIssueNumber = Form.useWatch("issueNumber", form);
   const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
+  const selectedSnippetId = Form.useWatch("snippetId", form);
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(selectedProvider);
+  const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
   const selectedIssue = githubIssues.find((issue) => issue.number === selectedIssueNumber) ?? null;
   const selectedPullRequest = githubPullRequests.find((pullRequest) => pullRequest.number === selectedPullRequestNumber) ?? null;
   const isBlankSource = selectedSourceType === "blank";
+  const isSnippetSource = selectedSourceType === "snippet";
   const isIssueSource = selectedSourceType === "issue";
   const isPullRequestSource = selectedSourceType === "pull_request";
   const effectiveTaskType = isPullRequestSource ? "build" : selectedTaskType;
   const isImplementationTask = effectiveTaskType === "build";
-  const baseBranchLabel = isBlankSource || isIssueSource ? "Base Branch" : undefined;
+  const baseBranchLabel = isBlankSource || isSnippetSource || isIssueSource ? "Base Branch" : undefined;
+  const selectedSnippet = snippets.find((snippet) => snippet.id === selectedSnippetId) ?? null;
   const providerMissingCredentials =
     selectedProvider === "codex"
       ? !(settings?.openaiApiKeyConfigured || session?.user.codexAuthJsonConfigured)
@@ -211,6 +244,7 @@ export function TaskDefinitionFields({
   );
   const sourceOptions: Array<{ label: string; value: TaskSourceType }> = [
     { label: "Blank", value: "blank" },
+    ...(canUseSnippets ? [{ label: "Snippet", value: "snippet" as const }] : []),
     ...(canReadRepositoryMetadata
       ? [
           { label: "From Issue", value: "issue" as const },
@@ -228,7 +262,7 @@ export function TaskDefinitionFields({
   ];
 
   useEffect(() => {
-    if (canReadRepositoryMetadata || selectedSourceType === "blank") {
+    if (canReadRepositoryMetadata || selectedSourceType === "blank" || selectedSourceType === "snippet") {
       return;
     }
 
@@ -315,10 +349,10 @@ export function TaskDefinitionFields({
   }, [form, selectedProvider]);
 
   useEffect(() => {
-    if ((isBlankSource || isIssueSource) && selectedStartMode === "prepare_workspace" && selectedTaskType !== "build") {
+    if ((isBlankSource || isSnippetSource || isIssueSource) && selectedStartMode === "prepare_workspace" && selectedTaskType !== "build") {
       form.setFieldValue("taskType", "build");
     }
-  }, [form, isBlankSource, isIssueSource, selectedStartMode, selectedTaskType]);
+  }, [form, isBlankSource, isSnippetSource, isIssueSource, selectedStartMode, selectedTaskType]);
 
   useEffect(() => {
     if (selectedTaskType === "build" && !canBuildTasks && canAskTasks) {
@@ -332,7 +366,7 @@ export function TaskDefinitionFields({
   }, [canAskTasks, canBuildTasks, form, selectedTaskType]);
 
   useEffect(() => {
-    if (!(isBlankSource || isIssueSource)) {
+    if (!(isBlankSource || isSnippetSource || isIssueSource)) {
       return;
     }
 
@@ -344,13 +378,30 @@ export function TaskDefinitionFields({
     if (selectedStartMode !== "prepare_workspace" && !canRunAutomatedTask && canUseInteractiveTerminal) {
       form.setFieldValue("startMode", "prepare_workspace");
     }
-  }, [canRunAutomatedTask, canUseInteractiveTerminal, form, isBlankSource, isIssueSource, selectedStartMode]);
+  }, [canRunAutomatedTask, canUseInteractiveTerminal, form, isBlankSource, isSnippetSource, isIssueSource, selectedStartMode]);
 
   useEffect(() => {
-    if ((isBlankSource || isIssueSource) && selectedStartMode === "idle") {
+    if ((isBlankSource || isSnippetSource || isIssueSource) && selectedStartMode === "idle") {
       form.setFieldValue("startMode", "run_now");
     }
-  }, [form, isBlankSource, isIssueSource, selectedStartMode]);
+  }, [form, isBlankSource, isSnippetSource, isIssueSource, selectedStartMode]);
+
+  useEffect(() => {
+    if (!isSnippetSource) {
+      return;
+    }
+    if (selectedStartMode !== "run_now") {
+      form.setFieldValue("startMode", "run_now");
+    }
+  }, [form, isSnippetSource, selectedStartMode]);
+
+  useEffect(() => {
+    if (!isSnippetSource || !selectedSnippet) {
+      return;
+    }
+    const defaults = Object.fromEntries((selectedSnippet.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""]));
+    form.setFieldValue("snippetVariables", defaults);
+  }, [form, isSnippetSource, selectedSnippet]);
 
   useEffect(() => {
     if (!selectedRepoId || !canReadRepositoryMetadata) {
@@ -383,7 +434,7 @@ export function TaskDefinitionFields({
     };
   }, [canReadRepositoryMetadata, selectedRepoId]);
 
-  const promptPanelTitle = isBlankSource ? (effectiveTaskType === "ask" ? "Question" : "Prompt") : "Imported Context";
+  const promptPanelTitle = isBlankSource ? (effectiveTaskType === "ask" ? "Question" : "Prompt") : isSnippetSource ? "Snippet Variables" : "Imported Context";
   const requirePromptForBlank = selectedStartMode === "run_now";
   const disableBlankPromptInput = isBlankSource && selectedStartMode === "prepare_workspace";
   const canAttachPromptImages = isBlankSource && selectedStartMode === "run_now";
@@ -478,6 +529,64 @@ export function TaskDefinitionFields({
             />
           </Form.Item>
         </>
+      );
+    }
+
+    if (isSnippetSource) {
+      return (
+        <Flex vertical gap={16}>
+          <Form.Item name="title" label="Title" rules={[{ required: true, message: "Enter a task title" }]} style={{ marginBottom: 0 }}>
+            <Input placeholder="Your Task Title" size="large" />
+          </Form.Item>
+          <Alert
+            type="info"
+            showIcon
+            message="Prompt input is replaced by snippet variables"
+            description="Pick a snippet and fill the fields below. This reduces mistakes and keeps setup fast."
+          />
+          <Form.Item name="snippetId" label="Snippet" rules={[{ required: true, message: "Select a snippet" }]} style={{ marginBottom: 0 }}>
+            <Select
+              showSearch
+              loading={snippetsLoading}
+              placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
+              optionFilterProp="label"
+              options={snippets.map((snippet) => ({ label: snippet.name, value: snippet.id }))}
+              onChange={() => trackEvent("snippet_selected")}
+            />
+          </Form.Item>
+          {(selectedSnippet?.variables ?? []).map((variable) => (
+            <Form.Item
+              key={variable.name}
+              name={["snippetVariables", variable.name]}
+              label={variable.title || variable.name}
+              rules={[{ required: true, message: `Enter ${variable.title || variable.name}` }]}
+              extra={variable.description || undefined}
+              style={{ marginBottom: 0 }}
+            >
+              {variable.type === "multiline" ? (
+                <Input.TextArea autoSize={{ minRows: 3, maxRows: 12 }} placeholder={variable.defaultValue || ""} />
+              ) : (
+                <Input placeholder={variable.defaultValue || ""} />
+              )}
+            </Form.Item>
+          ))}
+          <Form.Item
+            name="notes"
+            label="Notes (Markdown)"
+            extra={
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Optional. These notes are shown in the task Info tab below current configuration.
+              </Typography.Text>
+            }
+            style={{ marginBottom: 0 }}
+          >
+            <Input.TextArea
+              autoSize={{ minRows: 6, maxRows: 16 }}
+              style={{ resize: "none" }}
+              placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
+            />
+          </Form.Item>
+        </Flex>
       );
     }
 
@@ -587,6 +696,7 @@ export function TaskDefinitionFields({
             <Select
               options={sourceOptions}
               onChange={(value: TaskSourceType) => {
+                trackEvent("task_source_selected", { source: value });
                 if (value === "pull_request") {
                   form.setFieldValue("taskType", "build");
                   form.setFieldValue("branchStrategy", "work_on_branch");
@@ -594,6 +704,10 @@ export function TaskDefinitionFields({
                 }
                 if (value === "issue") {
                   form.setFieldValue("startMode", "run_now");
+                }
+                if (value === "snippet") {
+                  form.setFieldValue("startMode", "run_now");
+                  form.setFieldValue("taskType", "build");
                 }
 
                 if (value !== "blank") {
@@ -603,6 +717,10 @@ export function TaskDefinitionFields({
                 if (value === "issue" || value === "pull_request") {
                   form.setFieldValue("title", undefined);
                   form.setFields([{ name: "title", touched: false }]);
+                }
+                if (value !== "snippet") {
+                  form.setFieldValue("snippetId", undefined);
+                  form.setFieldValue("snippetVariables", undefined);
                 }
               }}
             />
@@ -658,13 +776,22 @@ export function TaskDefinitionFields({
             </>
           ) : null}
 
-          {isBlankSource || isIssueSource ? (
+          {isBlankSource || isSnippetSource || isIssueSource ? (
             <Form.Item name="startMode" label="Start mode" rules={[{ required: true }]}>
-              <Select options={startModeOptions} />
+              {isSnippetSource ? (
+                <>
+                  <Input value="Automatic" readOnly />
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    Locked because snippet tasks always start automatically.
+                  </Typography.Text>
+                </>
+              ) : (
+                <Select options={startModeOptions} />
+              )}
             </Form.Item>
           ) : null}
 
-          {isBlankSource && selectedStartMode !== "prepare_workspace" ? (
+          {(isBlankSource || isSnippetSource) && selectedStartMode !== "prepare_workspace" ? (
             <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
               <Select options={taskTypeOptions} />
             </Form.Item>
@@ -734,7 +861,7 @@ export function TaskDefinitionFields({
             </>
           ) : null}
 
-          {(isBlankSource || isIssueSource) && baseBranchLabel ? (
+          {(isBlankSource || isSnippetSource || isIssueSource) && baseBranchLabel ? (
             <Form.Item name="baseBranch" label={baseBranchLabel} rules={[{ required: true }]}>
               <Select
                 showSearch
@@ -755,7 +882,7 @@ export function TaskDefinitionFields({
             </Form.Item>
           ) : null}
 
-          {(isBlankSource && isImplementationTask) || (isIssueSource && selectedTaskType === "build") ? (
+          {(isBlankSource && isImplementationTask) || (isSnippetSource && isImplementationTask) || (isIssueSource && selectedTaskType === "build") ? (
             <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]}>
               <Select
                 options={[
