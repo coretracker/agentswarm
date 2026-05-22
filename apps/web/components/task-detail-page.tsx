@@ -107,6 +107,7 @@ import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 import { useThemeMode } from "./theme-provider";
 import { getPrismTheme } from "../src/theme/code-highlighting";
+import { useAppRightPanel } from "./app-right-panel-context";
 
 const runStatusColor: Record<TaskRun["status"], string> = {
   running: "processing",
@@ -678,6 +679,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { token } = antTheme.useToken();
   const screens = Grid.useBreakpoint();
   const isDesktopWorkspaceLayout = screens.lg ?? false;
+  const { setRightPanel } = useAppRightPanel();
   const { mode } = useThemeMode();
   const prismTheme = useMemo(() => getPrismTheme(mode, token), [mode, token]);
   const historyCardHeadStyle: CSSProperties = {
@@ -4715,6 +4717,65 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
   ];
 
+  useEffect(() => {
+    if (!task || !isDesktopWorkspaceLayout) {
+      setRightPanel(null);
+      return;
+    }
+
+    setRightPanel({
+      title: "Notes",
+      extra: (
+        <Typography.Text type={workspaceNotesStatus === "error" ? "danger" : "secondary"}>
+          {workspaceNotesStatus === "saving" ? "Saving…" : workspaceNotesStatus === "error" ? "Save failed" : "Saved"}
+        </Typography.Text>
+      ),
+      content: (
+        <Flex vertical gap={12}>
+          <Segmented
+            options={[
+              { label: "Edit", value: "edit" },
+              { label: "Preview", value: "preview" }
+            ]}
+            value={workspaceNotesView}
+            onChange={(value) => setWorkspaceNotesView(value as "edit" | "preview")}
+          />
+          {workspaceNotesLoading ? (
+            <Skeleton active title={false} paragraph={{ rows: 12 }} />
+          ) : workspaceNotesView === "edit" ? (
+            <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={!canEditTask || workspaceNotesSaving} />
+          ) : workspaceNotesDraft.trim().length > 0 ? (
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {workspaceNotesDraft}
+            </ReactMarkdown>
+          ) : (
+            <Typography.Text type="secondary">No notes yet.</Typography.Text>
+          )}
+          {workspaceNotes?.updatedAt ? (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Last saved: {dayjs(workspaceNotes.updatedAt).format("YYYY-MM-DD HH:mm:ss")}
+            </Typography.Text>
+          ) : null}
+        </Flex>
+      )
+    });
+
+    return () => {
+      setRightPanel(null);
+    };
+  }, [
+    task,
+    isDesktopWorkspaceLayout,
+    setRightPanel,
+    workspaceNotesStatus,
+    workspaceNotesView,
+    workspaceNotesLoading,
+    workspaceNotesDraft,
+    canEditTask,
+    workspaceNotesSaving,
+    workspaceNotes?.updatedAt
+  ]);
+
   return (
     <>
       {contextHolder}
@@ -5190,43 +5251,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             </div>
           ) : null}
         </div>
-        {isDesktopWorkspaceLayout ? (
-          <Card
-            title="Notes"
-            style={{ width: 420, position: "sticky", top: 80, maxHeight: "calc(100vh - 96px)", overflow: "auto" }}
-            extra={
-              <Typography.Text type={workspaceNotesStatus === "error" ? "danger" : "secondary"}>
-                {workspaceNotesStatus === "saving" ? "Saving…" : workspaceNotesStatus === "error" ? "Save failed" : "Saved"}
-              </Typography.Text>
-            }
-            bodyStyle={{ display: "flex", flexDirection: "column", gap: 12 }}
-          >
-            <Segmented
-              options={[
-                { label: "Edit", value: "edit" },
-                { label: "Preview", value: "preview" }
-              ]}
-              value={workspaceNotesView}
-              onChange={(value) => setWorkspaceNotesView(value as "edit" | "preview")}
-            />
-            {workspaceNotesLoading ? (
-              <Skeleton active title={false} paragraph={{ rows: 12 }} />
-            ) : workspaceNotesView === "edit" ? (
-              <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={!canEditTask || workspaceNotesSaving} />
-            ) : workspaceNotesDraft.trim().length > 0 ? (
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                {workspaceNotesDraft}
-              </ReactMarkdown>
-            ) : (
-              <Typography.Text type="secondary">No notes yet.</Typography.Text>
-            )}
-            {workspaceNotes?.updatedAt ? (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Last saved: {dayjs(workspaceNotes.updatedAt).format("YYYY-MM-DD HH:mm:ss")}
-              </Typography.Text>
-            ) : null}
-          </Card>
-        ) : null}
       </Flex>
       {task && !isDesktopWorkspaceLayout ? (
         <FloatButton

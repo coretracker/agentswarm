@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useMemo, useEffect, useState, type ReactNode } from "react";
 import { App, Button, Card, Divider, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Spin, Typography, message, theme as antTheme } from "antd";
 import {
   CopyOutlined,
@@ -21,6 +21,7 @@ import { TaskBrowserNotifications } from "./task-browser-notifications";
 import { useThemeMode } from "./theme-provider";
 import { appThemeOptions, type AppThemeMode } from "../src/theme/antd-theme";
 import { api } from "../src/api/client";
+import { AppRightPanelProvider, type AppRightPanelConfig } from "./app-right-panel-context";
 import type {
   AgentClarifyBehavior,
   AgentCodePreference,
@@ -54,6 +55,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const contentMaxWidth = 1760;
   const headerHeight = 64;
   const sidebarWidth = 320;
+  const rightPanelWidth = 420;
   const { token } = antTheme.useToken();
   const screens = Grid.useBreakpoint();
   const [loggingOut, setLoggingOut] = useState(false);
@@ -61,6 +63,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileCodexConfigured, setProfileCodexConfigured] = useState(false);
+  const [rightPanel, setRightPanel] = useState<AppRightPanelConfig | null>(null);
   const [profileForm] = Form.useForm<{
     name: string;
     codexAuthJson?: string;
@@ -85,6 +88,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       label: route.label
     }));
   const hasRouteAccess = session ? canAll(getRequiredScopesForPathname(pathname)) : false;
+  const rightPanelContextValue = useMemo(() => ({ setRightPanel }), []);
 
   useEffect(() => {
     if (loading || publicPath) {
@@ -212,7 +216,8 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const shellContent = (
     <>
-      <Layout style={{ minHeight: "100vh", background: token.colorBgLayout }}>
+      <AppRightPanelProvider value={rightPanelContextValue}>
+        <Layout style={{ minHeight: "100vh", background: token.colorBgLayout }}>
         <Layout.Header
           style={{
             position: "sticky",
@@ -334,8 +339,44 @@ export function AppShell({ children }: { children: ReactNode }) {
               </div>
             </Layout.Footer>
           </Layout>
+          {desktopSidebar ? (
+            <Layout.Sider
+              width={rightPanelWidth}
+              theme="light"
+              style={{
+                position: "sticky",
+                top: headerHeight,
+                alignSelf: "flex-start",
+                height: `calc(100vh - ${headerHeight}px)`,
+                background: token.colorBgContainer,
+                borderLeft: `1px solid ${token.colorBorderSecondary}`,
+                overflow: "hidden"
+              }}
+            >
+              <Flex vertical style={{ height: "100%", minHeight: 0 }}>
+                <Flex
+                  justify="space-between"
+                  align="center"
+                  style={{
+                    padding: "16px 16px 12px",
+                    borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                    gap: 12
+                  }}
+                >
+                  <Typography.Title level={5} style={{ margin: 0 }}>
+                    {rightPanel?.title ?? "Notes"}
+                  </Typography.Title>
+                  {rightPanel?.extra ?? null}
+                </Flex>
+                <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16 }}>
+                  {rightPanel?.content ?? <Typography.Text type="secondary">No notes for this page.</Typography.Text>}
+                </div>
+              </Flex>
+            </Layout.Sider>
+          ) : null}
         </Layout>
       </Layout>
+      </AppRightPanelProvider>
       <Drawer
         placement="left"
         open={!desktopSidebar && mobileSidebarOpen}
