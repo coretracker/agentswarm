@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useEffect, useState, type ReactNode } from "react";
-import { App, Button, Card, Divider, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Spin, Typography, message, theme as antTheme } from "antd";
+import { useMemo, useEffect, useRef, useState, type ReactNode } from "react";
+import { App, Button, Card, Divider, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Skeleton, Spin, Typography, message, theme as antTheme } from "antd";
 import {
   CopyOutlined,
   DatabaseOutlined,
@@ -22,13 +22,15 @@ import { useThemeMode } from "./theme-provider";
 import { appThemeOptions, type AppThemeMode } from "../src/theme/antd-theme";
 import { api } from "../src/api/client";
 import { AppRightPanelProvider, type AppRightPanelConfig } from "./app-right-panel-context";
+import { NotesMarkdownEditor } from "./notes-markdown-editor";
 import type {
   AgentClarifyBehavior,
   AgentCodePreference,
   AgentExplanationDepth,
   AgentFormattingStyle,
   AgentJargonLevel,
-  AudienceType
+  AudienceType,
+  UserNotes
 } from "@agentswarm/shared-types";
 import {
   getRequiredScopesForPathname,
@@ -64,6 +66,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileCodexConfigured, setProfileCodexConfigured] = useState(false);
   const [rightPanel, setRightPanel] = useState<AppRightPanelConfig | null>(null);
+  const [workspaceNotes, setWorkspaceNotes] = useState<UserNotes | null>(null);
+  const [workspaceNotesDraft, setWorkspaceNotesDraft] = useState("");
+  const [workspaceNotesLoading, setWorkspaceNotesLoading] = useState(true);
+  const [workspaceNotesSaving, setWorkspaceNotesSaving] = useState(false);
+  const [workspaceNotesStatus, setWorkspaceNotesStatus] = useState<"saved" | "saving" | "error">("saved");
+  const workspaceNotesAutosaveTimeoutRef = useRef<number | null>(null);
+  const workspaceNotesSaveRequestIdRef = useRef(0);
   const [profileForm] = Form.useForm<{
     name: string;
     codexAuthJson?: string;
@@ -105,6 +114,78 @@ export function AppShell({ children }: { children: ReactNode }) {
       setMobileSidebarOpen(false);
     }
   }, [desktopSidebar]);
+
+  useEffect(() => {
+    if (publicPath || !session) {
+      return;
+    }
+
+    setWorkspaceNotesLoading(true);
+    void api
+      .getUserNotes()
+      .then((next) => {
+        setWorkspaceNotes(next);
+        setWorkspaceNotesDraft(next.notes);
+        setWorkspaceNotesStatus("saved");
+      })
+      .catch((error) => {
+        const messageText = error instanceof Error ? error.message : "Failed to load notes";
+        setWorkspaceNotesStatus("error");
+        message.error(messageText);
+      })
+      .finally(() => {
+        setWorkspaceNotesLoading(false);
+      });
+  }, [publicPath, session]);
+
+  useEffect(() => {
+    if (workspaceNotesAutosaveTimeoutRef.current !== null) {
+      window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
+      workspaceNotesAutosaveTimeoutRef.current = null;
+    }
+    if (!workspaceNotes || workspaceNotesDraft === workspaceNotes.notes) {
+      setWorkspaceNotesStatus("saved");
+      return;
+    }
+
+    setWorkspaceNotesStatus("saving");
+    workspaceNotesAutosaveTimeoutRef.current = window.setTimeout(() => {
+      workspaceNotesAutosaveTimeoutRef.current = null;
+      const requestId = workspaceNotesSaveRequestIdRef.current + 1;
+      workspaceNotesSaveRequestIdRef.current = requestId;
+      setWorkspaceNotesSaving(true);
+      void api
+        .updateUserNotes({ notes: workspaceNotesDraft })
+        .then((next) => {
+          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
+            return;
+          }
+          setWorkspaceNotes(next);
+          setWorkspaceNotesDraft(next.notes);
+          setWorkspaceNotesStatus("saved");
+        })
+        .catch((error) => {
+          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
+            return;
+          }
+          const messageText = error instanceof Error ? error.message : "Failed to save notes";
+          setWorkspaceNotesStatus("error");
+          message.error(messageText);
+        })
+        .finally(() => {
+          if (workspaceNotesSaveRequestIdRef.current === requestId) {
+            setWorkspaceNotesSaving(false);
+          }
+        });
+    }, 700);
+
+    return () => {
+      if (workspaceNotesAutosaveTimeoutRef.current !== null) {
+        window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
+        workspaceNotesAutosaveTimeoutRef.current = null;
+      }
+    };
+  }, [workspaceNotes, workspaceNotesDraft]);
 
   if (publicPath) {
     return <App>{children}</App>;
@@ -369,7 +450,22 @@ export function AppShell({ children }: { children: ReactNode }) {
                   {rightPanel?.extra ?? null}
                 </Flex>
                 <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16 }}>
-                  {rightPanel?.content ?? <Typography.Text type="secondary">No notes for this page.</Typography.Text>}
+                  {rightPanel?.content ?? (
+                    <Flex vertical gap={12}>
+                      <Typography.Text type={workspaceNotesStatus === "error" ? "danger" : "secondary"}>
+                        {workspaceNotesStatus === "saving"
+                          ? "Saving…"
+                          : workspaceNotesStatus === "error"
+                            ? "Save failed. Keep this page open; retrying on next edit."
+                            : "Saved"}
+                      </Typography.Text>
+                      {workspaceNotesLoading ? (
+                        <Skeleton active title={false} paragraph={{ rows: 12 }} />
+                      ) : (
+                        <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={workspaceNotesSaving} />
+                      )}
+                    </Flex>
+                  )}
                 </div>
               </Flex>
             </Layout.Sider>
