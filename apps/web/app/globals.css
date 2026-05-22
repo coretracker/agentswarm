@@ -701,9 +701,13 @@ html[data-theme="forge-light"] .diff-widget-content {
 }
 
 .task-notes-mdx-editor {
-  border: 1px solid var(--ant-colorBorder, rgba(5, 5, 5, 0.12));
-  border-radius: 8px;
+  border: 0;
   overflow: hidden;
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button,
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] {
+  background: transparent !important;
 }
 
 .task-notes-mdx-editor-content {

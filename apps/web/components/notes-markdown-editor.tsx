@@ -1,12 +1,10 @@
 "use client";
 
 import {
-  BlockTypeSelect,
   BoldItalicUnderlineToggles,
   CreateLink,
   ListsToggle,
   MDXEditor,
-  UndoRedo,
   headingsPlugin,
   linkDialogPlugin,
   linkPlugin,
@@ -34,10 +32,8 @@ const notesEditorPlugins = [
   toolbarPlugin({
     toolbarContents: () => (
       <>
-        <UndoRedo />
         <BoldItalicUnderlineToggles />
         <ListsToggle />
-        <BlockTypeSelect />
         <CreateLink />
       </>
     )
