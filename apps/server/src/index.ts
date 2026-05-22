@@ -16,6 +16,7 @@ import { SchedulerService } from "./services/scheduler.js";
 import { GitHubImportService } from "./services/github-import-service.js";
 import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
 import { GitHubOutboundService } from "./services/github-outbound-service.js";
+import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
 import { registerRoleRoutes } from "./routes/roles.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerUserRoutes } from "./routes/users.js";
@@ -73,6 +74,7 @@ const bootstrap = async (): Promise<void> => {
   const githubImportService = new GitHubImportService(settingsStore);
   const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
   const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
+  const githubStatusSyncService = new GitHubStatusSyncService(repositoryStore, githubOutboundService);
 
   await roleStore.ensureDefaultAdminRole();
   await userStore.ensureDefaultAdminUser({
@@ -129,6 +131,7 @@ const bootstrap = async (): Promise<void> => {
     try {
       const event = JSON.parse(message) as RealtimeEvent;
       void webhookDeliveryService.handleRealtimeEvent(event);
+      void githubStatusSyncService.handleRealtimeEvent(event);
       void auth.emitScopedRealtimeEvent(io, event);
     } catch (error) {
       app.log.error({ error }, "Failed to parse event message");

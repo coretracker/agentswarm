@@ -375,6 +375,7 @@ export interface Repository {
   name: string;
   url: string;
   defaultBranch: string;
+  syncStatusEnabled?: boolean;
   envVars: RepositoryEnvVar[];
   webhookUrl: string | null;
   webhookEnabled: boolean;
@@ -698,6 +699,7 @@ export interface CreateRepositoryInput {
   name: string;
   url: string;
   defaultBranch?: string;
+  syncStatusEnabled?: boolean;
   envVars?: RepositoryEnvVar[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
@@ -710,6 +712,7 @@ export interface UpdateRepositoryInput {
   name?: string;
   url?: string;
   defaultBranch?: string;
+  syncStatusEnabled?: boolean;
   envVars?: RepositoryEnvVar[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;

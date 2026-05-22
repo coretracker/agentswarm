@@ -289,5 +289,12 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS github_automations jsonb NOT NULL DEFAULT '[]'::jsonb;
     `
+  },
+  {
+    id: "20260522_01_repository_sync_status_enabled",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS sync_status_enabled boolean NOT NULL DEFAULT false;
+    `
   }
 ];
