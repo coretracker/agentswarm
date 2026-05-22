@@ -767,6 +767,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   >(null);
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
+  const showTaskActionError = useCallback(
+    (error: unknown, fallback: string): void => {
+      const nextMessage = error instanceof Error ? error.message : fallback;
+      if (nextMessage === "Close the terminal session before continuing.") {
+        return;
+      }
+      messageApi.error(nextMessage);
+    },
+    [messageApi]
+  );
   const selectedChatActionRef = useRef(false);
   const diffCompareBaseSyncedTaskIdRef = useRef<string | null>(null);
   const applyCheckpointAutoMagicProposalIdRef = useRef<string | null>(null);
@@ -1131,13 +1141,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setLiveDiffRefreshKey((k) => k + 1);
     void refreshBranchSyncCounts();
   }, [refreshBranchSyncCounts]);
-  const showTaskActionError = (error: unknown, fallback: string): void => {
-    const nextMessage = error instanceof Error ? error.message : fallback;
-    if (nextMessage === "Close the terminal session before continuing.") {
-      return;
-    }
-    messageApi.error(nextMessage);
-  };
   const assigneeNameById = useMemo(() => {
     return new Map(assignableUsers.map((user) => [user.id, user.name]));
   }, [assignableUsers]);
