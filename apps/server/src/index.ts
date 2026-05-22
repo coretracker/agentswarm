@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
+import * as Sentry from "@sentry/node";
 import { Server as SocketIOServer } from "socket.io";
 import type { RealtimeEvent } from "@agentswarm/shared-types";
 import { env } from "./config/env.js";
@@ -28,6 +29,14 @@ import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
 
 const bootstrap = async (): Promise<void> => {
+  const sentryEnabled = env.SENTRY_ENABLED && env.SENTRY_DSN.trim().length > 0;
+  if (sentryEnabled) {
+    Sentry.init({
+      dsn: env.SENTRY_DSN,
+      tracesSampleRate: 1
+    });
+  }
+
   const app = Fastify({ logger: true, bodyLimit: 35 * 1024 * 1024 });
   await app.register(cookie);
   app.decorateRequest("auth", null);
@@ -103,6 +112,21 @@ const bootstrap = async (): Promise<void> => {
 
   app.get("/health", async () => ({ ok: true }));
 
+  if (sentryEnabled) {
+    app.setErrorHandler((error, request, reply) => {
+      Sentry.captureException(error, {
+        tags: {
+          route: request.routeOptions.url
+        },
+        extra: {
+          method: request.method,
+          url: request.url
+        }
+      });
+      void reply.send(error);
+    });
+  }
+
   await app.ready();
   attachTaskInteractiveTerminalUpgrade(app.server, {
     auth,
@@ -154,6 +178,9 @@ const bootstrap = async (): Promise<void> => {
       redisClients.sub.quit()
     ]);
     await app.close();
+    if (sentryEnabled) {
+      await Sentry.close(2_000);
+    }
   };
 
   process.on("SIGINT", () => {
@@ -162,6 +189,15 @@ const bootstrap = async (): Promise<void> => {
   process.on("SIGTERM", () => {
     void close();
   });
+
+  if (sentryEnabled) {
+    process.on("uncaughtException", (error) => {
+      Sentry.captureException(error);
+    });
+    process.on("unhandledRejection", (reason) => {
+      Sentry.captureException(reason);
+    });
+  }
 
   await app.listen({ port: env.PORT, host: "0.0.0.0" });
 };

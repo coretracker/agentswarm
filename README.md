@@ -68,6 +68,8 @@ Copy `.env.example` to `.env` and adjust it if needed.
 | `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password | `admin123!` |
 | `AUTH_COOKIE_NAME` | Session cookie name | `agentswarm_session` |
 | `AUTH_SESSION_TTL_DAYS` | Session lifetime in days | `7` |
+| `SENTRY_ENABLED` | Enable/disable Sentry error tracking | `true` |
+| `SENTRY_DSN` | Sentry DSN used when enabled | `https://464566b3787dde0e2da9f69760ef8f40@o4511433840525312.ingest.de.sentry.io/4511433841901649` |
 
 ### Storage
 
