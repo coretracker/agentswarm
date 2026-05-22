@@ -734,10 +734,7 @@ html[data-theme="forge-light"] .diff-widget-content {
 .task-notes-mdx-editor .mdxeditor-toolbar [role="button"] svg {
   color: inherit !important;
   fill: currentColor !important;
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar button svg {
-  stroke: currentColor !important;
+  stroke: none !important;
 }
 
 .task-notes-mdx-editor-content {
