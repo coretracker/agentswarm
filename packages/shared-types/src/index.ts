@@ -695,6 +695,11 @@ export interface SystemSettings {
   dataStores?: SystemDataStores;
 }
 
+export interface UserNotes {
+  notes: string;
+  updatedAt: string;
+}
+
 export interface CreateRepositoryInput {
   name: string;
   url: string;
@@ -896,6 +901,10 @@ export interface UpdateTaskTitleInput {
 }
 
 export interface UpdateTaskNotesInput {
+  notes: string;
+}
+
+export interface UpdateUserNotesInput {
   notes: string;
 }
 

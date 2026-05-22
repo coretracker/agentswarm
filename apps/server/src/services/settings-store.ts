@@ -11,6 +11,7 @@ import type {
   type ResponsePreferencePreset,
   type ResponsePreferencePresetInput,
   SystemSettings,
+  UserNotes,
   UpdateCredentialSettingsInput,
   UpdateSettingsInput
 } from "@agentswarm/shared-types";
@@ -21,6 +22,7 @@ import { defaultModelForProvider } from "../lib/provider-config.js";
 import type { CredentialStore, RuntimeCredentials } from "./credential-store.js";
 
 const SETTINGS_KEY = "agentswarm:settings";
+const USER_NOTES_KEY_PREFIX = "agentswarm:user-notes:";
 const SYSTEM_RESPONSE_PREFERENCE_PRESET_ID = "neutral";
 
 const DEFAULT_CODEX_EFFORT: ProviderProfile = "high";
@@ -257,6 +259,8 @@ export interface SettingsStore {
   updateSettings(input: UpdateSettingsInput): Promise<SystemSettings>;
   updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings>;
   getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials>;
+  getUserNotes(userId: string): Promise<UserNotes>;
+  updateUserNotes(userId: string, notes: string): Promise<UserNotes>;
 }
 
 export class RedisSettingsStore implements SettingsStore {
@@ -380,6 +384,32 @@ export class RedisSettingsStore implements SettingsStore {
       openaiBaseUrl: settings.openaiBaseUrl,
       defaultProvider: settings.defaultProvider
     };
+  }
+
+  async getUserNotes(userId: string): Promise<UserNotes> {
+    const key = `${USER_NOTES_KEY_PREFIX}${userId}`;
+    const raw = await this.redis.get(key);
+    if (!raw) {
+      const initial: UserNotes = { notes: "", updatedAt: nowIso() };
+      await this.redis.set(key, JSON.stringify(initial));
+      return initial;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<UserNotes> | null;
+    return {
+      notes: typeof parsed?.notes === "string" ? parsed.notes : "",
+      updatedAt: typeof parsed?.updatedAt === "string" && parsed.updatedAt.trim().length > 0 ? parsed.updatedAt : nowIso()
+    };
+  }
+
+  async updateUserNotes(userId: string, notes: string): Promise<UserNotes> {
+    const key = `${USER_NOTES_KEY_PREFIX}${userId}`;
+    const next: UserNotes = {
+      notes,
+      updatedAt: nowIso()
+    };
+    await this.redis.set(key, JSON.stringify(next));
+    return next;
   }
 }
 
@@ -578,5 +608,41 @@ export class PostgresSettingsStore implements SettingsStore {
       openaiBaseUrl: settings.openaiBaseUrl,
       defaultProvider: settings.defaultProvider
     };
+  }
+
+  async getUserNotes(userId: string): Promise<UserNotes> {
+    const result = await this.pool.query(
+      `
+        SELECT notes, updated_at
+        FROM user_notes
+        WHERE user_id = $1
+      `,
+      [userId]
+    );
+    const row = result.rows[0];
+    return {
+      notes: typeof row?.notes === "string" ? row.notes : "",
+      updatedAt:
+        typeof row?.updated_at === "string" && row.updated_at.trim().length > 0
+          ? row.updated_at
+          : nowIso()
+    };
+  }
+
+  async updateUserNotes(userId: string, notes: string): Promise<UserNotes> {
+    const next: UserNotes = {
+      notes,
+      updatedAt: nowIso()
+    };
+    await this.pool.query(
+      `
+        INSERT INTO user_notes (user_id, notes, updated_at)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id) DO UPDATE
+        SET notes = EXCLUDED.notes, updated_at = EXCLUDED.updated_at
+      `,
+      [userId, next.notes, next.updatedAt]
+    );
+    return next;
   }
 }

@@ -48,6 +48,7 @@ import type {
   UpdateTaskNotesInput,
   UpdateTaskAssigneeInput,
   UpdateTaskStateInput,
+  UpdateUserNotesInput,
   UpdateTaskTitleInput,
   UpdateAuthProfileInput,
   UpdateCredentialSettingsInput,
@@ -55,7 +56,8 @@ import type {
   UpdateRepositoryInput,
   UpdateSettingsInput,
   UpdateUserInput,
-  User
+  User,
+  UserNotes
 } from "@agentswarm/shared-types";
 export type { TaskWorkspaceFilePreview } from "@agentswarm/shared-types";
 import { buildApiUrl } from "../lib/public-url";
@@ -510,6 +512,12 @@ export const api = {
     }),
   updateCredentials: (input: UpdateCredentialSettingsInput) =>
     request<SystemSettings>("/settings/credentials", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  getUserNotes: () => request<UserNotes>("/settings/notes"),
+  updateUserNotes: (input: UpdateUserNotesInput) =>
+    request<UserNotes>("/settings/notes", {
       method: "PATCH",
       body: JSON.stringify(input)
     })

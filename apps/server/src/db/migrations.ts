@@ -296,5 +296,25 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS sync_status_enabled boolean NOT NULL DEFAULT false;
     `
+  },
+  {
+    id: "20260522_02_workspace_notes",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS workspace_notes text NOT NULL DEFAULT '';
+
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS workspace_notes_updated_at text NOT NULL DEFAULT '';
+    `
+  },
+  {
+    id: "20260522_03_user_notes",
+    sql: `
+      CREATE TABLE IF NOT EXISTS user_notes (
+        user_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        notes text NOT NULL,
+        updated_at text NOT NULL
+      );
+    `
   }
 ];
