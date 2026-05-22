@@ -736,8 +736,8 @@ html[data-theme="forge-light"] .diff-widget-content {
   background: transparent;
 }
 
-.task-notes-mdx-editor-content > ul,
-.task-notes-mdx-editor-content > ol {
+.task-notes-mdx-editor-content ul,
+.task-notes-mdx-editor-content ol {
   margin-inline-start: 0;
-  padding-inline-start: 0;
+  padding-inline-start: 15px;
 }
