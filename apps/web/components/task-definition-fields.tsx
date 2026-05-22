@@ -11,6 +11,7 @@ import type {
   GitHubPullRequestReference,
   ProviderProfile,
   Repository,
+  SnippetVariable,
   SystemSettings,
   TaskBranchStrategy,
   TaskDefinitionInput,
@@ -100,7 +101,7 @@ export const buildTaskDefinitionInput = (
   values: TaskDefinitionFormValues,
   promptAttachments: CreateTaskPromptAttachmentInput[] = [],
   snippetContent?: string,
-  snippetVariablesDefinition: Array<{ name: string; type: "text" | "multiline"; defaultValue: string }> = []
+  snippetVariablesDefinition: SnippetVariable[] = []
 ): TaskDefinitionInput => {
   const provider = values.provider ?? "codex";
   const codexCredentialSource = provider === "codex" ? (values.codexCredentialSource ?? "auto") : undefined;
