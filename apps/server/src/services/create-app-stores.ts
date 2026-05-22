@@ -12,6 +12,7 @@ import { RedisTaskQueueStore } from "./task-queue-store.js";
 import { PostgresTaskStore, RedisTaskStore } from "./task-store.js";
 import { PostgresUserStore, RedisUserStore } from "./user-store.js";
 import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
+import { RedisGitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
 
 interface CreateAppStoresOptions {
   pool: Pool | null;
@@ -72,12 +73,14 @@ export const createAppStores = ({
     ? new PostgresSettingsStore(requirePool(pool, "settingsStore"), eventBus, credentialStore)
     : new RedisSettingsStore(redisClients.command, eventBus, credentialStore);
   const taskQueueStore = new RedisTaskQueueStore(redisClients.command);
+  const githubOutboundQueueStore = new RedisGitHubOutboundQueueStore(redisClients.command);
   const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
   const sessionStore = new RedisSessionStore(redisClients.command, sessionTtlDays);
 
   return {
     taskStore,
     taskQueueStore,
+    githubOutboundQueueStore,
     webhookDeliveryStore,
     snippetStore,
     repositoryStore,

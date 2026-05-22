@@ -15,6 +15,7 @@ import { SpawnerService } from "./services/spawner.js";
 import { SchedulerService } from "./services/scheduler.js";
 import { GitHubImportService } from "./services/github-import-service.js";
 import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
+import { GitHubOutboundService } from "./services/github-outbound-service.js";
 import { registerRoleRoutes } from "./routes/roles.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerUserRoutes } from "./routes/users.js";
@@ -44,6 +45,7 @@ const bootstrap = async (): Promise<void> => {
   const {
     taskStore,
     taskQueueStore,
+    githubOutboundQueueStore,
     webhookDeliveryStore,
     snippetStore,
     repositoryStore,
@@ -70,6 +72,7 @@ const bootstrap = async (): Promise<void> => {
   const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
   const githubImportService = new GitHubImportService(settingsStore);
   const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
+  const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
 
   await roleStore.ensureDefaultAdminRole();
   await userStore.ensureDefaultAdminUser({
@@ -133,11 +136,13 @@ const bootstrap = async (): Promise<void> => {
   });
 
   webhookDeliveryService.start();
+  githubOutboundService.start();
   await scheduler.bootstrap();
 
   const close = async (): Promise<void> => {
     scheduler.stop();
     webhookDeliveryService.stop();
+    githubOutboundService.stop();
     io.close();
     await Promise.all([
       ...(postgresPool ? [postgresPool.end()] : []),

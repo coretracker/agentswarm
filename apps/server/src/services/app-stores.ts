@@ -8,6 +8,7 @@ import type { TaskQueueStore } from "./task-queue-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { UserStore } from "./user-store.js";
 import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
+import type { GitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
 
 export type SupportedStoreBackend = "redis" | "postgres";
 
@@ -24,6 +25,7 @@ export interface DurableStoreBackends {
 export interface AppStores {
   taskStore: TaskStore;
   taskQueueStore: TaskQueueStore;
+  githubOutboundQueueStore: GitHubOutboundQueueStore;
   webhookDeliveryStore: WebhookDeliveryStore;
   snippetStore: SnippetStore;
   repositoryStore: RepositoryStore;
