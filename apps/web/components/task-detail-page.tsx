@@ -811,7 +811,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [workspaceNotesSaving, setWorkspaceNotesSaving] = useState(false);
   const [workspaceNotesMobileOpen, setWorkspaceNotesMobileOpen] = useState(false);
   const [workspaceNotesStatus, setWorkspaceNotesStatus] = useState<"saved" | "saving" | "error">("saved");
-  const [workspaceNotesView, setWorkspaceNotesView] = useState<"edit" | "preview">("edit");
   const [applyCheckpointModalProposal, setApplyCheckpointModalProposal] = useState<TaskChangeProposal | null>(null);
   const [applyCheckpointCommitMessage, setApplyCheckpointCommitMessage] = useState("");
   const [applyCheckpointCommitMessageGenerating, setApplyCheckpointCommitMessageGenerating] = useState(false);
@@ -4732,24 +4731,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       ),
       content: (
         <Flex vertical gap={12}>
-          <Segmented
-            options={[
-              { label: "Edit", value: "edit" },
-              { label: "Preview", value: "preview" }
-            ]}
-            value={workspaceNotesView}
-            onChange={(value) => setWorkspaceNotesView(value as "edit" | "preview")}
-          />
           {workspaceNotesLoading ? (
             <Skeleton active title={false} paragraph={{ rows: 12 }} />
-          ) : workspaceNotesView === "edit" ? (
-            <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={!canEditTask || workspaceNotesSaving} />
-          ) : workspaceNotesDraft.trim().length > 0 ? (
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-              {workspaceNotesDraft}
-            </ReactMarkdown>
           ) : (
-            <Typography.Text type="secondary">No notes yet.</Typography.Text>
+            <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={!canEditTask || workspaceNotesSaving} />
           )}
           {workspaceNotes?.updatedAt ? (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -4768,7 +4753,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     isDesktopWorkspaceLayout,
     setRightPanel,
     workspaceNotesStatus,
-    workspaceNotesView,
     workspaceNotesLoading,
     workspaceNotesDraft,
     canEditTask,
@@ -4950,24 +4934,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   ? `Saved ${dayjs(workspaceNotes.updatedAt).format("YYYY-MM-DD HH:mm:ss")}`
                   : "Saved"}
           </Typography.Text>
-          <Segmented
-            options={[
-              { label: "Edit", value: "edit" },
-              { label: "Preview", value: "preview" }
-            ]}
-            value={workspaceNotesView}
-            onChange={(value) => setWorkspaceNotesView(value as "edit" | "preview")}
-          />
           {workspaceNotesLoading ? (
             <Skeleton active title={false} paragraph={{ rows: 10 }} />
-          ) : workspaceNotesView === "preview" ? (
-            workspaceNotesDraft.trim().length > 0 ? (
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                {workspaceNotesDraft}
-              </ReactMarkdown>
-            ) : (
-              <Typography.Text type="secondary">No notes yet.</Typography.Text>
-            )
           ) : (
             <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={!canEditTask || workspaceNotesSaving} />
           )}
