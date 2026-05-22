@@ -24,7 +24,7 @@ function createPrismThemeFromToken(baseTheme: PrismTheme, token: GlobalToken, da
     styles: [
       ...(baseTheme.styles ?? []),
       { types: ["comment", "prolog", "doctype", "cdata"], style: { color: commentColor, fontStyle: "italic" } },
-      { types: ["keyword", "selector", "inserted"], style: { color: keywordColor, fontWeight: 600 } },
+      { types: ["keyword", "selector", "inserted"], style: { color: keywordColor, fontWeight: "600" } },
       { types: ["string", "char", "attr-value"], style: { color: stringColor } },
       { types: ["number", "boolean", "constant"], style: { color: numberColor } }
     ]
