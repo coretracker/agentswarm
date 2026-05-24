@@ -139,9 +139,26 @@ interface WorkspacePreparation {
   hostWorkspacePath: string;
   startRef: string;
   workspaceBaseRef: string;
-  kind: "worktree" | "clone";
+  kind: "clone";
   ephemeral: boolean;
   cleanupRepoPath: string | null;
+}
+
+type WorkspacePrepareFailureReason =
+  | "auth"
+  | "network"
+  | "branch_missing"
+  | "clone_error"
+  | "unknown";
+
+class WorkspacePrepareError extends Error {
+  readonly reason: WorkspacePrepareFailureReason;
+
+  constructor(message: string, reason: WorkspacePrepareFailureReason, readonly causeDetail?: string) {
+    super(message);
+    this.name = "WorkspacePrepareError";
+    this.reason = reason;
+  }
 }
 
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
@@ -165,6 +182,7 @@ const WORKSPACE_FILE_TREE_MAX_LIMIT = 20_000;
 const WORKSPACE_FILE_SEARCH_DEFAULT_LIMIT = 50;
 const WORKSPACE_FILE_SEARCH_MAX_LIMIT = 500;
 const SAFE_GIT_PREVIEW_REF_PATTERN = /^[A-Za-z0-9._/-]+(?:[~^][0-9]*)*$/;
+const WORKSPACE_KIND = "clone";
 
 function getPreviewMimeType(filePath: string): string | null {
   return IMAGE_MIME_BY_EXTENSION[path.extname(filePath).toLowerCase()] ?? null;
@@ -563,6 +581,137 @@ export class SpawnerService {
         gitEnv
       )
     );
+  }
+
+  /**
+   * Clone strategy for task/ask workspaces:
+   * - Fetch depth: full history by default (`null`) to avoid shallow-history edge cases.
+   * - Base ref selection: branch ref first, then task base branch.
+   * - Missing branch fallback: if feature branch is missing remotely, create it from base branch.
+   */
+  private static readonly WORKSPACE_FETCH_DEPTH: number | null = null;
+
+  private emitWorkspacePrepareEvent(
+    event: "workspace_prepare_started" | "workspace_prepare_succeeded" | "workspace_prepare_failed",
+    payload: {
+      taskId: string;
+      taskType: Task["taskType"];
+      workspaceKind: typeof WORKSPACE_KIND;
+      failureReason?: WorkspacePrepareFailureReason;
+      mode?: "clone_only" | "hybrid";
+    }
+  ): void {
+    const base = {
+      level: "info",
+      event,
+      workspace_kind: payload.workspaceKind,
+      task_type: payload.taskType,
+      task_id: payload.taskId,
+      workspace_provisioning_mode: payload.mode ?? "clone_only"
+    } as const;
+
+    if (event === "workspace_prepare_failed") {
+      console.info(JSON.stringify({ ...base, failure_reason: payload.failureReason ?? "unknown" }));
+      return;
+    }
+
+    console.info(JSON.stringify(base));
+  }
+
+  private classifyWorkspacePrepareFailure(error: unknown): WorkspacePrepareFailureReason {
+    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    if (
+      message.includes("authentication failed") ||
+      message.includes("could not read username") ||
+      message.includes("permission denied") ||
+      message.includes("repository not found") ||
+      message.includes("access denied")
+    ) {
+      return "auth";
+    }
+    if (
+      message.includes("could not resolve host") ||
+      message.includes("failed to connect") ||
+      message.includes("connection timed out") ||
+      message.includes("network is unreachable") ||
+      message.includes("http request failed")
+    ) {
+      return "network";
+    }
+    if (
+      message.includes("not a commit") ||
+      message.includes("did not match any file") ||
+      (message.includes("remote branch") && message.includes("not found"))
+    ) {
+      return "branch_missing";
+    }
+    if (message.includes("clone")) {
+      return "clone_error";
+    }
+    return "unknown";
+  }
+
+  private workspaceFetchArgs(refSpec: string): string[] {
+    const args = ["fetch", "--prune"];
+    if (SpawnerService.WORKSPACE_FETCH_DEPTH && SpawnerService.WORKSPACE_FETCH_DEPTH > 0) {
+      args.push(`--depth=${SpawnerService.WORKSPACE_FETCH_DEPTH}`);
+    }
+    args.push("origin", refSpec);
+    return args;
+  }
+
+  private async cloneWorkspaceRepository(sourceRepoPath: string, workspacePath: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<void> {
+    await this.gitCommand(["clone", "--no-checkout", "--no-local", sourceRepoPath, workspacePath], githubToken, gitUsername);
+  }
+
+  private async cloneWorkspaceFromSource(
+    sourceRepoPath: string,
+    sourceRepoUrl: string,
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<void> {
+    await rm(workspacePath, { recursive: true, force: true });
+    await mkdir(path.dirname(workspacePath), { recursive: true });
+    await this.cloneWorkspaceRepository(sourceRepoPath, workspacePath, githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "remote", "set-url", "origin", sourceRepoUrl], githubToken, gitUsername);
+  }
+
+  private async checkoutTaskWorkspaceBranch(
+    task: Task,
+    workspacePath: string,
+    branchName: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<void> {
+    const baseRemoteRef = `origin/${task.baseBranch}`;
+    const branchRemoteRef = `origin/${branchName}`;
+    await this.gitCommand(["-C", workspacePath, ...this.workspaceFetchArgs("+refs/heads/*:refs/remotes/origin/*")], githubToken, gitUsername);
+
+    if (task.branchStrategy === "work_on_branch") {
+      if (!(await this.refExists(workspacePath, baseRemoteRef, githubToken, gitUsername))) {
+        throw new WorkspacePrepareError(
+          `Workspace setup failed: base branch '${task.baseBranch}' is missing on origin.`,
+          "branch_missing"
+        );
+      }
+      await this.gitCommand(["-C", workspacePath, "checkout", "-B", task.baseBranch, baseRemoteRef], githubToken, gitUsername);
+      return;
+    }
+
+    if (await this.refExists(workspacePath, branchRemoteRef, githubToken, gitUsername)) {
+      await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, branchRemoteRef], githubToken, gitUsername);
+      return;
+    }
+
+    if (!(await this.refExists(workspacePath, baseRemoteRef, githubToken, gitUsername))) {
+      throw new WorkspacePrepareError(
+        `Workspace setup failed: neither '${branchName}' nor base branch '${task.baseBranch}' exists on origin.`,
+        "branch_missing"
+      );
+    }
+
+    await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, baseRemoteRef], githubToken, gitUsername);
   }
 
   private async withRepoLock<T>(repoKey: string, fn: () => Promise<T>): Promise<T> {
@@ -2040,9 +2189,8 @@ export class SpawnerService {
     };
   }
 
-  private async prepareWorkspace(
+  private async prepareWorkspaceLegacyWorktree(
     task: Task,
-    _action: TaskAction,
     branchName: string,
     repoCachePath: string,
     githubToken?: string | null,
@@ -2073,19 +2221,18 @@ export class SpawnerService {
     }
 
     const startRef = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
-    const gitPaths = await this.getWorkspaceGitPaths(workspacePath);
     return {
       workspacePath,
       hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
       startRef,
       workspaceBaseRef: task.workspaceBaseRef ?? startRef,
-      kind: gitPaths.usesLinkedWorktree ? "worktree" : "clone",
+      kind: WORKSPACE_KIND,
       ephemeral: false,
       cleanupRepoPath: null
     };
   }
 
-  private async prepareAskWorkspace(
+  private async prepareAskWorkspaceLegacyWorktree(
     task: Task,
     branchName: string,
     repoCachePath: string,
@@ -2112,13 +2259,158 @@ export class SpawnerService {
     await this.gitCommand(["-C", sourceRepoPath, "worktree", "add", "--detach", askWorkspacePath, startPoint], githubToken, gitUsername);
 
     const startRef = await this.gitCommandCapture(["-C", askWorkspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
-    const gitPaths = await this.getWorkspaceGitPaths(askWorkspacePath);
     return {
       workspacePath: askWorkspacePath,
       hostWorkspacePath: this.resolveAskWorkspaceHostPath(task.id, executionId),
       startRef,
       workspaceBaseRef: task.workspaceBaseRef ?? startRef,
-      kind: gitPaths.usesLinkedWorktree ? "worktree" : "clone",
+      // Keep metadata normalized for downstream analytics/UI.
+      kind: WORKSPACE_KIND,
+      // Keep ask-run workspaces on disk so file links in history remain previewable after the run finishes.
+      ephemeral: false,
+      cleanupRepoPath: null
+    };
+  }
+
+  private async prepareWorkspace(
+    task: Task,
+    _action: TaskAction,
+    branchName: string,
+    repoCachePath: string,
+    provisioningMode: "clone_only" | "hybrid",
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<WorkspacePreparation> {
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    try {
+      await this.cloneWorkspaceFromSource(repoCachePath, task.repoUrl, workspacePath, githubToken, gitUsername);
+      await this.checkoutTaskWorkspaceBranch(task, workspacePath, branchName, githubToken, gitUsername);
+    } catch (error) {
+      const reason = this.classifyWorkspacePrepareFailure(error);
+      const detail = error instanceof Error ? error.message : String(error);
+      if (provisioningMode === "hybrid" && (reason === "clone_error" || reason === "unknown")) {
+        return this.prepareWorkspaceLegacyWorktree(task, branchName, repoCachePath, githubToken, gitUsername);
+      }
+      if (error instanceof WorkspacePrepareError) {
+        throw error;
+      }
+
+      switch (reason) {
+        case "auth":
+          throw new WorkspacePrepareError(
+            "Workspace setup failed: repository access was denied. Check GitHub token permissions for this repository.",
+            reason,
+            detail
+          );
+        case "network":
+          throw new WorkspacePrepareError(
+            "Workspace setup failed: could not reach the Git remote. Check network/DNS connectivity and retry.",
+            reason,
+            detail
+          );
+        case "branch_missing":
+          throw new WorkspacePrepareError(
+            `Workspace setup failed: expected branch refs were not found on origin (base branch: ${task.baseBranch}).`,
+            reason,
+            detail
+          );
+        default:
+          throw new WorkspacePrepareError(
+            "Workspace setup failed while cloning the repository. See task logs for git error details.",
+            reason,
+            detail
+          );
+      }
+    }
+
+    const startRef = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
+    return {
+      workspacePath,
+      hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
+      startRef,
+      workspaceBaseRef: task.workspaceBaseRef ?? startRef,
+      kind: WORKSPACE_KIND,
+      ephemeral: false,
+      cleanupRepoPath: null
+    };
+  }
+
+  private async prepareAskWorkspace(
+    task: Task,
+    branchName: string,
+    repoCachePath: string,
+    executionId: string,
+    provisioningMode: "clone_only" | "hybrid",
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<WorkspacePreparation> {
+    const askWorkspacePath = this.resolveAskWorkspacePath(task.id, executionId);
+    const taskWorkspacePath = this.resolveWorkspacePath(task.id);
+    const taskWorkspaceExists = await access(taskWorkspacePath)
+      .then(() => true)
+      .catch(() => false);
+
+    const sourceRepoPath = taskWorkspaceExists ? taskWorkspacePath : repoCachePath;
+    try {
+      await this.cloneWorkspaceFromSource(sourceRepoPath, task.repoUrl, askWorkspacePath, githubToken, gitUsername);
+
+      if (taskWorkspaceExists) {
+        await this.gitCommand(["-C", askWorkspacePath, "checkout", "--detach", "HEAD"], githubToken, gitUsername);
+      } else {
+        await this.checkoutTaskWorkspaceBranch(task, askWorkspacePath, branchName, githubToken, gitUsername);
+        await this.gitCommand(["-C", askWorkspacePath, "checkout", "--detach", "HEAD"], githubToken, gitUsername);
+      }
+    } catch (error) {
+      const reason = this.classifyWorkspacePrepareFailure(error);
+      const detail = error instanceof Error ? error.message : String(error);
+      if (provisioningMode === "hybrid" && (reason === "clone_error" || reason === "unknown")) {
+        return this.prepareAskWorkspaceLegacyWorktree(
+          task,
+          branchName,
+          repoCachePath,
+          executionId,
+          githubToken,
+          gitUsername
+        );
+      }
+      if (error instanceof WorkspacePrepareError) {
+        throw error;
+      }
+      switch (reason) {
+        case "auth":
+          throw new WorkspacePrepareError(
+            "Ask workspace setup failed: repository access was denied. Check GitHub token permissions for this repository.",
+            reason,
+            detail
+          );
+        case "network":
+          throw new WorkspacePrepareError(
+            "Ask workspace setup failed: could not reach the Git remote. Check network/DNS connectivity and retry.",
+            reason,
+            detail
+          );
+        case "branch_missing":
+          throw new WorkspacePrepareError(
+            `Ask workspace setup failed: expected branch refs were not found on origin (base branch: ${task.baseBranch}).`,
+            reason,
+            detail
+          );
+        default:
+          throw new WorkspacePrepareError(
+            "Ask workspace setup failed while cloning the repository. See task logs for git error details.",
+            reason,
+            detail
+          );
+      }
+    }
+
+    const startRef = await this.gitCommandCapture(["-C", askWorkspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
+    return {
+      workspacePath: askWorkspacePath,
+      hostWorkspacePath: this.resolveAskWorkspaceHostPath(task.id, executionId),
+      startRef,
+      workspaceBaseRef: task.workspaceBaseRef ?? startRef,
+      kind: WORKSPACE_KIND,
       // Keep ask-run workspaces on disk so file links in history remain previewable after the run finishes.
       ephemeral: false,
       cleanupRepoPath: null
@@ -2133,15 +2425,6 @@ export class SpawnerService {
     if (!workspace?.ephemeral) {
       return;
     }
-
-    if (workspace.cleanupRepoPath) {
-      await this.gitCommand(
-        ["-C", workspace.cleanupRepoPath, "worktree", "remove", "--force", workspace.workspacePath],
-        githubToken,
-        gitUsername
-      ).catch(() => undefined);
-    }
-
     await rm(workspace.workspacePath, { recursive: true, force: true }).catch(() => undefined);
   }
 
@@ -3713,22 +3996,49 @@ export class SpawnerService {
     }
 
     const action: TaskAction = workingTask.taskType === "ask" ? "ask" : "build";
-    const { workspace } = await this.withFreshManagedRepo(
-      workingTask,
-      runtimeCredentials.githubToken,
-      runtimeCredentials.gitUsername,
-      "workspace_prepare",
-      async (managedRepoPath) => ({
-        workspace: await this.prepareWorkspace(
-          workingTask,
-          action,
-          branchName,
-          managedRepoPath,
-          runtimeCredentials.githubToken,
-          runtimeCredentials.gitUsername
-        )
-      })
-    );
+    this.emitWorkspacePrepareEvent("workspace_prepare_started", {
+      taskId: workingTask.id,
+      taskType: workingTask.taskType,
+      workspaceKind: WORKSPACE_KIND,
+      mode: settings.workspaceProvisioningMode
+    });
+    let workspace: WorkspacePreparation;
+    try {
+      const prepared = await this.withFreshManagedRepo(
+        workingTask,
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername,
+        "workspace_prepare",
+        async (managedRepoPath) => ({
+          workspace: await this.prepareWorkspace(
+            workingTask,
+            action,
+            branchName,
+            managedRepoPath,
+            settings.workspaceProvisioningMode,
+            runtimeCredentials.githubToken,
+            runtimeCredentials.gitUsername
+          )
+        })
+      );
+      workspace = prepared.workspace;
+      this.emitWorkspacePrepareEvent("workspace_prepare_succeeded", {
+        taskId: workingTask.id,
+        taskType: workingTask.taskType,
+        workspaceKind: WORKSPACE_KIND,
+        mode: settings.workspaceProvisioningMode
+      });
+    } catch (error) {
+      const reason = error instanceof WorkspacePrepareError ? error.reason : this.classifyWorkspacePrepareFailure(error);
+      this.emitWorkspacePrepareEvent("workspace_prepare_failed", {
+        taskId: workingTask.id,
+        taskType: workingTask.taskType,
+        workspaceKind: WORKSPACE_KIND,
+        failureReason: reason,
+        mode: settings.workspaceProvisioningMode
+      });
+      throw error;
+    }
 
     let nextTask = (await this.taskStore.getTask(workingTask.id)) ?? workingTask;
     if (action === "build" && !nextTask.workspaceBaseRef) {
@@ -3829,7 +4139,7 @@ export class SpawnerService {
         hostWorkspacePath,
         startRef: checkpointRef,
         workspaceBaseRef: task.workspaceBaseRef ?? checkpointRef,
-        kind: "worktree",
+        kind: WORKSPACE_KIND,
         ephemeral: false,
         cleanupRepoPath: null
       };
@@ -3983,38 +4293,68 @@ export class SpawnerService {
       this.ensureTaskNotCancelled(task.id);
       const repoCachePath = this.resolveRepoCachePath(task);
       await appendRunLog("Spawner: preparing managed repository and workspace.");
-      const { repoProfile, workspace: preparedWorkspace } = await this.withFreshManagedRepo(
-        task,
-        runtimeCredentials.githubToken,
-        runtimeCredentials.gitUsername,
-        action === "ask" ? "ask" : "run",
-        async (managedRepoPath) => ({
-          repoProfile: await this.ensureRepoProfile(
-            task,
-            managedRepoPath,
-            runtimeCredentials.githubToken,
-            runtimeCredentials.gitUsername
-          ),
-          workspace:
-            action === "ask"
-              ? await this.prepareAskWorkspace(
-                  task,
-                  branchName,
-                  managedRepoPath,
-                  executionId,
-                  runtimeCredentials.githubToken,
-                  runtimeCredentials.gitUsername
-                )
-              : await this.prepareWorkspace(
-                  task,
-                  action,
-                  branchName,
-                  managedRepoPath,
-                  runtimeCredentials.githubToken,
-                  runtimeCredentials.gitUsername
-                )
-        })
-      );
+      this.emitWorkspacePrepareEvent("workspace_prepare_started", {
+        taskId: task.id,
+        taskType: task.taskType,
+        workspaceKind: WORKSPACE_KIND,
+        mode: settings.workspaceProvisioningMode
+      });
+      let repoProfile: string;
+      let preparedWorkspace: WorkspacePreparation;
+      try {
+        const prepared = await this.withFreshManagedRepo(
+          task,
+          runtimeCredentials.githubToken,
+          runtimeCredentials.gitUsername,
+          action === "ask" ? "ask" : "run",
+          async (managedRepoPath) => ({
+            repoProfile: await this.ensureRepoProfile(
+              task,
+              managedRepoPath,
+              runtimeCredentials.githubToken,
+              runtimeCredentials.gitUsername
+            ),
+            workspace:
+              action === "ask"
+                ? await this.prepareAskWorkspace(
+                    task,
+                    branchName,
+                    managedRepoPath,
+                    executionId,
+                    settings.workspaceProvisioningMode,
+                    runtimeCredentials.githubToken,
+                    runtimeCredentials.gitUsername
+                  )
+                : await this.prepareWorkspace(
+                    task,
+                    action,
+                    branchName,
+                    managedRepoPath,
+                    settings.workspaceProvisioningMode,
+                    runtimeCredentials.githubToken,
+                    runtimeCredentials.gitUsername
+                  )
+          })
+        );
+        repoProfile = prepared.repoProfile;
+        preparedWorkspace = prepared.workspace;
+        this.emitWorkspacePrepareEvent("workspace_prepare_succeeded", {
+          taskId: task.id,
+          taskType: task.taskType,
+          workspaceKind: WORKSPACE_KIND,
+          mode: settings.workspaceProvisioningMode
+        });
+      } catch (error) {
+        const reason = error instanceof WorkspacePrepareError ? error.reason : this.classifyWorkspacePrepareFailure(error);
+        this.emitWorkspacePrepareEvent("workspace_prepare_failed", {
+          taskId: task.id,
+          taskType: task.taskType,
+          workspaceKind: WORKSPACE_KIND,
+          failureReason: reason,
+          mode: settings.workspaceProvisioningMode
+        });
+        throw error;
+      }
       workspace = preparedWorkspace;
       this.ensureTaskNotCancelled(task.id);
       if (action === "build" && !task.workspaceBaseRef) {

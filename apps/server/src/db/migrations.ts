@@ -88,6 +88,7 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         default_provider text NOT NULL,
         max_agents integer NOT NULL,
         branch_prefix text NOT NULL,
+        workspace_provisioning_mode text NOT NULL DEFAULT 'clone_only',
         git_username text NOT NULL,
         mcp_servers jsonb NOT NULL,
         openai_base_url text NULL,
@@ -288,6 +289,13 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
 
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS github_automations jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260524_01_workspace_provisioning_mode",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS workspace_provisioning_mode text NOT NULL DEFAULT 'clone_only';
     `
   },
   {

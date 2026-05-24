@@ -492,6 +492,7 @@ const main = async (): Promise<void> => {
               default_provider,
               max_agents,
               branch_prefix,
+              workspace_provisioning_mode,
               git_username,
               mcp_servers,
               openai_base_url,
@@ -501,12 +502,13 @@ const main = async (): Promise<void> => {
               claude_default_effort,
               response_preference_presets
             )
-            VALUES (1, $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11::jsonb)
+            VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb)
           `,
           [
             trimString(settings.defaultProvider) ?? "codex",
             typeof settings.maxAgents === "number" ? settings.maxAgents : 2,
             trimString(settings.branchPrefix) ?? "agentswarm",
+            trimString((settings as { workspaceProvisioningMode?: string }).workspaceProvisioningMode) ?? "clone_only",
             trimString(settings.gitUsername) ?? "x-access-token",
             JSON.stringify(Array.isArray(settings.mcpServers) ? settings.mcpServers : []),
             trimString(settings.openaiBaseUrl),

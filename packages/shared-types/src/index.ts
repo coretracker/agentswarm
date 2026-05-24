@@ -663,6 +663,7 @@ export interface GitHubBranchReference {
 }
 
 export type DataStoreBackend = "redis" | "postgres";
+export type WorkspaceProvisioningMode = "clone_only" | "hybrid";
 
 export interface SystemDataStores {
   taskStore: DataStoreBackend;
@@ -682,6 +683,7 @@ export interface SystemSettings {
   defaultProvider: AgentProvider;
   maxAgents: number;
   branchPrefix: string;
+  workspaceProvisioningMode: WorkspaceProvisioningMode;
   gitUsername: string;
   mcpServers: McpServerConfig[];
   openaiBaseUrl: string | null;
@@ -1045,6 +1047,7 @@ export interface UpdateSettingsInput {
   defaultProvider?: AgentProvider;
   maxAgents?: number;
   branchPrefix?: string;
+  workspaceProvisioningMode?: WorkspaceProvisioningMode;
   gitUsername?: string;
   mcpServers?: McpServerConfig[];
   openaiBaseUrl?: string | null;

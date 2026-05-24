@@ -8,6 +8,7 @@ import type {
   SystemDataStores,
   McpServerConfig,
   ProviderProfile,
+  WorkspaceProvisioningMode,
   ResponsePreferencePreset,
   ResponsePreferencePresetInput,
   SystemSettings,
@@ -59,6 +60,7 @@ const defaultSettings: SystemSettings = {
   defaultProvider: DEFAULT_PROVIDER,
   maxAgents: 2,
   branchPrefix: "agentswarm",
+  workspaceProvisioningMode: "clone_only",
   gitUsername: "x-access-token",
   mcpServers: [],
   openaiBaseUrl: null,
@@ -91,6 +93,9 @@ const normalizeGitUsername = (value: string | undefined): string => {
 
 const normalizeDefaultProvider = (value: AgentProvider | string | undefined): AgentProvider =>
   normalizeProvider(value ?? defaultSettings.defaultProvider);
+
+const normalizeWorkspaceProvisioningMode = (value: WorkspaceProvisioningMode | string | undefined): WorkspaceProvisioningMode =>
+  value === "hybrid" ? "hybrid" : "clone_only";
 
 const normalizeMcpServerName = (value: string | undefined): string =>
   (value ?? "")
@@ -281,6 +286,7 @@ export class RedisSettingsStore implements SettingsStore {
         defaultProvider: defaultSettings.defaultProvider,
         maxAgents: defaultSettings.maxAgents,
         branchPrefix: defaultSettings.branchPrefix,
+        workspaceProvisioningMode: defaultSettings.workspaceProvisioningMode,
         gitUsername: defaultSettings.gitUsername,
         mcpServers: defaultSettings.mcpServers,
         openaiBaseUrl: defaultSettings.openaiBaseUrl,
@@ -298,6 +304,7 @@ export class RedisSettingsStore implements SettingsStore {
       defaultProvider: normalizeDefaultProvider(parsed.defaultProvider),
       maxAgents: parsed.maxAgents ?? defaultSettings.maxAgents,
       branchPrefix: normalizeBranchPrefix(parsed.branchPrefix),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(parsed.workspaceProvisioningMode),
       gitUsername: normalizeGitUsername(parsed.gitUsername),
       mcpServers: normalizeMcpServers(parsed.mcpServers),
       openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null,
@@ -314,6 +321,7 @@ export class RedisSettingsStore implements SettingsStore {
       parsed.defaultProvider !== normalizedBase.defaultProvider ||
       parsed.maxAgents !== normalizedBase.maxAgents ||
       parsed.branchPrefix !== normalizedBase.branchPrefix ||
+      parsed.workspaceProvisioningMode !== normalizedBase.workspaceProvisioningMode ||
       parsed.gitUsername !== normalizedBase.gitUsername ||
       JSON.stringify(parsed.mcpServers ?? []) !== JSON.stringify(normalizedBase.mcpServers) ||
       (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl ||
@@ -336,6 +344,9 @@ export class RedisSettingsStore implements SettingsStore {
       defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
       maxAgents: input.maxAgents ?? current.maxAgents,
       branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
+        input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
+      ),
       gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
       mcpServers:
         input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
@@ -432,6 +443,7 @@ export class PostgresSettingsStore implements SettingsStore {
           default_provider,
           max_agents,
           branch_prefix,
+          workspace_provisioning_mode,
           git_username,
           mcp_servers,
           openai_base_url,
@@ -441,13 +453,14 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
         defaultSettings.defaultProvider,
         defaultSettings.maxAgents,
         defaultSettings.branchPrefix,
+        defaultSettings.workspaceProvisioningMode,
         defaultSettings.gitUsername,
         JSON.stringify(defaultSettings.mcpServers),
         defaultSettings.openaiBaseUrl,
@@ -468,6 +481,7 @@ export class PostgresSettingsStore implements SettingsStore {
           default_provider,
           max_agents,
           branch_prefix,
+          workspace_provisioning_mode,
           git_username,
           mcp_servers,
           openai_base_url,
@@ -485,6 +499,7 @@ export class PostgresSettingsStore implements SettingsStore {
       defaultProvider: normalizeDefaultProvider(row?.default_provider),
       maxAgents: typeof row?.max_agents === "number" ? row.max_agents : defaultSettings.maxAgents,
       branchPrefix: normalizeBranchPrefix(typeof row?.branch_prefix === "string" ? row.branch_prefix : undefined),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(row?.workspace_provisioning_mode),
       gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
       mcpServers: normalizeMcpServers(Array.isArray(row?.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined),
       openaiBaseUrl: typeof row?.openai_base_url === "string" && row.openai_base_url.trim().length > 0 ? row.openai_base_url.trim() : null,
@@ -517,6 +532,9 @@ export class PostgresSettingsStore implements SettingsStore {
       defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
       maxAgents: input.maxAgents ?? current.maxAgents,
       branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
+        input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
+      ),
       gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
       mcpServers: input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
       openaiBaseUrl:
@@ -542,6 +560,7 @@ export class PostgresSettingsStore implements SettingsStore {
           default_provider,
           max_agents,
           branch_prefix,
+          workspace_provisioning_mode,
           git_username,
           mcp_servers,
           openai_base_url,
@@ -551,12 +570,13 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
           max_agents = EXCLUDED.max_agents,
           branch_prefix = EXCLUDED.branch_prefix,
+          workspace_provisioning_mode = EXCLUDED.workspace_provisioning_mode,
           git_username = EXCLUDED.git_username,
           mcp_servers = EXCLUDED.mcp_servers,
           openai_base_url = EXCLUDED.openai_base_url,
@@ -570,6 +590,7 @@ export class PostgresSettingsStore implements SettingsStore {
         nextBase.defaultProvider,
         nextBase.maxAgents,
         nextBase.branchPrefix,
+        nextBase.workspaceProvisioningMode,
         nextBase.gitUsername,
         JSON.stringify(nextBase.mcpServers),
         nextBase.openaiBaseUrl,

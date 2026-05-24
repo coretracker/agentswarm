@@ -91,6 +91,7 @@ const updateSettingsSchema = z.object({
   defaultProvider: z.enum(["codex", "claude"]).optional(),
   maxAgents: z.coerce.number().int().min(1).max(20).optional(),
   branchPrefix: z.string().trim().min(1).max(80).optional(),
+  workspaceProvisioningMode: z.enum(["clone_only", "hybrid"]).optional(),
   gitUsername: z.string().trim().min(1).max(120).optional(),
   mcpServers: z.array(mcpServerSchema).max(25).optional(),
   openaiBaseUrl: z.string().trim().url().nullable().optional(),
