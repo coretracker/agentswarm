@@ -3,13 +3,13 @@ import type Redis from "ioredis";
 import type { Pool } from "pg";
 import type {
   AgentProvider,
-  type AgentResponsePreference,
-  type AudienceType,
+  AgentResponsePreference,
+  AudienceType,
   SystemDataStores,
   McpServerConfig,
   ProviderProfile,
-  type ResponsePreferencePreset,
-  type ResponsePreferencePresetInput,
+  ResponsePreferencePreset,
+  ResponsePreferencePresetInput,
   SystemSettings,
   UserNotes,
   UpdateCredentialSettingsInput,

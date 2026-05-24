@@ -20,6 +20,7 @@ import { RedisTaskStore } from "./task-store.js";
 import type { UserStore } from "./user-store.js";
 import { RedisUserStore } from "./user-store.js";
 import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
+import { RedisGitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
 
 export const createRedisStores = (
   redisClients: RedisClients,
@@ -28,6 +29,7 @@ export const createRedisStores = (
 ): AppStores => {
   const taskStore = new RedisTaskStore(redisClients.command, eventBus);
   const taskQueueStore = new RedisTaskQueueStore(redisClients.command);
+  const githubOutboundQueueStore = new RedisGitHubOutboundQueueStore(redisClients.command);
   const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
   const snippetStore = new RedisSnippetStore(redisClients.command, eventBus);
   const repositoryStore = new RedisRepositoryStore(redisClients.command, eventBus);
@@ -40,6 +42,7 @@ export const createRedisStores = (
   return {
     taskStore,
     taskQueueStore,
+    githubOutboundQueueStore,
     webhookDeliveryStore,
     snippetStore,
     repositoryStore,

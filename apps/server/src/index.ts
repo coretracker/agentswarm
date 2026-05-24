@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { randomUUID } from "node:crypto";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import * as Sentry from "@sentry/node";
@@ -28,6 +29,21 @@ import { registerSnippetRoutes } from "./routes/snippets.js";
 import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
 
+const readHeaderValue = (value: string | string[] | undefined): string | null => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (Array.isArray(value) && value.length > 0) {
+    const first = value[0]?.trim();
+    return first && first.length > 0 ? first : null;
+  }
+  return null;
+};
+
+const getOperationIdFromHeaders = (headers: Record<string, string | string[] | undefined>): string | null =>
+  readHeaderValue(headers["x-operation-id"]) ?? readHeaderValue(headers["x-agent-operation-id"]);
+
 const bootstrap = async (): Promise<void> => {
   const sentryEnabled = env.SENTRY_ENABLED && env.SENTRY_DSN.trim().length > 0;
   if (sentryEnabled) {
@@ -37,19 +53,75 @@ const bootstrap = async (): Promise<void> => {
     });
   }
 
-  const app = Fastify({ logger: true, bodyLimit: 35 * 1024 * 1024 });
+  const app = Fastify({
+    logger: {
+      level: process.env.LOG_LEVEL ?? "info",
+      base: { service: "agentswarm-server" }
+    },
+    disableRequestLogging: true,
+    requestIdHeader: "x-request-id",
+    genReqId: (rawRequest) => readHeaderValue(rawRequest.headers["x-request-id"]) ?? randomUUID(),
+    bodyLimit: 35 * 1024 * 1024
+  });
   await app.register(cookie);
   app.decorateRequest("auth", null);
   await app.register(cors, {
     origin: env.CORS_ORIGIN,
     credentials: true
   });
+  app.addHook("onRequest", async (request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    reply.header("x-request-id", request.id);
+    if (operationId) {
+      reply.header("x-operation-id", operationId);
+    }
+    request.log.info(
+      {
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url
+      },
+      "request.started"
+    );
+  });
+  app.addHook("onResponse", async (request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    request.log.info(
+      {
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url,
+        statusCode: reply.statusCode,
+        durationMs: reply.elapsedTime
+      },
+      "request.completed"
+    );
+  });
+  app.log.info(
+    {
+      event: "startup.config",
+      port: env.PORT,
+      corsOrigin: env.CORS_ORIGIN,
+      storeBackends: env.STORE_BACKENDS,
+      postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
+      sentryEnabled,
+      taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
+      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
+    },
+    "Server configuration loaded"
+  );
 
   const redisClients = createRedisClients(env.REDIS_URL);
   const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
   const postgresPool = usesPostgresBackends(env.STORE_BACKENDS) ? createPostgresPool(env.DATABASE_URL) : null;
   if (postgresPool && env.POSTGRES_AUTO_MIGRATE) {
+    app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
     await runPostgresMigrations(postgresPool);
+    app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
+  } else if (postgresPool) {
+    app.log.info({ event: "startup.migrations", mode: "manual" }, "Skipping auto-migrations");
   }
 
   const {
@@ -112,20 +184,33 @@ const bootstrap = async (): Promise<void> => {
 
   app.get("/health", async () => ({ ok: true }));
 
-  if (sentryEnabled) {
-    app.setErrorHandler((error, request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    request.log.error(
+      {
+        err: error,
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url
+      },
+      "request.failed"
+    );
+    if (sentryEnabled) {
       Sentry.captureException(error, {
         tags: {
           route: request.routeOptions.url
         },
         extra: {
+          requestId: request.id,
+          operationId,
           method: request.method,
           url: request.url
         }
       });
-      void reply.send(error);
-    });
-  }
+    }
+    void reply.send(error);
+  });
 
   await app.ready();
   attachTaskInteractiveTerminalUpgrade(app.server, {
@@ -166,7 +251,12 @@ const bootstrap = async (): Promise<void> => {
   githubOutboundService.start();
   await scheduler.bootstrap();
 
+  let closeStarted = false;
   const close = async (): Promise<void> => {
+    if (closeStarted) {
+      return;
+    }
+    closeStarted = true;
     scheduler.stop();
     webhookDeliveryService.stop();
     githubOutboundService.stop();
@@ -184,26 +274,53 @@ const bootstrap = async (): Promise<void> => {
   };
 
   process.on("SIGINT", () => {
+    app.log.warn({ signal: "SIGINT" }, "Shutdown signal received");
     void close();
   });
   process.on("SIGTERM", () => {
+    app.log.warn({ signal: "SIGTERM" }, "Shutdown signal received");
     void close();
   });
 
-  if (sentryEnabled) {
-    process.on("uncaughtException", (error) => {
+  process.on("uncaughtException", (error) => {
+    app.log.fatal({ err: error }, "Unhandled exception");
+    if (sentryEnabled) {
       Sentry.captureException(error);
-    });
-    process.on("unhandledRejection", (reason) => {
+    }
+    void close().finally(() => process.exit(1));
+  });
+  process.on("unhandledRejection", (reason) => {
+    app.log.fatal({ reason }, "Unhandled promise rejection");
+    if (sentryEnabled) {
       Sentry.captureException(reason);
-    });
-  }
+    }
+    void close().finally(() => process.exit(1));
+  });
 
-  await app.listen({ port: env.PORT, host: "0.0.0.0" });
+  const listenAddress = await app.listen({ port: env.PORT, host: "0.0.0.0" });
+  app.log.info(
+    {
+      event: "startup.ready",
+      listenAddress,
+      healthPath: "/health",
+      proxyHealthPath: "/api/health"
+    },
+    "Server started"
+  );
 };
 
 void bootstrap().catch((error) => {
   // Startup errors should stop the process so Docker restart policies can react.
-  console.error(error);
+  const errorForLog =
+    error instanceof Error
+      ? { name: error.name, message: error.message, stack: error.stack }
+      : { message: String(error) };
+  console.error(
+    JSON.stringify({
+      level: "fatal",
+      event: "startup.bootstrap_failed",
+      error: errorForLog
+    })
+  );
   process.exit(1);
 });

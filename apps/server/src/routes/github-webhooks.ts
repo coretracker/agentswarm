@@ -387,7 +387,8 @@ export const registerGitHubWebhookRoutes = (
       if (!triggerType) {
         return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
       }
-      const reactionContent = githubEvent === "reaction" ? String(payload.content ?? "").trim().toLowerCase() : null;
+      const reactionContent =
+        githubEvent === "reaction" ? String((payload as GitHubReactionPayload).content ?? "").trim().toLowerCase() : null;
 
       const issueNumber =
         githubEvent === "pull_request_review_comment"

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
+import type { CreateRepositoryInput, GitHubAutomationRule, UpdateRepositoryInput } from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import { sendHttpError } from "../lib/http-error.js";
 import { canUserAccessRepository } from "../lib/task-ownership.js";
@@ -98,6 +99,49 @@ const updateRepositorySchema = createRepositorySchema.partial().extend({
   clearGithubWebhookSecret: z.boolean().optional()
 });
 
+type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;
+type ParsedRepositoryUpdateInput = z.infer<typeof updateRepositorySchema>;
+type ParsedGitHubAutomationRule = NonNullable<ParsedRepositoryInput["githubAutomations"]>[number];
+
+const nowIso = (): string => new Date().toISOString();
+
+const toGitHubAutomationRule = (rule: ParsedGitHubAutomationRule, now: string): GitHubAutomationRule => ({
+  id: rule.id,
+  name: rule.name,
+  enabled: rule.enabled ?? true,
+  trigger: rule.trigger,
+  syncStatusEnabled: rule.syncStatusEnabled,
+  automationEnabled: rule.automationEnabled,
+  allowedTriggers: rule.allowedTriggers,
+  allowedReactions: rule.allowedReactions,
+  allowedCommands: rule.allowedCommands,
+  allowedActorLogins: rule.allowedActorLogins,
+  labelFilter: rule.labelFilter,
+  task: rule.task,
+  createdAt: now,
+  updatedAt: now
+});
+
+const normalizeGitHubAutomations = (
+  rules: ParsedRepositoryInput["githubAutomations"] | ParsedRepositoryUpdateInput["githubAutomations"]
+): GitHubAutomationRule[] | undefined => {
+  if (!rules) {
+    return undefined;
+  }
+  const now = nowIso();
+  return rules.map((rule) => toGitHubAutomationRule(rule, now));
+};
+
+const toCreateRepositoryInput = (input: ParsedRepositoryInput): CreateRepositoryInput => ({
+  ...input,
+  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
+});
+
+const toUpdateRepositoryInput = (input: ParsedRepositoryUpdateInput): UpdateRepositoryInput => ({
+  ...input,
+  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
+});
+
 export const registerRepositoryRoutes = (
   app: FastifyInstance,
   deps: {
@@ -118,7 +162,8 @@ export const registerRepositoryRoutes = (
     }
 
     try {
-      const repository = await deps.repositoryStore.createRepository(parsed.data);
+      const createInput: CreateRepositoryInput = toCreateRepositoryInput(parsed.data);
+      const repository = await deps.repositoryStore.createRepository(createInput);
       const authUser = request.auth?.user;
       if (authUser) {
         const creator = await deps.userStore.getUser(authUser.id);
@@ -159,7 +204,8 @@ export const registerRepositoryRoutes = (
         return reply.status(404).send({ message: "Repository not found" });
       }
 
-      const updated = await deps.repositoryStore.updateRepository(request.params.id, parsed.data);
+      const updateInput: UpdateRepositoryInput = toUpdateRepositoryInput(parsed.data);
+      const updated = await deps.repositoryStore.updateRepository(request.params.id, updateInput);
       if (!updated) {
         return reply.status(404).send({ message: "Repository not found" });
       }

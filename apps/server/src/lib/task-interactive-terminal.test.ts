@@ -30,7 +30,7 @@ describe("buildGitTerminalStartScript", () => {
 
     assert.equal(result.status, 0, result.stderr || "expected sh -n to accept git terminal shell wrapper");
     assert.match(shellScript, /exec \/bin\/bash --noprofile --norc --restricted -i/);
-    assert.match(dockerfile, /\bapk add --no-cache bash git vim diffutils ca-certificates\b/);
+    assert.match(dockerfile, /\bapk add --no-cache bash git vim( neovim)? diffutils ca-certificates\b/);
   });
 });
 
