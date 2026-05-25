@@ -1170,22 +1170,6 @@ export class SpawnerService {
     return path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
   }
 
-  private resolveAskWorkspaceRoot(taskId: string): string {
-    return path.join(env.TASK_WORKSPACE_ROOT, ".ask-runs", taskId);
-  }
-
-  private resolveAskWorkspaceHostRoot(taskId: string): string {
-    return path.join(env.TASK_WORKSPACE_HOST_ROOT, ".ask-runs", taskId);
-  }
-
-  private resolveAskWorkspacePath(taskId: string, executionId: string): string {
-    return path.join(this.resolveAskWorkspaceRoot(taskId), executionId);
-  }
-
-  private resolveAskWorkspaceHostPath(taskId: string, executionId: string): string {
-    return path.join(this.resolveAskWorkspaceHostRoot(taskId), executionId);
-  }
-
   private registerActiveExecution(
     taskId: string,
     executionId: string,
@@ -1390,9 +1374,9 @@ export class SpawnerService {
 
   async listTaskWorkspaceFiles(
     task: Task,
-    options?: { executionId?: string | null; prefix?: string | null; limit?: number }
+    options?: { prefix?: string | null; limit?: number }
   ): Promise<TaskWorkspaceFileTree> {
-    const workspacePath = options?.executionId ? this.resolveAskWorkspacePath(task.id, options.executionId) : this.resolveWorkspacePath(task.id);
+    const workspacePath = this.resolveWorkspacePath(task.id);
     const safeLimit = Number.isFinite(options?.limit)
       ? Math.max(1, Math.min(WORKSPACE_FILE_TREE_MAX_LIMIT, Math.floor(options?.limit ?? WORKSPACE_FILE_TREE_DEFAULT_LIMIT)))
       : WORKSPACE_FILE_TREE_DEFAULT_LIMIT;
@@ -1481,9 +1465,9 @@ export class SpawnerService {
 
   async searchTaskWorkspaceFiles(
     task: Task,
-    options: { query: string; executionId?: string | null; limit?: number }
+    options: { query: string; limit?: number }
   ): Promise<TaskWorkspaceFileSearchResult> {
-    const workspacePath = options.executionId ? this.resolveAskWorkspacePath(task.id, options.executionId) : this.resolveWorkspacePath(task.id);
+    const workspacePath = this.resolveWorkspacePath(task.id);
     const query = options.query.trim().toLowerCase();
     const safeLimit = Number.isFinite(options.limit)
       ? Math.max(1, Math.min(WORKSPACE_FILE_SEARCH_MAX_LIMIT, Math.floor(options.limit ?? WORKSPACE_FILE_SEARCH_DEFAULT_LIMIT)))
@@ -1579,10 +1563,9 @@ export class SpawnerService {
   async getTaskWorkspaceFilePreview(
     task: Task,
     filePath: string,
-    ref?: string | null,
-    executionId?: string | null
+    ref?: string | null
   ): Promise<TaskWorkspaceFilePreview | null> {
-    const workspacePath = executionId ? this.resolveAskWorkspacePath(task.id, executionId) : this.resolveWorkspacePath(task.id);
+    const workspacePath = this.resolveWorkspacePath(task.id);
     const relativePath = normalizeSafeWorkspaceRelativePath(filePath);
     if (!relativePath) {
       return null;
@@ -2232,46 +2215,6 @@ export class SpawnerService {
     };
   }
 
-  private async prepareAskWorkspaceLegacyWorktree(
-    task: Task,
-    branchName: string,
-    repoCachePath: string,
-    executionId: string,
-    githubToken?: string | null,
-    gitUsername = "x-access-token"
-  ): Promise<WorkspacePreparation> {
-    const askWorkspacePath = this.resolveAskWorkspacePath(task.id, executionId);
-    const taskWorkspacePath = this.resolveWorkspacePath(task.id);
-    const taskWorkspaceExists = await access(taskWorkspacePath)
-      .then(() => true)
-      .catch(() => false);
-
-    const sourceRepoPath = taskWorkspaceExists ? taskWorkspacePath : repoCachePath;
-    const startPoint = taskWorkspaceExists
-      ? "HEAD"
-      : (await this.refExists(repoCachePath, `origin/${branchName}`, githubToken, gitUsername))
-        ? `origin/${branchName}`
-        : `origin/${task.baseBranch}`;
-
-    await rm(askWorkspacePath, { recursive: true, force: true });
-    await mkdir(path.dirname(askWorkspacePath), { recursive: true });
-    await this.gitCommand(["-C", sourceRepoPath, "worktree", "prune"], githubToken, gitUsername).catch(() => undefined);
-    await this.gitCommand(["-C", sourceRepoPath, "worktree", "add", "--detach", askWorkspacePath, startPoint], githubToken, gitUsername);
-
-    const startRef = await this.gitCommandCapture(["-C", askWorkspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
-    return {
-      workspacePath: askWorkspacePath,
-      hostWorkspacePath: this.resolveAskWorkspaceHostPath(task.id, executionId),
-      startRef,
-      workspaceBaseRef: task.workspaceBaseRef ?? startRef,
-      // Keep metadata normalized for downstream analytics/UI.
-      kind: WORKSPACE_KIND,
-      // Keep ask-run workspaces on disk so file links in history remain previewable after the run finishes.
-      ephemeral: false,
-      cleanupRepoPath: null
-    };
-  }
-
   private async prepareWorkspace(
     task: Task,
     _action: TaskAction,
@@ -2335,83 +2278,30 @@ export class SpawnerService {
     };
   }
 
-  private async prepareAskWorkspace(
+  private async prepareAskRunWorkspace(
     task: Task,
     branchName: string,
     repoCachePath: string,
-    executionId: string,
     provisioningMode: "clone_only" | "hybrid",
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<WorkspacePreparation> {
-    const askWorkspacePath = this.resolveAskWorkspacePath(task.id, executionId);
     const taskWorkspacePath = this.resolveWorkspacePath(task.id);
     const taskWorkspaceExists = await access(taskWorkspacePath)
       .then(() => true)
       .catch(() => false);
 
-    const sourceRepoPath = taskWorkspaceExists ? taskWorkspacePath : repoCachePath;
-    try {
-      await this.cloneWorkspaceFromSource(sourceRepoPath, task.repoUrl, askWorkspacePath, githubToken, gitUsername);
-
-      if (taskWorkspaceExists) {
-        await this.gitCommand(["-C", askWorkspacePath, "checkout", "--detach", "HEAD"], githubToken, gitUsername);
-      } else {
-        await this.checkoutTaskWorkspaceBranch(task, askWorkspacePath, branchName, githubToken, gitUsername);
-        await this.gitCommand(["-C", askWorkspacePath, "checkout", "--detach", "HEAD"], githubToken, gitUsername);
-      }
-    } catch (error) {
-      const reason = this.classifyWorkspacePrepareFailure(error);
-      const detail = error instanceof Error ? error.message : String(error);
-      if (provisioningMode === "hybrid" && (reason === "clone_error" || reason === "unknown")) {
-        return this.prepareAskWorkspaceLegacyWorktree(
-          task,
-          branchName,
-          repoCachePath,
-          executionId,
-          githubToken,
-          gitUsername
-        );
-      }
-      if (error instanceof WorkspacePrepareError) {
-        throw error;
-      }
-      switch (reason) {
-        case "auth":
-          throw new WorkspacePrepareError(
-            "Ask workspace setup failed: repository access was denied. Check GitHub token permissions for this repository.",
-            reason,
-            detail
-          );
-        case "network":
-          throw new WorkspacePrepareError(
-            "Ask workspace setup failed: could not reach the Git remote. Check network/DNS connectivity and retry.",
-            reason,
-            detail
-          );
-        case "branch_missing":
-          throw new WorkspacePrepareError(
-            `Ask workspace setup failed: expected branch refs were not found on origin (base branch: ${task.baseBranch}).`,
-            reason,
-            detail
-          );
-        default:
-          throw new WorkspacePrepareError(
-            "Ask workspace setup failed while cloning the repository. See task logs for git error details.",
-            reason,
-            detail
-          );
-      }
+    if (!taskWorkspaceExists) {
+      return this.prepareWorkspace(task, "ask", branchName, repoCachePath, provisioningMode, githubToken, gitUsername);
     }
 
-    const startRef = await this.gitCommandCapture(["-C", askWorkspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
+    const startRef = await this.gitCommandCapture(["-C", taskWorkspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
     return {
-      workspacePath: askWorkspacePath,
-      hostWorkspacePath: this.resolveAskWorkspaceHostPath(task.id, executionId),
+      workspacePath: taskWorkspacePath,
+      hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
       startRef,
       workspaceBaseRef: task.workspaceBaseRef ?? startRef,
       kind: WORKSPACE_KIND,
-      // Keep ask-run workspaces on disk so file links in history remain previewable after the run finishes.
       ephemeral: false,
       cleanupRepoPath: null
     };
@@ -3586,13 +3476,11 @@ export class SpawnerService {
   async cleanupTaskArtifacts(task: Task): Promise<void> {
     const payloadDir = this.resolveRuntimePayloadDir(task.id);
     const workspacePath = this.resolveWorkspacePath(task.id);
-    const askWorkspaceRoot = this.resolveAskWorkspaceRoot(task.id);
     const promptAttachmentRoot = resolveTaskPromptAttachmentRoot(task.id);
     const taskStateRootPath = resolveTaskStateRootPaths(task.id).serverPath;
     const legacyCodexStatePath = resolveTaskProviderStatePaths(task.id, "codex").legacyServerPath;
     const legacyClaudeStatePath = resolveTaskProviderStatePaths(task.id, "claude").legacyServerPath;
     await rm(payloadDir, { recursive: true, force: true });
-    await rm(askWorkspaceRoot, { recursive: true, force: true }).catch(() => undefined);
     await rm(promptAttachmentRoot, { recursive: true, force: true }).catch(() => undefined);
     const repoCachePath = this.resolveRepoCachePath(task);
     await this.withRepoLock(repoCachePath, async () => {
@@ -4316,11 +4204,10 @@ export class SpawnerService {
             ),
             workspace:
               action === "ask"
-                ? await this.prepareAskWorkspace(
+                ? await this.prepareAskRunWorkspace(
                     task,
                     branchName,
                     managedRepoPath,
-                    executionId,
                     settings.workspaceProvisioningMode,
                     runtimeCredentials.githubToken,
                     runtimeCredentials.gitUsername

@@ -230,7 +230,6 @@ interface WorkspaceFilePreviewState {
   open: boolean;
   loading: boolean;
   taskId: string;
-  executionId: string | null;
   filePath: string;
   kind: TaskWorkspaceFilePreview["kind"];
   mimeType: string | null;
@@ -844,7 +843,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     open: false,
     loading: false,
     taskId: "",
-    executionId: null,
     filePath: "",
     kind: "text",
     mimeType: null,
@@ -2435,7 +2433,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       open: true,
       loading: true,
       taskId: target.taskId,
-      executionId: target.executionId,
       filePath: target.filePath,
       kind: "text",
       mimeType: null,
@@ -2447,7 +2444,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     });
 
     void api
-      .getTaskWorkspaceFile(target.taskId, target.filePath, { executionId: target.executionId })
+      .getTaskWorkspaceFile(target.taskId, target.filePath)
       .then((result: TaskWorkspaceFilePreview) => {
         if (workspaceFilePreviewRequestIdRef.current !== requestId) {
           return;

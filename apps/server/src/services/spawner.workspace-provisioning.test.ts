@@ -110,37 +110,42 @@ describe("SpawnerService workspace provisioning", () => {
     assert.deepEqual(workspace, fallbackWorkspace);
   });
 
-  it("prepares ask workspace from task workspace clone when available", async () => {
+  it("reuses the existing task workspace for ask runs", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
     const root = await mkdtemp(path.join(tmpdir(), "agentswarm-ask-"));
     const taskWorkspacePath = path.join(root, "task-workspace");
-    const askWorkspacePath = path.join(root, "ask-run");
     const task = createTask();
     await mkdir(taskWorkspacePath, { recursive: true });
 
-    const gitCalls: string[][] = [];
-    let cloneSourcePath = "";
     spawnerAny.resolveWorkspacePath = () => taskWorkspacePath;
-    spawnerAny.resolveAskWorkspacePath = () => askWorkspacePath;
-    spawnerAny.resolveAskWorkspaceHostPath = () => askWorkspacePath;
-    spawnerAny.cloneWorkspaceFromSource = async (sourcePath: string) => {
-      cloneSourcePath = sourcePath;
-      await mkdir(askWorkspacePath, { recursive: true });
-    };
-    spawnerAny.gitCommand = async (args: string[]) => {
-      gitCalls.push(args);
-    };
     spawnerAny.gitCommandCapture = async () => "deadbeef";
 
-    const workspace = await spawnerAny.prepareAskWorkspace(task, "feature/task-1", "/repo-cache/path", "run-1", "clone_only");
-    assert.equal(cloneSourcePath, taskWorkspacePath);
-    assert.equal(
-      gitCalls.some((args) => args.join(" ").includes(`-C ${askWorkspacePath} checkout --detach HEAD`)),
-      true
-    );
-    assert.equal(workspace.workspacePath, askWorkspacePath);
+    const workspace = await spawnerAny.prepareAskRunWorkspace(task, "feature/task-1", "/repo-cache/path", "clone_only");
+    assert.equal(workspace.workspacePath, taskWorkspacePath);
+    assert.equal(workspace.hostWorkspacePath, taskWorkspacePath);
     assert.equal(workspace.kind, "clone");
+  });
+
+  it("prepares the task workspace for ask runs when missing", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const task = createTask();
+    const preparedWorkspace = {
+      workspacePath: "/tmp/task-workspace",
+      hostWorkspacePath: "/tmp/task-workspace",
+      startRef: "start",
+      workspaceBaseRef: "start",
+      kind: "clone",
+      ephemeral: false,
+      cleanupRepoPath: null
+    };
+
+    spawnerAny.resolveWorkspacePath = () => "/tmp/task-workspace";
+    spawnerAny.prepareWorkspace = async () => preparedWorkspace;
+
+    const workspace = await spawnerAny.prepareAskRunWorkspace(task, "feature/task-1", "/repo-cache/path", "clone_only");
+    assert.deepEqual(workspace, preparedWorkspace);
   });
 
   it("cleans up ephemeral clone workspace directory", async () => {

@@ -265,12 +265,8 @@ export const api = {
     const query = params.toString();
     return request<TaskWorkspaceCommitLog>(`/tasks/${id}/workspace-commit-log${query ? `?${query}` : ""}`);
   },
-  getTaskWorkspaceFiles: (id: string, options?: { executionId?: string | null; prefix?: string | null; limit?: number }) => {
+  getTaskWorkspaceFiles: (id: string, options?: { prefix?: string | null; limit?: number }) => {
     const params = new URLSearchParams();
-    const executionId = options?.executionId?.trim();
-    if (executionId) {
-      params.set("executionId", executionId);
-    }
     const prefix = options?.prefix?.trim();
     if (prefix) {
       params.set("prefix", prefix);
@@ -281,26 +277,18 @@ export const api = {
     const query = params.toString();
     return request<TaskWorkspaceFileTree>(`/tasks/${id}/workspace-files${query ? `?${query}` : ""}`);
   },
-  searchTaskWorkspaceFiles: (id: string, options: { query: string; executionId?: string | null; limit?: number }) => {
+  searchTaskWorkspaceFiles: (id: string, options: { query: string; limit?: number }) => {
     const params = new URLSearchParams({ q: options.query });
-    const executionId = options.executionId?.trim();
-    if (executionId) {
-      params.set("executionId", executionId);
-    }
     if (options.limit != null && Number.isFinite(options.limit)) {
       params.set("limit", String(options.limit));
     }
     return request<TaskWorkspaceFileSearchResult>(`/tasks/${id}/workspace-files/search?${params.toString()}`);
   },
-  getTaskWorkspaceFile: (id: string, filePath: string, options?: { ref?: string | null; executionId?: string | null }) => {
+  getTaskWorkspaceFile: (id: string, filePath: string, options?: { ref?: string | null }) => {
     const params = new URLSearchParams({ path: filePath });
     const ref = options?.ref?.trim();
     if (ref) {
       params.set("ref", ref);
-    }
-    const executionId = options?.executionId?.trim();
-    if (executionId) {
-      params.set("executionId", executionId);
     }
     return request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file?${params.toString()}`);
   },

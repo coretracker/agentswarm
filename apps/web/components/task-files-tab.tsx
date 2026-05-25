@@ -191,7 +191,6 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
   const [truncationNotice, setTruncationNotice] = useState<string | null>(null);
   const [treeRootLoading, setTreeRootLoading] = useState(false);
 
-  const [executionId, setExecutionId] = useState<string | null>(null);
   const [selectedFilePath, setSelectedFilePath] = useState("");
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [searchText, setSearchText] = useState("");
@@ -240,7 +239,6 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
 
       try {
         const result = await api.getTaskWorkspaceFiles(taskId, {
-          executionId,
           prefix: normalizedPrefix || null,
           limit: 1000
         });
@@ -269,11 +267,10 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
         }
       }
     },
-    [executionId, taskId]
+    [taskId]
   );
 
   useEffect(() => {
-    setExecutionId(null);
     setSelectedFilePath("");
     setSelectedLine(null);
     searchRequestIdRef.current += 1;
@@ -290,20 +287,10 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
   }, [taskId, resetTreeState]);
 
   useEffect(() => {
-    searchRequestIdRef.current += 1;
-    setSearchText("");
-    setFileSearchOptions([]);
-    setSearchLoading(false);
-    setSearchTruncated(false);
-    resetTreeState();
-  }, [executionId, resetTreeState]);
-
-  useEffect(() => {
     if (!openTarget || openTarget.taskId !== taskId) {
       return;
     }
 
-    setExecutionId(openTarget.executionId ?? null);
     setSelectedFilePath(openTarget.filePath);
     setSelectedLine(openTarget.line);
     onOpenTargetHandled?.();
@@ -334,7 +321,6 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
       void api
         .searchTaskWorkspaceFiles(taskId, {
           query,
-          executionId,
           limit: 80
         })
         .then((result) => {
@@ -362,7 +348,7 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
     return () => {
       window.clearTimeout(timer);
     };
-  }, [executionId, searchText, taskId]);
+  }, [searchText, taskId]);
 
   useEffect(() => {
     if (!active || !selectedFilePath) {
@@ -404,7 +390,7 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
     }));
 
     void api
-      .getTaskWorkspaceFile(taskId, selectedFilePath, { executionId })
+      .getTaskWorkspaceFile(taskId, selectedFilePath)
       .then((preview) => {
         if (cancelled) {
           return;
@@ -429,7 +415,7 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
     return () => {
       cancelled = true;
     };
-  }, [executionId, selectedFilePath, taskId]);
+  }, [selectedFilePath, taskId]);
 
   useEffect(() => {
     if (!selectedLine || !fileState.preview || fileState.preview.kind !== "text") {
@@ -522,21 +508,6 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
           </AutoComplete>
           {searchTruncated ? (
             <Typography.Text type="secondary">Search results truncated. Keep typing to narrow matches.</Typography.Text>
-          ) : null}
-
-          {executionId ? (
-            <Space wrap size={8}>
-              <Tag color="cyan">Execution {executionId}</Tag>
-              <Button
-                size="small"
-                onClick={() => {
-                  setExecutionId(null);
-                  setSelectedLine(null);
-                }}
-              >
-                Use Current Task Workspace
-              </Button>
-            </Space>
           ) : null}
 
           {truncationNotice ? <Alert type="info" showIcon message={truncationNotice} /> : null}
@@ -632,7 +603,7 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
               />
             ) : (
               <MonacoEditor
-                key={`${executionId ?? "workspace"}:${fileState.preview.path}`}
+                key={`workspace:${fileState.preview.path}`}
                 path={fileState.preview.path}
                 height="100%"
                 theme={darkTheme ? "vs-dark" : "vs"}

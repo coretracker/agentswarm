@@ -179,37 +179,16 @@ const workspaceFileQuerySchema = z.object({
     .min(1)
     .max(255)
     .regex(/^[A-Za-z0-9._/-]+(?:[~^][0-9]*)*$/, "Invalid git ref.")
-    .optional(),
-  executionId: z
-    .string()
-    .trim()
-    .min(1)
-    .max(255)
-    .regex(/^[A-Za-z0-9_-]+$/, "Invalid execution id.")
     .optional()
 });
 
 const workspaceFilesQuerySchema = z.object({
-  executionId: z
-    .string()
-    .trim()
-    .min(1)
-    .max(255)
-    .regex(/^[A-Za-z0-9_-]+$/, "Invalid execution id.")
-    .optional(),
   prefix: z.string().trim().min(1).max(4096).optional(),
   limit: z.coerce.number().int().min(1).max(20_000).optional()
 });
 
 const workspaceFileSearchQuerySchema = z.object({
   q: z.string().trim().min(1).max(512),
-  executionId: z
-    .string()
-    .trim()
-    .min(1)
-    .max(255)
-    .regex(/^[A-Za-z0-9_-]+$/, "Invalid execution id.")
-    .optional(),
   limit: z.coerce.number().int().min(1).max(500).optional()
 });
 
@@ -577,7 +556,7 @@ export const registerTaskRoutes = (
     }
   );
 
-  app.get<{ Params: { id: string }; Querystring: { executionId?: string; prefix?: string; limit?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { prefix?: string; limit?: string } }>(
     "/tasks/:id/workspace-files",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
     async (request, reply) => {
@@ -592,7 +571,6 @@ export const registerTaskRoutes = (
       }
 
       const listing = await deps.spawner.listTaskWorkspaceFiles(task, {
-        executionId: parsed.data.executionId ?? null,
         prefix: parsed.data.prefix ?? null,
         limit: parsed.data.limit
       });
@@ -600,7 +578,7 @@ export const registerTaskRoutes = (
     }
   );
 
-  app.get<{ Params: { id: string }; Querystring: { q?: string; executionId?: string; limit?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { q?: string; limit?: string } }>(
     "/tasks/:id/workspace-files/search",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
     async (request, reply) => {
@@ -616,14 +594,13 @@ export const registerTaskRoutes = (
 
       const result = await deps.spawner.searchTaskWorkspaceFiles(task, {
         query: parsed.data.q,
-        executionId: parsed.data.executionId ?? null,
         limit: parsed.data.limit
       });
       return reply.send(result);
     }
   );
 
-  app.get<{ Params: { id: string }; Querystring: { path: string; ref?: string; executionId?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { path: string; ref?: string } }>(
     "/tasks/:id/workspace-file",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
     async (request, reply) => {
@@ -641,8 +618,7 @@ export const registerTaskRoutes = (
         const preview = await deps.spawner.getTaskWorkspaceFilePreview(
           task,
           parsed.data.path,
-          parsed.data.ref ?? null,
-          parsed.data.executionId ?? null
+          parsed.data.ref ?? null
         );
         if (preview === null) {
           return reply.status(404).send({ message: "Workspace file not found or is outside the task workspace." });
@@ -683,7 +659,7 @@ export const registerTaskRoutes = (
         return reply.status(409).send({ message: "Close the terminal session before editing files." });
       }
 
-      const preview = await deps.spawner.getTaskWorkspaceFilePreview(task, parsed.data.path, null, null);
+      const preview = await deps.spawner.getTaskWorkspaceFilePreview(task, parsed.data.path, null);
       if (preview === null) {
         return reply.status(404).send({ message: "Workspace file not found or is outside the task workspace." });
       }
@@ -697,7 +673,7 @@ export const registerTaskRoutes = (
         return reply.status(404).send({ message: "Workspace file could not be updated." });
       }
 
-      const refreshed = await deps.spawner.getTaskWorkspaceFilePreview(task, parsed.data.path, null, null);
+      const refreshed = await deps.spawner.getTaskWorkspaceFilePreview(task, parsed.data.path, null);
       if (refreshed === null) {
         return reply.status(404).send({ message: "Workspace file could not be reloaded after saving." });
       }
