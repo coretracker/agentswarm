@@ -231,16 +231,7 @@ const buildPrompt = () => {
     promptSections.push(responsePreferencePreamble, "");
   }
   promptSections.push("Current user request:", "", rawContent);
-  const promptBody = promptSections.join("\n");
-
-  if (manifest.action === "ask") {
-    return (
-      "You are in read-only mode. Answer the user's question using only read-only operations: read files, list directories, search. Do not edit, write, or modify any files. Do not run commands that change the repository.\n\n" +
-      promptBody
-    );
-  }
-
-  return promptBody;
+  return promptSections.join("\n");
 };
 
 if (!codexAuthJson) {
