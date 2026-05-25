@@ -232,6 +232,15 @@ export class SpawnerService {
     return truncate([command, ...args].join(" "), 160);
   }
 
+  private normalizeCommandError(command: string, stderr: string, code: number | null): string {
+    const raw = (stderr || "").trim();
+    if (command === "git" && raw.includes("warning: Not a git repository. Use --no-index")) {
+      return "Task workspace is not a valid git repository. Rebuild/prep the workspace, then retry.";
+    }
+
+    return raw || `${command} exited with code ${code ?? "unknown"}`;
+  }
+
   private registerCurrentExecutionProcess(command: string, args: string[], process: ReturnType<typeof spawn>): void {
     const context = this.executionContextStorage.getStore();
     if (!context) {
@@ -285,7 +294,7 @@ export class SpawnerService {
           return;
         }
 
-        reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+        reject(new Error(this.normalizeCommandError(command, stderr, code)));
       });
     });
   }
@@ -322,7 +331,7 @@ export class SpawnerService {
           return;
         }
 
-        reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+        reject(new Error(this.normalizeCommandError(command, stderr, code)));
       });
     });
   }
@@ -359,7 +368,7 @@ export class SpawnerService {
           return;
         }
 
-        reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+        reject(new Error(this.normalizeCommandError(command, stderr, code)));
       });
     });
   }
@@ -396,7 +405,7 @@ export class SpawnerService {
           return;
         }
 
-        reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+        reject(new Error(this.normalizeCommandError(command, stderr, code)));
       });
     });
   }
@@ -438,7 +447,7 @@ export class SpawnerService {
           return;
         }
 
-        reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+        reject(new Error(this.normalizeCommandError(command, stderr, code)));
       });
     });
   }
