@@ -276,7 +276,6 @@ console.log(
 );
 const args = [
   "exec",
-  "--dangerously-bypass-approvals-and-sandbox",
   "-C",
   manifest.workspacePath,
   "-c",
@@ -287,6 +286,11 @@ const args = [
   "--output-last-message",
   lastMessageFile
 ];
+if (isAsk) {
+  args.push("--sandbox", "read-only", "--ask-for-approval", "never");
+} else {
+  args.push("--dangerously-bypass-approvals-and-sandbox");
+}
 if (manifest.resolvedModel) {
   args.push("-m", manifest.resolvedModel);
 }

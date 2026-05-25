@@ -183,7 +183,6 @@ const WORKSPACE_FILE_SEARCH_DEFAULT_LIMIT = 50;
 const WORKSPACE_FILE_SEARCH_MAX_LIMIT = 500;
 const SAFE_GIT_PREVIEW_REF_PATTERN = /^[A-Za-z0-9._/-]+(?:[~^][0-9]*)*$/;
 const WORKSPACE_KIND = "clone";
-const PROVIDER_SESSION_ID_FILE = "agentswarm-session-id.txt";
 
 function getPreviewMimeType(filePath: string): string | null {
   return IMAGE_MIME_BY_EXTENSION[path.extname(filePath).toLowerCase()] ?? null;
@@ -1225,25 +1224,6 @@ export class SpawnerService {
 
   private resolveProviderStateContainerPath(provider: AgentProvider): string {
     return provider === "claude" ? "/runtime/home/.claude" : "/root/.codex";
-  }
-
-  private async maybeResetProviderSessionForActionSwitch(
-    task: Pick<Task, "id" | "provider" | "lastAction">,
-    action: TaskAction,
-    appendRunLog: (line: string) => Promise<unknown>
-  ): Promise<void> {
-    const previousAction = task.lastAction;
-    if (!previousAction || (previousAction !== "ask" && previousAction !== "build")) {
-      return;
-    }
-    if (previousAction === action) {
-      return;
-    }
-
-    const providerStatePath = resolveTaskProviderStatePaths(task.id, task.provider).serverPath;
-    const sessionIdPath = path.join(providerStatePath, PROVIDER_SESSION_ID_FILE);
-    await rm(sessionIdPath, { force: true }).catch(() => undefined);
-    await appendRunLog(`Spawner: cleared provider session id after action switch (${previousAction} -> ${action}).`);
   }
 
   private resolveRepoCachePath(task: Task): string {
@@ -4339,7 +4319,6 @@ export class SpawnerService {
       const payloadPaths = await this.writeRuntimePayloadFiles(manifest, providerDefinition.getProviderConfig(settings.mcpServers));
       await appendRunLog(`Spawner: runtime payload files ready at ${payloadDir}.`);
       this.ensureTaskNotCancelled(task.id);
-      await this.maybeResetProviderSessionForActionSwitch(task, action, appendRunLog);
 
       if (action === "build") {
         await this.ensureWorkspaceGitHooks(workspace.workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);

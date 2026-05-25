@@ -185,12 +185,16 @@ const args = [
   "stream-json",
   "--include-partial-messages",
   "--verbose",
-  "--dangerously-skip-permissions",
   "--allowedTools",
   allowedTools,
   "--mcp-config",
   providerConfigPath
 ];
+if (isAsk) {
+  args.push("--permission-mode", "plan");
+} else {
+  args.push("--dangerously-skip-permissions");
+}
 if (manifest.resolvedModel) {
   args.push("--model", manifest.resolvedModel);
 }
