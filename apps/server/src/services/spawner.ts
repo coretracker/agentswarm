@@ -1895,7 +1895,7 @@ export class SpawnerService {
     for (const filePath of untrackedFiles) {
       try {
         const patch = await this.gitCommandCaptureAllowExitCodes(
-          ["-C", workspacePath, "diff", "--no-index", "--relative", "--", "/dev/null", filePath],
+          ["-C", workspacePath, "diff", "--no-index", "--", "/dev/null", filePath],
           [1],
           githubToken,
           gitUsername
