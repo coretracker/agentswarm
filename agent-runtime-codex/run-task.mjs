@@ -278,7 +278,7 @@ const args = [
   lastMessageFile
 ];
 if (isAsk) {
-  args.push("--sandbox", "read-only", "--ask-for-approval", "never");
+  args.push("--sandbox", "read-only");
 } else {
   args.push("--dangerously-bypass-approvals-and-sandbox");
 }
