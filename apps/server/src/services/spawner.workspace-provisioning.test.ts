@@ -117,6 +117,7 @@ describe("SpawnerService workspace provisioning", () => {
     const taskWorkspacePath = path.join(root, "task-workspace");
     const task = createTask();
     await mkdir(taskWorkspacePath, { recursive: true });
+    await mkdir(path.join(taskWorkspacePath, ".git"), { recursive: true });
 
     spawnerAny.resolveWorkspacePath = () => taskWorkspacePath;
     spawnerAny.gitCommandCapture = async () => "deadbeef";
@@ -145,6 +146,37 @@ describe("SpawnerService workspace provisioning", () => {
     spawnerAny.prepareWorkspace = async () => preparedWorkspace;
 
     const workspace = await spawnerAny.prepareAskRunWorkspace(task, "feature/task-1", "/repo-cache/path", "clone_only");
+    assert.deepEqual(workspace, preparedWorkspace);
+  });
+
+  it("rebuilds ask workspace when the folder exists but is not a git repo", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-ask-rebuild-"));
+    const taskWorkspacePath = path.join(root, "task-workspace");
+    const task = createTask();
+    await mkdir(taskWorkspacePath, { recursive: true });
+    await writeFile(path.join(taskWorkspacePath, "README.txt"), "placeholder", "utf8");
+
+    const preparedWorkspace = {
+      workspacePath: taskWorkspacePath,
+      hostWorkspacePath: taskWorkspacePath,
+      startRef: "rebuilt",
+      workspaceBaseRef: "rebuilt",
+      kind: "clone",
+      ephemeral: false,
+      cleanupRepoPath: null
+    };
+
+    let prepareWorkspaceCalled = false;
+    spawnerAny.resolveWorkspacePath = () => taskWorkspacePath;
+    spawnerAny.prepareWorkspace = async () => {
+      prepareWorkspaceCalled = true;
+      return preparedWorkspace;
+    };
+
+    const workspace = await spawnerAny.prepareAskRunWorkspace(task, "feature/task-1", "/repo-cache/path", "clone_only");
+    assert.equal(prepareWorkspaceCalled, true);
     assert.deepEqual(workspace, preparedWorkspace);
   });
 
