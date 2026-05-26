@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { SequenceRun } from "@agentswarm/shared-types";
+import type { SequenceRun, TaskRun } from "@agentswarm/shared-types";
 import { useSocket } from "../src/hooks/useSocket";
 import { trackEvent } from "../src/utils/analytics";
 import { useAuth } from "./auth-provider";
@@ -17,6 +17,7 @@ export function SequenceAnalyticsTracker() {
   const { can } = useAuth();
   const canReadTasks = can("task:read");
   const snapshotsRef = useRef(new Map<string, RunSnapshot>());
+  const taskRunsByIdRef = useRef(new Map<string, Pick<TaskRun, "action" | "changeOutcome">>());
 
   useEffect(() => {
     if (!socket || !canReadTasks) {
@@ -33,6 +34,30 @@ export function SequenceAnalyticsTracker() {
 
       run.steps.forEach((step, index) => {
         const previousState = previous?.stepStates[index];
+        if (step.state === "succeeded" && previousState !== "succeeded") {
+          trackEvent("sequence_step_completed", {
+            step_count: run.stepCount,
+            step_index: index
+          });
+
+          const taskRunId = step.taskRunId?.trim();
+          const taskRun = taskRunId ? taskRunsByIdRef.current.get(taskRunId) : undefined;
+          const nextStepIndex = index + 1;
+          if (taskRun?.action === "build" && taskRun.changeOutcome === "no_change") {
+            trackEvent("sequence_no_change", {
+              step_count: run.stepCount,
+              step_index: index
+            });
+          }
+          if (nextStepIndex < run.stepCount) {
+            trackEvent("sequence_auto_advanced", {
+              step_count: run.stepCount,
+              from_step_index: index,
+              to_step_index: nextStepIndex
+            });
+          }
+        }
+
         if (step.state === "failed" && previousState !== "failed") {
           trackEvent("sequence_step_failed", {
             step_count: run.stepCount,
@@ -42,6 +67,12 @@ export function SequenceAnalyticsTracker() {
       });
 
       if (run.status === "failed" && previous?.status !== "failed") {
+        const failedStep = run.failedStepIndex !== null ? run.steps[run.failedStepIndex] : null;
+        trackEvent("sequence_stalled", {
+          step_count: run.stepCount,
+          failed_step_index: run.failedStepIndex,
+          reason: failedStep?.errorMessage ?? null
+        });
         trackEvent("sequence_run_failed", {
           step_count: run.stepCount,
           failed_step_index: run.failedStepIndex
@@ -58,10 +89,18 @@ export function SequenceAnalyticsTracker() {
         stepStates: currentStepStates
       });
     };
+    const onTaskRunUpdated = (run: TaskRun) => {
+      taskRunsByIdRef.current.set(run.id, {
+        action: run.action,
+        changeOutcome: run.changeOutcome ?? null
+      });
+    };
 
     socket.on("sequence:run_updated", onRunUpdated);
+    socket.on("task:run_updated", onTaskRunUpdated);
     return () => {
       socket.off("sequence:run_updated", onRunUpdated);
+      socket.off("task:run_updated", onTaskRunUpdated);
     };
   }, [socket, canReadTasks]);
 

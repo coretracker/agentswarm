@@ -1,4 +1,4 @@
-import type { SequenceRunStep, TaskAction } from "@agentswarm/shared-types";
+import { isActiveTaskStatus, isQueuedTaskStatus, type SequenceRunStep, type TaskAction } from "@agentswarm/shared-types";
 import type { SchedulerService } from "./scheduler.js";
 import type { SequenceStore } from "./sequence-store.js";
 import type { TaskStore } from "./task-store.js";
@@ -6,6 +6,7 @@ import type { TaskStore } from "./task-store.js";
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const RUN_POLL_INTERVAL_MS = 1000;
 const MAX_WAIT_MS = 8 * 60 * 60 * 1000;
+const TASK_READY_WAIT_MS = 5 * 60 * 1000;
 
 export class SequenceExecutionService {
   constructor(
@@ -81,11 +82,17 @@ export class SequenceExecutionService {
 
       let taskRunId: string | null = null;
       if (stepIndex > 0) {
+        const taskReadyResult = await this.waitForTaskReady(input.taskId);
+        if (!taskReadyResult.ready) {
+          await this.failAtStep(run, input.taskId, stepIndex, taskReadyResult.reason);
+          return;
+        }
+
         const accepted = await this.scheduler.triggerAction(input.taskId, input.action, {
           content: input.stepPrompts[stepIndex]!
         });
         if (!accepted) {
-          await this.failAtStep(run, input.taskId, stepIndex, "Step could not be started. The task is currently unavailable for execution.");
+          await this.failAtStep(run, input.taskId, stepIndex, await this.buildStepStartBlockedMessage(input.taskId));
           return;
         }
       }
@@ -135,6 +142,9 @@ export class SequenceExecutionService {
       );
       run = (await this.sequenceStore.updateRun(run.id, { steps: succeededSteps })) ?? run;
       await this.taskStore.appendLog(input.taskId, `Sequence step ${stepIndex + 1}/${input.stepPrompts.length} succeeded.`);
+      if (completedRun.action === "build" && completedRun.changeOutcome === "no_change" && stepIndex + 1 < input.stepPrompts.length) {
+        await this.taskStore.appendLog(input.taskId, "No changes needed for this step. Continuing.");
+      }
     }
 
     await this.sequenceStore.updateRun(run.id, {
@@ -217,5 +227,57 @@ export class SequenceExecutionService {
       await sleep(RUN_POLL_INTERVAL_MS);
     }
     throw new Error("Timed out waiting for the step run to finish.");
+  }
+
+  private async waitForTaskReady(taskId: string): Promise<{ ready: true } | { ready: false; reason: string }> {
+    const deadline = Date.now() + TASK_READY_WAIT_MS;
+    while (Date.now() < deadline) {
+      const task = await this.taskStore.getTask(taskId);
+      if (!task) {
+        return {
+          ready: false,
+          reason: "Step could not be started because the task could not be loaded."
+        };
+      }
+
+      if (task.status === "archived") {
+        return {
+          ready: false,
+          reason: "Step could not be started because the task is archived."
+        };
+      }
+
+      if (!isActiveTaskStatus(task.status) && !isQueuedTaskStatus(task.status)) {
+        return { ready: true };
+      }
+
+      await sleep(RUN_POLL_INTERVAL_MS);
+    }
+
+    return {
+      ready: false,
+      reason: "Timed out waiting for the previous step to become ready for the next run."
+    };
+  }
+
+  private async buildStepStartBlockedMessage(taskId: string): Promise<string> {
+    const task = await this.taskStore.getTask(taskId);
+    if (!task) {
+      return "Step could not be started because the task could not be loaded.";
+    }
+
+    if (task.status === "archived") {
+      return "Step could not be started because the task is archived.";
+    }
+
+    if (task.hasPendingCheckpoint) {
+      return "Step could not be started because a pending checkpoint must be reviewed first.";
+    }
+
+    if (task.activeInteractiveSession) {
+      return "Step could not be started because an interactive terminal session is active.";
+    }
+
+    return "Step could not be started. The task is currently unavailable for execution.";
   }
 }
