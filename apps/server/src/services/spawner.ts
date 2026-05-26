@@ -2577,6 +2577,37 @@ export class SpawnerService {
     };
   }
 
+  private async requireExistingTaskWorkspace(
+    task: Task,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<WorkspacePreparation> {
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const workspaceExists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!workspaceExists) {
+      throw new Error("No local workspace exists for this task. Prepare the task workspace first.");
+    }
+
+    const gitPaths = await this.getWorkspaceGitPaths(workspacePath).catch(() => null);
+    if (!gitPaths) {
+      throw new Error("Task workspace is not a Git repository. Prepare the task workspace again.");
+    }
+
+    await this.cleanupWorkspaceGitLocks(workspacePath);
+    const startRef = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
+    return {
+      workspacePath,
+      hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
+      startRef,
+      workspaceBaseRef: task.workspaceBaseRef ?? startRef,
+      kind: WORKSPACE_KIND,
+      ephemeral: false,
+      cleanupRepoPath: null
+    };
+  }
+
   private async cleanupPreparedWorkspace(
     workspace: WorkspacePreparation | null,
     githubToken?: string | null,
@@ -4457,71 +4488,14 @@ export class SpawnerService {
         ...(action === "ask" && isActiveTaskStatus(task.status) ? {} : { lastAction: action })
       });
       this.ensureTaskNotCancelled(task.id);
-      const repoCachePath = this.resolveRepoCachePath(task);
-      await appendRunLog("Spawner: preparing managed repository and workspace.");
-      const prepared = await this.withTrackedTaskGitOperation(task, "clone_for_task", async () => {
-        this.emitWorkspacePrepareEvent("workspace_prepare_started", {
-          taskId: task.id,
-          taskType: task.taskType,
-          workspaceKind: WORKSPACE_KIND,
-          mode: settings.workspaceProvisioningMode
-        });
-        try {
-          const preparedValue = await this.withFreshManagedRepo(
-            task,
-            runtimeCredentials.githubToken,
-            runtimeCredentials.gitUsername,
-            action === "ask" ? "ask" : "run",
-            async (managedRepoPath) => ({
-              repoProfile: await this.ensureRepoProfile(
-                task,
-                managedRepoPath,
-                runtimeCredentials.githubToken,
-                runtimeCredentials.gitUsername
-              ),
-              workspace:
-                action === "ask"
-                  ? await this.prepareAskRunWorkspace(
-                      task,
-                      branchName,
-                      managedRepoPath,
-                      settings.workspaceProvisioningMode,
-                      runtimeCredentials.githubToken,
-                      runtimeCredentials.gitUsername
-                    )
-                  : await this.prepareWorkspace(
-                      task,
-                      action,
-                      branchName,
-                      managedRepoPath,
-                      settings.workspaceProvisioningMode,
-                      runtimeCredentials.githubToken,
-                      runtimeCredentials.gitUsername
-                    )
-            })
-          );
-          this.emitWorkspacePrepareEvent("workspace_prepare_succeeded", {
-            taskId: task.id,
-            taskType: task.taskType,
-            workspaceKind: WORKSPACE_KIND,
-            mode: settings.workspaceProvisioningMode
-          });
-          return preparedValue;
-        } catch (error) {
-          const reason = error instanceof WorkspacePrepareError ? error.reason : this.classifyWorkspacePrepareFailure(error);
-          this.emitWorkspacePrepareEvent("workspace_prepare_failed", {
-            taskId: task.id,
-            taskType: task.taskType,
-            workspaceKind: WORKSPACE_KIND,
-            failureReason: reason,
-            mode: settings.workspaceProvisioningMode
-          });
-          throw error;
-        }
-      });
-      const repoProfile = prepared.repoProfile;
-      const preparedWorkspace = prepared.workspace;
-      workspace = preparedWorkspace;
+      await appendRunLog("Spawner: using existing task workspace.");
+      workspace = await this.requireExistingTaskWorkspace(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      const repoProfile = await this.ensureRepoProfile(
+        task,
+        workspace.workspacePath,
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername
+      );
       this.ensureTaskNotCancelled(task.id);
       if (action === "build" && !task.workspaceBaseRef) {
         await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
@@ -4585,8 +4559,6 @@ export class SpawnerService {
       };
       await appendRunLog(`Spawner: preparing ${task.provider} runtime image (${action}).`);
       await this.ensureRuntimeImage(task.provider);
-      await appendRunLog("Spawner: refreshed managed repository cache.");
-      await appendRunLog(`Spawner: managed repository ready at ${repoCachePath}.`);
       await appendRunLog("Spawner: repository profile ready.");
       await appendRunLog(`Spawner: ${workspace.kind} workspace ready at ${workspace.workspacePath}.`);
 

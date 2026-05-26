@@ -42,6 +42,7 @@ export async function applyTaskStartMode(
     runPrepareWorkspaceInBackground(task, { taskStore: deps.taskStore, spawner: deps.spawner });
     return (await deps.taskStore.getTask(task.id)) ?? task;
   }
+  await deps.spawner.prepareTaskWorkspaceOnly(task);
   const action = getTriggerActionForNewTask(task);
   const accepted = await deps.scheduler.triggerAction(task.id, action, input);
   if (!accepted) {
