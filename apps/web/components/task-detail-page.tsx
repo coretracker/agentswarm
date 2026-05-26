@@ -778,6 +778,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   >(null);
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
+  const viewedGitOperationIdsRef = useRef<Set<string>>(new Set());
+  const [gitOperation, setGitOperation] = useState<TaskGitOperation | null>(null);
 
   useEffect(() => {
     for (const run of taskRuns) {
@@ -957,9 +959,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const fileMentionSearchTimerRef = useRef<number | null>(null);
   const bottomScrollAnchorRef = useRef<HTMLDivElement | null>(null);
   const initialBottomScrollStateRef = useRef<{ taskId: string; scrolledWithTerminal: boolean } | null>(null);
-  const viewedGitOperationIdsRef = useRef<Set<string>>(new Set());
-  const [gitOperation, setGitOperation] = useState<TaskGitOperation | null>(null);
-
   useEffect(() => {
     if (task) {
       hadLoadedTaskRef.current = true;
