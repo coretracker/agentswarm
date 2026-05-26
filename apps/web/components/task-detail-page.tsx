@@ -96,6 +96,7 @@ import {
 } from "../src/utils/task-prompt-attachments";
 import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
 import { buildTaskHistoryEntries } from "../src/utils/task-history";
+import { trackEvent } from "../src/utils/analytics";
 import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
 import { TaskDiffOpenAiPanel } from "./task-diff-openai-panel";
@@ -689,6 +690,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { settings } = useSettings();
   const { task, setTask, loading, refetch: refetchTask } = useTask(taskId);
   const hadLoadedTaskRef = useRef(false);
+  const trackedBuildOutcomeRunIdsRef = useRef<Set<string>>(new Set());
+  const trackedBuildSummaryViewedRunIdsRef = useRef<Set<string>>(new Set());
   const {
     messages: taskMessages,
     setMessages: setTaskMessages,
@@ -768,6 +771,30 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   >(null);
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
+
+  useEffect(() => {
+    for (const run of taskRuns) {
+      if (run.action !== "build" || run.status !== "succeeded") {
+        continue;
+      }
+
+      if (!trackedBuildOutcomeRunIdsRef.current.has(run.id)) {
+        trackEvent(run.changeOutcome === "no_change" ? "build_completed_no_changes" : "build_completed_with_changes", {
+          taskId: run.taskId,
+          runId: run.id
+        });
+        trackedBuildOutcomeRunIdsRef.current.add(run.id);
+      }
+
+      if ((run.summary?.trim() ?? "").length > 0 && !trackedBuildSummaryViewedRunIdsRef.current.has(run.id)) {
+        trackEvent("build_summary_viewed", {
+          taskId: run.taskId,
+          runId: run.id
+        });
+        trackedBuildSummaryViewedRunIdsRef.current.add(run.id);
+      }
+    }
+  }, [taskRuns]);
   const showTaskActionError = useCallback(
     (error: unknown, fallback: string): void => {
       const nextMessage = error instanceof Error ? error.message : fallback;
@@ -3904,6 +3931,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         })()
       : run.summary?.trim() || null;
 
+  const renderRunNoChangeNotice = (run: TaskRun) =>
+    run.action === "build" && run.status === "succeeded" && run.changeOutcome === "no_change" ? (
+      <Typography.Paragraph type="secondary" style={{ margin: "8px 0 0" }}>
+        No code changes were needed for this run.
+      </Typography.Paragraph>
+    ) : null;
+
   const renderRunLogsPanel = (run: TaskRun) => (
     <div
       style={{
@@ -4363,6 +4397,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Space wrap size={8}>
               <Tag color={runStatusColor[run.status]}>{run.status}</Tag>
               <Tag>{taskActionLabel[run.action]}</Tag>
+              {run.action === "build" && run.changeOutcome === "no_change" ? <Tag color="default">No code changes</Tag> : null}
               <Tag>{getAgentProviderLabel(run.provider)}</Tag>
             </Space>
             <Typography.Text type="secondary">
@@ -4374,6 +4409,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </Typography.Paragraph>
           {renderRunErrorNotice(run)}
           {renderRunLogsCollapse(run)}
+          {renderRunNoChangeNotice(run)}
           {normalizedRunSummary ? (
             isCollapsibleSummaryRun ? (
               <Collapse
@@ -4410,6 +4446,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Space wrap>
             <Tag color={runStatusColor[entry.run.status]}>{entry.run.status}</Tag>
             <Tag>{taskActionLabel[entry.run.action]}</Tag>
+            {entry.run.action === "build" && entry.run.changeOutcome === "no_change" ? <Tag color="default">No code changes</Tag> : null}
             <Tag>{getAgentProviderLabel(entry.run.provider)}</Tag>
             {entry.proposal ? <Tag color={checkpointStatusColor(entry.proposal.status)}>{checkpointStatusLabel(entry.proposal.status)}</Tag> : null}
             {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
@@ -4445,6 +4482,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   <Typography.Text type="secondary">
                     {entry.run.status === "running"
                       ? "Summary will appear when the run finishes."
+                      : entry.run.action === "build" && entry.run.changeOutcome === "no_change"
+                        ? "No code changes were needed for this run."
                       : "No summary was captured for this run."}
                   </Typography.Text>
                 )

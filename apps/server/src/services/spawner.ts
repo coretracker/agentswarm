@@ -2528,7 +2528,7 @@ export class SpawnerService {
     runStartRef: string,
     githubToken?: string | null,
     gitUsername = "x-access-token"
-  ): Promise<{ branchDiff: string; changedFiles: string[]; commitSha: string; providerCommitted: boolean }> {
+  ): Promise<{ branchDiff: string; changedFiles: string[]; commitSha: string; providerCommitted: boolean; changeOutcome: "changed" | "no_change" }> {
     // Keep repo-owned .agentswarm files. Only strip workspace scratch paths from diffs/commits.
     await this.stripEphemeralWorkspaceFiles(workspacePath);
     const commitSha = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
@@ -2539,11 +2539,8 @@ export class SpawnerService {
       githubToken,
       gitUsername
     );
-    if (changedFiles.length === 0) {
-      throw new Error("No changes detected after provider execution");
-    }
-
-    return { branchDiff, changedFiles, commitSha, providerCommitted };
+    const changeOutcome = changedFiles.length > 0 ? "changed" : "no_change";
+    return { branchDiff, changedFiles, commitSha, providerCommitted, changeOutcome };
   }
 
   private async collectReviewDiff(task: Task, workspacePath: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string | null> {
@@ -4523,7 +4520,7 @@ export class SpawnerService {
         }
       } else {
         const diffBaseRef = task.workspaceBaseRef ?? workspace.workspaceBaseRef;
-        const { branchDiff, providerCommitted } = await this.finalizeBuild(
+        const { branchDiff, providerCommitted, changeOutcome } = await this.finalizeBuild(
           task,
           workspace.workspacePath,
           diffBaseRef,
@@ -4534,21 +4531,25 @@ export class SpawnerService {
         if (providerCommitted) {
           await appendRunLog("Spawner: detected provider-created local commit; reusing it instead of creating a new commit.");
         }
-        if (runtimeResult.summaryMarkdown.trim()) {
-          await this.taskStore.updateResultArtifacts(task.id, runtimeResult.summaryMarkdown.trim());
+        const finalSummary =
+          runtimeResult.summaryMarkdown.trim() ||
+          (changeOutcome === "no_change"
+            ? "No code changes were needed. Reviewed current implementation and kept files unchanged."
+            : "Build completed locally. Review the diff, then push the branch when ready.");
+        if (finalSummary) {
+          await this.taskStore.updateResultArtifacts(task.id, finalSummary);
         }
         await this.taskStore.appendMessage(task.id, {
           role: "assistant",
           action,
-          content:
-            runtimeResult.summaryMarkdown.trim() ||
-            "Build completed locally. Review the diff, then push the branch when ready."
+          content: finalSummary
         });
         if (runId) {
           await this.taskStore.updateRun(runId, {
             status: "succeeded",
             finishedAt,
-            summary: runtimeResult.summaryMarkdown.trim() || "Build completed locally. Review the diff and push when ready."
+            summary: finalSummary,
+            changeOutcome
           });
         }
         if (runId && action === "build") {

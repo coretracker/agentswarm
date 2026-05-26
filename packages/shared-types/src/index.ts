@@ -598,6 +598,8 @@ export interface TaskRun {
   startedAt: string;
   finishedAt: string | null;
   summary: string | null;
+  /** Build-only outcome. Null for ask runs and legacy runs. */
+  changeOutcome?: "changed" | "no_change" | null;
   errorMessage: string | null;
   /** Git HEAD ref captured before the agent container runs; used for change proposals. */
   changeProposalCheckpointRef?: string | null;

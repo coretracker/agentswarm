@@ -355,8 +355,12 @@ fi
 git add -A
 
 if git diff --cached --quiet; then
-  echo "[runtime] no changes detected after codex; failing task"
-  exit 20
+  echo "[runtime] no changes detected after codex; completing without commit"
+  if [[ -f "$LAST_MESSAGE_FILE" ]]; then
+    echo "[runtime] result markdown generated"
+  fi
+  echo "[runtime] completed"
+  exit 0
 fi
 
 git commit -m "feat(agentswarm): ${TASK_TITLE}"

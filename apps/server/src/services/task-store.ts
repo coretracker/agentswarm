@@ -162,7 +162,14 @@ export interface CreateTaskRunInput {
 export type UpdateTaskRunPatch = Partial<
   Pick<
     TaskRun,
-    "status" | "finishedAt" | "summary" | "errorMessage" | "branchName" | "changeProposalCheckpointRef" | "changeProposalUntrackedPaths"
+    | "status"
+    | "finishedAt"
+    | "summary"
+    | "changeOutcome"
+    | "errorMessage"
+    | "branchName"
+    | "changeProposalCheckpointRef"
+    | "changeProposalUntrackedPaths"
   >
 >;
 
@@ -459,6 +466,7 @@ export class RedisTaskStore implements TaskStore {
   private normalizeRun(run: TaskRun): TaskRun {
     return {
       ...run,
+      changeOutcome: run.changeOutcome === "changed" || run.changeOutcome === "no_change" ? run.changeOutcome : null,
       changeProposalCheckpointRef: run.changeProposalCheckpointRef ?? null,
       changeProposalUntrackedPaths: Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : null
     };
@@ -791,6 +799,7 @@ export class RedisTaskStore implements TaskStore {
       startedAt: nowIso(),
       finishedAt: null,
       summary: null,
+      changeOutcome: null,
       errorMessage: null,
       changeProposalCheckpointRef: null,
       changeProposalUntrackedPaths: null,
@@ -814,6 +823,7 @@ export class RedisTaskStore implements TaskStore {
         | "status"
         | "finishedAt"
         | "summary"
+        | "changeOutcome"
         | "errorMessage"
         | "branchName"
         | "changeProposalCheckpointRef"
@@ -1496,6 +1506,7 @@ export class PostgresTaskStore implements TaskStore {
   private normalizeRun(run: TaskRun): TaskRun {
     return {
       ...run,
+      changeOutcome: run.changeOutcome === "changed" || run.changeOutcome === "no_change" ? run.changeOutcome : null,
       changeProposalCheckpointRef: run.changeProposalCheckpointRef ?? null,
       changeProposalUntrackedPaths: Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : null
     };
@@ -1967,6 +1978,7 @@ export class PostgresTaskStore implements TaskStore {
       startedAt: nowIso(),
       finishedAt: null,
       summary: null,
+      changeOutcome: null,
       errorMessage: null,
       changeProposalCheckpointRef: null,
       changeProposalUntrackedPaths: null,
