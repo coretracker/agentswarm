@@ -1,6 +1,7 @@
 import { isActiveTaskStatus, isQueuedTaskStatus, type SequenceExecutionMode, type SequenceRunStep, type TaskAction } from "@agentswarm/shared-types";
 import type { SchedulerService } from "./scheduler.js";
 import type { SequenceStore } from "./sequence-store.js";
+import type { SpawnerService } from "./spawner.js";
 import type { TaskStore } from "./task-store.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -12,7 +13,8 @@ export class SequenceExecutionService {
   constructor(
     private readonly sequenceStore: SequenceStore,
     private readonly taskStore: TaskStore,
-    private readonly scheduler: SchedulerService
+    private readonly scheduler: SchedulerService,
+    private readonly spawner: SpawnerService
   ) {}
 
   async initializeRun(
@@ -157,6 +159,38 @@ export class SequenceExecutionService {
       );
       run = (await this.sequenceStore.updateRun(run.id, { steps: succeededSteps })) ?? run;
       await this.taskStore.appendLog(input.taskId, `Sequence step ${stepIndex + 1}/${input.stepPrompts.length} succeeded.`);
+
+      if (run.executionMode === "auto_apply_changes" && completedRun.action === "build" && stepIndex + 1 < input.stepPrompts.length) {
+        const pendingProposal = (await this.taskStore.listChangeProposals(input.taskId)).find((proposal) => proposal.status === "pending");
+        if (pendingProposal) {
+          const task = await this.taskStore.getTask(input.taskId);
+          if (!task) {
+            await this.failAtStep(run, input.taskId, stepIndex + 1, "Step could not be started because the task could not be loaded.");
+            return;
+          }
+
+          const autoApplyResult = await this.spawner.applyChangeProposal(task, pendingProposal.id);
+          if (!autoApplyResult.ok) {
+            run = (await this.sequenceStore.updateRun(run.id, {
+              status: "waiting_for_checkpoint_resolution",
+              failedStepIndex: null,
+              waitingForApprovalAfterStepIndex: null,
+              finishedAt: null
+            })) ?? run;
+            await this.taskStore.appendLog(
+              input.taskId,
+              `Sequence paused after step ${stepIndex + 1}/${input.stepPrompts.length}: could not auto-apply checkpoint (${autoApplyResult.message}). Resolve checkpoint and sequence will continue.`
+            );
+            return;
+          }
+
+          await this.taskStore.appendLog(
+            input.taskId,
+            `Sequence auto-applied checkpoint after step ${stepIndex + 1}/${input.stepPrompts.length}. Continuing.`
+          );
+        }
+      }
+
       if (completedRun.action === "build" && completedRun.changeOutcome === "no_change" && stepIndex + 1 < input.stepPrompts.length) {
         if (run.executionMode === "approve_before_continuing") {
           await this.taskStore.appendLog(input.taskId, "No changes needed for this step. Waiting for approval to continue.");

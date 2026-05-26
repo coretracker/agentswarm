@@ -921,7 +921,7 @@ export interface UpdateSnippetInput {
 export type SequenceStepType = "inline" | "snippet";
 export type SequenceStepState = "pending" | "running" | "succeeded" | "failed" | "skipped";
 export type SequenceExecutionMode = "auto_apply_changes" | "approve_before_continuing";
-export type SequenceRunStatus = "running" | "waiting_for_approval" | "succeeded" | "failed";
+export type SequenceRunStatus = "running" | "waiting_for_approval" | "waiting_for_checkpoint_resolution" | "succeeded" | "failed";
 
 export interface SequenceStep {
   id: string;

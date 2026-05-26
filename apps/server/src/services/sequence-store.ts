@@ -30,7 +30,9 @@ const normalizeExecutionMode = (value: unknown): SequenceExecutionMode =>
   value === "approve_before_continuing" ? "approve_before_continuing" : "auto_apply_changes";
 
 const normalizeRunStatus = (value: unknown): SequenceRun["status"] =>
-  value === "succeeded" || value === "failed" || value === "waiting_for_approval" ? value : "running";
+  value === "succeeded" || value === "failed" || value === "waiting_for_approval" || value === "waiting_for_checkpoint_resolution"
+    ? value
+    : "running";
 
 const normalizeSnippetVariables = (value: unknown): SnippetVariable[] => {
   if (!Array.isArray(value)) {

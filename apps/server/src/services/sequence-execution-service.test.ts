@@ -76,6 +76,7 @@ describe("SequenceExecutionService", () => {
       appendLog: async (_taskId: string, line: string) => {
         logs.push(line);
       },
+      listChangeProposals: async () => [],
       listRuns: async () => {
         listRunsCallCount += 1;
         return listRunsCallCount === 1 ? [taskRuns[0]!] : [taskRuns[0]!, taskRuns[1]!];
@@ -97,8 +98,11 @@ describe("SequenceExecutionService", () => {
         return true;
       }
     };
+    const spawner = {
+      applyChangeProposal: async () => ({ ok: true as const })
+    };
 
-    const service = new SequenceExecutionService(sequenceStore as never, taskStore as never, scheduler as never);
+    const service = new SequenceExecutionService(sequenceStore as never, taskStore as never, scheduler as never, spawner as never);
     await service.runSteps({
       runId: run.id,
       taskId: "task-1",
@@ -141,6 +145,7 @@ describe("SequenceExecutionService", () => {
       appendLog: async (_taskId: string, line: string) => {
         logs.push(line);
       },
+      listChangeProposals: async () => [],
       listRuns: async () => {
         listRunsCallCount += 1;
         return listRunsCallCount === 1 ? [taskRuns[0]!] : taskRuns;
@@ -153,8 +158,11 @@ describe("SequenceExecutionService", () => {
         return true;
       }
     };
+    const spawner = {
+      applyChangeProposal: async () => ({ ok: true as const })
+    };
 
-    const service = new SequenceExecutionService(sequenceStore as never, taskStore as never, scheduler as never);
+    const service = new SequenceExecutionService(sequenceStore as never, taskStore as never, scheduler as never, spawner as never);
     await service.runSteps({
       runId: run.id,
       taskId: "task-1",
@@ -205,6 +213,7 @@ describe("SequenceExecutionService", () => {
     };
     const taskStore = {
       appendLog: async () => undefined,
+      listChangeProposals: async () => [],
       listRuns: async () => taskRuns,
       getRun: async (runId: string) => taskRuns.find((runItem) => runItem.id === runId) ?? null,
       getTask: async () => ({
@@ -220,8 +229,11 @@ describe("SequenceExecutionService", () => {
         return true;
       }
     };
+    const spawner = {
+      applyChangeProposal: async () => ({ ok: true as const })
+    };
 
-    const service = new SequenceExecutionService(sequenceStore as never, taskStore as never, scheduler as never);
+    const service = new SequenceExecutionService(sequenceStore as never, taskStore as never, scheduler as never, spawner as never);
     await service.runSteps({
       runId: run.id,
       taskId: "task-1",
@@ -236,5 +248,135 @@ describe("SequenceExecutionService", () => {
     assert.equal(run.steps[1]?.state, "succeeded");
     assert.equal(run.steps[1]?.taskRunId, "run-2");
     assert.equal(triggerActionCount, 1);
+  });
+
+  it("auto-applies pending checkpoints in auto mode before continuing", async () => {
+    let run = createSequenceRun(2, "auto_apply_changes");
+    const taskRuns = [
+      createTaskRun({ id: "run-1", taskId: "task-1", changeOutcome: "changed" }),
+      createTaskRun({ id: "run-2", taskId: "task-1", changeOutcome: "changed" })
+    ];
+    let triggerActionCount = 0;
+    let applyCount = 0;
+    const logs: string[] = [];
+    let listRunsCallCount = 0;
+
+    const sequenceStore = {
+      getRun: async () => run,
+      updateRun: async (
+        _runId: string,
+        patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps" | "waitingForApprovalAfterStepIndex">>
+      ) => {
+        run = {
+          ...run,
+          ...patch,
+          steps: patch.steps ?? run.steps
+        };
+        return run;
+      }
+    };
+    const taskStore = {
+      appendLog: async (_taskId: string, line: string) => {
+        logs.push(line);
+      },
+      listChangeProposals: async () => [{ id: "cp-1", taskId: "task-1", status: "pending" }],
+      listRuns: async () => {
+        listRunsCallCount += 1;
+        return listRunsCallCount === 1 ? [taskRuns[0]!] : [taskRuns[0]!, taskRuns[1]!];
+      },
+      getRun: async (runId: string) => taskRuns.find((runItem) => runItem.id === runId) ?? null,
+      getTask: async () => ({
+        id: "task-1",
+        status: "open",
+        hasPendingCheckpoint: false,
+        activeInteractiveSession: false
+      })
+    };
+    const scheduler = {
+      triggerAction: async () => {
+        triggerActionCount += 1;
+        return true;
+      }
+    };
+    const spawner = {
+      applyChangeProposal: async () => {
+        applyCount += 1;
+        return { ok: true as const };
+      }
+    };
+
+    const service = new SequenceExecutionService(sequenceStore as never, taskStore as never, scheduler as never, spawner as never);
+    await service.runSteps({
+      runId: run.id,
+      taskId: "task-1",
+      action: "build",
+      stepPrompts: ["step-1", "step-2"],
+      initialKnownRunIds: new Set<string>()
+    });
+
+    assert.equal(run.status, "succeeded");
+    assert.equal(applyCount, 1);
+    assert.equal(triggerActionCount, 1);
+    assert.ok(logs.some((line) => line.includes("auto-applied checkpoint")));
+  });
+
+  it("waits for checkpoint resolution when auto-apply fails", async () => {
+    let run = createSequenceRun(2, "auto_apply_changes");
+    const taskRuns = [createTaskRun({ id: "run-1", taskId: "task-1", changeOutcome: "changed" })];
+    let triggerActionCount = 0;
+    const logs: string[] = [];
+
+    const sequenceStore = {
+      getRun: async () => run,
+      updateRun: async (
+        _runId: string,
+        patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps" | "waitingForApprovalAfterStepIndex">>
+      ) => {
+        run = {
+          ...run,
+          ...patch,
+          steps: patch.steps ?? run.steps
+        };
+        return run;
+      }
+    };
+    const taskStore = {
+      appendLog: async (_taskId: string, line: string) => {
+        logs.push(line);
+      },
+      listChangeProposals: async () => [{ id: "cp-1", taskId: "task-1", status: "pending" }],
+      listRuns: async () => taskRuns,
+      getRun: async (runId: string) => taskRuns.find((runItem) => runItem.id === runId) ?? null,
+      getTask: async () => ({
+        id: "task-1",
+        status: "open",
+        hasPendingCheckpoint: true,
+        activeInteractiveSession: false
+      })
+    };
+    const scheduler = {
+      triggerAction: async () => {
+        triggerActionCount += 1;
+        return true;
+      }
+    };
+    const spawner = {
+      applyChangeProposal: async () => ({ ok: false as const, message: "conflict" })
+    };
+
+    const service = new SequenceExecutionService(sequenceStore as never, taskStore as never, scheduler as never, spawner as never);
+    await service.runSteps({
+      runId: run.id,
+      taskId: "task-1",
+      action: "build",
+      stepPrompts: ["step-1", "step-2"],
+      initialKnownRunIds: new Set<string>()
+    });
+
+    assert.equal(run.status, "waiting_for_checkpoint_resolution");
+    assert.equal(run.steps[0]?.state, "succeeded");
+    assert.equal(run.steps[1]?.state, "pending");
+    assert.equal(triggerActionCount, 0);
+    assert.ok(logs.some((line) => line.includes("could not auto-apply checkpoint")));
   });
 });

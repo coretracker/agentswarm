@@ -2230,7 +2230,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     [changeProposals, interactiveTerminalLaunchPending, interactiveTerminalRunning, taskMessages, taskRuns, taskSequenceRun]
   );
   const sequenceQueuedSteps = useMemo(() => {
-    if (!taskSequenceRun || (taskSequenceRun.status !== "running" && taskSequenceRun.status !== "waiting_for_approval")) {
+    if (
+      !taskSequenceRun ||
+      (taskSequenceRun.status !== "running" &&
+        taskSequenceRun.status !== "waiting_for_approval" &&
+        taskSequenceRun.status !== "waiting_for_checkpoint_resolution")
+    ) {
       return [];
     }
 
@@ -3651,13 +3656,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     .filter((part): part is string => Boolean(part))
     .join(" · ");
   const sequenceQueueNotice =
-    sequenceQueuedSteps.length > 0 || taskSequenceRun?.status === "waiting_for_approval" ? (
+    sequenceQueuedSteps.length > 0 ||
+    taskSequenceRun?.status === "waiting_for_approval" ||
+    taskSequenceRun?.status === "waiting_for_checkpoint_resolution" ? (
       <Alert
-        type={taskSequenceRun?.status === "waiting_for_approval" ? "warning" : "info"}
+        type={taskSequenceRun?.status === "waiting_for_approval" || taskSequenceRun?.status === "waiting_for_checkpoint_resolution" ? "warning" : "info"}
         showIcon
         message={
           taskSequenceRun?.status === "waiting_for_approval"
             ? `Sequence paused for approval. ${sequenceQueuedSteps.length} step(s) waiting next.`
+            : taskSequenceRun?.status === "waiting_for_checkpoint_resolution"
+              ? `Sequence paused for checkpoint resolution. ${sequenceQueuedSteps.length} step(s) waiting next.`
             : runningSequenceStep
               ? `Sequence step ${runningSequenceStep.index + 1} is running. ${sequenceQueuedSteps.length} step(s) queued next.`
               : `${sequenceQueuedSteps.length} sequence step(s) queued next.`
@@ -3670,6 +3679,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   ? `Review completed step ${taskSequenceRun.waitingForApprovalAfterStepIndex + 1} and approve to continue.`
                   : "Review progress and approve to continue."}
               </Typography.Text>
+            ) : null}
+            {taskSequenceRun?.status === "waiting_for_checkpoint_resolution" ? (
+              <Typography.Text>Resolve the pending checkpoint (apply or reject) to continue the sequence automatically.</Typography.Text>
             ) : null}
             {sequenceQueuedSteps.map((step) => (
               <Typography.Text key={`sequence-queued-${step.index}`} type="secondary">

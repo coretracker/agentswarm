@@ -354,7 +354,79 @@ export const registerTaskRoutes = (
     auth: AuthService;
   }
 ): void => {
-  const sequenceExecutionService = new SequenceExecutionService(deps.sequenceStore, deps.taskStore, deps.scheduler);
+  const sequenceExecutionService = new SequenceExecutionService(deps.sequenceStore, deps.taskStore, deps.scheduler, deps.spawner);
+  const maybeResumeAutoApplySequence = async (taskId: string): Promise<void> => {
+    const task = await deps.taskStore.getTask(taskId);
+    if (!task || task.status === "archived") {
+      return;
+    }
+    if (isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {
+      return;
+    }
+    if (await deps.taskStore.hasPendingChangeProposal(task.id)) {
+      return;
+    }
+    if (await deps.taskStore.getActiveInteractiveSession(task.id)) {
+      return;
+    }
+
+    const run = await deps.sequenceStore.getRunForTask(task.id);
+    if (!run || run.executionMode !== "auto_apply_changes" || (run.status !== "failed" && run.status !== "waiting_for_checkpoint_resolution")) {
+      return;
+    }
+
+    const blockedByCheckpoint =
+      run.status === "waiting_for_checkpoint_resolution" ||
+      (run.failedStepIndex !== null && (run.steps[run.failedStepIndex]?.errorMessage ?? "").toLowerCase().includes("pending checkpoint"));
+    if (!blockedByCheckpoint) {
+      return;
+    }
+
+    const firstPendingStepIndex = run.steps.findIndex((step) => step.state === "pending");
+    const failedStepIndex = run.failedStepIndex ?? (firstPendingStepIndex >= 0 ? firstPendingStepIndex : null);
+    if (failedStepIndex === null) {
+      return;
+    }
+
+    const stepPrompts = run.steps.map((step) => step.prompt);
+    if (failedStepIndex >= stepPrompts.length) {
+      return;
+    }
+    const initialRuns = await deps.taskStore.listRuns(task.id);
+    const resumed = await deps.sequenceStore.updateRun(run.id, {
+      status: "running",
+      failedStepIndex: null,
+      waitingForApprovalAfterStepIndex: null,
+      finishedAt: null
+    });
+    const runId = resumed?.id ?? run.id;
+    await deps.taskStore.appendLog(
+      task.id,
+      `Sequence auto-apply recovery: resuming step ${failedStepIndex + 1}/${stepPrompts.length} after checkpoint decision.`
+    );
+
+    void sequenceExecutionService
+      .runSteps({
+        runId,
+        taskId: task.id,
+        action: getChatActionForTask(task),
+        stepPrompts,
+        initialKnownRunIds: new Set(initialRuns.map((runItem) => runItem.id)),
+        startStepIndex: failedStepIndex
+      })
+      .catch(async (error) => {
+        const message = error instanceof Error ? error.message : "Sequence execution failed.";
+        await deps.taskStore.appendLog(task.id, `Sequence execution failed: ${message}`);
+        const currentRun = await deps.sequenceStore.getRun(runId);
+        if (currentRun?.status === "running") {
+          await sequenceExecutionService.failRunImmediately({
+            runId,
+            failedStepIndex: currentRun.failedStepIndex ?? failedStepIndex,
+            errorMessage: message
+          });
+        }
+      });
+  };
 
   app.get<{ Querystring: { view?: string; limit?: string } }>(
     "/tasks",
@@ -866,6 +938,7 @@ export const registerTaskRoutes = (
       if (!result.ok) {
         return reply.status(409).send({ message: result.message });
       }
+      await maybeResumeAutoApplySequence(task.id);
 
       return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
     }
@@ -896,6 +969,7 @@ export const registerTaskRoutes = (
       if (!result.ok) {
         return reply.status(409).send({ message: result.message });
       }
+      await maybeResumeAutoApplySequence(task.id);
 
       return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
     }
@@ -918,6 +992,7 @@ export const registerTaskRoutes = (
       if (!result.ok) {
         return reply.status(409).send({ message: result.message });
       }
+      await maybeResumeAutoApplySequence(task.id);
 
       return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
     }
@@ -945,6 +1020,7 @@ export const registerTaskRoutes = (
       if (!result.ok) {
         return reply.status(409).send({ message: result.message });
       }
+      await maybeResumeAutoApplySequence(task.id);
 
       return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
     }
@@ -967,6 +1043,7 @@ export const registerTaskRoutes = (
       if (!result.ok) {
         return reply.status(409).send({ message: result.message });
       }
+      await maybeResumeAutoApplySequence(task.id);
 
       return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
     }
