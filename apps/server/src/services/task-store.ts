@@ -512,16 +512,6 @@ export class RedisTaskStore implements TaskStore {
     };
   }
 
-  private normalizeGitOperation(operation: TaskGitOperation): TaskGitOperation {
-    return {
-      ...operation,
-      finishedAt: operation.finishedAt ?? null,
-      errorCode: operation.errorCode ?? null,
-      errorMessage: operation.errorMessage ?? null,
-      attemptCount: Math.max(1, Number.isFinite(operation.attemptCount) ? Math.floor(operation.attemptCount) : 1)
-    };
-  }
-
   private async getStoredRun(runId: string): Promise<TaskRun | null> {
     const raw = await this.redis.get(this.taskRunKey(runId));
     if (!raw) {
@@ -1623,6 +1613,16 @@ export class PostgresTaskStore implements TaskStore {
       changeOutcome: run.changeOutcome === "changed" || run.changeOutcome === "no_change" ? run.changeOutcome : null,
       changeProposalCheckpointRef: run.changeProposalCheckpointRef ?? null,
       changeProposalUntrackedPaths: Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : null
+    };
+  }
+
+  private normalizeGitOperation(operation: TaskGitOperation): TaskGitOperation {
+    return {
+      ...operation,
+      finishedAt: operation.finishedAt ?? null,
+      errorCode: operation.errorCode ?? null,
+      errorMessage: operation.errorMessage ?? null,
+      attemptCount: Math.max(1, Number.isFinite(operation.attemptCount) ? Math.floor(operation.attemptCount) : 1)
     };
   }
 
