@@ -1,92 +1,35 @@
 "use client";
 
-import { useState } from "react";
-import type { GitHubAutomationRule, Repository } from "@agentswarm/shared-types";
-import { Button, Card, Checkbox, Flex, Form, Input, Modal, Popconfirm, Space, Switch, Table, Typography, message } from "antd";
+import { useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import type { Repository } from "@agentswarm/shared-types";
+import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
-import { buildApiUrl } from "../src/lib/public-url";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useAuth } from "./auth-provider";
 
-type RepositoryFormValues = {
-  name: string;
-  url: string;
-  defaultBranch: string;
-  envVars: Array<{ key: string; value: string }>;
-  webhookEnabled: boolean;
-  webhookUrl: string;
-  webhookSecret: string;
-  clearWebhookSecret: boolean;
-  githubWebhookSecret: string;
-  clearGithubWebhookSecret: boolean;
-  githubAutomationsJson: string;
-};
-
-const isGitHubAutomationRule = (value: unknown): value is GitHubAutomationRule => {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  if (typeof record.id !== "string" || record.id.trim().length === 0) {
-    return false;
-  }
-  if (typeof record.name !== "string" || record.name.trim().length === 0) {
-    return false;
-  }
-  if (record.trigger !== "issue_opened" && record.trigger !== "pull_request_opened") {
-    return false;
-  }
-  return typeof record.task === "object" && record.task !== null;
-};
-
 export function RepositoriesPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { repositories, loading } = useRepositories();
   const { can } = useAuth();
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<Repository | null>(null);
-  const [form] = Form.useForm<RepositoryFormValues>();
-  const [submitting, setSubmitting] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
   const canCreateRepository = can("repo:create");
   const canEditRepository = can("repo:edit");
   const canDeleteRepository = can("repo:delete");
-  const githubWebhookUrl = editing ? buildApiUrl(`/webhooks/github/${encodeURIComponent(editing.id)}`) : null;
 
-  const openCreate = () => {
-    setEditing(null);
-    form.setFieldsValue({
-      name: "",
-      url: "",
-      defaultBranch: "develop",
-      envVars: [],
-      webhookEnabled: false,
-      webhookUrl: "",
-      webhookSecret: "",
-      clearWebhookSecret: false,
-      githubWebhookSecret: "",
-      clearGithubWebhookSecret: false,
-      githubAutomationsJson: "[]"
-    });
-    setOpen(true);
-  };
-
-  const openEdit = (repository: Repository) => {
-    setEditing(repository);
-    form.setFieldsValue({
-      name: repository.name,
-      url: repository.url,
-      defaultBranch: repository.defaultBranch,
-      envVars: repository.envVars ?? [],
-      webhookEnabled: repository.webhookEnabled,
-      webhookUrl: repository.webhookUrl ?? "",
-      webhookSecret: "",
-      clearWebhookSecret: false,
-      githubWebhookSecret: "",
-      clearGithubWebhookSecret: false,
-      githubAutomationsJson: JSON.stringify(repository.githubAutomations ?? [], null, 2)
-    });
-    setOpen(true);
-  };
+  useEffect(() => {
+    const savedState = searchParams.get("saved");
+    if (!savedState) {
+      return;
+    }
+    if (savedState === "created") {
+      messageApi.success("Repository created");
+    } else if (savedState === "updated") {
+      messageApi.success("Repository updated");
+    }
+    router.replace("/repositories");
+  }, [messageApi, router, searchParams]);
 
   return (
     <>
@@ -100,7 +43,7 @@ export function RepositoriesPage() {
             <Typography.Text type="secondary">Manage reusable repository definitions for task creation.</Typography.Text>
           </Flex>
           {canCreateRepository ? (
-            <Button type="primary" onClick={openCreate}>
+            <Button type="primary" onClick={() => router.push("/repositories/new?from=list")}>
               Add Repository
             </Button>
           ) : null}
@@ -150,14 +93,20 @@ export function RepositoriesPage() {
                 title: "Actions",
                 render: (_, repository) => (
                   <Space>
-                    {canEditRepository ? <Button onClick={() => openEdit(repository)}>Edit</Button> : null}
+                    {canEditRepository ? (
+                      <Button onClick={() => router.push(`/repositories/${repository.id}/edit?from=list`)}>Edit</Button>
+                    ) : null}
                     {canDeleteRepository ? (
                       <Popconfirm
                         title="Delete repository?"
                         description="Tasks keep their stored snapshot, but this repository will be removed from quick selection."
                         onConfirm={async () => {
-                          await api.deleteRepository(repository.id);
-                          messageApi.success("Repository deleted");
+                          try {
+                            await api.deleteRepository(repository.id);
+                            messageApi.success("Repository deleted");
+                          } catch (error) {
+                            messageApi.error(error instanceof Error ? error.message : "Failed to delete repository");
+                          }
                         }}
                       >
                         <Button danger>Delete</Button>
@@ -170,233 +119,6 @@ export function RepositoriesPage() {
           />
         </Card>
       </Space>
-
-      <Modal open={open} title={editing ? "Edit Repository" : "Add Repository"} footer={null} width={920} onCancel={() => setOpen(false)}>
-        <Form
-          form={form}
-          layout="vertical"
-          onFinish={async (values) => {
-            setSubmitting(true);
-            try {
-              const envVars = (values.envVars ?? [])
-                .map((entry) => ({
-                  key: entry.key.trim(),
-                  value: typeof entry.value === "string" ? entry.value : ""
-                }))
-                .filter((entry) => entry.key.length > 0);
-              let githubAutomations: GitHubAutomationRule[] = [];
-              if (values.githubAutomationsJson.trim().length > 0) {
-                const parsed = JSON.parse(values.githubAutomationsJson);
-                if (!Array.isArray(parsed)) {
-                  throw new Error("GitHub automations must be a JSON array.");
-                }
-                if (!parsed.every(isGitHubAutomationRule)) {
-                  throw new Error("Each GitHub automation must include id, name, trigger, and task.");
-                }
-                githubAutomations = parsed;
-              }
-              const payload = {
-                name: values.name,
-                url: values.url,
-                defaultBranch: values.defaultBranch,
-                envVars,
-                webhookEnabled: values.webhookEnabled,
-                webhookUrl: values.webhookUrl.trim().length > 0 ? values.webhookUrl.trim() : null,
-                ...(values.webhookSecret.trim().length > 0 ? { webhookSecret: values.webhookSecret.trim() } : {}),
-                ...(editing && values.clearWebhookSecret ? { clearWebhookSecret: true } : {}),
-                ...(values.githubWebhookSecret.trim().length > 0 ? { githubWebhookSecret: values.githubWebhookSecret.trim() } : {}),
-                ...(editing && values.clearGithubWebhookSecret ? { clearGithubWebhookSecret: true } : {}),
-                githubAutomations
-              };
-              if (editing) {
-                await api.updateRepository(editing.id, payload);
-                messageApi.success("Repository updated");
-              } else {
-                await api.createRepository(payload);
-                messageApi.success("Repository created");
-              }
-              setOpen(false);
-            } finally {
-              setSubmitting(false);
-            }
-          }}
-        >
-          <Form.Item name="name" label="Name" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="url" label="URL" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="defaultBranch" label="Default Branch" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.List
-            name="envVars"
-            rules={[
-              {
-                validator: async (_, value: RepositoryFormValues["envVars"]) => {
-                  const seen = new Set<string>();
-                  for (const entry of value ?? []) {
-                    const key = typeof entry?.key === "string" ? entry.key.trim() : "";
-                    if (!key) {
-                      continue;
-                    }
-                    if (seen.has(key)) {
-                      throw new Error(`Duplicate variable name: ${key}`);
-                    }
-                    seen.add(key);
-                  }
-                }
-              }
-            ]}
-          >
-            {(fields, { add, remove }, { errors }) => (
-              <Flex vertical gap={8} style={{ marginBottom: 16 }}>
-                <Typography.Text strong>Environment Variables</Typography.Text>
-                <Typography.Text type="secondary">
-                  Repository variables are injected into interactive, automatic, and terminal runs for tasks from this repository.
-                </Typography.Text>
-                {fields.map((field) => (
-                  <Flex key={field.key} gap={8} align="flex-start">
-                    <Form.Item
-                      {...field}
-                      name={[field.name, "key"]}
-                      style={{ flex: 1, marginBottom: 0 }}
-                      rules={[
-                        { required: true, whitespace: true, message: "Name is required." },
-                        { max: 128, message: "Name must be 128 characters or fewer." },
-                        {
-                          pattern: /^[A-Za-z_][A-Za-z0-9_]*$/,
-                          message: "Name must match /^[A-Za-z_][A-Za-z0-9_]*$/."
-                        }
-                      ]}
-                    >
-                      <Input placeholder="NAME" autoComplete="off" />
-                    </Form.Item>
-                    <Form.Item
-                      {...field}
-                      name={[field.name, "value"]}
-                      style={{ flex: 2, marginBottom: 0 }}
-                      rules={[{ max: 8192, message: "Value must be 8192 characters or fewer." }]}
-                    >
-                      <Input placeholder="value" autoComplete="off" />
-                    </Form.Item>
-                    <Button danger onClick={() => remove(field.name)}>
-                      Remove
-                    </Button>
-                  </Flex>
-                ))}
-                <Button onClick={() => add({ key: "", value: "" })}>Add variable</Button>
-                <Form.ErrorList errors={errors} />
-              </Flex>
-            )}
-          </Form.List>
-          <Form.Item name="webhookEnabled" label="Enable Webhooks" valuePropName="checked">
-            <Switch />
-          </Form.Item>
-          <Form.Item
-            name="webhookUrl"
-            label="Webhook URL"
-            dependencies={["webhookEnabled"]}
-            rules={[
-              ({ getFieldValue }) => ({
-                validator(_, value) {
-                  if (!getFieldValue("webhookEnabled")) {
-                    return Promise.resolve();
-                  }
-                  if (typeof value === "string" && value.trim().length > 0) {
-                    try {
-                      new URL(value.trim());
-                      return Promise.resolve();
-                    } catch {
-                      return Promise.reject(new Error("Webhook URL must be a valid absolute URL."));
-                    }
-                  }
-                  return Promise.reject(new Error("Webhook URL is required when webhooks are enabled."));
-                }
-              })
-            ]}
-          >
-            <Input placeholder="https://example.com/webhooks/agentswarm" />
-          </Form.Item>
-          <Form.Item
-            name="webhookSecret"
-            label={editing?.webhookSecretConfigured ? "Webhook Secret (leave blank to keep existing)" : "Webhook Secret"}
-            dependencies={["webhookEnabled", "clearWebhookSecret"]}
-            rules={[
-              ({ getFieldValue }) => ({
-                validator(_, value) {
-                  if (!getFieldValue("webhookEnabled")) {
-                    return Promise.resolve();
-                  }
-                  const normalized = typeof value === "string" ? value.trim() : "";
-                  const clearSecret = getFieldValue("clearWebhookSecret") === true;
-                  if (normalized.length > 0) {
-                    return Promise.resolve();
-                  }
-                  if (editing?.webhookSecretConfigured && !clearSecret) {
-                    return Promise.resolve();
-                  }
-                  return Promise.reject(new Error("Webhook secret is required when webhooks are enabled."));
-                }
-              })
-            ]}
-          >
-            <Input.Password />
-          </Form.Item>
-          {editing?.webhookSecretConfigured ? (
-            <Form.Item name="clearWebhookSecret" valuePropName="checked">
-              <Checkbox>Clear stored webhook secret</Checkbox>
-            </Form.Item>
-          ) : null}
-          <Form.Item
-            name="githubWebhookSecret"
-            label={editing?.githubWebhookSecretConfigured ? "GitHub Webhook Secret (leave blank to keep existing)" : "GitHub Webhook Secret"}
-          >
-            <Input.Password placeholder="Optional but recommended for signature verification" />
-          </Form.Item>
-          {editing?.githubWebhookSecretConfigured ? (
-            <Form.Item name="clearGithubWebhookSecret" valuePropName="checked">
-              <Checkbox>Clear stored GitHub webhook secret</Checkbox>
-            </Form.Item>
-          ) : null}
-          <Form.Item label="GitHub Webhook URL">
-            {githubWebhookUrl ? (
-              <Typography.Text code copyable>
-                {githubWebhookUrl}
-              </Typography.Text>
-            ) : (
-              <Typography.Text type="secondary">
-                Save this repository first to generate its webhook URL.
-              </Typography.Text>
-            )}
-          </Form.Item>
-          <Form.Item
-            name="githubAutomationsJson"
-            label="GitHub Automations (JSON rules)"
-            rules={[
-              {
-                validator: async (_, value) => {
-                  const text = typeof value === "string" ? value.trim() : "";
-                  if (!text) {
-                    return;
-                  }
-                  const parsed = JSON.parse(text);
-                  if (!Array.isArray(parsed)) {
-                    throw new Error("GitHub automations must be a JSON array.");
-                  }
-                }
-              }
-            ]}
-            extra='Example trigger with label filter: [{"id":"bug-opened","name":"Bug Issue","enabled":true,"trigger":"issue_opened","labelFilter":{"labelsAny":["bug"],"labelsNone":["wip"]},"task":{"taskType":"build","startMode":"run_now"}}]'
-          >
-            <Input.TextArea rows={10} />
-          </Form.Item>
-          <Button type="primary" htmlType="submit" loading={submitting}>
-            {editing ? "Save Changes" : "Create Repository"}
-          </Button>
-        </Form>
-      </Modal>
     </>
   );
 }

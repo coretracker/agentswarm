@@ -497,6 +497,7 @@ export const api = {
       body: JSON.stringify(input)
     }),
   listRepositories: () => request<Repository[]>("/repositories"),
+  getRepository: (id: string) => request<Repository>(`/repositories/${id}`),
   createRepository: (input: CreateRepositoryInput) =>
     request<Repository>("/repositories", {
       method: "POST",

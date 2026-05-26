@@ -155,6 +155,15 @@ export const registerRepositoryRoutes = (
     return repositories.filter((repository) => canUserAccessRepository(request.auth?.user, repository.id));
   });
 
+  app.get<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repository = await deps.repositoryStore.getRepository(request.params.id);
+    if (!repository || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    return reply.send(repository);
+  });
+
   app.post("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:create"]) }, async (request, reply) => {
     const parsed = createRepositorySchema.safeParse(request.body);
     if (!parsed.success) {
