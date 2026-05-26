@@ -80,6 +80,7 @@ Copy `.env.example` to `.env` and adjust it if needed.
 | `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start | `true` |
 | `TASK_STORE_BACKEND` | Override backend for task data only | inherit |
 | `SNIPPET_STORE_BACKEND` | Override backend for snippets | inherit |
+| `SEQUENCE_STORE_BACKEND` | Override backend for sequences | inherit |
 | `REPOSITORY_STORE_BACKEND` | Override backend for repositories | inherit |
 | `CREDENTIAL_STORE_BACKEND` | Override backend for encrypted credentials | inherit |
 | `ROLE_STORE_BACKEND` | Override backend for roles | inherit |

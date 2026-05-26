@@ -22,6 +22,10 @@ const realtimeScopesByEventType: Record<RealtimeEvent["type"], PermissionScope[]
   "snippet:created": ["snippet:list"],
   "snippet:updated": ["snippet:list"],
   "snippet:deleted": ["snippet:list"],
+  "sequence:created": ["sequence:list"],
+  "sequence:updated": ["sequence:list"],
+  "sequence:deleted": ["sequence:list"],
+  "sequence:run_updated": ["task:read"],
   "repository:created": ["repo:list"],
   "repository:updated": ["repo:list"],
   "repository:deleted": ["repo:list"],
@@ -190,6 +194,10 @@ export const createAuthService = ({
         return task?.ownerUserId ?? null;
       }
       case "task:change_proposal": {
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
+        return task?.ownerUserId ?? null;
+      }
+      case "sequence:run_updated": {
         const task = await taskStore.getTaskMetadata(event.payload.taskId);
         return task?.ownerUserId ?? null;
       }

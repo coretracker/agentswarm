@@ -45,6 +45,7 @@ const buildSystemResponsePreferencePreset = (): ResponsePreferencePreset => ({
 const buildSystemDataStores = (): SystemDataStores => ({
   taskStore: env.STORE_BACKENDS.taskStore,
   snippetStore: env.STORE_BACKENDS.snippetStore,
+  sequenceStore: env.STORE_BACKENDS.sequenceStore,
   repositoryStore: env.STORE_BACKENDS.repositoryStore,
   credentialStore: env.STORE_BACKENDS.credentialStore,
   roleStore: env.STORE_BACKENDS.roleStore,

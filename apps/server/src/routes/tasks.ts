@@ -15,6 +15,8 @@ import {
 import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
+import type { SequenceStore } from "../services/sequence-store.js";
+import type { SnippetStore } from "../services/snippet-store.js";
 import type { UserStore } from "../services/user-store.js";
 import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
 import { applyTaskStartMode, getTriggerActionForNewTask } from "../lib/task-start-mode.js";
@@ -23,6 +25,8 @@ import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
+import { SequenceExecutionService } from "../services/sequence-execution-service.js";
+import { resolveSequenceStepPrompts, SequenceValidationError } from "../services/sequence-resolution.js";
 import { buildExecutionSummaryFromPrompt, classifyTaskComplexity } from "../lib/task-intelligence.js";
 import { getMutationBlockedReason } from "../lib/task-mutation-guards.js";
 import { persistTaskPromptAttachments, readTaskPromptAttachmentBuffer } from "../lib/task-prompt-attachments.js";
@@ -63,8 +67,10 @@ const createTaskSchema = z
     branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
     model: z.string().min(1).optional(),
     reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
-    task_source: z.enum(["blank", "snippet"]).optional(),
+    task_source: z.enum(["blank", "snippet", "sequence"]).optional(),
     snippet_id: z.string().trim().min(1).optional(),
+    sequence_id: z.string().trim().min(1).optional(),
+    sequence_variables: z.record(z.string().max(2000)).optional(),
     start_mode_locked: z.boolean().optional()
   })
   .superRefine((data, ctx) => {
@@ -91,7 +97,30 @@ const createTaskSchema = z
         });
       }
     }
-    if (data.startMode === "run_now" && data.prompt.trim().length === 0) {
+    if (data.task_source === "sequence") {
+      if (!data.sequence_id) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "sequence_id is required when task_source is sequence",
+          path: ["sequence_id"]
+        });
+      }
+      if (data.start_mode_locked !== true) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "start_mode_locked must be true when task_source is sequence",
+          path: ["start_mode_locked"]
+        });
+      }
+      if (data.startMode !== "run_now") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Sequence tasks must use automatic start mode",
+          path: ["startMode"]
+        });
+      }
+    }
+    if (data.startMode === "run_now" && data.task_source !== "sequence" && data.prompt.trim().length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Prompt is required when start mode is Run now",
@@ -319,9 +348,13 @@ export const registerTaskRoutes = (
     scheduler: SchedulerService;
     spawner: SpawnerService;
     settingsStore: SettingsStore;
+    sequenceStore: SequenceStore;
+    snippetStore: SnippetStore;
     auth: AuthService;
   }
 ): void => {
+  const sequenceExecutionService = new SequenceExecutionService(deps.sequenceStore, deps.taskStore, deps.scheduler);
+
   app.get<{ Querystring: { view?: string; limit?: string } }>(
     "/tasks",
     { preHandler: deps.auth.requireAllScopes(["task:list"]) },
@@ -511,6 +544,22 @@ export const registerTaskRoutes = (
       }
 
       return reply.send(await deps.taskStore.listRunsPage(task.id, parsedQuery.data));
+    }
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/tasks/:id/sequence-run",
+    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+      const run = await deps.sequenceStore.getRunForTask(task.id);
+      if (!run) {
+        return reply.status(404).send({ message: "Sequence run not found for this task." });
+      }
+      return reply.send(run);
     }
   );
 
@@ -904,6 +953,30 @@ export const registerTaskRoutes = (
     const { startMode, attachments: attachmentUploads = [], ...rawCreatePayload } = parsed.data;
     const settings = await deps.settingsStore.getSettings();
     const createPayload = applyCreateDefaultsFromSettings(rawCreatePayload, settings);
+    let sequenceStepPrompts: string[] = [];
+    let sequenceId: string | null = null;
+    if (createPayload.task_source === "sequence") {
+      const selectedSequenceId = createPayload.sequence_id?.trim() ?? "";
+      const sequence = selectedSequenceId ? await deps.sequenceStore.getSequence(selectedSequenceId) : null;
+      if (!sequence) {
+        return reply.status(400).send({ message: "Sequence not found." });
+      }
+      try {
+        sequenceStepPrompts = await resolveSequenceStepPrompts({
+          sequence,
+          snippetStore: deps.snippetStore,
+          variables: createPayload.sequence_variables
+        });
+      } catch (error) {
+        const message = error instanceof SequenceValidationError ? error.message : "Sequence validation failed.";
+        return reply.status(400).send({ message });
+      }
+      if (sequenceStepPrompts.length === 0) {
+        return reply.status(400).send({ message: "Sequence must contain at least one executable step." });
+      }
+      sequenceId = sequence.id;
+      createPayload.prompt = sequenceStepPrompts[0] ?? "";
+    }
     if (attachmentUploads.length > 0 && startMode !== "run_now") {
       return reply.status(400).send({ message: "Image attachments are only supported when start mode is Run now." });
     }
@@ -936,6 +1009,20 @@ export const registerTaskRoutes = (
       ...task,
       creatorName: request.auth!.user.name
     };
+    let sequenceRunContext:
+      | { runId: string; action: TaskAction; stepPrompts: string[]; initialKnownRunIds: Set<string> }
+      | null = null;
+    if (createPayload.task_source === "sequence" && sequenceId && sequenceStepPrompts.length > 0) {
+      const initialRuns = await deps.taskStore.listRuns(createdTask.id);
+      const { runId } = await sequenceExecutionService.initializeRun(sequenceId, createdTask.id, sequenceStepPrompts.length);
+      await deps.taskStore.appendLog(createdTask.id, `Sequence run started with ${sequenceStepPrompts.length} step(s).`);
+      sequenceRunContext = {
+        runId,
+        action: getTriggerActionForNewTask(createdTask),
+        stepPrompts: sequenceStepPrompts,
+        initialKnownRunIds: new Set(initialRuns.map((run) => run.id))
+      };
+    }
 
     let persistedAttachments: TaskPromptAttachment[] = [];
     if (attachmentUploads.length > 0) {
@@ -959,9 +1046,38 @@ export const registerTaskRoutes = (
         content: createPayload.prompt.trim(),
         ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
       });
+      if (sequenceRunContext) {
+        void sequenceExecutionService
+          .runSteps({
+            runId: sequenceRunContext.runId,
+            taskId: createdTask.id,
+            action: sequenceRunContext.action,
+            stepPrompts: sequenceRunContext.stepPrompts,
+            initialKnownRunIds: sequenceRunContext.initialKnownRunIds
+          })
+          .catch(async (error) => {
+            const message = error instanceof Error ? error.message : "Sequence execution failed.";
+            await deps.taskStore.appendLog(createdTask.id, `Sequence execution failed: ${message}`);
+            const currentRun = await deps.sequenceStore.getRun(sequenceRunContext.runId);
+            if (currentRun?.status === "running") {
+              await sequenceExecutionService.failRunImmediately({
+                runId: sequenceRunContext.runId,
+                failedStepIndex: currentRun.failedStepIndex ?? 0,
+                errorMessage: message
+              });
+            }
+          });
+      }
       return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, result)));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Task follow-up failed";
+      if (sequenceRunContext) {
+        await sequenceExecutionService.failRunImmediately({
+          runId: sequenceRunContext.runId,
+          failedStepIndex: 0,
+          errorMessage: message
+        });
+      }
       if (startMode === "prepare_workspace") {
         await deps.taskStore.patchTask(createdTask.id, {
           status: "failed",

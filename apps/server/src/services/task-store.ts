@@ -300,7 +300,15 @@ export class RedisTaskStore implements TaskStore {
       requirements?: string;
       prompt?: string;
       notes?: string;
+      taskSource?: Task["taskSource"];
+      snippetId?: string;
+      sequenceId?: string;
+      sequenceRunId?: string | null;
     };
+    const taskSource =
+      legacyTask.taskSource === "snippet" || legacyTask.taskSource === "sequence" || legacyTask.taskSource === "blank"
+        ? legacyTask.taskSource
+        : "blank";
     const normalizedTask: Task = {
       ...legacyTask,
       pinned: legacyTask.pinned ?? false,
@@ -318,6 +326,19 @@ export class RedisTaskStore implements TaskStore {
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
       codexCredentialSource: normalizeCodexCredentialSource(legacyTask.codexCredentialSource),
+      taskSource,
+      snippetId:
+        taskSource === "snippet" && typeof legacyTask.snippetId === "string" && legacyTask.snippetId.trim().length > 0
+          ? legacyTask.snippetId.trim()
+          : undefined,
+      sequenceId:
+        taskSource === "sequence" && typeof legacyTask.sequenceId === "string" && legacyTask.sequenceId.trim().length > 0
+          ? legacyTask.sequenceId.trim()
+          : undefined,
+      sequenceRunId:
+        taskSource === "sequence" && typeof legacyTask.sequenceRunId === "string" && legacyTask.sequenceRunId.trim().length > 0
+          ? legacyTask.sequenceRunId.trim()
+          : null,
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
@@ -476,6 +497,15 @@ export class RedisTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
+    const taskSource = input.task_source === "snippet" || input.task_source === "sequence" ? input.task_source : "blank";
+    const snippetId =
+      taskSource === "snippet" && typeof input.snippet_id === "string" && input.snippet_id.trim().length > 0
+        ? input.snippet_id.trim()
+        : undefined;
+    const sequenceId =
+      taskSource === "sequence" && typeof input.sequence_id === "string" && input.sequence_id.trim().length > 0
+        ? input.sequence_id.trim()
+        : undefined;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
     const initialStatus: TaskStatus =
       startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
@@ -496,6 +526,10 @@ export class RedisTaskStore implements TaskStore {
       providerProfile,
       modelOverride,
       codexCredentialSource,
+      taskSource,
+      ...(snippetId ? { snippetId } : {}),
+      ...(sequenceId ? { sequenceId } : {}),
+      sequenceRunId: taskSource === "sequence" ? null : undefined,
       baseBranch,
       branchStrategy,
       complexity,
@@ -1379,7 +1413,15 @@ export class PostgresTaskStore implements TaskStore {
       requirements?: string;
       prompt?: string;
       notes?: string;
+      taskSource?: Task["taskSource"];
+      snippetId?: string;
+      sequenceId?: string;
+      sequenceRunId?: string | null;
     };
+    const taskSource =
+      legacyTask.taskSource === "snippet" || legacyTask.taskSource === "sequence" || legacyTask.taskSource === "blank"
+        ? legacyTask.taskSource
+        : "blank";
     const normalizedTask: Task = {
       ...legacyTask,
       pinned: legacyTask.pinned ?? false,
@@ -1397,6 +1439,19 @@ export class PostgresTaskStore implements TaskStore {
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
       codexCredentialSource: normalizeCodexCredentialSource(legacyTask.codexCredentialSource),
+      taskSource,
+      snippetId:
+        taskSource === "snippet" && typeof legacyTask.snippetId === "string" && legacyTask.snippetId.trim().length > 0
+          ? legacyTask.snippetId.trim()
+          : undefined,
+      sequenceId:
+        taskSource === "sequence" && typeof legacyTask.sequenceId === "string" && legacyTask.sequenceId.trim().length > 0
+          ? legacyTask.sequenceId.trim()
+          : undefined,
+      sequenceRunId:
+        taskSource === "sequence" && typeof legacyTask.sequenceRunId === "string" && legacyTask.sequenceRunId.trim().length > 0
+          ? legacyTask.sequenceRunId.trim()
+          : null,
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
@@ -1611,6 +1666,15 @@ export class PostgresTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
+    const taskSource = input.task_source === "snippet" || input.task_source === "sequence" ? input.task_source : "blank";
+    const snippetId =
+      taskSource === "snippet" && typeof input.snippet_id === "string" && input.snippet_id.trim().length > 0
+        ? input.snippet_id.trim()
+        : undefined;
+    const sequenceId =
+      taskSource === "sequence" && typeof input.sequence_id === "string" && input.sequence_id.trim().length > 0
+        ? input.sequence_id.trim()
+        : undefined;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
     const initialStatus: TaskStatus =
       startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
@@ -1631,6 +1695,10 @@ export class PostgresTaskStore implements TaskStore {
       providerProfile,
       modelOverride,
       codexCredentialSource,
+      taskSource,
+      ...(snippetId ? { snippetId } : {}),
+      ...(sequenceId ? { sequenceId } : {}),
+      sequenceRunId: taskSource === "sequence" ? null : undefined,
       baseBranch,
       branchStrategy,
       complexity,

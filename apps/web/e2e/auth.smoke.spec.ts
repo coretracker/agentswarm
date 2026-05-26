@@ -26,6 +26,6 @@ test("happy path: seeded admin can sign in", async ({ page }) => {
   await page.getByLabel("Password").fill(loginPassword);
   await page.getByTestId("login-submit-button").click();
 
-  await expect(page).toHaveURL(/\/(tasks|snippets|repositories|settings|users)(\/.*)?$/, { timeout: 20_000 });
+  await expect(page).toHaveURL(/\/(tasks|snippets|sequences|repositories|settings|users)(\/.*)?$/, { timeout: 20_000 });
   await expect(page.getByRole("button", { name: "Logout" })).toBeVisible();
 });

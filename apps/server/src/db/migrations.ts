@@ -324,5 +324,31 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         updated_at text NOT NULL
       );
     `
+  },
+  {
+    id: "20260526_01_sequences_mvp",
+    sql: `
+      CREATE TABLE IF NOT EXISTS sequences (
+        id text PRIMARY KEY,
+        name text NOT NULL,
+        steps jsonb NOT NULL DEFAULT '[]'::jsonb,
+        variables jsonb NOT NULL DEFAULT '[]'::jsonb,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS sequences_updated_at_idx ON sequences(updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS sequence_runs (
+        id text PRIMARY KEY,
+        sequence_id text NOT NULL REFERENCES sequences(id) ON DELETE CASCADE,
+        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        started_at text NOT NULL,
+        run_data jsonb NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS sequence_runs_task_id_idx ON sequence_runs(task_id);
+      CREATE INDEX IF NOT EXISTS sequence_runs_sequence_id_started_at_idx ON sequence_runs(sequence_id, started_at DESC, id);
+    `
   }
 ];
