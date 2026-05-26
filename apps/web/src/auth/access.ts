@@ -45,6 +45,14 @@ export const getRequiredScopesForPathname = (pathname: string): PermissionScope[
     return ["sequence:list"];
   }
 
+  if (pathname === "/sequences/new") {
+    return ["sequence:create"];
+  }
+
+  if (/^\/sequences\/[^/]+\/edit$/.test(pathname)) {
+    return ["sequence:list", "sequence:edit"];
+  }
+
   if (pathname === "/repositories") {
     return ["repo:list"];
   }
