@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import dayjs from "dayjs";
-import type { Sequence, SequenceStep } from "@agentswarm/shared-types";
+import type { Sequence, SequenceExecutionMode, SequenceStep } from "@agentswarm/shared-types";
 import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { useSequences } from "../src/hooks/useSequences";
@@ -19,6 +19,9 @@ const summarizeStep = (step: SequenceStep): string => {
   }
   return normalized.length > 90 ? `${normalized.slice(0, 90)}...` : normalized;
 };
+
+const getExecutionModeLabel = (mode: SequenceExecutionMode): string =>
+  mode === "approve_before_continuing" ? "Approve Before Continuing" : "Auto Apply Changes";
 
 export function SequencesPage() {
   const router = useRouter();
@@ -61,6 +64,10 @@ export function SequencesPage() {
               {
                 title: "Steps",
                 render: (_value, sequence) => sequence.steps.length
+              },
+              {
+                title: "Run Mode",
+                render: (_value, sequence) => getExecutionModeLabel(sequence.executionMode)
               },
               {
                 title: "Preview",

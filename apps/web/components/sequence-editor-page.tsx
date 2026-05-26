@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { Sequence, SequenceStep, SnippetVariable } from "@agentswarm/shared-types";
+import type { Sequence, SequenceExecutionMode, SequenceStep, SnippetVariable } from "@agentswarm/shared-types";
 import { ArrowDownOutlined, ArrowUpOutlined, MinusCircleOutlined, PlusOutlined } from "@ant-design/icons";
 import { Alert, Button, Card, Flex, Form, Input, Result, Select, Space, Spin, Typography, message } from "antd";
 import { api } from "../src/api/client";
@@ -19,6 +19,7 @@ interface SequenceEditorPageProps {
 
 interface SequenceFormValues {
   name: string;
+  executionMode: SequenceExecutionMode;
   steps: SequenceStep[];
   variables: SnippetVariable[];
 }
@@ -57,6 +58,7 @@ export function SequenceEditorPage({ mode, sequenceId }: SequenceEditorPageProps
     if (mode === "create") {
       form.setFieldsValue({
         name: "",
+        executionMode: "auto_apply_changes",
         steps: [defaultStep()],
         variables: []
       });
@@ -69,6 +71,7 @@ export function SequenceEditorPage({ mode, sequenceId }: SequenceEditorPageProps
 
     form.setFieldsValue({
       name: editingSequence.name,
+      executionMode: editingSequence.executionMode,
       steps: editingSequence.steps,
       variables: editingSequence.variables
     });
@@ -126,6 +129,7 @@ export function SequenceEditorPage({ mode, sequenceId }: SequenceEditorPageProps
           try {
             const payload = {
               name: values.name,
+              executionMode: values.executionMode ?? "auto_apply_changes",
               steps: values.steps.map((step, index) => ({
                 id: step.id?.trim() || `step_${index + 1}`,
                 type: step.type,
@@ -134,6 +138,7 @@ export function SequenceEditorPage({ mode, sequenceId }: SequenceEditorPageProps
               })),
               variables: values.variables ?? []
             };
+            trackEvent("sequence_mode_selected", { execution_mode: payload.executionMode, editor_mode: mode, source: "save" });
             if (mode === "edit" && editingSequence) {
               await api.updateSequence(editingSequence.id, payload);
               messageApi.success("Sequence updated");
@@ -175,6 +180,15 @@ export function SequenceEditorPage({ mode, sequenceId }: SequenceEditorPageProps
           <Card bordered={false}>
             <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a sequence name" }]}>
               <Input placeholder="Feature implementation flow" />
+            </Form.Item>
+            <Form.Item name="executionMode" label="Run Mode" rules={[{ required: true }]}>
+              <Select
+                options={[
+                  { value: "auto_apply_changes", label: "Auto Apply Changes" },
+                  { value: "approve_before_continuing", label: "Approve Before Continuing" }
+                ]}
+                onChange={(value: SequenceExecutionMode) => trackEvent("sequence_mode_selected", { execution_mode: value, editor_mode: mode })}
+              />
             </Form.Item>
 
             <Form.List

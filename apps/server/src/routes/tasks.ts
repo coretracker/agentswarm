@@ -9,6 +9,7 @@ import {
   TASK_PROMPT_ATTACHMENT_MAX_COUNT,
   type Task,
   type TaskAction,
+  type SequenceExecutionMode,
   type TaskPromptAttachment,
   type TaskTerminalSessionMode
 } from "@agentswarm/shared-types";
@@ -576,6 +577,83 @@ export const registerTaskRoutes = (
     }
   );
 
+  app.post<{ Params: { id: string } }>(
+    "/tasks/:id/sequence-run/approve",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const run = await deps.sequenceStore.getRunForTask(task.id);
+      if (!run) {
+        return reply.status(404).send({ message: "Sequence run not found for this task." });
+      }
+      if (run.status !== "waiting_for_approval" || run.waitingForApprovalAfterStepIndex === null) {
+        return reply.status(409).send({ message: "Sequence is not waiting for approval." });
+      }
+
+      if (isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {
+        return reply.status(409).send({ message: "Task is still finishing the previous step. Try again shortly." });
+      }
+      if (await deps.taskStore.hasPendingChangeProposal(task.id)) {
+        return reply.status(409).send({ message: "Apply or reject the pending checkpoint before continuing." });
+      }
+      if (await deps.taskStore.getActiveInteractiveSession(task.id)) {
+        return reply.status(409).send({ message: "Close the terminal session before continuing." });
+      }
+
+      const claimed = await deps.sequenceStore.claimRunWaitingForApproval(run.id);
+      if (!claimed) {
+        return reply.status(409).send({ message: "Sequence is no longer waiting for approval." });
+      }
+
+      const stepPrompts = claimed.run.steps.map((step) => step.prompt);
+      const nextStepIndex = claimed.approvedStepIndex + 1;
+      if (nextStepIndex >= stepPrompts.length) {
+        const completed = await deps.sequenceStore.updateRun(claimed.run.id, {
+          status: "succeeded",
+          waitingForApprovalAfterStepIndex: null,
+          failedStepIndex: null,
+          finishedAt: new Date().toISOString()
+        });
+        return reply.send(completed ?? claimed.run);
+      }
+
+      const initialRuns = await deps.taskStore.listRuns(task.id);
+      await deps.taskStore.appendLog(task.id, `Sequence approval received. Resuming step ${nextStepIndex + 1}/${stepPrompts.length}.`);
+
+      void sequenceExecutionService
+        .runSteps({
+          runId: claimed.run.id,
+          taskId: task.id,
+          action: getChatActionForTask(task),
+          stepPrompts,
+          initialKnownRunIds: new Set(initialRuns.map((runItem) => runItem.id)),
+          startStepIndex: nextStepIndex
+        })
+        .catch(async (error) => {
+          const message = error instanceof Error ? error.message : "Sequence execution failed.";
+          await deps.taskStore.appendLog(task.id, `Sequence execution failed: ${message}`);
+          const currentRun = await deps.sequenceStore.getRun(claimed.run.id);
+          if (currentRun?.status === "running") {
+            await sequenceExecutionService.failRunImmediately({
+              runId: claimed.run.id,
+              failedStepIndex: nextStepIndex,
+              errorMessage: message
+            });
+          }
+        });
+
+      return reply.send(claimed.run);
+    }
+  );
+
   app.get<{ Params: { id: string }; Querystring: { base?: string; kind?: string; commit?: string } }>(
     "/tasks/:id/live-diff",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
@@ -968,6 +1046,7 @@ export const registerTaskRoutes = (
     const createPayload = applyCreateDefaultsFromSettings(rawCreatePayload, settings);
     let sequenceStepPrompts: string[] = [];
     let sequenceId: string | null = null;
+    let sequenceExecutionMode: SequenceExecutionMode = "auto_apply_changes";
     if (createPayload.task_source === "sequence") {
       const selectedSequenceId = createPayload.sequence_id?.trim() ?? "";
       const sequence = selectedSequenceId ? await deps.sequenceStore.getSequence(selectedSequenceId) : null;
@@ -988,6 +1067,7 @@ export const registerTaskRoutes = (
         return reply.status(400).send({ message: "Sequence must contain at least one executable step." });
       }
       sequenceId = sequence.id;
+      sequenceExecutionMode = sequence.executionMode;
       createPayload.prompt = sequenceStepPrompts[0] ?? "";
     }
     if (attachmentUploads.length > 0 && startMode !== "run_now") {
@@ -1027,7 +1107,7 @@ export const registerTaskRoutes = (
       | null = null;
     if (createPayload.task_source === "sequence" && sequenceId && sequenceStepPrompts.length > 0) {
       const initialRuns = await deps.taskStore.listRuns(createdTask.id);
-      const { runId } = await sequenceExecutionService.initializeRun(sequenceId, createdTask.id, sequenceStepPrompts);
+      const { runId } = await sequenceExecutionService.initializeRun(sequenceId, createdTask.id, sequenceStepPrompts, sequenceExecutionMode);
       await deps.taskStore.appendLog(createdTask.id, `Sequence run started with ${sequenceStepPrompts.length} step(s).`);
       sequenceRunContext = {
         runId,

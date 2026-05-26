@@ -9,6 +9,7 @@ import { useAuth } from "./auth-provider";
 interface RunSnapshot {
   status: SequenceRun["status"];
   failedStepIndex: number | null;
+  waitingForApprovalAfterStepIndex: number | null;
   stepStates: SequenceRun["steps"][number]["state"][];
 }
 
@@ -49,7 +50,7 @@ export function SequenceAnalyticsTracker() {
               step_index: index
             });
           }
-          if (nextStepIndex < run.stepCount) {
+          if (nextStepIndex < run.stepCount && run.executionMode === "auto_apply_changes") {
             trackEvent("sequence_auto_advanced", {
               step_count: run.stepCount,
               from_step_index: index,
@@ -83,9 +84,24 @@ export function SequenceAnalyticsTracker() {
         trackEvent("sequence_run_succeeded", { step_count: run.stepCount });
       }
 
+      if (run.status === "waiting_for_approval" && previous?.status !== "waiting_for_approval") {
+        trackEvent("sequence_paused_for_approval", {
+          step_count: run.stepCount,
+          after_step_index: run.waitingForApprovalAfterStepIndex
+        });
+      }
+
+      if (run.status === "running" && previous?.status === "waiting_for_approval") {
+        trackEvent("sequence_resumed", {
+          step_count: run.stepCount,
+          after_step_index: previous.waitingForApprovalAfterStepIndex
+        });
+      }
+
       snapshotsRef.current.set(run.id, {
         status: run.status,
         failedStepIndex: run.failedStepIndex,
+        waitingForApprovalAfterStepIndex: run.waitingForApprovalAfterStepIndex,
         stepStates: currentStepStates
       });
     };

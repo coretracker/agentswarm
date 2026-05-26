@@ -6,6 +6,7 @@ import { resolveSequenceStepPrompts, SequenceValidationError } from "./sequence-
 const baseSequence: Sequence = {
   id: "seq-1",
   name: "Sample",
+  executionMode: "auto_apply_changes",
   variables: [
     {
       name: "ticket",

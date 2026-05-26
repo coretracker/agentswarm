@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import type {
   CreateSequenceInput,
   Sequence,
+  SequenceExecutionMode,
   SequenceRun,
   SequenceRunStep,
   SequenceStep,
@@ -25,6 +26,11 @@ const SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH = 2000;
 const NEWLINE_PATTERN = /\r?\n/u;
 
 const nowIso = (): string => new Date().toISOString();
+const normalizeExecutionMode = (value: unknown): SequenceExecutionMode =>
+  value === "approve_before_continuing" ? "approve_before_continuing" : "auto_apply_changes";
+
+const normalizeRunStatus = (value: unknown): SequenceRun["status"] =>
+  value === "succeeded" || value === "failed" || value === "waiting_for_approval" ? value : "running";
 
 const normalizeSnippetVariables = (value: unknown): SnippetVariable[] => {
   if (!Array.isArray(value)) {
@@ -130,10 +136,20 @@ export interface SequenceStore {
   getSequence(sequenceId: string): Promise<Sequence | null>;
   updateSequence(sequenceId: string, input: UpdateSequenceInput): Promise<Sequence | null>;
   deleteSequence(sequenceId: string): Promise<boolean>;
-  createRun(input: { sequenceId: string; taskId: string; stepCount: number; stepPrompts?: string[] }): Promise<SequenceRun>;
+  createRun(input: {
+    sequenceId: string;
+    taskId: string;
+    stepCount: number;
+    stepPrompts?: string[];
+    executionMode?: SequenceExecutionMode;
+  }): Promise<SequenceRun>;
   getRun(runId: string): Promise<SequenceRun | null>;
   getRunForTask(taskId: string): Promise<SequenceRun | null>;
-  updateRun(runId: string, patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps">>): Promise<SequenceRun | null>;
+  claimRunWaitingForApproval(runId: string): Promise<{ run: SequenceRun; approvedStepIndex: number } | null>;
+  updateRun(
+    runId: string,
+    patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps" | "waitingForApprovalAfterStepIndex">>
+  ): Promise<SequenceRun | null>;
 }
 
 export class RedisSequenceStore implements SequenceStore {
@@ -156,12 +172,13 @@ export class RedisSequenceStore implements SequenceStore {
 
   private buildSequence(
     input: CreateSequenceInput | UpdateSequenceInput,
-    current?: Pick<Sequence, "id" | "createdAt">
+    current?: Pick<Sequence, "id" | "createdAt" | "executionMode">
   ): Sequence {
     const timestamp = nowIso();
     return {
       id: current?.id ?? nanoid(),
       name: input.name.trim(),
+      executionMode: input.executionMode ? normalizeExecutionMode(input.executionMode) : (current?.executionMode ?? "auto_apply_changes"),
       steps: normalizeSteps(input.steps),
       variables: normalizeSnippetVariables(input.variables),
       createdAt: current?.createdAt ?? timestamp,
@@ -199,6 +216,7 @@ export class RedisSequenceStore implements SequenceStore {
         const parsed = JSON.parse(raw) as Sequence;
         sequences.push({
           ...parsed,
+          executionMode: normalizeExecutionMode(parsed.executionMode),
           steps: normalizeSteps(parsed.steps),
           variables: normalizeSnippetVariables(parsed.variables)
         });
@@ -215,6 +233,7 @@ export class RedisSequenceStore implements SequenceStore {
     const parsed = JSON.parse(raw) as Sequence;
     return {
       ...parsed,
+      executionMode: normalizeExecutionMode(parsed.executionMode),
       steps: normalizeSteps(parsed.steps),
       variables: normalizeSnippetVariables(parsed.variables)
     };
@@ -241,14 +260,22 @@ export class RedisSequenceStore implements SequenceStore {
     return true;
   }
 
-  async createRun(input: { sequenceId: string; taskId: string; stepCount: number; stepPrompts?: string[] }): Promise<SequenceRun> {
+  async createRun(input: {
+    sequenceId: string;
+    taskId: string;
+    stepCount: number;
+    stepPrompts?: string[];
+    executionMode?: SequenceExecutionMode;
+  }): Promise<SequenceRun> {
     const run: SequenceRun = {
       id: nanoid(),
       sequenceId: input.sequenceId,
       taskId: input.taskId,
       status: "running",
+      executionMode: normalizeExecutionMode(input.executionMode),
       failPolicy: "fail_fast",
       stepCount: input.stepCount,
+      waitingForApprovalAfterStepIndex: null,
       failedStepIndex: null,
       startedAt: nowIso(),
       finishedAt: null,
@@ -270,9 +297,15 @@ export class RedisSequenceStore implements SequenceStore {
       return null;
     }
     const parsed = JSON.parse(raw) as SequenceRun;
+    const normalizedStepCount = typeof parsed.stepCount === "number" && Number.isFinite(parsed.stepCount) ? Math.max(0, Math.floor(parsed.stepCount)) : 0;
     return {
       ...parsed,
-      steps: normalizeRunSteps(parsed.steps, parsed.stepCount)
+      status: normalizeRunStatus(parsed.status),
+      executionMode: normalizeExecutionMode(parsed.executionMode),
+      stepCount: normalizedStepCount,
+      waitingForApprovalAfterStepIndex:
+        typeof parsed.waitingForApprovalAfterStepIndex === "number" ? Math.max(0, Math.floor(parsed.waitingForApprovalAfterStepIndex)) : null,
+      steps: normalizeRunSteps(parsed.steps, normalizedStepCount)
     };
   }
 
@@ -284,7 +317,58 @@ export class RedisSequenceStore implements SequenceStore {
     return this.getRun(runId);
   }
 
-  async updateRun(runId: string, patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps">>): Promise<SequenceRun | null> {
+  async claimRunWaitingForApproval(runId: string): Promise<{ run: SequenceRun; approvedStepIndex: number } | null> {
+    const key = this.runKey(runId);
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await this.redis.watch(key);
+      const raw = await this.redis.get(key);
+      if (!raw) {
+        await this.redis.unwatch();
+        return null;
+      }
+
+      const parsed = JSON.parse(raw) as SequenceRun;
+      const normalizedStepCount = typeof parsed.stepCount === "number" && Number.isFinite(parsed.stepCount) ? Math.max(0, Math.floor(parsed.stepCount)) : 0;
+      const current: SequenceRun = {
+        ...parsed,
+        status: normalizeRunStatus(parsed.status),
+        executionMode: normalizeExecutionMode(parsed.executionMode),
+        stepCount: normalizedStepCount,
+        waitingForApprovalAfterStepIndex:
+          typeof parsed.waitingForApprovalAfterStepIndex === "number" ? Math.max(0, Math.floor(parsed.waitingForApprovalAfterStepIndex)) : null,
+        steps: normalizeRunSteps(parsed.steps, normalizedStepCount)
+      };
+
+      const approvedStepIndex = current.waitingForApprovalAfterStepIndex;
+      if (current.status !== "waiting_for_approval" || approvedStepIndex === null) {
+        await this.redis.unwatch();
+        return null;
+      }
+
+      const next: SequenceRun = {
+        ...current,
+        status: "running",
+        waitingForApprovalAfterStepIndex: null
+      };
+      const result = await this.redis.multi().set(key, JSON.stringify(next)).exec();
+      if (result === null) {
+        continue;
+      }
+      await this.eventBus.publish({ type: "sequence:run_updated", payload: next });
+      return {
+        run: next,
+        approvedStepIndex
+      };
+    }
+
+    return null;
+  }
+
+  async updateRun(
+    runId: string,
+    patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps" | "waitingForApprovalAfterStepIndex">>
+  ): Promise<SequenceRun | null> {
     const current = await this.getRun(runId);
     if (!current) {
       return null;
@@ -292,6 +376,13 @@ export class RedisSequenceStore implements SequenceStore {
     const next: SequenceRun = {
       ...current,
       ...patch,
+      status: patch.status ? normalizeRunStatus(patch.status) : current.status,
+      waitingForApprovalAfterStepIndex:
+        typeof patch.waitingForApprovalAfterStepIndex === "number"
+          ? Math.max(0, Math.floor(patch.waitingForApprovalAfterStepIndex))
+          : patch.waitingForApprovalAfterStepIndex === null
+            ? null
+            : current.waitingForApprovalAfterStepIndex,
       steps: patch.steps ? normalizeRunSteps(patch.steps, current.stepCount) : current.steps
     };
     await this.redis.set(this.runKey(runId), JSON.stringify(next));
@@ -308,12 +399,13 @@ export class PostgresSequenceStore implements SequenceStore {
 
   private buildSequence(
     input: CreateSequenceInput | UpdateSequenceInput,
-    current?: Pick<Sequence, "id" | "createdAt">
+    current?: Pick<Sequence, "id" | "createdAt" | "executionMode">
   ): Sequence {
     const timestamp = nowIso();
     return {
       id: current?.id ?? nanoid(),
       name: input.name.trim(),
+      executionMode: input.executionMode ? normalizeExecutionMode(input.executionMode) : (current?.executionMode ?? "auto_apply_changes"),
       steps: normalizeSteps(input.steps),
       variables: normalizeSnippetVariables(input.variables),
       createdAt: current?.createdAt ?? timestamp,
@@ -325,20 +417,21 @@ export class PostgresSequenceStore implements SequenceStore {
     const sequence = this.buildSequence(input);
     await this.pool.query(
       `
-        INSERT INTO sequences (id, name, steps, variables, created_at, updated_at)
-        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6)
+        INSERT INTO sequences (id, name, execution_mode, steps, variables, created_at, updated_at)
+        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
       `,
-      [sequence.id, sequence.name, JSON.stringify(sequence.steps), JSON.stringify(sequence.variables), sequence.createdAt, sequence.updatedAt]
+      [sequence.id, sequence.name, sequence.executionMode, JSON.stringify(sequence.steps), JSON.stringify(sequence.variables), sequence.createdAt, sequence.updatedAt]
     );
     await this.eventBus.publish({ type: "sequence:created", payload: sequence });
     return sequence;
   }
 
   async listSequences(): Promise<Sequence[]> {
-    const result = await this.pool.query("SELECT id, name, steps, variables, created_at, updated_at FROM sequences ORDER BY updated_at DESC");
+    const result = await this.pool.query("SELECT id, name, execution_mode, steps, variables, created_at, updated_at FROM sequences ORDER BY updated_at DESC");
     return result.rows.map((row) => ({
       id: String(row.id),
       name: String(row.name),
+      executionMode: normalizeExecutionMode(row.execution_mode),
       steps: normalizeSteps(row.steps),
       variables: normalizeSnippetVariables(row.variables),
       createdAt: String(row.created_at),
@@ -348,7 +441,7 @@ export class PostgresSequenceStore implements SequenceStore {
 
   async getSequence(sequenceId: string): Promise<Sequence | null> {
     const result = await this.pool.query(
-      "SELECT id, name, steps, variables, created_at, updated_at FROM sequences WHERE id = $1",
+      "SELECT id, name, execution_mode, steps, variables, created_at, updated_at FROM sequences WHERE id = $1",
       [sequenceId]
     );
     const row = result.rows[0];
@@ -356,6 +449,7 @@ export class PostgresSequenceStore implements SequenceStore {
       ? {
           id: String(row.id),
           name: String(row.name),
+          executionMode: normalizeExecutionMode(row.execution_mode),
           steps: normalizeSteps(row.steps),
           variables: normalizeSnippetVariables(row.variables),
           createdAt: String(row.created_at),
@@ -373,10 +467,10 @@ export class PostgresSequenceStore implements SequenceStore {
     await this.pool.query(
       `
         UPDATE sequences
-        SET name = $2, steps = $3::jsonb, variables = $4::jsonb, updated_at = $5
+        SET name = $2, execution_mode = $3, steps = $4::jsonb, variables = $5::jsonb, updated_at = $6
         WHERE id = $1
       `,
-      [sequenceId, next.name, JSON.stringify(next.steps), JSON.stringify(next.variables), next.updatedAt]
+      [sequenceId, next.name, next.executionMode, JSON.stringify(next.steps), JSON.stringify(next.variables), next.updatedAt]
     );
     await this.eventBus.publish({ type: "sequence:updated", payload: next });
     return next;
@@ -391,14 +485,22 @@ export class PostgresSequenceStore implements SequenceStore {
     return true;
   }
 
-  async createRun(input: { sequenceId: string; taskId: string; stepCount: number; stepPrompts?: string[] }): Promise<SequenceRun> {
+  async createRun(input: {
+    sequenceId: string;
+    taskId: string;
+    stepCount: number;
+    stepPrompts?: string[];
+    executionMode?: SequenceExecutionMode;
+  }): Promise<SequenceRun> {
     const run: SequenceRun = {
       id: nanoid(),
       sequenceId: input.sequenceId,
       taskId: input.taskId,
       status: "running",
+      executionMode: normalizeExecutionMode(input.executionMode),
       failPolicy: "fail_fast",
       stepCount: input.stepCount,
+      waitingForApprovalAfterStepIndex: null,
       failedStepIndex: null,
       startedAt: nowIso(),
       finishedAt: null,
@@ -422,9 +524,15 @@ export class PostgresSequenceStore implements SequenceStore {
       return null;
     }
     const run = parseJsonColumn<SequenceRun>(row.run_data);
+    const normalizedStepCount = typeof run.stepCount === "number" && Number.isFinite(run.stepCount) ? Math.max(0, Math.floor(run.stepCount)) : 0;
     return {
       ...run,
-      steps: normalizeRunSteps(run.steps, run.stepCount)
+      status: normalizeRunStatus(run.status),
+      executionMode: normalizeExecutionMode(run.executionMode),
+      stepCount: normalizedStepCount,
+      waitingForApprovalAfterStepIndex:
+        typeof run.waitingForApprovalAfterStepIndex === "number" ? Math.max(0, Math.floor(run.waitingForApprovalAfterStepIndex)) : null,
+      steps: normalizeRunSteps(run.steps, normalizedStepCount)
     };
   }
 
@@ -438,13 +546,80 @@ export class PostgresSequenceStore implements SequenceStore {
       return null;
     }
     const run = parseJsonColumn<SequenceRun>(row.run_data);
+    const normalizedStepCount = typeof run.stepCount === "number" && Number.isFinite(run.stepCount) ? Math.max(0, Math.floor(run.stepCount)) : 0;
     return {
       ...run,
-      steps: normalizeRunSteps(run.steps, run.stepCount)
+      status: normalizeRunStatus(run.status),
+      executionMode: normalizeExecutionMode(run.executionMode),
+      stepCount: normalizedStepCount,
+      waitingForApprovalAfterStepIndex:
+        typeof run.waitingForApprovalAfterStepIndex === "number" ? Math.max(0, Math.floor(run.waitingForApprovalAfterStepIndex)) : null,
+      steps: normalizeRunSteps(run.steps, normalizedStepCount)
     };
   }
 
-  async updateRun(runId: string, patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps">>): Promise<SequenceRun | null> {
+  async claimRunWaitingForApproval(runId: string): Promise<{ run: SequenceRun; approvedStepIndex: number } | null> {
+    const result = await this.pool.query<{
+      run_data: unknown;
+      approved_step_index: number;
+    }>(
+      `
+        WITH selected AS (
+          SELECT
+            id,
+            run_data,
+            (run_data->>'waitingForApprovalAfterStepIndex')::int AS approved_step_index
+          FROM sequence_runs
+          WHERE id = $1
+            AND run_data->>'status' = 'waiting_for_approval'
+            AND jsonb_typeof(run_data->'waitingForApprovalAfterStepIndex') = 'number'
+          FOR UPDATE
+        ),
+        updated AS (
+          UPDATE sequence_runs AS sequence_runs
+          SET run_data = jsonb_set(
+            jsonb_set(selected.run_data, '{status}', '"running"'::jsonb, false),
+            '{waitingForApprovalAfterStepIndex}',
+            'null'::jsonb,
+            false
+          )
+          FROM selected
+          WHERE sequence_runs.id = selected.id
+          RETURNING sequence_runs.run_data, selected.approved_step_index
+        )
+        SELECT run_data, approved_step_index
+        FROM updated
+      `,
+      [runId]
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+
+    const run = parseJsonColumn<SequenceRun>(row.run_data);
+    const normalizedStepCount = typeof run.stepCount === "number" && Number.isFinite(run.stepCount) ? Math.max(0, Math.floor(run.stepCount)) : 0;
+    const nextRun: SequenceRun = {
+      ...run,
+      status: normalizeRunStatus(run.status),
+      executionMode: normalizeExecutionMode(run.executionMode),
+      stepCount: normalizedStepCount,
+      waitingForApprovalAfterStepIndex:
+        typeof run.waitingForApprovalAfterStepIndex === "number" ? Math.max(0, Math.floor(run.waitingForApprovalAfterStepIndex)) : null,
+      steps: normalizeRunSteps(run.steps, normalizedStepCount)
+    };
+    await this.eventBus.publish({ type: "sequence:run_updated", payload: nextRun });
+    return {
+      run: nextRun,
+      approvedStepIndex: Math.max(0, Math.floor(Number(row.approved_step_index)))
+    };
+  }
+
+  async updateRun(
+    runId: string,
+    patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps" | "waitingForApprovalAfterStepIndex">>
+  ): Promise<SequenceRun | null> {
     const current = await this.getRun(runId);
     if (!current) {
       return null;
@@ -452,6 +627,13 @@ export class PostgresSequenceStore implements SequenceStore {
     const next: SequenceRun = {
       ...current,
       ...patch,
+      status: patch.status ? normalizeRunStatus(patch.status) : current.status,
+      waitingForApprovalAfterStepIndex:
+        typeof patch.waitingForApprovalAfterStepIndex === "number"
+          ? Math.max(0, Math.floor(patch.waitingForApprovalAfterStepIndex))
+          : patch.waitingForApprovalAfterStepIndex === null
+            ? null
+            : current.waitingForApprovalAfterStepIndex,
       steps: patch.steps ? normalizeRunSteps(patch.steps, current.stepCount) : current.steps
     };
     await this.pool.query("UPDATE sequence_runs SET started_at = $2, run_data = $3::jsonb WHERE id = $1", [

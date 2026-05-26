@@ -48,6 +48,7 @@ const sequenceStepSchema = z
 const sequenceSchema = z
   .object({
     name: z.string().trim().min(1).max(120),
+    executionMode: z.enum(["auto_apply_changes", "approve_before_continuing"]).optional().default("auto_apply_changes"),
     steps: z.array(sequenceStepSchema).min(1).max(100),
     variables: z.array(sequenceVariableSchema).max(100).optional()
   })

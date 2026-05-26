@@ -775,6 +775,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "state"
     | "renameTitle"
     | "editComment"
+    | "sequenceApprove"
   >(null);
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
@@ -2229,7 +2230,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     [changeProposals, interactiveTerminalLaunchPending, interactiveTerminalRunning, taskMessages, taskRuns, taskSequenceRun]
   );
   const sequenceQueuedSteps = useMemo(() => {
-    if (!taskSequenceRun || taskSequenceRun.status !== "running") {
+    if (!taskSequenceRun || (taskSequenceRun.status !== "running" && taskSequenceRun.status !== "waiting_for_approval")) {
       return [];
     }
 
@@ -2523,6 +2524,25 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       showTaskActionError(error, "Task execution could not be started");
     } finally {
       setSubmitting(null);
+    }
+  };
+  const handleApproveSequenceRun = async () => {
+    if (!task || !taskSequenceRun || taskSequenceRun.status !== "waiting_for_approval") {
+      return;
+    }
+
+    setSubmitting("sequenceApprove");
+    trackEvent("sequence_approved_continue", {
+      task_id: task.id,
+      sequence_run_id: taskSequenceRun.id
+    });
+    try {
+      await api.approveTaskSequenceRun(task.id);
+      messageApi.success("Sequence approved. Continuing.");
+    } catch (error) {
+      showTaskActionError(error, "Could not continue sequence");
+    } finally {
+      setSubmitting((current) => (current === "sequenceApprove" ? null : current));
     }
   };
   const handleDeleteTask = async () => {
@@ -3631,22 +3651,46 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     .filter((part): part is string => Boolean(part))
     .join(" · ");
   const sequenceQueueNotice =
-    sequenceQueuedSteps.length > 0 ? (
+    sequenceQueuedSteps.length > 0 || taskSequenceRun?.status === "waiting_for_approval" ? (
       <Alert
-        type="info"
+        type={taskSequenceRun?.status === "waiting_for_approval" ? "warning" : "info"}
         showIcon
         message={
-          runningSequenceStep
-            ? `Sequence step ${runningSequenceStep.index + 1} is running. ${sequenceQueuedSteps.length} step(s) queued next.`
-            : `${sequenceQueuedSteps.length} sequence step(s) queued next.`
+          taskSequenceRun?.status === "waiting_for_approval"
+            ? `Sequence paused for approval. ${sequenceQueuedSteps.length} step(s) waiting next.`
+            : runningSequenceStep
+              ? `Sequence step ${runningSequenceStep.index + 1} is running. ${sequenceQueuedSteps.length} step(s) queued next.`
+              : `${sequenceQueuedSteps.length} sequence step(s) queued next.`
         }
         description={
           <Flex vertical gap={6}>
+            {taskSequenceRun?.status === "waiting_for_approval" ? (
+              <Typography.Text>
+                {taskSequenceRun.waitingForApprovalAfterStepIndex !== null
+                  ? `Review completed step ${taskSequenceRun.waitingForApprovalAfterStepIndex + 1} and approve to continue.`
+                  : "Review progress and approve to continue."}
+              </Typography.Text>
+            ) : null}
             {sequenceQueuedSteps.map((step) => (
               <Typography.Text key={`sequence-queued-${step.index}`} type="secondary">
                 {`Step ${step.index + 1}: ${step.prompt}`}
               </Typography.Text>
             ))}
+            {taskSequenceRun?.status === "waiting_for_approval" ? (
+              <Button
+                type="primary"
+                onClick={() => void handleApproveSequenceRun()}
+                loading={submitting === "sequenceApprove"}
+                disabled={!canEditTask || isArchived || !!pendingChangeProposal}
+              >
+                Approve and Continue
+              </Button>
+            ) : null}
+            {taskSequenceRun?.status === "waiting_for_approval" && pendingChangeProposal ? (
+              <Typography.Text type="secondary">
+                Apply or reject the pending checkpoint before continuing.
+              </Typography.Text>
+            ) : null}
           </Flex>
         }
       />

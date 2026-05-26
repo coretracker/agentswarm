@@ -364,5 +364,12 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       CREATE INDEX IF NOT EXISTS task_git_operations_task_id_started_at_idx
         ON task_git_operations(task_id, started_at DESC, id DESC);
     `
+  },
+  {
+    id: "20260526_03_sequence_execution_mode",
+    sql: `
+      ALTER TABLE sequences
+      ADD COLUMN IF NOT EXISTS execution_mode text NOT NULL DEFAULT 'auto_apply_changes';
+    `
   }
 ];

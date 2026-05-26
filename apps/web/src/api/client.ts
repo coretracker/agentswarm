@@ -239,6 +239,10 @@ export const api = {
   },
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
   getTaskSequenceRun: (id: string) => request<SequenceRun>(`/tasks/${id}/sequence-run`),
+  approveTaskSequenceRun: (id: string) =>
+    request<SequenceRun>(`/tasks/${id}/sequence-run/approve`, {
+      method: "POST"
+    }),
   getTaskBranchSyncCounts: (id: string) => request<TaskBranchSyncCounts>(`/tasks/${id}/branch-sync-counts`),
   getTaskGitOperation: (id: string) => request<TaskGitOperation | null>(`/tasks/${id}/git-operation`),
   getTaskInteractiveTerminalStatus: (id: string, options?: { mode?: TaskTerminalSessionMode }) => {

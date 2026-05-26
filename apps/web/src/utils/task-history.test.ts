@@ -52,7 +52,9 @@ function createProposal(
 
 function createSequenceRun(input: Partial<SequenceRun> & Pick<SequenceRun, "id" | "taskId" | "sequenceId" | "status" | "stepCount" | "steps">): SequenceRun {
   return {
+    executionMode: "auto_apply_changes",
     failPolicy: "fail_fast",
+    waitingForApprovalAfterStepIndex: null,
     failedStepIndex: null,
     startedAt: "2026-03-24T00:00:00.000Z",
     finishedAt: null,

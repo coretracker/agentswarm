@@ -1,4 +1,4 @@
-import { isActiveTaskStatus, isQueuedTaskStatus, type SequenceRunStep, type TaskAction } from "@agentswarm/shared-types";
+import { isActiveTaskStatus, isQueuedTaskStatus, type SequenceExecutionMode, type SequenceRunStep, type TaskAction } from "@agentswarm/shared-types";
 import type { SchedulerService } from "./scheduler.js";
 import type { SequenceStore } from "./sequence-store.js";
 import type { TaskStore } from "./task-store.js";
@@ -15,8 +15,13 @@ export class SequenceExecutionService {
     private readonly scheduler: SchedulerService
   ) {}
 
-  async initializeRun(sequenceId: string, taskId: string, stepPrompts: string[]): Promise<{ runId: string; steps: SequenceRunStep[] }> {
-    const run = await this.sequenceStore.createRun({ sequenceId, taskId, stepCount: stepPrompts.length, stepPrompts });
+  async initializeRun(
+    sequenceId: string,
+    taskId: string,
+    stepPrompts: string[],
+    executionMode: SequenceExecutionMode = "auto_apply_changes"
+  ): Promise<{ runId: string; steps: SequenceRunStep[] }> {
+    const run = await this.sequenceStore.createRun({ sequenceId, taskId, stepCount: stepPrompts.length, stepPrompts, executionMode });
     await this.taskStore.patchTask(taskId, { sequenceRunId: run.id });
     return { runId: run.id, steps: run.steps };
   }
@@ -48,6 +53,7 @@ export class SequenceExecutionService {
     await this.sequenceStore.updateRun(input.runId, {
       status: "failed",
       failedStepIndex: input.failedStepIndex,
+      waitingForApprovalAfterStepIndex: null,
       finishedAt: now,
       steps
     });
@@ -59,14 +65,19 @@ export class SequenceExecutionService {
     action: TaskAction;
     stepPrompts: string[];
     initialKnownRunIds: Set<string>;
+    startStepIndex?: number;
   }): Promise<void> {
     let run = await this.sequenceStore.getRun(input.runId);
     if (!run) {
       return;
     }
     let knownRunIds = new Set(input.initialKnownRunIds);
+    const startStepIndex =
+      typeof input.startStepIndex === "number" && Number.isFinite(input.startStepIndex)
+        ? Math.max(0, Math.min(Math.floor(input.startStepIndex), input.stepPrompts.length))
+        : 0;
 
-    for (let stepIndex = 0; stepIndex < input.stepPrompts.length; stepIndex += 1) {
+    for (let stepIndex = startStepIndex; stepIndex < input.stepPrompts.length; stepIndex += 1) {
       const startedAt = new Date().toISOString();
       const runningSteps = run.steps.map((step, index) =>
         index === stepIndex
@@ -77,7 +88,11 @@ export class SequenceExecutionService {
             }
           : step
       );
-      run = (await this.sequenceStore.updateRun(run.id, { steps: runningSteps })) ?? run;
+      run = (await this.sequenceStore.updateRun(run.id, {
+        status: "running",
+        waitingForApprovalAfterStepIndex: null,
+        steps: runningSteps
+      })) ?? run;
       await this.taskStore.appendLog(input.taskId, `Sequence step ${stepIndex + 1}/${input.stepPrompts.length} started.`);
 
       let taskRunId: string | null = null;
@@ -143,12 +158,29 @@ export class SequenceExecutionService {
       run = (await this.sequenceStore.updateRun(run.id, { steps: succeededSteps })) ?? run;
       await this.taskStore.appendLog(input.taskId, `Sequence step ${stepIndex + 1}/${input.stepPrompts.length} succeeded.`);
       if (completedRun.action === "build" && completedRun.changeOutcome === "no_change" && stepIndex + 1 < input.stepPrompts.length) {
-        await this.taskStore.appendLog(input.taskId, "No changes needed for this step. Continuing.");
+        if (run.executionMode === "approve_before_continuing") {
+          await this.taskStore.appendLog(input.taskId, "No changes needed for this step. Waiting for approval to continue.");
+        } else {
+          await this.taskStore.appendLog(input.taskId, "No changes needed for this step. Continuing.");
+        }
+      }
+
+      if (run.executionMode === "approve_before_continuing" && stepIndex + 1 < input.stepPrompts.length) {
+        run = (await this.sequenceStore.updateRun(run.id, {
+          status: "waiting_for_approval",
+          waitingForApprovalAfterStepIndex: stepIndex
+        })) ?? run;
+        await this.taskStore.appendLog(
+          input.taskId,
+          `Sequence paused after step ${stepIndex + 1}/${input.stepPrompts.length}. Awaiting approval to continue.`
+        );
+        return;
       }
     }
 
     await this.sequenceStore.updateRun(run.id, {
       status: "succeeded",
+      waitingForApprovalAfterStepIndex: null,
       failedStepIndex: null,
       finishedAt: new Date().toISOString()
     });
@@ -195,6 +227,7 @@ export class SequenceExecutionService {
     await this.sequenceStore.updateRun(run.id, {
       status: "failed",
       failedStepIndex: stepIndex,
+      waitingForApprovalAfterStepIndex: null,
       finishedAt,
       steps: nextSteps
     });

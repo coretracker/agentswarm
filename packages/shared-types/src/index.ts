@@ -920,7 +920,8 @@ export interface UpdateSnippetInput {
 
 export type SequenceStepType = "inline" | "snippet";
 export type SequenceStepState = "pending" | "running" | "succeeded" | "failed" | "skipped";
-export type SequenceRunStatus = "running" | "succeeded" | "failed";
+export type SequenceExecutionMode = "auto_apply_changes" | "approve_before_continuing";
+export type SequenceRunStatus = "running" | "waiting_for_approval" | "succeeded" | "failed";
 
 export interface SequenceStep {
   id: string;
@@ -932,6 +933,7 @@ export interface SequenceStep {
 export interface Sequence {
   id: string;
   name: string;
+  executionMode: SequenceExecutionMode;
   steps: SequenceStep[];
   variables: SnippetVariable[];
   createdAt: string;
@@ -940,12 +942,14 @@ export interface Sequence {
 
 export interface CreateSequenceInput {
   name: string;
+  executionMode?: SequenceExecutionMode;
   steps: SequenceStep[];
   variables?: SnippetVariable[];
 }
 
 export interface UpdateSequenceInput {
   name: string;
+  executionMode?: SequenceExecutionMode;
   steps: SequenceStep[];
   variables?: SnippetVariable[];
 }
@@ -965,8 +969,10 @@ export interface SequenceRun {
   sequenceId: string;
   taskId: string;
   status: SequenceRunStatus;
+  executionMode: SequenceExecutionMode;
   failPolicy: "fail_fast";
   stepCount: number;
+  waitingForApprovalAfterStepIndex: number | null;
   failedStepIndex: number | null;
   startedAt: string;
   finishedAt: string | null;
