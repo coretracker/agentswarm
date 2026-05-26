@@ -49,15 +49,23 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
       const selectedSnippet = snippets.find((snippet) => snippet.id === values.snippetId) ?? null;
       const definition = buildTaskDefinitionInput(values, encodedAttachments, selectedSnippet?.content, selectedSnippet?.variables ?? []);
       trackEvent("task_create_submitted", { source: definition.sourceType });
-      const task = await createTaskFromDefinition(definition);
-      onCreated?.(task);
-      message.success(startMessageForDefinition(definition));
+
+      const creationPromise = createTaskFromDefinition(definition);
       form.resetFields();
       setPromptImageFiles([]);
+      setSubmitting(false);
       onClose();
+
+      void creationPromise
+        .then((task) => {
+          onCreated?.(task);
+          message.success(startMessageForDefinition(definition));
+        })
+        .catch((error) => {
+          message.error(error instanceof Error ? error.message : "Failed to create task");
+        });
     } catch (error) {
       message.error(error instanceof Error ? error.message : "Failed to create task");
-    } finally {
       setSubmitting(false);
     }
   };

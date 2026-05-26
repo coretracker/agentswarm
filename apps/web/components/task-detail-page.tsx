@@ -3844,27 +3844,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         </Flex>
       </Flex>
       <Divider style={{ margin: "8px 0 0" }} />
-      {gitOperation && gitOperationStatusLabel && gitOperationActionLabel ? (
-        <Alert
-          style={{ marginTop: 8 }}
-          type={gitOperationStatusTone}
-          showIcon
-          message={`Git status: ${gitOperationStatusLabel}`}
-          description={
-            <Space direction="vertical" size={4} style={{ width: "100%" }}>
-              <Typography.Text>{gitOperationActionLabel}</Typography.Text>
-              {gitOperation.errorMessage ? <Typography.Text type="secondary">{gitOperation.errorMessage}</Typography.Text> : null}
-            </Space>
-          }
-          action={
-            gitOperationRetryAllowed ? (
-              <Button size="small" onClick={() => void handleRetryLatestGitOperation()}>
-                Retry
-              </Button>
-            ) : null
-          }
-        />
-      ) : null}
       <Typography.Text type="secondary" style={{ display: "block", textAlign: "left" }}>
         {`Current: ${aiSettingsSummary}`}
         {isActive ? " Settings will be applied on next run." : ""}
