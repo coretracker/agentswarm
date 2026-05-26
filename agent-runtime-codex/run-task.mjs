@@ -277,11 +277,9 @@ const args = [
   "--output-last-message",
   lastMessageFile
 ];
-if (isAsk) {
-  args.push("--sandbox", "read-only");
-} else {
-  args.push("--dangerously-bypass-approvals-and-sandbox");
-}
+// Ask-mode immutability is enforced by mounting the workspace as read-only in the spawner.
+// Avoid Codex sandbox flags here because nested bubblewrap can fail on hosts without user namespaces.
+args.push("--dangerously-bypass-approvals-and-sandbox");
 if (manifest.resolvedModel) {
   args.push("-m", manifest.resolvedModel);
 }
