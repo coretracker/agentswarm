@@ -36,6 +36,7 @@ import {
   type TaskTerminalSessionMode,
   type TaskWorkspaceCommit,
   type TaskWorkspaceFilePreview,
+  type TaskGitOperation,
   type CodexCredentialSource,
   type User,
   type UserNotes
@@ -89,6 +90,7 @@ import { useTaskRuns } from "../src/hooks/useTaskRuns";
 import { useTaskChangeProposals } from "../src/hooks/useTaskChangeProposals";
 import { useTaskSequenceRun } from "../src/hooks/useTaskSequenceRun";
 import { useSettings } from "../src/hooks/useSettings";
+import { useSocket } from "../src/hooks/useSocket";
 import { isImageDiffPath, normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
 import {
   encodeTaskPromptImageFiles,
@@ -246,6 +248,8 @@ interface CheckpointEditorModalState {
   proposal: TaskChangeProposal;
   initialFilePath: string | null;
 }
+
+interface TaskGitOperationPayload extends TaskGitOperation {}
 
 function checkpointStatusLabel(status: TaskChangeProposal["status"]): string {
   switch (status) {
@@ -677,6 +681,7 @@ function MermaidDiagram({ chart }: { chart: string }) {
 
 export function TaskDetailPage({ taskId }: { taskId: string }) {
   const router = useRouter();
+  const socket = useSocket();
   const { token } = antTheme.useToken();
   const screens = Grid.useBreakpoint();
   const isDesktopWorkspaceLayout = screens.lg ?? false;
@@ -797,6 +802,67 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       }
     }
   }, [taskRuns]);
+
+  useEffect(() => {
+    if (!task?.id) {
+      setGitOperation(null);
+      return;
+    }
+
+    let cancelled = false;
+    void api
+      .getTaskGitOperation(task.id)
+      .then((nextOperation) => {
+        if (!cancelled) {
+          setGitOperation(nextOperation ?? null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setGitOperation(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [task?.id]);
+
+  useEffect(() => {
+    if (!socket || !task?.id) {
+      return;
+    }
+
+    const onTaskGitOperation = (payload: TaskGitOperationPayload) => {
+      if (payload.taskId !== task.id) {
+        return;
+      }
+      setGitOperation(payload);
+    };
+
+    socket.on("task:git_operation", onTaskGitOperation);
+    return () => {
+      socket.off("task:git_operation", onTaskGitOperation);
+    };
+  }, [socket, task?.id]);
+
+  useEffect(() => {
+    if (!gitOperation?.operationId) {
+      return;
+    }
+    if (viewedGitOperationIdsRef.current.has(gitOperation.operationId)) {
+      return;
+    }
+    viewedGitOperationIdsRef.current.add(gitOperation.operationId);
+    trackEvent("git_op_status_viewed", {
+      task_id: gitOperation.taskId,
+      operation_type: gitOperation.operationType,
+      status: gitOperation.status,
+      failure_code: gitOperation.errorCode,
+      source_surface: "task_detail"
+    });
+  }, [gitOperation]);
+
   const showTaskActionError = useCallback(
     (error: unknown, fallback: string): void => {
       const nextMessage = error instanceof Error ? error.message : fallback;
@@ -891,6 +957,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const fileMentionSearchTimerRef = useRef<number | null>(null);
   const bottomScrollAnchorRef = useRef<HTMLDivElement | null>(null);
   const initialBottomScrollStateRef = useRef<{ taskId: string; scrolledWithTerminal: boolean } | null>(null);
+  const viewedGitOperationIdsRef = useRef<Set<string>>(new Set());
+  const [gitOperation, setGitOperation] = useState<TaskGitOperation | null>(null);
 
   useEffect(() => {
     if (task) {
@@ -1169,6 +1237,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setLiveDiffRefreshKey((k) => k + 1);
     void refreshBranchSyncCounts();
   }, [refreshBranchSyncCounts]);
+  useEffect(() => {
+    if (!task?.id || !gitOperation) {
+      return;
+    }
+    if (gitOperation.taskId !== task.id) {
+      return;
+    }
+    if (gitOperation.status !== "succeeded" || (gitOperation.operationType !== "pull_task_branch" && gitOperation.operationType !== "push_task_branch")) {
+      return;
+    }
+    void refreshBranchSyncCounts(task.id);
+  }, [gitOperation, refreshBranchSyncCounts, task?.id]);
   const assigneeNameById = useMemo(() => {
     return new Map(assignableUsers.map((user) => [user.id, user.name]));
   }, [assignableUsers]);
@@ -2728,6 +2808,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     setSubmitting("push");
+    trackEvent("git_op_started", {
+      task_id: task.id,
+      operation_type: "push_task_branch",
+      source_surface: "task_detail"
+    });
     try {
       const updatedTask = await api.pushTask(task.id, {
         commitMessage: pushCommitMessage.trim() || undefined
@@ -2742,9 +2827,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : updatedTask
       );
       messageApi.success("Changes pushed");
+      trackEvent("git_op_succeeded", {
+        task_id: task.id,
+        operation_type: "push_task_branch",
+        source_surface: "task_detail"
+      });
       void loadPushPreview();
       setLiveDiffRefreshKey((k) => k + 1);
     } catch (error) {
+      trackEvent("git_op_failed", {
+        task_id: task.id,
+        operation_type: "push_task_branch",
+        failure_code: "unknown",
+        source_surface: "task_detail"
+      });
       showTaskActionError(error, "Failed to push changes");
     } finally {
       setSubmitting(null);
@@ -2855,6 +2951,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     setSubmitting("pull");
+    trackEvent("git_op_started", {
+      task_id: task.id,
+      operation_type: "pull_task_branch",
+      source_surface: "task_detail"
+    });
     try {
       const updatedTask = await api.pullTask(task.id);
       setTask((current) =>
@@ -2867,14 +2968,44 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : updatedTask
       );
       messageApi.success("Changes pulled");
+      trackEvent("git_op_succeeded", {
+        task_id: task.id,
+        operation_type: "pull_task_branch",
+        source_surface: "task_detail"
+      });
       setLiveDiffRefreshKey((k) => k + 1);
       void loadPushPreview();
     } catch (error) {
+      trackEvent("git_op_failed", {
+        task_id: task.id,
+        operation_type: "pull_task_branch",
+        failure_code: "unknown",
+        source_surface: "task_detail"
+      });
       showTaskActionError(error, "Failed to pull changes");
     } finally {
       setSubmitting(null);
     }
   };
+
+  const handleRetryLatestGitOperation = async () => {
+    if (!gitOperation || gitOperation.status !== "failed") {
+      return;
+    }
+    trackEvent("git_op_retried", {
+      task_id: gitOperation.taskId,
+      operation_type: gitOperation.operationType,
+      source_surface: "task_detail"
+    });
+    if (gitOperation.operationType === "pull_task_branch") {
+      await handlePullTask();
+      return;
+    }
+    if (gitOperation.operationType === "push_task_branch") {
+      await confirmPushTask();
+    }
+  };
+
   const handleKillInteractiveTerminal = async () => {
     if (!task) {
       return;
@@ -3138,6 +3269,36 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     pushPreview &&
       (pushPreview.hasUncommittedChanges || pushPreview.unpushedCommitSubjects.length > 0)
   );
+  const gitOperationBusy = gitOperation?.status === "queued" || gitOperation?.status === "running";
+  const gitOperationStatusLabel =
+    gitOperation?.status === "queued"
+      ? "Queued"
+      : gitOperation?.status === "running"
+        ? "Running"
+        : gitOperation?.status === "succeeded"
+          ? "Succeeded"
+          : gitOperation?.status === "failed"
+            ? "Failed"
+            : gitOperation?.status === "cancelled"
+              ? "Cancelled"
+              : null;
+  const gitOperationActionLabel =
+    gitOperation?.operationType === "clone_for_task"
+      ? "Clone task workspace"
+      : gitOperation?.operationType === "pull_task_branch"
+        ? "Pull branch"
+        : gitOperation?.operationType === "push_task_branch"
+          ? "Push branch"
+          : null;
+  const gitOperationStatusTone: "info" | "success" | "warning" | "error" =
+    gitOperation?.status === "failed"
+      ? "error"
+      : gitOperation?.status === "succeeded"
+        ? "success"
+        : gitOperation?.status === "cancelled"
+          ? "warning"
+          : "info";
+  const gitOperationRetryAllowed = gitOperation?.status === "failed" && (gitOperation.operationType === "pull_task_branch" || gitOperation.operationType === "push_task_branch");
   const applyCheckpointApplying =
     applyCheckpointModalProposal !== null &&
     proposalBusy?.id === applyCheckpointModalProposal.id &&
@@ -3146,7 +3307,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const applyCheckpointFooterBusy = applyCheckpointApplyingOrPushing || applyCheckpointCommitMessageGenerating;
   const mergeFooterBusy = submitting === "merge" || mergeCommitMessageGenerating;
   const pushNothingToPush = Boolean(pushPreview) && pushCount === 0 && !pushPreviewHasPushableChanges;
-  const pushPrimaryDisabled = submitting === "push" || pushPreviewLoading || pushNothingToPush;
+  const pushPrimaryDisabled = submitting === "push" || pushPreviewLoading || pushNothingToPush || gitOperationBusy;
   const mergeBlockedReason =
     pendingChangeProposal
       ? "Apply or reject the pending checkpoint before merging."
@@ -3159,11 +3320,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         title={
           pendingChangeProposal
             ? "Apply or reject the pending checkpoint before pulling."
+            : gitOperationBusy
+              ? "Another Git operation is already running."
             : undefined
         }
       >
         <span style={{ display: "inline-block" }}>
-          <Button onClick={handlePullTask} loading={submitting === "pull"} disabled={!!pendingChangeProposal || submitting === "push"}>
+          <Button onClick={handlePullTask} loading={submitting === "pull"} disabled={!!pendingChangeProposal || submitting === "push" || gitOperationBusy}>
             {`Pull (${pullCount})`}
           </Button>
         </span>
@@ -3175,6 +3338,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         title={
           pendingChangeProposal
             ? "Apply or reject the pending checkpoint before pushing."
+            : gitOperationBusy
+              ? "Another Git operation is already running."
             : pushNothingToPush
               ? "Nothing to push — commit local changes or refresh Git status."
               : undefined
@@ -3680,6 +3845,27 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         </Flex>
       </Flex>
       <Divider style={{ margin: "8px 0 0" }} />
+      {gitOperation && gitOperationStatusLabel && gitOperationActionLabel ? (
+        <Alert
+          style={{ marginTop: 8 }}
+          type={gitOperationStatusTone}
+          showIcon
+          message={`Git status: ${gitOperationStatusLabel}`}
+          description={
+            <Space direction="vertical" size={4} style={{ width: "100%" }}>
+              <Typography.Text>{gitOperationActionLabel}</Typography.Text>
+              {gitOperation.errorMessage ? <Typography.Text type="secondary">{gitOperation.errorMessage}</Typography.Text> : null}
+            </Space>
+          }
+          action={
+            gitOperationRetryAllowed ? (
+              <Button size="small" onClick={() => void handleRetryLatestGitOperation()}>
+                Retry
+              </Button>
+            ) : null
+          }
+        />
+      ) : null}
       <Typography.Text type="secondary" style={{ display: "block", textAlign: "left" }}>
         {`Current: ${aiSettingsSummary}`}
         {isActive ? " Settings will be applied on next run." : ""}

@@ -350,5 +350,19 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       CREATE UNIQUE INDEX IF NOT EXISTS sequence_runs_task_id_idx ON sequence_runs(task_id);
       CREATE INDEX IF NOT EXISTS sequence_runs_sequence_id_started_at_idx ON sequence_runs(sequence_id, started_at DESC, id);
     `
+  },
+  {
+    id: "20260526_02_task_git_operations",
+    sql: `
+      CREATE TABLE IF NOT EXISTS task_git_operations (
+        id text PRIMARY KEY,
+        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        started_at text NOT NULL,
+        operation_data jsonb NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_git_operations_task_id_started_at_idx
+        ON task_git_operations(task_id, started_at DESC, id DESC);
+    `
   }
 ];

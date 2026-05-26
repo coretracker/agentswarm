@@ -41,6 +41,7 @@ import type {
   UpdateTaskMessageInput,
   UpdateTaskWorkspaceFileInput,
   TaskRun,
+  TaskGitOperation,
   TaskChangeProposal,
   TaskInteractiveTerminalTranscript,
   TaskAction,
@@ -239,6 +240,7 @@ export const api = {
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
   getTaskSequenceRun: (id: string) => request<SequenceRun>(`/tasks/${id}/sequence-run`),
   getTaskBranchSyncCounts: (id: string) => request<TaskBranchSyncCounts>(`/tasks/${id}/branch-sync-counts`),
+  getTaskGitOperation: (id: string) => request<TaskGitOperation | null>(`/tasks/${id}/git-operation`),
   getTaskInteractiveTerminalStatus: (id: string, options?: { mode?: TaskTerminalSessionMode }) => {
     const params = new URLSearchParams();
     if (options?.mode) {

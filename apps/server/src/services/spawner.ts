@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
-import type { Dirent } from "node:fs";
+import { existsSync, type Dirent } from "node:fs";
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { nanoid } from "nanoid";
 import { tmpdir } from "node:os";
@@ -31,7 +31,10 @@ import {
   type TaskWorkspaceFileTree,
   type TaskWorkspaceFileTreeEntry,
   type TaskWorkspaceCommit,
-  type TaskWorkspaceCommitLog
+  type TaskWorkspaceCommitLog,
+  type TaskGitOperation,
+  type TaskGitOperationFailureCode,
+  type TaskGitOperationType
 } from "@agentswarm/shared-types";
 import { makeBranchName } from "../lib/branch.js";
 import { buildGitProcessEnv } from "../lib/git-env.js";
@@ -218,8 +221,10 @@ export class SpawnerService {
   private cancelRequestedTaskIds = new Set<string>();
   private repoLocks = new Map<string, Promise<void>>();
   private gitTargetLocks = new Map<string, Promise<void>>();
+  private taskGitOperationLocks = new Map<string, Promise<void>>();
   private readonly repoSyncManager = new RepoSyncManager();
   private executionContextStorage = new AsyncLocalStorage<{ taskId: string; executionId: string }>();
+  private gitWorkerContextStorage = new AsyncLocalStorage<{ enabled: boolean }>();
 
   constructor(
     private readonly taskStore: TaskStore,
@@ -452,6 +457,89 @@ export class SpawnerService {
     });
   }
 
+  private shouldUseGitWorkerContainer(): boolean {
+    return this.gitWorkerContextStorage.getStore()?.enabled === true;
+  }
+
+  private buildGitWorkerDockerArgs(args: string[], gitEnv: NodeJS.ProcessEnv): string[] {
+    const image = env.GIT_TERMINAL_IMAGE?.trim();
+    if (!image) {
+      throw new Error("Git worker container is not configured (set GIT_TERMINAL_IMAGE on the server).");
+    }
+
+    const dockerEnv: string[] = [
+      "-e",
+      "GIT_OPTIONAL_LOCKS=0",
+      "-e",
+      "HOME=/tmp",
+      "-e",
+      "GIT_CONFIG_COUNT=1",
+      "-e",
+      "GIT_CONFIG_KEY_0=safe.directory",
+      "-e",
+      "GIT_CONFIG_VALUE_0=*"
+    ];
+    for (const [key, value] of Object.entries(gitEnv)) {
+      if (typeof value === "string") {
+        dockerEnv.push("-e", `${key}=${value}`);
+      }
+    }
+
+    const commandScript =
+      [
+        "set -eu",
+        "if [ -n \"${GIT_TOKEN:-}\" ]; then",
+        "  printf '%s\\n' '#!/bin/sh' 'case \"$1\" in' '  *sername*) echo \"${GIT_USERNAME:-x-access-token}\" ;;' '  *assword*) echo \"${GIT_TOKEN:-}\" ;;' '  *) echo \"\" ;;' 'esac' > /tmp/agentswarm-git-askpass.sh",
+        "  chmod 700 /tmp/agentswarm-git-askpass.sh",
+        "  export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/tmp/agentswarm-git-askpass.sh",
+        "fi",
+        "exec git \"$@\""
+      ].join("\n");
+
+    const repoCacheMountSource = existsSync("/.dockerenv") ? env.REPO_CACHE_VOLUME : env.REPO_CACHE_ROOT;
+
+    return [
+      "run",
+      "--rm",
+      "-i",
+      "-v",
+      `${env.TASK_WORKSPACE_HOST_ROOT}:${env.TASK_WORKSPACE_ROOT}:rw`,
+      "-v",
+      `${repoCacheMountSource}:${env.REPO_CACHE_ROOT}:rw`,
+      ...dockerEnv,
+      image,
+      "sh",
+      "-lc",
+      commandScript,
+      "sh",
+      ...args
+    ];
+  }
+
+  private async runGitCommandInWorker(args: string[], gitEnv: NodeJS.ProcessEnv): Promise<void> {
+    await this.runCommand("docker", this.buildGitWorkerDockerArgs(args, gitEnv));
+  }
+
+  private async runGitCommandCaptureInWorker(args: string[], gitEnv: NodeJS.ProcessEnv): Promise<string> {
+    return this.runCommandCapture("docker", this.buildGitWorkerDockerArgs(args, gitEnv));
+  }
+
+  private async runGitCommandCaptureRawInWorker(args: string[], gitEnv: NodeJS.ProcessEnv): Promise<string> {
+    return this.runCommandCaptureRaw("docker", this.buildGitWorkerDockerArgs(args, gitEnv));
+  }
+
+  private runGitCommandCaptureBufferInWorker(args: string[], gitEnv: NodeJS.ProcessEnv): Promise<Buffer> {
+    return this.runCommandCaptureBuffer("docker", this.buildGitWorkerDockerArgs(args, gitEnv));
+  }
+
+  private async runGitCommandCaptureAllowExitCodesInWorker(
+    args: string[],
+    allowedExitCodes: number[],
+    gitEnv: NodeJS.ProcessEnv
+  ): Promise<string> {
+    return this.runCommandCaptureAllowExitCodes("docker", this.buildGitWorkerDockerArgs(args, gitEnv), allowedExitCodes);
+  }
+
   private async buildGitEnv(
     args: string[],
     githubToken?: string | null,
@@ -557,22 +645,38 @@ export class SpawnerService {
     task?: Pick<Task, "ownerUserId">
   ): Promise<void> {
     const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername, task);
-    await this.runGitWithRecovery(args, () => this.runCommand("git", args, gitEnv));
+    await this.runGitWithRecovery(args, () =>
+      this.shouldUseGitWorkerContainer()
+        ? this.runGitCommandInWorker(args, gitEnv)
+        : this.runCommand("git", args, gitEnv)
+    );
   }
 
   private async gitCommandCapture(args: string[], githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
     const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
-    return this.runGitWithRecovery(args, () => this.runCommandCapture("git", args, gitEnv));
+    return this.runGitWithRecovery(args, () =>
+      this.shouldUseGitWorkerContainer()
+        ? this.runGitCommandCaptureInWorker(args, gitEnv)
+        : this.runCommandCapture("git", args, gitEnv)
+    );
   }
 
   private async gitCommandCaptureRaw(args: string[], githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
     const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
-    return this.runGitWithRecovery(args, () => this.runCommandCaptureRaw("git", args, gitEnv));
+    return this.runGitWithRecovery(args, () =>
+      this.shouldUseGitWorkerContainer()
+        ? this.runGitCommandCaptureRawInWorker(args, gitEnv)
+        : this.runCommandCaptureRaw("git", args, gitEnv)
+    );
   }
 
   private async gitCommandCaptureBuffer(args: string[], githubToken?: string | null, gitUsername = "x-access-token"): Promise<Buffer> {
     const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
-    return this.runGitWithRecovery(args, () => this.runCommandCaptureBuffer("git", args, gitEnv));
+    return this.runGitWithRecovery(args, () =>
+      this.shouldUseGitWorkerContainer()
+        ? this.runGitCommandCaptureBufferInWorker(args, gitEnv)
+        : this.runCommandCaptureBuffer("git", args, gitEnv)
+    );
   }
 
   private async gitCommandCaptureAllowExitCodes(
@@ -583,12 +687,14 @@ export class SpawnerService {
   ): Promise<string> {
     const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
     return this.runGitWithRecovery(args, () =>
-      this.runCommandCaptureAllowExitCodes(
-        "git",
-        args,
-        allowedExitCodes,
-        gitEnv
-      )
+      this.shouldUseGitWorkerContainer()
+        ? this.runGitCommandCaptureAllowExitCodesInWorker(args, allowedExitCodes, gitEnv)
+        : this.runCommandCaptureAllowExitCodes(
+            "git",
+            args,
+            allowedExitCodes,
+            gitEnv
+          )
     );
   }
 
@@ -658,6 +764,155 @@ export class SpawnerService {
       return "clone_error";
     }
     return "unknown";
+  }
+
+  private classifyTaskGitOperationFailure(operationType: TaskGitOperationType, error: unknown): TaskGitOperationFailureCode {
+    if (error instanceof CancelledTaskError) {
+      return "unknown";
+    }
+
+    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    if (
+      message.includes("authentication failed") ||
+      message.includes("could not read username") ||
+      message.includes("permission denied") ||
+      message.includes("repository not found") ||
+      message.includes("access denied")
+    ) {
+      return "auth_failed";
+    }
+    if (
+      message.includes("could not resolve host") ||
+      message.includes("failed to connect") ||
+      message.includes("connection timed out") ||
+      message.includes("network is unreachable") ||
+      message.includes("http request failed")
+    ) {
+      return "network_error";
+    }
+    if (message.includes("no local workspace exists")) {
+      return "workspace_missing";
+    }
+    if (
+      message.includes("remote branch") && message.includes("does not exist") ||
+      message.includes("not a commit") ||
+      message.includes("did not match any file")
+    ) {
+      return "branch_missing";
+    }
+    if (
+      message.includes("non-fast-forward") ||
+      message.includes("merge conflict") ||
+      message.includes("could not apply") ||
+      message.includes("rebase")
+    ) {
+      return "conflict";
+    }
+    if (operationType === "push_task_branch" && (message.includes("nothing to commit") || message.includes("nothing to push"))) {
+      return "nothing_to_push";
+    }
+    return "unknown";
+  }
+
+  private emitTaskGitOperationAnalytics(
+    event: "git_op_started" | "git_op_succeeded" | "git_op_failed" | "git_op_retried",
+    payload: {
+      operation: TaskGitOperation;
+      durationMs?: number;
+    }
+  ): void {
+    const base = {
+      level: "info",
+      event,
+      task_id: payload.operation.taskId,
+      operation_type: payload.operation.operationType,
+      status: payload.operation.status,
+      failure_code: payload.operation.errorCode,
+      retry_count: Math.max(0, payload.operation.attemptCount - 1)
+    } as Record<string, unknown>;
+    if (typeof payload.durationMs === "number") {
+      base.duration_ms = payload.durationMs;
+    }
+    console.info(JSON.stringify(base));
+  }
+
+  private async withGitWorkerContainer<T>(fn: () => Promise<T>): Promise<T> {
+    return this.gitWorkerContextStorage.run({ enabled: true }, fn);
+  }
+
+  private async withTrackedTaskGitOperation<T>(
+    task: Task,
+    operationType: TaskGitOperationType,
+    fn: (operation: TaskGitOperation) => Promise<T>
+  ): Promise<T> {
+    if (this.taskGitOperationLocks.has(task.id)) {
+      throw new Error("Another Git operation is already running for this task workspace. Wait for it to finish, then retry.");
+    }
+
+    const latest = await this.taskStore.getLatestGitOperation(task.id);
+    const attemptCount = latest && latest.operationType === operationType ? latest.attemptCount + 1 : 1;
+    const queued = await this.taskStore.createGitOperation({
+      taskId: task.id,
+      operationType,
+      status: "queued",
+      attemptCount
+    });
+    if (!queued) {
+      throw new Error("Task not found.");
+    }
+
+    if (attemptCount > 1) {
+      this.emitTaskGitOperationAnalytics("git_op_retried", { operation: queued });
+    }
+
+    return this.withNamedLock(this.taskGitOperationLocks, task.id, async () => {
+      const running =
+        (await this.taskStore.updateGitOperation(queued.operationId, {
+          status: "running",
+          finishedAt: null,
+          errorCode: null,
+          errorMessage: null,
+          attemptCount
+        })) ?? queued;
+      this.emitTaskGitOperationAnalytics("git_op_started", { operation: running });
+
+      const startedAtMs = Date.parse(running.startedAt);
+      try {
+        const result = await this.withGitWorkerContainer(() => fn(running));
+        const finished =
+          (await this.taskStore.updateGitOperation(running.operationId, {
+            status: "succeeded",
+            finishedAt: new Date().toISOString(),
+            errorCode: null,
+            errorMessage: null,
+            attemptCount
+          })) ?? running;
+        const finishedAtMs = finished.finishedAt ? Date.parse(finished.finishedAt) : NaN;
+        this.emitTaskGitOperationAnalytics("git_op_succeeded", {
+          operation: finished,
+          durationMs: Number.isFinite(startedAtMs) && Number.isFinite(finishedAtMs) ? Math.max(0, finishedAtMs - startedAtMs) : undefined
+        });
+        return result;
+      } catch (error) {
+        const failureCode = this.classifyTaskGitOperationFailure(operationType, error);
+        const message = error instanceof Error ? error.message : String(error);
+        const failedStatus: TaskGitOperation["status"] = error instanceof CancelledTaskError ? "cancelled" : "failed";
+        const failed =
+          (await this.taskStore.updateGitOperation(running.operationId, {
+            status: failedStatus,
+            finishedAt: new Date().toISOString(),
+            errorCode: failedStatus === "failed" ? failureCode : null,
+            errorMessage: failedStatus === "failed" ? message : null,
+            attemptCount
+          })) ?? running;
+        const finishedAtMs = failed.finishedAt ? Date.parse(failed.finishedAt) : NaN;
+        this.emitTaskGitOperationAnalytics("git_op_failed", {
+          operation: failed,
+          durationMs: Number.isFinite(startedAtMs) && Number.isFinite(finishedAtMs) ? Math.max(0, finishedAtMs - startedAtMs) : undefined
+        });
+        throw error;
+      }
+    });
   }
 
   private workspaceFetchArgs(refSpec: string): string[] {
@@ -3509,6 +3764,10 @@ export class SpawnerService {
   }
 
   async pullTaskBranch(task: Task): Promise<Task> {
+    return this.withTrackedTaskGitOperation(task, "pull_task_branch", async () => this.pullTaskBranchCore(task));
+  }
+
+  private async pullTaskBranchCore(task: Task): Promise<Task> {
     const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
     const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
     if (!branchName) {
@@ -3580,6 +3839,10 @@ export class SpawnerService {
   }
 
   async pushTaskBranch(task: Task, options?: { commitMessage?: string | null }): Promise<Task> {
+    return this.withTrackedTaskGitOperation(task, "push_task_branch", async () => this.pushTaskBranchCore(task, options));
+  }
+
+  private async pushTaskBranchCore(task: Task, options?: { commitMessage?: string | null }): Promise<Task> {
     const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
     const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
     if (!branchName) {
@@ -3895,49 +4158,52 @@ export class SpawnerService {
     }
 
     const action: TaskAction = workingTask.taskType === "ask" ? "ask" : "build";
-    this.emitWorkspacePrepareEvent("workspace_prepare_started", {
-      taskId: workingTask.id,
-      taskType: workingTask.taskType,
-      workspaceKind: WORKSPACE_KIND,
-      mode: settings.workspaceProvisioningMode
-    });
     let workspace: WorkspacePreparation;
-    try {
-      const prepared = await this.withFreshManagedRepo(
-        workingTask,
-        runtimeCredentials.githubToken,
-        runtimeCredentials.gitUsername,
-        "workspace_prepare",
-        async (managedRepoPath) => ({
-          workspace: await this.prepareWorkspace(
-            workingTask,
-            action,
-            branchName,
-            managedRepoPath,
-            settings.workspaceProvisioningMode,
-            runtimeCredentials.githubToken,
-            runtimeCredentials.gitUsername
-          )
-        })
-      );
-      workspace = prepared.workspace;
-      this.emitWorkspacePrepareEvent("workspace_prepare_succeeded", {
+    const preparedWorkspace = await this.withTrackedTaskGitOperation(workingTask, "clone_for_task", async () => {
+      this.emitWorkspacePrepareEvent("workspace_prepare_started", {
         taskId: workingTask.id,
         taskType: workingTask.taskType,
         workspaceKind: WORKSPACE_KIND,
         mode: settings.workspaceProvisioningMode
       });
-    } catch (error) {
-      const reason = error instanceof WorkspacePrepareError ? error.reason : this.classifyWorkspacePrepareFailure(error);
-      this.emitWorkspacePrepareEvent("workspace_prepare_failed", {
-        taskId: workingTask.id,
-        taskType: workingTask.taskType,
-        workspaceKind: WORKSPACE_KIND,
-        failureReason: reason,
-        mode: settings.workspaceProvisioningMode
-      });
-      throw error;
-    }
+      try {
+        const prepared = await this.withFreshManagedRepo(
+          workingTask,
+          runtimeCredentials.githubToken,
+          runtimeCredentials.gitUsername,
+          "workspace_prepare",
+          async (managedRepoPath) => ({
+            workspace: await this.prepareWorkspace(
+              workingTask,
+              action,
+              branchName,
+              managedRepoPath,
+              settings.workspaceProvisioningMode,
+              runtimeCredentials.githubToken,
+              runtimeCredentials.gitUsername
+            )
+          })
+        );
+        this.emitWorkspacePrepareEvent("workspace_prepare_succeeded", {
+          taskId: workingTask.id,
+          taskType: workingTask.taskType,
+          workspaceKind: WORKSPACE_KIND,
+          mode: settings.workspaceProvisioningMode
+        });
+        return prepared.workspace;
+      } catch (error) {
+        const reason = error instanceof WorkspacePrepareError ? error.reason : this.classifyWorkspacePrepareFailure(error);
+        this.emitWorkspacePrepareEvent("workspace_prepare_failed", {
+          taskId: workingTask.id,
+          taskType: workingTask.taskType,
+          workspaceKind: WORKSPACE_KIND,
+          failureReason: reason,
+          mode: settings.workspaceProvisioningMode
+        });
+        throw error;
+      }
+    });
+    workspace = preparedWorkspace;
 
     let nextTask = (await this.taskStore.getTask(workingTask.id)) ?? workingTask;
     if (action === "build" && !nextTask.workspaceBaseRef) {
@@ -4192,67 +4458,68 @@ export class SpawnerService {
       this.ensureTaskNotCancelled(task.id);
       const repoCachePath = this.resolveRepoCachePath(task);
       await appendRunLog("Spawner: preparing managed repository and workspace.");
-      this.emitWorkspacePrepareEvent("workspace_prepare_started", {
-        taskId: task.id,
-        taskType: task.taskType,
-        workspaceKind: WORKSPACE_KIND,
-        mode: settings.workspaceProvisioningMode
+      const prepared = await this.withTrackedTaskGitOperation(task, "clone_for_task", async () => {
+        this.emitWorkspacePrepareEvent("workspace_prepare_started", {
+          taskId: task.id,
+          taskType: task.taskType,
+          workspaceKind: WORKSPACE_KIND,
+          mode: settings.workspaceProvisioningMode
+        });
+        try {
+          const preparedValue = await this.withFreshManagedRepo(
+            task,
+            runtimeCredentials.githubToken,
+            runtimeCredentials.gitUsername,
+            action === "ask" ? "ask" : "run",
+            async (managedRepoPath) => ({
+              repoProfile: await this.ensureRepoProfile(
+                task,
+                managedRepoPath,
+                runtimeCredentials.githubToken,
+                runtimeCredentials.gitUsername
+              ),
+              workspace:
+                action === "ask"
+                  ? await this.prepareAskRunWorkspace(
+                      task,
+                      branchName,
+                      managedRepoPath,
+                      settings.workspaceProvisioningMode,
+                      runtimeCredentials.githubToken,
+                      runtimeCredentials.gitUsername
+                    )
+                  : await this.prepareWorkspace(
+                      task,
+                      action,
+                      branchName,
+                      managedRepoPath,
+                      settings.workspaceProvisioningMode,
+                      runtimeCredentials.githubToken,
+                      runtimeCredentials.gitUsername
+                    )
+            })
+          );
+          this.emitWorkspacePrepareEvent("workspace_prepare_succeeded", {
+            taskId: task.id,
+            taskType: task.taskType,
+            workspaceKind: WORKSPACE_KIND,
+            mode: settings.workspaceProvisioningMode
+          });
+          return preparedValue;
+        } catch (error) {
+          const reason = error instanceof WorkspacePrepareError ? error.reason : this.classifyWorkspacePrepareFailure(error);
+          this.emitWorkspacePrepareEvent("workspace_prepare_failed", {
+            taskId: task.id,
+            taskType: task.taskType,
+            workspaceKind: WORKSPACE_KIND,
+            failureReason: reason,
+            mode: settings.workspaceProvisioningMode
+          });
+          throw error;
+        }
       });
-      let repoProfile: string;
-      let preparedWorkspace: WorkspacePreparation;
-      try {
-        const prepared = await this.withFreshManagedRepo(
-          task,
-          runtimeCredentials.githubToken,
-          runtimeCredentials.gitUsername,
-          action === "ask" ? "ask" : "run",
-          async (managedRepoPath) => ({
-            repoProfile: await this.ensureRepoProfile(
-              task,
-              managedRepoPath,
-              runtimeCredentials.githubToken,
-              runtimeCredentials.gitUsername
-            ),
-            workspace:
-              action === "ask"
-                ? await this.prepareAskRunWorkspace(
-                    task,
-                    branchName,
-                    managedRepoPath,
-                    settings.workspaceProvisioningMode,
-                    runtimeCredentials.githubToken,
-                    runtimeCredentials.gitUsername
-                  )
-                : await this.prepareWorkspace(
-                    task,
-                    action,
-                    branchName,
-                    managedRepoPath,
-                    settings.workspaceProvisioningMode,
-                    runtimeCredentials.githubToken,
-                    runtimeCredentials.gitUsername
-                  )
-          })
-        );
-        repoProfile = prepared.repoProfile;
-        preparedWorkspace = prepared.workspace;
-        this.emitWorkspacePrepareEvent("workspace_prepare_succeeded", {
-          taskId: task.id,
-          taskType: task.taskType,
-          workspaceKind: WORKSPACE_KIND,
-          mode: settings.workspaceProvisioningMode
-        });
-      } catch (error) {
-        const reason = error instanceof WorkspacePrepareError ? error.reason : this.classifyWorkspacePrepareFailure(error);
-        this.emitWorkspacePrepareEvent("workspace_prepare_failed", {
-          taskId: task.id,
-          taskType: task.taskType,
-          workspaceKind: WORKSPACE_KIND,
-          failureReason: reason,
-          mode: settings.workspaceProvisioningMode
-        });
-        throw error;
-      }
+      const repoProfile = prepared.repoProfile;
+      const preparedWorkspace = prepared.workspace;
       workspace = preparedWorkspace;
       this.ensureTaskNotCancelled(task.id);
       if (action === "build" && !task.workspaceBaseRef) {

@@ -397,6 +397,19 @@ export const registerTaskRoutes = (
     }
   );
 
+  app.get<{ Params: { id: string } }>(
+    "/tasks/:id/git-operation",
+    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      return reply.send(await deps.taskStore.getLatestGitOperation(task.id));
+    }
+  );
+
   app.get<{ Params: { id: string }; Querystring: { mode?: string } }>(
     "/tasks/:id/interactive-terminal/status",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },

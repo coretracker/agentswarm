@@ -14,6 +14,10 @@ import {
   type TaskPromptAttachment,
   type TaskReasoningEffort,
   type TaskRun,
+  type TaskGitOperation,
+  type TaskGitOperationFailureCode,
+  type TaskGitOperationStatus,
+  type TaskGitOperationType,
   type TaskStartMode,
   type TaskStatus,
   type TaskChangeProposal,
@@ -45,6 +49,8 @@ const TASK_MESSAGE_KEY_PREFIX = "agentswarm:task_messages:";
 const TASK_RUN_KEY_PREFIX = "agentswarm:task_run:";
 const TASK_RUN_LOG_KEY_PREFIX = "agentswarm:task_run_logs:";
 const TASK_RUN_IDS_KEY_PREFIX = "agentswarm:task_run_ids:";
+const TASK_GIT_OPERATION_KEY_PREFIX = "agentswarm:task_git_operation:";
+const TASK_GIT_OPERATION_IDS_KEY_PREFIX = "agentswarm:task_git_operation_ids:";
 const TASK_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_change_proposal:";
 const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "agentswarm:task_change_proposal_ids:";
 const TASK_PENDING_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_pending_change_proposal:";
@@ -159,6 +165,19 @@ export interface CreateTaskRunInput {
   branchName: string | null;
 }
 
+export interface CreateTaskGitOperationInput {
+  taskId: string;
+  operationType: TaskGitOperationType;
+  status?: TaskGitOperationStatus;
+  attemptCount?: number;
+  errorCode?: TaskGitOperationFailureCode | null;
+  errorMessage?: string | null;
+}
+
+export type UpdateTaskGitOperationPatch = Partial<
+  Pick<TaskGitOperation, "status" | "finishedAt" | "errorCode" | "errorMessage" | "attemptCount">
+>;
+
 export type UpdateTaskRunPatch = Partial<
   Pick<
     TaskRun,
@@ -252,6 +271,9 @@ export interface TaskStore {
   getRun(runId: string): Promise<TaskRun | null>;
   createRun(taskId: string, input: CreateTaskRunInput): Promise<TaskRun | null>;
   updateRun(runId: string, patch: UpdateTaskRunPatch): Promise<TaskRun | null>;
+  createGitOperation(input: CreateTaskGitOperationInput): Promise<TaskGitOperation | null>;
+  updateGitOperation(operationId: string, patch: UpdateTaskGitOperationPatch): Promise<TaskGitOperation | null>;
+  getLatestGitOperation(taskId: string): Promise<TaskGitOperation | null>;
   appendMessage(taskId: string, input: AppendTaskMessageInput): Promise<TaskMessage | null>;
   updateMessage(taskId: string, messageId: string, content: string): Promise<TaskMessage | null>;
   setMessageAttachments(taskId: string, messageId: string, attachments: TaskPromptAttachment[]): Promise<TaskMessage | null>;
@@ -390,6 +412,14 @@ export class RedisTaskStore implements TaskStore {
     return `${TASK_RUN_IDS_KEY_PREFIX}${taskId}`;
   }
 
+  private taskGitOperationKey(operationId: string): string {
+    return `${TASK_GIT_OPERATION_KEY_PREFIX}${operationId}`;
+  }
+
+  private taskGitOperationIdsKey(taskId: string): string {
+    return `${TASK_GIT_OPERATION_IDS_KEY_PREFIX}${taskId}`;
+  }
+
   private taskChangeProposalKey(proposalId: string): string {
     return `${TASK_CHANGE_PROPOSAL_KEY_PREFIX}${proposalId}`;
   }
@@ -472,6 +502,26 @@ export class RedisTaskStore implements TaskStore {
     };
   }
 
+  private normalizeGitOperation(operation: TaskGitOperation): TaskGitOperation {
+    return {
+      ...operation,
+      finishedAt: operation.finishedAt ?? null,
+      errorCode: operation.errorCode ?? null,
+      errorMessage: operation.errorMessage ?? null,
+      attemptCount: Math.max(1, Number.isFinite(operation.attemptCount) ? Math.floor(operation.attemptCount) : 1)
+    };
+  }
+
+  private normalizeGitOperation(operation: TaskGitOperation): TaskGitOperation {
+    return {
+      ...operation,
+      finishedAt: operation.finishedAt ?? null,
+      errorCode: operation.errorCode ?? null,
+      errorMessage: operation.errorMessage ?? null,
+      attemptCount: Math.max(1, Number.isFinite(operation.attemptCount) ? Math.floor(operation.attemptCount) : 1)
+    };
+  }
+
   private async getStoredRun(runId: string): Promise<TaskRun | null> {
     const raw = await this.redis.get(this.taskRunKey(runId));
     if (!raw) {
@@ -487,6 +537,14 @@ export class RedisTaskStore implements TaskStore {
       ...run,
       logs
     };
+  }
+
+  private async getStoredGitOperation(operationId: string): Promise<TaskGitOperation | null> {
+    const raw = await this.redis.get(this.taskGitOperationKey(operationId));
+    if (!raw) {
+      return null;
+    }
+    return this.normalizeGitOperation(JSON.parse(raw) as TaskGitOperation);
   }
 
   async createTask(input: CreateTaskInput, repository: Repository, ownerUserId: string): Promise<Task> {
@@ -847,6 +905,57 @@ export class RedisTaskStore implements TaskStore {
     return next;
   }
 
+  async createGitOperation(input: CreateTaskGitOperationInput): Promise<TaskGitOperation | null> {
+    const task = await this.getStoredTask(input.taskId);
+    if (!task) {
+      return null;
+    }
+
+    const operation: TaskGitOperation = this.normalizeGitOperation({
+      operationId: nanoid(),
+      taskId: input.taskId,
+      operationType: input.operationType,
+      status: input.status ?? "queued",
+      startedAt: nowIso(),
+      finishedAt: null,
+      errorCode: input.errorCode ?? null,
+      errorMessage: input.errorMessage ?? null,
+      attemptCount: Math.max(1, input.attemptCount ?? 1)
+    });
+
+    await this.redis
+      .multi()
+      .set(this.taskGitOperationKey(operation.operationId), JSON.stringify(operation))
+      .rpush(this.taskGitOperationIdsKey(input.taskId), operation.operationId)
+      .exec();
+    await this.eventBus.publish({ type: "task:git_operation", payload: operation });
+    return operation;
+  }
+
+  async updateGitOperation(operationId: string, patch: UpdateTaskGitOperationPatch): Promise<TaskGitOperation | null> {
+    const operation = await this.getStoredGitOperation(operationId);
+    if (!operation) {
+      return null;
+    }
+
+    const next: TaskGitOperation = this.normalizeGitOperation({
+      ...operation,
+      ...patch
+    });
+
+    await this.redis.set(this.taskGitOperationKey(operationId), JSON.stringify(next));
+    await this.eventBus.publish({ type: "task:git_operation", payload: next });
+    return next;
+  }
+
+  async getLatestGitOperation(taskId: string): Promise<TaskGitOperation | null> {
+    const operationId = await this.redis.lindex(this.taskGitOperationIdsKey(taskId), -1);
+    if (!operationId) {
+      return null;
+    }
+    return this.getStoredGitOperation(operationId);
+  }
+
   async appendMessage(taskId: string, input: AppendTaskMessageInput): Promise<TaskMessage | null> {
     const task = await this.getStoredTask(taskId);
     if (!task) {
@@ -1042,6 +1151,7 @@ export class RedisTaskStore implements TaskStore {
       return false;
     }
     const runIds = await this.redis.lrange(this.taskRunIdsKey(taskId), 0, -1);
+    const gitOperationIds = await this.redis.lrange(this.taskGitOperationIdsKey(taskId), 0, -1);
     const proposalIds = await this.redis.lrange(this.taskChangeProposalIdsKey(taskId), 0, -1);
     const pipeline = this.redis
       .multi()
@@ -1049,12 +1159,16 @@ export class RedisTaskStore implements TaskStore {
       .del(this.taskLogKey(taskId))
       .del(this.taskMessageKey(taskId))
       .del(this.taskRunIdsKey(taskId))
+      .del(this.taskGitOperationIdsKey(taskId))
       .del(this.taskChangeProposalIdsKey(taskId))
       .del(this.taskPendingChangeProposalKey(taskId))
       .del(this.taskActiveInteractiveSessionKey(taskId))
       .srem(TASK_IDS_KEY, taskId);
     for (const runId of runIds) {
       pipeline.del(this.taskRunKey(runId)).del(this.taskRunLogKey(runId));
+    }
+    for (const operationId of gitOperationIds) {
+      pipeline.del(this.taskGitOperationKey(operationId));
     }
     for (const proposalId of proposalIds) {
       pipeline.del(this.taskChangeProposalKey(proposalId));
@@ -1607,10 +1721,20 @@ export class PostgresTaskStore implements TaskStore {
     return { ...this.normalizeRun(parseJsonColumn<TaskRun>(row.run_data)), logs: [] };
   }
 
+  private mapGitOperationRow(row: Record<string, unknown>): TaskGitOperation {
+    return this.normalizeGitOperation(parseJsonColumn<TaskGitOperation>(row.operation_data));
+  }
+
   private async getStoredRun(runId: string, db: PostgresQueryable = this.pool): Promise<TaskRun | null> {
     const result = await db.query("SELECT run_data FROM task_runs WHERE id = $1", [runId]);
     const row = result.rows[0];
     return row ? this.mapRunRow(row) : null;
+  }
+
+  private async getStoredGitOperation(operationId: string, db: PostgresQueryable = this.pool): Promise<TaskGitOperation | null> {
+    const result = await db.query("SELECT operation_data FROM task_git_operations WHERE id = $1", [operationId]);
+    const row = result.rows[0];
+    return row ? this.mapGitOperationRow(row) : null;
   }
 
   private async loadRunLogs(runId: string, db: PostgresQueryable = this.pool): Promise<string[]> {
@@ -2011,6 +2135,60 @@ export class PostgresTaskStore implements TaskStore {
     );
     await this.eventBus.publish({ type: "task:run_updated", payload: next });
     return next;
+  }
+
+  async createGitOperation(input: CreateTaskGitOperationInput): Promise<TaskGitOperation | null> {
+    const task = await this.getStoredTask(input.taskId);
+    if (!task) {
+      return null;
+    }
+
+    const operation: TaskGitOperation = this.normalizeGitOperation({
+      operationId: nanoid(),
+      taskId: input.taskId,
+      operationType: input.operationType,
+      status: input.status ?? "queued",
+      startedAt: nowIso(),
+      finishedAt: null,
+      errorCode: input.errorCode ?? null,
+      errorMessage: input.errorMessage ?? null,
+      attemptCount: Math.max(1, input.attemptCount ?? 1)
+    });
+
+    await this.pool.query(
+      "INSERT INTO task_git_operations (id, task_id, started_at, operation_data) VALUES ($1, $2, $3, $4::jsonb)",
+      [operation.operationId, operation.taskId, operation.startedAt, JSON.stringify(operation)]
+    );
+    await this.eventBus.publish({ type: "task:git_operation", payload: operation });
+    return operation;
+  }
+
+  async updateGitOperation(operationId: string, patch: UpdateTaskGitOperationPatch): Promise<TaskGitOperation | null> {
+    const operation = await this.getStoredGitOperation(operationId);
+    if (!operation) {
+      return null;
+    }
+
+    const next: TaskGitOperation = this.normalizeGitOperation({
+      ...operation,
+      ...patch
+    });
+
+    await this.pool.query(
+      "UPDATE task_git_operations SET started_at = $2, operation_data = $3::jsonb WHERE id = $1",
+      [operationId, next.startedAt, JSON.stringify(next)]
+    );
+    await this.eventBus.publish({ type: "task:git_operation", payload: next });
+    return next;
+  }
+
+  async getLatestGitOperation(taskId: string): Promise<TaskGitOperation | null> {
+    const result = await this.pool.query(
+      "SELECT operation_data FROM task_git_operations WHERE task_id = $1 ORDER BY started_at DESC, id DESC LIMIT 1",
+      [taskId]
+    );
+    const row = result.rows[0];
+    return row ? this.mapGitOperationRow(row) : null;
   }
 
   async appendMessage(taskId: string, input: AppendTaskMessageInput): Promise<TaskMessage | null> {

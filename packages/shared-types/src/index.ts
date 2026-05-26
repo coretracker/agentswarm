@@ -608,6 +608,29 @@ export interface TaskRun {
   logs: string[];
 }
 
+export type TaskGitOperationType = "clone_for_task" | "pull_task_branch" | "push_task_branch";
+export type TaskGitOperationStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type TaskGitOperationFailureCode =
+  | "auth_failed"
+  | "network_error"
+  | "branch_missing"
+  | "conflict"
+  | "nothing_to_push"
+  | "workspace_missing"
+  | "unknown";
+
+export interface TaskGitOperation {
+  operationId: string;
+  taskId: string;
+  operationType: TaskGitOperationType;
+  status: TaskGitOperationStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  errorCode: TaskGitOperationFailureCode | null;
+  errorMessage: string | null;
+  attemptCount: number;
+}
+
 export type TaskChangeProposalSourceType = "build_run" | "interactive_session";
 
 export type TaskChangeProposalStatus = "pending" | "applied" | "rejected" | "reverted";
@@ -1211,6 +1234,11 @@ export interface TaskRunEvent {
   payload: TaskRun;
 }
 
+export interface TaskGitOperationEvent {
+  type: "task:git_operation";
+  payload: TaskGitOperation;
+}
+
 export interface TaskChangeProposalEvent {
   type: "task:change_proposal";
   payload: TaskChangeProposal;
@@ -1271,6 +1299,7 @@ export type RealtimeEvent =
   | TaskMessageEvent
   | TaskMessageUpdatedEvent
   | TaskRunEvent
+  | TaskGitOperationEvent
   | TaskChangeProposalEvent
   | TaskPushedEvent
   | TaskMergedEvent
