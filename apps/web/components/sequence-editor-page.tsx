@@ -9,6 +9,7 @@ import { api } from "../src/api/client";
 import { useSnippets } from "../src/hooks/useSnippets";
 import { useSequences } from "../src/hooks/useSequences";
 import { trackEvent } from "../src/utils/analytics";
+import { mergeSnippetVariables } from "../src/utils/sequence-variables";
 import { useAuth } from "./auth-provider";
 
 interface SequenceEditorPageProps {
@@ -23,48 +24,6 @@ interface SequenceFormValues {
 }
 
 const defaultStep = (): SequenceStep => ({ id: "step_1", type: "inline", prompt: "", snippetId: undefined });
-
-const normalizeVariable = (value: SnippetVariable): SnippetVariable => ({
-  name: value.name,
-  type: value.type,
-  title: value.title ?? "",
-  description: value.description ?? "",
-  defaultValue: value.defaultValue ?? ""
-});
-
-const mergeSnippetVariables = (input: { current: SnippetVariable[]; steps: SequenceStep[]; snippetDefinitions: Map<string, SnippetVariable[]> }) => {
-  const next = input.current.map((entry) => normalizeVariable(entry));
-  const byName = new Map(next.map((entry, index) => [entry.name, index]));
-  const conflicts = new Set<string>();
-
-  for (const step of input.steps) {
-    if (step.type !== "snippet" || !step.snippetId) {
-      continue;
-    }
-    const variables = input.snippetDefinitions.get(step.snippetId) ?? [];
-    for (const snippetVariable of variables) {
-      const existingIndex = byName.get(snippetVariable.name);
-      if (existingIndex === undefined) {
-        byName.set(snippetVariable.name, next.length);
-        next.push(normalizeVariable(snippetVariable));
-        continue;
-      }
-      const existing = next[existingIndex]!;
-      if (existing.type !== snippetVariable.type) {
-        conflicts.add(snippetVariable.name);
-      }
-      next[existingIndex] = {
-        ...existing,
-        title: existing.title || snippetVariable.title || "",
-        description: existing.description || snippetVariable.description || "",
-        defaultValue: existing.defaultValue || snippetVariable.defaultValue || ""
-      };
-    }
-  }
-
-  const changed = JSON.stringify(next) !== JSON.stringify(input.current.map((entry) => normalizeVariable(entry)));
-  return { next, conflicts: Array.from(conflicts), changed };
-};
 
 export function SequenceEditorPage({ mode, sequenceId }: SequenceEditorPageProps) {
   const router = useRouter();
@@ -319,7 +278,7 @@ export function SequenceEditorPage({ mode, sequenceId }: SequenceEditorPageProps
                 }
               ]}
             >
-              {(fields, { add, remove }, { errors }) => (
+              {(fields, { add, remove, move }, { errors }) => (
                 <Flex vertical gap={8} style={{ marginBottom: 16 }}>
                   <Flex justify="space-between" align="center">
                     <Typography.Text strong>Variables</Typography.Text>
@@ -327,8 +286,44 @@ export function SequenceEditorPage({ mode, sequenceId }: SequenceEditorPageProps
                       Add Variable
                     </Button>
                   </Flex>
-                  {fields.map((field) => (
+                  {fields.map((field, index) => (
                     <Card key={field.key} size="small">
+                      <Flex justify="space-between" align="center" style={{ marginBottom: 8 }}>
+                        <Typography.Text strong>{`Variable ${index + 1}`}</Typography.Text>
+                        <Space size={4}>
+                          <Button
+                            icon={<ArrowUpOutlined />}
+                            disabled={index === 0}
+                            onClick={() => {
+                              const variables = (form.getFieldValue("variables") as SequenceFormValues["variables"] | undefined) ?? [];
+                              const variableName = variables[index]?.name ?? "";
+                              move(index, index - 1);
+                              trackEvent("sequence_variable_reordered", {
+                                variable_name: variableName,
+                                from_index: index,
+                                to_index: index - 1,
+                                editor_mode: mode
+                              });
+                            }}
+                          />
+                          <Button
+                            icon={<ArrowDownOutlined />}
+                            disabled={index === fields.length - 1}
+                            onClick={() => {
+                              const variables = (form.getFieldValue("variables") as SequenceFormValues["variables"] | undefined) ?? [];
+                              const variableName = variables[index]?.name ?? "";
+                              move(index, index + 1);
+                              trackEvent("sequence_variable_reordered", {
+                                variable_name: variableName,
+                                from_index: index,
+                                to_index: index + 1,
+                                editor_mode: mode
+                              });
+                            }}
+                          />
+                          <Button type="text" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)} />
+                        </Space>
+                      </Flex>
                       <Flex gap={8} align="flex-start">
                         <Form.Item name={[field.name, "name"]} style={{ marginBottom: 8, flex: 1 }} rules={[{ required: true, message: "Name is required" }]}>
                           <Input placeholder="name ({{name}})" />
@@ -341,7 +336,6 @@ export function SequenceEditorPage({ mode, sequenceId }: SequenceEditorPageProps
                             ]}
                           />
                         </Form.Item>
-                        <Button type="text" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)} />
                       </Flex>
                       <Form.Item name={[field.name, "title"]} style={{ marginBottom: 8 }}>
                         <Input placeholder="Title (optional)" />

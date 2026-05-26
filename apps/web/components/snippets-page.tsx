@@ -3,10 +3,11 @@
 import { useState } from "react";
 import dayjs from "dayjs";
 import type { Snippet } from "@agentswarm/shared-types";
-import { CopyOutlined, MinusCircleOutlined, PlusOutlined } from "@ant-design/icons";
+import { ArrowDownOutlined, ArrowUpOutlined, CopyOutlined, MinusCircleOutlined, PlusOutlined } from "@ant-design/icons";
 import { Button, Card, Flex, Form, Input, Modal, Popconfirm, Select, Space, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { useSnippets } from "../src/hooks/useSnippets";
+import { trackEvent } from "../src/utils/analytics";
 import { useAuth } from "./auth-provider";
 
 interface SnippetFormValues {
@@ -221,7 +222,7 @@ export function SnippetsPage() {
               }
             ]}
           >
-            {(fields, { add, remove }, { errors }) => (
+            {(fields, { add, remove, move }, { errors }) => (
               <Flex vertical gap={8} style={{ marginBottom: 16 }}>
                 <Flex justify="space-between" align="center">
                   <Typography.Text strong>Variables</Typography.Text>
@@ -233,8 +234,44 @@ export function SnippetsPage() {
                     Add Variable
                   </Button>
                 </Flex>
-                {fields.map((field) => (
+                {fields.map((field, index) => (
                   <Card key={field.key} size="small">
+                    <Flex justify="space-between" align="center" style={{ marginBottom: 8 }}>
+                      <Typography.Text strong>{`Variable ${index + 1}`}</Typography.Text>
+                      <Space size={4}>
+                        <Button
+                          icon={<ArrowUpOutlined />}
+                          disabled={index === 0}
+                          onClick={() => {
+                            const variables = (form.getFieldValue("variables") as SnippetFormValues["variables"] | undefined) ?? [];
+                            const variableName = variables[index]?.name ?? "";
+                            move(index, index - 1);
+                            trackEvent("snippet_variable_reordered", {
+                              variable_name: variableName,
+                              from_index: index,
+                              to_index: index - 1,
+                              editor_mode: editing ? "edit" : "create"
+                            });
+                          }}
+                        />
+                        <Button
+                          icon={<ArrowDownOutlined />}
+                          disabled={index === fields.length - 1}
+                          onClick={() => {
+                            const variables = (form.getFieldValue("variables") as SnippetFormValues["variables"] | undefined) ?? [];
+                            const variableName = variables[index]?.name ?? "";
+                            move(index, index + 1);
+                            trackEvent("snippet_variable_reordered", {
+                              variable_name: variableName,
+                              from_index: index,
+                              to_index: index + 1,
+                              editor_mode: editing ? "edit" : "create"
+                            });
+                          }}
+                        />
+                        <Button type="text" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)} />
+                      </Space>
+                    </Flex>
                     <Flex gap={8} align="flex-start">
                       <Form.Item
                         name={[field.name, "name"]}
@@ -251,7 +288,6 @@ export function SnippetsPage() {
                           ]}
                         />
                       </Form.Item>
-                      <Button type="text" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)} />
                     </Flex>
                     <Form.Item name={[field.name, "title"]} style={{ marginBottom: 8 }}>
                       <Input placeholder="Title (shown in insert form)" />
