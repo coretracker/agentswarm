@@ -1002,6 +1002,18 @@ export class SpawnerService {
     return resolveGitPaths(path.join(workspacePath, ".git"));
   }
 
+  private async resolveWorkspaceHeadRef(
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string | null> {
+    try {
+      return await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
+    } catch {
+      return null;
+    }
+  }
+
   private async syncWorkspaceRemoteRefsIfNeeded(
     task: Pick<Task, "repoUrl">,
     workspacePath: string,
@@ -2468,7 +2480,13 @@ export class SpawnerService {
       await this.syncWorkspaceRemoteRefsIfNeeded(task, workspacePath, githubToken, gitUsername);
     }
 
-    const startRef = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
+    const startRef = await this.resolveWorkspaceHeadRef(workspacePath, githubToken, gitUsername);
+    if (!startRef) {
+      throw new WorkspacePrepareError(
+        "Workspace setup failed: repository has no commits yet, so HEAD is not available.",
+        "branch_missing"
+      );
+    }
     return {
       workspacePath,
       hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
@@ -2531,7 +2549,13 @@ export class SpawnerService {
       }
     }
 
-    const startRef = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
+    const startRef = await this.resolveWorkspaceHeadRef(workspacePath, githubToken, gitUsername);
+    if (!startRef) {
+      throw new WorkspacePrepareError(
+        "Workspace setup failed: repository has no commits yet, so HEAD is not available.",
+        "branch_missing"
+      );
+    }
     return {
       workspacePath,
       hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
@@ -2565,7 +2589,10 @@ export class SpawnerService {
       return this.prepareWorkspace(task, "ask", branchName, repoCachePath, provisioningMode, githubToken, gitUsername);
     }
 
-    const startRef = await this.gitCommandCapture(["-C", taskWorkspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
+    const startRef = await this.resolveWorkspaceHeadRef(taskWorkspacePath, githubToken, gitUsername);
+    if (!startRef) {
+      throw new Error("Task workspace has no commits yet. Prepare the task workspace again after creating an initial commit.");
+    }
     return {
       workspacePath: taskWorkspacePath,
       hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
@@ -2596,7 +2623,10 @@ export class SpawnerService {
     }
 
     await this.cleanupWorkspaceGitLocks(workspacePath);
-    const startRef = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
+    const startRef = await this.resolveWorkspaceHeadRef(workspacePath, githubToken, gitUsername);
+    if (!startRef) {
+      throw new Error("Task workspace has no commits yet. Prepare the task workspace again after creating an initial commit.");
+    }
     return {
       workspacePath,
       hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
@@ -4583,13 +4613,14 @@ export class SpawnerService {
       this.ensureTaskNotCancelled(task.id);
 
       if (runId && action === "build") {
-        const checkpointRef = (
-          await this.gitCommandCapture(
-            ["-C", workspace.workspacePath, "rev-parse", "HEAD"],
-            runtimeCredentials.githubToken,
-            runtimeCredentials.gitUsername
-          )
-        ).trim();
+        const checkpointRef = await this.resolveWorkspaceHeadRef(
+          workspace.workspacePath,
+          runtimeCredentials.githubToken,
+          runtimeCredentials.gitUsername
+        );
+        if (!checkpointRef) {
+          throw new Error("Task workspace has no commits yet. Create an initial commit before running build mode.");
+        }
         const changeProposalUntrackedPaths = await this.listUntrackedRelativePaths(
           workspace.workspacePath,
           runtimeCredentials.githubToken,
