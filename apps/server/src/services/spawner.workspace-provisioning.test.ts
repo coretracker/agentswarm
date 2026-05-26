@@ -57,6 +57,17 @@ const createSpawner = (): SpawnerService =>
   );
 
 describe("SpawnerService workspace provisioning", () => {
+  it("releases named locks after completion", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const locks = new Map<string, Promise<void>>();
+    const key = "task-1";
+
+    const result = await spawnerAny.withNamedLock(locks, key, async () => "ok");
+    assert.equal(result, "ok");
+    assert.equal(locks.has(key), false);
+  });
+
   it("prepares build workspace via clone model", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;

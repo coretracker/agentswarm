@@ -590,18 +590,19 @@ export class SpawnerService {
   private async withNamedLock<T>(locks: Map<string, Promise<void>>, key: string, fn: () => Promise<T>): Promise<T> {
     const current = locks.get(key) ?? Promise.resolve();
     let release!: () => void;
-    const next = new Promise<void>((resolve) => {
+    const nextGate = new Promise<void>((resolve) => {
       release = resolve;
     });
+    const nextLock = current.then(() => nextGate);
 
-    locks.set(key, current.then(() => next));
+    locks.set(key, nextLock);
     await current;
 
     try {
       return await fn();
     } finally {
       release();
-      if (locks.get(key) === next) {
+      if (locks.get(key) === nextLock) {
         locks.delete(key);
       }
     }
