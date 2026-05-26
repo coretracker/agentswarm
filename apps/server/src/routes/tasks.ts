@@ -1014,7 +1014,7 @@ export const registerTaskRoutes = (
       | null = null;
     if (createPayload.task_source === "sequence" && sequenceId && sequenceStepPrompts.length > 0) {
       const initialRuns = await deps.taskStore.listRuns(createdTask.id);
-      const { runId } = await sequenceExecutionService.initializeRun(sequenceId, createdTask.id, sequenceStepPrompts.length);
+      const { runId } = await sequenceExecutionService.initializeRun(sequenceId, createdTask.id, sequenceStepPrompts);
       await deps.taskStore.appendLog(createdTask.id, `Sequence run started with ${sequenceStepPrompts.length} step(s).`);
       sequenceRunContext = {
         runId,

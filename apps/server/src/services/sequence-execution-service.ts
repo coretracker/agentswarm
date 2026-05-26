@@ -14,8 +14,8 @@ export class SequenceExecutionService {
     private readonly scheduler: SchedulerService
   ) {}
 
-  async initializeRun(sequenceId: string, taskId: string, stepCount: number): Promise<{ runId: string; steps: SequenceRunStep[] }> {
-    const run = await this.sequenceStore.createRun({ sequenceId, taskId, stepCount });
+  async initializeRun(sequenceId: string, taskId: string, stepPrompts: string[]): Promise<{ runId: string; steps: SequenceRunStep[] }> {
+    const run = await this.sequenceStore.createRun({ sequenceId, taskId, stepCount: stepPrompts.length, stepPrompts });
     await this.taskStore.patchTask(taskId, { sequenceRunId: run.id });
     return { runId: run.id, steps: run.steps };
   }

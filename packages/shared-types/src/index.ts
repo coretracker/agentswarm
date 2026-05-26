@@ -929,6 +929,7 @@ export interface UpdateSequenceInput {
 
 export interface SequenceRunStep {
   index: number;
+  prompt: string;
   state: SequenceStepState;
   taskRunId: string | null;
   errorMessage: string | null;

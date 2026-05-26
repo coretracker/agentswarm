@@ -5,7 +5,8 @@ import {
   type TaskAction,
   type TaskChangeProposal,
   type TaskMessage,
-  type TaskRun
+  type TaskRun,
+  type SequenceRun
 } from "@agentswarm/shared-types";
 
 type RawMessageHistoryEntry = {
@@ -34,6 +35,7 @@ export type GroupedAutoRunHistoryEntry = {
   kind: "grouped_auto_run";
   timestamp: string;
   run: TaskRun;
+  promptText: string;
   promptMessage: TaskMessage | null;
   summaryMessage: TaskMessage | null;
   proposal: TaskChangeProposal | null;
@@ -109,6 +111,7 @@ export function buildTaskHistoryEntries(input: {
   messages: TaskMessage[];
   runs: TaskRun[];
   proposals: TaskChangeProposal[];
+  sequenceRun?: SequenceRun | null;
   interactiveTerminalRunning?: boolean;
 }): TaskHistoryEntry[] {
   const sortedMessages = [...input.messages].sort((left, right) =>
@@ -139,6 +142,17 @@ export function buildTaskHistoryEntries(input: {
       buildProposalByRunId.set(proposal.sourceId, proposal);
     }
   }
+  const sequenceStepPromptByTaskRunId = new Map<string, string>();
+  if (input.sequenceRun) {
+    for (const step of input.sequenceRun.steps) {
+      const taskRunId = step.taskRunId?.trim();
+      const stepPrompt = step.prompt.trim();
+      if (!taskRunId || !stepPrompt || sequenceStepPromptByTaskRunId.has(taskRunId)) {
+        continue;
+      }
+      sequenceStepPromptByTaskRunId.set(taskRunId, stepPrompt);
+    }
+  }
 
   for (const run of sortedRuns) {
     if (!isAutoRunAction(run.action)) {
@@ -157,6 +171,8 @@ export function buildTaskHistoryEntries(input: {
     if (promptMessage) {
       consumedMessageIds.add(promptMessage.id);
     }
+    const fallbackSequencePrompt = sequenceStepPromptByTaskRunId.get(run.id) ?? null;
+    const promptText = promptMessage?.content ?? fallbackSequencePrompt ?? "No matched user prompt was found for this run.";
 
     let summaryMessage: TaskMessage | null = null;
     const normalizedRunSummary = run.summary?.trim() ?? "";
@@ -187,6 +203,7 @@ export function buildTaskHistoryEntries(input: {
       kind: "grouped_auto_run",
       timestamp: run.startedAt,
       run,
+      promptText,
       promptMessage,
       summaryMessage,
       proposal

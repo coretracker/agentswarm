@@ -89,10 +89,11 @@ const normalizeSteps = (value: unknown): SequenceStep[] => {
   return steps;
 };
 
-const normalizeRunSteps = (value: unknown, stepCount: number): SequenceRunStep[] => {
+const normalizeRunSteps = (value: unknown, stepCount: number, initialPrompts?: string[]): SequenceRunStep[] => {
   if (!Array.isArray(value)) {
     return Array.from({ length: stepCount }, (_, index) => ({
       index,
+      prompt: typeof initialPrompts?.[index] === "string" ? initialPrompts[index]!.trim() : "",
       state: "pending",
       taskRunId: null,
       errorMessage: null,
@@ -112,6 +113,7 @@ const normalizeRunSteps = (value: unknown, stepCount: number): SequenceRunStep[]
     return [
       {
         index: typeof record.index === "number" ? Math.max(0, Math.floor(record.index)) : index,
+        prompt: typeof record.prompt === "string" ? record.prompt : "",
         state,
         taskRunId: typeof record.taskRunId === "string" && record.taskRunId.trim() ? record.taskRunId.trim() : null,
         errorMessage: typeof record.errorMessage === "string" && record.errorMessage.trim() ? record.errorMessage.trim() : null,
@@ -128,7 +130,7 @@ export interface SequenceStore {
   getSequence(sequenceId: string): Promise<Sequence | null>;
   updateSequence(sequenceId: string, input: UpdateSequenceInput): Promise<Sequence | null>;
   deleteSequence(sequenceId: string): Promise<boolean>;
-  createRun(input: { sequenceId: string; taskId: string; stepCount: number }): Promise<SequenceRun>;
+  createRun(input: { sequenceId: string; taskId: string; stepCount: number; stepPrompts?: string[] }): Promise<SequenceRun>;
   getRun(runId: string): Promise<SequenceRun | null>;
   getRunForTask(taskId: string): Promise<SequenceRun | null>;
   updateRun(runId: string, patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps">>): Promise<SequenceRun | null>;
@@ -239,7 +241,7 @@ export class RedisSequenceStore implements SequenceStore {
     return true;
   }
 
-  async createRun(input: { sequenceId: string; taskId: string; stepCount: number }): Promise<SequenceRun> {
+  async createRun(input: { sequenceId: string; taskId: string; stepCount: number; stepPrompts?: string[] }): Promise<SequenceRun> {
     const run: SequenceRun = {
       id: nanoid(),
       sequenceId: input.sequenceId,
@@ -250,7 +252,7 @@ export class RedisSequenceStore implements SequenceStore {
       failedStepIndex: null,
       startedAt: nowIso(),
       finishedAt: null,
-      steps: normalizeRunSteps(null, input.stepCount)
+      steps: normalizeRunSteps(null, input.stepCount, input.stepPrompts)
     };
 
     await this.redis
@@ -389,7 +391,7 @@ export class PostgresSequenceStore implements SequenceStore {
     return true;
   }
 
-  async createRun(input: { sequenceId: string; taskId: string; stepCount: number }): Promise<SequenceRun> {
+  async createRun(input: { sequenceId: string; taskId: string; stepCount: number; stepPrompts?: string[] }): Promise<SequenceRun> {
     const run: SequenceRun = {
       id: nanoid(),
       sequenceId: input.sequenceId,
@@ -400,7 +402,7 @@ export class PostgresSequenceStore implements SequenceStore {
       failedStepIndex: null,
       startedAt: nowIso(),
       finishedAt: null,
-      steps: normalizeRunSteps(null, input.stepCount)
+      steps: normalizeRunSteps(null, input.stepCount, input.stepPrompts)
     };
     await this.pool.query(
       `

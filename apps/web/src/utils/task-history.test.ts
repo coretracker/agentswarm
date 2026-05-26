@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { TaskChangeProposal, TaskMessage, TaskRun } from "@agentswarm/shared-types";
+import type { SequenceRun, TaskChangeProposal, TaskMessage, TaskRun } from "@agentswarm/shared-types";
 import {
   buildTaskHistoryEntries,
   GIT_TERMINAL_END_REVIEW_MESSAGE,
@@ -50,6 +50,16 @@ function createProposal(
   };
 }
 
+function createSequenceRun(input: Partial<SequenceRun> & Pick<SequenceRun, "id" | "taskId" | "sequenceId" | "status" | "stepCount" | "steps">): SequenceRun {
+  return {
+    failPolicy: "fail_fast",
+    failedStepIndex: null,
+    startedAt: "2026-03-24T00:00:00.000Z",
+    finishedAt: null,
+    ...input
+  };
+}
+
 test("groups a build run with its prompt, summary message, and proposal", () => {
   const prompt = createMessage({
     id: "m1",
@@ -94,6 +104,7 @@ test("groups a build run with its prompt, summary message, and proposal", () => 
     throw new Error("Expected grouped_auto_run");
   }
   assert.equal(entries[0].promptMessage?.id, "m1");
+  assert.equal(entries[0].promptText, "Implement grouped history cards.");
   assert.equal(entries[0].summaryMessage?.id, "m2");
   assert.equal(entries[0].proposal?.id, "p1");
 });
@@ -175,6 +186,57 @@ test("keeps unmatched messages and proposals as raw entries when a run has no ma
     throw new Error("Expected grouped_auto_run");
   }
   assert.equal(grouped.promptMessage, null);
+  assert.equal(grouped.promptText, "No matched user prompt was found for this run.");
+});
+
+test("uses sequence step prompt text when a run has no matched user prompt message", () => {
+  const run = createRun({
+    id: "r-seq-2",
+    action: "build",
+    startedAt: "2026-03-24T12:05:00.000Z",
+    status: "running"
+  });
+  const sequenceRun = createSequenceRun({
+    id: "seq-run-1",
+    taskId: "task-1",
+    sequenceId: "seq-1",
+    status: "running",
+    stepCount: 2,
+    steps: [
+      {
+        index: 0,
+        prompt: "First step prompt",
+        state: "succeeded",
+        taskRunId: "r-seq-1",
+        errorMessage: null,
+        startedAt: "2026-03-24T12:00:00.000Z",
+        finishedAt: "2026-03-24T12:01:00.000Z"
+      },
+      {
+        index: 1,
+        prompt: "Second step prompt from sequence",
+        state: "running",
+        taskRunId: "r-seq-2",
+        errorMessage: null,
+        startedAt: "2026-03-24T12:05:00.000Z",
+        finishedAt: null
+      }
+    ]
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [],
+    runs: [run],
+    proposals: [],
+    sequenceRun
+  });
+
+  assert.equal(entries[0]?.kind, "grouped_auto_run");
+  if (entries[0]?.kind !== "grouped_auto_run") {
+    throw new Error("Expected grouped_auto_run");
+  }
+  assert.equal(entries[0].promptMessage, null);
+  assert.equal(entries[0].promptText, "Second step prompt from sequence");
 });
 
 test("groups completed terminal sessions with a diff proposal", () => {

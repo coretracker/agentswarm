@@ -87,6 +87,7 @@ import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useTaskMessages } from "../src/hooks/useTaskMessages";
 import { useTaskRuns } from "../src/hooks/useTaskRuns";
 import { useTaskChangeProposals } from "../src/hooks/useTaskChangeProposals";
+import { useTaskSequenceRun } from "../src/hooks/useTaskSequenceRun";
 import { useSettings } from "../src/hooks/useSettings";
 import { isImageDiffPath, normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
 import {
@@ -717,6 +718,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     refetch: refetchChangeProposals,
     loadMore: loadMoreProposals
   } = useTaskChangeProposals(taskId);
+  const { sequenceRun: taskSequenceRun } = useTaskSequenceRun(taskId, task?.taskSource === "sequence");
   const canUseSnippets = can("snippet:list");
   const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
   const [liveDiff, setLiveDiff] = useState<TaskLiveDiff | null>(null);
@@ -2142,10 +2144,25 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         messages: taskMessages,
         runs: taskRuns,
         proposals: changeProposals,
+        sequenceRun: taskSequenceRun,
         interactiveTerminalRunning: interactiveTerminalRunning || interactiveTerminalLaunchPending
       }),
-    [changeProposals, interactiveTerminalLaunchPending, interactiveTerminalRunning, taskMessages, taskRuns]
+    [changeProposals, interactiveTerminalLaunchPending, interactiveTerminalRunning, taskMessages, taskRuns, taskSequenceRun]
   );
+  const sequenceQueuedSteps = useMemo(() => {
+    if (!taskSequenceRun || taskSequenceRun.status !== "running") {
+      return [];
+    }
+
+    return taskSequenceRun.steps.filter((step) => step.state === "pending" && step.prompt.trim().length > 0);
+  }, [taskSequenceRun]);
+  const runningSequenceStep = useMemo(() => {
+    if (!taskSequenceRun || taskSequenceRun.status !== "running") {
+      return null;
+    }
+
+    return taskSequenceRun.steps.find((step) => step.state === "running") ?? null;
+  }, [taskSequenceRun]);
   const activeTerminalHistoryEntry = useMemo(
     () =>
       [...chatTimeline]
@@ -3449,9 +3466,31 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   ]
     .filter((part): part is string => Boolean(part))
     .join(" · ");
+  const sequenceQueueNotice =
+    sequenceQueuedSteps.length > 0 ? (
+      <Alert
+        type="info"
+        showIcon
+        message={
+          runningSequenceStep
+            ? `Sequence step ${runningSequenceStep.index + 1} is running. ${sequenceQueuedSteps.length} step(s) queued next.`
+            : `${sequenceQueuedSteps.length} sequence step(s) queued next.`
+        }
+        description={
+          <Flex vertical gap={6}>
+            {sequenceQueuedSteps.map((step) => (
+              <Typography.Text key={`sequence-queued-${step.index}`} type="secondary">
+                {`Step ${step.index + 1}: ${step.prompt}`}
+              </Typography.Text>
+            ))}
+          </Flex>
+        }
+      />
+    ) : null;
 
   const chatComposer = (
     <Flex vertical gap={12}>
+      {sequenceQueueNotice}
       <Mentions
         autoSize={{ minRows: 4, maxRows: 14 }}
         prefix="@"
@@ -4434,7 +4473,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const renderGroupedAutoRunEntry = (entryKey: string, entry: Extract<(typeof chatTimeline)[number], { kind: "grouped_auto_run" }>) => {
     const normalizedRunSummary = getNormalizedRunSummary(entry.run);
     const summaryTitle = entry.run.action === "build" ? "Implementation Summary" : "Summary";
-    const promptText = entry.promptMessage?.content ?? "No matched user prompt was found for this run.";
+    const promptText = entry.promptText;
 
     return (
       <Card
