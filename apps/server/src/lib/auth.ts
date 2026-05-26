@@ -16,6 +16,7 @@ const realtimeScopesByEventType: Record<RealtimeEvent["type"], PermissionScope[]
   "task:message": ["task:read"],
   "task:message_updated": ["task:read"],
   "task:run_updated": ["task:read"],
+  "task:git_operation": ["task:read"],
   "task:change_proposal": ["task:read"],
   "task:pushed": [],
   "task:merged": [],
@@ -190,6 +191,10 @@ export const createAuthService = ({
         return task?.ownerUserId ?? null;
       }
       case "task:run_updated": {
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
+        return task?.ownerUserId ?? null;
+      }
+      case "task:git_operation": {
         const task = await taskStore.getTaskMetadata(event.payload.taskId);
         return task?.ownerUserId ?? null;
       }
