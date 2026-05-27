@@ -21,7 +21,7 @@ import type { SnippetStore } from "../services/snippet-store.js";
 import type { UserStore } from "../services/user-store.js";
 import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
 import { getTriggerActionForNewTask } from "../lib/task-start-mode.js";
-import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
+import { orchestrateTaskActionStart, orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
 import { executeOpenAiDiffAssist } from "../services/openai-diff-assist-service.js";
 import { executeTaskPromptMagic } from "../services/openai-task-prompt-magic-service.js";
 import type { SettingsStore } from "../services/settings-store.js";
@@ -461,6 +461,31 @@ export const registerTaskRoutes = (
       ok: true,
       task: await withBranchSyncCounts(deps.spawner, refreshedTask)
     };
+  };
+
+  const ensureGitMutationAllowed = async (reply: FastifyReply, task: Task): Promise<boolean> => {
+    if (task.status === "archived") {
+      await reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      return false;
+    }
+    const blocked = await getMutationBlocked(deps.taskStore, task.id);
+    if (blocked) {
+      await replyWithMutationBlocked(reply, blocked);
+      return false;
+    }
+    return true;
+  };
+
+  const runGitCommand = async <T>(
+    operation: () => Promise<T>,
+    fallbackMessage: string
+  ): Promise<{ ok: true; value: T } | { ok: false; message: string }> => {
+    try {
+      return { ok: true, value: await operation() };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : fallbackMessage;
+      return { ok: false, message };
+    }
   };
 
   app.get<{ Querystring: { view?: string; limit?: string } }>(
@@ -1373,23 +1398,25 @@ export const registerTaskRoutes = (
     }
 
     const allowParallelAsk = parsed.data.action === "ask" && (task.status === "building" || task.status === "asking");
-
-    const blocked = await getMutationBlocked(deps.taskStore, task.id);
-    if (blocked) {
-      return replyWithMutationBlocked(reply, blocked);
-    }
-
-    if (isActiveTaskStatus(task.status) && !allowParallelAsk) {
-      return reply.status(409).send({ message: "Task is already running" });
-    }
-
-    if (allowParallelAsk && !(await deps.scheduler.hasExecutionCapacity())) {
-      return reply.status(409).send({ message: "No agent capacity is available for a parallel ask right now." });
-    }
-
-    const accepted = await deps.scheduler.triggerAction(task.id, parsed.data.action);
-    if (!accepted) {
-      return reply.status(409).send({ message: "Task is already running" });
+    const actionStartResult = await orchestrateTaskActionStart(
+      {
+        taskStore: deps.taskStore,
+        scheduler: deps.scheduler
+      },
+      {
+        task,
+        action: parsed.data.action,
+        allowParallelAsk,
+        busyMessage: "Task is already running",
+        triggerRejectedMessage: "Task is already running",
+        capacityMessage: "No agent capacity is available for a parallel ask right now."
+      }
+    );
+    if (!actionStartResult.ok) {
+      const body = actionStartResult.reasonCode
+        ? { message: actionStartResult.message, reasonCode: actionStartResult.reasonCode }
+        : { message: actionStartResult.message };
+      return reply.status(actionStartResult.statusCode).send(body);
     }
 
     const refreshed = await deps.taskStore.getTask(task.id);
@@ -1808,13 +1835,8 @@ export const registerTaskRoutes = (
       return;
     }
 
-    if (task.status === "archived") {
-      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
-    }
-
-    const blockedPush = await getMutationBlocked(deps.taskStore, task.id);
-    if (blockedPush) {
-      return replyWithMutationBlocked(reply, blockedPush);
+    if (!(await ensureGitMutationAllowed(reply, task))) {
+      return;
     }
 
     const parsed = pushTaskBodySchema.safeParse((request.body as unknown) ?? {});
@@ -1822,9 +1844,17 @@ export const registerTaskRoutes = (
       return reply.status(400).send({ message: parsed.error.message });
     }
 
-    const pushed = await deps.spawner.pushTaskBranch(task, {
-      commitMessage: parsed.data.commitMessage
-    });
+    const pushResult = await runGitCommand(
+      () =>
+        deps.spawner.pushTaskBranch(task, {
+          commitMessage: parsed.data.commitMessage
+        }),
+      "Push failed"
+    );
+    if (!pushResult.ok) {
+      return reply.status(400).send({ message: pushResult.message });
+    }
+    const pushed = pushResult.value;
     const pushedRefreshed = await deps.taskStore.patchTask(pushed.id, {});
     const pushedTask = pushedRefreshed ?? pushed;
     const pushedBranchName =
@@ -1845,16 +1875,15 @@ export const registerTaskRoutes = (
       return;
     }
 
-    if (task.status === "archived") {
-      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    if (!(await ensureGitMutationAllowed(reply, task))) {
+      return;
     }
 
-    const blockedPull = await getMutationBlocked(deps.taskStore, task.id);
-    if (blockedPull) {
-      return replyWithMutationBlocked(reply, blockedPull);
+    const pullResult = await runGitCommand(() => deps.spawner.pullTaskBranch(task), "Pull failed");
+    if (!pullResult.ok) {
+      return reply.status(400).send({ message: pullResult.message });
     }
-
-    const pulled = await deps.spawner.pullTaskBranch(task);
+    const pulled = pullResult.value;
     const pulledRefreshed = await deps.taskStore.patchTask(pulled.id, {});
     return reply.send(await withBranchSyncCounts(deps.spawner, pulledRefreshed ?? pulled));
   });
@@ -1900,8 +1929,8 @@ export const registerTaskRoutes = (
       return;
     }
 
-    if (task.status === "archived") {
-      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    if (!(await ensureGitMutationAllowed(reply, task))) {
+      return;
     }
 
     if (task.branchStrategy !== "feature_branch") {
@@ -1921,9 +1950,17 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: "Task branch cannot merge into itself" });
     }
 
-    const merged = await deps.spawner.mergeTaskBranch(task, parsed.data.targetBranch, {
-      commitMessage: parsed.data.commitMessage
-    });
+    const mergeResult = await runGitCommand(
+      () =>
+        deps.spawner.mergeTaskBranch(task, parsed.data.targetBranch, {
+          commitMessage: parsed.data.commitMessage
+        }),
+      "Merge failed"
+    );
+    if (!mergeResult.ok) {
+      return reply.status(400).send({ message: mergeResult.message });
+    }
+    const merged = mergeResult.value;
     await deps.taskStore.publishTaskMergedEvent({
       taskId: merged.id,
       sourceBranch: task.branchName,

@@ -131,6 +131,7 @@ describe("SpawnerService workspace provisioning", () => {
     await mkdir(path.join(taskWorkspacePath, ".git"), { recursive: true });
 
     spawnerAny.resolveWorkspacePath = () => taskWorkspacePath;
+    spawnerAny.resolveWorkspaceHostPath = () => taskWorkspacePath;
     spawnerAny.gitCommandCapture = async () => "deadbeef";
 
     const workspace = await spawnerAny.prepareAskRunWorkspace(task, "feature/task-1", "/repo-cache/path", "clone_only");

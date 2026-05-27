@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Task } from "@agentswarm/shared-types";
-import { orchestrateTaskStart, taskStartFailureStatusCode } from "./task-start-orchestrator.js";
+import { orchestrateTaskActionStart, orchestrateTaskStart, taskStartFailureStatusCode } from "./task-start-orchestrator.js";
 
 const createTask = (overrides: Partial<Task> = {}): Task =>
   ({
@@ -135,5 +135,123 @@ describe("orchestrateTaskStart", () => {
     }
     assert.equal(patched.length, 1);
     assert.equal(logs.length, 1);
+  });
+});
+
+describe("orchestrateTaskActionStart", () => {
+  it("returns reason code when a pending checkpoint blocks mutation", async () => {
+    const task = createTask();
+    const result = await orchestrateTaskActionStart(
+      {
+        taskStore: {
+          hasPendingChangeProposal: async () => true,
+          getActiveInteractiveSession: async () => null
+        } as never,
+        scheduler: {} as never
+      },
+      {
+        task,
+        action: "build"
+      }
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.statusCode, 409);
+      assert.equal(result.reasonCode, "pending_checkpoint");
+    }
+  });
+
+  it("returns busy message when task is already active", async () => {
+    const task = createTask({ status: "building" });
+    const result = await orchestrateTaskActionStart(
+      {
+        taskStore: {
+          hasPendingChangeProposal: async () => false,
+          getActiveInteractiveSession: async () => null
+        } as never,
+        scheduler: {} as never
+      },
+      {
+        task,
+        action: "build"
+      }
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.message, "Task is already running");
+    }
+  });
+
+  it("returns capacity message for parallel ask when no capacity is available", async () => {
+    const task = createTask({ status: "building", taskType: "ask" });
+    const result = await orchestrateTaskActionStart(
+      {
+        taskStore: {
+          hasPendingChangeProposal: async () => false,
+          getActiveInteractiveSession: async () => null
+        } as never,
+        scheduler: {
+          hasExecutionCapacity: async () => false
+        } as never
+      },
+      {
+        task,
+        action: "ask",
+        allowParallelAsk: true
+      }
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.message, /capacity/i);
+    }
+  });
+
+  it("returns trigger-rejected message when scheduler refuses to start", async () => {
+    const task = createTask({ status: "open" });
+    const result = await orchestrateTaskActionStart(
+      {
+        taskStore: {
+          hasPendingChangeProposal: async () => false,
+          getActiveInteractiveSession: async () => null
+        } as never,
+        scheduler: {
+          triggerAction: async () => false
+        } as never
+      },
+      {
+        task,
+        action: "build",
+        triggerRejectedMessage: "Task execution could not be started"
+      }
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.message, "Task execution could not be started");
+    }
+  });
+
+  it("returns ok when scheduler accepts the action", async () => {
+    const task = createTask({ status: "open" });
+    const result = await orchestrateTaskActionStart(
+      {
+        taskStore: {
+          hasPendingChangeProposal: async () => false,
+          getActiveInteractiveSession: async () => null
+        } as never,
+        scheduler: {
+          triggerAction: async () => true
+        } as never
+      },
+      {
+        task,
+        action: "build"
+      }
+    );
+
+    assert.deepEqual(result, { ok: true });
   });
 });

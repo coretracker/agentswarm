@@ -110,7 +110,7 @@ flowchart TD
     N7[web api: POST /imports/pull-request]
     N8[server route: routes/tasks.ts or routes/imports.ts]
     N9[server: taskStore.createTask]
-    N10[server: applyTaskStartMode]
+    N10[server: orchestrateTaskStart]
     N11{startMode}
     N12[scheduler.triggerAction]
     N13[spawner.prepareWorkspace]
@@ -130,7 +130,7 @@ flowchart TD
     B1[web: task-detail build action]
     B2[web api: POST /tasks/:id/actions action=build]
     B3[server route: routes/tasks.ts]
-    B4[scheduler triggerAction build]
+    B4[server: orchestrateTaskActionStart]
     B5[taskStore.markQueuedForAction]
     B6[taskQueueStore.replaceTask]
     B7[scheduler.drainQueue dequeue]
@@ -151,7 +151,7 @@ flowchart TD
     A1[web: task-detail ask action]
     A2[web api: POST /tasks/:id/actions action=ask]
     A3[server route: routes/tasks.ts]
-    A4[scheduler triggerAction ask]
+    A4[server: orchestrateTaskActionStart]
     A5{parallel ask allowed}
     A6[scheduler.executeTask direct]
     A7[queue via taskQueueStore]
@@ -177,13 +177,13 @@ flowchart TD
   G3[Pull selected]
   G4[POST tasks id pull]
   G5{Mutation blocked? active run pending checkpoint terminal active archived}
-  G6[spawner pullTaskBranch]
+  G6[shared git command handler then spawner pullTaskBranch]
   G7[task refreshed and sync counts updated]
 
   G8[Push selected]
   G9[POST tasks id push]
   G10{Mutation blocked? active run pending checkpoint terminal active archived}
-  G11[spawner pushTaskBranch]
+  G11[shared git command handler then spawner pushTaskBranch]
   G12[publish task pushed event]
   G13[task refreshed and sync counts updated]
 
@@ -191,14 +191,14 @@ flowchart TD
   G15[GET merge preview target branch]
   G16{Merge allowed? feature branch target not same blocked checks pass}
   G17[POST tasks id merge]
-  G18[spawner mergeTaskBranch]
+  G18[shared git command handler then spawner mergeTaskBranch]
   G19[publish task merged event]
   G20[remove queued entry archive task append archived log]
   G21[return merged archived task]
 
   G22[Checkpoint action apply reject revert]
   G23[POST change proposals action endpoint]
-  G24[checkpoint mutation executed]
+  G24[checkpoint mutation transition helper executes action and refresh]
   G25{sequence auto apply recovery needed}
   G26[resume waiting sequence step]
 

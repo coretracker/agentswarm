@@ -6,7 +6,6 @@ import {
   getDefaultModelForProvider,
   getEffortOptionsForProvider,
   getProviderProfileLabel,
-  getCheckpointMutationBlockedReason,
   getTaskBranchStrategyLabel,
   getTaskStatusLabel,
   getTaskTerminalSessionLabel,
@@ -14,7 +13,6 @@ import {
   getTaskTypeLabel,
   getModelsForProvider,
   isActiveTaskStatus,
-  isTaskWorking,
   type Task,
   type TaskAction,
   type TaskMessageAction,
@@ -99,6 +97,7 @@ import {
 } from "../src/utils/task-prompt-attachments";
 import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
 import { buildTaskHistoryEntries } from "../src/utils/task-history";
+import { buildTaskLifecycleViewModel } from "../src/utils/task-lifecycle-view-model";
 import { trackEvent } from "../src/utils/analytics";
 import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
@@ -1133,12 +1132,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canListUsers = can("user:list");
   const isAdminTaskUser = Boolean(session?.user.roles.some((role) => role.id === SYSTEM_ADMIN_ROLE_ID));
   const canCreateFollowUp = canAll(["task:create", "repo:list"]) && canBuildTasks;
-  const isQueued = task?.status === "build_queued" || task?.status === "ask_queued";
-  const isActive = task ? isActiveTaskStatus(task.status) : false;
-  const hasTaskWorkingState = task ? isTaskWorking(task) : false;
-  const checkpointDiffActionsBlockedReason = task ? getCheckpointMutationBlockedReason(task.status) : null;
-  const checkpointDiffActionsBlocked = checkpointDiffActionsBlockedReason !== null;
-  const isPreparingWorkspace = task?.status === "preparing_workspace";
+  const lifecycle = buildTaskLifecycleViewModel(task);
+  const isQueued = lifecycle.isQueued;
+  const isActive = lifecycle.isActive;
+  const hasTaskWorkingState = lifecycle.hasTaskWorkingState;
+  const checkpointDiffActionsBlockedReason = lifecycle.checkpointDiffActionsBlockedReason;
+  const checkpointDiffActionsBlocked = lifecycle.checkpointDiffActionsBlocked;
+  const isPreparingWorkspace = lifecycle.isPreparingWorkspace;
   const canCancel = canEditTask && (isQueued || isActive);
   const hasBranchForSync = isBuildTask || isAskTask;
   const canPull = canEditTask && hasBranchForSync && !!task?.branchName && !isArchived && !isActive;
@@ -1186,16 +1186,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource) ||
     (isImplementationTask && branchStrategyInput !== currentTaskBranchStrategy);
 
-  const resultStatusText =
-    task?.status === "preparing_workspace"
-      ? "Preparing workspace"
-      : isBuildTask
-        ? task?.status === "build_queued"
-          ? "Build queued"
-          : "Build in progress"
-        : task?.status === "ask_queued"
-          ? "Question queued"
-          : "Answer in progress";
+  const resultStatusText = lifecycle.resultStatusText;
 
   const codeTextStyle: CSSProperties = {
     marginBottom: 0,
