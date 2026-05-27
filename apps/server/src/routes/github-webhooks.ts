@@ -8,7 +8,7 @@ import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { UserStore } from "../services/user-store.js";
 import { withGitHubStatusSyncMarker } from "../lib/github-status-sync.js";
-import { applyTaskStartMode } from "../lib/task-start-mode.js";
+import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
 
 const GITHUB_DEDUPE_TTL_MS = 15 * 60 * 1_000;
 const githubEventDedupeCache = new Map<string, number>();
@@ -327,11 +327,22 @@ export const registerGitHubWebhookRoutes = (
         issueInput.notes = withGitHubStatusSyncMarker(issueInput.notes, rule.syncStatusEnabled === true);
         const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
         const task = await deps.taskStore.createTask(issueInput, repository, ownerUserId);
-        await applyTaskStartMode(task, rule.task.startMode ?? "run_now", {
-          taskStore: deps.taskStore,
-          scheduler: deps.scheduler,
-          spawner: deps.spawner
-        });
+        const startResult = await orchestrateTaskStart(
+          {
+            taskStore: deps.taskStore,
+            scheduler: deps.scheduler,
+            spawner: deps.spawner
+          },
+          {
+            task,
+            startMode: rule.task.startMode ?? "run_now",
+            fallbackMessage: "Webhook-created task follow-up failed",
+            setPrepareWorkspaceFailureState: true
+          }
+        );
+        if (!startResult.ok) {
+          throw new Error(startResult.message);
+        }
         created += 1;
       }
       return reply.status(202).send({ accepted: true, matched, created });
@@ -367,11 +378,21 @@ export const registerGitHubWebhookRoutes = (
         prInput.notes = withGitHubStatusSyncMarker(prInput.notes, rule.syncStatusEnabled === true);
         const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
         const task = await deps.taskStore.createTask(prInput, repository, ownerUserId);
-        await applyTaskStartMode(task, "run_now", {
-          taskStore: deps.taskStore,
-          scheduler: deps.scheduler,
-          spawner: deps.spawner
-        });
+        const startResult = await orchestrateTaskStart(
+          {
+            taskStore: deps.taskStore,
+            scheduler: deps.scheduler,
+            spawner: deps.spawner
+          },
+          {
+            task,
+            startMode: "run_now",
+            fallbackMessage: "Webhook-created task execution could not be started"
+          }
+        );
+        if (!startResult.ok) {
+          throw new Error(startResult.message);
+        }
         created += 1;
       }
       return reply.status(202).send({ accepted: true, matched, created });
@@ -467,11 +488,21 @@ export const registerGitHubWebhookRoutes = (
           prInput.notes = withGitHubStatusSyncMarker(prInput.notes, rule.syncStatusEnabled === true);
           const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
           const task = await deps.taskStore.createTask(prInput, repository, ownerUserId);
-          await applyTaskStartMode(task, "run_now", {
-            taskStore: deps.taskStore,
-            scheduler: deps.scheduler,
-            spawner: deps.spawner
-          });
+          const startResult = await orchestrateTaskStart(
+            {
+              taskStore: deps.taskStore,
+              scheduler: deps.scheduler,
+              spawner: deps.spawner
+            },
+            {
+              task,
+              startMode: "run_now",
+              fallbackMessage: "Webhook-created task execution could not be started"
+            }
+          );
+          if (!startResult.ok) {
+            throw new Error(startResult.message);
+          }
           created += 1;
         } else {
           const issueInput = await deps.githubImportService.buildTaskInputFromIssue(repository, {
@@ -498,11 +529,22 @@ export const registerGitHubWebhookRoutes = (
           issueInput.notes = withGitHubStatusSyncMarker(issueInput.notes, rule.syncStatusEnabled === true);
           const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
           const task = await deps.taskStore.createTask(issueInput, repository, ownerUserId);
-          await applyTaskStartMode(task, rule.task.startMode ?? "run_now", {
-            taskStore: deps.taskStore,
-            scheduler: deps.scheduler,
-            spawner: deps.spawner
-          });
+          const startResult = await orchestrateTaskStart(
+            {
+              taskStore: deps.taskStore,
+              scheduler: deps.scheduler,
+              spawner: deps.spawner
+            },
+            {
+              task,
+              startMode: rule.task.startMode ?? "run_now",
+              fallbackMessage: "Webhook-created task follow-up failed",
+              setPrepareWorkspaceFailureState: true
+            }
+          );
+          if (!startResult.ok) {
+            throw new Error(startResult.message);
+          }
           created += 1;
         }
       }

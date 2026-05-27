@@ -7,7 +7,7 @@ import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
-import { applyTaskStartMode } from "../lib/task-start-mode.js";
+import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
 import { requireTaskCapabilityAccess, requireTaskExecutionConfigAccess } from "../lib/task-capability-access.js";
 import { canUserAccessRepository } from "../lib/task-ownership.js";
 import { withBranchSyncCounts, withTaskCreatorName } from "./tasks.js";
@@ -205,29 +205,23 @@ export const registerImportRoutes = (
         ...task,
         creatorName: request.auth!.user.name
       };
-      try {
-        const result = await applyTaskStartMode(createdTask, startMode, {
+      const startResult = await orchestrateTaskStart(
+        {
           taskStore: deps.taskStore,
           scheduler: deps.scheduler,
           spawner: deps.spawner
-        });
-        return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, result)));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Imported task follow-up failed";
-        if (startMode === "prepare_workspace") {
-          await deps.taskStore.patchTask(createdTask.id, {
-            status: "failed",
-            enqueued: false,
-            errorMessage: message,
-            finishedAt: new Date().toISOString()
-          });
-          await deps.taskStore.appendLog(createdTask.id, `Workspace preparation failed: ${message}`);
+        },
+        {
+          task: createdTask,
+          startMode,
+          fallbackMessage: "Imported task follow-up failed",
+          setPrepareWorkspaceFailureState: true
         }
-        if (startMode === "run_now") {
-          return reply.status(409).send({ message });
-        }
-        return reply.status(500).send({ message });
+      );
+      if (!startResult.ok) {
+        return reply.status(startResult.statusCode).send({ message: startResult.message });
       }
+      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
     } catch (error) {
       if (error instanceof GitHubImportError) {
         return reply.status(error.statusCode).send({ message: error.message });
@@ -267,17 +261,22 @@ export const registerImportRoutes = (
         ...task,
         creatorName: request.auth!.user.name
       };
-      try {
-        const started = await applyTaskStartMode(createdTask, "run_now", {
+      const startResult = await orchestrateTaskStart(
+        {
           taskStore: deps.taskStore,
           scheduler: deps.scheduler,
           spawner: deps.spawner
-        });
-        return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, started)));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Imported task execution could not be started";
-        return reply.status(409).send({ message });
+        },
+        {
+          task: createdTask,
+          startMode: "run_now",
+          fallbackMessage: "Imported task execution could not be started"
+        }
+      );
+      if (!startResult.ok) {
+        return reply.status(startResult.statusCode).send({ message: startResult.message });
       }
+      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
     } catch (error) {
       if (error instanceof GitHubImportError) {
         return reply.status(error.statusCode).send({ message: error.message });

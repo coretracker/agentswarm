@@ -20,7 +20,8 @@ import type { SequenceStore } from "../services/sequence-store.js";
 import type { SnippetStore } from "../services/snippet-store.js";
 import type { UserStore } from "../services/user-store.js";
 import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
-import { applyTaskStartMode, getTriggerActionForNewTask } from "../lib/task-start-mode.js";
+import { getTriggerActionForNewTask } from "../lib/task-start-mode.js";
+import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
 import { executeOpenAiDiffAssist } from "../services/openai-diff-assist-service.js";
 import { executeTaskPromptMagic } from "../services/openai-task-prompt-magic-service.js";
 import type { SettingsStore } from "../services/settings-store.js";
@@ -445,6 +446,21 @@ export const registerTaskRoutes = (
           );
         }
       });
+  };
+
+  const resolveCheckpointMutationTransition = async (
+    task: Task,
+    mutationResult: { ok: true } | { ok: false; message: string }
+  ): Promise<{ ok: false; message: string } | { ok: true; task: Task }> => {
+    if (!mutationResult.ok) {
+      return { ok: false, message: mutationResult.message };
+    }
+    await maybeResumeAutoApplySequence(task.id);
+    const refreshedTask = (await deps.taskStore.getTask(task.id)) ?? task;
+    return {
+      ok: true,
+      task: await withBranchSyncCounts(deps.spawner, refreshedTask)
+    };
   };
 
   app.get<{ Querystring: { view?: string; limit?: string } }>(
@@ -965,12 +981,11 @@ export const registerTaskRoutes = (
       const result = await deps.spawner.applyChangeProposal(task, request.params.proposalId, {
         commitMessage: parsed.data.commitMessage ?? null
       });
-      if (!result.ok) {
-        return reply.status(409).send({ message: result.message });
+      const transition = await resolveCheckpointMutationTransition(task, result);
+      if (!transition.ok) {
+        return reply.status(409).send({ message: transition.message });
       }
-      await maybeResumeAutoApplySequence(task.id);
-
-      return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
+      return reply.send(transition.task);
     }
   );
 
@@ -996,12 +1011,11 @@ export const registerTaskRoutes = (
       const result = await deps.spawner.applyChangeProposal(task, request.params.proposalId, {
         commitMessage: parsed.data.commitMessage ?? null
       });
-      if (!result.ok) {
-        return reply.status(409).send({ message: result.message });
+      const transition = await resolveCheckpointMutationTransition(task, result);
+      if (!transition.ok) {
+        return reply.status(409).send({ message: transition.message });
       }
-      await maybeResumeAutoApplySequence(task.id);
-
-      return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
+      return reply.send(transition.task);
     }
   );
 
@@ -1019,12 +1033,11 @@ export const registerTaskRoutes = (
       }
 
       const result = await deps.spawner.revertChangeProposal(task, request.params.proposalId);
-      if (!result.ok) {
-        return reply.status(409).send({ message: result.message });
+      const transition = await resolveCheckpointMutationTransition(task, result);
+      if (!transition.ok) {
+        return reply.status(409).send({ message: transition.message });
       }
-      await maybeResumeAutoApplySequence(task.id);
-
-      return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
+      return reply.send(transition.task);
     }
   );
 
@@ -1047,12 +1060,11 @@ export const registerTaskRoutes = (
       }
 
       const result = await deps.spawner.revertPendingChangeProposalFile(task, request.params.proposalId, parsed.data.path);
-      if (!result.ok) {
-        return reply.status(409).send({ message: result.message });
+      const transition = await resolveCheckpointMutationTransition(task, result);
+      if (!transition.ok) {
+        return reply.status(409).send({ message: transition.message });
       }
-      await maybeResumeAutoApplySequence(task.id);
-
-      return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
+      return reply.send(transition.task);
     }
   );
 
@@ -1070,12 +1082,11 @@ export const registerTaskRoutes = (
       }
 
       const result = await deps.spawner.rejectChangeProposal(task, request.params.proposalId);
-      if (!result.ok) {
-        return reply.status(409).send({ message: result.message });
+      const transition = await resolveCheckpointMutationTransition(task, result);
+      if (!transition.ok) {
+        return reply.status(409).send({ message: transition.message });
       }
-      await maybeResumeAutoApplySequence(task.id);
-
-      return reply.send(await withBranchSyncCounts(deps.spawner, (await deps.taskStore.getTask(task.id)) ?? task));
+      return reply.send(transition.task);
     }
   );
 
@@ -1277,72 +1288,69 @@ export const registerTaskRoutes = (
         await deps.taskStore.setMessageAttachments(createdTask.id, initialMessage.id, persistedAttachments);
       }
     }
-    try {
-      const result = await applyTaskStartMode(createdTask, startMode, {
+    const startResult = await orchestrateTaskStart(
+      {
         taskStore: deps.taskStore,
         scheduler: deps.scheduler,
         spawner: deps.spawner
-      }, {
-        content: createPayload.prompt.trim(),
-        ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
-      });
-      if (sequenceRunContext) {
-        void sequenceExecutionService
-          .runSteps({
-            runId: sequenceRunContext.runId,
-            taskId: createdTask.id,
-            action: sequenceRunContext.action,
-            stepPrompts: sequenceRunContext.stepPrompts,
-            initialKnownRunIds: sequenceRunContext.initialKnownRunIds
-          })
-          .catch(async (error) => {
-            try {
-              const message = error instanceof Error ? error.message : "Sequence execution failed.";
-              await deps.taskStore.appendLog(createdTask.id, `Sequence execution failed: ${message}`);
-              const currentRun = await deps.sequenceStore.getRun(sequenceRunContext.runId);
-              if (currentRun?.status === "running") {
-                await sequenceExecutionService.failRunImmediately({
-                  runId: sequenceRunContext.runId,
-                  failedStepIndex: currentRun.failedStepIndex ?? 0,
-                  errorMessage: message
-                });
-              }
-            } catch (innerError) {
-              app.log.warn(
-                {
-                  taskId: createdTask.id,
-                  runId: sequenceRunContext.runId,
-                  error: innerError instanceof Error ? innerError.message : String(innerError)
-                },
-                "Sequence start handler failed while processing runSteps rejection."
-              );
-            }
-          });
+      },
+      {
+        task: createdTask,
+        startMode,
+        fallbackMessage: "Task follow-up failed",
+        setPrepareWorkspaceFailureState: true,
+        input: {
+          content: createPayload.prompt.trim(),
+          ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
+        }
       }
-      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, result)));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Task follow-up failed";
+    );
+    if (!startResult.ok) {
       if (sequenceRunContext) {
         await sequenceExecutionService.failRunImmediately({
           runId: sequenceRunContext.runId,
           failedStepIndex: 0,
-          errorMessage: message
+          errorMessage: startResult.message
         });
       }
-      if (startMode === "prepare_workspace") {
-        await deps.taskStore.patchTask(createdTask.id, {
-          status: "failed",
-          enqueued: false,
-          errorMessage: message,
-          finishedAt: new Date().toISOString()
-        });
-        await deps.taskStore.appendLog(createdTask.id, `Workspace preparation failed: ${message}`);
-      }
-      if (startMode === "run_now") {
-        return reply.status(409).send({ message });
-      }
-      return reply.status(500).send({ message });
+      return reply.status(startResult.statusCode).send({ message: startResult.message });
     }
+
+    if (sequenceRunContext) {
+      void sequenceExecutionService
+        .runSteps({
+          runId: sequenceRunContext.runId,
+          taskId: createdTask.id,
+          action: sequenceRunContext.action,
+          stepPrompts: sequenceRunContext.stepPrompts,
+          initialKnownRunIds: sequenceRunContext.initialKnownRunIds
+        })
+        .catch(async (error) => {
+          try {
+            const message = error instanceof Error ? error.message : "Sequence execution failed.";
+            await deps.taskStore.appendLog(createdTask.id, `Sequence execution failed: ${message}`);
+            const currentRun = await deps.sequenceStore.getRun(sequenceRunContext.runId);
+            if (currentRun?.status === "running") {
+              await sequenceExecutionService.failRunImmediately({
+                runId: sequenceRunContext.runId,
+                failedStepIndex: currentRun.failedStepIndex ?? 0,
+                errorMessage: message
+              });
+            }
+          } catch (innerError) {
+            app.log.warn(
+              {
+                taskId: createdTask.id,
+                runId: sequenceRunContext.runId,
+                error: innerError instanceof Error ? innerError.message : String(innerError)
+              },
+              "Sequence start handler failed while processing runSteps rejection."
+            );
+          }
+        });
+    }
+
+    return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/actions", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
