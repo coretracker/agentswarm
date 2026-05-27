@@ -80,7 +80,7 @@ flowchart TD
     C1[Open existing task]
     C2[Click Ask or send Ask message]
     C3[Scheduler triggerAction ask]
-    C4{Parallel ask allowed? (task already building/asking)}
+    C4{Parallel ask allowed while already building or asking}
     C5[Run ask immediately if capacity]
     C6[Else queue ask]
     C7[Status -> asking]
@@ -130,7 +130,7 @@ flowchart TD
     B1[web: task-detail build action]
     B2[web api: POST /tasks/:id/actions action=build]
     B3[server route: routes/tasks.ts]
-    B4[scheduler.triggerAction(taskId, build)]
+    B4[scheduler triggerAction build]
     B5[taskStore.markQueuedForAction]
     B6[taskQueueStore.replaceTask]
     B7[scheduler.drainQueue dequeue]
@@ -151,7 +151,7 @@ flowchart TD
     A1[web: task-detail ask action]
     A2[web api: POST /tasks/:id/actions action=ask]
     A3[server route: routes/tasks.ts]
-    A4[scheduler.triggerAction(taskId, ask)]
+    A4[scheduler triggerAction ask]
     A5{parallel ask allowed}
     A6[scheduler.executeTask direct]
     A7[queue via taskQueueStore]
