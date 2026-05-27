@@ -30,7 +30,7 @@ import type { TaskStore } from "../services/task-store.js";
 import { SequenceExecutionService } from "../services/sequence-execution-service.js";
 import { resolveSequenceStepPrompts, SequenceValidationError } from "../services/sequence-resolution.js";
 import { buildExecutionSummaryFromPrompt, classifyTaskComplexity } from "../lib/task-intelligence.js";
-import { getMutationBlockedReason } from "../lib/task-mutation-guards.js";
+import { getMutationBlocked } from "../lib/task-mutation-guards.js";
 import { persistTaskPromptAttachments, readTaskPromptAttachmentBuffer } from "../lib/task-prompt-attachments.js";
 import {
   requireInteractiveTerminalAccess,
@@ -343,6 +343,9 @@ const getAccessibleTask = async (
 
   return task;
 };
+
+const replyWithMutationBlocked = (reply: FastifyReply, blocked: { code: string; message: string }) =>
+  reply.status(409).send({ message: blocked.message, reasonCode: blocked.code });
 
 export const registerTaskRoutes = (
   app: FastifyInstance,
@@ -1363,9 +1366,9 @@ export const registerTaskRoutes = (
 
     const allowParallelAsk = parsed.data.action === "ask" && (task.status === "building" || task.status === "asking");
 
-    const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
+    const blocked = await getMutationBlocked(deps.taskStore, task.id);
     if (blocked) {
-      return reply.status(409).send({ message: blocked });
+      return replyWithMutationBlocked(reply, blocked);
     }
 
     if (isActiveTaskStatus(task.status) && !allowParallelAsk) {
@@ -1395,9 +1398,9 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
+    const blocked = await getMutationBlocked(deps.taskStore, task.id);
     if (blocked) {
-      return reply.status(409).send({ message: blocked });
+      return replyWithMutationBlocked(reply, blocked);
     }
 
     if (isActiveTaskStatus(task.status)) {
@@ -1429,9 +1432,9 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: "Postflight is only available for build tasks." });
     }
 
-    const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
+    const blocked = await getMutationBlocked(deps.taskStore, task.id);
     if (blocked) {
-      return reply.status(409).send({ message: blocked });
+      return replyWithMutationBlocked(reply, blocked);
     }
 
     if (isActiveTaskStatus(task.status)) {
@@ -1691,9 +1694,9 @@ export const registerTaskRoutes = (
     }
 
     if (action !== "comment") {
-      const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
+      const blocked = await getMutationBlocked(deps.taskStore, task.id);
       if (blocked) {
-        return reply.status(409).send({ message: blocked });
+        return replyWithMutationBlocked(reply, blocked);
       }
     }
 
@@ -1777,9 +1780,9 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    const blocked = await getMutationBlockedReason(deps.taskStore, task.id);
+    const blocked = await getMutationBlocked(deps.taskStore, task.id);
     if (blocked) {
-      return reply.status(409).send({ message: blocked });
+      return replyWithMutationBlocked(reply, blocked);
     }
 
     try {
@@ -1801,9 +1804,9 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    const blockedPush = await getMutationBlockedReason(deps.taskStore, task.id);
+    const blockedPush = await getMutationBlocked(deps.taskStore, task.id);
     if (blockedPush) {
-      return reply.status(409).send({ message: blockedPush });
+      return replyWithMutationBlocked(reply, blockedPush);
     }
 
     const parsed = pushTaskBodySchema.safeParse((request.body as unknown) ?? {});
@@ -1838,9 +1841,9 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    const blockedPull = await getMutationBlockedReason(deps.taskStore, task.id);
+    const blockedPull = await getMutationBlocked(deps.taskStore, task.id);
     if (blockedPull) {
-      return reply.status(409).send({ message: blockedPull });
+      return replyWithMutationBlocked(reply, blockedPull);
     }
 
     const pulled = await deps.spawner.pullTaskBranch(task);
