@@ -3656,7 +3656,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     .filter((part): part is string => Boolean(part))
     .join(" · ");
   const sequenceQueueNotice =
-    sequenceQueuedSteps.length > 0 ||
     taskSequenceRun?.status === "waiting_for_approval" ||
     taskSequenceRun?.status === "waiting_for_checkpoint_resolution" ? (
       <Alert
@@ -3667,9 +3666,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             ? `Sequence paused for approval. ${sequenceQueuedSteps.length} step(s) waiting next.`
             : taskSequenceRun?.status === "waiting_for_checkpoint_resolution"
               ? `Sequence paused for checkpoint resolution. ${sequenceQueuedSteps.length} step(s) waiting next.`
-            : runningSequenceStep
-              ? `Sequence step ${runningSequenceStep.index + 1} is running. ${sequenceQueuedSteps.length} step(s) queued next.`
-              : `${sequenceQueuedSteps.length} sequence step(s) queued next.`
+              : `${sequenceQueuedSteps.length} sequence step(s) waiting next.`
         }
         description={
           <Flex vertical gap={6}>
