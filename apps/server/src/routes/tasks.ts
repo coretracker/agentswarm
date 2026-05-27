@@ -1152,6 +1152,8 @@ export const registerTaskRoutes = (
       try {
         const result = await executeTaskPromptMagic({
           prompt: parsed.data.prompt,
+          model: settings.taskPromptMagicModel,
+          template: settings.taskPromptMagicTemplate,
           openaiApiKey: credentials.openaiApiKey,
           openaiBaseUrl: settings.openaiBaseUrl
         });

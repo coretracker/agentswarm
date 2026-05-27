@@ -92,6 +92,8 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         git_username text NOT NULL,
         mcp_servers jsonb NOT NULL,
         openai_base_url text NULL,
+        task_prompt_magic_model text NOT NULL DEFAULT 'gpt-5.4-mini',
+        task_prompt_magic_template text NOT NULL DEFAULT '',
         codex_default_model text NOT NULL,
         codex_default_effort text NOT NULL,
         claude_default_model text NOT NULL,
@@ -370,6 +372,16 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
     sql: `
       ALTER TABLE sequences
       ADD COLUMN IF NOT EXISTS execution_mode text NOT NULL DEFAULT 'auto_apply_changes';
+    `
+  },
+  {
+    id: "20260527_01_task_prompt_magic_settings",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS task_prompt_magic_model text NOT NULL DEFAULT 'gpt-5.4-mini';
+
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS task_prompt_magic_template text NOT NULL DEFAULT '';
     `
   }
 ];

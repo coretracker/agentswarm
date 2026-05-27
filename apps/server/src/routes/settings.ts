@@ -95,6 +95,8 @@ const updateSettingsSchema = z.object({
   gitUsername: z.string().trim().min(1).max(120).optional(),
   mcpServers: z.array(mcpServerSchema).max(25).optional(),
   openaiBaseUrl: z.string().trim().url().nullable().optional(),
+  taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
+  taskPromptMagicTemplate: z.string().trim().min(1).max(12_000).optional(),
   codexDefaultModel: z.string().trim().min(1).max(120).optional(),
   codexDefaultEffort: providerProfileEnum.optional(),
   claudeDefaultModel: z.string().trim().min(1).max(120).optional(),

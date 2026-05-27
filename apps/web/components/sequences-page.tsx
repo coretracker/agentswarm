@@ -87,7 +87,7 @@ export function SequencesPage() {
                 title: "Actions",
                 width: 220,
                 render: (_value, sequence) => (
-                  <Space wrap>
+                  <Space size={8} wrap={false} style={{ whiteSpace: "nowrap" }}>
                     {canEdit ? (
                       <Button size="small" onClick={() => router.push(`/sequences/${sequence.id}/edit`)}>
                         Edit

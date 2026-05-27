@@ -1,7 +1,8 @@
 import type { TaskPromptMagicResult } from "@agentswarm/shared-types";
 
 const MAX_USER_PROMPT = 16_000;
-const SYSTEM_PROMPT_TEMPLATE = `You are an expert prompt editor for software engineering tasks.
+const DEFAULT_MODEL = "gpt-5.4-mini";
+const FALLBACK_TEMPLATE = `You are an expert prompt editor for software engineering tasks.
 Rewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.
 
 Requirements:
@@ -67,6 +68,8 @@ async function postChatCompletions(
 
 export async function executeTaskPromptMagic(input: {
   prompt: string;
+  model?: string;
+  template?: string;
   openaiApiKey: string;
   openaiBaseUrl: string | null;
 }): Promise<TaskPromptMagicResult> {
@@ -75,11 +78,13 @@ export async function executeTaskPromptMagic(input: {
     throw Object.assign(new Error("Prompt is required."), { status: 400 });
   }
 
-  const systemPrompt = SYSTEM_PROMPT_TEMPLATE.replace("{{user_request}}", userPrompt);
+  const selectedModel = input.model?.trim() || DEFAULT_MODEL;
+  const selectedTemplate = input.template?.trim() || FALLBACK_TEMPLATE;
+  const systemPrompt = selectedTemplate.replaceAll("{{user_request}}", userPrompt);
   const base = openAiChatBase(input.openaiBaseUrl);
 
   const response = await postChatCompletions(base, input.openaiApiKey, {
-    model: "gpt-5.4-mini",
+    model: selectedModel,
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt }

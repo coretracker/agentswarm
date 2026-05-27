@@ -67,6 +67,8 @@ interface GeneralSettingsForm {
   branchPrefix: string;
   gitUsername: string;
   openaiBaseUrl: string;
+  taskPromptMagicModel: string;
+  taskPromptMagicTemplate: string;
   mcpServers: McpServerFormItem[];
   codexDefaultModel: string;
   codexDefaultEffort: ProviderProfile;
@@ -147,6 +149,8 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   branchPrefix: settings.branchPrefix,
   gitUsername: settings.gitUsername,
   openaiBaseUrl: settings.openaiBaseUrl ?? "",
+  taskPromptMagicModel: settings.taskPromptMagicModel,
+  taskPromptMagicTemplate: settings.taskPromptMagicTemplate,
   mcpServers: settings.mcpServers.map((server) => ({
     name: server.name,
     enabled: server.enabled,
@@ -369,6 +373,8 @@ export function SettingsPage() {
                 branchPrefix: values.branchPrefix,
                 gitUsername: values.gitUsername,
                 openaiBaseUrl: values.openaiBaseUrl?.trim() ? values.openaiBaseUrl.trim() : null,
+                taskPromptMagicModel: values.taskPromptMagicModel,
+                taskPromptMagicTemplate: values.taskPromptMagicTemplate,
                 codexDefaultModel: values.codexDefaultModel,
                 codexDefaultEffort: values.codexDefaultEffort,
                 claudeDefaultModel: values.claudeDefaultModel,
@@ -433,6 +439,22 @@ export function SettingsPage() {
                       style={{ marginBottom: 0 }}
                     >
                       <Input placeholder="https://api.openai.com/v1" />
+                    </Form.Item>
+                    <Form.Item
+                      name="taskPromptMagicModel"
+                      label="Task Prompt Magic Model"
+                      extra="Model used by the Magic Prompt helper in task creation."
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input placeholder="gpt-5.4-mini" />
+                    </Form.Item>
+                    <Form.Item
+                      name="taskPromptMagicTemplate"
+                      label="Task Prompt Magic Template"
+                      extra="Use {{user_request}} as placeholder for the user's current text."
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input.TextArea autoSize={{ minRows: 6, maxRows: 16 }} placeholder="Template with {{user_request}} placeholder" />
                     </Form.Item>
                   </Flex>
                 </div>

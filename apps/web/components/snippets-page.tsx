@@ -107,7 +107,7 @@ export function SnippetsPage() {
                 key: "actions",
                 width: 280,
                 render: (_value, snippet) => (
-                  <Space wrap>
+                  <Space size={8} wrap={false} style={{ whiteSpace: "nowrap" }}>
                     <Button size="small" icon={<CopyOutlined />} onClick={() => void copySnippetToClipboard(snippet.content, snippet.name)}>
                       Copy
                     </Button>

@@ -736,6 +736,8 @@ export interface SystemSettings {
   gitUsername: string;
   mcpServers: McpServerConfig[];
   openaiBaseUrl: string | null;
+  taskPromptMagicModel: string;
+  taskPromptMagicTemplate: string;
   githubTokenConfigured: boolean;
   openaiApiKeyConfigured: boolean;
   anthropicApiKeyConfigured: boolean;
@@ -1186,6 +1188,8 @@ export interface UpdateSettingsInput {
   gitUsername?: string;
   mcpServers?: McpServerConfig[];
   openaiBaseUrl?: string | null;
+  taskPromptMagicModel?: string;
+  taskPromptMagicTemplate?: string;
   codexDefaultModel?: string;
   codexDefaultEffort?: ProviderProfile;
   claudeDefaultModel?: string;

@@ -65,6 +65,9 @@ const defaultSettings: SystemSettings = {
   gitUsername: "x-access-token",
   mcpServers: [],
   openaiBaseUrl: null,
+  taskPromptMagicModel: "gpt-5.4-mini",
+  taskPromptMagicTemplate:
+    "You are an expert prompt editor for software engineering tasks.\nRewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.\n\nRequirements:\n- Preserve intent and constraints.\n- Make it specific and actionable.\n- Include acceptance criteria when implied.\n- Avoid changing requested scope.\n- Return plain text only, no markdown fences.\n\nUser request:\n{{user_request}}\n",
   githubTokenConfigured: false,
   openaiApiKeyConfigured: false,
   anthropicApiKeyConfigured: false,
@@ -291,6 +294,8 @@ export class RedisSettingsStore implements SettingsStore {
         gitUsername: defaultSettings.gitUsername,
         mcpServers: defaultSettings.mcpServers,
         openaiBaseUrl: defaultSettings.openaiBaseUrl,
+        taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
+        taskPromptMagicTemplate: defaultSettings.taskPromptMagicTemplate,
         codexDefaultModel: defaultSettings.codexDefaultModel,
         codexDefaultEffort: defaultSettings.codexDefaultEffort,
         claudeDefaultModel: defaultSettings.claudeDefaultModel,
@@ -309,6 +314,8 @@ export class RedisSettingsStore implements SettingsStore {
       gitUsername: normalizeGitUsername(parsed.gitUsername),
       mcpServers: normalizeMcpServers(parsed.mcpServers),
       openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null,
+      taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
+      taskPromptMagicTemplate: parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate,
       codexDefaultModel: parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel,
       codexDefaultEffort: normalizeProviderProfile(parsed.codexDefaultEffort) ?? defaultSettings.codexDefaultEffort,
       claudeDefaultModel: parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel,
@@ -326,6 +333,8 @@ export class RedisSettingsStore implements SettingsStore {
       parsed.gitUsername !== normalizedBase.gitUsername ||
       JSON.stringify(parsed.mcpServers ?? []) !== JSON.stringify(normalizedBase.mcpServers) ||
       (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl ||
+      (parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel) !== normalizedBase.taskPromptMagicModel ||
+      (parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate) !== normalizedBase.taskPromptMagicTemplate ||
       JSON.stringify(parsed.responsePreferencePresets ?? []) !== JSON.stringify(normalizedBase.responsePreferencePresets)
     ) {
       await this.redis.set(SETTINGS_KEY, JSON.stringify(normalizedBase));
@@ -357,6 +366,8 @@ export class RedisSettingsStore implements SettingsStore {
           : input.openaiBaseUrl?.trim()
             ? input.openaiBaseUrl.trim()
             : null,
+      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
+      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
       codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
       codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
       claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
@@ -448,13 +459,15 @@ export class PostgresSettingsStore implements SettingsStore {
           git_username,
           mcp_servers,
           openai_base_url,
+          task_prompt_magic_model,
+          task_prompt_magic_template,
           codex_default_model,
           codex_default_effort,
           claude_default_model,
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
@@ -465,6 +478,8 @@ export class PostgresSettingsStore implements SettingsStore {
         defaultSettings.gitUsername,
         JSON.stringify(defaultSettings.mcpServers),
         defaultSettings.openaiBaseUrl,
+        defaultSettings.taskPromptMagicModel,
+        defaultSettings.taskPromptMagicTemplate,
         defaultSettings.codexDefaultModel,
         defaultSettings.codexDefaultEffort,
         defaultSettings.claudeDefaultModel,
@@ -486,6 +501,8 @@ export class PostgresSettingsStore implements SettingsStore {
           git_username,
           mcp_servers,
           openai_base_url,
+          task_prompt_magic_model,
+          task_prompt_magic_template,
           codex_default_model,
           codex_default_effort,
           claude_default_model,
@@ -504,6 +521,14 @@ export class PostgresSettingsStore implements SettingsStore {
       gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
       mcpServers: normalizeMcpServers(Array.isArray(row?.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined),
       openaiBaseUrl: typeof row?.openai_base_url === "string" && row.openai_base_url.trim().length > 0 ? row.openai_base_url.trim() : null,
+      taskPromptMagicModel:
+        typeof row?.task_prompt_magic_model === "string" && row.task_prompt_magic_model.trim().length > 0
+          ? row.task_prompt_magic_model.trim()
+          : defaultSettings.taskPromptMagicModel,
+      taskPromptMagicTemplate:
+        typeof row?.task_prompt_magic_template === "string" && row.task_prompt_magic_template.trim().length > 0
+          ? row.task_prompt_magic_template.trim()
+          : defaultSettings.taskPromptMagicTemplate,
       codexDefaultModel:
         typeof row?.codex_default_model === "string" && row.codex_default_model.trim().length > 0
           ? row.codex_default_model.trim()
@@ -544,6 +569,8 @@ export class PostgresSettingsStore implements SettingsStore {
           : input.openaiBaseUrl?.trim()
             ? input.openaiBaseUrl.trim()
             : null,
+      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
+      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
       codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
       codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
       claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
@@ -565,13 +592,15 @@ export class PostgresSettingsStore implements SettingsStore {
           git_username,
           mcp_servers,
           openai_base_url,
+          task_prompt_magic_model,
+          task_prompt_magic_template,
           codex_default_model,
           codex_default_effort,
           claude_default_model,
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
@@ -581,6 +610,8 @@ export class PostgresSettingsStore implements SettingsStore {
           git_username = EXCLUDED.git_username,
           mcp_servers = EXCLUDED.mcp_servers,
           openai_base_url = EXCLUDED.openai_base_url,
+          task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
+          task_prompt_magic_template = EXCLUDED.task_prompt_magic_template,
           codex_default_model = EXCLUDED.codex_default_model,
           codex_default_effort = EXCLUDED.codex_default_effort,
           claude_default_model = EXCLUDED.claude_default_model,
@@ -595,6 +626,8 @@ export class PostgresSettingsStore implements SettingsStore {
         nextBase.gitUsername,
         JSON.stringify(nextBase.mcpServers),
         nextBase.openaiBaseUrl,
+        nextBase.taskPromptMagicModel,
+        nextBase.taskPromptMagicTemplate,
         nextBase.codexDefaultModel,
         nextBase.codexDefaultEffort,
         nextBase.claudeDefaultModel,

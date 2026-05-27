@@ -496,13 +496,15 @@ const main = async (): Promise<void> => {
               git_username,
               mcp_servers,
               openai_base_url,
+              task_prompt_magic_model,
+              task_prompt_magic_template,
               codex_default_model,
               codex_default_effort,
               claude_default_model,
               claude_default_effort,
               response_preference_presets
             )
-            VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb)
+            VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13::jsonb)
           `,
           [
             trimString(settings.defaultProvider) ?? "codex",
@@ -512,6 +514,8 @@ const main = async (): Promise<void> => {
             trimString(settings.gitUsername) ?? "x-access-token",
             JSON.stringify(Array.isArray(settings.mcpServers) ? settings.mcpServers : []),
             trimString(settings.openaiBaseUrl),
+            trimString((settings as { taskPromptMagicModel?: string }).taskPromptMagicModel) ?? "gpt-5.4-mini",
+            trimString((settings as { taskPromptMagicTemplate?: string }).taskPromptMagicTemplate) ?? "",
             trimString(settings.codexDefaultModel) ?? "gpt-5.4",
             trimString(settings.codexDefaultEffort) ?? "high",
             trimString(settings.claudeDefaultModel) ?? "claude-sonnet-4-5",
