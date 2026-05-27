@@ -494,7 +494,7 @@ export function TaskDefinitionFields({
   const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
 
   const handleGeneratePromptMagic = async (): Promise<void> => {
-    const prompt = selectedPrompt?.trim() ?? "";
+    const prompt = (form.getFieldValue("prompt") as string | undefined)?.trim() ?? "";
     if (!prompt || magicPromptLoading) {
       return;
     }
@@ -502,13 +502,19 @@ export function TaskDefinitionFields({
     setMagicPromptLoading(true);
     try {
       const response = await api.generateTaskPromptMagic({ prompt });
-      form.setFieldValue("prompt", response.prompt);
+      const nextPrompt = response.prompt ?? "";
+      form.setFieldsValue({ prompt: nextPrompt });
+      form.setFields([{ name: "prompt", value: nextPrompt }]);
       trackEvent("task_prompt_magic_used", {
         source: "task_create",
         input_length: prompt.length,
-        output_length: response.prompt.length
+        output_length: nextPrompt.length
       });
-      void message.success("Prompt improved.");
+      if (nextPrompt.trim() === prompt) {
+        void message.info("Magic prompt returned a similar result.");
+      } else {
+        void message.success("Prompt improved.");
+      }
     } catch (error) {
       const fallback = "Failed to generate prompt.";
       const errorMessage = error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
