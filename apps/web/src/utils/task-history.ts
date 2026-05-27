@@ -35,6 +35,7 @@ export type GroupedAutoRunHistoryEntry = {
   kind: "grouped_auto_run";
   timestamp: string;
   run: TaskRun;
+  isQueued?: boolean;
   promptText: string;
   promptMessage: TaskMessage | null;
   summaryMessage: TaskMessage | null;
@@ -208,6 +209,56 @@ export function buildTaskHistoryEntries(input: {
       summaryMessage,
       proposal
     });
+  }
+
+  if (input.sequenceRun) {
+    const knownRunIds = new Set(sortedRuns.map((run) => run.id));
+    const inferredTemplateRun = sortedRuns.at(-1) ?? null;
+    const queuedSteps = input.sequenceRun.steps.filter((step) => step.state === "pending");
+    const anchorTimestamp =
+      input.sequenceRun.steps.find((step) => step.state === "running")?.startedAt ??
+      input.sequenceRun.steps
+        .slice()
+        .reverse()
+        .find((step) => step.state === "succeeded" || step.state === "failed")?.finishedAt ??
+      input.sequenceRun.startedAt;
+
+    for (const step of queuedSteps) {
+      const stepRunId = step.taskRunId?.trim();
+      if (stepRunId && knownRunIds.has(stepRunId)) {
+        continue;
+      }
+      const syntheticRunId = stepRunId || `sequence-queued-${input.sequenceRun.id}-${step.index + 1}`;
+      const syntheticRun: TaskRun = {
+        id: syntheticRunId,
+        taskId: input.sequenceRun.taskId,
+        action: inferredTemplateRun?.action ?? "build",
+        provider: inferredTemplateRun?.provider ?? "codex",
+        providerProfile: inferredTemplateRun?.providerProfile ?? "high",
+        modelOverride: inferredTemplateRun?.modelOverride ?? null,
+        branchName: inferredTemplateRun?.branchName ?? null,
+        status: "running",
+        startedAt: anchorTimestamp ?? input.sequenceRun.startedAt,
+        finishedAt: null,
+        summary: null,
+        changeOutcome: null,
+        errorMessage: null,
+        changeProposalCheckpointRef: null,
+        changeProposalUntrackedPaths: null,
+        logs: []
+      };
+      groupedAutoEntries.push({
+        key: `grouped-auto-queued-${input.sequenceRun.id}-${step.index + 1}`,
+        kind: "grouped_auto_run",
+        timestamp: syntheticRun.startedAt,
+        run: syntheticRun,
+        isQueued: true,
+        promptText: step.prompt.trim() || "Sequence step queued.",
+        promptMessage: null,
+        summaryMessage: null,
+        proposal: null
+      });
+    }
   }
 
   const terminalStartMessages = sortedMessages.filter(isInteractiveTerminalStartMessage);

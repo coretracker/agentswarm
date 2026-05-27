@@ -4694,6 +4694,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     const normalizedRunSummary = getNormalizedRunSummary(entry.run);
     const summaryTitle = entry.run.action === "build" ? "Implementation Summary" : "Summary";
     const promptText = entry.promptText;
+    const runStatusLabel = entry.isQueued ? "queued" : entry.run.status;
+    const runStatusTagColor = entry.isQueued ? "processing" : runStatusColor[entry.run.status];
 
     return (
       <Card
@@ -4703,7 +4705,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         headStyle={historyCardHeadStyle}
         title={
           <Space wrap>
-            <Tag color={runStatusColor[entry.run.status]}>{entry.run.status}</Tag>
+            <Tag color={runStatusTagColor}>{runStatusLabel}</Tag>
             <Tag>{taskActionLabel[entry.run.action]}</Tag>
             {entry.run.action === "build" && entry.run.changeOutcome === "no_change" ? <Tag color="default">No code changes</Tag> : null}
             <Tag>{getAgentProviderLabel(entry.run.provider)}</Tag>
@@ -4739,7 +4741,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   </ReactMarkdown>
                 ) : (
                   <Typography.Text type="secondary">
-                    {entry.run.status === "running"
+                    {entry.isQueued
+                      ? "Run is queued and will start automatically when prior sequence work is complete."
+                      : entry.run.status === "running"
                       ? "Summary will appear when the run finishes."
                       : entry.run.action === "build" && entry.run.changeOutcome === "no_change"
                         ? "No code changes were needed for this run."

@@ -105,6 +105,35 @@ export class SequenceExecutionService {
           return;
         }
 
+        if (run.executionMode === "auto_apply_changes" && input.action === "build") {
+          const pendingProposal = (await this.taskStore.listChangeProposals(input.taskId)).find((proposal) => proposal.status === "pending");
+          if (pendingProposal) {
+            const task = await this.taskStore.getTask(input.taskId);
+            if (!task) {
+              await this.failAtStep(run, input.taskId, stepIndex, "Step could not be started because the task could not be loaded.");
+              return;
+            }
+            const autoApplyResult = await this.spawner.applyChangeProposal(task, pendingProposal.id);
+            if (!autoApplyResult.ok) {
+              run = (await this.sequenceStore.updateRun(run.id, {
+                status: "waiting_for_checkpoint_resolution",
+                failedStepIndex: null,
+                waitingForApprovalAfterStepIndex: null,
+                finishedAt: null
+              })) ?? run;
+              await this.taskStore.appendLog(
+                input.taskId,
+                `Sequence paused before step ${stepIndex + 1}/${input.stepPrompts.length}: could not auto-apply checkpoint (${autoApplyResult.message}). Resolve checkpoint and sequence will continue.`
+              );
+              return;
+            }
+            await this.taskStore.appendLog(
+              input.taskId,
+              `Sequence auto-applied checkpoint before step ${stepIndex + 1}/${input.stepPrompts.length}. Continuing.`
+            );
+          }
+        }
+
         const accepted = await this.scheduler.triggerAction(input.taskId, input.action, {
           content: input.stepPrompts[stepIndex]!
         });

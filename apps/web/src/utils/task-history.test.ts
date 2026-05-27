@@ -241,6 +241,65 @@ test("uses sequence step prompt text when a run has no matched user prompt messa
   assert.equal(entries[0].promptText, "Second step prompt from sequence");
 });
 
+test("adds queued sequence steps as grouped auto run entries", () => {
+  const runningRun = createRun({
+    id: "r-seq-1",
+    action: "build",
+    startedAt: "2026-03-24T12:00:00.000Z",
+    status: "running"
+  });
+  const sequenceRun = createSequenceRun({
+    id: "seq-run-queued",
+    taskId: "task-1",
+    sequenceId: "seq-1",
+    status: "running",
+    stepCount: 3,
+    steps: [
+      {
+        index: 0,
+        prompt: "Step one",
+        state: "running",
+        taskRunId: "r-seq-1",
+        errorMessage: null,
+        startedAt: "2026-03-24T12:00:00.000Z",
+        finishedAt: null
+      },
+      {
+        index: 1,
+        prompt: "Step two queued",
+        state: "pending",
+        taskRunId: null,
+        errorMessage: null,
+        startedAt: null,
+        finishedAt: null
+      },
+      {
+        index: 2,
+        prompt: "Step three queued",
+        state: "pending",
+        taskRunId: null,
+        errorMessage: null,
+        startedAt: null,
+        finishedAt: null
+      }
+    ]
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [],
+    runs: [runningRun],
+    proposals: [],
+    sequenceRun
+  });
+
+  const grouped = entries.filter((entry) => entry.kind === "grouped_auto_run");
+  assert.equal(grouped.length, 3);
+  const queued = grouped.filter((entry) => entry.isQueued);
+  assert.equal(queued.length, 2);
+  assert.equal(queued[0]?.promptText, "Step two queued");
+  assert.equal(queued[1]?.promptText, "Step three queued");
+});
+
 test("groups completed terminal sessions with a diff proposal", () => {
   const start = createMessage({
     id: "m1",
