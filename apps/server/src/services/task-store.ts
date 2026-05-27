@@ -63,6 +63,20 @@ const DEFAULT_HISTORY_PAGE_LIMIT = 25;
 const MAX_HISTORY_PAGE_LIMIT = 100;
 
 const nowIso = (): string => new Date().toISOString();
+const POSTGRES_DEADLOCK_ERROR_CODE = "40P01";
+const POSTGRES_SERIALIZATION_ERROR_CODE = "40001";
+
+const isRetryablePostgresError = (error: unknown): boolean => {
+  if (!error || typeof error !== "object" || !("code" in error)) {
+    return false;
+  }
+  const code = String((error as { code?: string }).code ?? "");
+  return code === POSTGRES_DEADLOCK_ERROR_CODE || code === POSTGRES_SERIALIZATION_ERROR_CODE;
+};
+
+const sleep = async (ms: number): Promise<void> => {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+};
 
 const clampHistoryPageLimit = (raw: number | null | undefined): number => {
   if (!Number.isFinite(raw)) {
@@ -1696,6 +1710,25 @@ export class PostgresTaskStore implements TaskStore {
     );
   }
 
+  private async trimTaskLogsBestEffort(taskId: string): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.trimTaskLogs(taskId);
+        return;
+      } catch (error) {
+        if (!isRetryablePostgresError(error) || attempt === 2) {
+          console.warn("Failed to trim task logs", {
+            taskId,
+            attempt: attempt + 1,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return;
+        }
+        await sleep(20 * (attempt + 1));
+      }
+    }
+  }
+
   private async hydrateTask(task: Task): Promise<Task> {
     const logs = await this.loadTaskLogs(task.id);
     const hydratedTask = {
@@ -1759,6 +1792,25 @@ export class PostgresTaskStore implements TaskStore {
       `,
       [runId, MAX_LOG_LINES]
     );
+  }
+
+  private async trimRunLogsBestEffort(runId: string): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.trimRunLogs(runId);
+        return;
+      } catch (error) {
+        if (!isRetryablePostgresError(error) || attempt === 2) {
+          console.warn("Failed to trim run logs", {
+            runId,
+            attempt: attempt + 1,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return;
+        }
+        await sleep(20 * (attempt + 1));
+      }
+    }
   }
 
   private async hydrateRun(run: TaskRun): Promise<TaskRun> {
@@ -1983,24 +2035,36 @@ export class PostgresTaskStore implements TaskStore {
     const timestamped = `[${new Date().toISOString()}] ${line}`;
     await withPostgresTransaction(this.pool, async (client) => {
       await client.query("INSERT INTO task_logs (task_id, line) VALUES ($1, $2)", [taskId, timestamped]);
-      await this.trimTaskLogs(taskId, client);
       if (runId) {
         const run = await this.getStoredRun(runId, client);
         if (run) {
           await client.query("INSERT INTO task_run_logs (run_id, line) VALUES ($1, $2)", [runId, timestamped]);
-          await this.trimRunLogs(runId, client);
         }
       }
     });
-    await this.eventBus.publish({
-      type: "task:log",
-      payload: {
+
+    await this.trimTaskLogsBestEffort(taskId);
+    if (runId) {
+      await this.trimRunLogsBestEffort(runId);
+    }
+
+    try {
+      await this.eventBus.publish({
+        type: "task:log",
+        payload: {
+          taskId,
+          runId,
+          line: timestamped,
+          timestamp: new Date().toISOString()
+        }
+      });
+    } catch (error) {
+      console.warn("Failed to publish task log event", {
         taskId,
         runId,
-        line: timestamped,
-        timestamp: new Date().toISOString()
-      }
-    });
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   async listMessages(taskId: string): Promise<TaskMessage[]> {

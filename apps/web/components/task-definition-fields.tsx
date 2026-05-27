@@ -575,7 +575,20 @@ export function TaskDefinitionFields({
             <Input placeholder="Your Task Title" size="large" />
           </Form.Item>
           <Form.Item
-            label={promptPanelTitle}
+            label={
+              <Flex align="center" justify="space-between" style={{ width: "100%" }}>
+                <span>{promptPanelTitle}</span>
+                <Button
+                  size="small"
+                  type="default"
+                  loading={magicPromptLoading}
+                  disabled={!canUsePromptMagic || promptIsEmpty || magicPromptLoading}
+                  onClick={() => void handleGeneratePromptMagic()}
+                >
+                  Magic Wand
+                </Button>
+              </Flex>
+            }
             extra={
               disableBlankPromptInput ? (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -616,17 +629,6 @@ export function TaskDefinitionFields({
                   }
                 />
               </Form.Item>
-              <Flex justify="flex-end">
-                <Button
-                  size="small"
-                  type="default"
-                  loading={magicPromptLoading}
-                  disabled={!canUsePromptMagic || promptIsEmpty || magicPromptLoading}
-                  onClick={() => void handleGeneratePromptMagic()}
-                >
-                  Magic Prompt
-                </Button>
-              </Flex>
               <TaskPromptAttachmentsInput
                 files={promptImageFiles}
                 onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}

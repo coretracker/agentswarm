@@ -4953,9 +4953,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               description="Apply or reject the workspace changes from this run before starting a new build or using Git push/pull. You can still open Terminal to inspect the workspace."
             />
           ) : null}
-          {chatTimelineBlock}
-          {renderHistoryPaginationControl()}
-          {chatHistoryEmptyState}
+          {!isPreparingWorkspace ? chatTimelineBlock : null}
+          {!isPreparingWorkspace ? renderHistoryPaginationControl() : null}
+          {!isPreparingWorkspace ? chatHistoryEmptyState : null}
           {!isPreparingWorkspace ? chatComposer : null}
         </Space>
       )
