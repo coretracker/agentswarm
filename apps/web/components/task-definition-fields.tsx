@@ -85,6 +85,23 @@ const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSetti
 const getProviderDefaultProfile = (provider: AgentProvider, settings?: SystemSettings | null): ProviderProfile =>
   provider === "claude" ? settings?.claudeDefaultEffort ?? "high" : settings?.codexDefaultEffort ?? "high";
 
+const deriveTitleFromPrompt = (prompt: string): string => {
+  const lines = prompt
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) {
+    return "";
+  }
+
+  const heading = lines.find((line) => /^#{1,6}\s+/.test(line));
+  if (heading) {
+    return heading.replace(/^#{1,6}\s+/, "").trim();
+  }
+
+  return lines[0];
+};
+
 export const getTaskDefinitionInitialValues = (settings?: SystemSettings | null): Partial<TaskDefinitionFormValues> => {
   const provider = settings?.defaultProvider ?? "codex";
   return {
@@ -503,7 +520,13 @@ export function TaskDefinitionFields({
     try {
       const response = await api.generateTaskPromptMagic({ prompt });
       const nextPrompt = response.prompt ?? "";
-      form.setFieldsValue({ prompt: nextPrompt });
+      const currentTitle = (form.getFieldValue("title") as string | undefined)?.trim() ?? "";
+      const derivedTitle = deriveTitleFromPrompt(nextPrompt);
+      const nextValues: Partial<TaskDefinitionFormValues> = { prompt: nextPrompt };
+      if (!currentTitle && derivedTitle) {
+        nextValues.title = derivedTitle.slice(0, 500);
+      }
+      form.setFieldsValue(nextValues);
       form.setFields([{ name: "prompt", value: nextPrompt }]);
       trackEvent("task_prompt_magic_used", {
         source: "task_create",
