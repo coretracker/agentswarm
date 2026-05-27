@@ -147,7 +147,24 @@ export function buildTaskHistoryEntries(input: {
   }
   const sequenceStepPromptByTaskRunId = new Map<string, string>();
   const sequenceStepIndexByTaskRunId = new Map<string, number>();
+  const sequenceStepIndexByUniquePrompt = new Map<string, number>();
   if (input.sequenceRun) {
+    const promptCounts = new Map<string, number>();
+    for (const step of input.sequenceRun.steps) {
+      const prompt = step.prompt.trim();
+      if (!prompt) {
+        continue;
+      }
+      promptCounts.set(prompt, (promptCounts.get(prompt) ?? 0) + 1);
+    }
+    for (const step of input.sequenceRun.steps) {
+      const prompt = step.prompt.trim();
+      if (!prompt || (promptCounts.get(prompt) ?? 0) !== 1) {
+        continue;
+      }
+      sequenceStepIndexByUniquePrompt.set(prompt, step.index);
+    }
+
     for (const step of input.sequenceRun.steps) {
       const taskRunId = step.taskRunId?.trim();
       const stepPrompt = step.prompt.trim();
@@ -178,6 +195,9 @@ export function buildTaskHistoryEntries(input: {
     }
     const fallbackSequencePrompt = sequenceStepPromptByTaskRunId.get(run.id) ?? null;
     const promptText = promptMessage?.content ?? fallbackSequencePrompt ?? "No matched user prompt was found for this run.";
+    const inferredSequenceStepIndex =
+      sequenceStepIndexByTaskRunId.get(run.id) ??
+      sequenceStepIndexByUniquePrompt.get(promptText.trim());
 
     let summaryMessage: TaskMessage | null = null;
     const normalizedRunSummary = run.summary?.trim() ?? "";
@@ -208,8 +228,8 @@ export function buildTaskHistoryEntries(input: {
       kind: "grouped_auto_run",
       timestamp: run.startedAt,
       run,
-      sequenceRunId: input.sequenceRun?.id,
-      sequenceStepIndex: sequenceStepIndexByTaskRunId.get(run.id),
+      sequenceRunId: inferredSequenceStepIndex !== undefined ? input.sequenceRun?.id : undefined,
+      sequenceStepIndex: inferredSequenceStepIndex,
       promptText,
       promptMessage,
       summaryMessage,

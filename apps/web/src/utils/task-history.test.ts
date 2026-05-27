@@ -367,6 +367,80 @@ test("keeps sequence step order stable across done, running, and queued states",
   );
 });
 
+test("keeps order stable when the running step has no taskRunId yet", () => {
+  const doneRun = createRun({
+    id: "r-step-1",
+    action: "build",
+    startedAt: "2026-03-24T12:01:00.000Z",
+    finishedAt: "2026-03-24T12:02:00.000Z",
+    status: "succeeded",
+    summary: "done"
+  });
+  const activeRun = createRun({
+    id: "r-step-2",
+    action: "build",
+    startedAt: "2026-03-24T12:10:00.000Z",
+    status: "running"
+  });
+  const step2PromptMessage = createMessage({
+    id: "m-step-2",
+    createdAt: "2026-03-24T12:09:59.000Z",
+    role: "user",
+    action: "build",
+    content: "Step 2 unique prompt"
+  });
+  const sequenceRun = createSequenceRun({
+    id: "seq-run-no-runid",
+    taskId: "task-1",
+    sequenceId: "seq-1",
+    status: "running",
+    stepCount: 3,
+    steps: [
+      {
+        index: 0,
+        prompt: "Step 1 unique prompt",
+        state: "succeeded",
+        taskRunId: "r-step-1",
+        errorMessage: null,
+        startedAt: "2026-03-24T12:01:00.000Z",
+        finishedAt: "2026-03-24T12:02:00.000Z"
+      },
+      {
+        index: 1,
+        prompt: "Step 2 unique prompt",
+        state: "running",
+        taskRunId: null,
+        errorMessage: null,
+        startedAt: "2026-03-24T12:10:00.000Z",
+        finishedAt: null
+      },
+      {
+        index: 2,
+        prompt: "Step 3 unique prompt",
+        state: "pending",
+        taskRunId: null,
+        errorMessage: null,
+        startedAt: null,
+        finishedAt: null
+      }
+    ]
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [step2PromptMessage],
+    runs: [activeRun, doneRun],
+    proposals: [],
+    sequenceRun
+  });
+
+  const grouped = entries.filter((entry) => entry.kind === "grouped_auto_run");
+  assert.equal(grouped.length, 3);
+  assert.deepEqual(
+    grouped.map((entry) => entry.promptText),
+    ["Step 1 unique prompt", "Step 2 unique prompt", "Step 3 unique prompt"]
+  );
+});
+
 test("groups completed terminal sessions with a diff proposal", () => {
   const start = createMessage({
     id: "m1",
