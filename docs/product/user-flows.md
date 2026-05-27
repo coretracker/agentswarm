@@ -166,3 +166,57 @@ flowchart TD
   A5 -- No --> A7 --> A8 --> A9
   A9 --> A10 --> A11
 ```
+
+## Git Flow (Task Detail)
+
+```mermaid
+flowchart TD
+  G1[User opens task detail Git actions]
+  G2{Action chosen}
+
+  G3[Pull selected]
+  G4[POST tasks id pull]
+  G5{Mutation blocked? active run pending checkpoint terminal active archived}
+  G6[spawner pullTaskBranch]
+  G7[task refreshed and sync counts updated]
+
+  G8[Push selected]
+  G9[POST tasks id push]
+  G10{Mutation blocked? active run pending checkpoint terminal active archived}
+  G11[spawner pushTaskBranch]
+  G12[publish task pushed event]
+  G13[task refreshed and sync counts updated]
+
+  G14[Merge selected]
+  G15[GET merge preview target branch]
+  G16{Merge allowed? feature branch target not same blocked checks pass}
+  G17[POST tasks id merge]
+  G18[spawner mergeTaskBranch]
+  G19[publish task merged event]
+  G20[remove queued entry archive task append archived log]
+  G21[return merged archived task]
+
+  G22[Checkpoint action apply reject revert]
+  G23[POST change proposals action endpoint]
+  G24[checkpoint mutation executed]
+  G25{sequence auto apply recovery needed}
+  G26[resume waiting sequence step]
+
+  G1 --> G2
+
+  G2 -- Pull --> G3 --> G4 --> G5
+  G5 -- No --> G6 --> G7
+  G5 -- Yes --> G7
+
+  G2 -- Push --> G8 --> G9 --> G10
+  G10 -- No --> G11 --> G12 --> G13
+  G10 -- Yes --> G13
+
+  G2 -- Merge --> G14 --> G15 --> G16
+  G16 -- Yes --> G17 --> G18 --> G19 --> G20 --> G21
+  G16 -- No --> G21
+
+  G2 -- Checkpoint --> G22 --> G23 --> G24 --> G25
+  G25 -- Yes --> G26
+  G25 -- No --> G24
+```
