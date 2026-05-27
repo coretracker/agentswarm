@@ -552,13 +552,7 @@ export function TaskDefinitionFields({
             <Input placeholder="Your Task Title" size="large" />
           </Form.Item>
           <Form.Item
-            name="prompt"
             label={promptPanelTitle}
-            rules={
-              requirePromptForBlank
-                ? [{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]
-                : []
-            }
             extra={
               disableBlankPromptInput ? (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -573,22 +567,32 @@ export function TaskDefinitionFields({
             style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
           >
             <Flex vertical gap={12} style={{ flex: 1 }}>
-              <Input.TextArea
-                autoSize={{ minRows: 12, maxRows: 28 }}
-                style={{ resize: "none" }}
-                disabled={disableBlankPromptInput}
-                placeholder={
-                  disableBlankPromptInput
-                    ? "Prompt is disabled while preparing the workspace only."
-                    : effectiveTaskType === "ask"
-                    ? requirePromptForBlank
-                      ? "Ask a repository question."
-                      : "Optional question for the agent when you start a run."
-                    : requirePromptForBlank
-                      ? "Describe the goal, constraints, and expected outcome in your prompt."
-                      : "Optional — add a goal now or open Interactive after the workspace is prepared."
+              <Form.Item
+                name="prompt"
+                style={{ marginBottom: 0 }}
+                rules={
+                  requirePromptForBlank
+                    ? [{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]
+                    : []
                 }
-              />
+              >
+                <Input.TextArea
+                  autoSize={{ minRows: 12, maxRows: 28 }}
+                  style={{ resize: "none" }}
+                  disabled={disableBlankPromptInput}
+                  placeholder={
+                    disableBlankPromptInput
+                      ? "Prompt is disabled while preparing the workspace only."
+                      : effectiveTaskType === "ask"
+                      ? requirePromptForBlank
+                        ? "Ask a repository question."
+                        : "Optional question for the agent when you start a run."
+                      : requirePromptForBlank
+                        ? "Describe the goal, constraints, and expected outcome in your prompt."
+                        : "Optional — add a goal now or open Interactive after the workspace is prepared."
+                  }
+                />
+              </Form.Item>
               <Flex justify="flex-end">
                 <Button
                   size="small"
