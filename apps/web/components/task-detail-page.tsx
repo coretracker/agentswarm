@@ -4698,7 +4698,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       <Card
         key={entryKey}
         size="small"
-        style={getHistoryContextCardStyle(entryKey)}
+        style={{
+          ...getHistoryContextCardStyle(entryKey),
+          ...(entry.isQueued ? { opacity: 0.72 } : {})
+        }}
         headStyle={historyCardHeadStyle}
         title={
           <Space wrap>

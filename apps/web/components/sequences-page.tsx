@@ -8,6 +8,7 @@ import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } fro
 import { api } from "../src/api/client";
 import { useSequences } from "../src/hooks/useSequences";
 import { useAuth } from "./auth-provider";
+import { trackEvent } from "../src/utils/analytics";
 
 const summarizeStep = (step: SequenceStep): string => {
   if (step.type === "snippet") {
@@ -32,6 +33,8 @@ export function SequencesPage() {
   const canCreate = can("sequence:create");
   const canEdit = can("sequence:edit");
   const canDelete = can("sequence:delete");
+  const canDuplicate = can("sequence:create");
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
 
   return (
     <>
@@ -88,6 +91,31 @@ export function SequencesPage() {
                     {canEdit ? (
                       <Button size="small" onClick={() => router.push(`/sequences/${sequence.id}/edit`)}>
                         Edit
+                      </Button>
+                    ) : null}
+                    {canDuplicate ? (
+                      <Button
+                        size="small"
+                        loading={duplicatingId === sequence.id}
+                        onClick={async () => {
+                          setDuplicatingId(sequence.id);
+                          try {
+                            const duplicated = await api.duplicateSequence(sequence.id);
+                            trackEvent("sequence_duplicated", {
+                              source: "list",
+                              sequence_id: sequence.id,
+                              duplicated_sequence_id: duplicated.id
+                            });
+                            messageApi.success("Sequence duplicated");
+                            router.push(`/sequences/${duplicated.id}/edit`);
+                          } catch (error) {
+                            messageApi.error(error instanceof Error ? error.message : "Failed to duplicate sequence");
+                          } finally {
+                            setDuplicatingId(null);
+                          }
+                        }}
+                      >
+                        Duplicate
                       </Button>
                     ) : null}
                     {canDelete ? (

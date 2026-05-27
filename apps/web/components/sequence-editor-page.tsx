@@ -29,6 +29,7 @@ const defaultStep = (): SequenceStep => ({ id: "step_1", type: "inline", prompt:
 export function SequenceEditorPage({ mode, sequenceId }: SequenceEditorPageProps) {
   const router = useRouter();
   const { can } = useAuth();
+  const canDuplicateSequence = can("sequence:create");
   const canListSnippets = can("snippet:list");
   const canListSequences = can("sequence:list");
   const { snippets, loading: snippetsLoading } = useSnippets(canListSnippets);
@@ -36,6 +37,7 @@ export function SequenceEditorPage({ mode, sequenceId }: SequenceEditorPageProps
   const [form] = Form.useForm<SequenceFormValues>();
   const [messageApi, contextHolder] = message.useMessage();
   const [submitting, setSubmitting] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
   const [snippetVariableConflicts, setSnippetVariableConflicts] = useState<string[]>([]);
   const watchedSteps = Form.useWatch("steps", form) as SequenceStep[] | undefined;
   const editingSequence = useMemo<Sequence | null>(() => {
@@ -116,6 +118,26 @@ export function SequenceEditorPage({ mode, sequenceId }: SequenceEditorPageProps
   }
 
   const title = mode === "edit" ? "Edit Sequence" : "Add Sequence";
+  const handleDuplicateSequence = async () => {
+    if (mode !== "edit" || !editingSequence || !canDuplicateSequence) {
+      return;
+    }
+    setDuplicating(true);
+    try {
+      const duplicated = await api.duplicateSequence(editingSequence.id);
+      trackEvent("sequence_duplicated", {
+        source: "editor",
+        sequence_id: editingSequence.id,
+        duplicated_sequence_id: duplicated.id
+      });
+      messageApi.success("Sequence duplicated");
+      router.push(`/sequences/${duplicated.id}/edit`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to duplicate sequence");
+    } finally {
+      setDuplicating(false);
+    }
+  };
 
   return (
     <>
@@ -170,6 +192,11 @@ export function SequenceEditorPage({ mode, sequenceId }: SequenceEditorPageProps
               </Typography.Text>
             </Flex>
             <Space>
+              {mode === "edit" && canDuplicateSequence ? (
+                <Button onClick={() => void handleDuplicateSequence()} loading={duplicating}>
+                  Duplicate
+                </Button>
+              ) : null}
               <Button onClick={() => router.push("/sequences")}>Cancel</Button>
               <Button type="primary" htmlType="submit" loading={submitting}>
                 {mode === "edit" ? "Save" : "Create"}

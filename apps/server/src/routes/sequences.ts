@@ -115,6 +115,26 @@ export const registerSequenceRoutes = (
     return reply.status(201).send(sequence);
   });
 
+  app.post<{ Params: { id: string } }>("/sequences/:id/duplicate", { preHandler: deps.auth.requireAllScopes(["sequence:create"]) }, async (request, reply) => {
+    const source = await deps.sequenceStore.getSequence(request.params.id);
+    if (!source) {
+      return reply.status(404).send({ message: "Sequence not found" });
+    }
+
+    const duplicated = await deps.sequenceStore.createSequence({
+      name: `Copy of ${source.name}`,
+      executionMode: source.executionMode,
+      steps: source.steps.map((step) => ({
+        id: step.id,
+        type: step.type,
+        prompt: step.prompt,
+        ...(step.snippetId ? { snippetId: step.snippetId } : {})
+      })),
+      variables: source.variables
+    });
+    return reply.status(201).send(duplicated);
+  });
+
   app.patch<{ Params: { id: string } }>("/sequences/:id", { preHandler: deps.auth.requireAllScopes(["sequence:edit"]) }, async (request, reply) => {
     const parsed = sequenceSchema.safeParse(request.body);
     if (!parsed.success) {

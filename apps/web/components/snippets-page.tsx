@@ -9,6 +9,7 @@ import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } fro
 import { api } from "../src/api/client";
 import { useSnippets } from "../src/hooks/useSnippets";
 import { useAuth } from "./auth-provider";
+import { trackEvent } from "../src/utils/analytics";
 
 const summarizeSnippet = (value: string): string => {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -28,6 +29,8 @@ export function SnippetsPage() {
   const canCreateSnippet = can("snippet:create");
   const canEditSnippet = can("snippet:edit");
   const canDeleteSnippet = can("snippet:delete");
+  const canDuplicateSnippet = can("snippet:create");
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
 
   useEffect(() => {
     const savedState = searchParams.get("saved");
@@ -111,6 +114,27 @@ export function SnippetsPage() {
                     {canEditSnippet ? (
                       <Button size="small" onClick={() => router.push(`/snippets/${snippet.id}/edit?from=list`)}>
                         Edit
+                      </Button>
+                    ) : null}
+                    {canDuplicateSnippet ? (
+                      <Button
+                        size="small"
+                        loading={duplicatingId === snippet.id}
+                        onClick={async () => {
+                          setDuplicatingId(snippet.id);
+                          try {
+                            const duplicated = await api.duplicateSnippet(snippet.id);
+                            trackEvent("snippet_duplicated", { source: "list", snippet_id: snippet.id, duplicated_snippet_id: duplicated.id });
+                            messageApi.success("Snippet duplicated");
+                            router.push(`/snippets/${duplicated.id}/edit?from=duplicate`);
+                          } catch (error) {
+                            messageApi.error(error instanceof Error ? error.message : "Failed to duplicate snippet");
+                          } finally {
+                            setDuplicatingId(null);
+                          }
+                        }}
+                      >
+                        Duplicate
                       </Button>
                     ) : null}
                     {canDeleteSnippet ? (

@@ -7,6 +7,7 @@ import { ArrowDownOutlined, ArrowUpOutlined, CopyOutlined, MinusCircleOutlined, 
 import { Button, Card, Flex, Form, Input, Result, Select, Space, Spin, Typography, message } from "antd";
 import { ApiError, api } from "../src/api/client";
 import { trackEvent } from "../src/utils/analytics";
+import { useAuth } from "./auth-provider";
 
 interface SnippetEditorPageProps {
   mode: "create" | "edit";
@@ -47,6 +48,8 @@ const snapshotValues = (values?: Partial<SnippetFormValues> | null): string => J
 
 export function SnippetEditorPage({ mode, snippetId }: SnippetEditorPageProps) {
   const router = useRouter();
+  const { can } = useAuth();
+  const canDuplicateSnippet = can("snippet:create");
   const searchParams = useSearchParams();
   const entryPoint = searchParams.get("from") === "list" ? "list" : "direct_url";
   const [form] = Form.useForm<SnippetFormValues>();
@@ -56,6 +59,7 @@ export function SnippetEditorPage({ mode, snippetId }: SnippetEditorPageProps) {
   const [notFound, setNotFound] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editingSnippet, setEditingSnippet] = useState<Snippet | null>(null);
+  const [duplicating, setDuplicating] = useState(false);
   const [initialSnapshot, setInitialSnapshot] = useState("");
   const watchedValues = Form.useWatch([], form) as SnippetFormValues | undefined;
   const currentSnippetName = Form.useWatch("name", form) ?? "";
@@ -168,6 +172,27 @@ export function SnippetEditorPage({ mode, snippetId }: SnippetEditorPageProps) {
     }
   };
 
+  const handleDuplicateSnippet = async () => {
+    if (mode !== "edit" || !editingSnippet || !canDuplicateSnippet) {
+      return;
+    }
+    setDuplicating(true);
+    try {
+      const duplicated = await api.duplicateSnippet(editingSnippet.id);
+      trackEvent("snippet_duplicated", {
+        source: "editor",
+        snippet_id: editingSnippet.id,
+        duplicated_snippet_id: duplicated.id
+      });
+      messageApi.success("Snippet duplicated");
+      router.push(`/snippets/${duplicated.id}/edit?from=duplicate`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to duplicate snippet");
+    } finally {
+      setDuplicating(false);
+    }
+  };
+
   if (loading) {
     return (
       <Flex align="center" justify="center" style={{ minHeight: 320 }}>
@@ -243,6 +268,11 @@ export function SnippetEditorPage({ mode, snippetId }: SnippetEditorPageProps) {
               >
                 Copy
               </Button>
+              {mode === "edit" && canDuplicateSnippet ? (
+                <Button onClick={() => void handleDuplicateSnippet()} loading={duplicating}>
+                  Duplicate
+                </Button>
+              ) : null}
               <Button onClick={goBack}>Cancel</Button>
               <Button type="primary" htmlType="submit" loading={submitting}>
                 {mode === "edit" ? "Save" : "Create"}

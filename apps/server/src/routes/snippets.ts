@@ -58,6 +58,20 @@ export const registerSnippetRoutes = (
     return reply.status(201).send(snippet);
   });
 
+  app.post<{ Params: { id: string } }>("/snippets/:id/duplicate", { preHandler: deps.auth.requireAllScopes(["snippet:create"]) }, async (request, reply) => {
+    const source = await deps.snippetStore.getSnippet(request.params.id);
+    if (!source) {
+      return reply.status(404).send({ message: "Snippet not found" });
+    }
+
+    const duplicated = await deps.snippetStore.createSnippet({
+      name: `Copy of ${source.name}`,
+      content: source.content,
+      variables: source.variables
+    });
+    return reply.status(201).send(duplicated);
+  });
+
   app.patch<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:edit"]) }, async (request, reply) => {
     const parsed = snippetSchema.safeParse(request.body);
     if (!parsed.success) {
