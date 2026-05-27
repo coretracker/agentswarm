@@ -300,6 +300,73 @@ test("adds queued sequence steps as grouped auto run entries", () => {
   assert.equal(queued[1]?.promptText, "Step three queued");
 });
 
+test("keeps sequence step order stable across done, running, and queued states", () => {
+  const doneRun = createRun({
+    id: "r-step-1",
+    action: "build",
+    startedAt: "2026-03-24T12:01:00.000Z",
+    finishedAt: "2026-03-24T12:02:00.000Z",
+    status: "succeeded",
+    summary: "done"
+  });
+  const activeRun = createRun({
+    id: "r-step-2",
+    action: "build",
+    startedAt: "2026-03-24T12:10:00.000Z",
+    status: "running"
+  });
+  const sequenceRun = createSequenceRun({
+    id: "seq-run-order",
+    taskId: "task-1",
+    sequenceId: "seq-1",
+    status: "running",
+    stepCount: 3,
+    steps: [
+      {
+        index: 0,
+        prompt: "Step 1",
+        state: "succeeded",
+        taskRunId: "r-step-1",
+        errorMessage: null,
+        startedAt: "2026-03-24T12:01:00.000Z",
+        finishedAt: "2026-03-24T12:02:00.000Z"
+      },
+      {
+        index: 1,
+        prompt: "Step 2",
+        state: "running",
+        taskRunId: "r-step-2",
+        errorMessage: null,
+        startedAt: "2026-03-24T12:10:00.000Z",
+        finishedAt: null
+      },
+      {
+        index: 2,
+        prompt: "Step 3",
+        state: "pending",
+        taskRunId: null,
+        errorMessage: null,
+        startedAt: null,
+        finishedAt: null
+      }
+    ]
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [],
+    runs: [activeRun, doneRun],
+    proposals: [],
+    sequenceRun
+  });
+
+  const grouped = entries.filter((entry) => entry.kind === "grouped_auto_run");
+  assert.equal(grouped.length, 3);
+  assert.deepEqual(
+    grouped.map((entry) => entry.promptText),
+    ["Step 1", "Step 2", "Step 3"]
+  );
+});
+
 test("groups completed terminal sessions with a diff proposal", () => {
   const start = createMessage({
     id: "m1",

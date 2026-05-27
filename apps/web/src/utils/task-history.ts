@@ -36,6 +36,8 @@ export type GroupedAutoRunHistoryEntry = {
   timestamp: string;
   run: TaskRun;
   isQueued?: boolean;
+  sequenceRunId?: string;
+  sequenceStepIndex?: number;
   promptText: string;
   promptMessage: TaskMessage | null;
   summaryMessage: TaskMessage | null;
@@ -144,6 +146,7 @@ export function buildTaskHistoryEntries(input: {
     }
   }
   const sequenceStepPromptByTaskRunId = new Map<string, string>();
+  const sequenceStepIndexByTaskRunId = new Map<string, number>();
   if (input.sequenceRun) {
     for (const step of input.sequenceRun.steps) {
       const taskRunId = step.taskRunId?.trim();
@@ -152,6 +155,7 @@ export function buildTaskHistoryEntries(input: {
         continue;
       }
       sequenceStepPromptByTaskRunId.set(taskRunId, stepPrompt);
+      sequenceStepIndexByTaskRunId.set(taskRunId, step.index);
     }
   }
 
@@ -204,6 +208,8 @@ export function buildTaskHistoryEntries(input: {
       kind: "grouped_auto_run",
       timestamp: run.startedAt,
       run,
+      sequenceRunId: input.sequenceRun?.id,
+      sequenceStepIndex: sequenceStepIndexByTaskRunId.get(run.id),
       promptText,
       promptMessage,
       summaryMessage,
@@ -253,6 +259,8 @@ export function buildTaskHistoryEntries(input: {
         timestamp: syntheticRun.startedAt,
         run: syntheticRun,
         isQueued: true,
+        sequenceRunId: input.sequenceRun.id,
+        sequenceStepIndex: step.index,
         promptText: step.prompt.trim() || "Sequence step queued.",
         promptMessage: null,
         summaryMessage: null,
@@ -387,7 +395,7 @@ export function buildTaskHistoryEntries(input: {
   });
   const rawProposals = sortedProposals.filter((proposal) => !consumedProposalIds.has(proposal.id));
 
-  return [
+  const entries = [
     ...groupedAutoEntries,
     ...groupedTerminalEntries,
     ...rawMessages.map(
@@ -414,5 +422,24 @@ export function buildTaskHistoryEntries(input: {
         proposal
       })
     )
-  ].sort((left, right) => compareIso(left.timestamp, right.timestamp, left.key, right.key));
+  ];
+
+  return entries.sort((left, right) => {
+    if (left.kind === "grouped_auto_run" && right.kind === "grouped_auto_run") {
+      const leftSequenceRunId = left.sequenceRunId?.trim() ?? "";
+      const rightSequenceRunId = right.sequenceRunId?.trim() ?? "";
+      const leftSequenceStepIndex = typeof left.sequenceStepIndex === "number" ? left.sequenceStepIndex : null;
+      const rightSequenceStepIndex = typeof right.sequenceStepIndex === "number" ? right.sequenceStepIndex : null;
+      if (
+        leftSequenceRunId.length > 0 &&
+        leftSequenceRunId === rightSequenceRunId &&
+        leftSequenceStepIndex !== null &&
+        rightSequenceStepIndex !== null &&
+        leftSequenceStepIndex !== rightSequenceStepIndex
+      ) {
+        return leftSequenceStepIndex - rightSequenceStepIndex;
+      }
+    }
+    return compareIso(left.timestamp, right.timestamp, left.key, right.key);
+  });
 }
