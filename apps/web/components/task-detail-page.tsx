@@ -4945,7 +4945,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       label: "History",
       children: (
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
-          {chatPreparingNotice}
           {pendingChangeProposal && canEditTask && task && !isArchived ? (
             <Alert
               type="warning"
@@ -5501,6 +5500,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 </Flex>
 
                 <Flex vertical gap={16}>
+                  {chatPreparingNotice}
                   <Card bordered={false}>
                     <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff" | "files")} items={mainTabItems} />
                   </Card>
