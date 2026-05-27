@@ -22,6 +22,7 @@ import type { UserStore } from "../services/user-store.js";
 import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
 import { applyTaskStartMode, getTriggerActionForNewTask } from "../lib/task-start-mode.js";
 import { executeOpenAiDiffAssist } from "../services/openai-diff-assist-service.js";
+import { executeTaskPromptMagic } from "../services/openai-task-prompt-magic-service.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
@@ -199,6 +200,10 @@ const openAiDiffAssistSchema = z.object({
   userPrompt: z.string().max(16_000).default(""),
   filePath: z.string().trim().min(1).max(4096),
   selectedSnippet: z.string().max(48_000)
+});
+
+const taskPromptMagicSchema = z.object({
+  prompt: z.string().max(16_000)
 });
 
 const workspaceFileQuerySchema = z.object({
@@ -415,15 +420,26 @@ export const registerTaskRoutes = (
         startStepIndex: failedStepIndex
       })
       .catch(async (error) => {
-        const message = error instanceof Error ? error.message : "Sequence execution failed.";
-        await deps.taskStore.appendLog(task.id, `Sequence execution failed: ${message}`);
-        const currentRun = await deps.sequenceStore.getRun(runId);
-        if (currentRun?.status === "running") {
-          await sequenceExecutionService.failRunImmediately({
-            runId,
-            failedStepIndex: currentRun.failedStepIndex ?? failedStepIndex,
-            errorMessage: message
-          });
+        try {
+          const message = error instanceof Error ? error.message : "Sequence execution failed.";
+          await deps.taskStore.appendLog(task.id, `Sequence execution failed: ${message}`);
+          const currentRun = await deps.sequenceStore.getRun(runId);
+          if (currentRun?.status === "running") {
+            await sequenceExecutionService.failRunImmediately({
+              runId,
+              failedStepIndex: currentRun.failedStepIndex ?? failedStepIndex,
+              errorMessage: message
+            });
+          }
+        } catch (innerError) {
+          app.log.warn(
+            {
+              taskId: task.id,
+              runId,
+              error: innerError instanceof Error ? innerError.message : String(innerError)
+            },
+            "Sequence recovery handler failed while processing runSteps rejection."
+          );
         }
       });
   };
@@ -710,15 +726,26 @@ export const registerTaskRoutes = (
           startStepIndex: nextStepIndex
         })
         .catch(async (error) => {
-          const message = error instanceof Error ? error.message : "Sequence execution failed.";
-          await deps.taskStore.appendLog(task.id, `Sequence execution failed: ${message}`);
-          const currentRun = await deps.sequenceStore.getRun(claimed.run.id);
-          if (currentRun?.status === "running") {
-            await sequenceExecutionService.failRunImmediately({
-              runId: claimed.run.id,
-              failedStepIndex: nextStepIndex,
-              errorMessage: message
-            });
+          try {
+            const message = error instanceof Error ? error.message : "Sequence execution failed.";
+            await deps.taskStore.appendLog(task.id, `Sequence execution failed: ${message}`);
+            const currentRun = await deps.sequenceStore.getRun(claimed.run.id);
+            if (currentRun?.status === "running") {
+              await sequenceExecutionService.failRunImmediately({
+                runId: claimed.run.id,
+                failedStepIndex: nextStepIndex,
+                errorMessage: message
+              });
+            }
+          } catch (innerError) {
+            app.log.warn(
+              {
+                taskId: task.id,
+                runId: claimed.run.id,
+                error: innerError instanceof Error ? innerError.message : String(innerError)
+              },
+              "Sequence approval resume handler failed while processing runSteps rejection."
+            );
           }
         });
 
@@ -1107,6 +1134,44 @@ export const registerTaskRoutes = (
     }
   );
 
+  app.post(
+    "/tasks/prompt-magic",
+    { preHandler: deps.auth.requireAllScopes(["task:create"]) },
+    async (request, reply) => {
+      const parsed = taskPromptMagicSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+
+      const credentials = await deps.settingsStore.getRuntimeCredentials();
+      const settings = await deps.settingsStore.getSettings();
+      if (!credentials.openaiApiKey) {
+        return reply.status(400).send({ message: "OpenAI API key is not configured in Settings." });
+      }
+
+      try {
+        const result = await executeTaskPromptMagic({
+          prompt: parsed.data.prompt,
+          openaiApiKey: credentials.openaiApiKey,
+          openaiBaseUrl: settings.openaiBaseUrl
+        });
+        return reply.send(result);
+      } catch (error: unknown) {
+        if (
+          error &&
+          typeof error === "object" &&
+          "status" in error &&
+          typeof (error as { status: unknown }).status === "number"
+        ) {
+          const status = (error as { status: number }).status;
+          const message = error instanceof Error ? error.message : "Request failed";
+          return reply.status(status).send({ message });
+        }
+        throw error;
+      }
+    }
+  );
+
   app.post("/tasks", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:list"]) }, async (request, reply) => {
     const parsed = createTaskSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -1226,15 +1291,26 @@ export const registerTaskRoutes = (
             initialKnownRunIds: sequenceRunContext.initialKnownRunIds
           })
           .catch(async (error) => {
-            const message = error instanceof Error ? error.message : "Sequence execution failed.";
-            await deps.taskStore.appendLog(createdTask.id, `Sequence execution failed: ${message}`);
-            const currentRun = await deps.sequenceStore.getRun(sequenceRunContext.runId);
-            if (currentRun?.status === "running") {
-              await sequenceExecutionService.failRunImmediately({
-                runId: sequenceRunContext.runId,
-                failedStepIndex: currentRun.failedStepIndex ?? 0,
-                errorMessage: message
-              });
+            try {
+              const message = error instanceof Error ? error.message : "Sequence execution failed.";
+              await deps.taskStore.appendLog(createdTask.id, `Sequence execution failed: ${message}`);
+              const currentRun = await deps.sequenceStore.getRun(sequenceRunContext.runId);
+              if (currentRun?.status === "running") {
+                await sequenceExecutionService.failRunImmediately({
+                  runId: sequenceRunContext.runId,
+                  failedStepIndex: currentRun.failedStepIndex ?? 0,
+                  errorMessage: message
+                });
+              }
+            } catch (innerError) {
+              app.log.warn(
+                {
+                  taskId: createdTask.id,
+                  runId: sequenceRunContext.runId,
+                  error: innerError instanceof Error ? innerError.message : String(innerError)
+                },
+                "Sequence start handler failed while processing runSteps rejection."
+              );
             }
           });
       }

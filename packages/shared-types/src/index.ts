@@ -462,6 +462,14 @@ export interface OpenAiDiffAssistResult {
   text: string;
 }
 
+export interface TaskPromptMagicInput {
+  prompt: string;
+}
+
+export interface TaskPromptMagicResult {
+  prompt: string;
+}
+
 export interface TaskLiveDiff {
   diff: string | null;
   live: boolean;

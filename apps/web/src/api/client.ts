@@ -27,6 +27,8 @@ import type {
   Task,
   OpenAiDiffAssistInput,
   OpenAiDiffAssistResult,
+  TaskPromptMagicInput,
+  TaskPromptMagicResult,
   TaskLiveDiff,
   TaskWorkspaceFileSearchResult,
   TaskWorkspaceFileTree,
@@ -210,6 +212,10 @@ export const api = {
     request<void>(`/snippets/${id}`, {
       method: "DELETE"
     }),
+  duplicateSnippet: (id: string) =>
+    request<Snippet>(`/snippets/${id}/duplicate`, {
+      method: "POST"
+    }),
   listSequences: () => request<Sequence[]>("/sequences"),
   getSequence: (id: string) => request<Sequence>(`/sequences/${id}`),
   createSequence: (input: CreateSequenceInput) =>
@@ -225,6 +231,10 @@ export const api = {
   deleteSequence: (id: string) =>
     request<void>(`/sequences/${id}`, {
       method: "DELETE"
+    }),
+  duplicateSequence: (id: string) =>
+    request<Sequence>(`/sequences/${id}/duplicate`, {
+      method: "POST"
     }),
   listTasks: (options?: ListTasksOptions) => {
     const params = new URLSearchParams();
@@ -326,6 +336,11 @@ export const api = {
     }),
   openAiDiffAssist: (taskId: string, input: OpenAiDiffAssistInput) =>
     request<OpenAiDiffAssistResult>(`/tasks/${taskId}/openai/diff-assist`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  generateTaskPromptMagic: (input: TaskPromptMagicInput) =>
+    request<TaskPromptMagicResult>("/tasks/prompt-magic", {
       method: "POST",
       body: JSON.stringify(input)
     }),

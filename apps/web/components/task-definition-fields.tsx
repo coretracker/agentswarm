@@ -214,6 +214,7 @@ export function TaskDefinitionFields({
   const [githubPullRequests, setGitHubPullRequests] = useState<GitHubPullRequestReference[]>([]);
   const [githubBranches, setGitHubBranches] = useState<GitHubBranchReference[]>([]);
   const [githubOptionsLoading, setGitHubOptionsLoading] = useState(false);
+  const [magicPromptLoading, setMagicPromptLoading] = useState(false);
   const canReadRepositoryMetadata = can("repo:read");
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
@@ -233,6 +234,7 @@ export function TaskDefinitionFields({
   const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
   const selectedSnippetId = Form.useWatch("snippetId", form);
   const selectedSequenceId = Form.useWatch("sequenceId", form);
+  const selectedPrompt = Form.useWatch("prompt", form);
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(selectedProvider);
   const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
   const { sequences, loading: sequencesLoading } = useSequences(canUseSequences);
@@ -488,6 +490,33 @@ export function TaskDefinitionFields({
   const requirePromptForBlank = selectedStartMode === "run_now";
   const disableBlankPromptInput = isBlankSource && selectedStartMode === "prepare_workspace";
   const canAttachPromptImages = isBlankSource && selectedStartMode === "run_now";
+  const canUsePromptMagic = isBlankSource && !disableBlankPromptInput;
+  const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
+
+  const handleGeneratePromptMagic = async (): Promise<void> => {
+    const prompt = selectedPrompt?.trim() ?? "";
+    if (!prompt || magicPromptLoading) {
+      return;
+    }
+
+    setMagicPromptLoading(true);
+    try {
+      const response = await api.generateTaskPromptMagic({ prompt });
+      form.setFieldValue("prompt", response.prompt);
+      trackEvent("task_prompt_magic_used", {
+        source: "task_create",
+        input_length: prompt.length,
+        output_length: response.prompt.length
+      });
+      void message.success("Prompt improved.");
+    } catch (error) {
+      const fallback = "Failed to generate prompt.";
+      const errorMessage = error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
+      void message.error(errorMessage);
+    } finally {
+      setMagicPromptLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (selectedSourceType === "blank") {
@@ -554,6 +583,17 @@ export function TaskDefinitionFields({
                       : "Optional — add a goal now or open Interactive after the workspace is prepared."
                 }
               />
+              <Flex justify="flex-end">
+                <Button
+                  size="small"
+                  type="default"
+                  loading={magicPromptLoading}
+                  disabled={!canUsePromptMagic || promptIsEmpty || magicPromptLoading}
+                  onClick={() => void handleGeneratePromptMagic()}
+                >
+                  Magic Prompt
+                </Button>
+              </Flex>
               <TaskPromptAttachmentsInput
                 files={promptImageFiles}
                 onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
