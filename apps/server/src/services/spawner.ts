@@ -55,6 +55,13 @@ import {
   readSafeWorkspaceFileBuffer,
   resolveSafeWorkspaceFilePath
 } from "../lib/safe-workspace-file.js";
+import {
+  emitDockerSocketEnabledEventOnce,
+  emitNestedContainerSpawnedEvent,
+  resolveDockerSocketAccessPolicy,
+  resolveDockerSocketEnvEntries,
+  resolveDockerSocketMountArgs
+} from "../lib/docker-socket-access.js";
 import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
 import { env } from "../config/env.js";
@@ -4637,8 +4644,17 @@ export class SpawnerService {
       const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
       const providerStateContainerPath = this.resolveProviderStateContainerPath(task.provider);
       const providerStatePaths = await ensureTaskProviderStatePaths(task.id, task.provider);
+      const dockerSocketPolicy = resolveDockerSocketAccessPolicy(task.provider);
+      const dockerSocketMountArgs = resolveDockerSocketMountArgs(dockerSocketPolicy);
+      const dockerSocketEnvEntries = resolveDockerSocketEnvEntries(dockerSocketPolicy);
       if (workspaceMountMode === "ro") {
         await appendRunLog("Spawner: mounting workspace read-only (ask mode).");
+      }
+      if (dockerSocketPolicy.enabled) {
+        emitDockerSocketEnabledEventOnce({ provider: task.provider, policy: dockerSocketPolicy });
+        await appendRunLog(
+          `Spawner: docker socket access enabled for provider runtime (${dockerSocketPolicy.appEnvironment} environment).`
+        );
       }
       const args = [
         "run",
@@ -4652,6 +4668,7 @@ export class SpawnerService {
         ...gitRuntimeMounts,
         "-v",
         `${providerStatePaths.hostPath}:${providerStateContainerPath}:rw`,
+        ...dockerSocketMountArgs,
         "-e",
         `TASK_MANIFEST_FILE=${payloadPaths.manifestPath}`,
         "-e",
@@ -4673,6 +4690,9 @@ export class SpawnerService {
           args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
         }
       }
+      for (const [name, value] of dockerSocketEnvEntries) {
+        args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
+      }
       for (const [name, value] of Object.entries(runtimeMcpEnv)) {
         args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
       }
@@ -4681,6 +4701,12 @@ export class SpawnerService {
       }
 
       await appendRunLog(`Spawner: launching ${task.provider} container for branch ${branchName}.`);
+      emitNestedContainerSpawnedEvent({
+        source: "task_runtime",
+        taskId: task.id,
+        provider: task.provider,
+        policy: dockerSocketPolicy
+      });
 
       await new Promise<void>((resolve, reject) => {
         const proc = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });

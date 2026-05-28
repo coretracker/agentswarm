@@ -51,6 +51,11 @@ services:
       - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-admin123!}
       - AUTH_COOKIE_NAME=${AUTH_COOKIE_NAME:-agentswarm_session}
       - AUTH_SESSION_TTL_DAYS=${AUTH_SESSION_TTL_DAYS:-7}
+      - APP_ENVIRONMENT=${APP_ENVIRONMENT:-local}
+      - DOCKER_SOCKET_ACCESS_ENABLED=${DOCKER_SOCKET_ACCESS_ENABLED:-false}
+      - DOCKER_SOCKET_HOST_PATH=${DOCKER_SOCKET_HOST_PATH:-/var/run/docker.sock}
+      - DOCKER_SOCKET_CONTAINER_PATH_CODEX=${DOCKER_SOCKET_CONTAINER_PATH_CODEX:-/var/run/docker.sock}
+      - DOCKER_SOCKET_CONTAINER_PATH_CLAUDE=${DOCKER_SOCKET_CONTAINER_PATH_CLAUDE:-/var/run/docker.sock}
       - GIT_TERMINAL_IMAGE=${GIT_TERMINAL_IMAGE:-local/git-terminal:latest}
       # In-browser terminal images: build with tools/codex-web-terminal/Dockerfile.git, Dockerfile.codex, and Dockerfile.claude
       - CODEX_INTERACTIVE_IMAGE=${CODEX_INTERACTIVE_IMAGE:-local/codex-interactive:latest}

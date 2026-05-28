@@ -70,6 +70,7 @@ Copy `.env.example` to `.env` and adjust it if needed.
 | `AUTH_SESSION_TTL_DAYS` | Session lifetime in days | `7` |
 | `SENTRY_ENABLED` | Enable/disable Sentry error tracking | `true` |
 | `SENTRY_DSN` | Sentry DSN used when enabled | `https://464566b3787dde0e2da9f69760ef8f40@o4511433840525312.ingest.de.sentry.io/4511433841901649` |
+| `APP_ENVIRONMENT` | Deployment environment label used in runtime logs/analytics | `local` |
 
 ### Storage
 
@@ -115,6 +116,27 @@ Leave both empty if you want to use the bundled same-origin `/api` proxy.
 | `CLAUDE_INTERACTIVE_IMAGE` | Image for the interactive Claude terminal | `local/claude-interactive:latest` |
 
 These images are used only for in-browser terminal sessions. Automated agent runs use the runtime images built by `./agentswarm.sh rebuild`.
+
+### Docker socket access (opt-in, high risk)
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `DOCKER_SOCKET_ACCESS_ENABLED` | Enables docker.sock mount into Codex/Claude runtime containers | `false` |
+| `DOCKER_SOCKET_HOST_PATH` | Host path for the Docker socket source mount | `/var/run/docker.sock` |
+| `DOCKER_SOCKET_CONTAINER_PATH_CODEX` | In-container docker.sock path for Codex runtimes | `/var/run/docker.sock` |
+| `DOCKER_SOCKET_CONTAINER_PATH_CLAUDE` | In-container docker.sock path for Claude runtimes | `/var/run/docker.sock` |
+
+When enabled, Codex and Claude runtime containers can start nested containers through Docker.
+
+Security warning: mounting `docker.sock` is highly privileged and can effectively grant host-level control from inside the container.
+
+Recommended safeguards:
+- Keep `DOCKER_SOCKET_ACCESS_ENABLED=false` unless strictly needed.
+- Prefer safer alternatives when possible: a restricted Docker API proxy, rootless Docker, or a dedicated limited builder service.
+
+Operational analytics:
+- `docker_socket_enabled`: emitted when docker socket access is active.
+- `nested_container_spawned`: emitted when a Codex/Claude runtime or interactive session starts with socket access enabled.
 
 ## GitHub Webhooks and Automations
 

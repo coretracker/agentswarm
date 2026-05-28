@@ -40,6 +40,16 @@ const envSchema = z.object({
   AUTH_SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(7),
   SENTRY_ENABLED: z.coerce.boolean().default(true),
   SENTRY_DSN: z.string().default("https://464566b3787dde0e2da9f69760ef8f40@o4511433840525312.ingest.de.sentry.io/4511433841901649"),
+  /** Logical deployment environment label for runtime logs/analytics (for example: local, staging, production). */
+  APP_ENVIRONMENT: z.string().default("local"),
+  /** Opt-in flag: when true, Codex/Claude runtime containers can receive Docker socket access. */
+  DOCKER_SOCKET_ACCESS_ENABLED: z.coerce.boolean().default(false),
+  /** Host path for docker.sock mount source. */
+  DOCKER_SOCKET_HOST_PATH: z.string().default("/var/run/docker.sock"),
+  /** Container path for docker.sock mount target in Codex runtime containers. */
+  DOCKER_SOCKET_CONTAINER_PATH_CODEX: z.string().default("/var/run/docker.sock"),
+  /** Container path for docker.sock mount target in Claude runtime containers. */
+  DOCKER_SOCKET_CONTAINER_PATH_CLAUDE: z.string().default("/var/run/docker.sock"),
   /** Docker image for the restricted in-browser Git terminal (see tools/codex-web-terminal/Dockerfile.git). Empty disables Git terminals. */
   GIT_TERMINAL_IMAGE: z.string().default(""),
   /** Docker image for in-browser interactive Codex (see tools/codex-web-terminal/Dockerfile.codex). Empty disables Codex interactive terminals. */

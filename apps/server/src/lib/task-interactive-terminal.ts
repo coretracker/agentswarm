@@ -47,6 +47,13 @@ import {
   buildGitTerminalEnvEntries,
   buildInteractiveWorkspaceGitEnvEntries
 } from "./task-interactive-terminal-git-env.js";
+import {
+  emitDockerSocketEnabledEventOnce,
+  emitNestedContainerSpawnedEvent,
+  resolveDockerSocketAccessPolicy,
+  resolveDockerSocketEnvEntries,
+  resolveDockerSocketMountArgs
+} from "./docker-socket-access.js";
 import type { UserStore } from "../services/user-store.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
@@ -740,6 +747,11 @@ async function initializeTaskInteractiveTerminalWebSocket(
     if (!runtime.ok) {
       throw new Error(runtime.reason);
     }
+    const dockerSocketPolicy = resolveDockerSocketAccessPolicy(runtime.provider);
+    const dockerSocketMountArgs = resolveDockerSocketMountArgs(dockerSocketPolicy);
+    if (dockerSocketPolicy.enabled) {
+      emitDockerSocketEnabledEventOnce({ provider: runtime.provider, policy: dockerSocketPolicy });
+    }
 
     const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
     const statePaths = runtime.persistentState
@@ -755,6 +767,9 @@ async function initializeTaskInteractiveTerminalWebSocket(
     for (const { key, value } of repository?.envVars ?? []) {
       dockerEnv.push("-e", `${key}=${value}`);
     }
+    for (const [name, value] of resolveDockerSocketEnvEntries(dockerSocketPolicy)) {
+      dockerEnv.push("-e", `${name}=${value}`);
+    }
     dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
 
     const dockerArgs = [
@@ -766,6 +781,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       sessionName,
       "-v",
       `${dockerBindSource}:/workspace:rw`,
+      ...dockerSocketMountArgs,
       ...gitRuntimeMounts,
       ...(statePaths && runtime.persistentState
         ? ["-v", `${statePaths.hostPath}:${runtime.persistentState.containerPath}:rw`]
@@ -779,6 +795,12 @@ async function initializeTaskInteractiveTerminalWebSocket(
       "-lc",
       runtime.startScript,
     ];
+    emitNestedContainerSpawnedEvent({
+      source: "interactive_terminal",
+      taskId,
+      provider: runtime.provider,
+      policy: dockerSocketPolicy
+    });
 
     const child = pty.spawn("docker", dockerArgs, {
       name: "xterm-256color",
