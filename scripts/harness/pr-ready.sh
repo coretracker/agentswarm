@@ -35,10 +35,10 @@ if [[ ! -d node_modules ]]; then
   run env HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
 fi
 
-step "1/8 doctor"
+step "1/9 doctor"
 run ./scripts/harness/doctor.sh
 
-step "2/8 format check"
+step "2/9 format check"
 format_check_required="${HARNESS_REQUIRE_FORMAT_CHECK:-0}"
 if has_root_script "format:check"; then
   run npm run format:check
@@ -52,24 +52,27 @@ else
   step "no root format-check script found; skipping (set HARNESS_REQUIRE_FORMAT_CHECK=1 to enforce)"
 fi
 
-step "3/8 boundary checks"
+step "3/9 human-gated flow checks"
+run ./scripts/harness/check-human-gated-flow.sh
+
+step "4/9 boundary checks"
 run node ./scripts/harness/boundary-check.mjs
 
-step "4/8 lint"
+step "5/9 lint"
 run npm run lint
 
-step "5/8 typecheck"
+step "6/9 typecheck"
 # In this repo, lint commands are TypeScript no-emit checks.
 run npm run -w @agentswarm/server lint
 run npm run -w @agentswarm/web lint
 
-step "6/8 tests"
+step "7/9 tests"
 run ./scripts/harness/test.sh
 
-step "7/8 build"
+step "8/9 build"
 run npm run build
 
-step "8/8 repo-specific checks"
+step "9/9 repo-specific checks"
 # Validate Compose config when Docker is available.
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   run docker compose config >/dev/null

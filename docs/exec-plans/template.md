@@ -23,6 +23,22 @@
 2. TODO
 3. TODO
 
+## Human-Gated Flow Evidence
+- Requirements Read: TODO
+- Requirements Understood: TODO
+- Repository Research Complete: TODO
+- Uncertainties Logged: TODO
+- Human Review Completed: TODO
+- User Approval To Start: TODO
+- Baseline Checks Run: TODO
+- Visible Task List Updated: TODO
+- Task-Level Tests/Lint/Build: TODO
+- Self Review Complete: TODO
+- Code Review Complete: TODO
+- Final Verification Complete: TODO
+- Security/Privacy Review Complete: TODO
+- Docs/Changelog Updated: TODO
+
 ## Validation Commands
 - TODO
 

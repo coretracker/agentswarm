@@ -3,6 +3,7 @@
 ## Getting Started
 - [Development setup](development/setup.md)
 - [Development commands](development/commands.md)
+- [Human-gated taskwise delivery flow](development/human-gated-taskwise-delivery-flow.md)
 - [Testing](development/testing.md)
 - [Debugging](development/debugging.md)
 

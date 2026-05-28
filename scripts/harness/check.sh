@@ -13,6 +13,9 @@ echo "[harness:check] repo root: $REPO_ROOT"
 echo "[harness:check] running docs checks"
 ./scripts/harness/check-docs.sh
 
+echo "[harness:check] running human-gated flow checks"
+./scripts/harness/check-human-gated-flow.sh
+
 echo "[harness:check] running boundary checks"
 node ./scripts/harness/boundary-check.mjs
 

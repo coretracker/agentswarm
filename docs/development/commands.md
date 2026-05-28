@@ -5,7 +5,8 @@
 - `./scripts/harness/setup.sh`: initialize Docker stack and local runtime folders.
 - `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh`: also install npm dependencies for check/test/pr-ready.
 - `./scripts/harness/check-docs.sh`: scan docs for broken internal links, TODO/FIXME counts, and stale review metadata warnings.
-- `./scripts/harness/check.sh`: run docs checks + boundary checks + lint + build.
+- `./scripts/harness/check-human-gated-flow.sh`: verify active execution plans contain required human-gated flow evidence.
+- `./scripts/harness/check.sh`: run docs checks + human-gated flow checks + boundary checks + lint + build.
 - `node ./scripts/harness/boundary-check.mjs`: run architecture boundary checks only.
 - `./scripts/harness/test.sh`: run server + web tests.
 - `./scripts/harness/pr-ready.sh`: run pull request readiness verification.
@@ -38,6 +39,8 @@ Notes:
 - `pr-ready.sh` forces dependency installation automatically when `node_modules` is missing.
 - Harness setup installs dependencies with `npm ci --include=dev`.
 - `npm ci` requires `python3` in this repo because `node-pty` may need local native build steps.
+- `check.sh` and `pr-ready.sh` enforce human-gated flow evidence for active execution plans.
+- Set `HARNESS_REQUIRE_ACTIVE_EXEC_PLAN=1` to fail when no active execution plan exists.
 
 ## Workspace Commands
 - Server (`@agentswarm/server`):

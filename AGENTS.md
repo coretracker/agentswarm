@@ -6,6 +6,7 @@ This file is a short operating guide for coding agents in this repository.
 - If `REMOTE_BUILD=1`, export `REMOTE_BUILD_IMAGE` first.
 - Run `./scripts/harness/doctor.sh`
 - Run `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh` on clean checkout
+- Run `./scripts/harness/check-human-gated-flow.sh`
 - Run `./scripts/harness/check.sh`
 - Run `./scripts/harness/test.sh` (canonical test command)
 - Run `./scripts/harness/start.sh` (foreground dev mode)
@@ -26,6 +27,7 @@ Note:
 - [Docs Home](docs/index.md)
 - [Development Setup](docs/development/setup.md)
 - [Development Commands](docs/development/commands.md)
+- [Human-Gated Flow](docs/development/human-gated-taskwise-delivery-flow.md)
 - [Testing](docs/development/testing.md)
 - [Debugging](docs/development/debugging.md)
 - [Agent Self-Review](docs/development/agent-review.md)
@@ -40,6 +42,8 @@ Note:
 - Complex tasks must create an execution plan using `docs/exec-plans/template.md`.
 - Plans must be updated during work as steps complete or scope changes.
 - Completed plans move from `docs/exec-plans/active/` to `docs/exec-plans/completed/`.
+- Complex task plans must include the required `Human-Gated Flow Evidence` checklist from the template.
+- Flow reference: `docs/development/human-gated-taskwise-delivery-flow.md`.
 
 ## Operating Rules
 - Prefer harness scripts in `scripts/harness/`.

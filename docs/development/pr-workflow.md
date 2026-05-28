@@ -12,6 +12,8 @@ Note:
 - `pr-ready.sh` auto-runs setup when dependencies are missing and forces npm dependency installation.
 
 ## What `pr-ready.sh` checks
+- Human-gated flow evidence in active execution plans.
+  - optional strict mode: set `HARNESS_REQUIRE_ACTIVE_EXEC_PLAN=1` to fail if there is no active plan.
 - Format check:
   - runs `format:check` or `fmt:check` if defined at root
   - skips by default when no format-check script exists
