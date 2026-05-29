@@ -744,6 +744,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [followUpForm] = Form.useForm();
   const [chatInput, setChatInput] = useState("");
   const [chatInputDraftReady, setChatInputDraftReady] = useState(false);
+  const [taskPromptMagicLoading, setTaskPromptMagicLoading] = useState(false);
   const [providerInput, setProviderInput] = useState<AgentProvider>("codex");
   const [providerProfileInput, setProviderProfileInput] = useState<ProviderProfile>("high");
   const [modelInput, setModelInput] = useState<string>("gpt-5.4");
@@ -1125,6 +1126,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const isImplementationTask = isBuildTask;
   const isArchived = task?.status === "archived";
   const canEditTask = can("task:edit");
+  const canCreateTask = can("task:create");
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
   const canUseInteractiveTerminal = can("task:interactive");
@@ -2157,11 +2159,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const terminalComposerSelected = selectedChatAction === "terminal";
   const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive" && selectedChatAction !== "terminal";
   const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived";
+  const promptMagicVisible = (selectedChatAction === "build" || selectedChatAction === "ask") && canCreateTask;
   const parallelAskAllowed = selectedChatAction === "ask" && (task?.status === "building" || task?.status === "asking");
   const autoRunStartBlocked =
     selectedChatAction !== "comment" && (!!pendingChangeProposal || ((isQueued || isActive) && !parallelAskAllowed));
   const chatDisabled = chatClosed || interactiveTerminalRunning || autoRunStartBlocked;
   const chatInputDisabled = chatClosed || interactiveTerminalRunning || interactiveComposerSelected || terminalComposerSelected;
+  const canUsePromptMagic = promptMagicVisible && !chatInputDisabled;
+  const promptMagicDisabled = !canUsePromptMagic || chatInput.trim().length === 0 || taskPromptMagicLoading;
   const canAttachPromptImages = selectedChatAction === "build" || selectedChatAction === "ask";
   const promptImageAttachmentDisabled = chatClosed || interactiveTerminalRunning || !canAttachPromptImages;
   const draftActionLabel = taskActionLabel[selectedChatAction].toLowerCase();
@@ -2520,6 +2525,37 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       showTaskActionError(error, "Task execution could not be started");
     } finally {
       setSubmitting(null);
+    }
+  };
+  const handleGeneratePromptMagic = async (): Promise<void> => {
+    const prompt = chatInput.trim();
+    if (!prompt || promptMagicDisabled) {
+      return;
+    }
+
+    setTaskPromptMagicLoading(true);
+    try {
+      const response = await api.generateTaskPromptMagic({ prompt });
+      const nextPrompt = response.prompt ?? "";
+      setChatInput(nextPrompt);
+      trackEvent("task_prompt_magic_used", {
+        source: "task_detail",
+        task_id: task?.id ?? taskId,
+        action: selectedChatAction,
+        input_length: prompt.length,
+        output_length: nextPrompt.length
+      });
+      if (nextPrompt.trim() === prompt) {
+        void messageApi.info("Magic prompt returned a similar result.");
+      } else {
+        void messageApi.success("Prompt improved.");
+      }
+    } catch (error) {
+      const fallback = "Failed to generate prompt.";
+      const errorMessage = error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
+      void messageApi.error(errorMessage);
+    } finally {
+      setTaskPromptMagicLoading(false);
     }
   };
   const handleApproveSequenceRun = async () => {
@@ -3789,6 +3825,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Button style={{ alignSelf: "flex-start" }} onClick={() => setAiSettingsModalOpen(true)}>
               AI Settings
             </Button>
+            {promptMagicVisible ? (
+              <Button
+                size="small"
+                style={{ alignSelf: "flex-start", marginTop: 8 }}
+                loading={taskPromptMagicLoading}
+                disabled={promptMagicDisabled}
+                onClick={() => void handleGeneratePromptMagic()}
+              >
+                Magic Wand
+              </Button>
+            ) : null}
           </div>
           {!interactiveComposerSelected && !terminalComposerSelected ? (
             <div
