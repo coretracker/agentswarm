@@ -3748,8 +3748,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             onClick={() => void handleGeneratePromptMagic()}
             style={{
               position: "absolute",
-              right: 0,
-              bottom: "calc(100% + 8px)",
+              right: 10,
+              bottom: 10,
               zIndex: 1
             }}
           />
@@ -3818,7 +3818,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           }}
           placeholder={chatPlaceholder}
           disabled={chatInputDisabled}
-          style={{ resize: "none" }}
+          style={{ resize: "none", paddingRight: 44, paddingBottom: 38 }}
         />
       </div>
       {canAttachPromptImages || selectedPromptImageFiles.length > 0 ? (

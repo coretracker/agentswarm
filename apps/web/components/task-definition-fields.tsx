@@ -603,8 +603,8 @@ export function TaskDefinitionFields({
                   onClick={() => void handleGeneratePromptMagic()}
                   style={{
                     position: "absolute",
-                    right: 0,
-                    bottom: "calc(100% + 8px)",
+                    right: 10,
+                    bottom: 10,
                     zIndex: 1
                   }}
                 />
@@ -619,7 +619,7 @@ export function TaskDefinitionFields({
                 >
                   <Input.TextArea
                     autoSize={{ minRows: 12, maxRows: 28 }}
-                    style={{ resize: "none" }}
+                    style={{ resize: "none", paddingRight: 44, paddingBottom: 38 }}
                     disabled={disableBlankPromptInput}
                     placeholder={
                       disableBlankPromptInput
