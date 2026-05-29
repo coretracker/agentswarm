@@ -71,7 +71,7 @@ import {
   message,
   theme as antTheme
 } from "antd";
-import { ArrowRightOutlined, CopyOutlined, EditOutlined, LoadingOutlined, MoreOutlined, RollbackOutlined } from "@ant-design/icons";
+import { ArrowRightOutlined, CopyOutlined, EditOutlined, LoadingOutlined, MoreOutlined, RobotOutlined, RollbackOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
@@ -3735,72 +3735,92 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const chatComposer = (
     <Flex vertical gap={12}>
       {sequenceQueueNotice}
-      <Mentions
-        autoSize={{ minRows: 4, maxRows: 14 }}
-        prefix="@"
-        value={chatInput}
-        onChange={(value) => setChatInput(value)}
-        options={fileMentionOptions}
-        filterOption={false}
-        notFoundContent={fileMentionLoading ? <Spin size="small" /> : "No files found"}
-        onSearch={(searchText, mentionPrefix) => {
-          if (mentionPrefix !== "@") {
-            return;
-          }
+      <div style={{ position: "relative" }}>
+        {promptMagicVisible ? (
+          <Button
+            size="small"
+            type="default"
+            icon={<RobotOutlined />}
+            title="Magic Wand"
+            aria-label="Magic Wand"
+            loading={taskPromptMagicLoading}
+            disabled={promptMagicDisabled}
+            onClick={() => void handleGeneratePromptMagic()}
+            style={{
+              position: "absolute",
+              right: 0,
+              bottom: "calc(100% + 8px)",
+              zIndex: 1
+            }}
+          />
+        ) : null}
+        <Mentions
+          autoSize={{ minRows: 4, maxRows: 14 }}
+          prefix="@"
+          value={chatInput}
+          onChange={(value) => setChatInput(value)}
+          options={fileMentionOptions}
+          filterOption={false}
+          notFoundContent={fileMentionLoading ? <Spin size="small" /> : "No files found"}
+          onSearch={(searchText, mentionPrefix) => {
+            if (mentionPrefix !== "@") {
+              return;
+            }
 
-          const query = searchText.trim();
-          if (fileMentionSearchTimerRef.current !== null) {
-            window.clearTimeout(fileMentionSearchTimerRef.current);
-            fileMentionSearchTimerRef.current = null;
-          }
+            const query = searchText.trim();
+            if (fileMentionSearchTimerRef.current !== null) {
+              window.clearTimeout(fileMentionSearchTimerRef.current);
+              fileMentionSearchTimerRef.current = null;
+            }
 
-          if (query.length === 0) {
-            fileMentionSearchRequestIdRef.current += 1;
-            setFileMentionOptions([]);
-            setFileMentionLoading(false);
-            return;
-          }
+            if (query.length === 0) {
+              fileMentionSearchRequestIdRef.current += 1;
+              setFileMentionOptions([]);
+              setFileMentionLoading(false);
+              return;
+            }
 
-          const requestId = fileMentionSearchRequestIdRef.current + 1;
-          fileMentionSearchRequestIdRef.current = requestId;
-          setFileMentionLoading(true);
+            const requestId = fileMentionSearchRequestIdRef.current + 1;
+            fileMentionSearchRequestIdRef.current = requestId;
+            setFileMentionLoading(true);
 
-          fileMentionSearchTimerRef.current = window.setTimeout(() => {
-            void api
-              .searchTaskWorkspaceFiles(taskId, { query, limit: 40 })
-              .then((result) => {
-                if (fileMentionSearchRequestIdRef.current !== requestId) {
-                  return;
-                }
+            fileMentionSearchTimerRef.current = window.setTimeout(() => {
+              void api
+                .searchTaskWorkspaceFiles(taskId, { query, limit: 40 })
+                .then((result) => {
+                  if (fileMentionSearchRequestIdRef.current !== requestId) {
+                    return;
+                  }
 
-                setFileMentionOptions(result.results.map((path) => ({ value: path, label: path })));
-              })
-              .catch(() => {
-                if (fileMentionSearchRequestIdRef.current !== requestId) {
-                  return;
-                }
-                setFileMentionOptions([]);
-              })
-              .finally(() => {
-                if (fileMentionSearchRequestIdRef.current !== requestId) {
-                  return;
-                }
-                setFileMentionLoading(false);
-              });
-          }, 180);
-        }}
-        onKeyDown={(event) => {
-          if (event.nativeEvent.isComposing || event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
-            return;
-          }
+                  setFileMentionOptions(result.results.map((path) => ({ value: path, label: path })));
+                })
+                .catch(() => {
+                  if (fileMentionSearchRequestIdRef.current !== requestId) {
+                    return;
+                  }
+                  setFileMentionOptions([]);
+                })
+                .finally(() => {
+                  if (fileMentionSearchRequestIdRef.current !== requestId) {
+                    return;
+                  }
+                  setFileMentionLoading(false);
+                });
+            }, 180);
+          }}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
+              return;
+            }
 
-          event.preventDefault();
-          void handleSubmitComposer();
-        }}
-        placeholder={chatPlaceholder}
-        disabled={chatInputDisabled}
-        style={{ resize: "none" }}
-      />
+            event.preventDefault();
+            void handleSubmitComposer();
+          }}
+          placeholder={chatPlaceholder}
+          disabled={chatInputDisabled}
+          style={{ resize: "none" }}
+        />
+      </div>
       {canAttachPromptImages || selectedPromptImageFiles.length > 0 ? (
         <>
           <Divider style={{ margin: 0 }} />
@@ -3825,17 +3845,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Button style={{ alignSelf: "flex-start" }} onClick={() => setAiSettingsModalOpen(true)}>
               AI Settings
             </Button>
-            {promptMagicVisible ? (
-              <Button
-                size="small"
-                style={{ alignSelf: "flex-start", marginTop: 8 }}
-                loading={taskPromptMagicLoading}
-                disabled={promptMagicDisabled}
-                onClick={() => void handleGeneratePromptMagic()}
-              >
-                Magic Wand
-              </Button>
-            ) : null}
           </div>
           {!interactiveComposerSelected && !terminalComposerSelected ? (
             <div

@@ -21,6 +21,7 @@ import type {
 } from "@agentswarm/shared-types";
 import { getAgentProviderLabel, getDefaultModelForProvider, getEffortOptionsForProvider, getModelsForProvider } from "@agentswarm/shared-types";
 import { Alert, Button, Card, Checkbox, Col, Flex, Form, Input, Row, Select, Space, Typography, message } from "antd";
+import { RobotOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
@@ -575,20 +576,7 @@ export function TaskDefinitionFields({
             <Input placeholder="Your Task Title" size="large" />
           </Form.Item>
           <Form.Item
-            label={
-              <Flex align="center" justify="space-between" style={{ width: "100%" }}>
-                <span>{promptPanelTitle}</span>
-                <Button
-                  size="small"
-                  type="default"
-                  loading={magicPromptLoading}
-                  disabled={!canUsePromptMagic || promptIsEmpty || magicPromptLoading}
-                  onClick={() => void handleGeneratePromptMagic()}
-                >
-                  Magic Wand
-                </Button>
-              </Flex>
-            }
+            label={promptPanelTitle}
             extra={
               disableBlankPromptInput ? (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -603,32 +591,50 @@ export function TaskDefinitionFields({
             style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
           >
             <Flex vertical gap={12} style={{ flex: 1 }}>
-              <Form.Item
-                name="prompt"
-                style={{ marginBottom: 0 }}
-                rules={
-                  requirePromptForBlank
-                    ? [{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]
-                    : []
-                }
-              >
-                <Input.TextArea
-                  autoSize={{ minRows: 12, maxRows: 28 }}
-                  style={{ resize: "none" }}
-                  disabled={disableBlankPromptInput}
-                  placeholder={
-                    disableBlankPromptInput
-                      ? "Prompt is disabled while preparing the workspace only."
-                      : effectiveTaskType === "ask"
-                      ? requirePromptForBlank
-                        ? "Ask a repository question."
-                        : "Optional question for the agent when you start a run."
-                      : requirePromptForBlank
-                        ? "Describe the goal, constraints, and expected outcome in your prompt."
-                        : "Optional — add a goal now or open Interactive after the workspace is prepared."
-                  }
+              <div style={{ position: "relative" }}>
+                <Button
+                  size="small"
+                  type="default"
+                  icon={<RobotOutlined />}
+                  title="Magic Wand"
+                  aria-label="Magic Wand"
+                  loading={magicPromptLoading}
+                  disabled={!canUsePromptMagic || promptIsEmpty || magicPromptLoading}
+                  onClick={() => void handleGeneratePromptMagic()}
+                  style={{
+                    position: "absolute",
+                    right: 0,
+                    bottom: "calc(100% + 8px)",
+                    zIndex: 1
+                  }}
                 />
-              </Form.Item>
+                <Form.Item
+                  name="prompt"
+                  style={{ marginBottom: 0 }}
+                  rules={
+                    requirePromptForBlank
+                      ? [{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]
+                      : []
+                  }
+                >
+                  <Input.TextArea
+                    autoSize={{ minRows: 12, maxRows: 28 }}
+                    style={{ resize: "none" }}
+                    disabled={disableBlankPromptInput}
+                    placeholder={
+                      disableBlankPromptInput
+                        ? "Prompt is disabled while preparing the workspace only."
+                        : effectiveTaskType === "ask"
+                        ? requirePromptForBlank
+                          ? "Ask a repository question."
+                          : "Optional question for the agent when you start a run."
+                        : requirePromptForBlank
+                          ? "Describe the goal, constraints, and expected outcome in your prompt."
+                          : "Optional — add a goal now or open Interactive after the workspace is prepared."
+                    }
+                  />
+                </Form.Item>
+              </div>
               <TaskPromptAttachmentsInput
                 files={promptImageFiles}
                 onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
