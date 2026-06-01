@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { getTaskStartModeLabel } from "@agentswarm/shared-types";
 import { ApiError, api } from "../src/api/client";
 import { useTask } from "../src/hooks/useTask";
 import { useAuth } from "./auth-provider";
-import { Alert, Button, Card, DatePicker, Flex, Form, Input, Result, Skeleton, Space, Typography, message } from "antd";
+import { Alert, Button, Card, DatePicker, Flex, Form, Input, Result, Skeleton, Space, Tag, Typography, message } from "antd";
 import type { Dayjs } from "dayjs";
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
@@ -135,6 +136,7 @@ export function SchedulerTaskEditPage({ taskId }: SchedulerTaskEditPageProps) {
               Edit Scheduled Task
             </Typography.Title>
             <Typography.Text type="secondary">Update timing or details before you start this task.</Typography.Text>
+            <Tag style={{ width: "fit-content", marginTop: 8 }}>{getTaskStartModeLabel(task.startMode ?? "idle")}</Tag>
           </Flex>
           <Space>
             <Button onClick={() => router.push("/scheduler")}>Back to Scheduler</Button>

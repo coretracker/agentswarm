@@ -21,6 +21,7 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     repoUrl: "https://github.com/example/repo.git",
     repoDefaultBranch: "main",
     taskType: "build",
+    startMode: "run_now",
     provider: "codex",
     providerProfile: "high",
     modelOverride: null,

@@ -201,3 +201,22 @@ describe("TaskStore.appendMessage", () => {
     assert.equal(publishedEvents.length, 3);
   });
 });
+
+describe("TaskStore.createTask", () => {
+  it("persists task start mode on the task record", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(
+      {
+        ...createTaskInput,
+        startMode: "prepare_workspace"
+      },
+      repository,
+      "user-1"
+    );
+
+    assert.equal(task.startMode, "prepare_workspace");
+  });
+});

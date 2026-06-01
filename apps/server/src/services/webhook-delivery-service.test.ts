@@ -121,6 +121,7 @@ const baseTask = (): Task => ({
   repoUrl: "https://github.com/example/repo.git",
   repoDefaultBranch: "main",
   taskType: "build",
+  startMode: "run_now",
   provider: "codex",
   providerProfile: "medium",
   modelOverride: null,

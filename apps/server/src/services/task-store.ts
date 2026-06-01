@@ -109,6 +109,18 @@ const paginateByTimestamp = <T extends { id: string }>(
 const getInitialAction = (task: { taskType: Task["taskType"] }): TaskAction => (task.taskType === "ask" ? "ask" : "build");
 
 const normalizeLegacyTaskType = (taskType: string | null | undefined): Task["taskType"] => (taskType === "ask" ? "ask" : "build");
+const normalizeTaskStartMode = (startMode: string | null | undefined, status: string | null | undefined): TaskStartMode => {
+  if (startMode === "run_now" || startMode === "prepare_workspace" || startMode === "idle") {
+    return startMode;
+  }
+  if (status === "scheduled") {
+    return "idle";
+  }
+  if (status === "preparing_workspace") {
+    return "prepare_workspace";
+  }
+  return "run_now";
+};
 const currentTaskStatuses = new Set<TaskStatus>([
   "scheduled",
   "build_queued",
@@ -348,6 +360,7 @@ export class RedisTaskStore implements TaskStore {
       snippetId?: string;
       sequenceId?: string;
       sequenceRunId?: string | null;
+      startMode?: TaskStartMode | null;
       scheduledStartAt?: string | null;
       scheduledEndAt?: string | null;
     };
@@ -368,6 +381,7 @@ export class RedisTaskStore implements TaskStore {
             : null,
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
       taskType: normalizeLegacyTaskType(legacyTask.taskType),
+      startMode: normalizeTaskStartMode(legacyTask.startMode, legacyTask.status),
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
@@ -612,6 +626,7 @@ export class RedisTaskStore implements TaskStore {
       repoUrl: repository.url,
       repoDefaultBranch: repository.defaultBranch,
       taskType,
+      startMode,
       provider,
       providerProfile,
       modelOverride,
@@ -1570,6 +1585,7 @@ export class PostgresTaskStore implements TaskStore {
       snippetId?: string;
       sequenceId?: string;
       sequenceRunId?: string | null;
+      startMode?: TaskStartMode | null;
       scheduledStartAt?: string | null;
       scheduledEndAt?: string | null;
     };
@@ -1590,6 +1606,7 @@ export class PostgresTaskStore implements TaskStore {
             : null,
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
       taskType: normalizeLegacyTaskType(legacyTask.taskType),
+      startMode: normalizeTaskStartMode(legacyTask.startMode, legacyTask.status),
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
@@ -1922,6 +1939,7 @@ export class PostgresTaskStore implements TaskStore {
       repoUrl: repository.url,
       repoDefaultBranch: repository.defaultBranch,
       taskType,
+      startMode,
       provider,
       providerProfile,
       modelOverride,

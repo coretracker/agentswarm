@@ -467,6 +467,7 @@ export interface Task {
   repoUrl: string;
   repoDefaultBranch: string;
   taskType: TaskType;
+  startMode: TaskStartMode;
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride: string | null;
@@ -1224,6 +1225,14 @@ export function getCheckpointMutationBlockedReason(status: TaskStatus): string |
 
 export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
   status === "archived";
+
+export const getTaskStartModeLabel = (startMode: TaskStartMode): string =>
+  ({
+    run_now: "Run Agent",
+    prepare_workspace: "Prepare Workspace",
+    idle: "Manual Start"
+  })[startMode];
+
 export const getTaskStatusLabel = (status: TaskStatus): string =>
   ({
     scheduled: "Scheduled",
