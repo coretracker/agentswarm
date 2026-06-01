@@ -110,6 +110,7 @@ const getInitialAction = (task: { taskType: Task["taskType"] }): TaskAction => (
 
 const normalizeLegacyTaskType = (taskType: string | null | undefined): Task["taskType"] => (taskType === "ask" ? "ask" : "build");
 const currentTaskStatuses = new Set<TaskStatus>([
+  "scheduled",
   "build_queued",
   "preparing_workspace",
   "building",
@@ -167,7 +168,7 @@ const normalizeCodexCredentialSource = (value: string | null | undefined): Codex
 
 export interface ListTasksOptions {
   ownerUserId?: string | null;
-  view?: "all" | "active" | "archived";
+  view?: "all" | "active" | "archived" | "scheduled";
   limit?: number;
 }
 
@@ -347,6 +348,8 @@ export class RedisTaskStore implements TaskStore {
       snippetId?: string;
       sequenceId?: string;
       sequenceRunId?: string | null;
+      scheduledStartAt?: string | null;
+      scheduledEndAt?: string | null;
     };
     const taskSource =
       legacyTask.taskSource === "snippet" || legacyTask.taskSource === "sequence" || legacyTask.taskSource === "blank"
@@ -387,6 +390,14 @@ export class RedisTaskStore implements TaskStore {
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
       resultMarkdown: legacyTask.resultMarkdown ?? null,
       lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
+      scheduledStartAt:
+        typeof legacyTask.scheduledStartAt === "string" && legacyTask.scheduledStartAt.trim().length > 0
+          ? legacyTask.scheduledStartAt
+          : null,
+      scheduledEndAt:
+        typeof legacyTask.scheduledEndAt === "string" && legacyTask.scheduledEndAt.trim().length > 0
+          ? legacyTask.scheduledEndAt
+          : null,
       // Prefer the new prompt field; fall back to legacy requirements for older tasks.
       prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim(),
       notes: (legacyTask.notes ?? "").trim()
@@ -567,6 +578,15 @@ export class RedisTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
+    const scheduledStartAt =
+      typeof input.scheduledStartAt === "string" && input.scheduledStartAt.trim().length > 0
+        ? input.scheduledStartAt.trim()
+        : null;
+    const scheduledEndAt =
+      typeof input.scheduledEndAt === "string" && input.scheduledEndAt.trim().length > 0
+        ? input.scheduledEndAt.trim()
+        : null;
+    const isScheduledTask = Boolean(scheduledStartAt && scheduledEndAt);
     const taskSource = input.task_source === "snippet" || input.task_source === "sequence" ? input.task_source : "blank";
     const snippetId =
       taskSource === "snippet" && typeof input.snippet_id === "string" && input.snippet_id.trim().length > 0
@@ -578,7 +598,7 @@ export class RedisTaskStore implements TaskStore {
         : undefined;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
     const initialStatus: TaskStatus =
-      startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
+      isScheduledTask ? "scheduled" : startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
     const task: Task = {
       id: nanoid(),
       title,
@@ -614,16 +634,18 @@ export class RedisTaskStore implements TaskStore {
       status: initialStatus,
       logs: [],
       enqueued: false,
+      scheduledStartAt,
+      scheduledEndAt,
       createdAt: timestamp,
       updatedAt: timestamp,
-      startedAt: startMode === "prepare_workspace" ? timestamp : null,
+      startedAt: !isScheduledTask && startMode === "prepare_workspace" ? timestamp : null,
       finishedAt: null,
       errorMessage: null
     };
 
     await this.redis.multi().set(this.taskKey(task.id), JSON.stringify(task)).sadd(TASK_IDS_KEY, task.id).exec();
     await this.publishTaskEvent("task:created", task);
-    if (startMode !== "prepare_workspace" || prompt.trim().length > 0) {
+    if (isScheduledTask || startMode !== "prepare_workspace" || prompt.trim().length > 0) {
       await this.appendMessage(task.id, {
         role: "user",
         action: initialAction,
@@ -693,6 +715,9 @@ export class RedisTaskStore implements TaskStore {
           continue;
         }
         if (view === "archived" && task.status !== "archived") {
+          continue;
+        }
+        if (view === "scheduled" && task.status !== "scheduled") {
           continue;
         }
         tasks.push(task);
@@ -1545,6 +1570,8 @@ export class PostgresTaskStore implements TaskStore {
       snippetId?: string;
       sequenceId?: string;
       sequenceRunId?: string | null;
+      scheduledStartAt?: string | null;
+      scheduledEndAt?: string | null;
     };
     const taskSource =
       legacyTask.taskSource === "snippet" || legacyTask.taskSource === "sequence" || legacyTask.taskSource === "blank"
@@ -1585,6 +1612,14 @@ export class PostgresTaskStore implements TaskStore {
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
       resultMarkdown: legacyTask.resultMarkdown ?? null,
       lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
+      scheduledStartAt:
+        typeof legacyTask.scheduledStartAt === "string" && legacyTask.scheduledStartAt.trim().length > 0
+          ? legacyTask.scheduledStartAt
+          : null,
+      scheduledEndAt:
+        typeof legacyTask.scheduledEndAt === "string" && legacyTask.scheduledEndAt.trim().length > 0
+          ? legacyTask.scheduledEndAt
+          : null,
       prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim(),
       notes: (legacyTask.notes ?? "").trim()
     };
@@ -1853,6 +1888,15 @@ export class PostgresTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
+    const scheduledStartAt =
+      typeof input.scheduledStartAt === "string" && input.scheduledStartAt.trim().length > 0
+        ? input.scheduledStartAt.trim()
+        : null;
+    const scheduledEndAt =
+      typeof input.scheduledEndAt === "string" && input.scheduledEndAt.trim().length > 0
+        ? input.scheduledEndAt.trim()
+        : null;
+    const isScheduledTask = Boolean(scheduledStartAt && scheduledEndAt);
     const taskSource = input.task_source === "snippet" || input.task_source === "sequence" ? input.task_source : "blank";
     const snippetId =
       taskSource === "snippet" && typeof input.snippet_id === "string" && input.snippet_id.trim().length > 0
@@ -1864,7 +1908,7 @@ export class PostgresTaskStore implements TaskStore {
         : undefined;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
     const initialStatus: TaskStatus =
-      startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
+      isScheduledTask ? "scheduled" : startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
     const task: Task = {
       id: nanoid(),
       title,
@@ -1900,16 +1944,18 @@ export class PostgresTaskStore implements TaskStore {
       status: initialStatus,
       logs: [],
       enqueued: false,
+      scheduledStartAt,
+      scheduledEndAt,
       createdAt: timestamp,
       updatedAt: timestamp,
-      startedAt: startMode === "prepare_workspace" ? timestamp : null,
+      startedAt: !isScheduledTask && startMode === "prepare_workspace" ? timestamp : null,
       finishedAt: null,
       errorMessage: null
     };
 
     await this.storeTask(task);
     await this.publishTaskEvent("task:created", task);
-    if (startMode !== "prepare_workspace" || prompt.trim().length > 0) {
+    if (isScheduledTask || startMode !== "prepare_workspace" || prompt.trim().length > 0) {
       await this.appendMessage(task.id, {
         role: "user",
         action: initialAction,
@@ -1964,6 +2010,9 @@ export class PostgresTaskStore implements TaskStore {
       clauses.push(`status <> $${values.length}`);
     } else if (view === "archived") {
       values.push("archived");
+      clauses.push(`status = $${values.length}`);
+    } else if (view === "scheduled") {
+      values.push("scheduled");
       clauses.push(`status = $${values.length}`);
     }
 

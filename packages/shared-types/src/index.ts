@@ -60,6 +60,7 @@ export type TaskMessageRole = "user" | "assistant" | "system";
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 
 export type TaskStatus =
+  | "scheduled"
   | "build_queued"
   | "preparing_workspace"
   | "building"
@@ -490,6 +491,8 @@ export interface Task {
   status: TaskStatus;
   logs: string[];
   enqueued: boolean;
+  scheduledStartAt?: string | null;
+  scheduledEndAt?: string | null;
   createdAt: string;
   updatedAt: string;
   startedAt: string | null;
@@ -854,6 +857,8 @@ export interface CreateTaskInput {
   sequence_id?: string;
   sequence_variables?: Record<string, string>;
   start_mode_locked?: boolean;
+  scheduledStartAt?: string;
+  scheduledEndAt?: string;
 }
 
 export type TaskSourceType = "blank" | "snippet" | "sequence" | "issue" | "pull_request";
@@ -1094,6 +1099,14 @@ export interface UpdateTaskNotesInput {
   notes: string;
 }
 
+export interface UpdateTaskScheduleInput {
+  title?: string;
+  prompt?: string;
+  notes?: string;
+  scheduledStartAt?: string;
+  scheduledEndAt?: string;
+}
+
 export interface UpdateUserNotesInput {
   notes: string;
 }
@@ -1213,6 +1226,7 @@ export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
   status === "archived";
 export const getTaskStatusLabel = (status: TaskStatus): string =>
   ({
+    scheduled: "Scheduled",
     build_queued: "Build Queued",
     preparing_workspace: "Preparing Workspace",
     building: "Building",

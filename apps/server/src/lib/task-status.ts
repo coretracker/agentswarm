@@ -14,7 +14,7 @@ export const reconcileTaskStatusWithPendingCheckpoint = (
   status: TaskStatus,
   hasPendingCheckpoint: boolean
 ): TaskStatus => {
-  if (status === "archived" || isQueuedTaskStatus(status) || isActiveTaskStatus(status)) {
+  if (status === "scheduled" || status === "archived" || isQueuedTaskStatus(status) || isActiveTaskStatus(status)) {
     return status;
   }
 
@@ -35,6 +35,7 @@ export const normalizeTaskLifecycleStatus = (
   hasPendingCheckpoint: boolean
 ): TaskStatus => {
   if (
+    status === "scheduled" ||
     status === "build_queued" ||
     status === "preparing_workspace" ||
     status === "building" ||

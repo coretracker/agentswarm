@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { Dayjs } from "dayjs";
 import type { FormInstance } from "antd";
 import type {
   AgentProvider,
@@ -20,7 +21,7 @@ import type {
   TaskType
 } from "@agentswarm/shared-types";
 import { getAgentProviderLabel, getDefaultModelForProvider, getEffortOptionsForProvider, getModelsForProvider } from "@agentswarm/shared-types";
-import { Alert, Button, Card, Checkbox, Col, Flex, Form, Input, Row, Select, Space, Typography, message } from "antd";
+import { Alert, Button, Card, Checkbox, Col, DatePicker, Flex, Form, Input, Row, Select, Space, Typography, message } from "antd";
 import { RobotOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -55,6 +56,8 @@ export type TaskDefinitionFormValues = {
   snippetVariables?: Record<string, string>;
   sequenceId?: string;
   sequenceVariables?: Record<string, string>;
+  scheduledStartAt?: Dayjs;
+  scheduledEndAt?: Dayjs;
 };
 
 export interface TaskDefinitionFieldsProps {
@@ -62,6 +65,7 @@ export interface TaskDefinitionFieldsProps {
   syncSettingsDefaults?: boolean;
   promptImageFiles?: SelectedTaskPromptImageFile[];
   onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
+  schedulerMode?: boolean;
 }
 
 const providerOptions = (
@@ -103,8 +107,12 @@ const deriveTitleFromPrompt = (prompt: string): string => {
   return lines[0];
 };
 
-export const getTaskDefinitionInitialValues = (settings?: SystemSettings | null): Partial<TaskDefinitionFormValues> => {
+export const getTaskDefinitionInitialValues = (
+  settings?: SystemSettings | null,
+  options: { schedulerMode?: boolean } = {}
+): Partial<TaskDefinitionFormValues> => {
   const provider = settings?.defaultProvider ?? "codex";
+  const schedulerMode = options.schedulerMode === true;
   return {
     sourceType: "blank",
     taskType: "build",
@@ -114,7 +122,7 @@ export const getTaskDefinitionInitialValues = (settings?: SystemSettings | null)
     codexCredentialSource: "auto",
     branchStrategy: "feature_branch",
     includeComments: true,
-    startMode: "prepare_workspace"
+    startMode: schedulerMode ? "run_now" : "prepare_workspace"
   };
 };
 
@@ -223,7 +231,8 @@ export function TaskDefinitionFields({
   form,
   syncSettingsDefaults = true,
   promptImageFiles = [],
-  onPromptImageFilesChange
+  onPromptImageFilesChange,
+  schedulerMode = false
 }: TaskDefinitionFieldsProps) {
   const { can, session } = useAuth();
   const { repositories } = useRepositories();
@@ -291,17 +300,19 @@ export function TaskDefinitionFields({
   const allowedEffortOptions = getEffortOptionsForProvider(selectedProvider).filter(
     (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
   );
-  const sourceOptions: Array<{ label: string; value: TaskSourceType }> = [
-    { label: "Blank", value: "blank" },
-    ...(canUseSnippets ? [{ label: "Snippet", value: "snippet" as const }] : []),
-    ...(canUseSequences ? [{ label: "Sequence", value: "sequence" as const }] : []),
-    ...(canReadRepositoryMetadata
-      ? [
-          { label: "From Issue", value: "issue" as const },
-          ...(canBuildTasks ? [{ label: "From Pull Request", value: "pull_request" as const }] : [])
-        ]
-      : [])
-  ];
+  const sourceOptions: Array<{ label: string; value: TaskSourceType }> = schedulerMode
+    ? [{ label: "Blank", value: "blank" }]
+    : [
+        { label: "Blank", value: "blank" },
+        ...(canUseSnippets ? [{ label: "Snippet", value: "snippet" as const }] : []),
+        ...(canUseSequences ? [{ label: "Sequence", value: "sequence" as const }] : []),
+        ...(canReadRepositoryMetadata
+          ? [
+              { label: "From Issue", value: "issue" as const },
+              ...(canBuildTasks ? [{ label: "From Pull Request", value: "pull_request" as const }] : [])
+            ]
+          : [])
+      ];
   const startModeOptions: Array<{ label: string; value: TaskStartMode }> = [
     ...(canRunAutomatedTask ? [{ label: "Run automated agent now", value: "run_now" as const }] : []),
     ...(canUseInteractiveTerminal ? [{ label: "Prepare workspace only", value: "prepare_workspace" as const }] : [])
@@ -310,6 +321,19 @@ export function TaskDefinitionFields({
     ...(canBuildTasks ? [{ label: "Build", value: "build" as const }] : []),
     ...(canAskTasks ? [{ label: "Ask", value: "ask" as const }] : [])
   ];
+
+  useEffect(() => {
+    if (!schedulerMode) {
+      return;
+    }
+
+    if (selectedSourceType !== "blank") {
+      form.setFieldValue("sourceType", "blank");
+    }
+    if (selectedStartMode !== "run_now") {
+      form.setFieldValue("startMode", "run_now");
+    }
+  }, [form, schedulerMode, selectedSourceType, selectedStartMode]);
 
   useEffect(() => {
     if (canReadRepositoryMetadata || selectedSourceType === "blank" || selectedSourceType === "snippet" || selectedSourceType === "sequence") {
@@ -505,9 +529,9 @@ export function TaskDefinitionFields({
       : isSequenceSource
         ? "Sequence Variables"
         : "Imported Context";
-  const requirePromptForBlank = selectedStartMode === "run_now";
+  const requirePromptForBlank = schedulerMode || selectedStartMode === "run_now";
   const disableBlankPromptInput = isBlankSource && selectedStartMode === "prepare_workspace";
-  const canAttachPromptImages = isBlankSource && selectedStartMode === "run_now";
+  const canAttachPromptImages = !schedulerMode && isBlankSource && selectedStartMode === "run_now";
   const canUsePromptMagic = isBlankSource && !disableBlankPromptInput;
   const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
 
@@ -635,12 +659,14 @@ export function TaskDefinitionFields({
                   />
                 </Form.Item>
               </div>
-              <TaskPromptAttachmentsInput
-                files={promptImageFiles}
-                onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
-                onError={(errorMessage) => void message.error(errorMessage)}
-                disabled={!canAttachPromptImages || !onPromptImageFilesChange}
-              />
+              {!schedulerMode ? (
+                <TaskPromptAttachmentsInput
+                  files={promptImageFiles}
+                  onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
+                  onError={(errorMessage) => void message.error(errorMessage)}
+                  disabled={!canAttachPromptImages || !onPromptImageFilesChange}
+                />
+              ) : null}
             </Flex>
           </Form.Item>
           <Form.Item
@@ -881,47 +907,53 @@ export function TaskDefinitionFields({
     <Row gutter={[24, 24]} align="stretch">
       <Col xs={24} xl={8}>
         <Card bordered={false} title="Configuration" styles={{ body: { display: "flex", flexDirection: "column", gap: 0 } }}>
-          <Form.Item name="sourceType" label="Source" rules={[{ required: true }]}>
-            <Select
-              options={sourceOptions}
-              onChange={(value: TaskSourceType) => {
-                trackEvent("task_source_selected", { source: value });
-                if (value === "pull_request") {
-                  form.setFieldValue("taskType", "build");
-                  form.setFieldValue("branchStrategy", "work_on_branch");
-                  form.setFieldValue("startMode", "run_now");
-                }
-                if (value === "issue") {
-                  form.setFieldValue("startMode", "run_now");
-                }
-                if (value === "snippet") {
-                  form.setFieldValue("startMode", "run_now");
-                  form.setFieldValue("taskType", "build");
-                }
-                if (value === "sequence") {
-                  form.setFieldValue("startMode", "run_now");
-                  form.setFieldValue("taskType", "build");
-                }
+          {schedulerMode ? (
+            <Form.Item label="Source">
+              <Input value="Blank Task" readOnly />
+            </Form.Item>
+          ) : (
+            <Form.Item name="sourceType" label="Source" rules={[{ required: true }]}>
+              <Select
+                options={sourceOptions}
+                onChange={(value: TaskSourceType) => {
+                  trackEvent("task_source_selected", { source: value });
+                  if (value === "pull_request") {
+                    form.setFieldValue("taskType", "build");
+                    form.setFieldValue("branchStrategy", "work_on_branch");
+                    form.setFieldValue("startMode", "run_now");
+                  }
+                  if (value === "issue") {
+                    form.setFieldValue("startMode", "run_now");
+                  }
+                  if (value === "snippet") {
+                    form.setFieldValue("startMode", "run_now");
+                    form.setFieldValue("taskType", "build");
+                  }
+                  if (value === "sequence") {
+                    form.setFieldValue("startMode", "run_now");
+                    form.setFieldValue("taskType", "build");
+                  }
 
-                if (value !== "blank") {
-                  form.setFieldValue("prompt", undefined);
-                }
+                  if (value !== "blank") {
+                    form.setFieldValue("prompt", undefined);
+                  }
 
-                if (value === "issue" || value === "pull_request") {
-                  form.setFieldValue("title", undefined);
-                  form.setFields([{ name: "title", touched: false }]);
-                }
-                if (value !== "snippet") {
-                  form.setFieldValue("snippetId", undefined);
-                  form.setFieldValue("snippetVariables", undefined);
-                }
-                if (value !== "sequence") {
-                  form.setFieldValue("sequenceId", undefined);
-                  form.setFieldValue("sequenceVariables", undefined);
-                }
-              }}
-            />
-          </Form.Item>
+                  if (value === "issue" || value === "pull_request") {
+                    form.setFieldValue("title", undefined);
+                    form.setFields([{ name: "title", touched: false }]);
+                  }
+                  if (value !== "snippet") {
+                    form.setFieldValue("snippetId", undefined);
+                    form.setFieldValue("snippetVariables", undefined);
+                  }
+                  if (value !== "sequence") {
+                    form.setFieldValue("sequenceId", undefined);
+                    form.setFieldValue("sequenceVariables", undefined);
+                  }
+                }}
+              />
+            </Form.Item>
+          )}
 
           <Form.Item name="repoId" label="Repository" rules={[{ required: true }]}>
             <Select
@@ -935,6 +967,47 @@ export function TaskDefinitionFields({
               }}
             />
           </Form.Item>
+
+          {schedulerMode ? (
+            <>
+              <Form.Item
+                name="scheduledStartAt"
+                label="Start Date & Time"
+                rules={[
+                  { required: true, message: "Select a start date and time" },
+                  ({ getFieldValue }) => ({
+                    validator(_rule, value: Dayjs | undefined) {
+                      const end = getFieldValue("scheduledEndAt") as Dayjs | undefined;
+                      if (!value || !end || value.isBefore(end)) {
+                        return Promise.resolve();
+                      }
+                      return Promise.reject(new Error("Start must be before end"));
+                    }
+                  })
+                ]}
+              >
+                <DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: "100%" }} />
+              </Form.Item>
+              <Form.Item
+                name="scheduledEndAt"
+                label="End Date & Time"
+                rules={[
+                  { required: true, message: "Select an end date and time" },
+                  ({ getFieldValue }) => ({
+                    validator(_rule, value: Dayjs | undefined) {
+                      const start = getFieldValue("scheduledStartAt") as Dayjs | undefined;
+                      if (!value || !start || value.isAfter(start)) {
+                        return Promise.resolve();
+                      }
+                      return Promise.reject(new Error("End must be after start"));
+                    }
+                  })
+                ]}
+              >
+                <DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: "100%" }} />
+              </Form.Item>
+            </>
+          ) : null}
 
           {isPullRequestSource ? (
             <Form.Item name="pullRequestNumber" label="Pull Request" rules={[{ required: true }]}>
@@ -973,7 +1046,7 @@ export function TaskDefinitionFields({
             </>
           ) : null}
 
-          {isBlankSource || isSnippetSource || isSequenceSource || isIssueSource ? (
+          {!schedulerMode && (isBlankSource || isSnippetSource || isSequenceSource || isIssueSource) ? (
             <Form.Item name="startMode" label="Start mode" rules={[{ required: true }]}>
               {isSnippetSource || isSequenceSource ? (
                 <>

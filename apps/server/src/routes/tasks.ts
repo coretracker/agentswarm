@@ -74,9 +74,35 @@ const createTaskSchema = z
     snippet_id: z.string().trim().min(1).optional(),
     sequence_id: z.string().trim().min(1).optional(),
     sequence_variables: z.record(z.string().max(2000)).optional(),
-    start_mode_locked: z.boolean().optional()
+    start_mode_locked: z.boolean().optional(),
+    scheduledStartAt: z.string().datetime({ offset: true }).optional(),
+    scheduledEndAt: z.string().datetime({ offset: true }).optional()
   })
   .superRefine((data, ctx) => {
+    const hasScheduledWindow = Boolean(data.scheduledStartAt || data.scheduledEndAt);
+    if (hasScheduledWindow) {
+      if (!data.scheduledStartAt || !data.scheduledEndAt) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Both scheduledStartAt and scheduledEndAt are required together",
+          path: ["scheduledStartAt"]
+        });
+      } else if (Date.parse(data.scheduledStartAt) >= Date.parse(data.scheduledEndAt)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "scheduledEndAt must be after scheduledStartAt",
+          path: ["scheduledEndAt"]
+        });
+      }
+      if (data.task_source && data.task_source !== "blank") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Scheduled tasks currently support blank task source only",
+          path: ["task_source"]
+        });
+      }
+    }
+
     if (data.task_source === "snippet") {
       if (!data.snippet_id) {
         ctx.addIssue({
@@ -123,7 +149,7 @@ const createTaskSchema = z
         });
       }
     }
-    if (data.startMode === "run_now" && data.task_source !== "sequence" && data.prompt.trim().length === 0) {
+    if ((data.startMode === "run_now" || hasScheduledWindow) && data.task_source !== "sequence" && data.prompt.trim().length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Prompt is required when start mode is Run now",
@@ -155,6 +181,48 @@ const updateTaskTitleSchema = z.object({
 const updateTaskNotesSchema = z.object({
   notes: z.string().max(40_000)
 });
+
+const updateTaskScheduleSchema = z
+  .object({
+    title: z.string().trim().min(1).max(500).optional(),
+    prompt: z.string().trim().min(1).max(40_000).optional(),
+    notes: z.string().max(40_000).optional(),
+    scheduledStartAt: z.string().datetime({ offset: true }).optional(),
+    scheduledEndAt: z.string().datetime({ offset: true }).optional()
+  })
+  .superRefine((data, ctx) => {
+    if (
+      data.title === undefined &&
+      data.prompt === undefined &&
+      data.notes === undefined &&
+      data.scheduledStartAt === undefined &&
+      data.scheduledEndAt === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "At least one schedule field is required"
+      });
+      return;
+    }
+
+    const hasWindowField = data.scheduledStartAt !== undefined || data.scheduledEndAt !== undefined;
+    if (hasWindowField && (data.scheduledStartAt === undefined || data.scheduledEndAt === undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Both scheduledStartAt and scheduledEndAt are required together",
+        path: ["scheduledStartAt"]
+      });
+      return;
+    }
+
+    if (data.scheduledStartAt && data.scheduledEndAt && Date.parse(data.scheduledStartAt) >= Date.parse(data.scheduledEndAt)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "scheduledEndAt must be after scheduledStartAt",
+        path: ["scheduledEndAt"]
+      });
+    }
+  });
 
 const updateTaskStateSchema = z.object({
   status: z.enum(["open", "in_review", "awaiting_review", "done"])
@@ -234,7 +302,7 @@ const updateWorkspaceFileSchema = z.object({
 });
 
 const listTasksQuerySchema = z.object({
-  view: z.enum(["all", "active", "archived"]).optional(),
+  view: z.enum(["all", "active", "archived", "scheduled"]).optional(),
   limit: z.coerce.number().int().min(1).max(500).optional()
 });
 
@@ -1224,7 +1292,15 @@ export const registerTaskRoutes = (
       return reply.status(404).send({ message: "Repository not found" });
     }
 
-    const { startMode, attachments: attachmentUploads = [], ...rawCreatePayload } = parsed.data;
+    const {
+      startMode,
+      attachments: attachmentUploads = [],
+      scheduledStartAt,
+      scheduledEndAt,
+      ...rawCreatePayload
+    } = parsed.data;
+    const isScheduledTask = Boolean(scheduledStartAt && scheduledEndAt);
+    const effectiveStartMode = isScheduledTask ? "idle" : startMode;
     const settings = await deps.settingsStore.getSettings();
     const createPayload = applyCreateDefaultsFromSettings(rawCreatePayload, settings);
     let sequenceStepPrompts: string[] = [];
@@ -1253,13 +1329,16 @@ export const registerTaskRoutes = (
       sequenceExecutionMode = sequence.executionMode;
       createPayload.prompt = sequenceStepPrompts[0] ?? "";
     }
-    if (attachmentUploads.length > 0 && startMode !== "run_now") {
+    if (isScheduledTask && attachmentUploads.length > 0) {
+      return reply.status(400).send({ message: "Image attachments are not supported for scheduled tasks." });
+    }
+    if (attachmentUploads.length > 0 && effectiveStartMode !== "run_now") {
       return reply.status(400).send({ message: "Image attachments are only supported when start mode is Run now." });
     }
     if (
       !requireTaskCapabilityAccess(request, reply, {
         taskType: createPayload.taskType ?? "build",
-        startMode
+        startMode: effectiveStartMode
       })
     ) {
       return;
@@ -1273,7 +1352,13 @@ export const registerTaskRoutes = (
         ...createPayload,
         prompt: createPayload.prompt.trim(),
         notes: createPayload.notes?.trim() ?? "",
-        startMode
+        startMode: effectiveStartMode,
+        ...(scheduledStartAt && scheduledEndAt
+          ? {
+              scheduledStartAt,
+              scheduledEndAt
+            }
+          : {})
       },
       repository,
       request.auth!.user.id
@@ -1288,7 +1373,7 @@ export const registerTaskRoutes = (
     let sequenceRunContext:
       | { runId: string; action: TaskAction; stepPrompts: string[]; initialKnownRunIds: Set<string> }
       | null = null;
-    if (createPayload.task_source === "sequence" && sequenceId && sequenceStepPrompts.length > 0) {
+    if (!isScheduledTask && createPayload.task_source === "sequence" && sequenceId && sequenceStepPrompts.length > 0) {
       const initialRuns = await deps.taskStore.listRuns(createdTask.id);
       const { runId } = await sequenceExecutionService.initializeRun(sequenceId, createdTask.id, sequenceStepPrompts, sequenceExecutionMode);
       await deps.taskStore.appendLog(createdTask.id, `Sequence run started with ${sequenceStepPrompts.length} step(s).`);
@@ -1301,7 +1386,7 @@ export const registerTaskRoutes = (
     }
 
     let persistedAttachments: TaskPromptAttachment[] = [];
-    if (attachmentUploads.length > 0) {
+    if (!isScheduledTask && attachmentUploads.length > 0) {
       try {
         persistedAttachments = await persistTaskPromptAttachments(createdTask.id, attachmentUploads);
       } catch (error) {
@@ -1313,6 +1398,10 @@ export const registerTaskRoutes = (
         await deps.taskStore.setMessageAttachments(createdTask.id, initialMessage.id, persistedAttachments);
       }
     }
+    if (isScheduledTask) {
+      return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
+    }
+
     const startResult = await orchestrateTaskStart(
       {
         taskStore: deps.taskStore,
@@ -1321,7 +1410,7 @@ export const registerTaskRoutes = (
       },
       {
         task: createdTask,
-        startMode,
+        startMode: effectiveStartMode,
         fallbackMessage: "Task follow-up failed",
         setPrepareWorkspaceFailureState: true,
         input: {
@@ -1618,6 +1707,101 @@ export const registerTaskRoutes = (
     return reply.send(updated);
   });
 
+  app.patch<{ Params: { id: string } }>("/tasks/:id/schedule", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateTaskScheduleSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    if (task.status !== "scheduled" || task.startedAt !== null) {
+      return reply.status(409).send({ message: "This task has already started. Open task detail instead." });
+    }
+
+    const nextScheduledStartAt = parsed.data.scheduledStartAt ?? task.scheduledStartAt ?? null;
+    const nextScheduledEndAt = parsed.data.scheduledEndAt ?? task.scheduledEndAt ?? null;
+    if (!nextScheduledStartAt || !nextScheduledEndAt || Date.parse(nextScheduledStartAt) >= Date.parse(nextScheduledEndAt)) {
+      return reply.status(400).send({ message: "A valid scheduled start and end time is required." });
+    }
+
+    const nextTitle = parsed.data.title ?? task.title;
+    const nextPrompt = parsed.data.prompt ?? task.prompt;
+    const nextNotes = parsed.data.notes !== undefined ? parsed.data.notes.trim() : task.notes ?? "";
+    const complexity = classifyTaskComplexity(nextTitle, nextPrompt);
+    const executionSummary = buildExecutionSummaryFromPrompt(nextTitle, nextPrompt);
+
+    const updated = await deps.taskStore.patchTask(task.id, {
+      title: nextTitle,
+      prompt: nextPrompt,
+      notes: nextNotes,
+      scheduledStartAt: nextScheduledStartAt,
+      scheduledEndAt: nextScheduledEndAt,
+      complexity,
+      executionSummary
+    });
+    if (!updated) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    if (parsed.data.prompt !== undefined) {
+      const promptMessage = (await deps.taskStore.listMessages(task.id)).find(
+        (message) => message.role === "user" && message.action === getChatActionForTask(task)
+      );
+      if (promptMessage) {
+        await deps.taskStore.updateMessage(task.id, promptMessage.id, nextPrompt);
+      }
+    }
+
+    return reply.send(updated);
+  });
+
+  app.post<{ Params: { id: string } }>(
+    "/tasks/:id/schedule/run-now",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      if (task.status !== "scheduled" || task.startedAt !== null) {
+        return reply.status(409).send({ message: "This task has already started. Open task detail instead." });
+      }
+
+      const action = getTriggerActionForNewTask(task);
+      if (!requireTaskActionCapabilityAccess(request, reply, action)) {
+        return;
+      }
+
+      const blocked = await getMutationBlocked(deps.taskStore, task.id);
+      if (blocked) {
+        return replyWithMutationBlocked(reply, blocked);
+      }
+
+      const accepted = await deps.scheduler.triggerAction(task.id, action, {
+        content: task.prompt
+      });
+      if (!accepted) {
+        return reply.status(409).send({ message: "Task execution could not be started" });
+      }
+
+      const refreshed = await deps.taskStore.getTask(task.id);
+      return reply.send(refreshed);
+    }
+  );
+
   app.patch<{ Params: { id: string } }>("/tasks/:id/state", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const parsed = updateTaskStateSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -1631,6 +1815,10 @@ export const registerTaskRoutes = (
 
     if (task.status === "archived") {
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    if (task.status === "scheduled") {
+      return reply.status(409).send({ message: "Use the scheduler to edit or start scheduled tasks." });
     }
 
     if (isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {

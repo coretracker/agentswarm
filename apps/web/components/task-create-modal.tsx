@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { Task, TaskSourceType } from "@agentswarm/shared-types";
 import { App, Button, Form, Modal } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
+import { api } from "../src/api/client";
 import { useSnippets } from "../src/hooks/useSnippets";
 import { trackEvent } from "../src/utils/analytics";
 import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
@@ -19,9 +20,10 @@ interface TaskCreateModalProps {
   open: boolean;
   onClose: () => void;
   onCreated?: (task: Task) => void;
+  schedulerMode?: boolean;
 }
 
-export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalProps) {
+export function TaskCreateModal({ open, onClose, onCreated, schedulerMode = false }: TaskCreateModalProps) {
   const { message } = App.useApp();
   const { can } = useAuth();
   const [form] = Form.useForm<TaskDefinitionFormValues>();
@@ -50,7 +52,33 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
       const definition = buildTaskDefinitionInput(values, encodedAttachments, selectedSnippet?.content, selectedSnippet?.variables ?? []);
       trackEvent("task_create_submitted", { source: definition.sourceType });
 
-      const creationPromise = createTaskFromDefinition(definition);
+      const creationPromise = schedulerMode
+        ? (() => {
+            if (definition.sourceType !== "blank") {
+              return Promise.reject(new Error("Scheduler supports blank tasks only."));
+            }
+            if (!values.scheduledStartAt || !values.scheduledEndAt) {
+              return Promise.reject(new Error("Select both start and end date/time."));
+            }
+            return api.createTask({
+              title: definition.title,
+              repoId: definition.repoId,
+              prompt: definition.prompt,
+              notes: definition.notes,
+              taskType: definition.taskType,
+              startMode: "idle",
+              provider: definition.provider,
+              providerProfile: definition.providerProfile,
+              modelOverride: definition.model || undefined,
+              codexCredentialSource: definition.codexCredentialSource,
+              baseBranch: definition.baseBranch,
+              branchStrategy: definition.branchStrategy,
+              task_source: "blank",
+              scheduledStartAt: values.scheduledStartAt.toISOString(),
+              scheduledEndAt: values.scheduledEndAt.toISOString()
+            });
+          })()
+        : createTaskFromDefinition(definition);
       form.resetFields();
       setPromptImageFiles([]);
       setSubmitting(false);
@@ -59,7 +87,7 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
       void creationPromise
         .then((task) => {
           onCreated?.(task);
-          message.success(startMessageForDefinition(definition));
+          message.success(schedulerMode ? "Task scheduled" : startMessageForDefinition(definition));
         })
         .catch((error) => {
           message.error(error instanceof Error ? error.message : "Failed to create task");
@@ -74,7 +102,7 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
     <Modal
       open={open}
       onCancel={handleCancel}
-      title="New Task"
+      title={schedulerMode ? "Schedule Task" : "New Task"}
       width="min(1180px, calc(100vw - 32px))"
       destroyOnHidden
       maskClosable={!submitting}
@@ -97,21 +125,28 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
           disabled={!canCreateAnyTaskMode}
           onClick={() => form.submit()}
         >
-          {selectedSourceType === "issue"
-            ? "Create Task From Issue"
-            : selectedSourceType === "pull_request"
-              ? "Create Task From Pull Request"
-              : "Create Task"}
+          {schedulerMode
+            ? "Schedule Task"
+            : selectedSourceType === "issue"
+              ? "Create Task From Issue"
+              : selectedSourceType === "pull_request"
+                ? "Create Task From Pull Request"
+                : "Create Task"}
         </Button>
       ]}
     >
       <Form
         form={form}
         layout="vertical"
-        initialValues={getTaskDefinitionInitialValues()}
+        initialValues={getTaskDefinitionInitialValues(undefined, { schedulerMode })}
         onFinish={handleSubmit}
       >
-        <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
+        <TaskDefinitionFields
+          form={form}
+          promptImageFiles={promptImageFiles}
+          onPromptImageFilesChange={setPromptImageFiles}
+          schedulerMode={schedulerMode}
+        />
       </Form>
     </Modal>
   );
