@@ -66,7 +66,7 @@ export function TaskCreateModal({ open, onClose, onCreated, schedulerMode = fals
               prompt: definition.prompt,
               notes: definition.notes,
               taskType: definition.taskType,
-              startMode: "idle",
+              startMode: values.startMode ?? "idle",
               provider: definition.provider,
               providerProfile: definition.providerProfile,
               modelOverride: definition.model || undefined,
