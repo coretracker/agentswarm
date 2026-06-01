@@ -94,13 +94,6 @@ const createTaskSchema = z
           path: ["scheduledEndAt"]
         });
       }
-      if (data.task_source && data.task_source !== "blank") {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Scheduled tasks currently support blank task source only",
-          path: ["task_source"]
-        });
-      }
     }
 
     if (data.task_source === "snippet") {
@@ -149,7 +142,7 @@ const createTaskSchema = z
         });
       }
     }
-    if ((data.startMode === "run_now" || hasScheduledWindow) && data.task_source !== "sequence" && data.prompt.trim().length === 0) {
+    if (data.startMode === "run_now" && !hasScheduledWindow && data.task_source !== "sequence" && data.prompt.trim().length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Prompt is required when start mode is Run now",
@@ -1300,7 +1293,7 @@ export const registerTaskRoutes = (
       ...rawCreatePayload
     } = parsed.data;
     const isScheduledTask = Boolean(scheduledStartAt && scheduledEndAt);
-    const effectiveStartMode = isScheduledTask ? "idle" : startMode;
+    const effectiveStartMode = startMode;
     const settings = await deps.settingsStore.getSettings();
     const createPayload = applyCreateDefaultsFromSettings(rawCreatePayload, settings);
     let sequenceStepPrompts: string[] = [];
@@ -1373,16 +1366,23 @@ export const registerTaskRoutes = (
     let sequenceRunContext:
       | { runId: string; action: TaskAction; stepPrompts: string[]; initialKnownRunIds: Set<string> }
       | null = null;
-    if (!isScheduledTask && createPayload.task_source === "sequence" && sequenceId && sequenceStepPrompts.length > 0) {
-      const initialRuns = await deps.taskStore.listRuns(createdTask.id);
+    if (createPayload.task_source === "sequence" && sequenceId && sequenceStepPrompts.length > 0) {
       const { runId } = await sequenceExecutionService.initializeRun(sequenceId, createdTask.id, sequenceStepPrompts, sequenceExecutionMode);
-      await deps.taskStore.appendLog(createdTask.id, `Sequence run started with ${sequenceStepPrompts.length} step(s).`);
-      sequenceRunContext = {
-        runId,
-        action: getTriggerActionForNewTask(createdTask),
-        stepPrompts: sequenceStepPrompts,
-        initialKnownRunIds: new Set(initialRuns.map((run) => run.id))
-      };
+      if (isScheduledTask) {
+        await deps.taskStore.appendLog(
+          createdTask.id,
+          `Sequence run prepared with ${sequenceStepPrompts.length} step(s). Start this scheduled task to begin step 1.`
+        );
+      } else {
+        const initialRuns = await deps.taskStore.listRuns(createdTask.id);
+        await deps.taskStore.appendLog(createdTask.id, `Sequence run started with ${sequenceStepPrompts.length} step(s).`);
+        sequenceRunContext = {
+          runId,
+          action: getTriggerActionForNewTask(createdTask),
+          stepPrompts: sequenceStepPrompts,
+          initialKnownRunIds: new Set(initialRuns.map((run) => run.id))
+        };
+      }
     }
 
     let persistedAttachments: TaskPromptAttachment[] = [];
@@ -1790,13 +1790,61 @@ export const registerTaskRoutes = (
         return replyWithMutationBlocked(reply, blocked);
       }
 
+      if (task.taskSource === "sequence" && task.sequenceRunId) {
+        const sequenceRun = await deps.sequenceStore.getRun(task.sequenceRunId);
+        const stepPrompts = sequenceRun?.steps.map((step) => step.prompt).filter((prompt) => prompt.trim().length > 0) ?? [];
+        if (sequenceRun && stepPrompts.length > 0) {
+          const initialRuns = await deps.taskStore.listRuns(task.id);
+          const accepted = await deps.scheduler.triggerAction(task.id, action, {
+            content: stepPrompts[0]
+          });
+          if (!accepted) {
+            return reply.status(409).send({ message: "Task execution could not be started" });
+          }
+
+          void sequenceExecutionService
+            .runSteps({
+              runId: sequenceRun.id,
+              taskId: task.id,
+              action,
+              stepPrompts,
+              initialKnownRunIds: new Set(initialRuns.map((run) => run.id))
+            })
+            .catch(async (error) => {
+              try {
+                const message = error instanceof Error ? error.message : "Sequence execution failed.";
+                await deps.taskStore.appendLog(task.id, `Sequence execution failed: ${message}`);
+                const currentRun = await deps.sequenceStore.getRun(sequenceRun.id);
+                if (currentRun?.status === "running") {
+                  await sequenceExecutionService.failRunImmediately({
+                    runId: sequenceRun.id,
+                    failedStepIndex: currentRun.failedStepIndex ?? 0,
+                    errorMessage: message
+                  });
+                }
+              } catch (innerError) {
+                app.log.warn(
+                  {
+                    taskId: task.id,
+                    runId: sequenceRun.id,
+                    error: innerError instanceof Error ? innerError.message : String(innerError)
+                  },
+                  "Sequence scheduled start handler failed while processing runSteps rejection."
+                );
+              }
+            });
+
+          const refreshed = await deps.taskStore.getTask(task.id);
+          return reply.send(refreshed);
+        }
+      }
+
       const accepted = await deps.scheduler.triggerAction(task.id, action, {
         content: task.prompt
       });
       if (!accepted) {
         return reply.status(409).send({ message: "Task execution could not be started" });
       }
-
       const refreshed = await deps.taskStore.getTask(task.id);
       return reply.send(refreshed);
     }

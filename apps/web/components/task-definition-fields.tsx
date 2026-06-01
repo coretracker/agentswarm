@@ -24,8 +24,7 @@ import {
   getAgentProviderLabel,
   getDefaultModelForProvider,
   getEffortOptionsForProvider,
-  getModelsForProvider,
-  getTaskStartModeLabel
+  getModelsForProvider
 } from "@agentswarm/shared-types";
 import { Alert, Button, Card, Checkbox, Col, DatePicker, Flex, Form, Input, Row, Select, Space, Typography, message } from "antd";
 import { RobotOutlined } from "@ant-design/icons";
@@ -128,7 +127,7 @@ export const getTaskDefinitionInitialValues = (
     codexCredentialSource: "auto",
     branchStrategy: "feature_branch",
     includeComments: true,
-    startMode: schedulerMode ? "idle" : "prepare_workspace"
+    startMode: schedulerMode ? "run_now" : "prepare_workspace"
   };
 };
 
@@ -261,7 +260,7 @@ export function TaskDefinitionFields({
   const selectedBaseBranch = Form.useWatch("baseBranch", form);
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
-  const selectedStartMode = (Form.useWatch("startMode", form) as TaskStartMode | undefined) ?? (schedulerMode ? "idle" : "prepare_workspace");
+  const selectedStartMode = (Form.useWatch("startMode", form) as TaskStartMode | undefined) ?? "prepare_workspace";
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
   const selectedIssueNumber = Form.useWatch("issueNumber", form);
   const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
@@ -306,19 +305,17 @@ export function TaskDefinitionFields({
   const allowedEffortOptions = getEffortOptionsForProvider(selectedProvider).filter(
     (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
   );
-  const sourceOptions: Array<{ label: string; value: TaskSourceType }> = schedulerMode
-    ? [{ label: "Blank", value: "blank" }]
-    : [
-        { label: "Blank", value: "blank" },
-        ...(canUseSnippets ? [{ label: "Snippet", value: "snippet" as const }] : []),
-        ...(canUseSequences ? [{ label: "Sequence", value: "sequence" as const }] : []),
-        ...(canReadRepositoryMetadata
-          ? [
-              { label: "From Issue", value: "issue" as const },
-              ...(canBuildTasks ? [{ label: "From Pull Request", value: "pull_request" as const }] : [])
-            ]
-          : [])
-      ];
+  const sourceOptions: Array<{ label: string; value: TaskSourceType }> = [
+    { label: "Blank", value: "blank" },
+    ...(canUseSnippets ? [{ label: "Snippet", value: "snippet" as const }] : []),
+    ...(canUseSequences ? [{ label: "Sequence", value: "sequence" as const }] : []),
+    ...(canReadRepositoryMetadata
+      ? [
+          { label: "From Issue", value: "issue" as const },
+          ...(canBuildTasks ? [{ label: "From Pull Request", value: "pull_request" as const }] : [])
+        ]
+      : [])
+  ];
   const startModeOptions: Array<{ label: string; value: TaskStartMode }> = [
     ...(canRunAutomatedTask ? [{ label: "Run automated agent now", value: "run_now" as const }] : []),
     ...(canUseInteractiveTerminal ? [{ label: "Prepare workspace only", value: "prepare_workspace" as const }] : [])
@@ -333,13 +330,10 @@ export function TaskDefinitionFields({
       return;
     }
 
-    if (selectedSourceType !== "blank") {
-      form.setFieldValue("sourceType", "blank");
+    if (selectedStartMode !== "run_now") {
+      form.setFieldValue("startMode", "run_now");
     }
-    if (selectedStartMode !== "idle") {
-      form.setFieldValue("startMode", "idle");
-    }
-  }, [form, schedulerMode, selectedSourceType, selectedStartMode]);
+  }, [form, schedulerMode, selectedStartMode]);
 
   useEffect(() => {
     if (canReadRepositoryMetadata || selectedSourceType === "blank" || selectedSourceType === "snippet" || selectedSourceType === "sequence") {
@@ -543,7 +537,7 @@ export function TaskDefinitionFields({
       : isSequenceSource
         ? "Sequence Variables"
         : "Imported Context";
-  const requirePromptForBlank = schedulerMode || selectedStartMode === "run_now";
+  const requirePromptForBlank = !schedulerMode && selectedStartMode === "run_now";
   const disableBlankPromptInput = isBlankSource && selectedStartMode === "prepare_workspace";
   const canAttachPromptImages = !schedulerMode && isBlankSource && selectedStartMode === "run_now";
   const canUsePromptMagic = isBlankSource && !disableBlankPromptInput;
@@ -1060,16 +1054,9 @@ export function TaskDefinitionFields({
             </>
           ) : null}
 
-          {(isBlankSource || isSnippetSource || isSequenceSource || isIssueSource) ? (
+          {!schedulerMode && (isBlankSource || isSnippetSource || isSequenceSource || isIssueSource) ? (
             <Form.Item name="startMode" label="Start mode" rules={[{ required: true }]}>
-              {schedulerMode ? (
-                <>
-                  <Input value={getTaskStartModeLabel("idle")} readOnly />
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    Scheduled tasks are created in manual start mode. Use "Run Task Now" when you are ready.
-                  </Typography.Text>
-                </>
-              ) : isSnippetSource || isSequenceSource ? (
+              {isSnippetSource || isSequenceSource ? (
                 <>
                   <Input value="Automatic" readOnly />
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>

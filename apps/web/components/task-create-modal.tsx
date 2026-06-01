@@ -4,7 +4,6 @@ import { useState } from "react";
 import type { Task, TaskSourceType } from "@agentswarm/shared-types";
 import { App, Button, Form, Modal } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
-import { api } from "../src/api/client";
 import { useSnippets } from "../src/hooks/useSnippets";
 import { trackEvent } from "../src/utils/analytics";
 import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
@@ -54,26 +53,10 @@ export function TaskCreateModal({ open, onClose, onCreated, schedulerMode = fals
 
       const creationPromise = schedulerMode
         ? (() => {
-            if (definition.sourceType !== "blank") {
-              return Promise.reject(new Error("Scheduler supports blank tasks only."));
-            }
             if (!values.scheduledStartAt || !values.scheduledEndAt) {
               return Promise.reject(new Error("Select both start and end date/time."));
             }
-            return api.createTask({
-              title: definition.title,
-              repoId: definition.repoId,
-              prompt: definition.prompt,
-              notes: definition.notes,
-              taskType: definition.taskType,
-              startMode: values.startMode ?? "idle",
-              provider: definition.provider,
-              providerProfile: definition.providerProfile,
-              modelOverride: definition.model || undefined,
-              codexCredentialSource: definition.codexCredentialSource,
-              baseBranch: definition.baseBranch,
-              branchStrategy: definition.branchStrategy,
-              task_source: "blank",
+            return createTaskFromDefinition(definition, {
               scheduledStartAt: values.scheduledStartAt.toISOString(),
               scheduledEndAt: values.scheduledEndAt.toISOString()
             });

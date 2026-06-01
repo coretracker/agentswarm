@@ -3,6 +3,11 @@
 import type { Task, TaskDefinitionInput, TaskStartMode } from "@agentswarm/shared-types";
 import { api } from "../api/client";
 
+interface ScheduledTaskWindowInput {
+  scheduledStartAt: string;
+  scheduledEndAt: string;
+}
+
 export const startMessageForDefinition = (definition: TaskDefinitionInput): string => {
   if (definition.sourceType === "pull_request") {
     return "Pull request task created and started";
@@ -28,7 +33,7 @@ export const startMessageForDefinition = (definition: TaskDefinitionInput): stri
   return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
 };
 
-export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promise<Task> => {
+export const createTaskFromDefinition = (definition: TaskDefinitionInput, scheduledWindow?: ScheduledTaskWindowInput): Promise<Task> => {
   if (definition.sourceType === "issue") {
     return api.createTaskFromIssue({
       repoId: definition.repoId,
@@ -43,7 +48,8 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
       codexCredentialSource: definition.codexCredentialSource,
       baseBranch: definition.baseBranch,
       branchStrategy: definition.branchStrategy,
-      startMode: definition.startMode ?? "run_now"
+      startMode: definition.startMode ?? "run_now",
+      ...(scheduledWindow ?? {})
     });
   }
 
@@ -56,7 +62,8 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
       provider: definition.provider,
       providerProfile: definition.providerProfile,
       modelOverride: definition.model || undefined,
-      codexCredentialSource: definition.codexCredentialSource
+      codexCredentialSource: definition.codexCredentialSource,
+      ...(scheduledWindow ?? {})
     });
   }
 
@@ -78,7 +85,8 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
       task_source: "sequence",
       sequence_id: definition.sequenceId,
       sequence_variables: definition.sequenceVariables,
-      start_mode_locked: true
+      start_mode_locked: true,
+      ...(scheduledWindow ?? {})
     });
   }
 
@@ -102,6 +110,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
           snippet_id: definition.snippetId,
           start_mode_locked: true
         }
-      : { task_source: "blank" as const })
+      : { task_source: "blank" as const }),
+    ...(scheduledWindow ?? {})
   });
 };

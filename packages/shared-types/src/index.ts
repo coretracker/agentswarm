@@ -1061,6 +1061,8 @@ export interface CreateTaskFromIssueInput {
   branchStrategy?: TaskBranchStrategy;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
+  scheduledStartAt?: string;
+  scheduledEndAt?: string;
 }
 
 export interface CreateTaskFromPullRequestInput {
@@ -1074,6 +1076,8 @@ export interface CreateTaskFromPullRequestInput {
   codexCredentialSource?: CodexCredentialSource;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
+  scheduledStartAt?: string;
+  scheduledEndAt?: string;
 }
 
 export interface TriggerTaskActionInput {

@@ -29,7 +29,29 @@ const issueImportSchema = z.object({
   branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
   model: z.string().trim().min(1).optional(),
   reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
+  scheduledStartAt: z.string().datetime({ offset: true }).optional(),
+  scheduledEndAt: z.string().datetime({ offset: true }).optional(),
   startMode: z.enum(["run_now", "prepare_workspace", "idle"]).optional().default("run_now")
+}).superRefine((data, ctx) => {
+  const hasScheduledWindow = Boolean(data.scheduledStartAt || data.scheduledEndAt);
+  if (!hasScheduledWindow) {
+    return;
+  }
+  if (!data.scheduledStartAt || !data.scheduledEndAt) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Both scheduledStartAt and scheduledEndAt are required together",
+      path: ["scheduledStartAt"]
+    });
+    return;
+  }
+  if (Date.parse(data.scheduledStartAt) >= Date.parse(data.scheduledEndAt)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "scheduledEndAt must be after scheduledStartAt",
+      path: ["scheduledEndAt"]
+    });
+  }
 });
 
 const pullRequestImportSchema = z.object({
@@ -42,7 +64,29 @@ const pullRequestImportSchema = z.object({
   modelOverride: z.string().trim().min(1).optional(),
   codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
   model: z.string().trim().min(1).optional(),
-  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
+  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
+  scheduledStartAt: z.string().datetime({ offset: true }).optional(),
+  scheduledEndAt: z.string().datetime({ offset: true }).optional()
+}).superRefine((data, ctx) => {
+  const hasScheduledWindow = Boolean(data.scheduledStartAt || data.scheduledEndAt);
+  if (!hasScheduledWindow) {
+    return;
+  }
+  if (!data.scheduledStartAt || !data.scheduledEndAt) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Both scheduledStartAt and scheduledEndAt are required together",
+      path: ["scheduledStartAt"]
+    });
+    return;
+  }
+  if (Date.parse(data.scheduledStartAt) >= Date.parse(data.scheduledEndAt)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "scheduledEndAt must be after scheduledStartAt",
+      path: ["scheduledEndAt"]
+    });
+  }
 });
 
 const applyCreateDefaultsFromSettings = <
@@ -181,7 +225,8 @@ export const registerImportRoutes = (
         return;
       }
 
-      const { startMode, ...rawIssueRest } = parsed.data;
+      const { startMode, scheduledStartAt, scheduledEndAt, ...rawIssueRest } = parsed.data;
+      const isScheduledTask = Boolean(scheduledStartAt && scheduledEndAt);
       const settings = await deps.settingsStore.getSettings();
       const issueRest = applyCreateDefaultsFromSettings(rawIssueRest, settings);
       if (
@@ -197,7 +242,14 @@ export const registerImportRoutes = (
       }
 
       const taskInput = await deps.githubImportService.buildTaskInputFromIssue(repository, { ...issueRest, startMode });
-      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
+      const task = await deps.taskStore.createTask(
+        {
+          ...taskInput,
+          ...(scheduledStartAt && scheduledEndAt ? { scheduledStartAt, scheduledEndAt } : {})
+        },
+        repository,
+        request.auth!.user.id
+      );
       const taskWithCreator = await deps.taskStore.patchTask(task.id, {
         creatorName: request.auth!.user.name
       });
@@ -205,6 +257,9 @@ export const registerImportRoutes = (
         ...task,
         creatorName: request.auth!.user.name
       };
+      if (isScheduledTask) {
+        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
+      }
       const startResult = await orchestrateTaskStart(
         {
           taskStore: deps.taskStore,
@@ -253,7 +308,17 @@ export const registerImportRoutes = (
       }
 
       const taskInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, createPayload);
-      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
+      const isScheduledTask = Boolean(createPayload.scheduledStartAt && createPayload.scheduledEndAt);
+      const task = await deps.taskStore.createTask(
+        {
+          ...taskInput,
+          ...(createPayload.scheduledStartAt && createPayload.scheduledEndAt
+            ? { scheduledStartAt: createPayload.scheduledStartAt, scheduledEndAt: createPayload.scheduledEndAt }
+            : {})
+        },
+        repository,
+        request.auth!.user.id
+      );
       const taskWithCreator = await deps.taskStore.patchTask(task.id, {
         creatorName: request.auth!.user.name
       });
@@ -261,6 +326,9 @@ export const registerImportRoutes = (
         ...task,
         creatorName: request.auth!.user.name
       };
+      if (isScheduledTask) {
+        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
+      }
       const startResult = await orchestrateTaskStart(
         {
           taskStore: deps.taskStore,
