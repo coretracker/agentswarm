@@ -64,13 +64,6 @@ describe("buildTaskLifecycleViewModel", () => {
     assert.equal(vm.resultStatusText, "Question queued");
   });
 
-  it("maps scheduled state", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "scheduled" }));
-    assert.equal(vm.resultStatusText, "Scheduled");
-    assert.equal(vm.isQueued, false);
-    assert.equal(vm.isActive, false);
-  });
-
   it("marks archived tasks", () => {
     const vm = buildTaskLifecycleViewModel(createTask({ status: "archived" }));
     assert.equal(vm.isArchived, true);

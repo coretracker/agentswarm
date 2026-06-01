@@ -16,15 +16,12 @@ interface TaskDeletedPayload {
   id: string;
 }
 
-function matchesTaskView(task: Task, view: "all" | "active" | "archived" | "scheduled"): boolean {
+function matchesTaskView(task: Task, view: "all" | "active" | "archived"): boolean {
   if (view === "active") {
     return task.status !== "archived";
   }
   if (view === "archived") {
     return task.status === "archived";
-  }
-  if (view === "scheduled") {
-    return task.status === "scheduled";
   }
   return true;
 }
@@ -35,7 +32,7 @@ export const useTasks = ({
   limit
 }: {
   enabled?: boolean;
-  view?: "all" | "active" | "archived" | "scheduled";
+  view?: "all" | "active" | "archived";
   limit?: number;
 } = {}) => {
   const socket = useSocket();

@@ -53,7 +53,6 @@ import type {
   UpdateSnippetInput,
   UpdateTaskPinInput,
   UpdateTaskNotesInput,
-  UpdateTaskScheduleInput,
   UpdateTaskAssigneeInput,
   UpdateTaskStateInput,
   UpdateUserNotesInput,
@@ -90,7 +89,7 @@ export interface TaskBranchSyncCounts {
 }
 
 export interface ListTasksOptions {
-  view?: "all" | "active" | "archived" | "scheduled";
+  view?: "all" | "active" | "archived";
   limit?: number;
 }
 
@@ -507,15 +506,6 @@ export const api = {
     request<Task>(`/tasks/${id}/notes`, {
       method: "PATCH",
       body: JSON.stringify(input)
-    }),
-  updateTaskSchedule: (id: string, input: UpdateTaskScheduleInput) =>
-    request<Task>(`/tasks/${id}/schedule`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  runScheduledTaskNow: (id: string) =>
-    request<Task>(`/tasks/${id}/schedule/run-now`, {
-      method: "POST"
     }),
   updateTaskState: (id: string, input: UpdateTaskStateInput) =>
     request<Task>(`/tasks/${id}/state`, {

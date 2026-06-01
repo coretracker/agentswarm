@@ -3,11 +3,6 @@
 import type { Task, TaskDefinitionInput, TaskStartMode } from "@agentswarm/shared-types";
 import { api } from "../api/client";
 
-interface ScheduledTaskWindowInput {
-  scheduledStartAt: string;
-  scheduledEndAt: string;
-}
-
 export const startMessageForDefinition = (definition: TaskDefinitionInput): string => {
   if (definition.sourceType === "pull_request") {
     return "Pull request task created and started";
@@ -33,7 +28,7 @@ export const startMessageForDefinition = (definition: TaskDefinitionInput): stri
   return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
 };
 
-export const createTaskFromDefinition = (definition: TaskDefinitionInput, scheduledWindow?: ScheduledTaskWindowInput): Promise<Task> => {
+export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promise<Task> => {
   if (definition.sourceType === "issue") {
     return api.createTaskFromIssue({
       repoId: definition.repoId,
@@ -48,8 +43,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput, schedu
       codexCredentialSource: definition.codexCredentialSource,
       baseBranch: definition.baseBranch,
       branchStrategy: definition.branchStrategy,
-      startMode: definition.startMode ?? "run_now",
-      ...(scheduledWindow ?? {})
+      startMode: definition.startMode ?? "run_now"
     });
   }
 
@@ -62,8 +56,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput, schedu
       provider: definition.provider,
       providerProfile: definition.providerProfile,
       modelOverride: definition.model || undefined,
-      codexCredentialSource: definition.codexCredentialSource,
-      ...(scheduledWindow ?? {})
+      codexCredentialSource: definition.codexCredentialSource
     });
   }
 
@@ -85,8 +78,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput, schedu
       task_source: "sequence",
       sequence_id: definition.sequenceId,
       sequence_variables: definition.sequenceVariables,
-      start_mode_locked: true,
-      ...(scheduledWindow ?? {})
+      start_mode_locked: true
     });
   }
 
@@ -105,12 +97,11 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput, schedu
     baseBranch: definition.baseBranch,
     branchStrategy: definition.branchStrategy,
     ...(definition.sourceType === "snippet"
-      ? {
-          task_source: "snippet" as const,
-          snippet_id: definition.snippetId,
-          start_mode_locked: true
-        }
-      : { task_source: "blank" as const }),
-    ...(scheduledWindow ?? {})
+        ? {
+            task_source: "snippet" as const,
+            snippet_id: definition.snippetId,
+            start_mode_locked: true
+          }
+        : { task_source: "blank" as const })
   });
 };

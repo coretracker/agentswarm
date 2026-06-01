@@ -858,8 +858,6 @@ export interface CreateTaskInput {
   sequence_id?: string;
   sequence_variables?: Record<string, string>;
   start_mode_locked?: boolean;
-  scheduledStartAt?: string;
-  scheduledEndAt?: string;
 }
 
 export type TaskSourceType = "blank" | "snippet" | "sequence" | "issue" | "pull_request";
@@ -1061,8 +1059,6 @@ export interface CreateTaskFromIssueInput {
   branchStrategy?: TaskBranchStrategy;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
-  scheduledStartAt?: string;
-  scheduledEndAt?: string;
 }
 
 export interface CreateTaskFromPullRequestInput {
@@ -1076,8 +1072,6 @@ export interface CreateTaskFromPullRequestInput {
   codexCredentialSource?: CodexCredentialSource;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
-  scheduledStartAt?: string;
-  scheduledEndAt?: string;
 }
 
 export interface TriggerTaskActionInput {
@@ -1102,14 +1096,6 @@ export interface UpdateTaskTitleInput {
 
 export interface UpdateTaskNotesInput {
   notes: string;
-}
-
-export interface UpdateTaskScheduleInput {
-  title?: string;
-  prompt?: string;
-  notes?: string;
-  scheduledStartAt?: string;
-  scheduledEndAt?: string;
 }
 
 export interface UpdateUserNotesInput {

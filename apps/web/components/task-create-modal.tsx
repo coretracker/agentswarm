@@ -19,10 +19,9 @@ interface TaskCreateModalProps {
   open: boolean;
   onClose: () => void;
   onCreated?: (task: Task) => void;
-  schedulerMode?: boolean;
 }
 
-export function TaskCreateModal({ open, onClose, onCreated, schedulerMode = false }: TaskCreateModalProps) {
+export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalProps) {
   const { message } = App.useApp();
   const { can } = useAuth();
   const [form] = Form.useForm<TaskDefinitionFormValues>();
@@ -51,17 +50,7 @@ export function TaskCreateModal({ open, onClose, onCreated, schedulerMode = fals
       const definition = buildTaskDefinitionInput(values, encodedAttachments, selectedSnippet?.content, selectedSnippet?.variables ?? []);
       trackEvent("task_create_submitted", { source: definition.sourceType });
 
-      const creationPromise = schedulerMode
-        ? (() => {
-            if (!values.scheduledStartAt || !values.scheduledEndAt) {
-              return Promise.reject(new Error("Select both start and end date/time."));
-            }
-            return createTaskFromDefinition(definition, {
-              scheduledStartAt: values.scheduledStartAt.toISOString(),
-              scheduledEndAt: values.scheduledEndAt.toISOString()
-            });
-          })()
-        : createTaskFromDefinition(definition);
+      const creationPromise = createTaskFromDefinition(definition);
       form.resetFields();
       setPromptImageFiles([]);
       setSubmitting(false);
@@ -70,7 +59,7 @@ export function TaskCreateModal({ open, onClose, onCreated, schedulerMode = fals
       void creationPromise
         .then((task) => {
           onCreated?.(task);
-          message.success(schedulerMode ? "Task scheduled" : startMessageForDefinition(definition));
+          message.success(startMessageForDefinition(definition));
         })
         .catch((error) => {
           message.error(error instanceof Error ? error.message : "Failed to create task");
@@ -85,7 +74,7 @@ export function TaskCreateModal({ open, onClose, onCreated, schedulerMode = fals
     <Modal
       open={open}
       onCancel={handleCancel}
-      title={schedulerMode ? "Schedule Task" : "New Task"}
+      title="New Task"
       width="min(1180px, calc(100vw - 32px))"
       destroyOnHidden
       maskClosable={!submitting}
@@ -108,28 +97,21 @@ export function TaskCreateModal({ open, onClose, onCreated, schedulerMode = fals
           disabled={!canCreateAnyTaskMode}
           onClick={() => form.submit()}
         >
-          {schedulerMode
-            ? "Schedule Task"
-            : selectedSourceType === "issue"
-              ? "Create Task From Issue"
-              : selectedSourceType === "pull_request"
-                ? "Create Task From Pull Request"
-                : "Create Task"}
+          {selectedSourceType === "issue"
+            ? "Create Task From Issue"
+            : selectedSourceType === "pull_request"
+              ? "Create Task From Pull Request"
+              : "Create Task"}
         </Button>
       ]}
     >
       <Form
         form={form}
         layout="vertical"
-        initialValues={getTaskDefinitionInitialValues(undefined, { schedulerMode })}
+        initialValues={getTaskDefinitionInitialValues(undefined)}
         onFinish={handleSubmit}
       >
-        <TaskDefinitionFields
-          form={form}
-          promptImageFiles={promptImageFiles}
-          onPromptImageFilesChange={setPromptImageFiles}
-          schedulerMode={schedulerMode}
-        />
+        <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
       </Form>
     </Modal>
   );

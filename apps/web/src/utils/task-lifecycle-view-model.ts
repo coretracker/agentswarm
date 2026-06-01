@@ -21,9 +21,7 @@ export const buildTaskLifecycleViewModel = (task: Task | null | undefined): Task
   const checkpointDiffActionsBlocked = checkpointDiffActionsBlockedReason !== null;
   const isPreparingWorkspace = task?.status === "preparing_workspace";
   const resultStatusText =
-    task?.status === "scheduled"
-      ? "Scheduled"
-      : task?.status === "preparing_workspace"
+    task?.status === "preparing_workspace"
       ? "Preparing workspace"
       : taskType === "build"
         ? task?.status === "build_queued"

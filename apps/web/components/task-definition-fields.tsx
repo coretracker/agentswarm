@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Dayjs } from "dayjs";
 import type { FormInstance } from "antd";
 import type {
   AgentProvider,
@@ -26,7 +25,7 @@ import {
   getEffortOptionsForProvider,
   getModelsForProvider
 } from "@agentswarm/shared-types";
-import { Alert, Button, Card, Checkbox, Col, DatePicker, Flex, Form, Input, Row, Select, Space, Typography, message } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Flex, Form, Input, Row, Select, Space, Typography, message } from "antd";
 import { RobotOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -61,8 +60,6 @@ export type TaskDefinitionFormValues = {
   snippetVariables?: Record<string, string>;
   sequenceId?: string;
   sequenceVariables?: Record<string, string>;
-  scheduledStartAt?: Dayjs;
-  scheduledEndAt?: Dayjs;
 };
 
 export interface TaskDefinitionFieldsProps {
@@ -70,7 +67,6 @@ export interface TaskDefinitionFieldsProps {
   syncSettingsDefaults?: boolean;
   promptImageFiles?: SelectedTaskPromptImageFile[];
   onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
-  schedulerMode?: boolean;
 }
 
 const providerOptions = (
@@ -113,11 +109,9 @@ const deriveTitleFromPrompt = (prompt: string): string => {
 };
 
 export const getTaskDefinitionInitialValues = (
-  settings?: SystemSettings | null,
-  options: { schedulerMode?: boolean } = {}
+  settings?: SystemSettings | null
 ): Partial<TaskDefinitionFormValues> => {
   const provider = settings?.defaultProvider ?? "codex";
-  const schedulerMode = options.schedulerMode === true;
   return {
     sourceType: "blank",
     taskType: "build",
@@ -127,7 +121,7 @@ export const getTaskDefinitionInitialValues = (
     codexCredentialSource: "auto",
     branchStrategy: "feature_branch",
     includeComments: true,
-    startMode: schedulerMode ? "run_now" : "prepare_workspace"
+    startMode: "prepare_workspace"
   };
 };
 
@@ -236,8 +230,7 @@ export function TaskDefinitionFields({
   form,
   syncSettingsDefaults = true,
   promptImageFiles = [],
-  onPromptImageFilesChange,
-  schedulerMode = false
+  onPromptImageFilesChange
 }: TaskDefinitionFieldsProps) {
   const { can, session } = useAuth();
   const { repositories } = useRepositories();
@@ -324,16 +317,6 @@ export function TaskDefinitionFields({
     ...(canBuildTasks ? [{ label: "Build", value: "build" as const }] : []),
     ...(canAskTasks ? [{ label: "Ask", value: "ask" as const }] : [])
   ];
-
-  useEffect(() => {
-    if (!schedulerMode) {
-      return;
-    }
-
-    if (selectedStartMode !== "run_now") {
-      form.setFieldValue("startMode", "run_now");
-    }
-  }, [form, schedulerMode, selectedStartMode]);
 
   useEffect(() => {
     if (canReadRepositoryMetadata || selectedSourceType === "blank" || selectedSourceType === "snippet" || selectedSourceType === "sequence") {
@@ -446,10 +429,6 @@ export function TaskDefinitionFields({
   }, [canAskTasks, canBuildTasks, form, selectedTaskType]);
 
   useEffect(() => {
-    if (schedulerMode) {
-      return;
-    }
-
     if (!(isBlankSource || isSnippetSource || isSequenceSource || isIssueSource)) {
       return;
     }
@@ -462,17 +441,13 @@ export function TaskDefinitionFields({
     if (selectedStartMode !== "prepare_workspace" && !canRunAutomatedTask && canUseInteractiveTerminal) {
       form.setFieldValue("startMode", "prepare_workspace");
     }
-  }, [canRunAutomatedTask, canUseInteractiveTerminal, form, isBlankSource, isSnippetSource, isSequenceSource, isIssueSource, schedulerMode, selectedStartMode]);
+  }, [canRunAutomatedTask, canUseInteractiveTerminal, form, isBlankSource, isSnippetSource, isSequenceSource, isIssueSource, selectedStartMode]);
 
   useEffect(() => {
-    if (schedulerMode) {
-      return;
-    }
-
     if ((isBlankSource || isSnippetSource || isSequenceSource || isIssueSource) && selectedStartMode === "idle") {
       form.setFieldValue("startMode", "run_now");
     }
-  }, [form, isBlankSource, isSnippetSource, isSequenceSource, isIssueSource, schedulerMode, selectedStartMode]);
+  }, [form, isBlankSource, isSnippetSource, isSequenceSource, isIssueSource, selectedStartMode]);
 
   useEffect(() => {
     if (!isSnippetSource && !isSequenceSource) {
@@ -968,47 +943,6 @@ export function TaskDefinitionFields({
             />
           </Form.Item>
 
-          {schedulerMode ? (
-            <>
-              <Form.Item
-                name="scheduledStartAt"
-                label="Start Date & Time"
-                rules={[
-                  { required: true, message: "Select a start date and time" },
-                  ({ getFieldValue }) => ({
-                    validator(_rule, value: Dayjs | undefined) {
-                      const end = getFieldValue("scheduledEndAt") as Dayjs | undefined;
-                      if (!value || !end || value.isBefore(end)) {
-                        return Promise.resolve();
-                      }
-                      return Promise.reject(new Error("Start must be before end"));
-                    }
-                  })
-                ]}
-              >
-                <DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: "100%" }} />
-              </Form.Item>
-              <Form.Item
-                name="scheduledEndAt"
-                label="End Date & Time"
-                rules={[
-                  { required: true, message: "Select an end date and time" },
-                  ({ getFieldValue }) => ({
-                    validator(_rule, value: Dayjs | undefined) {
-                      const start = getFieldValue("scheduledStartAt") as Dayjs | undefined;
-                      if (!value || !start || value.isAfter(start)) {
-                        return Promise.resolve();
-                      }
-                      return Promise.reject(new Error("End must be after start"));
-                    }
-                  })
-                ]}
-              >
-                <DatePicker showTime format="YYYY-MM-DD HH:mm" style={{ width: "100%" }} />
-              </Form.Item>
-            </>
-          ) : null}
-
           {isPullRequestSource ? (
             <Form.Item name="pullRequestNumber" label="Pull Request" rules={[{ required: true }]}>
               <Select
@@ -1046,7 +980,7 @@ export function TaskDefinitionFields({
             </>
           ) : null}
 
-          {!schedulerMode && (isBlankSource || isSnippetSource || isSequenceSource || isIssueSource) ? (
+          {isBlankSource || isSnippetSource || isSequenceSource || isIssueSource ? (
             <Form.Item name="startMode" label="Start mode" rules={[{ required: true }]}>
               {isSnippetSource || isSequenceSource ? (
                 <>

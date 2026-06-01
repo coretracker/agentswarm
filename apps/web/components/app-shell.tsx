@@ -3,7 +3,6 @@
 import { useMemo, useEffect, useRef, useState, type ReactNode } from "react";
 import { App, Button, Card, Divider, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Skeleton, Spin, Typography, message, theme as antTheme } from "antd";
 import {
-  CalendarOutlined,
   CopyOutlined,
   DatabaseOutlined,
   LeftOutlined,
@@ -48,7 +47,6 @@ import {
 
 const menuIconByPath: Record<string, ReactNode> = {
   "/tasks": <UnorderedListOutlined />,
-  "/scheduler": <CalendarOutlined />,
   "/snippets": <CopyOutlined />,
   "/sequences": <UnorderedListOutlined />,
   "/repositories": <DatabaseOutlined />,
