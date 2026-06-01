@@ -55,6 +55,7 @@ import {
   readSafeWorkspaceFileBuffer,
   resolveSafeWorkspaceFilePath
 } from "../lib/safe-workspace-file.js";
+import { materializeRepositoryRuntimeEnvEntries } from "../lib/repository-runtime-env.js";
 import {
   emitDockerSocketEnabledEventOnce,
   emitNestedContainerSpawnedEvent,
@@ -70,6 +71,7 @@ import type { TaskStore } from "./task-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { UserStore } from "./user-store.js";
 import type { RepositoryStore } from "./repository-store.js";
+import { RepositoryEnvFileStore } from "./repository-env-file-store.js";
 import { RepoSyncManager, type RepoSyncOperation } from "./repo-sync-manager.js";
 
 const ansiPattern = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\))/g;
@@ -237,7 +239,8 @@ export class SpawnerService {
     private readonly taskStore: TaskStore,
     private readonly settingsStore: SettingsStore,
     private readonly userStore: UserStore,
-    private readonly repositoryStore: Pick<RepositoryStore, "getRepository" | "getRepositoryEnvSecrets">
+    private readonly repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries">,
+    private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore()
   ) {}
 
   private formatExecutionLabel(command: string, args: string[]): string {
@@ -4479,11 +4482,10 @@ export class SpawnerService {
 
   async runTask(task: Task, action: TaskAction, input?: TaskExecutionInput | string): Promise<void> {
     this.cancelRequestedTaskIds.delete(task.id);
-    const [settings, runtimeCredentialsRaw, repository, repositoryEnvSecrets, responsePreferenceUser] = await Promise.all([
+    const [settings, runtimeCredentialsRaw, repositoryRuntimeEnvEntries, responsePreferenceUser] = await Promise.all([
       this.settingsStore.getSettings(),
       this.settingsStore.getRuntimeCredentials(task.ownerUserId),
-      this.repositoryStore.getRepository(task.repoId),
-      this.repositoryStore.getRepositoryEnvSecrets(task.repoId),
+      this.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId),
       task.ownerUserId ? this.userStore.getAuthSessionUser(task.ownerUserId) : Promise.resolve(null)
     ]);
     const runtimeCredentials =
@@ -4493,8 +4495,6 @@ export class SpawnerService {
     if (task.provider === "codex" && task.codexCredentialSource === "profile" && !runtimeCredentials.codexAuthJson) {
       throw new Error("Codex credential source is set to Profile, but your profile Codex auth.json is not configured.");
     }
-    const repositoryEnvVars = repository?.envVars ?? [];
-    const repositoryEnvEntries = [...repositoryEnvVars, ...repositoryEnvSecrets];
     const providerDefinition = getProviderRuntimeDefinition(task.provider);
     const missingCredentialMessage = providerDefinition.getMissingCredentialMessage(runtimeCredentials);
     if (missingCredentialMessage) {
@@ -4602,6 +4602,11 @@ export class SpawnerService {
       await appendRunLog(`Spawner: ${workspace.kind} workspace ready at ${workspace.workspacePath}.`);
 
       const payloadPaths = await this.writeRuntimePayloadFiles(manifest, providerDefinition.getProviderConfig(settings.mcpServers));
+      const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
+        destinationDir: path.join(payloadPaths.payloadDir, "repository-env-files"),
+        entries: repositoryRuntimeEnvEntries,
+        fileStore: this.repositoryEnvFileStore
+      });
       await appendRunLog(`Spawner: runtime payload files ready at ${payloadDir}.`);
       this.ensureTaskNotCancelled(task.id);
 
@@ -4698,8 +4703,8 @@ export class SpawnerService {
       for (const [name, value] of Object.entries(runtimeMcpEnv)) {
         args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
       }
-      for (const { key, value } of repositoryEnvEntries) {
-        args.splice(args.length - 1, 0, "-e", `${key}=${value}`);
+      for (const [name, value] of repositoryRuntimeEnv) {
+        args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
       }
 
       await appendRunLog(`Spawner: launching ${task.provider} container for branch ${branchName}.`);

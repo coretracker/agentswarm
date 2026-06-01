@@ -5,13 +5,14 @@ import type {
   CreateRepositoryInput,
   GitHubAutomationRule,
   Repository,
+  RepositoryEnvVarInput,
   RepositoryEnvSecret,
   RepositoryEnvSecretInput,
-  RepositoryEnvVar,
   UpdateRepositoryInput
 } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
 import { HttpError } from "../lib/http-error.js";
+import { RepositoryEnvFileStore } from "./repository-env-file-store.js";
 
 const REPO_KEY_PREFIX = "agentswarm:repo:";
 const REPO_IDS_KEY = "agentswarm:repo_ids";
@@ -21,38 +22,100 @@ const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
 const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
 const REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH = 8192;
+const REPOSITORY_ENV_FILE_NAME_MAX_LENGTH = 255;
+const REPOSITORY_ENV_FILE_MAX_BYTES = 256 * 1024;
+const REPOSITORY_ENV_FILE_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
 const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
 const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
 const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
 const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
 
 const nowIso = (): string => new Date().toISOString();
-export interface RepositoryEnvSecretValue {
+export type RepositoryRuntimeEnvEntry =
+  | {
+      key: string;
+      type: "text";
+      value: string;
+    }
+  | {
+      key: string;
+      type: "file";
+      fileId: string;
+      fileName: string;
+    };
+
+interface StoredRepositoryEnvTextValue {
   key: string;
+  type: "text";
   value: string;
 }
 
-type StoredRepository = Omit<Repository, "webhookSecretConfigured" | "githubWebhookSecretConfigured" | "envSecrets"> & {
-  envSecrets: RepositoryEnvSecretValue[];
+interface StoredRepositoryEnvFileValue {
+  key: string;
+  type: "file";
+  fileId: string;
+  fileName: string;
+  sizeBytes: number;
+}
+
+type StoredRepositoryEnvValue = StoredRepositoryEnvTextValue | StoredRepositoryEnvFileValue;
+
+type StoredRepository = Omit<Repository, "webhookSecretConfigured" | "githubWebhookSecretConfigured" | "envVars" | "envSecrets"> & {
+  envVars: StoredRepositoryEnvValue[];
+  envSecrets: StoredRepositoryEnvValue[];
   webhookSecret: string | null;
   githubWebhookSecret: string | null;
   webhookSecretConfigured?: boolean;
   githubWebhookSecretConfigured?: boolean;
 } & Record<string, unknown>;
 
-const normalizeRepositoryEnvVars = (value: unknown): RepositoryEnvVar[] => {
+const normalizeRepositoryEnvFileName = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().replace(/[\\/\x00]/g, "_");
+  if (normalized.length === 0 || normalized.length > REPOSITORY_ENV_FILE_NAME_MAX_LENGTH) {
+    return null;
+  }
+  return normalized;
+};
+
+const decodeRepositoryEnvFileContent = (key: string, contentBase64: string): Buffer => {
+  const normalized = contentBase64.trim().replace(/\s+/g, "");
+  if (!normalized) {
+    throw new HttpError(400, `File content is required for ${key}.`);
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(normalized) || normalized.length % 4 !== 0) {
+    throw new HttpError(400, `File content for ${key} is not valid Base64.`);
+  }
+
+  const decoded = Buffer.from(normalized, "base64");
+  if (decoded.byteLength === 0) {
+    throw new HttpError(400, `File content is required for ${key}.`);
+  }
+  if (decoded.byteLength > REPOSITORY_ENV_FILE_MAX_BYTES) {
+    throw new HttpError(400, `File content for ${key} exceeds ${REPOSITORY_ENV_FILE_MAX_BYTES} bytes.`);
+  }
+  return decoded;
+};
+
+const normalizeStoredRepositoryEnvValues = (
+  value: unknown,
+  options: { secret: boolean }
+): StoredRepositoryEnvValue[] => {
   if (!Array.isArray(value)) {
     return [];
   }
 
-  const envVars: RepositoryEnvVar[] = [];
+  const entries: StoredRepositoryEnvValue[] = [];
   const seen = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") {
+  for (const rawEntry of value) {
+    if (!rawEntry || typeof rawEntry !== "object") {
       continue;
     }
 
-    const rawKey = (entry as Record<string, unknown>).key;
+    const entry = rawEntry as Record<string, unknown>;
+    const rawKey = entry.key;
     const key = typeof rawKey === "string" ? rawKey.trim() : "";
     if (
       !key ||
@@ -63,25 +126,147 @@ const normalizeRepositoryEnvVars = (value: unknown): RepositoryEnvVar[] => {
       continue;
     }
 
-    const rawValue = (entry as Record<string, unknown>).value;
-    const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
-    if (normalizedValue.length > REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH) {
+    const type = entry.type === "file" ? "file" : "text";
+    if (type === "file") {
+      const fileId = typeof entry.fileId === "string" ? entry.fileId.trim() : "";
+      if (!REPOSITORY_ENV_FILE_ID_PATTERN.test(fileId)) {
+        continue;
+      }
+      const fileName = normalizeRepositoryEnvFileName(entry.fileName) ?? `${key}.bin`;
+      const sizeBytes =
+        typeof entry.sizeBytes === "number" && Number.isFinite(entry.sizeBytes) && entry.sizeBytes > 0
+          ? Math.floor(entry.sizeBytes)
+          : 0;
+      entries.push({
+        key,
+        type: "file",
+        fileId,
+        fileName,
+        sizeBytes
+      });
+      seen.add(key);
+      if (entries.length >= REPOSITORY_ENV_VAR_MAX_COUNT) {
+        break;
+      }
       continue;
     }
 
-    envVars.push({ key, value: normalizedValue });
+    const normalizedValue = typeof entry.value === "string" ? entry.value : String(entry.value ?? "");
+    if (normalizedValue.length > REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH) {
+      continue;
+    }
+    if (options.secret && normalizedValue.length === 0) {
+      continue;
+    }
+
+    entries.push({ key, type: "text", value: normalizedValue });
+    seen.add(key);
+    if (entries.length >= REPOSITORY_ENV_VAR_MAX_COUNT) {
+      break;
+    }
+  }
+
+  return entries;
+};
+
+const toRepositoryEnvVars = (value: StoredRepositoryEnvValue[]): Repository["envVars"] =>
+  value.map((entry) =>
+    entry.type === "file"
+      ? {
+          key: entry.key,
+          type: "file",
+          configured: true,
+          fileName: entry.fileName
+        }
+      : {
+          key: entry.key,
+          type: "text",
+          value: entry.value
+        }
+  );
+
+const toConfiguredRepositoryEnvSecrets = (value: StoredRepositoryEnvValue[]): RepositoryEnvSecret[] =>
+  value.map((entry) => ({
+    key: entry.key,
+    configured: true,
+    type: entry.type,
+    ...(entry.type === "file" ? { fileName: entry.fileName } : {})
+  }));
+
+type NormalizedRepositoryEnvVarInput =
+  | {
+      key: string;
+      type: "text";
+      value: string;
+    }
+  | {
+      key: string;
+      type: "file";
+      fileName?: string;
+      fileContentBase64?: string;
+    };
+
+type NormalizedRepositoryEnvSecretInput =
+  | {
+      key: string;
+      type: "text";
+      value?: string;
+    }
+  | {
+      key: string;
+      type: "file";
+      fileName?: string;
+      fileContentBase64?: string;
+    };
+
+const normalizeRepositoryEnvVarInputs = (value: unknown): NormalizedRepositoryEnvVarInput[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const envVars: NormalizedRepositoryEnvVarInput[] = [];
+  const seen = new Set<string>();
+  for (const rawEntry of value) {
+    if (!rawEntry || typeof rawEntry !== "object") {
+      continue;
+    }
+
+    const entry = rawEntry as Record<string, unknown>;
+    const rawKey = entry.key;
+    const key = typeof rawKey === "string" ? rawKey.trim() : "";
+    if (
+      !key ||
+      key.length > REPOSITORY_ENV_VAR_KEY_MAX_LENGTH ||
+      !REPOSITORY_ENV_VAR_KEY_PATTERN.test(key) ||
+      seen.has(key)
+    ) {
+      continue;
+    }
+
+    const type = entry.type === "file" ? "file" : "text";
+    if (type === "file") {
+      envVars.push({
+        key,
+        type: "file",
+        ...(normalizeRepositoryEnvFileName(entry.fileName) ? { fileName: normalizeRepositoryEnvFileName(entry.fileName)! } : {}),
+        ...(typeof entry.fileContentBase64 === "string" && entry.fileContentBase64.trim().length > 0
+          ? { fileContentBase64: entry.fileContentBase64.trim() }
+          : {})
+      });
+    } else {
+      const normalizedValue = typeof entry.value === "string" ? entry.value : String(entry.value ?? "");
+      if (normalizedValue.length > REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH) {
+        continue;
+      }
+      envVars.push({ key, type: "text", value: normalizedValue });
+    }
+
     seen.add(key);
     if (envVars.length >= REPOSITORY_ENV_VAR_MAX_COUNT) {
       break;
     }
   }
-
   return envVars;
-};
-
-type NormalizedRepositoryEnvSecretInput = {
-  key: string;
-  value?: string;
 };
 
 const normalizeRepositoryEnvSecretInputs = (value: unknown): NormalizedRepositoryEnvSecretInput[] => {
@@ -91,12 +276,13 @@ const normalizeRepositoryEnvSecretInputs = (value: unknown): NormalizedRepositor
 
   const secrets: NormalizedRepositoryEnvSecretInput[] = [];
   const seen = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") {
+  for (const rawEntry of value) {
+    if (!rawEntry || typeof rawEntry !== "object") {
       continue;
     }
 
-    const rawKey = (entry as Record<string, unknown>).key;
+    const entry = rawEntry as Record<string, unknown>;
+    const rawKey = entry.key;
     const key = typeof rawKey === "string" ? rawKey.trim() : "";
     if (
       !key ||
@@ -107,16 +293,28 @@ const normalizeRepositoryEnvSecretInputs = (value: unknown): NormalizedRepositor
       continue;
     }
 
-    const rawValue = (entry as Record<string, unknown>).value;
-    const normalizedValue =
-      typeof rawValue === "string" && rawValue.length <= REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH
-        ? rawValue
-        : undefined;
+    const type = entry.type === "file" ? "file" : "text";
+    if (type === "file") {
+      secrets.push({
+        key,
+        type: "file",
+        ...(normalizeRepositoryEnvFileName(entry.fileName) ? { fileName: normalizeRepositoryEnvFileName(entry.fileName)! } : {}),
+        ...(typeof entry.fileContentBase64 === "string" && entry.fileContentBase64.trim().length > 0
+          ? { fileContentBase64: entry.fileContentBase64.trim() }
+          : {})
+      });
+    } else {
+      const normalizedValue =
+        typeof entry.value === "string" && entry.value.length <= REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH
+          ? entry.value
+          : undefined;
+      secrets.push({
+        key,
+        type: "text",
+        ...(normalizedValue !== undefined ? { value: normalizedValue } : {})
+      });
+    }
 
-    secrets.push({
-      key,
-      ...(normalizedValue !== undefined ? { value: normalizedValue } : {})
-    });
     seen.add(key);
     if (secrets.length >= REPOSITORY_ENV_SECRET_MAX_COUNT) {
       break;
@@ -126,80 +324,188 @@ const normalizeRepositoryEnvSecretInputs = (value: unknown): NormalizedRepositor
   return secrets;
 };
 
-const normalizeRepositoryEnvSecretValues = (value: unknown): RepositoryEnvSecretValue[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
+interface RepositoryEnvResolutionResult {
+  entries: StoredRepositoryEnvValue[];
+  staleFileIds: string[];
+  createdFileIds: string[];
+}
 
-  const secrets: RepositoryEnvSecretValue[] = [];
-  const seen = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-
-    const rawKey = (entry as Record<string, unknown>).key;
-    const key = typeof rawKey === "string" ? rawKey.trim() : "";
-    if (
-      !key ||
-      key.length > REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH ||
-      !REPOSITORY_ENV_SECRET_KEY_PATTERN.test(key) ||
-      seen.has(key)
-    ) {
-      continue;
-    }
-
-    const rawValue = (entry as Record<string, unknown>).value;
-    const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
-    if (normalizedValue.length === 0 || normalizedValue.length > REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH) {
-      continue;
-    }
-
-    secrets.push({ key, value: normalizedValue });
-    seen.add(key);
-    if (secrets.length >= REPOSITORY_ENV_SECRET_MAX_COUNT) {
-      break;
-    }
-  }
-
-  return secrets;
-};
-
-const toConfiguredRepositoryEnvSecrets = (value: RepositoryEnvSecretValue[]): RepositoryEnvSecret[] =>
-  value.map((entry) => ({
-    key: entry.key,
-    configured: true
-  }));
-
-const resolveNextRepositoryEnvSecrets = (
-  current: RepositoryEnvSecretValue[],
-  input: RepositoryEnvSecretInput[] | undefined
-): RepositoryEnvSecretValue[] => {
+const resolveNextRepositoryEnvVars = async (
+  fileStore: RepositoryEnvFileStore,
+  current: StoredRepositoryEnvValue[],
+  input: RepositoryEnvVarInput[] | undefined
+): Promise<RepositoryEnvResolutionResult> => {
   if (input === undefined) {
-    return current;
+    return { entries: current, staleFileIds: [], createdFileIds: [] };
+  }
+
+  const normalizedInput = normalizeRepositoryEnvVarInputs(input);
+  const currentByKey = new Map(current.map((entry) => [entry.key, entry] as const));
+  const next: StoredRepositoryEnvValue[] = [];
+  const staleFileIds = new Set<string>();
+  const createdFileIds: string[] = [];
+
+  for (const envVar of normalizedInput) {
+    const existing = currentByKey.get(envVar.key);
+    if (envVar.type === "text") {
+      if (existing?.type === "file") {
+        staleFileIds.add(existing.fileId);
+      }
+      next.push({ key: envVar.key, type: "text", value: envVar.value });
+      continue;
+    }
+
+    if (typeof envVar.fileContentBase64 === "string" && envVar.fileContentBase64.length > 0) {
+      const content = decodeRepositoryEnvFileContent(envVar.key, envVar.fileContentBase64);
+      const saved = await fileStore.saveFile(content);
+      createdFileIds.push(saved.fileId);
+      if (existing?.type === "file") {
+        staleFileIds.add(existing.fileId);
+      }
+      next.push({
+        key: envVar.key,
+        type: "file",
+        fileId: saved.fileId,
+        fileName: envVar.fileName ?? (existing?.type === "file" ? existing.fileName : `${envVar.key}.bin`),
+        sizeBytes: saved.sizeBytes
+      });
+      continue;
+    }
+
+    if (existing?.type === "file") {
+      next.push({
+        ...existing,
+        fileName: envVar.fileName ?? existing.fileName
+      });
+      continue;
+    }
+
+    throw new HttpError(400, `File value is required for ${envVar.key}.`);
+  }
+
+  const nextKeys = new Set(next.map((entry) => entry.key));
+  for (const existing of current) {
+    if (existing.type === "file" && !nextKeys.has(existing.key)) {
+      staleFileIds.add(existing.fileId);
+    }
+  }
+
+  return {
+    entries: next,
+    staleFileIds: Array.from(staleFileIds),
+    createdFileIds
+  };
+};
+
+const resolveNextRepositoryEnvSecrets = async (
+  fileStore: RepositoryEnvFileStore,
+  current: StoredRepositoryEnvValue[],
+  input: RepositoryEnvSecretInput[] | undefined
+): Promise<RepositoryEnvResolutionResult> => {
+  if (input === undefined) {
+    return { entries: current, staleFileIds: [], createdFileIds: [] };
   }
 
   const normalizedInput = normalizeRepositoryEnvSecretInputs(input);
-  const currentByKey = new Map(current.map((entry) => [entry.key, entry.value] as const));
-  const next: RepositoryEnvSecretValue[] = [];
+  const currentByKey = new Map(current.map((entry) => [entry.key, entry] as const));
+  const next: StoredRepositoryEnvValue[] = [];
+  const staleFileIds = new Set<string>();
+  const createdFileIds: string[] = [];
 
   for (const secret of normalizedInput) {
-    if (typeof secret.value === "string" && secret.value.length > 0) {
-      next.push({ key: secret.key, value: secret.value });
+    const existing = currentByKey.get(secret.key);
+
+    if (secret.type === "text") {
+      if (typeof secret.value === "string" && secret.value.length > 0) {
+        if (existing?.type === "file") {
+          staleFileIds.add(existing.fileId);
+        }
+        next.push({ key: secret.key, type: "text", value: secret.value });
+        continue;
+      }
+
+      if (existing?.type === "text") {
+        next.push(existing);
+        continue;
+      }
+
+      throw new HttpError(400, `Secret value is required for ${secret.key}.`);
+    }
+
+    if (typeof secret.fileContentBase64 === "string" && secret.fileContentBase64.length > 0) {
+      const content = decodeRepositoryEnvFileContent(secret.key, secret.fileContentBase64);
+      const saved = await fileStore.saveFile(content);
+      createdFileIds.push(saved.fileId);
+      if (existing?.type === "file") {
+        staleFileIds.add(existing.fileId);
+      }
+      next.push({
+        key: secret.key,
+        type: "file",
+        fileId: saved.fileId,
+        fileName: secret.fileName ?? (existing?.type === "file" ? existing.fileName : `${secret.key}.bin`),
+        sizeBytes: saved.sizeBytes
+      });
       continue;
     }
 
-    const existingValue = currentByKey.get(secret.key);
-    if (existingValue !== undefined) {
-      next.push({ key: secret.key, value: existingValue });
+    if (existing?.type === "file") {
+      next.push({
+        ...existing,
+        fileName: secret.fileName ?? existing.fileName
+      });
       continue;
     }
 
     throw new HttpError(400, `Secret value is required for ${secret.key}.`);
   }
 
-  return next;
+  const nextKeys = new Set(next.map((entry) => entry.key));
+  for (const existing of current) {
+    if (existing.type === "file" && !nextKeys.has(existing.key)) {
+      staleFileIds.add(existing.fileId);
+    }
+  }
+
+  return {
+    entries: next,
+    staleFileIds: Array.from(staleFileIds),
+    createdFileIds
+  };
 };
+
+const toRuntimeRepositoryEnvEntries = (
+  envVars: StoredRepositoryEnvValue[],
+  envSecrets: StoredRepositoryEnvValue[]
+): RepositoryRuntimeEnvEntry[] =>
+  [...envVars, ...envSecrets].map((entry) =>
+    entry.type === "file"
+      ? {
+          key: entry.key,
+          type: "file",
+          fileId: entry.fileId,
+          fileName: entry.fileName
+        }
+      : {
+          key: entry.key,
+          type: "text",
+          value: entry.value
+        }
+  );
+
+const deleteRepositoryEnvFiles = async (fileStore: RepositoryEnvFileStore, fileIds: string[]): Promise<void> => {
+  const unique = Array.from(new Set(fileIds.filter((entry) => REPOSITORY_ENV_FILE_ID_PATTERN.test(entry))));
+  await Promise.all(unique.map((fileId) => fileStore.deleteFile(fileId)));
+};
+
+const collectRepositoryEnvFileIds = (entries: StoredRepositoryEnvValue[]): string[] =>
+  entries.filter((entry): entry is StoredRepositoryEnvFileValue => entry.type === "file").map((entry) => entry.fileId);
+
+const normalizeRepositoryEnvVars = (value: unknown): StoredRepositoryEnvValue[] =>
+  normalizeStoredRepositoryEnvValues(value, { secret: false });
+
+const normalizeRepositoryEnvSecretValues = (value: unknown): StoredRepositoryEnvValue[] =>
+  normalizeStoredRepositoryEnvValues(value, { secret: true });
 
 const normalizeLabels = (value: unknown): string[] => {
   if (!Array.isArray(value)) {
@@ -307,7 +613,7 @@ export interface RepositoryStore {
   createRepository(input: CreateRepositoryInput): Promise<Repository>;
   listRepositories(): Promise<Repository[]>;
   getRepository(repositoryId: string): Promise<Repository | null>;
-  getRepositoryEnvSecrets(repositoryId: string): Promise<RepositoryEnvSecretValue[]>;
+  getRepositoryRuntimeEnvEntries(repositoryId: string): Promise<RepositoryRuntimeEnvEntry[]>;
   updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null>;
   getRepositoryGitHubWebhookSecret(repositoryId: string): Promise<string | null>;
   getRepositoryWebhookTarget(repositoryId: string): Promise<RepositoryWebhookTarget | null>;
@@ -321,7 +627,8 @@ export interface RepositoryStore {
 export class RedisRepositoryStore implements RepositoryStore {
   constructor(
     private readonly redis: Redis,
-    private readonly eventBus: EventBus
+    private readonly eventBus: EventBus,
+    private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore()
   ) {}
 
   private repoKey(repoId: string): string {
@@ -458,7 +765,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       url: normalized.url,
       defaultBranch: normalized.defaultBranch,
       syncStatusEnabled: normalized.syncStatusEnabled === true,
-      envVars: normalized.envVars,
+      envVars: toRepositoryEnvVars(normalized.envVars),
       envSecrets: toConfiguredRepositoryEnvSecrets(normalized.envSecrets),
       webhookUrl: normalized.webhookUrl,
       webhookEnabled: normalized.webhookEnabled,
@@ -488,8 +795,8 @@ export class RedisRepositoryStore implements RepositoryStore {
     const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
     const githubWebhookSecret = this.normalizeGitHubWebhookSecret(input.githubWebhookSecret);
     const webhookEnabled = input.webhookEnabled === true;
-    const envVars = normalizeRepositoryEnvVars(input.envVars);
-    const envSecrets = resolveNextRepositoryEnvSecrets([], input.envSecrets);
+    const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
+    const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
     const githubAutomations = normalizeGitHubAutomations(input.githubAutomations);
     this.assertValidWebhookConfiguration({
       webhookEnabled,
@@ -503,8 +810,8 @@ export class RedisRepositoryStore implements RepositoryStore {
       url: input.url.trim(),
       defaultBranch: input.defaultBranch?.trim() || "develop",
       syncStatusEnabled: input.syncStatusEnabled === true,
-      envVars,
-      envSecrets,
+      envVars: resolvedEnvVars.entries,
+      envSecrets: resolvedEnvSecrets.entries,
       webhookUrl,
       webhookEnabled,
       webhookSecret,
@@ -517,14 +824,22 @@ export class RedisRepositoryStore implements RepositoryStore {
       updatedAt: timestamp
     };
     const repository = this.normalizeRepository(stored);
+    const createdFileIds = [...resolvedEnvVars.createdFileIds, ...resolvedEnvSecrets.createdFileIds];
+    const staleFileIds = [...resolvedEnvVars.staleFileIds, ...resolvedEnvSecrets.staleFileIds];
 
-    await this.redis
-      .multi()
-      .set(this.repoKey(repository.id), JSON.stringify(stored))
-      .sadd(REPO_IDS_KEY, repository.id)
-      .exec();
-    await this.eventBus.publish({ type: "repository:created", payload: repository });
+    try {
+      await this.redis
+        .multi()
+        .set(this.repoKey(repository.id), JSON.stringify(stored))
+        .sadd(REPO_IDS_KEY, repository.id)
+        .exec();
+      await this.eventBus.publish({ type: "repository:created", payload: repository });
+    } catch (error) {
+      await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, createdFileIds);
+      throw error;
+    }
 
+    await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, staleFileIds);
     return repository;
   }
 
@@ -560,9 +875,13 @@ export class RedisRepositoryStore implements RepositoryStore {
     return this.normalizeRepository(stored);
   }
 
-  async getRepositoryEnvSecrets(repositoryId: string): Promise<RepositoryEnvSecretValue[]> {
+  async getRepositoryRuntimeEnvEntries(repositoryId: string): Promise<RepositoryRuntimeEnvEntry[]> {
     const stored = await this.getStoredRepository(repositoryId);
-    return stored?.envSecrets ?? [];
+    if (!stored) {
+      return [];
+    }
+
+    return toRuntimeRepositoryEnvEntries(stored.envVars, stored.envSecrets);
   }
 
   async getRepositoryGitHubWebhookSecret(repositoryId: string): Promise<string | null> {
@@ -592,8 +911,12 @@ export class RedisRepositoryStore implements RepositoryStore {
       input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
     const nextWebhookEnabled =
       input.webhookEnabled !== undefined ? input.webhookEnabled === true : current.webhookEnabled;
-    const nextEnvVars = input.envVars !== undefined ? normalizeRepositoryEnvVars(input.envVars) : current.envVars;
-    const nextEnvSecrets = resolveNextRepositoryEnvSecrets(current.envSecrets, input.envSecrets);
+    const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, current.envVars, input.envVars);
+    const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(
+      this.repositoryEnvFileStore,
+      current.envSecrets,
+      input.envSecrets
+    );
     const nextGitHubAutomations =
       input.githubAutomations !== undefined ? normalizeGitHubAutomations(input.githubAutomations) : normalizeGitHubAutomations(current.githubAutomations);
 
@@ -609,8 +932,8 @@ export class RedisRepositoryStore implements RepositoryStore {
       url: input.url?.trim() || current.url,
       defaultBranch: input.defaultBranch?.trim() || current.defaultBranch,
       syncStatusEnabled: input.syncStatusEnabled !== undefined ? input.syncStatusEnabled === true : current.syncStatusEnabled === true,
-      envVars: nextEnvVars,
-      envSecrets: nextEnvSecrets,
+      envVars: resolvedEnvVars.entries,
+      envSecrets: resolvedEnvSecrets.entries,
       webhookUrl: nextWebhookUrl,
       webhookEnabled: nextWebhookEnabled,
       webhookSecret: nextWebhookSecret,
@@ -619,9 +942,18 @@ export class RedisRepositoryStore implements RepositoryStore {
       updatedAt: nowIso()
     };
     const next = this.normalizeRepository(nextStored);
+    const createdFileIds = [...resolvedEnvVars.createdFileIds, ...resolvedEnvSecrets.createdFileIds];
+    const staleFileIds = [...resolvedEnvVars.staleFileIds, ...resolvedEnvSecrets.staleFileIds];
 
-    await this.redis.set(this.repoKey(repositoryId), JSON.stringify(nextStored));
-    await this.eventBus.publish({ type: "repository:updated", payload: next });
+    try {
+      await this.redis.set(this.repoKey(repositoryId), JSON.stringify(nextStored));
+      await this.eventBus.publish({ type: "repository:updated", payload: next });
+    } catch (error) {
+      await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, createdFileIds);
+      throw error;
+    }
+
+    await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, staleFileIds);
     return next;
   }
 
@@ -666,8 +998,8 @@ export class RedisRepositoryStore implements RepositoryStore {
   }
 
   async deleteRepository(repositoryId: string): Promise<boolean> {
-    const exists = await this.redis.exists(this.repoKey(repositoryId));
-    if (!exists) {
+    const stored = await this.getStoredRepository(repositoryId);
+    if (!stored) {
       return false;
     }
 
@@ -677,6 +1009,10 @@ export class RedisRepositoryStore implements RepositoryStore {
       transaction.set(userUpdate.userKey, userUpdate.userPayload);
     }
     await transaction.del(this.repoKey(repositoryId)).srem(REPO_IDS_KEY, repositoryId).exec();
+    await deleteRepositoryEnvFiles(
+      this.repositoryEnvFileStore,
+      [...collectRepositoryEnvFileIds(stored.envVars), ...collectRepositoryEnvFileIds(stored.envSecrets)]
+    );
     await this.eventBus.publish({ type: "repository:deleted", payload: { id: repositoryId } });
     return true;
   }
@@ -685,7 +1021,8 @@ export class RedisRepositoryStore implements RepositoryStore {
 export class PostgresRepositoryStore implements RepositoryStore {
   constructor(
     private readonly pool: Pool,
-    private readonly eventBus: EventBus
+    private readonly eventBus: EventBus,
+    private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore()
   ) {}
 
   private normalizeWebhookUrl(url: string | null | undefined): string | null {
@@ -719,13 +1056,14 @@ export class PostgresRepositoryStore implements RepositoryStore {
 
   private mapRepositoryRow(row: Record<string, unknown>): Repository {
     const envSecrets = normalizeRepositoryEnvSecretValues(row.env_secrets);
+    const envVars = normalizeRepositoryEnvVars(row.env_vars);
     return {
       id: String(row.id),
       name: String(row.name ?? "").trim(),
       url: String(row.url ?? "").trim(),
       defaultBranch: String(row.default_branch ?? "").trim() || "develop",
       syncStatusEnabled: row.sync_status_enabled === true,
-      envVars: normalizeRepositoryEnvVars(row.env_vars),
+      envVars: toRepositoryEnvVars(envVars),
       envSecrets: toConfiguredRepositoryEnvSecrets(envSecrets),
       webhookUrl: typeof row.webhook_url === "string" && row.webhook_url.trim().length > 0 ? row.webhook_url.trim() : null,
       webhookEnabled: row.webhook_enabled === true,
@@ -754,8 +1092,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
     const githubWebhookSecret = this.normalizeGitHubWebhookSecret(input.githubWebhookSecret);
     const webhookEnabled = input.webhookEnabled === true;
-    const envVars = normalizeRepositoryEnvVars(input.envVars);
-    const envSecrets = resolveNextRepositoryEnvSecrets([], input.envSecrets);
+    const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
+    const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
     const githubAutomations = normalizeGitHubAutomations(input.githubAutomations);
     this.assertValidWebhookConfiguration({
       webhookEnabled,
@@ -769,8 +1107,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
       url: input.url.trim(),
       defaultBranch: input.defaultBranch?.trim() || "develop",
       syncStatusEnabled: input.syncStatusEnabled === true,
-      envVars,
-      envSecrets: toConfiguredRepositoryEnvSecrets(envSecrets),
+      envVars: toRepositoryEnvVars(resolvedEnvVars.entries),
+      envSecrets: toConfiguredRepositoryEnvSecrets(resolvedEnvSecrets.entries),
       webhookUrl,
       webhookEnabled,
       webhookSecretConfigured: Boolean(webhookSecret),
@@ -783,50 +1121,60 @@ export class PostgresRepositoryStore implements RepositoryStore {
       updatedAt: timestamp
     } satisfies Repository;
 
-    await this.pool.query(
-      `
-        INSERT INTO repositories (
-          id,
-          name,
-          url,
-          default_branch,
-          sync_status_enabled,
-          env_vars,
-          env_secrets,
-          webhook_url,
-          webhook_enabled,
-          webhook_secret,
-          github_webhook_secret,
-          github_automations,
-          webhook_last_attempt_at,
-          webhook_last_status,
-          webhook_last_error,
-          created_at,
-          updated_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17)
-      `,
-      [
-        repository.id,
-        repository.name,
-        repository.url,
-        repository.defaultBranch,
-        repository.syncStatusEnabled === true,
-        JSON.stringify(repository.envVars),
-        JSON.stringify(envSecrets),
-        repository.webhookUrl,
-        repository.webhookEnabled,
-        webhookSecret,
-        githubWebhookSecret,
-        JSON.stringify(repository.githubAutomations ?? []),
-        repository.webhookLastAttemptAt,
-        repository.webhookLastStatus,
-        repository.webhookLastError,
-        repository.createdAt,
-        repository.updatedAt
-      ]
-    );
-    await this.eventBus.publish({ type: "repository:created", payload: repository });
+    const createdFileIds = [...resolvedEnvVars.createdFileIds, ...resolvedEnvSecrets.createdFileIds];
+    const staleFileIds = [...resolvedEnvVars.staleFileIds, ...resolvedEnvSecrets.staleFileIds];
+
+    try {
+      await this.pool.query(
+        `
+          INSERT INTO repositories (
+            id,
+            name,
+            url,
+            default_branch,
+            sync_status_enabled,
+            env_vars,
+            env_secrets,
+            webhook_url,
+            webhook_enabled,
+            webhook_secret,
+            github_webhook_secret,
+            github_automations,
+            webhook_last_attempt_at,
+            webhook_last_status,
+            webhook_last_error,
+            created_at,
+            updated_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17)
+        `,
+        [
+          repository.id,
+          repository.name,
+          repository.url,
+          repository.defaultBranch,
+          repository.syncStatusEnabled === true,
+          JSON.stringify(resolvedEnvVars.entries),
+          JSON.stringify(resolvedEnvSecrets.entries),
+          repository.webhookUrl,
+          repository.webhookEnabled,
+          webhookSecret,
+          githubWebhookSecret,
+          JSON.stringify(repository.githubAutomations ?? []),
+          repository.webhookLastAttemptAt,
+          repository.webhookLastStatus,
+          repository.webhookLastError,
+          repository.createdAt,
+          repository.updatedAt
+        ]
+      );
+      await this.eventBus.publish({ type: "repository:created", payload: repository });
+    } catch (error) {
+      await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, createdFileIds);
+      throw error;
+    }
+
+    await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, staleFileIds);
     return repository;
   }
 
@@ -840,12 +1188,15 @@ export class PostgresRepositoryStore implements RepositoryStore {
     return row ? this.mapRepositoryRow(row) : null;
   }
 
-  async getRepositoryEnvSecrets(repositoryId: string): Promise<RepositoryEnvSecretValue[]> {
+  async getRepositoryRuntimeEnvEntries(repositoryId: string): Promise<RepositoryRuntimeEnvEntry[]> {
     const row = await this.getStoredRepositoryRow(repositoryId);
     if (!row) {
       return [];
     }
-    return normalizeRepositoryEnvSecretValues(row.env_secrets);
+    return toRuntimeRepositoryEnvEntries(
+      normalizeRepositoryEnvVars(row.env_vars),
+      normalizeRepositoryEnvSecretValues(row.env_secrets)
+    );
   }
 
   async getRepositoryGitHubWebhookSecret(repositoryId: string): Promise<string | null> {
@@ -870,6 +1221,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       typeof currentRow.github_webhook_secret === "string" && currentRow.github_webhook_secret.trim().length > 0
         ? currentRow.github_webhook_secret.trim()
         : null;
+    const currentEnvVars = normalizeRepositoryEnvVars(currentRow.env_vars);
     const currentEnvSecrets = normalizeRepositoryEnvSecretValues(currentRow.env_secrets);
     const nextWebhookSecret =
       input.clearWebhookSecret === true
@@ -887,8 +1239,12 @@ export class PostgresRepositoryStore implements RepositoryStore {
       input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
     const nextWebhookEnabled =
       input.webhookEnabled !== undefined ? input.webhookEnabled === true : current.webhookEnabled;
-    const nextEnvVars = input.envVars !== undefined ? normalizeRepositoryEnvVars(input.envVars) : current.envVars;
-    const nextEnvSecrets = resolveNextRepositoryEnvSecrets(currentEnvSecrets, input.envSecrets);
+    const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, currentEnvVars, input.envVars);
+    const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(
+      this.repositoryEnvFileStore,
+      currentEnvSecrets,
+      input.envSecrets
+    );
     const nextGitHubAutomations =
       input.githubAutomations !== undefined ? normalizeGitHubAutomations(input.githubAutomations) : normalizeGitHubAutomations(current.githubAutomations);
 
@@ -904,8 +1260,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
       url: input.url?.trim() || current.url,
       defaultBranch: input.defaultBranch?.trim() || current.defaultBranch,
       syncStatusEnabled: input.syncStatusEnabled !== undefined ? input.syncStatusEnabled === true : current.syncStatusEnabled === true,
-      envVars: nextEnvVars,
-      envSecrets: toConfiguredRepositoryEnvSecrets(nextEnvSecrets),
+      envVars: toRepositoryEnvVars(resolvedEnvVars.entries),
+      envSecrets: toConfiguredRepositoryEnvSecrets(resolvedEnvSecrets.entries),
       webhookUrl: nextWebhookUrl,
       webhookEnabled: nextWebhookEnabled,
       webhookSecretConfigured: Boolean(nextWebhookSecret),
@@ -914,49 +1270,59 @@ export class PostgresRepositoryStore implements RepositoryStore {
       updatedAt: nowIso()
     };
 
-    await this.pool.query(
-      `
-        UPDATE repositories
-        SET
-          name = $2,
-          url = $3,
-          default_branch = $4,
-          sync_status_enabled = $5,
-          env_vars = $6::jsonb,
-          env_secrets = $7::jsonb,
-          webhook_url = $8,
-          webhook_enabled = $9,
-          webhook_secret = $10,
-          github_webhook_secret = $11,
-          github_automations = $12::jsonb,
-          webhook_last_attempt_at = $13,
-          webhook_last_status = $14,
-          webhook_last_error = $15,
-          created_at = $16,
-          updated_at = $17
-        WHERE id = $1
-      `,
-      [
-        repositoryId,
-        next.name,
-        next.url,
-        next.defaultBranch,
-        next.syncStatusEnabled === true,
-        JSON.stringify(next.envVars),
-        JSON.stringify(nextEnvSecrets),
-        next.webhookUrl,
-        next.webhookEnabled,
-        nextWebhookSecret,
-        nextGitHubWebhookSecret,
-        JSON.stringify(next.githubAutomations ?? []),
-        next.webhookLastAttemptAt,
-        next.webhookLastStatus,
-        next.webhookLastError,
-        next.createdAt,
-        next.updatedAt
-      ]
-    );
-    await this.eventBus.publish({ type: "repository:updated", payload: next });
+    const createdFileIds = [...resolvedEnvVars.createdFileIds, ...resolvedEnvSecrets.createdFileIds];
+    const staleFileIds = [...resolvedEnvVars.staleFileIds, ...resolvedEnvSecrets.staleFileIds];
+
+    try {
+      await this.pool.query(
+        `
+          UPDATE repositories
+          SET
+            name = $2,
+            url = $3,
+            default_branch = $4,
+            sync_status_enabled = $5,
+            env_vars = $6::jsonb,
+            env_secrets = $7::jsonb,
+            webhook_url = $8,
+            webhook_enabled = $9,
+            webhook_secret = $10,
+            github_webhook_secret = $11,
+            github_automations = $12::jsonb,
+            webhook_last_attempt_at = $13,
+            webhook_last_status = $14,
+            webhook_last_error = $15,
+            created_at = $16,
+            updated_at = $17
+          WHERE id = $1
+        `,
+        [
+          repositoryId,
+          next.name,
+          next.url,
+          next.defaultBranch,
+          next.syncStatusEnabled === true,
+          JSON.stringify(resolvedEnvVars.entries),
+          JSON.stringify(resolvedEnvSecrets.entries),
+          next.webhookUrl,
+          next.webhookEnabled,
+          nextWebhookSecret,
+          nextGitHubWebhookSecret,
+          JSON.stringify(next.githubAutomations ?? []),
+          next.webhookLastAttemptAt,
+          next.webhookLastStatus,
+          next.webhookLastError,
+          next.createdAt,
+          next.updatedAt
+        ]
+      );
+      await this.eventBus.publish({ type: "repository:updated", payload: next });
+    } catch (error) {
+      await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, createdFileIds);
+      throw error;
+    }
+
+    await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, staleFileIds);
     return next;
   }
 
@@ -997,6 +1363,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       typeof row.github_webhook_secret === "string" && row.github_webhook_secret.trim().length > 0
         ? row.github_webhook_secret.trim()
         : null;
+    const envVars = normalizeRepositoryEnvVars(row.env_vars);
     const envSecrets = normalizeRepositoryEnvSecretValues(row.env_secrets);
     const next: Repository = {
       ...current,
@@ -1034,7 +1401,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
         next.url,
         next.defaultBranch,
         next.syncStatusEnabled === true,
-        JSON.stringify(next.envVars),
+        JSON.stringify(envVars),
         JSON.stringify(envSecrets),
         next.webhookUrl,
         next.webhookEnabled,
@@ -1053,11 +1420,22 @@ export class PostgresRepositoryStore implements RepositoryStore {
   }
 
   async deleteRepository(repositoryId: string): Promise<boolean> {
+    const row = await this.getStoredRepositoryRow(repositoryId);
+    if (!row) {
+      return false;
+    }
+
     const result = await this.pool.query("DELETE FROM repositories WHERE id = $1", [repositoryId]);
     if (result.rowCount === 0) {
       return false;
     }
-
+    await deleteRepositoryEnvFiles(
+      this.repositoryEnvFileStore,
+      [
+        ...collectRepositoryEnvFileIds(normalizeRepositoryEnvVars(row.env_vars)),
+        ...collectRepositoryEnvFileIds(normalizeRepositoryEnvSecretValues(row.env_secrets))
+      ]
+    );
     await this.eventBus.publish({ type: "repository:deleted", payload: { id: repositoryId } });
     return true;
   }

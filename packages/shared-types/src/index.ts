@@ -337,18 +337,55 @@ export interface UpdateUserInput {
 
 export interface RepositoryEnvVar {
   key: string;
+  type?: "text";
   value: string;
 }
+
+export interface RepositoryEnvFile {
+  key: string;
+  type: "file";
+  configured: boolean;
+  fileName?: string;
+}
+
+export type RepositoryEnvVarValue = RepositoryEnvVar | RepositoryEnvFile;
+
+export interface RepositoryEnvVarInputText {
+  key: string;
+  type?: "text";
+  value: string;
+}
+
+export interface RepositoryEnvVarInputFile {
+  key: string;
+  type: "file";
+  fileName?: string;
+  fileContentBase64?: string;
+}
+
+export type RepositoryEnvVarInput = RepositoryEnvVarInputText | RepositoryEnvVarInputFile;
 
 export interface RepositoryEnvSecret {
   key: string;
   configured: boolean;
+  type?: "text" | "file";
+  fileName?: string;
 }
 
-export interface RepositoryEnvSecretInput {
+export interface RepositoryEnvSecretInputText {
   key: string;
+  type?: "text";
   value?: string;
 }
+
+export interface RepositoryEnvSecretInputFile {
+  key: string;
+  type: "file";
+  fileName?: string;
+  fileContentBase64?: string;
+}
+
+export type RepositoryEnvSecretInput = RepositoryEnvSecretInputText | RepositoryEnvSecretInputFile;
 
 export type GitHubAutomationTrigger = "issue_opened" | "pull_request_opened";
 export type GitHubCommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
@@ -398,7 +435,7 @@ export interface Repository {
   url: string;
   defaultBranch: string;
   syncStatusEnabled?: boolean;
-  envVars: RepositoryEnvVar[];
+  envVars: RepositoryEnvVarValue[];
   envSecrets?: RepositoryEnvSecret[];
   webhookUrl: string | null;
   webhookEnabled: boolean;
@@ -770,7 +807,7 @@ export interface CreateRepositoryInput {
   url: string;
   defaultBranch?: string;
   syncStatusEnabled?: boolean;
-  envVars?: RepositoryEnvVar[];
+  envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
@@ -784,7 +821,7 @@ export interface UpdateRepositoryInput {
   url?: string;
   defaultBranch?: string;
   syncStatusEnabled?: boolean;
-  envVars?: RepositoryEnvVar[];
+  envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;

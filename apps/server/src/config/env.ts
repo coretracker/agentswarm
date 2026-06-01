@@ -29,6 +29,7 @@ const envSchema = z.object({
   REPO_CACHE_VOLUME: z.string().default("agentswarm_repo_cache"),
   RUNTIME_PAYLOAD_ROOT: z.string().default("/runtime-payloads"),
   RUNTIME_PAYLOAD_VOLUME: z.string().default("agentswarm_runtime_payloads"),
+  REPOSITORY_ENV_FILE_STORE_ROOT: z.string().default("/secrets/repository-env-files"),
   TASK_WORKSPACE_ROOT: z.string().default("/task-workspaces"),
   TASK_WORKSPACE_HOST_ROOT: z.string().default("/tmp/agentswarm-task-workspaces"),
   SECRET_KEY_PATH: z.string().default("/secrets/agentswarm.key"),

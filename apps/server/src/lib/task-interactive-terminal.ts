@@ -1,6 +1,6 @@
 import { spawn as spawnChild } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, constants } from "node:fs/promises";
+import { access, constants, rm } from "node:fs/promises";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import path from "node:path";
 import type { Duplex } from "node:stream";
@@ -27,6 +27,7 @@ import type { TaskMetadata, TaskStore } from "../services/task-store.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import { canUserAccessTask } from "./task-ownership.js";
 import { resolveWorkspaceGitRuntimeMounts } from "./git-runtime-mounts.js";
+import { materializeRepositoryRuntimeEnvEntries } from "./repository-runtime-env.js";
 import {
   claudeModelSupportsThinkingBudget,
   claudeThinkingBudgetTokensForProfile,
@@ -55,6 +56,7 @@ import {
   resolveDockerSocketMountArgs
 } from "./docker-socket-access.js";
 import type { UserStore } from "../services/user-store.js";
+import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
 const INTERACTIVE_WORKSPACE_PATH = "/workspace";
@@ -63,6 +65,7 @@ const INTERACTIVE_TRANSCRIPT_LIMIT = 2_000_000;
 const INTERACTIVE_EXIT_WAIT_MS = 1_500;
 const INTERACTIVE_TERMINAL_CLOSE_CODE = 1012;
 const PROVIDER_SESSION_ID_FILE = "agentswarm-session-id.txt";
+const repositoryEnvFileStore = new RepositoryEnvFileStore();
 
 function normalizeTerminalSessionMode(value: string | null | undefined): TaskTerminalSessionMode {
   return value === "git" ? "git" : "interactive";
@@ -391,7 +394,7 @@ export interface TaskInteractiveTerminalDeps {
   settingsStore: SettingsStore;
   spawner: SpawnerService;
   userStore: Pick<UserStore, "getUser">;
-  repositoryStore: Pick<RepositoryStore, "getRepository" | "getRepositoryEnvSecrets">;
+  repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries">;
 }
 
 interface ActiveInteractiveTerminalController {
@@ -669,6 +672,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
   }
 
   let interactiveSessionId: string | null = null;
+  let sessionRepositoryEnvDir: string | null = null;
 
   try {
     const started = await deps.spawner.beginInteractiveTerminalSession(taskId, mode);
@@ -677,14 +681,13 @@ async function initializeTaskInteractiveTerminalWebSocket(
     const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
     if (mode === "git") {
-      const [credentials, gitIdentity, repository, repositoryEnvSecrets] = await Promise.all([
+      const [credentials, gitIdentity, repositoryRuntimeEnvEntries] = await Promise.all([
         deps.settingsStore.getRuntimeCredentials(userId),
         resolveTaskGitCommitIdentity(task, deps.userStore, {
           name: env.GIT_USER_NAME,
           email: env.GIT_USER_EMAIL
         }),
-        deps.repositoryStore.getRepository(task.repoId),
-        deps.repositoryStore.getRepositoryEnvSecrets(task.repoId)
+        deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
       ]);
       const runtime = resolveGitTerminalRuntimeConfig(credentials, gitIdentity);
       if (!runtime.ok) {
@@ -692,11 +695,17 @@ async function initializeTaskInteractiveTerminalWebSocket(
       }
 
       const sessionName = `aswgit-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
+      const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "interactive-env", taskId, interactiveSessionId);
+      sessionRepositoryEnvDir = repositoryEnvDir;
+      const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
+        destinationDir: repositoryEnvDir,
+        entries: repositoryRuntimeEnvEntries,
+        fileStore: repositoryEnvFileStore
+      });
       const dockerEnv: string[] = [];
       for (const [name, value] of buildGitTerminalDockerEnvEntries({
         runtimeEnvEntries: runtime.envEntries,
-        repositoryEnvVars: repository?.envVars,
-        repositoryEnvSecrets
+        repositoryEnvEntries: repositoryRuntimeEnv
       })) {
         dockerEnv.push("-e", `${name}=${value}`);
       }
@@ -709,6 +718,8 @@ async function initializeTaskInteractiveTerminalWebSocket(
         "--rm",
         "--name",
         sessionName,
+        "-v",
+        `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         "-v",
         `${dockerBindSource}:/workspace:rw`,
         ...gitRuntimeMounts,
@@ -733,18 +744,18 @@ async function initializeTaskInteractiveTerminalWebSocket(
         spawner: deps.spawner,
         taskStore: deps.taskStore,
         mode,
-        forceCleanup: () => {
+        cleanup: async () => {
           forceRemoveDockerSession(sessionName);
+          await rm(repositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
         }
       });
       return;
     }
 
-    const [credentials, settings, repository, repositoryEnvSecrets] = await Promise.all([
+    const [credentials, settings, repositoryRuntimeEnvEntries] = await Promise.all([
       deps.settingsStore.getRuntimeCredentials(userId),
       deps.settingsStore.getSettings(),
-      deps.repositoryStore.getRepository(task.repoId),
-      deps.repositoryStore.getRepositoryEnvSecrets(task.repoId)
+      deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
     ]);
     const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
     if (!runtime.ok) {
@@ -757,6 +768,13 @@ async function initializeTaskInteractiveTerminalWebSocket(
     }
 
     const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
+    const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "interactive-env", taskId, interactiveSessionId);
+    sessionRepositoryEnvDir = repositoryEnvDir;
+    const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
+      destinationDir: repositoryEnvDir,
+      entries: repositoryRuntimeEnvEntries,
+      fileStore: repositoryEnvFileStore
+    });
     const statePaths = runtime.persistentState
       ? await ensureTaskProviderStatePaths(task.id, runtime.provider, {
           uid: runtime.persistentState.uid,
@@ -767,11 +785,8 @@ async function initializeTaskInteractiveTerminalWebSocket(
     for (const [name, value] of runtime.envEntries) {
       dockerEnv.push("-e", `${name}=${value}`);
     }
-    for (const { key, value } of repository?.envVars ?? []) {
-      dockerEnv.push("-e", `${key}=${value}`);
-    }
-    for (const { key, value } of repositoryEnvSecrets) {
-      dockerEnv.push("-e", `${key}=${value}`);
+    for (const [name, value] of repositoryRuntimeEnv) {
+      dockerEnv.push("-e", `${name}=${value}`);
     }
     for (const [name, value] of resolveDockerSocketEnvEntries(dockerSocketPolicy)) {
       dockerEnv.push("-e", `${name}=${value}`);
@@ -785,6 +800,8 @@ async function initializeTaskInteractiveTerminalWebSocket(
       "--rm",
       "--name",
       sessionName,
+      "-v",
+      `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
       "-v",
       `${dockerBindSource}:/workspace:rw`,
       ...dockerSocketMountArgs,
@@ -822,11 +839,15 @@ async function initializeTaskInteractiveTerminalWebSocket(
       spawner: deps.spawner,
       taskStore: deps.taskStore,
       mode,
-      forceCleanup: () => {
+      cleanup: async () => {
         forceRemoveDockerSession(sessionName);
+        await rm(repositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
       }
     });
   } catch (error) {
+    if (sessionRepositoryEnvDir) {
+      await rm(sessionRepositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
+    }
     if (interactiveSessionId) {
       await deps.spawner.endInteractiveTerminalSession(taskId, interactiveSessionId).catch(() => undefined);
     }
@@ -844,7 +865,7 @@ function wireTerminalWebSocket(
     spawner: SpawnerService;
     taskStore: TaskStore;
     mode: TaskTerminalSessionMode;
-    forceCleanup?: () => void;
+    cleanup?: () => Promise<void> | void;
   }
 ): void {
   let sawTerminalOutput = false;
@@ -929,7 +950,7 @@ function wireTerminalWebSocket(
       } catch {
         /* ignore */
       }
-      proposalCtx.forceCleanup?.();
+      await proposalCtx.cleanup?.();
       await Promise.race([
         childExitPromise,
         new Promise<void>((resolve) => setTimeout(resolve, INTERACTIVE_EXIT_WAIT_MS))

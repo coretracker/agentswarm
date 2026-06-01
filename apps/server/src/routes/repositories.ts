@@ -11,22 +11,35 @@ const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
 const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
 const REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH = 8192;
+const REPOSITORY_ENV_FILE_NAME_MAX_LENGTH = 255;
+const REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH = 350_000;
 const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
 const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
 const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
 const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
 
+const repositoryEnvKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(REPOSITORY_ENV_VAR_KEY_MAX_LENGTH)
+  .regex(REPOSITORY_ENV_VAR_KEY_PATTERN, "Names must match /^[A-Za-z_][A-Za-z0-9_]*$/.");
+
 const repositoryEnvVarsSchema = z
   .array(
-    z.object({
-      key: z
-        .string()
-        .trim()
-        .min(1)
-        .max(REPOSITORY_ENV_VAR_KEY_MAX_LENGTH)
-        .regex(REPOSITORY_ENV_VAR_KEY_PATTERN, "Variable names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
-      value: z.string().max(REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH)
-    })
+    z.union([
+      z.object({
+        key: repositoryEnvKeySchema,
+        type: z.literal("text").optional(),
+        value: z.string().max(REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH)
+      }),
+      z.object({
+        key: repositoryEnvKeySchema,
+        type: z.literal("file"),
+        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
+        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
+      })
+    ])
   )
   .max(REPOSITORY_ENV_VAR_MAX_COUNT)
   .superRefine((entries, ctx) => {
@@ -50,15 +63,23 @@ const repositoryEnvVarsSchema = z
 
 const repositoryEnvSecretsSchema = z
   .array(
-    z.object({
-      key: z
-        .string()
-        .trim()
-        .min(1)
-        .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
-        .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
-      value: z.string().max(REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH).optional()
-    })
+    z.union([
+      z.object({
+        key: repositoryEnvKeySchema
+          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
+          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
+        type: z.literal("text").optional(),
+        value: z.string().max(REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH).optional()
+      }),
+      z.object({
+        key: repositoryEnvKeySchema
+          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
+          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
+        type: z.literal("file"),
+        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
+        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
+      })
+    ])
   )
   .max(REPOSITORY_ENV_SECRET_MAX_COUNT)
   .superRefine((entries, ctx) => {

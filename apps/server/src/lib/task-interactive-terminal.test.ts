@@ -81,18 +81,16 @@ describe("buildGitTerminalEnvEntries", () => {
 });
 
 describe("buildGitTerminalDockerEnvEntries", () => {
-  it("appends repository variables and secrets to git terminal runtime env entries", () => {
+  it("appends repository runtime env entries to git terminal runtime env entries", () => {
     const envEntries = buildGitTerminalDockerEnvEntries({
       runtimeEnvEntries: [
         ["TERM", "xterm-256color"],
         ["TASK_INTERACTIVE_WORKSPACE", "/workspace"]
       ],
-      repositoryEnvVars: [
-        { key: "FOO", value: "bar" },
-        { key: "EMPTY_OK", value: "" }
-      ],
-      repositoryEnvSecrets: [
-        { key: "API_TOKEN", value: "token-123" }
+      repositoryEnvEntries: [
+        ["FOO", "bar"],
+        ["EMPTY_OK", ""],
+        ["API_TOKEN", "token-123"]
       ]
     });
 

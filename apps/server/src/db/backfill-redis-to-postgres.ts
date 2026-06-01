@@ -133,12 +133,14 @@ const trimString = (value: unknown): string | null => {
   return normalized.length > 0 ? normalized : null;
 };
 
-const repositoryEnvVarArray = (value: unknown): Array<{ key: string; value: string }> => {
+const repositoryEnvVarArray = (
+  value: unknown
+): Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> => {
   if (!Array.isArray(value)) {
     return [];
   }
 
-  const normalized: Array<{ key: string; value: string }> = [];
+  const normalized: Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> = [];
   const seen = new Set<string>();
   for (const entry of value) {
     if (!entry || typeof entry !== "object") {
@@ -149,20 +151,35 @@ const repositoryEnvVarArray = (value: unknown): Array<{ key: string; value: stri
     if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || seen.has(key)) {
       continue;
     }
+    const type = (entry as Record<string, unknown>).type === "file" ? "file" : "text";
+    if (type === "file") {
+      const fileId = trimString((entry as Record<string, unknown>).fileId);
+      if (!fileId) {
+        continue;
+      }
+      const fileName = trimString((entry as Record<string, unknown>).fileName) ?? `${key}.bin`;
+      const sizeBytesRaw = (entry as Record<string, unknown>).sizeBytes;
+      const sizeBytes = typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0 ? Math.floor(sizeBytesRaw) : 0;
+      normalized.push({ key, type: "file", fileId, fileName, sizeBytes });
+      seen.add(key);
+      continue;
+    }
     const rawValue = (entry as Record<string, unknown>).value;
     const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
-    normalized.push({ key, value: normalizedValue });
+    normalized.push({ key, type: "text", value: normalizedValue });
     seen.add(key);
   }
   return normalized;
 };
 
-const repositoryEnvSecretArray = (value: unknown): Array<{ key: string; value: string }> => {
+const repositoryEnvSecretArray = (
+  value: unknown
+): Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> => {
   if (!Array.isArray(value)) {
     return [];
   }
 
-  const normalized: Array<{ key: string; value: string }> = [];
+  const normalized: Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> = [];
   const seen = new Set<string>();
   for (const entry of value) {
     if (!entry || typeof entry !== "object") {
@@ -171,6 +188,19 @@ const repositoryEnvSecretArray = (value: unknown): Array<{ key: string; value: s
     const rawKey = (entry as Record<string, unknown>).key;
     const key = typeof rawKey === "string" ? rawKey.trim() : "";
     if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || seen.has(key)) {
+      continue;
+    }
+    const type = (entry as Record<string, unknown>).type === "file" ? "file" : "text";
+    if (type === "file") {
+      const fileId = trimString((entry as Record<string, unknown>).fileId);
+      if (!fileId) {
+        continue;
+      }
+      const fileName = trimString((entry as Record<string, unknown>).fileName) ?? `${key}.bin`;
+      const sizeBytesRaw = (entry as Record<string, unknown>).sizeBytes;
+      const sizeBytes = typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0 ? Math.floor(sizeBytesRaw) : 0;
+      normalized.push({ key, type: "file", fileId, fileName, sizeBytes });
+      seen.add(key);
       continue;
     }
     const rawValue = (entry as Record<string, unknown>).value;
@@ -178,7 +208,7 @@ const repositoryEnvSecretArray = (value: unknown): Array<{ key: string; value: s
     if (!normalizedValue) {
       continue;
     }
-    normalized.push({ key, value: normalizedValue });
+    normalized.push({ key, type: "text", value: normalizedValue });
     seen.add(key);
   }
   return normalized;

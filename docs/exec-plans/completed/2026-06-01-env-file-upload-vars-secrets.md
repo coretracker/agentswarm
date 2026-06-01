@@ -1,85 +1,98 @@
 # Execution Plan
 
 ## Title
-- File Upload Support for Repository Environment Variables and Secrets
+- Text/File Support for Repository Environment Variables and Secrets
 
 ## Goal
-- Add file upload controls to repository environment variable and environment secret inputs so users can load values from files while preserving manual entry.
+- Let repository environment variables and secrets be either text values or uploaded files, with secure storage and runtime mounting for both Codex and Claude.
 
 ## Non-goals
-- Adding a new backend file-storage service.
-- Parsing file formats into structured config objects.
-- Changing provider-specific runtime injection behavior (already shared for Codex and Claude).
+- Parsing uploaded files into structured config objects.
+- Changing non-repository secret systems (for example webhook secret handling).
 
 ## Current State
-- Repository editor supports manual text entry for env vars and env secrets.
-- Backend enforces value length constraints (max 8192 chars).
-- Repository env vars and env secrets are injected into both Codex and Claude task runtimes.
+- Repository editor supported plain text values and converted uploaded files into inline text/Base64.
+- Runtime injected repository env values directly as strings.
+- No secure persistent file-backed path existed for repository env values.
 
 ## Acceptance Criteria
-- Users can upload file content into both env var and env secret value fields.
-- Upload keeps existing manual editing behavior.
-- UI clearly states upload behavior and limits.
-- Empty, unreadable, or oversize uploads show clear user-facing errors.
-- Clarify upload handling: UTF-8 files are stored as text; non-UTF-8 files are Base64-encoded.
-- Resulting values continue to apply to both Codex and Claude environments.
+- Users can choose `Text` or `File` for env vars and env secrets.
+- File uploads are stored securely and never returned in plaintext from API/UI.
+- Runtime mounts generated files for both Codex and Claude and sets env var values to mounted file paths.
+- Manual text behavior remains unchanged.
+- Missing/invalid files fail with clear errors.
+- Backend enforces constraints and permissions (scope checks already in repository routes).
 
 ## Affected Files
+- `packages/shared-types/src/index.ts`
+- `apps/server/src/config/env.ts`
+- `apps/server/src/services/repository-env-file-store.ts`
+- `apps/server/src/lib/repository-runtime-env.ts`
+- `apps/server/src/services/repository-store.ts`
+- `apps/server/src/routes/repositories.ts`
+- `apps/server/src/services/spawner.ts`
+- `apps/server/src/lib/task-interactive-terminal.ts`
+- `apps/server/src/lib/task-interactive-terminal-git-env.ts`
+- `apps/server/src/lib/task-interactive-terminal.test.ts`
 - `apps/web/components/repository-editor-page.tsx`
-- `docs/exec-plans/completed/2026-06-01-env-file-upload-vars-secrets.md`
 
 ## Step-by-Step Plan
-1. Add shared constants and helpers for file upload read/validation.
-2. Add upload controls to environment variables rows and wire value field updates.
-3. Add upload controls to environment secrets rows and wire value field updates.
-4. Add clear guidance text for provider targets (Codex + Claude), file handling mode, and constraints.
-5. Run lint/build checks and targeted tests.
-6. Update execution-plan evidence and move plan to completed.
+1. Add shared model types for text/file env entries.
+2. Add secure encrypted file store for repository env files.
+3. Update repository persistence and API normalization for text/file entries.
+4. Update runtime spawning and interactive terminals to materialize/mount file entries.
+5. Update repository editor UI with Text/File selector and upload flow.
+6. Run lint/build/test/harness verification.
 
 ## Human-Gated Flow Evidence
 - Requirements Read: YES
 - Requirements Understood: YES
 - Repository Research Complete: YES
-- Uncertainties Logged: YES (decided UTF-8 text with Base64 fallback for binary files)
-- Human Review Completed: TODO (awaiting maintainer review)
+- Uncertainties Logged: YES (selected encrypted-at-rest file storage with runtime materialization)
+- Human Review Completed: NO (pending maintainer review)
 - User Approval To Start: YES (issue request)
 - Baseline Checks Run: YES (`REMOTE_BUILD=0 ./scripts/harness/check.sh`)
 - Visible Task List Updated: YES
-- Task-Level Tests/Lint/Build: YES (`npm run build -w @agentswarm/web`, `npm run lint -w @agentswarm/web`, `npm run test -w @agentswarm/web`, harness check)
+- Task-Level Tests/Lint/Build: YES (`npm run build -w @agentswarm/server`, `npm run build -w @agentswarm/web`, package tests, harness check)
 - Self Review Complete: YES
-- Code Review Complete: TODO (awaiting maintainer review)
+- Code Review Complete: NO (pending maintainer review)
 - Final Verification Complete: YES (repository check pipeline completed successfully)
-- Security/Privacy Review Complete: YES (secret write-only behavior preserved, explicit UX copy)
+- Security/Privacy Review Complete: YES (file contents encrypted at rest and never surfaced in API/UI)
 - Docs/Changelog Updated: YES (execution plan documentation updated)
 
 ## Validation Commands
+- `npm run lint -w @agentswarm/server`
+- `npm run test -w @agentswarm/server`
+- `npm run build -w @agentswarm/server`
 - `npm run lint -w @agentswarm/web`
+- `npm run test -w @agentswarm/web`
 - `npm run build -w @agentswarm/web`
 - `REMOTE_BUILD=0 ./scripts/harness/check.sh`
+- `REMOTE_BUILD=0 ./scripts/harness/test.sh` (fails in this environment because Docker Compose is unavailable)
 
 ## Risks
-- Confusion if users upload binary files expecting raw binary storage.
-- Oversize uploads exceeding backend limits.
+- Orphaned encrypted files if write failures are not cleaned up.
+- Runtime failure if stored file reference is missing on disk.
 
 ## Rollback Plan
-- Remove upload controls and helper code in repository editor.
-- Re-run lint/build to restore previous behavior.
+- Revert shared type changes for env entries.
+- Remove repository env file store/materialization and use text-only env injection.
+- Re-run lint/build/tests to confirm fallback state.
 
 ## Progress Log
-- 2026-06-01 09:00 UTC: Created execution plan and scoped upload handling behavior.
-- 2026-06-01 09:12 UTC: Added file upload controls and value import logic for both env vars and env secrets.
-- 2026-06-01 09:24 UTC: Completed lint/build/test validation and harness checks.
+- 2026-06-01 09:00 UTC: Created execution plan.
+- 2026-06-01 10:10 UTC: Implemented secure repository env file store and updated repository persistence model.
+- 2026-06-01 10:40 UTC: Implemented runtime materialization for task runs and interactive terminals.
+- 2026-06-01 11:05 UTC: Updated repository editor with Text/File controls and file upload states.
+- 2026-06-01 11:30 UTC: Completed lint/build/tests and harness checks.
 
 ## Decisions
-- 2026-06-01: Uploaded files are stored as UTF-8 text when decodable, otherwise Base64.
+- 2026-06-01: File-backed env entries are encrypted at rest using the existing server key and materialized only at runtime.
+- 2026-06-01: File upload limit set to 256 KiB; text limit remains 8192 characters.
 
 ## Completion Notes
-- Added upload controls for both environment variables and environment secrets in the repository editor.
-- Preserved manual entry behavior for all existing fields.
-- Upload handling:
-  - Reads UTF-8 text when possible.
-  - Falls back to Base64 for binary files.
-  - Rejects empty/unreadable files and values over 8192 characters.
-- UI now clearly states:
-  - Values apply to both Codex and Claude.
-  - Upload behavior and backend size limit.
+- Added full text/file model support for repository env vars and env secrets.
+- Added secure encrypted-at-rest file persistence for uploaded values.
+- Runtime now mounts generated files and sets env variables to those mounted paths.
+- Interactive terminal modes now use the same file-backed behavior.
+- UI now supports type selection, file upload, “file set” states, and clear error messaging.

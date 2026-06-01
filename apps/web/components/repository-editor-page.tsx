@@ -6,9 +6,10 @@ import type {
   CreateRepositoryInput,
   GitHubAutomationRule,
   Repository,
-  RepositoryEnvSecretInput
+  RepositoryEnvSecretInput,
+  RepositoryEnvVarInput
 } from "@agentswarm/shared-types";
-import { Button, Card, Checkbox, Flex, Form, Input, Result, Space, Spin, Switch, Typography, Upload, message } from "antd";
+import { Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
 import { ApiError, api } from "../src/api/client";
 import { buildApiUrl } from "../src/lib/public-url";
 import { trackEvent } from "../src/utils/analytics";
@@ -22,8 +23,8 @@ type RepositoryFormValues = {
   name: string;
   url: string;
   defaultBranch: string;
-  envVars: Array<{ key: string; value: string }>;
-  envSecrets: Array<{ key: string; value: string }>;
+  envVars: Array<{ key: string; type: "text" | "file"; value: string; fileName: string; fileContentBase64: string }>;
+  envSecrets: Array<{ key: string; type: "text" | "file"; value: string; fileName: string; fileContentBase64: string }>;
   webhookEnabled: boolean;
   webhookUrl: string;
   webhookSecret: string;
@@ -54,11 +55,17 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   defaultBranch: typeof values?.defaultBranch === "string" ? values.defaultBranch : "develop",
   envVars: (values?.envVars ?? []).map((entry) => ({
     key: typeof entry?.key === "string" ? entry.key : "",
-    value: typeof entry?.value === "string" ? entry.value : ""
+    type: entry?.type === "file" ? "file" : "text",
+    value: typeof entry?.value === "string" ? entry.value : "",
+    fileName: typeof entry?.fileName === "string" ? entry.fileName : "",
+    fileContentBase64: typeof entry?.fileContentBase64 === "string" ? entry.fileContentBase64 : ""
   })),
   envSecrets: (values?.envSecrets ?? []).map((entry) => ({
     key: typeof entry?.key === "string" ? entry.key : "",
-    value: typeof entry?.value === "string" ? entry.value : ""
+    type: entry?.type === "file" ? "file" : "text",
+    value: typeof entry?.value === "string" ? entry.value : "",
+    fileName: typeof entry?.fileName === "string" ? entry.fileName : "",
+    fileContentBase64: typeof entry?.fileContentBase64 === "string" ? entry.fileContentBase64 : ""
   })),
   webhookEnabled: values?.webhookEnabled === true,
   webhookUrl: typeof values?.webhookUrl === "string" ? values.webhookUrl : "",
@@ -71,6 +78,7 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
 
 const snapshotValues = (values?: Partial<RepositoryFormValues> | null): string => JSON.stringify(normalizeValues(values));
 const REPOSITORY_ENV_VALUE_MAX_LENGTH = 8192;
+const REPOSITORY_ENV_FILE_MAX_BYTES = 256 * 1024;
 const ENV_VALUE_FILE_ACCEPT =
   ".txt,.env,.json,.yaml,.yml,.ini,.cfg,.conf,.properties,.xml,.pem,.crt,.cer,.key,.p12,.jks";
 
@@ -84,9 +92,12 @@ const bytesToBase64 = (bytes: Uint8Array): string => {
   return btoa(binary);
 };
 
-const readUploadedEnvValueFile = async (file: File): Promise<{ value: string; mode: "text" | "base64" }> => {
+const readUploadedEnvValueFile = async (file: File): Promise<{ fileName: string; fileContentBase64: string; sizeBytes: number }> => {
   if (file.size <= 0) {
     throw new Error(`"${file.name}" is empty.`);
+  }
+  if (file.size > REPOSITORY_ENV_FILE_MAX_BYTES) {
+    throw new Error(`"${file.name}" is too large. Keep files at ${REPOSITORY_ENV_FILE_MAX_BYTES} bytes or less.`);
   }
 
   let bytes: Uint8Array;
@@ -100,23 +111,11 @@ const readUploadedEnvValueFile = async (file: File): Promise<{ value: string; mo
     throw new Error(`"${file.name}" is empty.`);
   }
 
-  let value = "";
-  let mode: "text" | "base64" = "text";
-  try {
-    value = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    value = bytesToBase64(bytes);
-    mode = "base64";
-  }
-
-  if (value.length <= 0) {
-    throw new Error(`"${file.name}" does not contain a usable value.`);
-  }
-  if (value.length > REPOSITORY_ENV_VALUE_MAX_LENGTH) {
-    throw new Error(`"${file.name}" is too large. Keep values at ${REPOSITORY_ENV_VALUE_MAX_LENGTH} characters or less.`);
-  }
-
-  return { value, mode };
+  return {
+    fileName: file.name,
+    fileContentBase64: bytesToBase64(bytes),
+    sizeBytes: bytes.byteLength
+  };
 };
 
 const isGitHubAutomationRule = (value: unknown): value is GitHubAutomationRule => {
@@ -193,10 +192,19 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           name: repository.name,
           url: repository.url,
           defaultBranch: repository.defaultBranch,
-          envVars: repository.envVars ?? [],
+          envVars: (repository.envVars ?? []).map((entry) => ({
+            key: entry.key,
+            type: entry.type === "file" ? "file" : "text",
+            value: entry.type === "file" ? "" : entry.value,
+            fileName: entry.type === "file" ? (entry.fileName ?? "") : "",
+            fileContentBase64: ""
+          })),
           envSecrets: (repository.envSecrets ?? []).map((entry) => ({
             key: entry.key,
-            value: ""
+            type: entry.type === "file" ? "file" : "text",
+            value: "",
+            fileName: entry.type === "file" ? (entry.fileName ?? "") : "",
+            fileContentBase64: ""
           })),
           webhookEnabled: repository.webhookEnabled,
           webhookUrl: repository.webhookUrl ?? "",
@@ -260,16 +268,20 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
     router.push("/repositories");
   };
 
-  const importFileValue = async (namePath: Array<string | number>, file: File, label: "variable" | "secret"): Promise<void> => {
+  const importFileValue = async (basePath: Array<string | number>, file: File, label: "variable" | "secret"): Promise<void> => {
     try {
       const parsed = await readUploadedEnvValueFile(file);
-      form.setFieldValue(namePath as never, parsed.value);
-      form.setFields([{ name: namePath as never, errors: [] }]);
-      if (parsed.mode === "base64") {
-        messageApi.success(`${label === "variable" ? "Variable" : "Secret"} loaded from "${file.name}" as Base64.`);
-      } else {
-        messageApi.success(`${label === "variable" ? "Variable" : "Secret"} loaded from "${file.name}".`);
-      }
+      form.setFieldValue([...basePath, "type"] as never, "file");
+      form.setFieldValue([...basePath, "fileName"] as never, parsed.fileName);
+      form.setFieldValue([...basePath, "fileContentBase64"] as never, parsed.fileContentBase64);
+      form.setFieldValue([...basePath, "value"] as never, "");
+      form.setFields([
+        { name: [...basePath, "fileContentBase64"] as never, errors: [] },
+        { name: [...basePath, "value"] as never, errors: [] }
+      ]);
+      messageApi.success(
+        `${label === "variable" ? "Variable" : "Secret"} file "${parsed.fileName}" loaded (${parsed.sizeBytes} bytes).`
+      );
     } catch (error) {
       messageApi.error(error instanceof Error ? error.message : `Could not import ${label} file.`);
     }
@@ -317,23 +329,67 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           setSubmitting(true);
           try {
             const normalized = normalizeValues(values);
-            const envVars = normalized.envVars
-              .map((entry) => ({
-                key: entry.key.trim(),
-                value: entry.value
-              }))
-              .filter((entry) => entry.key.length > 0);
+            const envVars: RepositoryEnvVarInput[] = [];
+            for (const entry of normalized.envVars) {
+              const key = entry.key.trim();
+              if (!key) {
+                continue;
+              }
+              if (entry.type === "file") {
+                const fileContentBase64 = entry.fileContentBase64.trim();
+                const hasExistingFile = (editingRepository?.envVars ?? []).some(
+                  (item) => item.key === key && item.type === "file" && item.configured === true
+                );
+                if (fileContentBase64.length > 0) {
+                  envVars.push({
+                    key,
+                    type: "file",
+                    ...(entry.fileName.trim().length > 0 ? { fileName: entry.fileName.trim() } : {}),
+                    fileContentBase64
+                  });
+                } else if (hasExistingFile) {
+                  envVars.push({ key, type: "file" });
+                } else {
+                  throw new Error(`Upload a file for variable "${key}".`);
+                }
+              } else {
+                envVars.push({ key, type: "text", value: entry.value });
+              }
+            }
             const envSecrets: RepositoryEnvSecretInput[] = [];
             for (const entry of normalized.envSecrets) {
               const key = entry.key.trim();
               if (!key) {
                 continue;
               }
-              const value = entry.value.trim();
-              if (value.length > 0) {
-                envSecrets.push({ key, value });
+              if (entry.type === "file") {
+                const fileContentBase64 = entry.fileContentBase64.trim();
+                const hasExistingFile = (editingRepository?.envSecrets ?? []).some(
+                  (item) => item.key === key && item.type === "file" && item.configured === true
+                );
+                if (fileContentBase64.length > 0) {
+                  envSecrets.push({
+                    key,
+                    type: "file",
+                    ...(entry.fileName.trim().length > 0 ? { fileName: entry.fileName.trim() } : {}),
+                    fileContentBase64
+                  });
+                } else if (hasExistingFile) {
+                  envSecrets.push({ key, type: "file" });
+                } else {
+                  throw new Error(`Upload a file for secret "${key}".`);
+                }
               } else {
-                envSecrets.push({ key });
+                const hasExistingTextSecret = (editingRepository?.envSecrets ?? []).some(
+                  (item) => item.key === key && (item.type ?? "text") === "text" && item.configured === true
+                );
+                if (entry.value.trim().length > 0) {
+                  envSecrets.push({ key, type: "text", value: entry.value });
+                } else if (hasExistingTextSecret) {
+                  envSecrets.push({ key, type: "text" });
+                } else {
+                  throw new Error(`Value is required for secret "${key}".`);
+                }
               }
             }
             let githubAutomations: GitHubAutomationRule[] = [];
@@ -426,51 +482,100 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 <Flex vertical gap={8} style={{ marginBottom: 16 }}>
                   <Typography.Text strong>Environment Variables</Typography.Text>
                   <Typography.Text type="secondary">
-                    Applies to both Codex and Claude runs for this repository. Uploads are read as UTF-8 text; binary files are converted to Base64.
-                    Values must stay within {REPOSITORY_ENV_VALUE_MAX_LENGTH} characters.
+                    Applies to both Codex and Claude runs for this repository. Choose Text for normal values, or File to upload files up to{" "}
+                    {REPOSITORY_ENV_FILE_MAX_BYTES} bytes.
                   </Typography.Text>
-                  {fields.map((field) => (
-                    <Flex key={field.key} gap={8} align="flex-start" wrap="wrap">
-                      <Form.Item
-                        {...field}
-                        name={[field.name, "key"]}
-                        style={{ flex: 1, marginBottom: 0, minWidth: 220 }}
-                        rules={[
-                          { required: true, whitespace: true, message: "Name is required." },
-                          { max: 128, message: "Name must be 128 characters or fewer." },
-                          {
-                            pattern: /^[A-Za-z_][A-Za-z0-9_]*$/,
-                            message: "Name must match /^[A-Za-z_][A-Za-z0-9_]*$/."
-                          }
-                        ]}
-                      >
-                        <Input placeholder="NAME" autoComplete="off" />
-                      </Form.Item>
-                      <Form.Item
-                        {...field}
-                        name={[field.name, "value"]}
-                        style={{ flex: 2, marginBottom: 0, minWidth: 220 }}
-                        rules={[{ max: 8192, message: "Value must be 8192 characters or fewer." }]}
-                      >
-                        <Input.TextArea autoSize={{ minRows: 1, maxRows: 4 }} placeholder="value" autoComplete="off" />
-                      </Form.Item>
-                      <Upload
-                        accept={ENV_VALUE_FILE_ACCEPT}
-                        showUploadList={false}
-                        maxCount={1}
-                        beforeUpload={(file) => {
-                          void importFileValue(["envVars", field.name, "value"], file, "variable");
-                          return false;
-                        }}
-                      >
-                        <Button>Upload file</Button>
-                      </Upload>
-                      <Button danger onClick={() => remove(field.name)}>
-                        Remove
-                      </Button>
-                    </Flex>
-                  ))}
-                  <Button onClick={() => add({ key: "", value: "" })}>Add variable</Button>
+                  {fields.map((field) => {
+                    const keyName = String(form.getFieldValue(["envVars", field.name, "key"]) ?? "").trim();
+                    const entryType = form.getFieldValue(["envVars", field.name, "type"]) === "file" ? "file" : "text";
+                    const hasUploadedFile =
+                      String(form.getFieldValue(["envVars", field.name, "fileContentBase64"]) ?? "").trim().length > 0;
+                    const existingFileConfigured = (editingRepository?.envVars ?? []).some(
+                      (entry) => entry.key === keyName && entry.type === "file" && entry.configured === true
+                    );
+                    const fileStatus = hasUploadedFile
+                      ? "File ready"
+                      : existingFileConfigured
+                        ? "File set"
+                        : "No file uploaded";
+                    return (
+                      <Flex key={field.key} gap={8} align="flex-start" wrap="wrap">
+                        <Form.Item
+                          {...field}
+                          name={[field.name, "key"]}
+                          style={{ flex: 1, marginBottom: 0, minWidth: 220 }}
+                          rules={[
+                            { required: true, whitespace: true, message: "Name is required." },
+                            { max: 128, message: "Name must be 128 characters or fewer." },
+                            {
+                              pattern: /^[A-Za-z_][A-Za-z0-9_]*$/,
+                              message: "Name must match /^[A-Za-z_][A-Za-z0-9_]*$/."
+                            }
+                          ]}
+                        >
+                          <Input placeholder="NAME" autoComplete="off" />
+                        </Form.Item>
+                        <Form.Item
+                          {...field}
+                          name={[field.name, "type"]}
+                          style={{ width: 120, marginBottom: 0 }}
+                          initialValue="text"
+                        >
+                          <Select
+                            options={[
+                              { label: "Text", value: "text" },
+                              { label: "File", value: "file" }
+                            ]}
+                          />
+                        </Form.Item>
+                        {entryType === "text" ? (
+                          <Form.Item
+                            {...field}
+                            name={[field.name, "value"]}
+                            style={{ flex: 2, marginBottom: 0, minWidth: 220 }}
+                            rules={[{ max: 8192, message: "Value must be 8192 characters or fewer." }]}
+                          >
+                            <Input.TextArea autoSize={{ minRows: 1, maxRows: 4 }} placeholder="value" autoComplete="off" />
+                          </Form.Item>
+                        ) : (
+                          <Flex vertical style={{ minWidth: 260 }}>
+                            <Space wrap>
+                              <Upload
+                                accept={ENV_VALUE_FILE_ACCEPT}
+                                showUploadList={false}
+                                maxCount={1}
+                                beforeUpload={(file) => {
+                                  void importFileValue(["envVars", field.name], file, "variable");
+                                  return false;
+                                }}
+                              >
+                                <Button>Upload file</Button>
+                              </Upload>
+                              <Button
+                                onClick={() => {
+                                  form.setFieldValue(["envVars", field.name, "fileName"], "");
+                                  form.setFieldValue(["envVars", field.name, "fileContentBase64"], "");
+                                }}
+                              >
+                                Clear file
+                              </Button>
+                            </Space>
+                            <Typography.Text type="secondary">{fileStatus}</Typography.Text>
+                            <Form.Item {...field} name={[field.name, "fileName"]} style={{ display: "none", marginBottom: 0 }}>
+                              <Input />
+                            </Form.Item>
+                            <Form.Item {...field} name={[field.name, "fileContentBase64"]} style={{ display: "none", marginBottom: 0 }}>
+                              <Input />
+                            </Form.Item>
+                          </Flex>
+                        )}
+                        <Button danger onClick={() => remove(field.name)}>
+                          Remove
+                        </Button>
+                      </Flex>
+                    );
+                  })}
+                  <Button onClick={() => add({ key: "", type: "text", value: "", fileName: "", fileContentBase64: "" })}>Add variable</Button>
                   <Form.ErrorList errors={errors} />
                 </Flex>
               )}
@@ -500,13 +605,20 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   <Typography.Text strong>Environment Secrets</Typography.Text>
                   <Typography.Text type="secondary">
                     Applies to both Codex and Claude runs for this repository. Secret values are write-only after save. Existing values are never shown.
-                    Uploads are read as UTF-8 text; binary files are converted to Base64. Leave the value blank to keep a configured secret.
+                    Choose Text or File. Leave Text blank to keep an existing text secret, or keep File mode without a new upload to keep an existing file
+                    secret.
                   </Typography.Text>
                   {fields.map((field) => {
                     const keyName = String(form.getFieldValue(["envSecrets", field.name, "key"]) ?? "").trim();
-                    const configured = (editingRepository?.envSecrets ?? []).some(
-                      (entry) => entry.key === keyName && entry.configured === true
+                    const entryType = form.getFieldValue(["envSecrets", field.name, "type"]) === "file" ? "file" : "text";
+                    const configuredTextSecret = (editingRepository?.envSecrets ?? []).some(
+                      (entry) => entry.key === keyName && entry.configured === true && (entry.type ?? "text") === "text"
                     );
+                    const configuredFileSecret = (editingRepository?.envSecrets ?? []).some(
+                      (entry) => entry.key === keyName && entry.configured === true && entry.type === "file"
+                    );
+                    const hasUploadedFile =
+                      String(form.getFieldValue(["envSecrets", field.name, "fileContentBase64"]) ?? "").trim().length > 0;
                     return (
                       <Flex key={field.key} gap={8} align="flex-start" wrap="wrap">
                         <Form.Item
@@ -526,47 +638,73 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                         </Form.Item>
                         <Form.Item
                           {...field}
-                          name={[field.name, "value"]}
-                          style={{ flex: 2, marginBottom: 0, minWidth: 220 }}
-                          dependencies={[["envSecrets", field.name, "key"]]}
-                          rules={[
-                            { max: 8192, message: "Value must be 8192 characters or fewer." },
-                            () => ({
-                              validator(_, value) {
-                                const normalized = typeof value === "string" ? value.trim() : "";
-                                if (!keyName || normalized.length > 0 || configured) {
-                                  return Promise.resolve();
-                                }
-                                return Promise.reject(new Error("Value is required for new secrets."));
-                              }
-                            })
-                          ]}
+                          name={[field.name, "type"]}
+                          style={{ width: 120, marginBottom: 0 }}
+                          initialValue="text"
                         >
-                          <Input.TextArea
-                            autoSize={{ minRows: 1, maxRows: 4 }}
-                            placeholder={configured ? "Secret is set. Enter a value to replace it." : "secret value"}
-                            autoComplete="new-password"
+                          <Select
+                            options={[
+                              { label: "Text", value: "text" },
+                              { label: "File", value: "file" }
+                            ]}
                           />
                         </Form.Item>
-                        <Upload
-                          accept={ENV_VALUE_FILE_ACCEPT}
-                          showUploadList={false}
-                          maxCount={1}
-                          beforeUpload={(file) => {
-                            void importFileValue(["envSecrets", field.name, "value"], file, "secret");
-                            return false;
-                          }}
-                        >
-                          <Button>Upload file</Button>
-                        </Upload>
+                        {entryType === "text" ? (
+                          <Form.Item
+                            {...field}
+                            name={[field.name, "value"]}
+                            style={{ flex: 2, marginBottom: 0, minWidth: 220 }}
+                            rules={[{ max: 8192, message: "Value must be 8192 characters or fewer." }]}
+                          >
+                            <Input.TextArea
+                              autoSize={{ minRows: 1, maxRows: 4 }}
+                              placeholder={configuredTextSecret ? "Secret is set. Enter a value to replace it." : "secret value"}
+                              autoComplete="new-password"
+                            />
+                          </Form.Item>
+                        ) : (
+                          <Flex vertical style={{ minWidth: 260 }}>
+                            <Space wrap>
+                              <Upload
+                                accept={ENV_VALUE_FILE_ACCEPT}
+                                showUploadList={false}
+                                maxCount={1}
+                                beforeUpload={(file) => {
+                                  void importFileValue(["envSecrets", field.name], file, "secret");
+                                  return false;
+                                }}
+                              >
+                                <Button>Upload file</Button>
+                              </Upload>
+                              <Button
+                                onClick={() => {
+                                  form.setFieldValue(["envSecrets", field.name, "fileName"], "");
+                                  form.setFieldValue(["envSecrets", field.name, "fileContentBase64"], "");
+                                }}
+                              >
+                                Clear file
+                              </Button>
+                            </Space>
+                            <Typography.Text type="secondary">
+                              {hasUploadedFile ? "File ready" : configuredFileSecret ? "File set" : "No file uploaded"}
+                            </Typography.Text>
+                            <Form.Item {...field} name={[field.name, "fileName"]} style={{ display: "none", marginBottom: 0 }}>
+                              <Input />
+                            </Form.Item>
+                            <Form.Item {...field} name={[field.name, "fileContentBase64"]} style={{ display: "none", marginBottom: 0 }}>
+                              <Input />
+                            </Form.Item>
+                          </Flex>
+                        )}
                         <Button danger onClick={() => remove(field.name)}>
                           Remove
                         </Button>
-                        {configured ? <Typography.Text type="secondary">Secret set</Typography.Text> : null}
+                        {entryType === "text" && configuredTextSecret ? <Typography.Text type="secondary">Secret set</Typography.Text> : null}
+                        {entryType === "file" && configuredFileSecret ? <Typography.Text type="secondary">Secret file set</Typography.Text> : null}
                       </Flex>
                     );
                   })}
-                  <Button onClick={() => add({ key: "", value: "" })}>Add secret</Button>
+                  <Button onClick={() => add({ key: "", type: "text", value: "", fileName: "", fileContentBase64: "" })}>Add secret</Button>
                   <Form.ErrorList errors={errors} />
                 </Flex>
               )}
