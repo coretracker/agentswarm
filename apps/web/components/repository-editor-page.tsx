@@ -8,7 +8,7 @@ import type {
   Repository,
   RepositoryEnvSecretInput
 } from "@agentswarm/shared-types";
-import { Button, Card, Checkbox, Flex, Form, Input, Result, Space, Spin, Switch, Typography, message } from "antd";
+import { Button, Card, Checkbox, Flex, Form, Input, Result, Space, Spin, Switch, Typography, Upload, message } from "antd";
 import { ApiError, api } from "../src/api/client";
 import { buildApiUrl } from "../src/lib/public-url";
 import { trackEvent } from "../src/utils/analytics";
@@ -70,6 +70,54 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
 });
 
 const snapshotValues = (values?: Partial<RepositoryFormValues> | null): string => JSON.stringify(normalizeValues(values));
+const REPOSITORY_ENV_VALUE_MAX_LENGTH = 8192;
+const ENV_VALUE_FILE_ACCEPT =
+  ".txt,.env,.json,.yaml,.yml,.ini,.cfg,.conf,.properties,.xml,.pem,.crt,.cer,.key,.p12,.jks";
+
+const bytesToBase64 = (bytes: Uint8Array): string => {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+};
+
+const readUploadedEnvValueFile = async (file: File): Promise<{ value: string; mode: "text" | "base64" }> => {
+  if (file.size <= 0) {
+    throw new Error(`"${file.name}" is empty.`);
+  }
+
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(await file.arrayBuffer());
+  } catch {
+    throw new Error(`"${file.name}" could not be read.`);
+  }
+
+  if (bytes.byteLength <= 0) {
+    throw new Error(`"${file.name}" is empty.`);
+  }
+
+  let value = "";
+  let mode: "text" | "base64" = "text";
+  try {
+    value = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    value = bytesToBase64(bytes);
+    mode = "base64";
+  }
+
+  if (value.length <= 0) {
+    throw new Error(`"${file.name}" does not contain a usable value.`);
+  }
+  if (value.length > REPOSITORY_ENV_VALUE_MAX_LENGTH) {
+    throw new Error(`"${file.name}" is too large. Keep values at ${REPOSITORY_ENV_VALUE_MAX_LENGTH} characters or less.`);
+  }
+
+  return { value, mode };
+};
 
 const isGitHubAutomationRule = (value: unknown): value is GitHubAutomationRule => {
   if (!value || typeof value !== "object") {
@@ -210,6 +258,21 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
       return;
     }
     router.push("/repositories");
+  };
+
+  const importFileValue = async (namePath: Array<string | number>, file: File, label: "variable" | "secret"): Promise<void> => {
+    try {
+      const parsed = await readUploadedEnvValueFile(file);
+      form.setFieldValue(namePath as never, parsed.value);
+      form.setFields([{ name: namePath as never, errors: [] }]);
+      if (parsed.mode === "base64") {
+        messageApi.success(`${label === "variable" ? "Variable" : "Secret"} loaded from "${file.name}" as Base64.`);
+      } else {
+        messageApi.success(`${label === "variable" ? "Variable" : "Secret"} loaded from "${file.name}".`);
+      }
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : `Could not import ${label} file.`);
+    }
   };
 
   if (loading) {
@@ -363,7 +426,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 <Flex vertical gap={8} style={{ marginBottom: 16 }}>
                   <Typography.Text strong>Environment Variables</Typography.Text>
                   <Typography.Text type="secondary">
-                    Repository variables are injected into interactive, automatic, and terminal runs for tasks from this repository.
+                    Applies to both Codex and Claude runs for this repository. Uploads are read as UTF-8 text; binary files are converted to Base64.
+                    Values must stay within {REPOSITORY_ENV_VALUE_MAX_LENGTH} characters.
                   </Typography.Text>
                   {fields.map((field) => (
                     <Flex key={field.key} gap={8} align="flex-start" wrap="wrap">
@@ -388,8 +452,19 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                         style={{ flex: 2, marginBottom: 0, minWidth: 220 }}
                         rules={[{ max: 8192, message: "Value must be 8192 characters or fewer." }]}
                       >
-                        <Input placeholder="value" autoComplete="off" />
+                        <Input.TextArea autoSize={{ minRows: 1, maxRows: 4 }} placeholder="value" autoComplete="off" />
                       </Form.Item>
+                      <Upload
+                        accept={ENV_VALUE_FILE_ACCEPT}
+                        showUploadList={false}
+                        maxCount={1}
+                        beforeUpload={(file) => {
+                          void importFileValue(["envVars", field.name, "value"], file, "variable");
+                          return false;
+                        }}
+                      >
+                        <Button>Upload file</Button>
+                      </Upload>
                       <Button danger onClick={() => remove(field.name)}>
                         Remove
                       </Button>
@@ -424,7 +499,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 <Flex vertical gap={8} style={{ marginBottom: 16 }}>
                   <Typography.Text strong>Environment Secrets</Typography.Text>
                   <Typography.Text type="secondary">
-                    Secret values are write-only. Existing values are never shown. Leave the value blank to keep a configured secret.
+                    Applies to both Codex and Claude runs for this repository. Secret values are write-only after save. Existing values are never shown.
+                    Uploads are read as UTF-8 text; binary files are converted to Base64. Leave the value blank to keep a configured secret.
                   </Typography.Text>
                   {fields.map((field) => {
                     const keyName = String(form.getFieldValue(["envSecrets", field.name, "key"]) ?? "").trim();
@@ -466,11 +542,23 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                             })
                           ]}
                         >
-                          <Input.Password
+                          <Input.TextArea
+                            autoSize={{ minRows: 1, maxRows: 4 }}
                             placeholder={configured ? "Secret is set. Enter a value to replace it." : "secret value"}
                             autoComplete="new-password"
                           />
                         </Form.Item>
+                        <Upload
+                          accept={ENV_VALUE_FILE_ACCEPT}
+                          showUploadList={false}
+                          maxCount={1}
+                          beforeUpload={(file) => {
+                            void importFileValue(["envSecrets", field.name, "value"], file, "secret");
+                            return false;
+                          }}
+                        >
+                          <Button>Upload file</Button>
+                        </Upload>
                         <Button danger onClick={() => remove(field.name)}>
                           Remove
                         </Button>
