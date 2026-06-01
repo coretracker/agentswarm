@@ -2,7 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { GitHubAutomationRule, Repository } from "@agentswarm/shared-types";
+import type {
+  CreateRepositoryInput,
+  GitHubAutomationRule,
+  Repository,
+  RepositoryEnvSecretInput
+} from "@agentswarm/shared-types";
 import { Button, Card, Checkbox, Flex, Form, Input, Result, Space, Spin, Switch, Typography, message } from "antd";
 import { ApiError, api } from "../src/api/client";
 import { buildApiUrl } from "../src/lib/public-url";
@@ -18,6 +23,7 @@ type RepositoryFormValues = {
   url: string;
   defaultBranch: string;
   envVars: Array<{ key: string; value: string }>;
+  envSecrets: Array<{ key: string; value: string }>;
   webhookEnabled: boolean;
   webhookUrl: string;
   webhookSecret: string;
@@ -32,6 +38,7 @@ const emptyValues = (): RepositoryFormValues => ({
   url: "",
   defaultBranch: "develop",
   envVars: [],
+  envSecrets: [],
   webhookEnabled: false,
   webhookUrl: "",
   webhookSecret: "",
@@ -46,6 +53,10 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   url: typeof values?.url === "string" ? values.url : "",
   defaultBranch: typeof values?.defaultBranch === "string" ? values.defaultBranch : "develop",
   envVars: (values?.envVars ?? []).map((entry) => ({
+    key: typeof entry?.key === "string" ? entry.key : "",
+    value: typeof entry?.value === "string" ? entry.value : ""
+  })),
+  envSecrets: (values?.envSecrets ?? []).map((entry) => ({
     key: typeof entry?.key === "string" ? entry.key : "",
     value: typeof entry?.value === "string" ? entry.value : ""
   })),
@@ -135,6 +146,10 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           url: repository.url,
           defaultBranch: repository.defaultBranch,
           envVars: repository.envVars ?? [],
+          envSecrets: (repository.envSecrets ?? []).map((entry) => ({
+            key: entry.key,
+            value: ""
+          })),
           webhookEnabled: repository.webhookEnabled,
           webhookUrl: repository.webhookUrl ?? "",
           webhookSecret: "",
@@ -245,6 +260,19 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 value: entry.value
               }))
               .filter((entry) => entry.key.length > 0);
+            const envSecrets: RepositoryEnvSecretInput[] = [];
+            for (const entry of normalized.envSecrets) {
+              const key = entry.key.trim();
+              if (!key) {
+                continue;
+              }
+              const value = entry.value.trim();
+              if (value.length > 0) {
+                envSecrets.push({ key, value });
+              } else {
+                envSecrets.push({ key });
+              }
+            }
             let githubAutomations: GitHubAutomationRule[] = [];
             if (normalized.githubAutomationsJson.trim().length > 0) {
               const parsed = JSON.parse(normalized.githubAutomationsJson);
@@ -256,11 +284,12 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               }
               githubAutomations = parsed;
             }
-            const payload = {
+            const payload: CreateRepositoryInput = {
               name: normalized.name,
               url: normalized.url,
               defaultBranch: normalized.defaultBranch,
               envVars,
+              envSecrets,
               webhookEnabled: normalized.webhookEnabled,
               webhookUrl: normalized.webhookUrl.trim().length > 0 ? normalized.webhookUrl.trim() : null,
               ...(normalized.webhookSecret.trim().length > 0 ? { webhookSecret: normalized.webhookSecret.trim() } : {}),
@@ -367,6 +396,89 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     </Flex>
                   ))}
                   <Button onClick={() => add({ key: "", value: "" })}>Add variable</Button>
+                  <Form.ErrorList errors={errors} />
+                </Flex>
+              )}
+            </Form.List>
+            <Form.List
+              name="envSecrets"
+              rules={[
+                {
+                  validator: async (_, value: RepositoryFormValues["envSecrets"]) => {
+                    const seen = new Set<string>();
+                    for (const entry of value ?? []) {
+                      const key = typeof entry?.key === "string" ? entry.key.trim() : "";
+                      if (!key) {
+                        continue;
+                      }
+                      if (seen.has(key)) {
+                        throw new Error(`Duplicate secret name: ${key}`);
+                      }
+                      seen.add(key);
+                    }
+                  }
+                }
+              ]}
+            >
+              {(fields, { add, remove }, { errors }) => (
+                <Flex vertical gap={8} style={{ marginBottom: 16 }}>
+                  <Typography.Text strong>Environment Secrets</Typography.Text>
+                  <Typography.Text type="secondary">
+                    Secret values are write-only. Existing values are never shown. Leave the value blank to keep a configured secret.
+                  </Typography.Text>
+                  {fields.map((field) => {
+                    const keyName = String(form.getFieldValue(["envSecrets", field.name, "key"]) ?? "").trim();
+                    const configured = (editingRepository?.envSecrets ?? []).some(
+                      (entry) => entry.key === keyName && entry.configured === true
+                    );
+                    return (
+                      <Flex key={field.key} gap={8} align="flex-start" wrap="wrap">
+                        <Form.Item
+                          {...field}
+                          name={[field.name, "key"]}
+                          style={{ flex: 1, marginBottom: 0, minWidth: 220 }}
+                          rules={[
+                            { required: true, whitespace: true, message: "Name is required." },
+                            { max: 128, message: "Name must be 128 characters or fewer." },
+                            {
+                              pattern: /^[A-Za-z_][A-Za-z0-9_]*$/,
+                              message: "Name must match /^[A-Za-z_][A-Za-z0-9_]*$/."
+                            }
+                          ]}
+                        >
+                          <Input placeholder="SECRET_NAME" autoComplete="off" />
+                        </Form.Item>
+                        <Form.Item
+                          {...field}
+                          name={[field.name, "value"]}
+                          style={{ flex: 2, marginBottom: 0, minWidth: 220 }}
+                          dependencies={[["envSecrets", field.name, "key"]]}
+                          rules={[
+                            { max: 8192, message: "Value must be 8192 characters or fewer." },
+                            () => ({
+                              validator(_, value) {
+                                const normalized = typeof value === "string" ? value.trim() : "";
+                                if (!keyName || normalized.length > 0 || configured) {
+                                  return Promise.resolve();
+                                }
+                                return Promise.reject(new Error("Value is required for new secrets."));
+                              }
+                            })
+                          ]}
+                        >
+                          <Input.Password
+                            placeholder={configured ? "Secret is set. Enter a value to replace it." : "secret value"}
+                            autoComplete="new-password"
+                          />
+                        </Form.Item>
+                        <Button danger onClick={() => remove(field.name)}>
+                          Remove
+                        </Button>
+                        {configured ? <Typography.Text type="secondary">Secret set</Typography.Text> : null}
+                      </Flex>
+                    );
+                  })}
+                  <Button onClick={() => add({ key: "", value: "" })}>Add secret</Button>
                   <Form.ErrorList errors={errors} />
                 </Flex>
               )}

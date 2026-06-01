@@ -237,7 +237,7 @@ export class SpawnerService {
     private readonly taskStore: TaskStore,
     private readonly settingsStore: SettingsStore,
     private readonly userStore: UserStore,
-    private readonly repositoryStore: Pick<RepositoryStore, "getRepository">
+    private readonly repositoryStore: Pick<RepositoryStore, "getRepository" | "getRepositoryEnvSecrets">
   ) {}
 
   private formatExecutionLabel(command: string, args: string[]): string {
@@ -4479,10 +4479,11 @@ export class SpawnerService {
 
   async runTask(task: Task, action: TaskAction, input?: TaskExecutionInput | string): Promise<void> {
     this.cancelRequestedTaskIds.delete(task.id);
-    const [settings, runtimeCredentialsRaw, repository, responsePreferenceUser] = await Promise.all([
+    const [settings, runtimeCredentialsRaw, repository, repositoryEnvSecrets, responsePreferenceUser] = await Promise.all([
       this.settingsStore.getSettings(),
       this.settingsStore.getRuntimeCredentials(task.ownerUserId),
       this.repositoryStore.getRepository(task.repoId),
+      this.repositoryStore.getRepositoryEnvSecrets(task.repoId),
       task.ownerUserId ? this.userStore.getAuthSessionUser(task.ownerUserId) : Promise.resolve(null)
     ]);
     const runtimeCredentials =
@@ -4493,6 +4494,7 @@ export class SpawnerService {
       throw new Error("Codex credential source is set to Profile, but your profile Codex auth.json is not configured.");
     }
     const repositoryEnvVars = repository?.envVars ?? [];
+    const repositoryEnvEntries = [...repositoryEnvVars, ...repositoryEnvSecrets];
     const providerDefinition = getProviderRuntimeDefinition(task.provider);
     const missingCredentialMessage = providerDefinition.getMissingCredentialMessage(runtimeCredentials);
     if (missingCredentialMessage) {
@@ -4696,7 +4698,7 @@ export class SpawnerService {
       for (const [name, value] of Object.entries(runtimeMcpEnv)) {
         args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
       }
-      for (const { key, value } of repositoryEnvVars) {
+      for (const { key, value } of repositoryEnvEntries) {
         args.splice(args.length - 1, 0, "-e", `${key}=${value}`);
       }
 

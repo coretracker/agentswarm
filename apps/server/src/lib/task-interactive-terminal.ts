@@ -391,7 +391,7 @@ export interface TaskInteractiveTerminalDeps {
   settingsStore: SettingsStore;
   spawner: SpawnerService;
   userStore: Pick<UserStore, "getUser">;
-  repositoryStore: Pick<RepositoryStore, "getRepository">;
+  repositoryStore: Pick<RepositoryStore, "getRepository" | "getRepositoryEnvSecrets">;
 }
 
 interface ActiveInteractiveTerminalController {
@@ -677,13 +677,14 @@ async function initializeTaskInteractiveTerminalWebSocket(
     const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
     if (mode === "git") {
-      const [credentials, gitIdentity, repository] = await Promise.all([
+      const [credentials, gitIdentity, repository, repositoryEnvSecrets] = await Promise.all([
         deps.settingsStore.getRuntimeCredentials(userId),
         resolveTaskGitCommitIdentity(task, deps.userStore, {
           name: env.GIT_USER_NAME,
           email: env.GIT_USER_EMAIL
         }),
-        deps.repositoryStore.getRepository(task.repoId)
+        deps.repositoryStore.getRepository(task.repoId),
+        deps.repositoryStore.getRepositoryEnvSecrets(task.repoId)
       ]);
       const runtime = resolveGitTerminalRuntimeConfig(credentials, gitIdentity);
       if (!runtime.ok) {
@@ -694,7 +695,8 @@ async function initializeTaskInteractiveTerminalWebSocket(
       const dockerEnv: string[] = [];
       for (const [name, value] of buildGitTerminalDockerEnvEntries({
         runtimeEnvEntries: runtime.envEntries,
-        repositoryEnvVars: repository?.envVars
+        repositoryEnvVars: repository?.envVars,
+        repositoryEnvSecrets
       })) {
         dockerEnv.push("-e", `${name}=${value}`);
       }
@@ -738,10 +740,11 @@ async function initializeTaskInteractiveTerminalWebSocket(
       return;
     }
 
-    const [credentials, settings, repository] = await Promise.all([
+    const [credentials, settings, repository, repositoryEnvSecrets] = await Promise.all([
       deps.settingsStore.getRuntimeCredentials(userId),
       deps.settingsStore.getSettings(),
-      deps.repositoryStore.getRepository(task.repoId)
+      deps.repositoryStore.getRepository(task.repoId),
+      deps.repositoryStore.getRepositoryEnvSecrets(task.repoId)
     ]);
     const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
     if (!runtime.ok) {
@@ -765,6 +768,9 @@ async function initializeTaskInteractiveTerminalWebSocket(
       dockerEnv.push("-e", `${name}=${value}`);
     }
     for (const { key, value } of repository?.envVars ?? []) {
+      dockerEnv.push("-e", `${key}=${value}`);
+    }
+    for (const { key, value } of repositoryEnvSecrets) {
       dockerEnv.push("-e", `${key}=${value}`);
     }
     for (const [name, value] of resolveDockerSocketEnvEntries(dockerSocketPolicy)) {

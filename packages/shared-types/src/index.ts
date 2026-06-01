@@ -340,6 +340,16 @@ export interface RepositoryEnvVar {
   value: string;
 }
 
+export interface RepositoryEnvSecret {
+  key: string;
+  configured: boolean;
+}
+
+export interface RepositoryEnvSecretInput {
+  key: string;
+  value?: string;
+}
+
 export type GitHubAutomationTrigger = "issue_opened" | "pull_request_opened";
 export type GitHubCommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
 
@@ -389,6 +399,7 @@ export interface Repository {
   defaultBranch: string;
   syncStatusEnabled?: boolean;
   envVars: RepositoryEnvVar[];
+  envSecrets?: RepositoryEnvSecret[];
   webhookUrl: string | null;
   webhookEnabled: boolean;
   webhookSecretConfigured: boolean;
@@ -760,6 +771,7 @@ export interface CreateRepositoryInput {
   defaultBranch?: string;
   syncStatusEnabled?: boolean;
   envVars?: RepositoryEnvVar[];
+  envSecrets?: RepositoryEnvSecretInput[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
@@ -773,6 +785,7 @@ export interface UpdateRepositoryInput {
   defaultBranch?: string;
   syncStatusEnabled?: boolean;
   envVars?: RepositoryEnvVar[];
+  envSecrets?: RepositoryEnvSecretInput[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;

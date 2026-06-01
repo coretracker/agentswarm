@@ -308,6 +308,13 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
     `
   },
   {
+    id: "20260601_01_repository_env_secrets",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS env_secrets jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
     id: "20260522_02_workspace_notes",
     sql: `
       ALTER TABLE system_settings

@@ -63,6 +63,10 @@ export function RepositoriesPage() {
                 render: (_, repository) => <Typography.Text>{(repository.envVars ?? []).length}</Typography.Text>
               },
               {
+                title: "Secrets",
+                render: (_, repository) => <Typography.Text>{(repository.envSecrets ?? []).length}</Typography.Text>
+              },
+              {
                 title: "Webhook",
                 render: (_, repository) => {
                   if (!repository.webhookEnabled || !repository.webhookUrl) {

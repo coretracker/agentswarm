@@ -11,6 +11,10 @@ const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
 const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
 const REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH = 8192;
+const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
+const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
+const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
+const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
 
 const repositoryEnvVarsSchema = z
   .array(
@@ -44,12 +48,45 @@ const repositoryEnvVarsSchema = z
     }
   });
 
+const repositoryEnvSecretsSchema = z
+  .array(
+    z.object({
+      key: z
+        .string()
+        .trim()
+        .min(1)
+        .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
+        .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
+      value: z.string().max(REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH).optional()
+    })
+  )
+  .max(REPOSITORY_ENV_SECRET_MAX_COUNT)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const key = entries[index]?.key;
+      if (!key) {
+        continue;
+      }
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "key"],
+          message: `Duplicate secret name: ${key}`
+        });
+      } else {
+        seen.add(key);
+      }
+    }
+  });
+
 const createRepositorySchema = z.object({
   name: z.string().min(1),
   url: z.string().min(1),
   defaultBranch: z.string().min(1).optional(),
   syncStatusEnabled: z.boolean().optional(),
   envVars: repositoryEnvVarsSchema.optional(),
+  envSecrets: repositoryEnvSecretsSchema.optional(),
   webhookUrl: z.string().trim().url().nullable().optional(),
   webhookEnabled: z.boolean().optional(),
   webhookSecret: z.string().trim().min(1).optional(),

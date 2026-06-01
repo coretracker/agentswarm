@@ -15,6 +15,17 @@ Notes:
 - TODO: Document repository connect/sync flow.
 - TODO: Document settings and credentials flow.
 
+## Repository Configuration Flow (Current)
+1. Open `/repositories`.
+2. Create or edit a repository.
+3. Add environment variables (plaintext key/value).
+4. Add environment secrets (write-only values).
+5. Save.
+
+Notes:
+- Existing secrets are shown as configured placeholders only; values are never shown again after save.
+- Editing can keep an existing secret by leaving its value blank, replace it by entering a new value, or delete it by removing the row.
+
 ## Task Flows (New + Existing)
 
 ```mermaid
