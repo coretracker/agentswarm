@@ -227,12 +227,13 @@ export const registerImportRoutes = (
 
       const { startMode, scheduledStartAt, scheduledEndAt, ...rawIssueRest } = parsed.data;
       const isScheduledTask = Boolean(scheduledStartAt && scheduledEndAt);
+      const effectiveStartMode = isScheduledTask ? "run_now" : startMode;
       const settings = await deps.settingsStore.getSettings();
       const issueRest = applyCreateDefaultsFromSettings(rawIssueRest, settings);
       if (
         !requireTaskCapabilityAccess(request, reply, {
           taskType: issueRest.taskType ?? "build",
-          startMode
+          startMode: effectiveStartMode
         })
       ) {
         return;
@@ -241,7 +242,10 @@ export const registerImportRoutes = (
         return;
       }
 
-      const taskInput = await deps.githubImportService.buildTaskInputFromIssue(repository, { ...issueRest, startMode });
+      const taskInput = await deps.githubImportService.buildTaskInputFromIssue(repository, {
+        ...issueRest,
+        startMode: effectiveStartMode
+      });
       const task = await deps.taskStore.createTask(
         {
           ...taskInput,
@@ -268,7 +272,7 @@ export const registerImportRoutes = (
         },
         {
           task: createdTask,
-          startMode,
+          startMode: effectiveStartMode,
           fallbackMessage: "Imported task follow-up failed",
           setPrepareWorkspaceFailureState: true
         }

@@ -537,9 +537,9 @@ export function TaskDefinitionFields({
       : isSequenceSource
         ? "Sequence Variables"
         : "Imported Context";
-  const requirePromptForBlank = !schedulerMode && selectedStartMode === "run_now";
+  const requirePromptForBlank = selectedStartMode === "run_now";
   const disableBlankPromptInput = isBlankSource && selectedStartMode === "prepare_workspace";
-  const canAttachPromptImages = !schedulerMode && isBlankSource && selectedStartMode === "run_now";
+  const canAttachPromptImages = isBlankSource && selectedStartMode === "run_now";
   const canUsePromptMagic = isBlankSource && !disableBlankPromptInput;
   const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
 
@@ -667,14 +667,12 @@ export function TaskDefinitionFields({
                   />
                 </Form.Item>
               </div>
-              {!schedulerMode ? (
-                <TaskPromptAttachmentsInput
-                  files={promptImageFiles}
-                  onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
-                  onError={(errorMessage) => void message.error(errorMessage)}
-                  disabled={!canAttachPromptImages || !onPromptImageFilesChange}
-                />
-              ) : null}
+              <TaskPromptAttachmentsInput
+                files={promptImageFiles}
+                onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
+                onError={(errorMessage) => void message.error(errorMessage)}
+                disabled={!canAttachPromptImages || !onPromptImageFilesChange}
+              />
             </Flex>
           </Form.Item>
           <Form.Item
@@ -915,53 +913,47 @@ export function TaskDefinitionFields({
     <Row gutter={[24, 24]} align="stretch">
       <Col xs={24} xl={8}>
         <Card bordered={false} title="Configuration" styles={{ body: { display: "flex", flexDirection: "column", gap: 0 } }}>
-          {schedulerMode ? (
-            <Form.Item label="Source">
-              <Input value="Blank Task" readOnly />
-            </Form.Item>
-          ) : (
-            <Form.Item name="sourceType" label="Source" rules={[{ required: true }]}>
-              <Select
-                options={sourceOptions}
-                onChange={(value: TaskSourceType) => {
-                  trackEvent("task_source_selected", { source: value });
-                  if (value === "pull_request") {
-                    form.setFieldValue("taskType", "build");
-                    form.setFieldValue("branchStrategy", "work_on_branch");
-                    form.setFieldValue("startMode", "run_now");
-                  }
-                  if (value === "issue") {
-                    form.setFieldValue("startMode", "run_now");
-                  }
-                  if (value === "snippet") {
-                    form.setFieldValue("startMode", "run_now");
-                    form.setFieldValue("taskType", "build");
-                  }
-                  if (value === "sequence") {
-                    form.setFieldValue("startMode", "run_now");
-                    form.setFieldValue("taskType", "build");
-                  }
+          <Form.Item name="sourceType" label="Source" rules={[{ required: true }]}>
+            <Select
+              options={sourceOptions}
+              onChange={(value: TaskSourceType) => {
+                trackEvent("task_source_selected", { source: value });
+                if (value === "pull_request") {
+                  form.setFieldValue("taskType", "build");
+                  form.setFieldValue("branchStrategy", "work_on_branch");
+                  form.setFieldValue("startMode", "run_now");
+                }
+                if (value === "issue") {
+                  form.setFieldValue("startMode", "run_now");
+                }
+                if (value === "snippet") {
+                  form.setFieldValue("startMode", "run_now");
+                  form.setFieldValue("taskType", "build");
+                }
+                if (value === "sequence") {
+                  form.setFieldValue("startMode", "run_now");
+                  form.setFieldValue("taskType", "build");
+                }
 
-                  if (value !== "blank") {
-                    form.setFieldValue("prompt", undefined);
-                  }
+                if (value !== "blank") {
+                  form.setFieldValue("prompt", undefined);
+                }
 
-                  if (value === "issue" || value === "pull_request") {
-                    form.setFieldValue("title", undefined);
-                    form.setFields([{ name: "title", touched: false }]);
-                  }
-                  if (value !== "snippet") {
-                    form.setFieldValue("snippetId", undefined);
-                    form.setFieldValue("snippetVariables", undefined);
-                  }
-                  if (value !== "sequence") {
-                    form.setFieldValue("sequenceId", undefined);
-                    form.setFieldValue("sequenceVariables", undefined);
-                  }
-                }}
-              />
-            </Form.Item>
-          )}
+                if (value === "issue" || value === "pull_request") {
+                  form.setFieldValue("title", undefined);
+                  form.setFields([{ name: "title", touched: false }]);
+                }
+                if (value !== "snippet") {
+                  form.setFieldValue("snippetId", undefined);
+                  form.setFieldValue("snippetVariables", undefined);
+                }
+                if (value !== "sequence") {
+                  form.setFieldValue("sequenceId", undefined);
+                  form.setFieldValue("sequenceVariables", undefined);
+                }
+              }}
+            />
+          </Form.Item>
 
           <Form.Item name="repoId" label="Repository" rules={[{ required: true }]}>
             <Select

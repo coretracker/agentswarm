@@ -1293,7 +1293,7 @@ export const registerTaskRoutes = (
       ...rawCreatePayload
     } = parsed.data;
     const isScheduledTask = Boolean(scheduledStartAt && scheduledEndAt);
-    const effectiveStartMode = startMode;
+    const effectiveStartMode = isScheduledTask ? "run_now" : startMode;
     const settings = await deps.settingsStore.getSettings();
     const createPayload = applyCreateDefaultsFromSettings(rawCreatePayload, settings);
     let sequenceStepPrompts: string[] = [];
@@ -1321,9 +1321,6 @@ export const registerTaskRoutes = (
       sequenceId = sequence.id;
       sequenceExecutionMode = sequence.executionMode;
       createPayload.prompt = sequenceStepPrompts[0] ?? "";
-    }
-    if (isScheduledTask && attachmentUploads.length > 0) {
-      return reply.status(400).send({ message: "Image attachments are not supported for scheduled tasks." });
     }
     if (attachmentUploads.length > 0 && effectiveStartMode !== "run_now") {
       return reply.status(400).send({ message: "Image attachments are only supported when start mode is Run now." });
@@ -1386,7 +1383,7 @@ export const registerTaskRoutes = (
     }
 
     let persistedAttachments: TaskPromptAttachment[] = [];
-    if (!isScheduledTask && attachmentUploads.length > 0) {
+    if (attachmentUploads.length > 0) {
       try {
         persistedAttachments = await persistTaskPromptAttachments(createdTask.id, attachmentUploads);
       } catch (error) {
@@ -1790,13 +1787,19 @@ export const registerTaskRoutes = (
         return replyWithMutationBlocked(reply, blocked);
       }
 
+      const promptMessage = (await deps.taskStore.listMessages(task.id)).find(
+        (message) => message.role === "user" && message.action === action
+      );
+      const promptAttachments = promptMessage?.attachments ?? [];
+
       if (task.taskSource === "sequence" && task.sequenceRunId) {
         const sequenceRun = await deps.sequenceStore.getRun(task.sequenceRunId);
         const stepPrompts = sequenceRun?.steps.map((step) => step.prompt).filter((prompt) => prompt.trim().length > 0) ?? [];
         if (sequenceRun && stepPrompts.length > 0) {
           const initialRuns = await deps.taskStore.listRuns(task.id);
           const accepted = await deps.scheduler.triggerAction(task.id, action, {
-            content: stepPrompts[0]
+            content: stepPrompts[0],
+            ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {})
           });
           if (!accepted) {
             return reply.status(409).send({ message: "Task execution could not be started" });
@@ -1840,7 +1843,8 @@ export const registerTaskRoutes = (
       }
 
       const accepted = await deps.scheduler.triggerAction(task.id, action, {
-        content: task.prompt
+        content: task.prompt,
+        ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {})
       });
       if (!accepted) {
         return reply.status(409).send({ message: "Task execution could not be started" });
