@@ -156,6 +156,7 @@ export function TasksKanbanBoardPage() {
   const { drafts, setDrafts, loading: draftsLoading } = useTaskDrafts();
   const [movingTaskId, setMovingTaskId] = useState<string | null>(null);
   const [taskCreateModalOpen, setTaskCreateModalOpen] = useState(false);
+  const [selectedDraft, setSelectedDraft] = useState<TaskDraft | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const loading = tasksLoading || draftsLoading;
   const canCreateTask = can("task:create");
@@ -180,7 +181,23 @@ export function TasksKanbanBoardPage() {
   );
 
   const openItem = (item: BoardItem) => {
-    router.push(item.type === "draft" ? `/tasks/drafts/${item.draft.id}` : `/tasks/${item.task.id}`);
+    if (item.type === "draft") {
+      setSelectedDraft(item.draft);
+      setTaskCreateModalOpen(true);
+      return;
+    }
+
+    router.push(`/tasks/${item.task.id}`);
+  };
+
+  const openCreateModal = () => {
+    setSelectedDraft(null);
+    setTaskCreateModalOpen(true);
+  };
+
+  const closeCreateModal = () => {
+    setTaskCreateModalOpen(false);
+    setSelectedDraft(null);
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
@@ -215,7 +232,7 @@ export function TasksKanbanBoardPage() {
           </Flex>
           <Space>
             <Button onClick={() => router.push("/tasks")}>Table</Button>
-            {canCreateTask ? <Button type="primary" onClick={() => setTaskCreateModalOpen(true)}>New Task</Button> : null}
+            {canCreateTask ? <Button type="primary" onClick={openCreateModal}>New Task</Button> : null}
           </Space>
         </Flex>
         {loading ? (
@@ -226,7 +243,7 @@ export function TasksKanbanBoardPage() {
           <DndContext sensors={sensors} onDragEnd={(event) => void handleDragEnd(event)}>
             <Flex gap={16} align="stretch" style={{ overflowX: "auto", paddingBottom: 12 }}>
               {columns.map((column) => (
-                <KanbanColumn key={column.id} column={column} canCreate={canCreateTask} onAdd={() => setTaskCreateModalOpen(true)}>
+                <KanbanColumn key={column.id} column={column} canCreate={canCreateTask} onAdd={openCreateModal}>
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                     {itemsByColumn[column.id].length} item{itemsByColumn[column.id].length === 1 ? "" : "s"}
                   </Typography.Text>
@@ -248,12 +265,19 @@ export function TasksKanbanBoardPage() {
       </Flex>
       <TaskCreateModal
         open={taskCreateModalOpen}
-        onClose={() => setTaskCreateModalOpen(false)}
+        draft={selectedDraft}
+        onClose={closeCreateModal}
         onCreated={(task) => {
           setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
         }}
         onDraftCreated={(draft) => {
           setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
+        }}
+        onDraftUpdated={(draft) => {
+          setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
+        }}
+        onDraftDeleted={(draftId) => {
+          setDrafts((current) => current.filter((item) => item.id !== draftId));
         }}
       />
     </>
