@@ -13244,61 +13244,6 @@ local-plans
 task-workspaces
 ````
 
-## File: .repomixignore
-````
-# Add patterns to ignore here, one per line
-# Example:
-# *.log
-# tmp/
-````
-
-## File: repomix.config.json
-````json
-{
-  "$schema": "https://repomix.com/schemas/latest/schema.json",
-  "input": {
-    "maxFileSize": 52428800
-  },
-  "output": {
-    "filePath": "docs/repomix.md",
-    "style": "markdown",
-    "parsableStyle": false,
-    "fileSummary": true,
-    "directoryStructure": true,
-    "files": true,
-    "removeComments": false,
-    "removeEmptyLines": false,
-    "compress": false,
-    "topFilesLength": 5,
-    "showLineNumbers": false,
-    "truncateBase64": false,
-    "copyToClipboard": false,
-    "includeFullDirectoryStructure": false,
-    "tokenCountTree": false,
-    "git": {
-      "sortByChanges": true,
-      "sortByChangesMaxCommits": 100,
-      "includeDiffs": false,
-      "includeLogs": false,
-      "includeLogsCount": 50
-    }
-  },
-  "include": [],
-  "ignore": {
-    "useGitignore": true,
-    "useDotIgnore": true,
-    "useDefaultPatterns": true,
-    "customPatterns": []
-  },
-  "security": {
-    "enableSecurityCheck": true
-  },
-  "tokenCount": {
-    "encoding": "o200k_base"
-  }
-}
-````
-
 ## File: tsconfig.base.json
 ````json
 {
@@ -20623,127 +20568,6 @@ Complex tasks must record this evidence in the execution plan:
 Use `docs/exec-plans/template.md` and keep the evidence checklist current while implementing.
 ````
 
-## File: docs/development/setup.md
-````markdown
-# Development Setup
-
-## Goal
-Bring a clean checkout to a running app with one predictable flow.
-
-## Prerequisites
-- Docker with Docker Compose.
-- Bash shell.
-- Optional for Docker-only startup: Node 20+ and npm.
-- Required for local check/test/pr-ready flows: Node 20+ and npm.
-- Required when installing dependencies locally: `python3` (needed by `node-gyp` for native modules such as `node-pty`).
-
-## Remote Build Environment
-If your environment sets `REMOTE_BUILD=1`, harness scripts execute in Remote Build Runner.
-
-Before running harness commands in that mode:
-- Set `REMOTE_BUILD_IMAGE`.
-- Optional: set `REMOTE_BUILD_RUNNER_URL` if not using the default endpoint.
-- Ensure the remote image includes: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
-
-To run commands locally instead, set `REMOTE_BUILD=0`.
-If host ports are already in use, set `PUBLIC_PORT`, `REDIS_HOST_PORT`, and `POSTGRES_HOST_PORT`.
-
-## 1) Setup Command (Clean Checkout)
-Run from repository root:
-
-```bash
-HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-```
-
-What it does:
-- Creates `.env` from `.env.example` if missing.
-- Ensures runtime folders exist (`local-plans`, `task-workspaces`).
-- Runs `./agentswarm.sh init` (builds and starts required containers).
-- Installs npm dependencies (because `HARNESS_INSTALL_NPM_DEPS=1` is set above).
-
-If you only need Docker services and do not plan to run local checks/tests:
-
-```bash
-./scripts/harness/setup.sh
-```
-
-Optional flags:
-- Reset local DB/cache volumes first:
-
-```bash
-HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
-```
-
-- Also install npm dependencies:
-
-```bash
-HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-```
-
-If you plan to run `./scripts/harness/check.sh`, `./scripts/harness/test.sh`, or `./scripts/harness/pr-ready.sh`, install dependencies first.
-
-## 2) Environment Template
-Use `.env.example` as the template.
-
-If `.env` is missing, setup creates it automatically.
-
-Important values in template:
-- `PUBLIC_PORT` (default `3217`)
-- `REDIS_HOST_PORT` (default `6379`)
-- `POSTGRES_HOST_PORT` (default `5432`)
-- `TASK_WORKSPACE_HOST_ROOT` (optional absolute host path override)
-- `LOCAL_PLANS_HOST_ROOT` (optional absolute host path override)
-- `NGINX_CONF_HOST_PATH` (optional absolute host path override)
-- `DEFAULT_ADMIN_EMAIL`
-- `DEFAULT_ADMIN_PASSWORD`
-- `DATABASE_URL`
-
-## 3) Local Database Setup / Reset
-Default Docker flow starts Redis and Postgres from `docker-compose.yml`.
-
-Reset data when needed:
-
-```bash
-HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
-```
-
-This removes local Docker volumes for the stack and recreates services.
-
-## 4) Seed Data
-On first boot, the server creates the admin user using:
-- `DEFAULT_ADMIN_EMAIL`
-- `DEFAULT_ADMIN_PASSWORD`
-
-Defaults are in `.env.example`.
-
-No separate seed command is required for this default admin bootstrap.
-
-## 5) Start Command
-Start the app and wait for health:
-
-```bash
-./scripts/harness/start.sh
-```
-
-## 6) Health Check
-`start.sh` automatically waits for:
-
-- `http://localhost:<PUBLIC_PORT>/api/health`
-
-Manual check example:
-
-```bash
-curl -fsS http://localhost:3217/api/health
-```
-
-## External Credentials
-GitHub/OpenAI/Anthropic credentials are configured in the app Settings UI, not in `.env`.
-
-## TODO
-- TODO: Document a fully verified host-only (non-Docker) local startup path end-to-end.
-- TODO: Document any required external service accounts for production-like runs.
-````
-
 ## File: docs/development/testing.md
 ````markdown
 # Testing
@@ -21974,104 +21798,6 @@ fi
 echo "[harness:human-gated] check passed"
 ````
 
-## File: scripts/harness/doctor.sh
-````bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-
-source "${SCRIPT_DIR}/lib/remote-build.sh"
-ensure_remote_build_execution "$REPO_ROOT" "./scripts/harness/doctor.sh" "$@"
-
-cd "$REPO_ROOT"
-
-log() {
-  echo "[harness:doctor] $1"
-}
-
-require_cmd() {
-  local cmd="$1"
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "[harness:doctor] error: required command not found: $cmd" >&2
-    exit 1
-  fi
-}
-
-log "repo root: $REPO_ROOT"
-
-require_cmd bash
-require_cmd docker
-require_cmd node
-require_cmd npm
-
-if [[ ! -d node_modules ]]; then
-  require_cmd python3
-fi
-
-if ! docker compose version >/dev/null 2>&1 && ! command -v docker-compose >/dev/null 2>&1; then
-  echo "[harness:doctor] error: Docker Compose is required" >&2
-  exit 1
-fi
-if ! docker info >/dev/null 2>&1; then
-  echo "[harness:doctor] error: Docker daemon is not reachable. Start Docker and retry." >&2
-  exit 1
-fi
-
-if [[ ! -f package.json || ! -f package-lock.json ]]; then
-  echo "[harness:doctor] error: package.json and package-lock.json are required at repo root" >&2
-  exit 1
-fi
-
-if [[ ! -f .env && ! -f .env.example ]]; then
-  echo "[harness:doctor] error: no environment template found (.env or .env.example)" >&2
-  exit 1
-fi
-
-if [[ -f .env.example ]]; then
-  for required_key in DEFAULT_ADMIN_EMAIL DEFAULT_ADMIN_PASSWORD PUBLIC_PORT DATABASE_URL; do
-    if ! grep -q "^${required_key}=" .env.example; then
-      echo "[harness:doctor] error: .env.example is missing required key: ${required_key}" >&2
-      exit 1
-    fi
-  done
-fi
-
-if [[ ! -x ./agentswarm.sh ]]; then
-  echo "[harness:doctor] error: ./agentswarm.sh is missing or not executable" >&2
-  exit 1
-fi
-
-for script in ./scripts/harness/setup.sh ./scripts/harness/start.sh ./scripts/harness/check.sh ./scripts/harness/check-docs.sh ./scripts/harness/test.sh ./scripts/harness/pr-ready.sh ./scripts/harness/logs.sh; do
-  if [[ ! -x "$script" ]]; then
-    echo "[harness:doctor] error: harness script missing or not executable: $script" >&2
-    exit 1
-  fi
-done
-
-log "node version: $(node -v)"
-log "npm version: $(npm -v)"
-if command -v python3 >/dev/null 2>&1; then
-  log "python3 version: $(python3 --version 2>/dev/null || echo unknown)"
-fi
-
-log "validating Docker Compose configuration"
-if docker compose version >/dev/null 2>&1; then
-  docker compose config >/dev/null
-else
-  docker-compose config >/dev/null
-fi
-
-log "validating npm workspace scripts"
-npm run >/dev/null
-npm run -w @agentswarm/server >/dev/null
-npm run -w @agentswarm/web >/dev/null
-
-log "doctor checks passed"
-log "next: run ./scripts/harness/setup.sh"
-````
-
 ## File: scripts/harness/logs.sh
 ````bash
 #!/usr/bin/env bash
@@ -22412,6 +22138,14 @@ local-plans/
 task-workspaces/
 ````
 
+## File: .repomixignore
+````
+# Add patterns to ignore here, one per line
+# Example:
+# *.log
+# tmp/
+````
+
 ## File: agentswarm.sh
 ````bash
 #!/usr/bin/env bash
@@ -22706,6 +22440,53 @@ export default defineConfig({
     }
   ]
 });
+````
+
+## File: repomix.config.json
+````json
+{
+  "$schema": "https://repomix.com/schemas/latest/schema.json",
+  "input": {
+    "maxFileSize": 52428800
+  },
+  "output": {
+    "filePath": "docs/repomix.md",
+    "style": "markdown",
+    "parsableStyle": false,
+    "fileSummary": true,
+    "directoryStructure": true,
+    "files": true,
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "compress": false,
+    "topFilesLength": 5,
+    "showLineNumbers": false,
+    "truncateBase64": false,
+    "copyToClipboard": false,
+    "includeFullDirectoryStructure": false,
+    "tokenCountTree": false,
+    "git": {
+      "sortByChanges": true,
+      "sortByChangesMaxCommits": 100,
+      "includeDiffs": false,
+      "includeLogs": false,
+      "includeLogsCount": 50
+    }
+  },
+  "include": [],
+  "ignore": {
+    "useGitignore": true,
+    "useDotIgnore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": []
+  },
+  "security": {
+    "enableSecurityCheck": true
+  },
+  "tokenCount": {
+    "encoding": "o200k_base"
+  }
+}
 ````
 
 ## File: apps/server/src/lib/auth.ts
@@ -23975,6 +23756,3424 @@ export function RepositoriesPage() {
 }
 ````
 
+## File: apps/web/components/snippet-editor-page.tsx
+````typescript
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import type { Snippet } from "@agentswarm/shared-types";
+import { ArrowDownOutlined, ArrowUpOutlined, CopyOutlined, MinusCircleOutlined, PlusOutlined } from "@ant-design/icons";
+import { Button, Card, Flex, Form, Input, Result, Select, Space, Spin, Typography, message } from "antd";
+import { ApiError, api } from "../src/api/client";
+import { trackEvent } from "../src/utils/analytics";
+import { useAuth } from "./auth-provider";
+
+interface SnippetEditorPageProps {
+  mode: "create" | "edit";
+  snippetId?: string;
+}
+
+interface SnippetFormValues {
+  name: string;
+  content: string;
+  variables: Array<{
+    name: string;
+    type: "text" | "multiline";
+    title: string;
+    description: string;
+    defaultValue: string;
+  }>;
+}
+
+const emptyValues = (): SnippetFormValues => ({
+  name: "",
+  content: "",
+  variables: []
+});
+
+const normalizeValues = (values?: Partial<SnippetFormValues> | null): SnippetFormValues => ({
+  name: typeof values?.name === "string" ? values.name : "",
+  content: typeof values?.content === "string" ? values.content : "",
+  variables: (values?.variables ?? []).map((entry) => ({
+    name: typeof entry?.name === "string" ? entry.name : "",
+    type: entry?.type === "multiline" ? "multiline" : "text",
+    title: typeof entry?.title === "string" ? entry.title : "",
+    description: typeof entry?.description === "string" ? entry.description : "",
+    defaultValue: typeof entry?.defaultValue === "string" ? entry.defaultValue : ""
+  }))
+});
+
+const snapshotValues = (values?: Partial<SnippetFormValues> | null): string => JSON.stringify(normalizeValues(values));
+
+export function SnippetEditorPage({ mode, snippetId }: SnippetEditorPageProps) {
+  const router = useRouter();
+  const { can } = useAuth();
+  const canDuplicateSnippet = can("snippet:create");
+  const searchParams = useSearchParams();
+  const entryPoint = searchParams.get("from") === "list" ? "list" : "direct_url";
+  const [form] = Form.useForm<SnippetFormValues>();
+  const [messageApi, contextHolder] = message.useMessage();
+  const [submitting, setSubmitting] = useState(false);
+  const [loading, setLoading] = useState(mode === "edit");
+  const [notFound, setNotFound] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [editingSnippet, setEditingSnippet] = useState<Snippet | null>(null);
+  const [duplicating, setDuplicating] = useState(false);
+  const [initialSnapshot, setInitialSnapshot] = useState("");
+  const watchedValues = Form.useWatch([], form) as SnippetFormValues | undefined;
+  const currentSnippetName = Form.useWatch("name", form) ?? "";
+  const currentSnippetContent = Form.useWatch("content", form) ?? "";
+
+  const hasUnsavedChanges = useMemo(() => {
+    if (!initialSnapshot) {
+      return false;
+    }
+    return snapshotValues(watchedValues) !== initialSnapshot;
+  }, [initialSnapshot, watchedValues]);
+
+  useEffect(() => {
+    trackEvent("snippet_editor_opened", { mode, entry_point: entryPoint });
+  }, [entryPoint, mode]);
+
+  useEffect(() => {
+    if (mode !== "create") {
+      return;
+    }
+    const initial = emptyValues();
+    form.setFieldsValue(initial);
+    setInitialSnapshot(snapshotValues(initial));
+    setLoading(false);
+  }, [form, mode]);
+
+  useEffect(() => {
+    if (mode !== "edit" || !snippetId) {
+      return;
+    }
+
+    let active = true;
+    setLoading(true);
+    setNotFound(false);
+    setLoadError(null);
+
+    void api
+      .getSnippet(snippetId)
+      .then((snippet) => {
+        if (!active) {
+          return;
+        }
+        setEditingSnippet(snippet);
+        const initial = normalizeValues(snippet);
+        form.setFieldsValue(initial);
+        setInitialSnapshot(snapshotValues(initial));
+      })
+      .catch((error: unknown) => {
+        if (!active) {
+          return;
+        }
+        if (error instanceof ApiError && error.status === 404) {
+          setNotFound(true);
+          return;
+        }
+        setLoadError(error instanceof Error ? error.message : "Failed to load snippet");
+      })
+      .finally(() => {
+        if (active) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [form, mode, snippetId]);
+
+  useEffect(() => {
+    if (!hasUnsavedChanges || typeof window === "undefined") {
+      return;
+    }
+
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [hasUnsavedChanges]);
+
+  const confirmLeave = (): boolean => {
+    if (!hasUnsavedChanges || typeof window === "undefined") {
+      return true;
+    }
+    return window.confirm("Discard unsaved changes?");
+  };
+
+  const goBack = () => {
+    if (!confirmLeave()) {
+      return;
+    }
+    router.push("/snippets");
+  };
+
+  const copySnippetToClipboard = async (content: string, label: string) => {
+    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      messageApi.error("Clipboard access is unavailable in this browser.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(content);
+      messageApi.success(`${label} copied`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to copy snippet");
+    }
+  };
+
+  const handleDuplicateSnippet = async () => {
+    if (mode !== "edit" || !editingSnippet || !canDuplicateSnippet) {
+      return;
+    }
+    setDuplicating(true);
+    try {
+      const duplicated = await api.duplicateSnippet(editingSnippet.id);
+      trackEvent("snippet_duplicated", {
+        source: "editor",
+        snippet_id: editingSnippet.id,
+        duplicated_snippet_id: duplicated.id
+      });
+      messageApi.success("Snippet duplicated");
+      router.push(`/snippets/${duplicated.id}/edit?from=duplicate`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to duplicate snippet");
+    } finally {
+      setDuplicating(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <Flex align="center" justify="center" style={{ minHeight: 320 }}>
+        <Spin />
+      </Flex>
+    );
+  }
+
+  if (mode === "edit" && (notFound || !snippetId)) {
+    return (
+      <Result
+        status="404"
+        title="Snippet not found"
+        subTitle="The snippet may have been deleted or you may not have access to it."
+        extra={<Button onClick={() => router.push("/snippets")}>Back to Snippets</Button>}
+      />
+    );
+  }
+
+  if (mode === "edit" && loadError) {
+    return (
+      <Result
+        status="error"
+        title="Snippet unavailable"
+        subTitle={loadError}
+        extra={<Button onClick={() => router.push("/snippets")}>Back to Snippets</Button>}
+      />
+    );
+  }
+
+  const title = mode === "edit" ? "Edit Snippet" : "Add Snippet";
+
+  return (
+    <>
+      {contextHolder}
+      <Form
+        form={form}
+        layout="vertical"
+        onFinish={async (values) => {
+          setSubmitting(true);
+          try {
+            const payload = normalizeValues(values);
+            if (mode === "edit" && editingSnippet) {
+              await api.updateSnippet(editingSnippet.id, payload);
+            } else {
+              await api.createSnippet(payload);
+            }
+            trackEvent("snippet_saved", { mode, entry_point: entryPoint });
+            router.push(`/snippets?saved=${mode === "edit" ? "updated" : "created"}`);
+          } catch (error) {
+            trackEvent("snippet_save_failed", { mode, entry_point: entryPoint });
+            messageApi.error(error instanceof Error ? error.message : "Failed to save snippet");
+          } finally {
+            setSubmitting(false);
+          }
+        }}
+      >
+        <Flex vertical gap={16}>
+          <Flex align="center" justify="space-between" gap={16} wrap="wrap">
+            <Flex vertical gap={0}>
+              <Typography.Title level={2} style={{ margin: 0 }}>
+                {title}
+              </Typography.Title>
+              <Typography.Text type="secondary">
+                Store reusable text blocks and insert them into task prompts and follow-up messages.
+              </Typography.Text>
+            </Flex>
+            <Space wrap>
+              <Button
+                icon={<CopyOutlined />}
+                onClick={() => void copySnippetToClipboard(currentSnippetContent, currentSnippetName.trim() || "Snippet")}
+                disabled={!currentSnippetContent.trim()}
+              >
+                Copy
+              </Button>
+              {mode === "edit" && canDuplicateSnippet ? (
+                <Button onClick={() => void handleDuplicateSnippet()} loading={duplicating}>
+                  Duplicate
+                </Button>
+              ) : null}
+              <Button onClick={goBack}>Cancel</Button>
+              <Button type="primary" htmlType="submit" loading={submitting}>
+                {mode === "edit" ? "Save" : "Create"}
+              </Button>
+            </Space>
+          </Flex>
+
+          <Card bordered={false}>
+            <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a snippet name" }]}>
+              <Input placeholder="Repository context reminder" />
+            </Form.Item>
+            <Form.Item name="content" label="Content" rules={[{ required: true, message: "Enter snippet content" }]}>
+              <Input.TextArea rows={10} placeholder="Text that should be inserted into prompt fields." />
+            </Form.Item>
+            <Form.List
+              name="variables"
+              rules={[
+                {
+                  validator: async (_, value: SnippetFormValues["variables"]) => {
+                    const seen = new Set<string>();
+                    for (const entry of value ?? []) {
+                      const name = typeof entry?.name === "string" ? entry.name.trim() : "";
+                      if (!name) {
+                        continue;
+                      }
+                      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+                        throw new Error(`Invalid variable name: ${name}`);
+                      }
+                      if (seen.has(name)) {
+                        throw new Error(`Duplicate variable name: ${name}`);
+                      }
+                      seen.add(name);
+                    }
+                  }
+                }
+              ]}
+            >
+              {(fields, { add, remove, move }, { errors }) => (
+                <Flex vertical gap={8} style={{ marginBottom: 16 }}>
+                  <Flex justify="space-between" align="center">
+                    <Typography.Text strong>Variables</Typography.Text>
+                    <Button
+                      size="small"
+                      icon={<PlusOutlined />}
+                      onClick={() => add({ name: "", type: "text", title: "", description: "", defaultValue: "" })}
+                    >
+                      Add Variable
+                    </Button>
+                  </Flex>
+                  {fields.map((field, index) => (
+                    <Card key={field.key} size="small">
+                      <Flex justify="space-between" align="center" style={{ marginBottom: 8 }}>
+                        <Typography.Text strong>{`Variable ${index + 1}`}</Typography.Text>
+                        <Space size={4}>
+                          <Button
+                            icon={<ArrowUpOutlined />}
+                            disabled={index === 0}
+                            onClick={() => {
+                              const variables = (form.getFieldValue("variables") as SnippetFormValues["variables"] | undefined) ?? [];
+                              const variableName = variables[index]?.name ?? "";
+                              move(index, index - 1);
+                              trackEvent("snippet_variable_reordered", {
+                                variable_name: variableName,
+                                from_index: index,
+                                to_index: index - 1,
+                                editor_mode: mode
+                              });
+                            }}
+                          />
+                          <Button
+                            icon={<ArrowDownOutlined />}
+                            disabled={index === fields.length - 1}
+                            onClick={() => {
+                              const variables = (form.getFieldValue("variables") as SnippetFormValues["variables"] | undefined) ?? [];
+                              const variableName = variables[index]?.name ?? "";
+                              move(index, index + 1);
+                              trackEvent("snippet_variable_reordered", {
+                                variable_name: variableName,
+                                from_index: index,
+                                to_index: index + 1,
+                                editor_mode: mode
+                              });
+                            }}
+                          />
+                          <Button type="text" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)} />
+                        </Space>
+                      </Flex>
+                      <Flex gap={8} align="flex-start">
+                        <Form.Item
+                          name={[field.name, "name"]}
+                          style={{ marginBottom: 8, flex: 1 }}
+                          rules={[{ required: true, message: "Name is required" }]}
+                        >
+                          <Input placeholder="name (used as {{name}})" />
+                        </Form.Item>
+                        <Form.Item name={[field.name, "type"]} style={{ marginBottom: 8, width: 140 }} initialValue="text">
+                          <Select
+                            options={[
+                              { label: "Text", value: "text" },
+                              { label: "Multiline", value: "multiline" }
+                            ]}
+                          />
+                        </Form.Item>
+                      </Flex>
+                      <Form.Item name={[field.name, "title"]} style={{ marginBottom: 8 }}>
+                        <Input placeholder="Title (shown in insert form)" />
+                      </Form.Item>
+                      <Form.Item name={[field.name, "description"]} style={{ marginBottom: 0 }}>
+                        <Input placeholder="Description (helper text in insert form)" />
+                      </Form.Item>
+                      <Form.Item
+                        noStyle
+                        shouldUpdate={(prev, next) => {
+                          const prevType = prev?.variables?.[field.name]?.type;
+                          const nextType = next?.variables?.[field.name]?.type;
+                          return prevType !== nextType;
+                        }}
+                      >
+                        {({ getFieldValue }) => {
+                          const variableType = getFieldValue(["variables", field.name, "type"]) as "text" | "multiline" | undefined;
+                          return (
+                            <Form.Item name={[field.name, "defaultValue"]} style={{ marginBottom: 0, marginTop: 8 }}>
+                              {variableType === "multiline" ? (
+                                <Input.TextArea rows={2} placeholder="Default value (pre-filled when inserting)" />
+                              ) : (
+                                <Input placeholder="Default value (single line)" />
+                              )}
+                            </Form.Item>
+                          );
+                        }}
+                      </Form.Item>
+                    </Card>
+                  ))}
+                  {errors.length > 0 ? <Typography.Text type="danger">{errors.join(", ")}</Typography.Text> : null}
+                </Flex>
+              )}
+            </Form.List>
+          </Card>
+        </Flex>
+      </Form>
+    </>
+  );
+}
+````
+
+## File: apps/web/e2e/auth.smoke.spec.ts
+````typescript
+import { expect, test } from "@playwright/test";
+
+const loginEmail = process.env.AGENTSWARM_E2E_EMAIL ?? "admin@agentswarm.local";
+const loginPassword = process.env.AGENTSWARM_E2E_PASSWORD ?? "admin123!";
+
+test("smoke: login route renders", async ({ page }) => {
+  await page.goto("/login");
+
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  await expect(page.getByLabel("Email")).toBeVisible();
+  await expect(page.getByLabel("Password")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
+});
+
+test("smoke: main route redirects to login when signed out", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page).toHaveURL(/\/login$/, { timeout: 20_000 });
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+});
+
+test("happy path: seeded admin can sign in", async ({ page }) => {
+  await page.goto("/login");
+
+  await page.getByLabel("Email").fill(loginEmail);
+  await page.getByLabel("Password").fill(loginPassword);
+  await page.getByTestId("login-submit-button").click();
+
+  await expect(page).toHaveURL(/\/(tasks|snippets|sequences|repositories|settings|users)(\/.*)?$/, { timeout: 20_000 });
+  await expect(page.getByRole("button", { name: "Logout" })).toBeVisible();
+});
+````
+
+## File: apps/web/src/hooks/useTasks.ts
+````typescript
+"use client";
+
+import { useEffect, useState } from "react";
+import type { Task } from "@agentswarm/shared-types";
+import { api } from "../api/client";
+import { useSocket } from "./useSocket";
+
+const sortTasks = (items: Task[]): Task[] =>
+  [...items].sort((a, b) => {
+    if (a.pinned !== b.pinned) {
+      return a.pinned ? -1 : 1;
+    }
+    return b.createdAt.localeCompare(a.createdAt);
+  });
+interface TaskDeletedPayload {
+  id: string;
+}
+
+function matchesTaskView(task: Task, view: "all" | "active" | "archived"): boolean {
+  if (view === "active") {
+    return task.status !== "archived";
+  }
+  if (view === "archived") {
+    return task.status === "archived";
+  }
+  return true;
+}
+
+export const useTasks = ({
+  enabled = true,
+  view = "all",
+  limit
+}: {
+  enabled?: boolean;
+  view?: "all" | "active" | "archived";
+  limit?: number;
+} = {}) => {
+  const socket = useSocket();
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(enabled);
+
+  useEffect(() => {
+    if (!enabled) {
+      setTasks([]);
+      setLoading(false);
+      return;
+    }
+
+    let active = true;
+    setLoading(true);
+
+    void api
+      .listTasks({ view, limit })
+      .then((items) => {
+        if (!active) {
+          return;
+        }
+
+        setTasks(sortTasks(items));
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!active) {
+          return;
+        }
+
+        setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [enabled, limit, view]);
+
+  useEffect(() => {
+    if (!enabled || !socket) {
+      return;
+    }
+
+    const onTaskUpdate = (task: Task) => {
+      setTasks((current) => {
+        const next = current.filter((item) => item.id !== task.id);
+        if (matchesTaskView(task, view)) {
+          next.unshift({ ...task, logs: [] });
+        }
+        const sorted = sortTasks(next);
+        if (limit != null && Number.isFinite(limit)) {
+          return sorted.slice(0, Math.max(0, limit));
+        }
+        return sorted;
+      });
+    };
+
+    const onTaskDelete = (payload: TaskDeletedPayload) => {
+      setTasks((current) => current.filter((task) => task.id !== payload.id));
+    };
+
+    socket.on("task:created", onTaskUpdate);
+    socket.on("task:updated", onTaskUpdate);
+    socket.on("task:deleted", onTaskDelete);
+
+    return () => {
+      socket.off("task:created", onTaskUpdate);
+      socket.off("task:updated", onTaskUpdate);
+      socket.off("task:deleted", onTaskDelete);
+    };
+  }, [enabled, limit, socket, view]);
+
+  return { tasks, setTasks, loading };
+};
+````
+
+## File: apps/web/src/theme/code-highlighting.ts
+````typescript
+import type { CSSProperties } from "react";
+import type { PrismTheme } from "prism-react-renderer";
+import { themes } from "prism-react-renderer";
+import type { GlobalToken } from "antd/es/theme/interface";
+import { isDarkAppTheme, type AppThemeMode } from "./antd-theme";
+
+type HighlightTokenKind = "plain" | "comment" | "keyword" | "number" | "string";
+
+type TokenStyleMap = Record<HighlightTokenKind, CSSProperties>;
+
+function createPrismThemeFromToken(baseTheme: PrismTheme, token: GlobalToken, darkMode: boolean): PrismTheme {
+  const keywordColor = darkMode ? token.colorPrimaryText : token.colorPrimary;
+  const stringColor = darkMode ? token.colorSuccessText : token.colorSuccess;
+  const commentColor = token.colorTextTertiary;
+  const numberColor = darkMode ? token.colorWarningText : token.colorWarning;
+
+  return {
+    ...baseTheme,
+    plain: {
+      ...(baseTheme.plain ?? {}),
+      color: token.colorText,
+      backgroundColor: token.colorBgContainer
+    },
+    styles: [
+      ...(baseTheme.styles ?? []),
+      { types: ["comment", "prolog", "doctype", "cdata"], style: { color: commentColor, fontStyle: "italic" } },
+      { types: ["keyword", "selector", "inserted"], style: { color: keywordColor, fontWeight: "600" } },
+      { types: ["string", "char", "attr-value"], style: { color: stringColor } },
+      { types: ["number", "boolean", "constant"], style: { color: numberColor } }
+    ]
+  };
+}
+
+export function getPrismTheme(mode: AppThemeMode, token: GlobalToken): PrismTheme {
+  const darkMode = isDarkAppTheme(mode);
+  const baseTheme = darkMode ? themes.vsDark : themes.github;
+  return createPrismThemeFromToken(baseTheme, token, darkMode);
+}
+
+export function getCodeTokenStyles(token: GlobalToken): TokenStyleMap {
+  return {
+    plain: { color: token.colorText },
+    comment: { color: token.colorTextTertiary, fontStyle: "italic" },
+    keyword: { color: token.colorPrimaryText, fontWeight: 600 },
+    number: { color: token.colorWarningText },
+    string: { color: token.colorSuccessText }
+  };
+}
+````
+
+## File: apps/web/src/utils/snippets.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { applySnippetVariables, insertSnippetContent } from "./snippets";
+
+describe("insertSnippetContent", () => {
+  it("returns the snippet when the current value is empty", () => {
+    assert.equal(insertSnippetContent("", "  Follow the existing style guide.  "), "Follow the existing style guide.");
+  });
+
+  it("appends the snippet with a blank line separator", () => {
+    assert.equal(
+      insertSnippetContent("Implement the API endpoint.", "Add request validation."),
+      "Implement the API endpoint.\n\nAdd request validation."
+    );
+  });
+
+  it("keeps the current value when the snippet is blank", () => {
+    assert.equal(insertSnippetContent("Existing prompt", "   "), "Existing prompt");
+  });
+});
+
+describe("applySnippetVariables", () => {
+  it("replaces placeholders for defined variables", () => {
+    assert.equal(
+      applySnippetVariables("Hello {{name}} from {{team}}", [
+        { name: "name", type: "text", title: "", description: "", defaultValue: "" },
+        { name: "team", type: "text", title: "", description: "", defaultValue: "" }
+      ], { name: "Ada", team: "Core" }),
+      "Hello Ada from Core"
+    );
+  });
+
+  it("keeps placeholders for undefined variables", () => {
+    assert.equal(
+      applySnippetVariables("{{known}} / {{unknown}}", [{ name: "known", type: "text", title: "", description: "", defaultValue: "" }], { known: "ok" }),
+      "ok / {{unknown}}"
+    );
+  });
+
+  it("uses default values when no explicit value is provided", () => {
+    assert.equal(
+      applySnippetVariables("Hello {{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "there" }], {}),
+      "Hello there"
+    );
+  });
+
+  it("forces text variables to single-line values", () => {
+    assert.equal(
+      applySnippetVariables("{{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "Line1\nLine2" }], {}),
+      "Line1"
+    );
+    assert.equal(
+      applySnippetVariables("{{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "" }], { name: "A\nB" }),
+      "A"
+    );
+  });
+
+  it("keeps multiline values for multiline variables", () => {
+    assert.equal(
+      applySnippetVariables("{{details}}", [{ name: "details", type: "multiline", title: "", description: "", defaultValue: "A\nB" }], {}),
+      "A\nB"
+    );
+  });
+});
+````
+
+## File: apps/web/src/utils/snippets.ts
+````typescript
+import type { SnippetVariable } from "@agentswarm/shared-types";
+
+const SNIPPET_PLACEHOLDER_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
+
+export const insertSnippetContent = (current: string | null | undefined, snippet: string | null | undefined): string => {
+  const snippetText = snippet?.trim() ?? "";
+  if (!snippetText) {
+    return current ?? "";
+  }
+
+  const currentText = current ?? "";
+  if (currentText.trim().length === 0) {
+    return snippetText;
+  }
+
+  return `${currentText.trimEnd()}\n\n${snippetText}`;
+};
+
+export const applySnippetVariables = (
+  content: string | null | undefined,
+  variables: SnippetVariable[] | null | undefined,
+  values: Record<string, string>
+): string => {
+  const snippetText = content ?? "";
+  const variablesByName = new Map((variables ?? []).map((entry) => [entry.name, entry]));
+  return snippetText.replace(SNIPPET_PLACEHOLDER_PATTERN, (_match, name: string) => {
+    const variable = variablesByName.get(name);
+    if (!variable) {
+      return `{{${name}}}`;
+    }
+    const value = values[name];
+    const selected = typeof value === "string" && value.length > 0 ? value : variable.defaultValue ?? "";
+    if (variable.type === "text") {
+      return selected.split(/\r?\n/u)[0] ?? "";
+    }
+    return selected;
+  });
+};
+````
+
+## File: docs/development/commands.md
+````markdown
+# Development Commands
+
+## Canonical Agent Harness Commands
+- `./scripts/harness/doctor.sh`: verify tools and script availability.
+- `./scripts/harness/setup.sh`: initialize Docker stack and local runtime folders.
+- `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh`: also install npm dependencies for check/test/pr-ready.
+- `./scripts/harness/check-docs.sh`: scan docs for broken internal links, TODO/FIXME counts, and stale review metadata warnings.
+- `./scripts/harness/check-human-gated-flow.sh`: verify active execution plans contain required human-gated flow evidence.
+- `./scripts/harness/check.sh`: run docs checks + human-gated flow checks + boundary checks + lint + build.
+- `node ./scripts/harness/boundary-check.mjs`: run architecture boundary checks only.
+- `./scripts/harness/test.sh`: run server + web tests.
+- `./scripts/harness/pr-ready.sh`: run pull request readiness verification.
+- `./scripts/harness/start.sh`: start dev processes (foreground).
+
+## Remote Build Mode
+- Set `REMOTE_BUILD=1` to force harness scripts to execute in the Remote Build Runner.
+- Required with remote mode: `REMOTE_BUILD_IMAGE`.
+- Optional override: `REMOTE_BUILD_RUNNER_URL` (default: `http://host.docker.internal:38127`).
+- Remote runs use `TASK_WORKSPACE_PATH` when present for the runner `workdir`.
+- Remote mode auto-derives `TASK_WORKSPACE_HOST_ROOT`, `LOCAL_PLANS_HOST_ROOT`, and `NGINX_CONF_HOST_PATH` from the remote workdir unless explicitly set.
+- Set `REMOTE_BUILD=0` (or unset it) to run harness scripts locally.
+- Runner API note: `/run` expects `cmd` as a non-empty string array, not a single string.
+- Remote runner image should include: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
+- For remote browser E2E: if the runner is musl-based, harness auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`).
+- If host ports are occupied, override: `PUBLIC_PORT`, `REDIS_HOST_PORT`, `POSTGRES_HOST_PORT`.
+
+## Root Package Manager Commands
+- `npm run dev`: runs server and web dev processes together.
+- `npm run dev:server`: runs backend only.
+- `npm run dev:web`: runs frontend only.
+- `npm run test`: canonical harness test run (`./scripts/harness/test.sh`).
+- `npm run typecheck`: alias to repository type checks (`npm run lint`).
+- `npm run build`: builds shared-types, server, and web.
+- `npm run lint`: TypeScript no-emit checks for server and web.
+
+Notes:
+- `setup.sh` only installs npm dependencies when `HARNESS_INSTALL_NPM_DEPS=1` is set.
+- On clean checkout, install dependencies before running `check.sh`, `test.sh`, or `pr-ready.sh`.
+- `pr-ready.sh` forces dependency installation automatically when `node_modules` is missing.
+- Harness setup installs dependencies with `npm ci --include=dev`.
+- `npm ci` requires `python3` in this repo because `node-pty` may need local native build steps.
+- `check.sh` and `pr-ready.sh` enforce human-gated flow evidence for active execution plans.
+- Set `HARNESS_REQUIRE_ACTIVE_EXEC_PLAN=1` to fail when no active execution plan exists.
+
+## Workspace Commands
+- Server (`@agentswarm/server`):
+  - `npm run -w @agentswarm/server dev`
+  - `npm run -w @agentswarm/server start`
+  - `npm run -w @agentswarm/server build`
+  - `npm run -w @agentswarm/server lint`
+  - `npm run -w @agentswarm/server test`
+  - `npm run -w @agentswarm/server db:migrate`
+  - `npm run -w @agentswarm/server db:backfill:redis-to-postgres`
+- Web (`@agentswarm/web`):
+  - `npm run -w @agentswarm/web dev`
+  - `npm run -w @agentswarm/web start`
+  - `npm run -w @agentswarm/web build`
+  - `npm run -w @agentswarm/web lint`
+  - `npm run -w @agentswarm/web test`
+- Shared types (`@agentswarm/shared-types`):
+  - `npm run -w @agentswarm/shared-types build`
+
+## Existing Docker Control Commands
+- `./agentswarm.sh init`
+- `./agentswarm.sh start`
+- `./agentswarm.sh rebuild`
+- `./agentswarm.sh stop`
+
+## CI / Local Parity Notes
+- CI workflow: `.github/workflows/harness-check.yml`.
+- CI runs:
+  - `./scripts/harness/doctor.sh` when Docker is available on the runner.
+  - `./scripts/harness/check.sh`.
+  - `./scripts/harness/test.sh`.
+- CI does **not** run `./scripts/harness/pr-ready.sh` because that would duplicate expensive checks already covered by doctor/check/test.
+- Local pre-PR flow remains:
+  - `./scripts/harness/pr-ready.sh`
+
+## TODO
+- TODO: Add a canonical root format-check command (`format:check` or `fmt:check`) if/when a formatter is adopted.
+````
+
+## File: docs/development/pr-workflow.md
+````markdown
+# PR Workflow
+
+This page describes the expected pull request readiness flow for this repository.
+
+## Recommended Sequence
+1. Run `./scripts/harness/doctor.sh`.
+2. Run `./scripts/harness/setup.sh` if dependencies changed.
+3. Run `./scripts/harness/pr-ready.sh`.
+4. If checks pass, open a pull request and complete the PR template.
+
+Note:
+- `pr-ready.sh` auto-runs setup when dependencies are missing and forces npm dependency installation.
+
+## What `pr-ready.sh` checks
+- Human-gated flow evidence in active execution plans.
+  - optional strict mode: set `HARNESS_REQUIRE_ACTIVE_EXEC_PLAN=1` to fail if there is no active plan.
+- Format check:
+  - runs `format:check` or `fmt:check` if defined at root
+  - skips by default when no format-check script exists
+  - can be enforced by setting `HARNESS_REQUIRE_FORMAT_CHECK=1`
+- Boundary checks.
+- Lint checks.
+- Type checks.
+- Tests (server and web).
+- Build.
+- Repo-specific check: Docker Compose config validation when Docker is available.
+
+## Current limitation
+- This repository does not currently define a root format-check command.
+- Result: format-check step is skipped unless a format-check script is added.
+
+## TODO
+- TODO: Add a canonical root format-check script (for example `format:check`) and wire it into the harness.
+````
+
+## File: docs/development/setup.md
+````markdown
+# Development Setup
+
+## Goal
+Bring a clean checkout to a running app with one predictable flow.
+
+## Prerequisites
+- Docker with Docker Compose.
+- Bash shell.
+- Optional for Docker-only startup: Node 20+ and npm.
+- Required for local check/test/pr-ready flows: Node 20+ and npm.
+- Required when installing dependencies locally: `python3` (needed by `node-gyp` for native modules such as `node-pty`).
+
+## Remote Build Environment
+If your environment sets `REMOTE_BUILD=1`, harness scripts execute in Remote Build Runner.
+
+Before running harness commands in that mode:
+- Set `REMOTE_BUILD_IMAGE`.
+- Optional: set `REMOTE_BUILD_RUNNER_URL` if not using the default endpoint.
+- Ensure the remote image includes: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
+
+To run commands locally instead, set `REMOTE_BUILD=0`.
+If host ports are already in use, set `PUBLIC_PORT`, `REDIS_HOST_PORT`, and `POSTGRES_HOST_PORT`.
+
+## 1) Setup Command (Clean Checkout)
+Run from repository root:
+
+```bash
+HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+```
+
+What it does:
+- Creates `.env` from `.env.example` if missing.
+- Ensures runtime folders exist (`local-plans`, `task-workspaces`).
+- Runs `./agentswarm.sh init` (builds and starts required containers).
+- Installs npm dependencies (because `HARNESS_INSTALL_NPM_DEPS=1` is set above).
+
+If you only need Docker services and do not plan to run local checks/tests:
+
+```bash
+./scripts/harness/setup.sh
+```
+
+Optional flags:
+- Reset local DB/cache volumes first:
+
+```bash
+HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
+```
+
+- Also install npm dependencies:
+
+```bash
+HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+```
+
+If you plan to run `./scripts/harness/check.sh`, `./scripts/harness/test.sh`, or `./scripts/harness/pr-ready.sh`, install dependencies first.
+
+## 2) Environment Template
+Use `.env.example` as the template.
+
+If `.env` is missing, setup creates it automatically.
+
+Important values in template:
+- `PUBLIC_PORT` (default `3217`)
+- `REDIS_HOST_PORT` (default `6379`)
+- `POSTGRES_HOST_PORT` (default `5432`)
+- `TASK_WORKSPACE_HOST_ROOT` (optional absolute host path override)
+- `LOCAL_PLANS_HOST_ROOT` (optional absolute host path override)
+- `NGINX_CONF_HOST_PATH` (optional absolute host path override)
+- `DEFAULT_ADMIN_EMAIL`
+- `DEFAULT_ADMIN_PASSWORD`
+- `DATABASE_URL`
+
+## 3) Local Database Setup / Reset
+Default Docker flow starts Redis and Postgres from `docker-compose.yml`.
+
+Reset data when needed:
+
+```bash
+HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
+```
+
+This removes local Docker volumes for the stack and recreates services.
+
+## 4) Seed Data
+On first boot, the server creates the admin user using:
+- `DEFAULT_ADMIN_EMAIL`
+- `DEFAULT_ADMIN_PASSWORD`
+
+Defaults are in `.env.example`.
+
+No separate seed command is required for this default admin bootstrap.
+
+## 5) Start Command
+Start the app and wait for health:
+
+```bash
+./scripts/harness/start.sh
+```
+
+## 6) Health Check
+`start.sh` automatically waits for:
+
+- `http://localhost:<PUBLIC_PORT>/api/health`
+
+Manual check example:
+
+```bash
+curl -fsS http://localhost:3217/api/health
+```
+
+## External Credentials
+GitHub/OpenAI/Anthropic credentials are configured in the app Settings UI, not in `.env`.
+
+## TODO
+- TODO: Document a fully verified host-only (non-Docker) local startup path end-to-end.
+- TODO: Document any required external service accounts for production-like runs.
+````
+
+## File: docs/exec-plans/completed/2026-05-27-task-flow-unification.md
+````markdown
+# Execution Plan
+
+## Title
+- Task Flow Unification: Start Lifecycle, Mutation Guards, and Git/Checkpoint Actions
+
+## Goal
+- Unify task execution behavior across new-task creation, existing build/ask actions, and Git/checkpoint mutations so behavior is consistent, predictable, and easier to debug.
+
+## Non-goals
+- No UI redesign beyond behavior consistency and message parity.
+- No provider/model behavior changes (Codex/Claude execution internals stay unchanged).
+- No large schema rewrite of historical task records in this phase.
+
+## Current State
+- Task start logic is split across `createTask`, legacy start-mode handling, scheduler triggers, imports, and webhook entry points.
+- Git mutation checks (pull/push/merge/checkpoint actions) are repeated across multiple handlers with similar-but-not-identical conditions.
+- Sequence checkpoint resume is implemented as follow-up logic after mutation routes rather than first-class transition handling.
+- Task detail behavior has required multiple point-fixes to maintain parity between creation-time execution states.
+
+## Acceptance Criteria
+- One shared start orchestration API is used by task create/import/webhook and explicit action triggers.
+- One shared mutation guard policy is used by pull/push/merge/checkpoint endpoints and returns stable reason codes.
+- Checkpoint resolution and sequence resume run through one explicit transition path.
+- Git operation command handling is centralized with consistent response shape and logging.
+- Task detail renders from a consistent lifecycle view-model without mode-specific drift.
+- Regression tests cover new task, existing build, existing ask, and Git/checkpoint transitions.
+
+## Affected Files
+- Legacy task-start helper code, since removed
+- `apps/server/src/routes/tasks.ts`
+- `apps/server/src/routes/imports.ts`
+- `apps/server/src/routes/github-webhooks.ts`
+- `apps/server/src/lib/task-mutation-guards.ts`
+- `apps/server/src/services/scheduler.ts`
+- `apps/server/src/services/task-store.ts`
+- `apps/server/src/services/sequence-execution-service.ts`
+- `apps/web/components/task-detail-page.tsx`
+- `apps/web/src/api/client.ts`
+- `apps/server/src/services/*.test.ts`
+- `apps/web/components/*.test.*` (as needed)
+- `docs/product/user-flows.md`
+
+## Step-by-Step Plan
+1. Baseline and Test Inventory
+- Enumerate all task-entry paths (create/import/webhook/manual actions).
+- Add/expand failing-first tests for inconsistencies in start and mutation behavior.
+
+2. Start Orchestrator Extraction
+- Introduce a single server-side orchestrator for task start intents.
+- Refactor `/tasks`, `/imports/*`, and webhook-triggered task starts to call the orchestrator.
+- Preserve current external API contracts.
+
+3. Shared Mutation Guard Policy
+- Define one guard API returning machine-readable reason codes plus user-facing messages.
+- Replace ad-hoc pull/push/merge/checkpoint condition checks with shared guard calls.
+
+4. Checkpoint + Sequence Transition Unification
+- Consolidate checkpoint resolution and auto-apply sequence resume into one transition function.
+- Ensure apply/reject/revert all use the same continuation contract.
+
+5. Git Command Unification
+- Add an internal shared command handler for pull/push/merge operations.
+- Normalize operation logging, retries, and response payload assembly.
+
+6. Lifecycle View-Model Unification (Web)
+- Drive task detail sections from one lifecycle model mapping (`status`, `enqueued`, blockers).
+- Remove duplicated conditional rendering paths that diverge by mode.
+
+7. Hardening and Regression Pass
+- Run full harness checks/tests.
+- Validate key scenarios: new task creation, existing build, existing ask, checkpoint blocked, post-checkpoint resume, pull/push/merge guard outcomes.
+
+## Step 1 Inventory Snapshot
+- New task create route:
+`POST /tasks` in `apps/server/src/routes/tasks.ts` (creates task, starts execution, optionally initializes sequence execution).
+- Existing task manual action route:
+`POST /tasks/:id/actions` in `apps/server/src/routes/tasks.ts` (manual build/ask triggers through scheduler).
+- Import routes:
+`POST /imports/issue` and `POST /imports/pull-request` in `apps/server/src/routes/imports.ts` (create task from GitHub import, then start execution).
+- Webhook routes:
+`POST /github/webhooks/:repositoryId` in `apps/server/src/routes/github-webhooks.ts` (issues/PR/comment/reaction paths that create tasks and start execution).
+- Git mutation routes:
+`POST /tasks/:id/push`, `POST /tasks/:id/pull`, `POST /tasks/:id/merge` in `apps/server/src/routes/tasks.ts`.
+- Checkpoint mutation routes:
+`POST /tasks/:id/change-proposals/:proposalId/apply|revert|revert-file|reject` in `apps/server/src/routes/tasks.ts`.
+
+## Validation Commands
+- `./scripts/harness/check.sh`
+- `./scripts/harness/test.sh`
+- `npm run lint -w @agentswarm/server`
+- `npm run lint -w @agentswarm/web`
+- Targeted tests for scheduler/task-store/routes/sequence execution.
+
+## Risks
+- Behavior drift during refactor of route handlers.
+- Hidden coupling between scheduler queue semantics and UI assumptions.
+- Sequence auto-apply regressions if checkpoint transitions are not fully covered by tests.
+
+## Rollback Plan
+- Keep refactor split into small commits by phase.
+- If regressions appear, rollback phase commits in reverse order while preserving test additions.
+- Feature-flag orchestrator/guard usage if partial rollout is required.
+
+## Progress Log
+- 2026-05-27 19:20 UTC: Plan created; no implementation changes started yet.
+- 2026-05-27 17:47 UTC: Step 1 started. Added baseline coverage for the previous start-mode helper behavior.
+- 2026-05-27 17:48 UTC: Captured task-entry inventory snapshot for create/import/webhook/manual actions and git/checkpoint mutation endpoints.
+- 2026-05-27 17:53 UTC: Started Step 3 incrementally by introducing shared mutation guard reason codes in `apps/server/src/lib/task-mutation-guards.ts` and wiring `/tasks` mutation/action endpoints to return `{ message, reasonCode }` for blocked mutations.
+- 2026-05-27 17:54 UTC: Added guard coverage in `apps/server/src/lib/task-mutation-guards.test.ts` for blocker code priority (`pending_checkpoint` over `active_terminal_session`).
+- 2026-05-27 17:56 UTC: `npm run test -w @agentswarm/server` completed with one existing environment-sensitive failure in `spawner.workspace-provisioning.test.ts` (ask workspace path assertion), unrelated to changed files.
+- 2026-05-27 18:02 UTC: Step 2 started. Added shared start orchestrator in `apps/server/src/lib/task-start-orchestrator.ts` and baseline tests in `apps/server/src/lib/task-start-orchestrator.test.ts`.
+- 2026-05-27 18:03 UTC: Refactored task start entry points to use orchestrator: `POST /tasks`, import routes, and webhook-created task starts.
+- 2026-05-27 18:04 UTC: `npm run lint -w @agentswarm/server` and targeted orchestrator/start/guard tests passed; full server test run still has the same existing `spawner.workspace-provisioning.test.ts` environment-sensitive failure.
+- 2026-05-27 18:08 UTC: Began Step 4 consolidation by introducing a shared checkpoint transition helper in `apps/server/src/routes/tasks.ts` so apply/reject/revert/revert-file now all follow one continuation path (resume-check + refreshed response).
+- 2026-05-27 18:09 UTC: Re-ran server lint and full server tests; lint passed and full test run still only fails at the same known environment-sensitive `spawner.workspace-provisioning.test.ts` assertion.
+- 2026-05-27 18:17 UTC: Completed Step 5 by adding shared Git mutation handling helpers in `apps/server/src/routes/tasks.ts` (`ensureGitMutationAllowed`, `runGitCommand`) and applying them to pull/push/merge routes with consistent error responses.
+- 2026-05-27 18:19 UTC: Completed Step 6 by introducing lifecycle mapping utility `apps/web/src/utils/task-lifecycle-view-model.ts` and updating `apps/web/components/task-detail-page.tsx` to consume one lifecycle view-model.
+- 2026-05-27 18:21 UTC: Added lifecycle utility coverage in `apps/web/src/utils/task-lifecycle-view-model.test.ts` and included it in `apps/web/package.json` test command.
+- 2026-05-27 18:24 UTC: Extended shared start orchestration coverage for explicit task action triggers via `orchestrateTaskActionStart` in `apps/server/src/lib/task-start-orchestrator.ts`, applied in `/tasks/:id/actions`.
+- 2026-05-27 18:25 UTC: Added `orchestrateTaskActionStart` tests in `apps/server/src/lib/task-start-orchestrator.test.ts`.
+- 2026-05-27 18:27 UTC: Fixed `spawner.workspace-provisioning.test.ts` host-path assertion setup to match current workspace host path resolution and restored full server test pass.
+- 2026-05-27 18:29 UTC: Hardening run complete: `./scripts/harness/check.sh` passed; `TEST_SCOPE=integration ./scripts/harness/test.sh` passed; `npm run test -w @agentswarm/server` passed; `npm run test -w @agentswarm/web` passed.
+
+## Decisions
+- 2026-05-27: Use incremental refactor with contract-preserving route APIs first, then internal consolidation.
+- 2026-05-27: Introduce stable internal guard reason codes now, while preserving existing `message` field in route responses for backward compatibility.
+- 2026-05-27: Route-level Git mutation handling should use shared helpers for guarding and operation error mapping to keep responses uniform.
+- 2026-05-27: Task detail lifecycle UI state should come from a dedicated utility to avoid mode-specific rendering drift.
+
+## Completion Notes
+- Completed.
+- Acceptance criteria met:
+- Shared start orchestration is used across task create/import/webhook paths and explicit task action triggers.
+- Shared mutation guard policy with reason codes is applied across pull/push/merge/checkpoint mutation endpoints.
+- Checkpoint mutation continuation (resume + refresh) is unified through one helper path.
+- Git operation route handling is centralized for guard/error/response consistency.
+- Task detail lifecycle rendering now uses one lifecycle view-model mapping.
+- Regression coverage expanded with new server/web tests; all local server/web test suites passed.
+- Environment note:
+- `./scripts/harness/test.sh` with full scope (`TEST_SCOPE=all`) still requires Docker for app boot in this environment, so integration scope was used for harness regression validation.
+````
+
+## File: docs/exec-plans/completed/2026-06-01-env-file-upload-vars-secrets.md
+````markdown
+# Execution Plan
+
+## Title
+- Text/File Support for Repository Environment Variables and Secrets
+
+## Goal
+- Let repository environment variables and secrets be either text values or uploaded files, with secure storage and runtime mounting for both Codex and Claude.
+
+## Non-goals
+- Parsing uploaded files into structured config objects.
+- Changing non-repository secret systems (for example webhook secret handling).
+
+## Current State
+- Repository editor supported plain text values and converted uploaded files into inline text/Base64.
+- Runtime injected repository env values directly as strings.
+- No secure persistent file-backed path existed for repository env values.
+
+## Acceptance Criteria
+- Users can choose `Text` or `File` for env vars and env secrets.
+- File uploads are stored securely and never returned in plaintext from API/UI.
+- Runtime mounts generated files for both Codex and Claude and sets env var values to mounted file paths.
+- Manual text behavior remains unchanged.
+- Missing/invalid files fail with clear errors.
+- Backend enforces constraints and permissions (scope checks already in repository routes).
+
+## Affected Files
+- `packages/shared-types/src/index.ts`
+- `apps/server/src/config/env.ts`
+- `apps/server/src/services/repository-env-file-store.ts`
+- `apps/server/src/lib/repository-runtime-env.ts`
+- `apps/server/src/services/repository-store.ts`
+- `apps/server/src/routes/repositories.ts`
+- `apps/server/src/services/spawner.ts`
+- `apps/server/src/lib/task-interactive-terminal.ts`
+- `apps/server/src/lib/task-interactive-terminal-git-env.ts`
+- `apps/server/src/lib/task-interactive-terminal.test.ts`
+- `apps/web/components/repository-editor-page.tsx`
+
+## Step-by-Step Plan
+1. Add shared model types for text/file env entries.
+2. Add secure encrypted file store for repository env files.
+3. Update repository persistence and API normalization for text/file entries.
+4. Update runtime spawning and interactive terminals to materialize/mount file entries.
+5. Update repository editor UI with Text/File selector and upload flow.
+6. Run lint/build/test/harness verification.
+
+## Human-Gated Flow Evidence
+- Requirements Read: YES
+- Requirements Understood: YES
+- Repository Research Complete: YES
+- Uncertainties Logged: YES (selected encrypted-at-rest file storage with runtime materialization)
+- Human Review Completed: NO (pending maintainer review)
+- User Approval To Start: YES (issue request)
+- Baseline Checks Run: YES (`REMOTE_BUILD=0 ./scripts/harness/check.sh`)
+- Visible Task List Updated: YES
+- Task-Level Tests/Lint/Build: YES (`npm run build -w @agentswarm/server`, `npm run build -w @agentswarm/web`, package tests, harness check)
+- Self Review Complete: YES
+- Code Review Complete: NO (pending maintainer review)
+- Final Verification Complete: YES (repository check pipeline completed successfully)
+- Security/Privacy Review Complete: YES (file contents encrypted at rest and never surfaced in API/UI)
+- Docs/Changelog Updated: YES (execution plan documentation updated)
+
+## Validation Commands
+- `npm run lint -w @agentswarm/server`
+- `npm run test -w @agentswarm/server`
+- `npm run build -w @agentswarm/server`
+- `npm run lint -w @agentswarm/web`
+- `npm run test -w @agentswarm/web`
+- `npm run build -w @agentswarm/web`
+- `REMOTE_BUILD=0 ./scripts/harness/check.sh`
+- `REMOTE_BUILD=0 ./scripts/harness/test.sh` (fails in this environment because Docker Compose is unavailable)
+
+## Risks
+- Orphaned encrypted files if write failures are not cleaned up.
+- Runtime failure if stored file reference is missing on disk.
+
+## Rollback Plan
+- Revert shared type changes for env entries.
+- Remove repository env file store/materialization and use text-only env injection.
+- Re-run lint/build/tests to confirm fallback state.
+
+## Progress Log
+- 2026-06-01 09:00 UTC: Created execution plan.
+- 2026-06-01 10:10 UTC: Implemented secure repository env file store and updated repository persistence model.
+- 2026-06-01 10:40 UTC: Implemented runtime materialization for task runs and interactive terminals.
+- 2026-06-01 11:05 UTC: Updated repository editor with Text/File controls and file upload states.
+- 2026-06-01 11:30 UTC: Completed lint/build/tests and harness checks.
+
+## Decisions
+- 2026-06-01: File-backed env entries are encrypted at rest using the existing server key and materialized only at runtime.
+- 2026-06-01: File upload limit set to 256 KiB; text limit remains 8192 characters.
+
+## Completion Notes
+- Added full text/file model support for repository env vars and env secrets.
+- Added secure encrypted-at-rest file persistence for uploaded values.
+- Runtime now mounts generated files and sets env variables to those mounted paths.
+- Interactive terminal modes now use the same file-backed behavior.
+- UI now supports type selection, file upload, “file set” states, and clear error messaging.
+````
+
+## File: docs/exec-plans/template.md
+````markdown
+# Execution Plan Template
+
+## Title
+- TODO
+
+## Goal
+- TODO
+
+## Non-goals
+- TODO
+
+## Current State
+- TODO
+
+## Acceptance Criteria
+- TODO
+
+## Affected Files
+- TODO
+
+## Step-by-Step Plan
+1. TODO
+2. TODO
+3. TODO
+
+## Human-Gated Flow Evidence
+- Requirements Read: TODO
+- Requirements Understood: TODO
+- Repository Research Complete: TODO
+- Uncertainties Logged: TODO
+- Human Review Completed: TODO
+- User Approval To Start: TODO
+- Baseline Checks Run: TODO
+- Visible Task List Updated: TODO
+- Task-Level Tests/Lint/Build: TODO
+- Self Review Complete: TODO
+- Code Review Complete: TODO
+- Final Verification Complete: TODO
+- Security/Privacy Review Complete: TODO
+- Docs/Changelog Updated: TODO
+
+## Validation Commands
+- TODO
+
+## Risks
+- TODO
+
+## Rollback Plan
+- TODO
+
+## Progress Log
+- YYYY-MM-DD HH:MM UTC: TODO
+
+## Decisions
+- YYYY-MM-DD: TODO
+
+## Completion Notes
+- TODO
+````
+
+## File: docs/quality/tech-debt.md
+````markdown
+# Tech Debt Register
+
+Top gaps are prioritized from `docs/quality/scorecard.md`.
+
+## 1) Shared Types Have No Direct Tests
+- Impact: contract regressions can break both server and web at once.
+- Evidence: `packages/shared-types/src/index.ts` has no `*.test.*` files.
+- Suggested fix: add a small contract test suite (shape/enum compatibility checks) and run it from harness test flow.
+
+## 2) Runtime Domain Has Very Low Verification
+- Impact: agent runtime failures are harder to detect before real task execution.
+- Evidence: no runtime tests found under `agent-runtime*` or `tools/codex-web-terminal`.
+- Suggested fix: add smoke checks for runtime startup + command execution, and include them in PR readiness.
+
+## 3) Web Coverage Is Shallow For Core Flows
+- Impact: high-risk UI flows can regress even when utility tests pass.
+- Evidence: current browser coverage is one file (`apps/web/e2e/auth.smoke.spec.ts`) with login-focused checks.
+- Suggested fix: add e2e happy-path tests for task creation, task detail load, and repository flow.
+
+## 4) CI Does Not Run Full PR-Readiness Sequence
+- Impact: merges can pass CI without running tests/build parity used locally in `pr-ready.sh`.
+- Evidence: `.github/workflows/harness-check.yml` runs `./scripts/harness/check.sh` only.
+- Suggested fix: add a CI job for `./scripts/harness/pr-ready.sh` (or equivalent staged subset including tests).
+
+## 5) Documentation Drift Exists In Quality Docs
+- Impact: agents and maintainers can follow outdated guidance.
+- Evidence: `docs/quality/known-issues.md` still states no CI workflow exists.
+- Suggested fix: align `known-issues.md` with current repository state and keep it updated with each harness change.
+
+## 6) Legacy Task Status Is Overloaded
+- Impact: Kanban planning and task lifecycle UI have to interpret a single `status` field that mixes workflow state, execution state, and legacy result state.
+- Evidence: tasks now expose `workflowStatus`, `executionStatus`, `executionAction`, and `reviewReason`, but `status` remains for compatibility.
+- Suggested fix: migrate callers to the new fields, backfill persisted tasks if needed, then remove legacy `completed`/`answered`/`accepted` values and eventually retire overloaded `status`.
+
+## TODO
+- TODO: assign owner and target date for each item.
+- TODO: track status (`open`, `in progress`, `done`) for each item.
+````
+
+## File: docs/github-sync-ownership-model.md
+````markdown
+# GitHub Sync Ownership Model (MVP)
+
+## Goal
+Make GitHub sync behavior predictable by defining exactly which system is authoritative for each field and how conflicts are resolved.
+
+## Models Compared
+
+### 1) `github_authoritative`
+- GitHub is the source of truth for synced fields.
+- Internal edits to synced fields are treated as temporary and will be overwritten by incoming GitHub events.
+
+Pros:
+- Matches what users already expect from GitHub.
+- Lower risk of drift for issue state/metadata.
+
+Cons:
+- Internal edits may appear to "disappear" unless clearly marked as local-only.
+- Requires good webhook reliability.
+
+### 2) `internal_authoritative`
+- Internal task system is the source of truth for synced fields.
+- GitHub changes are informational and do not automatically override internal state.
+
+Pros:
+- Full control inside the product.
+- Works even when GitHub data is delayed.
+
+Cons:
+- High drift risk from GitHub.
+- Harder to explain for GitHub-first teams.
+
+### 3) `hybrid_sync`
+- Ownership differs by field (some GitHub-owned, some internal-owned).
+- Bidirectional updates are allowed only for explicitly shared fields.
+
+Pros:
+- Flexible and practical for mixed workflows.
+- Preserves internal workflow while staying aligned with GitHub metadata.
+
+Cons:
+- More rules to explain.
+- Needs clear UI audit trail.
+
+## Recommended MVP Default
+Use `hybrid_sync` as default, with strict per-field ownership.
+
+Reason:
+- It minimizes user surprise in day-to-day use.
+- It avoids forcing all behavior into a single system.
+- It supports current webhook/import flows and allows gradual expansion.
+
+## Source-of-Truth Mapping (MVP)
+
+| Field | Source of Truth | Direction | Notes |
+|---|---|---|---|
+| GitHub issue/PR number, URL | GitHub | GitHub -> internal | Immutable link fields after task creation. |
+| Title (imported task title) | Internal | Internal -> GitHub (optional later) | Internal title can diverge; show "custom title" badge if changed. |
+| Status/state | Internal (execution), GitHub (issue/PR lifecycle) | Bidirectional with mapping rules | Internal run status and GitHub open/closed are related but not identical. |
+| Labels | GitHub (for GitHub-prefixed labels), Internal (for internal-prefixed labels) | Bidirectional by namespace | Reserve `gh:*` for GitHub mirror, `as:*` for internal-only labels. |
+| Comments | Dual ownership by origin | Bidirectional append-only | Never edit/delete remote comments during MVP sync. |
+| Assignee | Internal | Internal -> GitHub (optional later) | Keep assignment stable for internal permission model. |
+| Description/body snapshot | GitHub at import time | GitHub -> internal (manual refresh only) | Treated as imported context, not live-synced text. |
+
+## Conflict Resolution Rules
+
+### Status
+- Maintain a mapping table:
+  - GitHub `open` -> internal `open` (or keep current running state if actively executing).
+  - GitHub `closed` -> internal `done` only if task is not running.
+- If internal task is running and GitHub closes issue/PR:
+  - Keep internal state unchanged.
+  - Add sync alert: `GitHub closed while task running`.
+  - Ask user to resolve with explicit action (`stop`, `complete`, or `reopen on GitHub`).
+
+### Labels
+- Namespace labels:
+  - `gh:*` labels are GitHub-owned mirrors and are overwritten by latest GitHub payload.
+  - `as:*` labels are internal-owned and never overwritten by GitHub.
+- If same semantic label exists in both systems without prefix:
+  - Convert during sync to `gh:<name>` to prevent future ambiguity.
+
+### Comments
+- Append-only sync for MVP:
+  - GitHub comments import as external entries with source metadata.
+  - Internal comments sync out only when user marks them as "publish to GitHub".
+- Never mutate existing comment content across systems in MVP.
+- On duplicate detection (same source id), keep first and skip duplicates.
+
+## Fallback When Systems Disagree
+
+1. Detect disagreement by field (`status`, `labels`, `comments`) and record timestamp/source.
+2. Apply deterministic winner based on mapping table above.
+3. Store a sync event log entry with:
+   - field
+   - local value
+   - remote value
+   - winning value
+   - rule used
+4. Surface a plain-language UI notice:
+   - Example: `GitHub label set won for gh:* labels at 2026-05-21 14:00 UTC.`
+5. If no rule safely applies, do not auto-merge:
+   - mark as `needs_manual_resolution`
+   - keep both values visible
+   - provide one-click user choice
+
+## UX Transparency Requirements
+- Every sync-driven overwrite must show:
+  - what changed
+  - which system won
+  - why (rule name)
+  - when it happened (UTC timestamp)
+- Users should always be able to filter history by `sync events`.
+- Avoid hidden automatic edits; all automatic conflict outcomes must be auditable.
+
+## Task-to-GitHub Status Mapping (Issue #22)
+
+### Scope
+- This mapping controls when internal task status changes create GitHub updates (labels and comments).
+- Goal: useful progress signals with low noise.
+
+### Repo-Level Switch
+- Add optional repository setting: `sync_status_enabled` (default: `false`).
+- If `sync_status_enabled=false`:
+  - no automatic status label updates are sent to GitHub
+  - no automatic status comments are sent to GitHub
+  - manual user comments can still be posted when explicitly requested
+- If `sync_status_enabled=true`:
+  - apply the milestone-only policy below
+
+### GitHub Labels Used for Status
+- Use exactly one active label from:
+  - `as:queued`
+  - `as:in-progress`
+  - `as:blocked`
+  - `as:done`
+- On change, remove the previous `as:*` status label and apply the new one.
+
+### Milestone-Only Posting Policy
+- Post only on meaningful milestones:
+  - work started
+  - blocked waiting on input/dependency
+  - unblocked and resumed
+  - completed
+  - failed/cancelled with clear outcome
+- Do not post for routine churn:
+  - retries
+  - step-level progress
+  - short-lived state flips
+  - background sync-only adjustments
+
+### Internal Status -> GitHub Action Mapping
+
+| Internal Transition | Update GitHub Label | Post GitHub Comment | Comment Template (short) |
+|---|---|---|---|
+| `queued -> in_progress` | `as:in-progress` | Yes | `Work started.` |
+| `in_progress -> blocked` | `as:blocked` | Yes | `Work blocked: <reason>.` |
+| `blocked -> in_progress` | `as:in-progress` | Yes | `Work resumed after unblock.` |
+| `in_progress -> done` | `as:done` | Yes | `Work completed.` |
+| `in_progress -> failed` | keep `as:in-progress` or set `as:blocked` (team choice) | Yes | `Work stopped: <failure summary>.` |
+| `in_progress -> cancelled` | keep current or set `as:queued` (team choice) | Yes | `Work cancelled.` |
+| `queued -> cancelled` | `as:queued` (unchanged) | No | n/a |
+| `queued -> queued` | none | No | n/a |
+| `in_progress -> in_progress` | none | No | n/a |
+| `blocked -> blocked` | none | No | n/a |
+| `done -> done` | none | No | n/a |
+
+### Transitions That Must Not Post Updates
+- Any transition where source and destination are the same.
+- Automatic retry state changes that return to the same milestone stage.
+- Internal-only housekeeping transitions (for example: scheduler rebalance, worker handoff).
+- Bulk backfill/import reconciliation updates.
+- Any status change while `sync_status_enabled=false`.
+
+### Sample Timeline: Issue Flow
+1. Issue imported -> task created as `queued` (no comment posted).
+2. Agent begins work -> set `as:in-progress`; post `Work started.`
+3. Missing requirement found -> set `as:blocked`; post `Work blocked: waiting for acceptance criteria.`
+4. User provides answer -> set `as:in-progress`; post `Work resumed after unblock.`
+5. Work completes -> set `as:done`; post `Work completed.`
+
+### Sample Timeline: PR Flow
+1. PR imported -> task `queued` (no comment posted).
+2. Agent starts edits -> `as:in-progress`; post `Work started.`
+3. CI failure blocks merge -> `as:blocked`; post `Work blocked: CI failing on test suite.`
+4. Fix applied and CI passes -> `as:in-progress`; post `Work resumed after unblock.`
+5. PR ready/merged -> `as:done`; post `Work completed.`
+````
+
+## File: docs/index.md
+````markdown
+# Documentation Index
+
+## Getting Started
+- [Development setup](development/setup.md)
+- [Development commands](development/commands.md)
+- [Human-gated taskwise delivery flow](development/human-gated-taskwise-delivery-flow.md)
+- [Testing](development/testing.md)
+- [Debugging](development/debugging.md)
+
+## Architecture
+- [Architecture index](architecture/index.md)
+- [Domains](architecture/domains.md)
+- [Boundaries](architecture/boundaries.md)
+- [GitHub sync ownership model](github-sync-ownership-model.md)
+
+## Product
+- [Product index](product/index.md)
+- [Terminology](product/terminology.md)
+
+## Quality
+- [Scorecard](quality/scorecard.md)
+- [Known issues](quality/known-issues.md)
+- [Tech debt](quality/tech-debt.md)
+
+## Execution Plans
+- Active plans: `docs/exec-plans/active/`
+- Completed plans: `docs/exec-plans/completed/`
+````
+
+## File: examples/github-automations.comment-triggers.json
+````json
+[
+  {
+    "id": "ai-issue-opened",
+    "name": "AI issue -> build task",
+    "enabled": true,
+    "trigger": "issue_opened",
+    "labelFilter": {
+      "labelsAny": ["ai"],
+      "labelsNone": ["wip"]
+    },
+    "task": {
+      "assigneeEmail": "dev@company.com",
+      "taskType": "build",
+      "provider": "codex",
+      "providerProfile": "high",
+      "modelOverride": "gpt-5.4",
+      "codexCredentialSource": "profile"
+    }
+  },
+  {
+    "id": "ai-comment-triggers-on-issues",
+    "name": "Issue comments can intentionally trigger automation",
+    "enabled": true,
+    "trigger": "issue_opened",
+    "automationEnabled": true,
+    "allowedTriggers": ["emoji_reaction", "slash_command", "bot_mention"],
+    "allowedReactions": ["🤖", "eyes"],
+    "allowedCommands": ["/agent run"],
+    "allowedActorLogins": ["repo-admin", "maintainer-1"],
+    "labelFilter": {
+      "labelsAny": ["ai"],
+      "labelsNone": ["wip"]
+    },
+    "task": {
+      "assigneeEmail": "dev@company.com",
+      "taskType": "build",
+      "includeComments": true,
+      "provider": "codex",
+      "providerProfile": "high"
+    }
+  },
+  {
+    "id": "ai-comment-triggers-on-prs",
+    "name": "PR comments can intentionally trigger automation",
+    "enabled": true,
+    "trigger": "pull_request_opened",
+    "automationEnabled": true,
+    "allowedTriggers": ["emoji_reaction", "slash_command", "bot_mention"],
+    "allowedReactions": ["🤖", "rocket"],
+    "allowedCommands": ["/agent run"],
+    "allowedActorLogins": ["repo-admin", "maintainer-1"],
+    "task": {
+      "assigneeEmail": "dev@company.com",
+      "provider": "codex",
+      "providerProfile": "high"
+    }
+  }
+]
+````
+
+## File: scripts/harness/check.sh
+````bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+source "${SCRIPT_DIR}/lib/remote-build.sh"
+ensure_remote_build_execution "$REPO_ROOT" "./scripts/harness/check.sh" "$@"
+
+cd "$REPO_ROOT"
+
+echo "[harness:check] repo root: $REPO_ROOT"
+echo "[harness:check] running docs checks"
+./scripts/harness/check-docs.sh
+
+echo "[harness:check] running human-gated flow checks"
+./scripts/harness/check-human-gated-flow.sh
+
+echo "[harness:check] running boundary checks"
+node ./scripts/harness/boundary-check.mjs
+
+echo "[harness:check] running lint"
+npm run lint
+
+echo "[harness:check] running build"
+npm run build
+
+echo "[harness:check] done"
+````
+
+## File: scripts/harness/doctor.sh
+````bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+source "${SCRIPT_DIR}/lib/remote-build.sh"
+ensure_remote_build_execution "$REPO_ROOT" "./scripts/harness/doctor.sh" "$@"
+
+cd "$REPO_ROOT"
+
+log() {
+  echo "[harness:doctor] $1"
+}
+
+require_cmd() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "[harness:doctor] error: required command not found: $cmd" >&2
+    exit 1
+  fi
+}
+
+log "repo root: $REPO_ROOT"
+
+require_cmd bash
+require_cmd docker
+require_cmd node
+require_cmd npm
+
+if [[ ! -d node_modules ]]; then
+  require_cmd python3
+fi
+
+if ! docker compose version >/dev/null 2>&1 && ! command -v docker-compose >/dev/null 2>&1; then
+  echo "[harness:doctor] error: Docker Compose is required" >&2
+  exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+  echo "[harness:doctor] error: Docker daemon is not reachable. Start Docker and retry." >&2
+  exit 1
+fi
+
+if [[ ! -f package.json || ! -f package-lock.json ]]; then
+  echo "[harness:doctor] error: package.json and package-lock.json are required at repo root" >&2
+  exit 1
+fi
+
+if [[ ! -f .env && ! -f .env.example ]]; then
+  echo "[harness:doctor] error: no environment template found (.env or .env.example)" >&2
+  exit 1
+fi
+
+if [[ -f .env.example ]]; then
+  for required_key in DEFAULT_ADMIN_EMAIL DEFAULT_ADMIN_PASSWORD PUBLIC_PORT DATABASE_URL; do
+    if ! grep -q "^${required_key}=" .env.example; then
+      echo "[harness:doctor] error: .env.example is missing required key: ${required_key}" >&2
+      exit 1
+    fi
+  done
+fi
+
+if [[ ! -x ./agentswarm.sh ]]; then
+  echo "[harness:doctor] error: ./agentswarm.sh is missing or not executable" >&2
+  exit 1
+fi
+
+for script in ./scripts/harness/setup.sh ./scripts/harness/start.sh ./scripts/harness/check.sh ./scripts/harness/check-docs.sh ./scripts/harness/test.sh ./scripts/harness/pr-ready.sh ./scripts/harness/logs.sh; do
+  if [[ ! -x "$script" ]]; then
+    echo "[harness:doctor] error: harness script missing or not executable: $script" >&2
+    exit 1
+  fi
+done
+
+log "node version: $(node -v)"
+log "npm version: $(npm -v)"
+if command -v python3 >/dev/null 2>&1; then
+  log "python3 version: $(python3 --version 2>/dev/null || echo unknown)"
+fi
+
+log "validating Docker Compose configuration"
+if docker compose version >/dev/null 2>&1; then
+  docker compose config >/dev/null
+else
+  docker-compose config >/dev/null
+fi
+
+log "validating npm workspace scripts"
+npm run >/dev/null
+npm run -w @agentswarm/server >/dev/null
+npm run -w @agentswarm/web >/dev/null
+
+log "doctor checks passed"
+log "next: run ./scripts/harness/setup.sh"
+````
+
+## File: scripts/harness/pr-ready.sh
+````bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+source "${SCRIPT_DIR}/lib/remote-build.sh"
+ensure_remote_build_execution "$REPO_ROOT" "./scripts/harness/pr-ready.sh" "$@"
+
+cd "$REPO_ROOT"
+
+step() {
+  echo "[harness:pr-ready] $1"
+}
+
+run() {
+  step "running: $*"
+  "$@"
+}
+
+has_root_script() {
+  local script_name="$1"
+  node -e '
+const fs = require("fs");
+const name = process.argv[1];
+const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+process.exit(pkg && pkg.scripts && Object.prototype.hasOwnProperty.call(pkg.scripts, name) ? 0 : 1);
+' "$script_name"
+}
+
+step "repo root: $REPO_ROOT"
+
+if [[ ! -d node_modules ]]; then
+  step "dependencies missing (node_modules not found); running setup first"
+  run env HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+fi
+
+step "1/9 doctor"
+run ./scripts/harness/doctor.sh
+
+step "2/9 format check"
+format_check_required="${HARNESS_REQUIRE_FORMAT_CHECK:-0}"
+if has_root_script "format:check"; then
+  run npm run format:check
+elif has_root_script "fmt:check"; then
+  run npm run fmt:check
+elif [[ "$format_check_required" == "1" ]]; then
+  echo "[harness:pr-ready] error: HARNESS_REQUIRE_FORMAT_CHECK=1 but no root format-check script is defined." >&2
+  echo "[harness:pr-ready] fix: add package.json script 'format:check' (or 'fmt:check') and retry." >&2
+  exit 1
+else
+  step "no root format-check script found; skipping (set HARNESS_REQUIRE_FORMAT_CHECK=1 to enforce)"
+fi
+
+step "3/9 human-gated flow checks"
+run ./scripts/harness/check-human-gated-flow.sh
+
+step "4/9 boundary checks"
+run node ./scripts/harness/boundary-check.mjs
+
+step "5/9 lint"
+run npm run lint
+
+step "6/9 typecheck"
+# In this repo, lint commands are TypeScript no-emit checks.
+run npm run -w @agentswarm/server lint
+run npm run -w @agentswarm/web lint
+
+step "7/9 tests"
+run ./scripts/harness/test.sh
+
+step "8/9 build"
+run npm run build
+
+step "9/9 repo-specific checks"
+# Validate Compose config when Docker is available.
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  run docker compose config >/dev/null
+  step "docker compose config is valid"
+else
+  step "docker compose not available; skipped compose config validation"
+fi
+
+step "PR readiness checks passed"
+````
+
+## File: scripts/harness/test.sh
+````bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+source "${SCRIPT_DIR}/lib/remote-build.sh"
+ensure_remote_build_execution "$REPO_ROOT" "./scripts/harness/test.sh" "$@"
+
+cd "$REPO_ROOT"
+
+TEST_SCOPE="${TEST_SCOPE:-all}"
+
+case "$TEST_SCOPE" in
+  all|unit|integration|e2e)
+    ;;
+  *)
+    echo "[harness:test] error: invalid TEST_SCOPE='$TEST_SCOPE' (use: all|unit|integration|e2e)" >&2
+    exit 2
+    ;;
+esac
+
+# Deterministic runtime defaults for CI and local agents.
+export CI="${CI:-1}"
+export NODE_ENV="${NODE_ENV:-test}"
+export TZ="${TZ:-UTC}"
+export LANG="${LANG:-C}"
+export LC_ALL="${LC_ALL:-C}"
+export NO_COLOR="${NO_COLOR:-1}"
+export FORCE_COLOR="${FORCE_COLOR:-0}"
+export AGENTSWARM_TEST_SEED="${AGENTSWARM_TEST_SEED:-20260523}"
+
+if ! node -e 'require.resolve("tsx/package.json")' >/dev/null 2>&1; then
+  echo "[harness:test] error: required test dependency 'tsx' is not installed" >&2
+  echo "[harness:test] fix: run npm ci (or HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh)" >&2
+  exit 1
+fi
+
+FIXTURE_ROOT="${REPO_ROOT}/.tmp/harness-tests"
+rm -rf "$FIXTURE_ROOT"
+mkdir -p "$FIXTURE_ROOT"
+export AGENTSWARM_TEST_FIXTURE_ROOT="$FIXTURE_ROOT"
+
+CURRENT_PHASE="initializing"
+CURRENT_CMD=""
+
+on_error() {
+  local exit_code=$?
+  echo "[harness:test]"
+  echo "[harness:test] failed during phase: ${CURRENT_PHASE}" >&2
+  if [[ -n "$CURRENT_CMD" ]]; then
+    echo "[harness:test] command: ${CURRENT_CMD}" >&2
+    echo "[harness:test] rerun: ${CURRENT_CMD}" >&2
+  fi
+  echo "[harness:test] tips:" >&2
+  echo "[harness:test] - run only one scope: TEST_SCOPE=unit ./scripts/harness/test.sh" >&2
+  echo "[harness:test] - read docs: docs/development/testing.md" >&2
+  exit "$exit_code"
+}
+
+trap on_error ERR
+
+run_phase() {
+  local phase="$1"
+  shift
+  CURRENT_PHASE="$phase"
+  CURRENT_CMD="$*"
+  echo "[harness:test]"
+  echo "[harness:test] phase: $phase"
+  echo "[harness:test] running: $*"
+  "$@"
+  echo "[harness:test] phase passed: $phase"
+}
+
+http_check() {
+  local url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS "$url" >/dev/null
+    return $?
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget -q -O /dev/null "$url"
+    return $?
+  fi
+  if command -v node >/dev/null 2>&1; then
+    node -e 'fetch(process.argv[1]).then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))' "$url"
+    return $?
+  fi
+  return 1
+}
+
+resolve_public_port() {
+  if [[ -n "${PUBLIC_PORT:-}" ]]; then
+    echo "$PUBLIC_PORT"
+    return
+  fi
+
+  if [[ -f .env ]]; then
+    local from_env
+    from_env="$(awk -F= '/^PUBLIC_PORT=/{print $2; exit}' .env | tr -d '[:space:]')"
+    if [[ -n "$from_env" ]]; then
+      echo "$from_env"
+      return
+    fi
+  fi
+
+  echo "3217"
+}
+
+ensure_ui_for_playwright() {
+  local ui_base_url="$1"
+  local health_url="${ui_base_url%/}/api/health"
+
+  if http_check "$health_url"; then
+    echo "[harness:test] e2e app health check already passing: $health_url"
+    return
+  fi
+
+  echo "[harness:test] e2e app not healthy yet; starting stack"
+  run_phase "e2e:boot-app" ./scripts/harness/start.sh
+
+  if ! http_check "$health_url"; then
+    echo "[harness:test] error: e2e app health endpoint is not reachable: $health_url" >&2
+    exit 1
+  fi
+
+  echo "[harness:test] e2e app health check passed: $health_url"
+}
+
+all_tests=()
+unit_tests=()
+integration_tests=()
+e2e_tests=()
+
+while IFS= read -r test_file; do
+  all_tests+=("$test_file")
+
+  case "$test_file" in
+    apps/server/src/lib/*.test.ts|apps/web/src/utils/*.test.ts)
+      unit_tests+=("$test_file")
+      ;;
+    */e2e/*|*.e2e.test.ts|*.e2e.test.tsx|*.e2e.test.js|*.e2e.test.mjs|*.e2e.spec.ts|*.e2e.spec.tsx|*.e2e.spec.js|*.e2e.spec.mjs)
+      e2e_tests+=("$test_file")
+      ;;
+    apps/server/src/services/*.test.ts|apps/server/src/routes/*.test.ts)
+      integration_tests+=("$test_file")
+      ;;
+    *)
+      # Conservative default: treat unknown test locations as integration-level.
+      integration_tests+=("$test_file")
+      ;;
+  esac
+done < <(
+  find apps \
+    \( -path '*/node_modules/*' -o -path '*/dist/*' -o -path '*/build/*' -o -path '*/.next/*' \) -prune -o \
+    -type f \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.test.mjs' \) -print |
+    sort
+)
+
+run_node_tests() {
+  local group_name="$1"
+  shift
+
+  if [[ "$#" -eq 0 ]]; then
+    echo "[harness:test]"
+    echo "[harness:test] phase: ${group_name}"
+    echo "[harness:test] no tests found for this group, skipping"
+    return
+  fi
+
+  run_phase "$group_name" node --import tsx --test "$@"
+}
+
+run_playwright_e2e() {
+  if [[ ! -f playwright.config.ts ]]; then
+    echo "[harness:test]"
+    echo "[harness:test] phase: e2e:playwright"
+    echo "[harness:test] playwright config not found, skipping"
+    return
+  fi
+
+  if ! find apps/web/e2e -type f -name '*.spec.ts' | grep -q .; then
+    echo "[harness:test]"
+    echo "[harness:test] phase: e2e:playwright"
+    echo "[harness:test] no Playwright spec files found, skipping"
+    return
+  fi
+
+  if ! node -e 'require.resolve("@playwright/test/package.json")' >/dev/null 2>&1; then
+    echo "[harness:test] error: @playwright/test is not installed in node_modules" >&2
+    echo "[harness:test] run npm ci (or HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh) and retry" >&2
+    exit 1
+  fi
+
+  local public_port
+  public_port="$(resolve_public_port)"
+  local default_ui_host="localhost"
+  if [[ "${HARNESS_REMOTE_EXECUTING:-0}" == "1" ]]; then
+    default_ui_host="host.docker.internal"
+  fi
+  local ui_base_url="${AGENTSWARM_UI_BASE_URL:-http://${default_ui_host}:${public_port}}"
+
+  ensure_ui_for_playwright "$ui_base_url"
+
+  local remote_runner_is_musl=0
+  if [[ "${HARNESS_REMOTE_EXECUTING:-0}" == "1" ]] && command -v ldd >/dev/null 2>&1; then
+    if ldd --version 2>&1 | grep -qi "musl"; then
+      remote_runner_is_musl=1
+    fi
+  fi
+
+  if [[ "$remote_runner_is_musl" == "1" ]] && command -v docker >/dev/null 2>&1; then
+    local musl_playwright_docker_image="${PLAYWRIGHT_DOCKER_IMAGE:-mcr.microsoft.com/playwright:v1.60.0-noble}"
+    local musl_docker_workspace_mount="$REPO_ROOT"
+    if [[ -n "${TASK_WORKSPACE_PATH:-}" ]]; then
+      musl_docker_workspace_mount="$TASK_WORKSPACE_PATH"
+    fi
+    echo "[harness:test] remote runner uses musl libc; running Playwright in containerized fallback"
+    run_phase \
+      "e2e:playwright:docker" \
+      docker run --rm \
+        -w /workspace \
+        -v "$musl_docker_workspace_mount:/workspace" \
+        -e AGENTSWARM_UI_BASE_URL="$ui_base_url" \
+        -e CI="${CI:-1}" \
+        -e NO_COLOR="${NO_COLOR:-1}" \
+        -e FORCE_COLOR="${FORCE_COLOR:-0}" \
+        -e PLAYWRIGHT_CAPTURE_VIDEO="${PLAYWRIGHT_CAPTURE_VIDEO:-0}" \
+        "$musl_playwright_docker_image" \
+        sh -lc "npx playwright test --config playwright.config.ts"
+    return
+  fi
+
+  if [[ "${PLAYWRIGHT_SKIP_INSTALL:-0}" != "1" ]]; then
+    if command -v apt-get >/dev/null 2>&1; then
+      run_phase "e2e:playwright-install" npx playwright install --with-deps chromium --only-shell
+    else
+      echo "[harness:test] apt-get not found; installing Playwright browser without OS package install"
+      run_phase "e2e:playwright-install" npx playwright install chromium --only-shell
+    fi
+  else
+    echo "[harness:test] skipping browser install (PLAYWRIGHT_SKIP_INSTALL=1)"
+  fi
+
+  if env AGENTSWARM_UI_BASE_URL="$ui_base_url" node -e 'const { chromium } = require("@playwright/test"); chromium.launch({ headless: true }).then((browser) => browser.close()).then(() => process.exit(0)).catch(() => process.exit(1));'; then
+    run_phase "e2e:playwright" env AGENTSWARM_UI_BASE_URL="$ui_base_url" npx playwright test --config playwright.config.ts
+    return
+  fi
+
+  if [[ "${HARNESS_REMOTE_EXECUTING:-0}" == "1" ]] && command -v docker >/dev/null 2>&1; then
+    local playwright_docker_image="${PLAYWRIGHT_DOCKER_IMAGE:-mcr.microsoft.com/playwright:v1.60.0-noble}"
+    local docker_workspace_mount="$REPO_ROOT"
+    if [[ -n "${TASK_WORKSPACE_PATH:-}" ]]; then
+      docker_workspace_mount="$TASK_WORKSPACE_PATH"
+    fi
+    echo "[harness:test] local Playwright launch probe failed in remote runner; falling back to containerized Playwright"
+    run_phase \
+      "e2e:playwright:docker" \
+      docker run --rm \
+        -w /workspace \
+        -v "$docker_workspace_mount:/workspace" \
+        -e AGENTSWARM_UI_BASE_URL="$ui_base_url" \
+        -e CI="${CI:-1}" \
+        -e NO_COLOR="${NO_COLOR:-1}" \
+        -e FORCE_COLOR="${FORCE_COLOR:-0}" \
+        -e PLAYWRIGHT_CAPTURE_VIDEO="${PLAYWRIGHT_CAPTURE_VIDEO:-0}" \
+        "$playwright_docker_image" \
+        sh -lc "npx playwright test --config playwright.config.ts"
+    return
+  fi
+
+  echo "[harness:test] error: Playwright browser launch probe failed" >&2
+  echo "[harness:test] fix: use a glibc-based runtime (or set PLAYWRIGHT_DOCKER_IMAGE and run in remote mode)" >&2
+  exit 1
+}
+
+echo "[harness:test] repo root: $REPO_ROOT"
+echo "[harness:test] scope: $TEST_SCOPE"
+echo "[harness:test] deterministic seed: $AGENTSWARM_TEST_SEED"
+echo "[harness:test] fixture root: $AGENTSWARM_TEST_FIXTURE_ROOT"
+echo "[harness:test] discovered tests: total=${#all_tests[@]}, unit=${#unit_tests[@]}, integration=${#integration_tests[@]}, e2e=${#e2e_tests[@]}"
+
+case "$TEST_SCOPE" in
+  all)
+    if [[ "${#unit_tests[@]}" -eq 0 ]]; then run_node_tests "unit"; else run_node_tests "unit" "${unit_tests[@]}"; fi
+    if [[ "${#integration_tests[@]}" -eq 0 ]]; then run_node_tests "integration"; else run_node_tests "integration" "${integration_tests[@]}"; fi
+    if [[ "${#e2e_tests[@]}" -eq 0 ]]; then run_node_tests "e2e:node"; else run_node_tests "e2e:node" "${e2e_tests[@]}"; fi
+    run_playwright_e2e
+    ;;
+  unit)
+    if [[ "${#unit_tests[@]}" -eq 0 ]]; then run_node_tests "unit"; else run_node_tests "unit" "${unit_tests[@]}"; fi
+    ;;
+  integration)
+    if [[ "${#integration_tests[@]}" -eq 0 ]]; then run_node_tests "integration"; else run_node_tests "integration" "${integration_tests[@]}"; fi
+    ;;
+  e2e)
+    if [[ "${#e2e_tests[@]}" -eq 0 ]]; then run_node_tests "e2e:node"; else run_node_tests "e2e:node" "${e2e_tests[@]}"; fi
+    run_playwright_e2e
+    ;;
+esac
+
+echo "[harness:test]"
+echo "[harness:test] all requested test phases passed"
+````
+
+## File: apps/server/src/lib/task-interactive-terminal.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
+
+import { buildGitTerminalDockerEnvEntries, buildGitTerminalEnvEntries } from "./task-interactive-terminal-git-env.js";
+import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
+const gitTerminalShellPath = path.join(repoRoot, "tools/codex-web-terminal/git-terminal-shell.sh");
+const gitTerminalDockerfilePath = path.join(repoRoot, "tools/codex-web-terminal/Dockerfile.git");
+
+describe("buildGitTerminalStartScript", () => {
+  it("generates shell syntax that parses under sh", () => {
+    const script = buildGitTerminalStartScript();
+    const result = spawnSync("sh", ["-n", "-c", script], { encoding: "utf8" });
+
+    assert.equal(result.status, 0, result.stderr || "expected sh -n to accept git terminal start script");
+    assert.match(script, /\n\s+printf '%s\\n'/);
+    assert.doesNotMatch(script, /then;\s/);
+    assert.match(script, /exec git-terminal-shell$/);
+  });
+
+  it("ships the git terminal wrapper with a restricted bash shell", () => {
+    const shellScript = readFileSync(gitTerminalShellPath, "utf8");
+    const dockerfile = readFileSync(gitTerminalDockerfilePath, "utf8");
+    const result = spawnSync("sh", ["-n", gitTerminalShellPath], { encoding: "utf8" });
+
+    assert.equal(result.status, 0, result.stderr || "expected sh -n to accept git terminal shell wrapper");
+    assert.match(shellScript, /exec \/bin\/bash --noprofile --norc --restricted -i/);
+    assert.match(dockerfile, /\bapk add --no-cache bash git vim( neovim)? diffutils ca-certificates\b/);
+  });
+});
+
+describe("buildGitTerminalEnvEntries", () => {
+  it("injects git identity as transient config for interactive commits", () => {
+    const env = Object.fromEntries(
+      buildGitTerminalEnvEntries({
+        workspacePath: "/workspace",
+        gitIdentity: {
+          name: "Ada Lovelace",
+          email: "ada@example.com"
+        }
+      })
+    );
+
+    assert.equal(env.GIT_CONFIG_COUNT, "3");
+    assert.equal(env.GIT_CONFIG_KEY_0, "safe.directory");
+    assert.equal(env.GIT_CONFIG_VALUE_0, "/workspace");
+    assert.equal(env.GIT_CONFIG_KEY_1, "user.name");
+    assert.equal(env.GIT_CONFIG_VALUE_1, "Ada Lovelace");
+    assert.equal(env.GIT_CONFIG_KEY_2, "user.email");
+    assert.equal(env.GIT_CONFIG_VALUE_2, "ada@example.com");
+    assert.equal(env.GIT_AUTHOR_NAME, "Ada Lovelace");
+    assert.equal(env.GIT_AUTHOR_EMAIL, "ada@example.com");
+    assert.equal(env.GIT_COMMITTER_NAME, "Ada Lovelace");
+    assert.equal(env.GIT_COMMITTER_EMAIL, "ada@example.com");
+  });
+
+  it("keeps token auth and safe.directory when identity is unavailable", () => {
+    const env = Object.fromEntries(
+      buildGitTerminalEnvEntries({
+        workspacePath: "/workspace",
+        githubToken: "secret-token",
+        gitUsername: "octocat"
+      })
+    );
+
+    assert.equal(env.GIT_CONFIG_COUNT, "1");
+    assert.equal(env.GIT_CONFIG_KEY_0, "safe.directory");
+    assert.equal(env.GIT_CONFIG_VALUE_0, "/workspace");
+    assert.equal(env.GIT_TOKEN, "secret-token");
+    assert.equal(env.GIT_USERNAME, "octocat");
+    assert.equal(env.GIT_AUTHOR_NAME, undefined);
+    assert.equal(env.GIT_AUTHOR_EMAIL, undefined);
+    assert.equal(env.GIT_COMMITTER_NAME, undefined);
+    assert.equal(env.GIT_COMMITTER_EMAIL, undefined);
+  });
+});
+
+describe("buildGitTerminalDockerEnvEntries", () => {
+  it("appends repository runtime env entries to git terminal runtime env entries", () => {
+    const envEntries = buildGitTerminalDockerEnvEntries({
+      runtimeEnvEntries: [
+        ["TERM", "xterm-256color"],
+        ["TASK_INTERACTIVE_WORKSPACE", "/workspace"]
+      ],
+      repositoryEnvEntries: [
+        ["FOO", "bar"],
+        ["EMPTY_OK", ""],
+        ["API_TOKEN", "token-123"]
+      ]
+    });
+
+    assert.deepEqual(envEntries, [
+      ["TERM", "xterm-256color"],
+      ["TASK_INTERACTIVE_WORKSPACE", "/workspace"],
+      ["FOO", "bar"],
+      ["EMPTY_OK", ""],
+      ["API_TOKEN", "token-123"]
+    ]);
+  });
+});
+````
+
+## File: apps/server/src/lib/task-status.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import {
+  normalizeTaskLifecycleStatus,
+  reconcileTaskStatusWithPendingCheckpoint,
+  resolveTaskReadyStatus
+} from "./task-status.js";
+
+describe("resolveTaskReadyStatus", () => {
+  it("returns open when no checkpoint is pending", () => {
+    assert.equal(resolveTaskReadyStatus(false), "open");
+  });
+
+  it("returns awaiting_review when a checkpoint is pending", () => {
+    assert.equal(resolveTaskReadyStatus(true), "awaiting_review");
+  });
+});
+
+describe("normalizeTaskLifecycleStatus", () => {
+  it("maps legacy successful statuses into the new ready states", () => {
+    assert.equal(normalizeTaskLifecycleStatus("completed", "build", true), "open");
+    assert.equal(normalizeTaskLifecycleStatus("answered", "ask", false), "open");
+    assert.equal(normalizeTaskLifecycleStatus("accepted", "build", false), "open");
+  });
+
+  it("preserves explicit done state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("done", "build", false), "done");
+  });
+
+  it("preserves explicit in_review state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("in_review", "build", false), "in_review");
+  });
+
+  it("maps queued and active execution statuses back to open Kanban state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("scheduled", "build", false), "scheduled");
+    assert.equal(normalizeTaskLifecycleStatus("build_queued", "build", false), "open");
+    assert.equal(normalizeTaskLifecycleStatus("asking", "ask", false), "open");
+  });
+});
+
+describe("reconcileTaskStatusWithPendingCheckpoint", () => {
+  it("does not move Kanban state when a checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("failed", true), "open");
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("open", true), "open");
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", true), "in_review");
+  });
+
+  it("returns legacy-ready states to open when no checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("accepted", false), "open");
+  });
+
+  it("preserves explicit in_review and done states when no checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", false), "in_review");
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("done", false), "done");
+  });
+
+  it("returns awaiting_review to open when no checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("awaiting_review", false), "open");
+  });
+
+  it("keeps archived tasks unchanged", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("archived", true), "archived");
+  });
+
+  it("keeps scheduled tasks unchanged", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("scheduled", true), "scheduled");
+  });
+});
+````
+
+## File: apps/server/src/routes/sequences.ts
+````typescript
+import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import type { AuthService } from "../lib/auth.js";
+import type { SequenceStore } from "../services/sequence-store.js";
+
+const sequenceVariableSchema = z
+  .object({
+    name: z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(128),
+    type: z.enum(["text", "multiline"]),
+    title: z.string().trim().max(200).default(""),
+    description: z.string().trim().max(200).default(""),
+    defaultValue: z.string().max(2000).default("")
+  })
+  .superRefine((value, ctx) => {
+    if (value.type === "text" && /[\r\n]/.test(value.defaultValue)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["defaultValue"],
+        message: "Default value for text variables must be a single line."
+      });
+    }
+  });
+
+const sequenceStepSchema = z
+  .object({
+    id: z.string().trim().min(1).max(80).optional(),
+    type: z.enum(["inline", "snippet"]),
+    prompt: z.string().max(20_000).default(""),
+    snippetId: z.string().trim().min(1).max(120).optional()
+  })
+  .superRefine((step, ctx) => {
+    if (step.type === "inline" && step.prompt.trim().length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["prompt"],
+        message: "Inline steps must include prompt content."
+      });
+    }
+    if (step.type === "snippet" && !step.snippetId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["snippetId"],
+        message: "Snippet steps must include snippetId."
+      });
+    }
+  });
+
+const sequenceSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    executionMode: z.enum(["auto_apply_changes", "approve_before_continuing"]).optional().default("auto_apply_changes"),
+    steps: z.array(sequenceStepSchema).min(1).max(100),
+    variables: z.array(sequenceVariableSchema).max(100).optional()
+  })
+  .superRefine((value, ctx) => {
+    const variableNames = new Set<string>();
+    for (const variable of value.variables ?? []) {
+      if (variableNames.has(variable.name)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["variables"],
+          message: `Duplicate variable name: ${variable.name}`
+        });
+      }
+      variableNames.add(variable.name);
+    }
+    const stepIds = new Set<string>();
+    for (const [index, step] of value.steps.entries()) {
+      const stepId = step.id?.trim();
+      if (!stepId) {
+        continue;
+      }
+      if (stepIds.has(stepId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["steps", index, "id"],
+          message: `Duplicate step id: ${stepId}`
+        });
+      }
+      stepIds.add(stepId);
+    }
+  });
+
+export const registerSequenceRoutes = (
+  app: FastifyInstance,
+  deps: {
+    sequenceStore: SequenceStore;
+    auth: AuthService;
+  }
+): void => {
+  const normalizeInput = (input: z.infer<typeof sequenceSchema>) => ({
+    ...input,
+    steps: input.steps.map((step, index) => ({
+      ...step,
+      id: step.id?.trim() || `step_${index + 1}`
+    }))
+  });
+
+  app.get("/sequences", { preHandler: deps.auth.requireAllScopes(["sequence:list"]) }, async () => deps.sequenceStore.listSequences());
+
+  app.get<{ Params: { id: string } }>("/sequences/:id", { preHandler: deps.auth.requireAllScopes(["sequence:read"]) }, async (request, reply) => {
+    const sequence = await deps.sequenceStore.getSequence(request.params.id);
+    if (!sequence) {
+      return reply.status(404).send({ message: "Sequence not found" });
+    }
+    return reply.send(sequence);
+  });
+
+  app.post("/sequences", { preHandler: deps.auth.requireAllScopes(["sequence:create"]) }, async (request, reply) => {
+    const parsed = sequenceSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+    const sequence = await deps.sequenceStore.createSequence(normalizeInput(parsed.data));
+    return reply.status(201).send(sequence);
+  });
+
+  app.post<{ Params: { id: string } }>("/sequences/:id/duplicate", { preHandler: deps.auth.requireAllScopes(["sequence:create"]) }, async (request, reply) => {
+    const source = await deps.sequenceStore.getSequence(request.params.id);
+    if (!source) {
+      return reply.status(404).send({ message: "Sequence not found" });
+    }
+
+    const duplicated = await deps.sequenceStore.createSequence({
+      name: `Copy of ${source.name}`,
+      executionMode: source.executionMode,
+      steps: source.steps.map((step) => ({
+        id: step.id,
+        type: step.type,
+        prompt: step.prompt,
+        ...(step.snippetId ? { snippetId: step.snippetId } : {})
+      })),
+      variables: source.variables
+    });
+    return reply.status(201).send(duplicated);
+  });
+
+  app.patch<{ Params: { id: string } }>("/sequences/:id", { preHandler: deps.auth.requireAllScopes(["sequence:edit"]) }, async (request, reply) => {
+    const parsed = sequenceSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+    const sequence = await deps.sequenceStore.updateSequence(request.params.id, normalizeInput(parsed.data));
+    if (!sequence) {
+      return reply.status(404).send({ message: "Sequence not found" });
+    }
+    return reply.send(sequence);
+  });
+
+  app.delete<{ Params: { id: string } }>("/sequences/:id", { preHandler: deps.auth.requireAllScopes(["sequence:delete"]) }, async (request, reply) => {
+    const deleted = await deps.sequenceStore.deleteSequence(request.params.id);
+    if (!deleted) {
+      return reply.status(404).send({ message: "Sequence not found" });
+    }
+    return reply.status(204).send();
+  });
+};
+````
+
+## File: apps/server/src/routes/settings.ts
+````typescript
+import { z } from "zod";
+import type { FastifyInstance } from "fastify";
+import type { AgentProvider } from "@agentswarm/shared-types";
+import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
+import type { AuthService } from "../lib/auth.js";
+import type { SchedulerService } from "../services/scheduler.js";
+import type { SettingsStore } from "../services/settings-store.js";
+
+interface ProviderModelEntry {
+  label: string;
+  value: string;
+}
+
+async function fetchOpenAiModels(apiKey: string, baseUrl: string | null): Promise<ProviderModelEntry[]> {
+  const base = (baseUrl?.replace(/\/$/, "") ?? "https://api.openai.com") + "/v1";
+  const response = await fetch(`${base}/models`, {
+    headers: { Authorization: `Bearer ${apiKey}` }
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenAI models API returned ${response.status}`);
+  }
+
+  const data = await response.json() as { data: Array<{ id: string }> };
+  return data.data
+    .map((m) => ({ label: m.id, value: m.id }))
+    .sort((a, b) => a.value.localeCompare(b.value));
+}
+
+async function fetchAnthropicModels(apiKey: string): Promise<ProviderModelEntry[]> {
+  const response = await fetch("https://api.anthropic.com/v1/models", {
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01"
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Anthropic models API returned ${response.status}`);
+  }
+
+  const data = await response.json() as { data: Array<{ id: string; display_name: string }> };
+  return data.data
+    .map((m) => ({ label: m.display_name || m.id, value: m.id }))
+    .sort((a, b) => a.value.localeCompare(b.value));
+}
+
+const mcpServerSchema = z.discriminatedUnion("transport", [
+  z.object({
+    name: z.string().trim().min(1).max(120),
+    enabled: z.boolean(),
+    transport: z.literal("stdio"),
+    command: z.string().trim().min(1).max(300),
+    args: z.array(z.string().trim().min(1).max(300)).max(40).optional()
+  }),
+  z.object({
+    name: z.string().trim().min(1).max(120),
+    enabled: z.boolean(),
+    transport: z.literal("http"),
+    url: z.string().trim().url(),
+    bearerTokenEnvVar: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
+      .nullable()
+      .optional()
+  })
+]);
+
+const providerProfileEnum = z.enum(["low", "medium", "high", "max"]);
+const responsePreferenceSchema = z
+  .object({
+    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
+    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
+    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
+    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
+    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
+    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
+    extraInstructions: z.string().trim().max(2000).optional()
+  });
+const responsePreferencePresetSchema = z.object({
+  id: z.string().trim().min(1).max(120).optional(),
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).optional(),
+  preference: responsePreferenceSchema
+});
+
+const updateSettingsSchema = z.object({
+  defaultProvider: z.enum(["codex", "claude"]).optional(),
+  maxAgents: z.coerce.number().int().min(1).max(20).optional(),
+  branchPrefix: z.string().trim().min(1).max(80).optional(),
+  workspaceProvisioningMode: z.enum(["clone_only", "hybrid"]).optional(),
+  gitUsername: z.string().trim().min(1).max(120).optional(),
+  mcpServers: z.array(mcpServerSchema).max(25).optional(),
+  openaiBaseUrl: z.string().trim().url().nullable().optional(),
+  taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
+  taskPromptMagicTemplate: z.string().trim().min(1).max(12_000).optional(),
+  codexDefaultModel: z.string().trim().min(1).max(120).optional(),
+  codexDefaultEffort: providerProfileEnum.optional(),
+  claudeDefaultModel: z.string().trim().min(1).max(120).optional(),
+  claudeDefaultEffort: providerProfileEnum.optional(),
+  responsePreferencePresets: z.array(responsePreferencePresetSchema).max(50).optional()
+});
+
+const updateCredentialsSchema = z.object({
+  githubToken: z.string().trim().min(1).optional(),
+  openaiApiKey: z.string().trim().min(1).optional(),
+  anthropicApiKey: z.string().trim().min(1).optional(),
+  clearGithubToken: z.boolean().optional(),
+  clearOpenAiApiKey: z.boolean().optional(),
+  clearAnthropicApiKey: z.boolean().optional()
+});
+
+const updateUserNotesSchema = z.object({
+  notes: z.string().max(200_000)
+});
+
+export const registerSettingsRoutes = (
+  app: FastifyInstance,
+  deps: {
+    settingsStore: SettingsStore;
+    scheduler: SchedulerService;
+    auth: AuthService;
+  }
+): void => {
+  app.get("/settings", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => deps.settingsStore.getSettings());
+
+  app.get("/settings/models", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async (request, reply) => {
+    const providerParam = (request.query as Record<string, string>).provider as AgentProvider | undefined;
+    const provider = providerParam === "claude" ? "claude" : "codex";
+
+    const credentials = await deps.settingsStore.getRuntimeCredentials();
+    const settings = await deps.settingsStore.getSettings();
+    const fallback = provider === "claude" ? [...CLAUDE_MODELS] : [...CODEX_MODELS];
+
+    try {
+      if (provider === "claude") {
+        if (!credentials.anthropicApiKey) {
+          return reply.send({ models: fallback, source: "static" });
+        }
+        const models = await fetchAnthropicModels(credentials.anthropicApiKey);
+        return reply.send({ models, source: "api" });
+      }
+
+      if (!credentials.openaiApiKey) {
+        return reply.send({ models: fallback, source: "static" });
+      }
+      const models = await fetchOpenAiModels(credentials.openaiApiKey, settings.openaiBaseUrl);
+      return reply.send({ models, source: "api" });
+    } catch {
+      return reply.send({ models: fallback, source: "static" });
+    }
+  });
+
+  app.patch("/settings", { preHandler: deps.auth.requireAllScopes(["settings:edit"]) }, async (request, reply) => {
+    const parsed = updateSettingsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const settings = await deps.settingsStore.updateSettings(parsed.data);
+    await deps.scheduler.onSettingsChanged();
+    return reply.send(settings);
+  });
+
+  app.patch("/settings/credentials", { preHandler: deps.auth.requireAllScopes(["settings:edit"]) }, async (request, reply) => {
+    const parsed = updateCredentialsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const settings = await deps.settingsStore.updateCredentials(parsed.data);
+    return reply.send(settings);
+  });
+
+  app.get("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request) =>
+    deps.settingsStore.getUserNotes(request.auth!.user.id)
+  );
+
+  app.patch("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateUserNotesSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const next = await deps.settingsStore.updateUserNotes(request.auth!.user.id, parsed.data.notes);
+    return reply.send(next);
+  });
+};
+````
+
+## File: apps/server/src/routes/snippets.ts
+````typescript
+import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import type { AuthService } from "../lib/auth.js";
+import type { SnippetStore } from "../services/snippet-store.js";
+
+const snippetSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  content: z.string().trim().min(1).max(20000),
+  variables: z
+    .array(
+      z
+        .object({
+          name: z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(128),
+          type: z.enum(["text", "multiline"]),
+          title: z.string().trim().max(200).default(""),
+          description: z.string().trim().max(200).default(""),
+          defaultValue: z.string().max(2000).default("")
+        })
+        .superRefine((value, ctx) => {
+          if (value.type === "text" && /[\r\n]/.test(value.defaultValue)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["defaultValue"],
+              message: "Default value for text variables must be a single line."
+            });
+          }
+        })
+    )
+    .max(100)
+    .optional()
+});
+
+export const registerSnippetRoutes = (
+  app: FastifyInstance,
+  deps: {
+    snippetStore: SnippetStore;
+    auth: AuthService;
+  }
+): void => {
+  app.get("/snippets", { preHandler: deps.auth.requireAllScopes(["snippet:list"]) }, async () => deps.snippetStore.listSnippets());
+
+  app.get<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:read"]) }, async (request, reply) => {
+    const snippet = await deps.snippetStore.getSnippet(request.params.id);
+    if (!snippet) {
+      return reply.status(404).send({ message: "Snippet not found" });
+    }
+
+    return reply.send(snippet);
+  });
+
+  app.post("/snippets", { preHandler: deps.auth.requireAllScopes(["snippet:create"]) }, async (request, reply) => {
+    const parsed = snippetSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const snippet = await deps.snippetStore.createSnippet(parsed.data);
+    return reply.status(201).send(snippet);
+  });
+
+  app.post<{ Params: { id: string } }>("/snippets/:id/duplicate", { preHandler: deps.auth.requireAllScopes(["snippet:create"]) }, async (request, reply) => {
+    const source = await deps.snippetStore.getSnippet(request.params.id);
+    if (!source) {
+      return reply.status(404).send({ message: "Snippet not found" });
+    }
+
+    const duplicated = await deps.snippetStore.createSnippet({
+      name: `Copy of ${source.name}`,
+      content: source.content,
+      variables: source.variables
+    });
+    return reply.status(201).send(duplicated);
+  });
+
+  app.patch<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:edit"]) }, async (request, reply) => {
+    const parsed = snippetSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const snippet = await deps.snippetStore.updateSnippet(request.params.id, parsed.data);
+    if (!snippet) {
+      return reply.status(404).send({ message: "Snippet not found" });
+    }
+
+    return reply.send(snippet);
+  });
+
+  app.delete<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:delete"]) }, async (request, reply) => {
+    const deleted = await deps.snippetStore.deleteSnippet(request.params.id);
+    if (!deleted) {
+      return reply.status(404).send({ message: "Snippet not found" });
+    }
+
+    return reply.status(204).send();
+  });
+};
+````
+
+## File: apps/server/src/services/create-postgres-stores.ts
+````typescript
+import type { Pool } from "pg";
+import type { EventBus } from "../lib/events.js";
+import type { RedisClients } from "../lib/redis.js";
+import type { AppStores } from "./app-stores.js";
+import { PostgresCredentialStore } from "./credential-store.js";
+import { PostgresRepositoryStore } from "./repository-store.js";
+import { PostgresRoleStore } from "./role-store.js";
+import { RedisSessionStore } from "./session-store.js";
+import { PostgresSettingsStore } from "./settings-store.js";
+import { PostgresSnippetStore } from "./snippet-store.js";
+import { PostgresSequenceStore } from "./sequence-store.js";
+import { RedisTaskQueueStore } from "./task-queue-store.js";
+import { PostgresTaskDraftStore } from "./task-draft-store.js";
+import { PostgresTaskStore } from "./task-store.js";
+import { PostgresUserStore } from "./user-store.js";
+import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
+import { RedisGitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
+
+export const createPostgresStores = (
+  pool: Pool,
+  redisClients: RedisClients,
+  eventBus: EventBus,
+  sessionTtlDays: number
+): AppStores => {
+  const taskStore = new PostgresTaskStore(pool, eventBus);
+  const taskDraftStore = new PostgresTaskDraftStore(pool);
+  const taskQueueStore = new RedisTaskQueueStore(redisClients.command);
+  const githubOutboundQueueStore = new RedisGitHubOutboundQueueStore(redisClients.command);
+  const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
+  const snippetStore = new PostgresSnippetStore(pool, eventBus);
+  const sequenceStore = new PostgresSequenceStore(pool, eventBus);
+  const repositoryStore = new PostgresRepositoryStore(pool, eventBus);
+  const credentialStore = new PostgresCredentialStore(pool);
+  const roleStore = new PostgresRoleStore(pool);
+  const userStore = new PostgresUserStore(pool, roleStore, repositoryStore);
+  const sessionStore = new RedisSessionStore(redisClients.command, sessionTtlDays);
+  const settingsStore = new PostgresSettingsStore(pool, eventBus, credentialStore);
+
+  return {
+    taskStore,
+    taskDraftStore,
+    taskQueueStore,
+    githubOutboundQueueStore,
+    webhookDeliveryStore,
+    snippetStore,
+    sequenceStore,
+    repositoryStore,
+    credentialStore,
+    roleStore,
+    userStore,
+    sessionStore,
+    settingsStore
+  };
+};
+````
+
+## File: apps/server/src/services/task-store.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import type { CreateTaskInput, Repository } from "@agentswarm/shared-types";
+import { RedisTaskStore } from "./task-store.js";
+
+class FakeRedis {
+  private readonly kv = new Map<string, string>();
+  private readonly lists = new Map<string, string[]>();
+  private readonly sets = new Map<string, Set<string>>();
+
+  private getList(key: string): string[] {
+    let current = this.lists.get(key);
+    if (!current) {
+      current = [];
+      this.lists.set(key, current);
+    }
+    return current;
+  }
+
+  private getSet(key: string): Set<string> {
+    let current = this.sets.get(key);
+    if (!current) {
+      current = new Set<string>();
+      this.sets.set(key, current);
+    }
+    return current;
+  }
+
+  private normalizeIndex(length: number, index: number): number {
+    return index < 0 ? Math.max(length + index, 0) : Math.min(index, length);
+  }
+
+  async set(key: string, value: string): Promise<"OK"> {
+    this.kv.set(key, value);
+    return "OK";
+  }
+
+  async get(key: string): Promise<string | null> {
+    return this.kv.get(key) ?? null;
+  }
+
+  async lrange(key: string, start: number, stop: number): Promise<string[]> {
+    const list = this.getList(key);
+    const normalizedStart = this.normalizeIndex(list.length, start);
+    const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
+    if (normalizedStop < normalizedStart) {
+      return [];
+    }
+    return list.slice(normalizedStart, normalizedStop + 1);
+  }
+
+  async rpush(key: string, ...values: string[]): Promise<number> {
+    const list = this.getList(key);
+    list.push(...values);
+    return list.length;
+  }
+
+  async ltrim(key: string, start: number, stop: number): Promise<"OK"> {
+    const list = this.getList(key);
+    const normalizedStart = this.normalizeIndex(list.length, start);
+    const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
+    const next = normalizedStop < normalizedStart ? [] : list.slice(normalizedStart, normalizedStop + 1);
+    this.lists.set(key, next);
+    return "OK";
+  }
+
+  async sadd(key: string, ...members: string[]): Promise<number> {
+    const set = this.getSet(key);
+    let added = 0;
+    for (const member of members) {
+      if (!set.has(member)) {
+        set.add(member);
+        added += 1;
+      }
+    }
+    return added;
+  }
+
+  async smembers(key: string): Promise<string[]> {
+    return [...this.getSet(key)];
+  }
+
+  async del(...keys: string[]): Promise<number> {
+    let deleted = 0;
+    for (const key of keys) {
+      deleted += Number(this.kv.delete(key));
+      deleted += Number(this.lists.delete(key));
+      deleted += Number(this.sets.delete(key));
+    }
+    return deleted;
+  }
+
+  multi(): {
+    set: (key: string, value: string) => unknown;
+    rpush: (key: string, ...values: string[]) => unknown;
+    ltrim: (key: string, start: number, stop: number) => unknown;
+    sadd: (key: string, ...members: string[]) => unknown;
+    del: (...keys: string[]) => unknown;
+    exec: () => Promise<unknown[]>;
+  } {
+    const operations: Array<() => void> = [];
+    const chain = {
+      set: (key: string, value: string) => {
+        operations.push(() => {
+          this.kv.set(key, value);
+        });
+        return chain;
+      },
+      rpush: (key: string, ...values: string[]) => {
+        operations.push(() => {
+          this.getList(key).push(...values);
+        });
+        return chain;
+      },
+      ltrim: (key: string, start: number, stop: number) => {
+        operations.push(() => {
+          const list = this.getList(key);
+          const normalizedStart = this.normalizeIndex(list.length, start);
+          const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
+          this.lists.set(key, normalizedStop < normalizedStart ? [] : list.slice(normalizedStart, normalizedStop + 1));
+        });
+        return chain;
+      },
+      sadd: (key: string, ...members: string[]) => {
+        operations.push(() => {
+          const set = this.getSet(key);
+          for (const member of members) {
+            set.add(member);
+          }
+        });
+        return chain;
+      },
+      del: (...keys: string[]) => {
+        operations.push(() => {
+          for (const key of keys) {
+            this.kv.delete(key);
+            this.lists.delete(key);
+            this.sets.delete(key);
+          }
+        });
+        return chain;
+      },
+      exec: async () => {
+        for (const operation of operations) {
+          operation();
+        }
+        return [] as unknown[];
+      }
+    };
+    return chain;
+  }
+
+  pipeline() {
+    return this.multi();
+  }
+}
+
+const repository: Repository = {
+  id: "repo-1",
+  name: "Repo",
+  url: "https://github.com/example/repo.git",
+  defaultBranch: "main",
+  envVars: [],
+  webhookUrl: null,
+  webhookEnabled: false,
+  webhookSecretConfigured: false,
+  webhookLastAttemptAt: null,
+  webhookLastStatus: null,
+  webhookLastError: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z"
+};
+
+const createTaskInput: CreateTaskInput = {
+  title: "Persist context",
+  repoId: repository.id,
+  prompt: "Initial prompt",
+  taskType: "build"
+};
+
+describe("TaskStore.appendMessage", () => {
+  it("persists user messages", async () => {
+    const redis = new FakeRedis();
+    const publishedEvents: unknown[] = [];
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async (event: unknown) => {
+        publishedEvents.push(event);
+      }
+    } as never);
+    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
+    await taskStore.appendMessage(task.id, {
+      role: "user",
+      action: "ask",
+      content: "What changed?"
+    });
+
+    const messages = await taskStore.listMessages(task.id);
+    assert.equal(messages.length, 2);
+    assert.equal(messages[1]?.content, "What changed?");
+    assert.equal(messages[1]?.action, "ask");
+    assert.equal(publishedEvents.length, 3);
+  });
+});
+
+describe("TaskStore.createTask", () => {
+  it("creates new build tasks in the build queue", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
+
+    assert.equal(task.status, "open");
+    assert.equal(task.executionStatus, "queued");
+    assert.equal(task.executionAction, "build");
+    assert.equal(task.startedAt, null);
+  });
+});
+````
+
+## File: apps/server/src/services/webhook-delivery-service.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { afterEach, describe, it } from "node:test";
+import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
+import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
+import { WebhookDeliveryService } from "./webhook-delivery-service.js";
+
+class FakeRedis {
+  private readonly kv = new Map<string, string>();
+  private readonly zsets = new Map<string, Map<string, number>>();
+
+  private getZset(key: string): Map<string, number> {
+    let current = this.zsets.get(key);
+    if (!current) {
+      current = new Map<string, number>();
+      this.zsets.set(key, current);
+    }
+    return current;
+  }
+
+  async set(key: string, value: string): Promise<"OK"> {
+    this.kv.set(key, value);
+    return "OK";
+  }
+
+  async get(key: string): Promise<string | null> {
+    return this.kv.get(key) ?? null;
+  }
+
+  async del(...keys: string[]): Promise<number> {
+    let deleted = 0;
+    for (const key of keys) {
+      if (this.kv.delete(key)) {
+        deleted += 1;
+      }
+    }
+    return deleted;
+  }
+
+  async zadd(key: string, score: number, member: string): Promise<number> {
+    this.getZset(key).set(member, score);
+    return 1;
+  }
+
+  async zrem(key: string, member: string): Promise<number> {
+    const zset = this.getZset(key);
+    const existed = zset.delete(member);
+    return existed ? 1 : 0;
+  }
+
+  async zrangebyscore(
+    key: string,
+    min: number,
+    max: number,
+    _limitKeyword?: string,
+    offset?: number,
+    count?: number
+  ): Promise<string[]> {
+    const parsedOffset = Number.isFinite(offset) ? Number(offset) : 0;
+    const parsedCount = Number.isFinite(count) ? Number(count) : Number.MAX_SAFE_INTEGER;
+    return [...this.getZset(key).entries()]
+      .filter(([, score]) => score >= min && score <= max)
+      .sort((a, b) => a[1] - b[1])
+      .slice(parsedOffset, parsedOffset + parsedCount)
+      .map(([member]) => member);
+  }
+
+  multi(): {
+    set: (key: string, value: string) => unknown;
+    zadd: (key: string, score: number, member: string) => unknown;
+    zrem: (key: string, member: string) => unknown;
+    del: (...keys: string[]) => unknown;
+    exec: () => Promise<unknown[]>;
+  } {
+    const operations: Array<() => void> = [];
+    const chain = {
+      set: (key: string, value: string) => {
+        operations.push(() => {
+          this.kv.set(key, value);
+        });
+        return chain;
+      },
+      zadd: (key: string, score: number, member: string) => {
+        operations.push(() => {
+          this.getZset(key).set(member, score);
+        });
+        return chain;
+      },
+      zrem: (key: string, member: string) => {
+        operations.push(() => {
+          this.getZset(key).delete(member);
+        });
+        return chain;
+      },
+      del: (...keys: string[]) => {
+        operations.push(() => {
+          for (const key of keys) {
+            this.kv.delete(key);
+          }
+        });
+        return chain;
+      },
+      exec: async () => {
+        for (const operation of operations) {
+          operation();
+        }
+        return [] as unknown[];
+      }
+    };
+    return chain;
+  }
+}
+
+const baseTask = (): Task => ({
+  id: "task-1",
+  title: "Example task",
+  pinned: false,
+  hasPendingCheckpoint: false,
+  ownerUserId: "user-1",
+  repoId: "repo-1",
+  repoName: "Repo",
+  repoUrl: "https://github.com/example/repo.git",
+  repoDefaultBranch: "main",
+  taskType: "build",
+  provider: "codex",
+  providerProfile: "medium",
+  modelOverride: null,
+  baseBranch: "main",
+  branchStrategy: "feature_branch",
+  complexity: "normal",
+  branchName: "agentswarm/task-1",
+  workspaceBaseRef: null,
+  prompt: "Do it",
+  resultMarkdown: null,
+  executionSummary: "Do it",
+  branchDiff: null,
+  lastAction: "build",
+  status: "build_queued",
+  workflowStatus: "ready",
+  executionStatus: "queued",
+  executionAction: "build",
+  reviewReason: null,
+  logs: [],
+  enqueued: false,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+  startedAt: null,
+  finishedAt: null,
+  errorMessage: null
+});
+
+const baseRepository = (): Repository => ({
+  id: "repo-1",
+  name: "Repo",
+  url: "https://github.com/example/repo.git",
+  defaultBranch: "main",
+  envVars: [],
+  webhookUrl: "https://example.com/webhook",
+  webhookEnabled: true,
+  webhookSecretConfigured: true,
+  webhookLastAttemptAt: null,
+  webhookLastStatus: null,
+  webhookLastError: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z"
+});
+
+describe("WebhookDeliveryService", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("delivers created events and records successful delivery", async () => {
+    const redis = new FakeRedis();
+    const deliveryResults: Array<{ status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }> = [];
+    const repositoryStore = {
+      getRepositoryWebhookTarget: async () => ({
+        repository: baseRepository(),
+        webhookUrl: "https://example.com/webhook",
+        webhookSecret: "super-secret"
+      }),
+      recordWebhookDeliveryResult: async (
+        _repoId: string,
+        input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
+      ) => {
+        deliveryResults.push(input);
+        return baseRepository();
+      }
+    };
+    const fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    const store = new RedisWebhookDeliveryStore(redis as never);
+    const event: RealtimeEvent = { type: "task:created", payload: baseTask() };
+    const service = new WebhookDeliveryService(store, repositoryStore as never);
+    await service.handleRealtimeEvent(event);
+    await (service as unknown as { processDueJobs: () => Promise<void> }).processDueJobs();
+
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fetchCalls[0]?.url, "https://example.com/webhook");
+    const headers = fetchCalls[0]?.init?.headers as Record<string, string>;
+    assert.equal(headers["x-agentswarm-event"], "created");
+    assert.equal(typeof headers["x-agentswarm-signature"], "string");
+    assert.equal(deliveryResults.length, 1);
+    assert.equal(deliveryResults[0]?.status, "success");
+  });
+
+  it("queues updated events only when status changes", async () => {
+    const redis = new FakeRedis();
+    const repositoryStore = {
+      getRepositoryWebhookTarget: async () => null,
+      recordWebhookDeliveryResult: async () => null
+    };
+    const store = new RedisWebhookDeliveryStore(redis as never);
+    const service = new WebhookDeliveryService(store, repositoryStore as never);
+    const task = baseTask();
+
+    await service.handleRealtimeEvent({ type: "task:created", payload: task });
+    await service.handleRealtimeEvent({ type: "task:updated", payload: { ...task, updatedAt: "2026-01-01T00:01:00.000Z" } });
+    await service.handleRealtimeEvent({
+      type: "task:updated",
+      payload: {
+        ...task,
+        status: "building",
+        updatedAt: "2026-01-01T00:02:00.000Z"
+      }
+    });
+
+    const queued = await redis.zrangebyscore("agentswarm:webhook_delivery_queue", 0, Number.MAX_SAFE_INTEGER);
+    assert.equal(queued.length, 2);
+  });
+});
+````
+
+## File: apps/web/components/sequence-analytics-tracker.tsx
+````typescript
+"use client";
+
+import { useEffect, useRef } from "react";
+import type { SequenceRun, TaskRun } from "@agentswarm/shared-types";
+import { useSocket } from "../src/hooks/useSocket";
+import { trackEvent } from "../src/utils/analytics";
+import { useAuth } from "./auth-provider";
+
+interface RunSnapshot {
+  status: SequenceRun["status"];
+  failedStepIndex: number | null;
+  waitingForApprovalAfterStepIndex: number | null;
+  stepStates: SequenceRun["steps"][number]["state"][];
+}
+
+export function SequenceAnalyticsTracker() {
+  const socket = useSocket();
+  const { can } = useAuth();
+  const canReadTasks = can("task:read");
+  const snapshotsRef = useRef(new Map<string, RunSnapshot>());
+  const taskRunsByIdRef = useRef(new Map<string, Pick<TaskRun, "action" | "changeOutcome">>());
+
+  useEffect(() => {
+    if (!socket || !canReadTasks) {
+      return;
+    }
+
+    const onRunUpdated = (run: SequenceRun) => {
+      const previous = snapshotsRef.current.get(run.id);
+      const currentStepStates = run.steps.map((step) => step.state);
+
+      if (!previous && run.status === "running") {
+        trackEvent("sequence_run_started", { step_count: run.stepCount });
+      }
+
+      run.steps.forEach((step, index) => {
+        const previousState = previous?.stepStates[index];
+        if (step.state === "succeeded" && previousState !== "succeeded") {
+          trackEvent("sequence_step_completed", {
+            step_count: run.stepCount,
+            step_index: index
+          });
+
+          const taskRunId = step.taskRunId?.trim();
+          const taskRun = taskRunId ? taskRunsByIdRef.current.get(taskRunId) : undefined;
+          const nextStepIndex = index + 1;
+          if (taskRun?.action === "build" && taskRun.changeOutcome === "no_change") {
+            trackEvent("sequence_no_change", {
+              step_count: run.stepCount,
+              step_index: index
+            });
+          }
+          if (nextStepIndex < run.stepCount && run.executionMode === "auto_apply_changes") {
+            trackEvent("sequence_auto_advanced", {
+              step_count: run.stepCount,
+              from_step_index: index,
+              to_step_index: nextStepIndex
+            });
+          }
+        }
+
+        if (step.state === "failed" && previousState !== "failed") {
+          trackEvent("sequence_step_failed", {
+            step_count: run.stepCount,
+            failed_step_index: index
+          });
+        }
+      });
+
+      if (run.status === "failed" && previous?.status !== "failed") {
+        const failedStep = run.failedStepIndex !== null ? run.steps[run.failedStepIndex] : null;
+        trackEvent("sequence_stalled", {
+          step_count: run.stepCount,
+          failed_step_index: run.failedStepIndex,
+          reason: failedStep?.errorMessage ?? null
+        });
+        trackEvent("sequence_run_failed", {
+          step_count: run.stepCount,
+          failed_step_index: run.failedStepIndex
+        });
+      }
+
+      if (run.status === "succeeded" && previous?.status !== "succeeded") {
+        trackEvent("sequence_run_succeeded", { step_count: run.stepCount });
+      }
+
+      if (run.status === "waiting_for_approval" && previous?.status !== "waiting_for_approval") {
+        trackEvent("sequence_paused_for_approval", {
+          step_count: run.stepCount,
+          after_step_index: run.waitingForApprovalAfterStepIndex
+        });
+      }
+
+      if (run.status === "running" && previous?.status === "waiting_for_approval") {
+        trackEvent("sequence_resumed", {
+          step_count: run.stepCount,
+          after_step_index: previous.waitingForApprovalAfterStepIndex
+        });
+      }
+
+      snapshotsRef.current.set(run.id, {
+        status: run.status,
+        failedStepIndex: run.failedStepIndex,
+        waitingForApprovalAfterStepIndex: run.waitingForApprovalAfterStepIndex,
+        stepStates: currentStepStates
+      });
+    };
+    const onTaskRunUpdated = (run: TaskRun) => {
+      taskRunsByIdRef.current.set(run.id, {
+        action: run.action,
+        changeOutcome: run.changeOutcome ?? null
+      });
+    };
+
+    socket.on("sequence:run_updated", onRunUpdated);
+    socket.on("task:run_updated", onTaskRunUpdated);
+    return () => {
+      socket.off("sequence:run_updated", onRunUpdated);
+      socket.off("task:run_updated", onTaskRunUpdated);
+    };
+  }, [socket, canReadTasks]);
+
+  return null;
+}
+````
+
 ## File: apps/web/components/settings-page.tsx
 ````typescript
 "use client";
@@ -25207,3238 +28406,6 @@ export function SettingsPage() {
       </Modal>
     </>
   );
-}
-````
-
-## File: apps/web/components/snippet-editor-page.tsx
-````typescript
-"use client";
-
-import { useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import type { Snippet } from "@agentswarm/shared-types";
-import { ArrowDownOutlined, ArrowUpOutlined, CopyOutlined, MinusCircleOutlined, PlusOutlined } from "@ant-design/icons";
-import { Button, Card, Flex, Form, Input, Result, Select, Space, Spin, Typography, message } from "antd";
-import { ApiError, api } from "../src/api/client";
-import { trackEvent } from "../src/utils/analytics";
-import { useAuth } from "./auth-provider";
-
-interface SnippetEditorPageProps {
-  mode: "create" | "edit";
-  snippetId?: string;
-}
-
-interface SnippetFormValues {
-  name: string;
-  content: string;
-  variables: Array<{
-    name: string;
-    type: "text" | "multiline";
-    title: string;
-    description: string;
-    defaultValue: string;
-  }>;
-}
-
-const emptyValues = (): SnippetFormValues => ({
-  name: "",
-  content: "",
-  variables: []
-});
-
-const normalizeValues = (values?: Partial<SnippetFormValues> | null): SnippetFormValues => ({
-  name: typeof values?.name === "string" ? values.name : "",
-  content: typeof values?.content === "string" ? values.content : "",
-  variables: (values?.variables ?? []).map((entry) => ({
-    name: typeof entry?.name === "string" ? entry.name : "",
-    type: entry?.type === "multiline" ? "multiline" : "text",
-    title: typeof entry?.title === "string" ? entry.title : "",
-    description: typeof entry?.description === "string" ? entry.description : "",
-    defaultValue: typeof entry?.defaultValue === "string" ? entry.defaultValue : ""
-  }))
-});
-
-const snapshotValues = (values?: Partial<SnippetFormValues> | null): string => JSON.stringify(normalizeValues(values));
-
-export function SnippetEditorPage({ mode, snippetId }: SnippetEditorPageProps) {
-  const router = useRouter();
-  const { can } = useAuth();
-  const canDuplicateSnippet = can("snippet:create");
-  const searchParams = useSearchParams();
-  const entryPoint = searchParams.get("from") === "list" ? "list" : "direct_url";
-  const [form] = Form.useForm<SnippetFormValues>();
-  const [messageApi, contextHolder] = message.useMessage();
-  const [submitting, setSubmitting] = useState(false);
-  const [loading, setLoading] = useState(mode === "edit");
-  const [notFound, setNotFound] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [editingSnippet, setEditingSnippet] = useState<Snippet | null>(null);
-  const [duplicating, setDuplicating] = useState(false);
-  const [initialSnapshot, setInitialSnapshot] = useState("");
-  const watchedValues = Form.useWatch([], form) as SnippetFormValues | undefined;
-  const currentSnippetName = Form.useWatch("name", form) ?? "";
-  const currentSnippetContent = Form.useWatch("content", form) ?? "";
-
-  const hasUnsavedChanges = useMemo(() => {
-    if (!initialSnapshot) {
-      return false;
-    }
-    return snapshotValues(watchedValues) !== initialSnapshot;
-  }, [initialSnapshot, watchedValues]);
-
-  useEffect(() => {
-    trackEvent("snippet_editor_opened", { mode, entry_point: entryPoint });
-  }, [entryPoint, mode]);
-
-  useEffect(() => {
-    if (mode !== "create") {
-      return;
-    }
-    const initial = emptyValues();
-    form.setFieldsValue(initial);
-    setInitialSnapshot(snapshotValues(initial));
-    setLoading(false);
-  }, [form, mode]);
-
-  useEffect(() => {
-    if (mode !== "edit" || !snippetId) {
-      return;
-    }
-
-    let active = true;
-    setLoading(true);
-    setNotFound(false);
-    setLoadError(null);
-
-    void api
-      .getSnippet(snippetId)
-      .then((snippet) => {
-        if (!active) {
-          return;
-        }
-        setEditingSnippet(snippet);
-        const initial = normalizeValues(snippet);
-        form.setFieldsValue(initial);
-        setInitialSnapshot(snapshotValues(initial));
-      })
-      .catch((error: unknown) => {
-        if (!active) {
-          return;
-        }
-        if (error instanceof ApiError && error.status === 404) {
-          setNotFound(true);
-          return;
-        }
-        setLoadError(error instanceof Error ? error.message : "Failed to load snippet");
-      })
-      .finally(() => {
-        if (active) {
-          setLoading(false);
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [form, mode, snippetId]);
-
-  useEffect(() => {
-    if (!hasUnsavedChanges || typeof window === "undefined") {
-      return;
-    }
-
-    const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = "";
-    };
-
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => {
-      window.removeEventListener("beforeunload", onBeforeUnload);
-    };
-  }, [hasUnsavedChanges]);
-
-  const confirmLeave = (): boolean => {
-    if (!hasUnsavedChanges || typeof window === "undefined") {
-      return true;
-    }
-    return window.confirm("Discard unsaved changes?");
-  };
-
-  const goBack = () => {
-    if (!confirmLeave()) {
-      return;
-    }
-    router.push("/snippets");
-  };
-
-  const copySnippetToClipboard = async (content: string, label: string) => {
-    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-      messageApi.error("Clipboard access is unavailable in this browser.");
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(content);
-      messageApi.success(`${label} copied`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to copy snippet");
-    }
-  };
-
-  const handleDuplicateSnippet = async () => {
-    if (mode !== "edit" || !editingSnippet || !canDuplicateSnippet) {
-      return;
-    }
-    setDuplicating(true);
-    try {
-      const duplicated = await api.duplicateSnippet(editingSnippet.id);
-      trackEvent("snippet_duplicated", {
-        source: "editor",
-        snippet_id: editingSnippet.id,
-        duplicated_snippet_id: duplicated.id
-      });
-      messageApi.success("Snippet duplicated");
-      router.push(`/snippets/${duplicated.id}/edit?from=duplicate`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to duplicate snippet");
-    } finally {
-      setDuplicating(false);
-    }
-  };
-
-  if (loading) {
-    return (
-      <Flex align="center" justify="center" style={{ minHeight: 320 }}>
-        <Spin />
-      </Flex>
-    );
-  }
-
-  if (mode === "edit" && (notFound || !snippetId)) {
-    return (
-      <Result
-        status="404"
-        title="Snippet not found"
-        subTitle="The snippet may have been deleted or you may not have access to it."
-        extra={<Button onClick={() => router.push("/snippets")}>Back to Snippets</Button>}
-      />
-    );
-  }
-
-  if (mode === "edit" && loadError) {
-    return (
-      <Result
-        status="error"
-        title="Snippet unavailable"
-        subTitle={loadError}
-        extra={<Button onClick={() => router.push("/snippets")}>Back to Snippets</Button>}
-      />
-    );
-  }
-
-  const title = mode === "edit" ? "Edit Snippet" : "Add Snippet";
-
-  return (
-    <>
-      {contextHolder}
-      <Form
-        form={form}
-        layout="vertical"
-        onFinish={async (values) => {
-          setSubmitting(true);
-          try {
-            const payload = normalizeValues(values);
-            if (mode === "edit" && editingSnippet) {
-              await api.updateSnippet(editingSnippet.id, payload);
-            } else {
-              await api.createSnippet(payload);
-            }
-            trackEvent("snippet_saved", { mode, entry_point: entryPoint });
-            router.push(`/snippets?saved=${mode === "edit" ? "updated" : "created"}`);
-          } catch (error) {
-            trackEvent("snippet_save_failed", { mode, entry_point: entryPoint });
-            messageApi.error(error instanceof Error ? error.message : "Failed to save snippet");
-          } finally {
-            setSubmitting(false);
-          }
-        }}
-      >
-        <Flex vertical gap={16}>
-          <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-            <Flex vertical gap={0}>
-              <Typography.Title level={2} style={{ margin: 0 }}>
-                {title}
-              </Typography.Title>
-              <Typography.Text type="secondary">
-                Store reusable text blocks and insert them into task prompts and follow-up messages.
-              </Typography.Text>
-            </Flex>
-            <Space wrap>
-              <Button
-                icon={<CopyOutlined />}
-                onClick={() => void copySnippetToClipboard(currentSnippetContent, currentSnippetName.trim() || "Snippet")}
-                disabled={!currentSnippetContent.trim()}
-              >
-                Copy
-              </Button>
-              {mode === "edit" && canDuplicateSnippet ? (
-                <Button onClick={() => void handleDuplicateSnippet()} loading={duplicating}>
-                  Duplicate
-                </Button>
-              ) : null}
-              <Button onClick={goBack}>Cancel</Button>
-              <Button type="primary" htmlType="submit" loading={submitting}>
-                {mode === "edit" ? "Save" : "Create"}
-              </Button>
-            </Space>
-          </Flex>
-
-          <Card bordered={false}>
-            <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a snippet name" }]}>
-              <Input placeholder="Repository context reminder" />
-            </Form.Item>
-            <Form.Item name="content" label="Content" rules={[{ required: true, message: "Enter snippet content" }]}>
-              <Input.TextArea rows={10} placeholder="Text that should be inserted into prompt fields." />
-            </Form.Item>
-            <Form.List
-              name="variables"
-              rules={[
-                {
-                  validator: async (_, value: SnippetFormValues["variables"]) => {
-                    const seen = new Set<string>();
-                    for (const entry of value ?? []) {
-                      const name = typeof entry?.name === "string" ? entry.name.trim() : "";
-                      if (!name) {
-                        continue;
-                      }
-                      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-                        throw new Error(`Invalid variable name: ${name}`);
-                      }
-                      if (seen.has(name)) {
-                        throw new Error(`Duplicate variable name: ${name}`);
-                      }
-                      seen.add(name);
-                    }
-                  }
-                }
-              ]}
-            >
-              {(fields, { add, remove, move }, { errors }) => (
-                <Flex vertical gap={8} style={{ marginBottom: 16 }}>
-                  <Flex justify="space-between" align="center">
-                    <Typography.Text strong>Variables</Typography.Text>
-                    <Button
-                      size="small"
-                      icon={<PlusOutlined />}
-                      onClick={() => add({ name: "", type: "text", title: "", description: "", defaultValue: "" })}
-                    >
-                      Add Variable
-                    </Button>
-                  </Flex>
-                  {fields.map((field, index) => (
-                    <Card key={field.key} size="small">
-                      <Flex justify="space-between" align="center" style={{ marginBottom: 8 }}>
-                        <Typography.Text strong>{`Variable ${index + 1}`}</Typography.Text>
-                        <Space size={4}>
-                          <Button
-                            icon={<ArrowUpOutlined />}
-                            disabled={index === 0}
-                            onClick={() => {
-                              const variables = (form.getFieldValue("variables") as SnippetFormValues["variables"] | undefined) ?? [];
-                              const variableName = variables[index]?.name ?? "";
-                              move(index, index - 1);
-                              trackEvent("snippet_variable_reordered", {
-                                variable_name: variableName,
-                                from_index: index,
-                                to_index: index - 1,
-                                editor_mode: mode
-                              });
-                            }}
-                          />
-                          <Button
-                            icon={<ArrowDownOutlined />}
-                            disabled={index === fields.length - 1}
-                            onClick={() => {
-                              const variables = (form.getFieldValue("variables") as SnippetFormValues["variables"] | undefined) ?? [];
-                              const variableName = variables[index]?.name ?? "";
-                              move(index, index + 1);
-                              trackEvent("snippet_variable_reordered", {
-                                variable_name: variableName,
-                                from_index: index,
-                                to_index: index + 1,
-                                editor_mode: mode
-                              });
-                            }}
-                          />
-                          <Button type="text" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)} />
-                        </Space>
-                      </Flex>
-                      <Flex gap={8} align="flex-start">
-                        <Form.Item
-                          name={[field.name, "name"]}
-                          style={{ marginBottom: 8, flex: 1 }}
-                          rules={[{ required: true, message: "Name is required" }]}
-                        >
-                          <Input placeholder="name (used as {{name}})" />
-                        </Form.Item>
-                        <Form.Item name={[field.name, "type"]} style={{ marginBottom: 8, width: 140 }} initialValue="text">
-                          <Select
-                            options={[
-                              { label: "Text", value: "text" },
-                              { label: "Multiline", value: "multiline" }
-                            ]}
-                          />
-                        </Form.Item>
-                      </Flex>
-                      <Form.Item name={[field.name, "title"]} style={{ marginBottom: 8 }}>
-                        <Input placeholder="Title (shown in insert form)" />
-                      </Form.Item>
-                      <Form.Item name={[field.name, "description"]} style={{ marginBottom: 0 }}>
-                        <Input placeholder="Description (helper text in insert form)" />
-                      </Form.Item>
-                      <Form.Item
-                        noStyle
-                        shouldUpdate={(prev, next) => {
-                          const prevType = prev?.variables?.[field.name]?.type;
-                          const nextType = next?.variables?.[field.name]?.type;
-                          return prevType !== nextType;
-                        }}
-                      >
-                        {({ getFieldValue }) => {
-                          const variableType = getFieldValue(["variables", field.name, "type"]) as "text" | "multiline" | undefined;
-                          return (
-                            <Form.Item name={[field.name, "defaultValue"]} style={{ marginBottom: 0, marginTop: 8 }}>
-                              {variableType === "multiline" ? (
-                                <Input.TextArea rows={2} placeholder="Default value (pre-filled when inserting)" />
-                              ) : (
-                                <Input placeholder="Default value (single line)" />
-                              )}
-                            </Form.Item>
-                          );
-                        }}
-                      </Form.Item>
-                    </Card>
-                  ))}
-                  {errors.length > 0 ? <Typography.Text type="danger">{errors.join(", ")}</Typography.Text> : null}
-                </Flex>
-              )}
-            </Form.List>
-          </Card>
-        </Flex>
-      </Form>
-    </>
-  );
-}
-````
-
-## File: apps/web/e2e/auth.smoke.spec.ts
-````typescript
-import { expect, test } from "@playwright/test";
-
-const loginEmail = process.env.AGENTSWARM_E2E_EMAIL ?? "admin@agentswarm.local";
-const loginPassword = process.env.AGENTSWARM_E2E_PASSWORD ?? "admin123!";
-
-test("smoke: login route renders", async ({ page }) => {
-  await page.goto("/login");
-
-  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
-  await expect(page.getByLabel("Email")).toBeVisible();
-  await expect(page.getByLabel("Password")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
-});
-
-test("smoke: main route redirects to login when signed out", async ({ page }) => {
-  await page.goto("/");
-
-  await expect(page).toHaveURL(/\/login$/, { timeout: 20_000 });
-  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
-});
-
-test("happy path: seeded admin can sign in", async ({ page }) => {
-  await page.goto("/login");
-
-  await page.getByLabel("Email").fill(loginEmail);
-  await page.getByLabel("Password").fill(loginPassword);
-  await page.getByTestId("login-submit-button").click();
-
-  await expect(page).toHaveURL(/\/(tasks|snippets|sequences|repositories|settings|users)(\/.*)?$/, { timeout: 20_000 });
-  await expect(page.getByRole("button", { name: "Logout" })).toBeVisible();
-});
-````
-
-## File: apps/web/src/hooks/useTasks.ts
-````typescript
-"use client";
-
-import { useEffect, useState } from "react";
-import type { Task } from "@agentswarm/shared-types";
-import { api } from "../api/client";
-import { useSocket } from "./useSocket";
-
-const sortTasks = (items: Task[]): Task[] =>
-  [...items].sort((a, b) => {
-    if (a.pinned !== b.pinned) {
-      return a.pinned ? -1 : 1;
-    }
-    return b.createdAt.localeCompare(a.createdAt);
-  });
-interface TaskDeletedPayload {
-  id: string;
-}
-
-function matchesTaskView(task: Task, view: "all" | "active" | "archived"): boolean {
-  if (view === "active") {
-    return task.status !== "archived";
-  }
-  if (view === "archived") {
-    return task.status === "archived";
-  }
-  return true;
-}
-
-export const useTasks = ({
-  enabled = true,
-  view = "all",
-  limit
-}: {
-  enabled?: boolean;
-  view?: "all" | "active" | "archived";
-  limit?: number;
-} = {}) => {
-  const socket = useSocket();
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [loading, setLoading] = useState(enabled);
-
-  useEffect(() => {
-    if (!enabled) {
-      setTasks([]);
-      setLoading(false);
-      return;
-    }
-
-    let active = true;
-    setLoading(true);
-
-    void api
-      .listTasks({ view, limit })
-      .then((items) => {
-        if (!active) {
-          return;
-        }
-
-        setTasks(sortTasks(items));
-        setLoading(false);
-      })
-      .catch(() => {
-        if (!active) {
-          return;
-        }
-
-        setLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [enabled, limit, view]);
-
-  useEffect(() => {
-    if (!enabled || !socket) {
-      return;
-    }
-
-    const onTaskUpdate = (task: Task) => {
-      setTasks((current) => {
-        const next = current.filter((item) => item.id !== task.id);
-        if (matchesTaskView(task, view)) {
-          next.unshift({ ...task, logs: [] });
-        }
-        const sorted = sortTasks(next);
-        if (limit != null && Number.isFinite(limit)) {
-          return sorted.slice(0, Math.max(0, limit));
-        }
-        return sorted;
-      });
-    };
-
-    const onTaskDelete = (payload: TaskDeletedPayload) => {
-      setTasks((current) => current.filter((task) => task.id !== payload.id));
-    };
-
-    socket.on("task:created", onTaskUpdate);
-    socket.on("task:updated", onTaskUpdate);
-    socket.on("task:deleted", onTaskDelete);
-
-    return () => {
-      socket.off("task:created", onTaskUpdate);
-      socket.off("task:updated", onTaskUpdate);
-      socket.off("task:deleted", onTaskDelete);
-    };
-  }, [enabled, limit, socket, view]);
-
-  return { tasks, setTasks, loading };
-};
-````
-
-## File: apps/web/src/theme/code-highlighting.ts
-````typescript
-import type { CSSProperties } from "react";
-import type { PrismTheme } from "prism-react-renderer";
-import { themes } from "prism-react-renderer";
-import type { GlobalToken } from "antd/es/theme/interface";
-import { isDarkAppTheme, type AppThemeMode } from "./antd-theme";
-
-type HighlightTokenKind = "plain" | "comment" | "keyword" | "number" | "string";
-
-type TokenStyleMap = Record<HighlightTokenKind, CSSProperties>;
-
-function createPrismThemeFromToken(baseTheme: PrismTheme, token: GlobalToken, darkMode: boolean): PrismTheme {
-  const keywordColor = darkMode ? token.colorPrimaryText : token.colorPrimary;
-  const stringColor = darkMode ? token.colorSuccessText : token.colorSuccess;
-  const commentColor = token.colorTextTertiary;
-  const numberColor = darkMode ? token.colorWarningText : token.colorWarning;
-
-  return {
-    ...baseTheme,
-    plain: {
-      ...(baseTheme.plain ?? {}),
-      color: token.colorText,
-      backgroundColor: token.colorBgContainer
-    },
-    styles: [
-      ...(baseTheme.styles ?? []),
-      { types: ["comment", "prolog", "doctype", "cdata"], style: { color: commentColor, fontStyle: "italic" } },
-      { types: ["keyword", "selector", "inserted"], style: { color: keywordColor, fontWeight: "600" } },
-      { types: ["string", "char", "attr-value"], style: { color: stringColor } },
-      { types: ["number", "boolean", "constant"], style: { color: numberColor } }
-    ]
-  };
-}
-
-export function getPrismTheme(mode: AppThemeMode, token: GlobalToken): PrismTheme {
-  const darkMode = isDarkAppTheme(mode);
-  const baseTheme = darkMode ? themes.vsDark : themes.github;
-  return createPrismThemeFromToken(baseTheme, token, darkMode);
-}
-
-export function getCodeTokenStyles(token: GlobalToken): TokenStyleMap {
-  return {
-    plain: { color: token.colorText },
-    comment: { color: token.colorTextTertiary, fontStyle: "italic" },
-    keyword: { color: token.colorPrimaryText, fontWeight: 600 },
-    number: { color: token.colorWarningText },
-    string: { color: token.colorSuccessText }
-  };
-}
-````
-
-## File: apps/web/src/utils/snippets.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { applySnippetVariables, insertSnippetContent } from "./snippets";
-
-describe("insertSnippetContent", () => {
-  it("returns the snippet when the current value is empty", () => {
-    assert.equal(insertSnippetContent("", "  Follow the existing style guide.  "), "Follow the existing style guide.");
-  });
-
-  it("appends the snippet with a blank line separator", () => {
-    assert.equal(
-      insertSnippetContent("Implement the API endpoint.", "Add request validation."),
-      "Implement the API endpoint.\n\nAdd request validation."
-    );
-  });
-
-  it("keeps the current value when the snippet is blank", () => {
-    assert.equal(insertSnippetContent("Existing prompt", "   "), "Existing prompt");
-  });
-});
-
-describe("applySnippetVariables", () => {
-  it("replaces placeholders for defined variables", () => {
-    assert.equal(
-      applySnippetVariables("Hello {{name}} from {{team}}", [
-        { name: "name", type: "text", title: "", description: "", defaultValue: "" },
-        { name: "team", type: "text", title: "", description: "", defaultValue: "" }
-      ], { name: "Ada", team: "Core" }),
-      "Hello Ada from Core"
-    );
-  });
-
-  it("keeps placeholders for undefined variables", () => {
-    assert.equal(
-      applySnippetVariables("{{known}} / {{unknown}}", [{ name: "known", type: "text", title: "", description: "", defaultValue: "" }], { known: "ok" }),
-      "ok / {{unknown}}"
-    );
-  });
-
-  it("uses default values when no explicit value is provided", () => {
-    assert.equal(
-      applySnippetVariables("Hello {{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "there" }], {}),
-      "Hello there"
-    );
-  });
-
-  it("forces text variables to single-line values", () => {
-    assert.equal(
-      applySnippetVariables("{{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "Line1\nLine2" }], {}),
-      "Line1"
-    );
-    assert.equal(
-      applySnippetVariables("{{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "" }], { name: "A\nB" }),
-      "A"
-    );
-  });
-
-  it("keeps multiline values for multiline variables", () => {
-    assert.equal(
-      applySnippetVariables("{{details}}", [{ name: "details", type: "multiline", title: "", description: "", defaultValue: "A\nB" }], {}),
-      "A\nB"
-    );
-  });
-});
-````
-
-## File: apps/web/src/utils/snippets.ts
-````typescript
-import type { SnippetVariable } from "@agentswarm/shared-types";
-
-const SNIPPET_PLACEHOLDER_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
-
-export const insertSnippetContent = (current: string | null | undefined, snippet: string | null | undefined): string => {
-  const snippetText = snippet?.trim() ?? "";
-  if (!snippetText) {
-    return current ?? "";
-  }
-
-  const currentText = current ?? "";
-  if (currentText.trim().length === 0) {
-    return snippetText;
-  }
-
-  return `${currentText.trimEnd()}\n\n${snippetText}`;
-};
-
-export const applySnippetVariables = (
-  content: string | null | undefined,
-  variables: SnippetVariable[] | null | undefined,
-  values: Record<string, string>
-): string => {
-  const snippetText = content ?? "";
-  const variablesByName = new Map((variables ?? []).map((entry) => [entry.name, entry]));
-  return snippetText.replace(SNIPPET_PLACEHOLDER_PATTERN, (_match, name: string) => {
-    const variable = variablesByName.get(name);
-    if (!variable) {
-      return `{{${name}}}`;
-    }
-    const value = values[name];
-    const selected = typeof value === "string" && value.length > 0 ? value : variable.defaultValue ?? "";
-    if (variable.type === "text") {
-      return selected.split(/\r?\n/u)[0] ?? "";
-    }
-    return selected;
-  });
-};
-````
-
-## File: docs/development/commands.md
-````markdown
-# Development Commands
-
-## Canonical Agent Harness Commands
-- `./scripts/harness/doctor.sh`: verify tools and script availability.
-- `./scripts/harness/setup.sh`: initialize Docker stack and local runtime folders.
-- `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh`: also install npm dependencies for check/test/pr-ready.
-- `./scripts/harness/check-docs.sh`: scan docs for broken internal links, TODO/FIXME counts, and stale review metadata warnings.
-- `./scripts/harness/check-human-gated-flow.sh`: verify active execution plans contain required human-gated flow evidence.
-- `./scripts/harness/check.sh`: run docs checks + human-gated flow checks + boundary checks + lint + build.
-- `node ./scripts/harness/boundary-check.mjs`: run architecture boundary checks only.
-- `./scripts/harness/test.sh`: run server + web tests.
-- `./scripts/harness/pr-ready.sh`: run pull request readiness verification.
-- `./scripts/harness/start.sh`: start dev processes (foreground).
-
-## Remote Build Mode
-- Set `REMOTE_BUILD=1` to force harness scripts to execute in the Remote Build Runner.
-- Required with remote mode: `REMOTE_BUILD_IMAGE`.
-- Optional override: `REMOTE_BUILD_RUNNER_URL` (default: `http://host.docker.internal:38127`).
-- Remote runs use `TASK_WORKSPACE_PATH` when present for the runner `workdir`.
-- Remote mode auto-derives `TASK_WORKSPACE_HOST_ROOT`, `LOCAL_PLANS_HOST_ROOT`, and `NGINX_CONF_HOST_PATH` from the remote workdir unless explicitly set.
-- Set `REMOTE_BUILD=0` (or unset it) to run harness scripts locally.
-- Runner API note: `/run` expects `cmd` as a non-empty string array, not a single string.
-- Remote runner image should include: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
-- For remote browser E2E: if the runner is musl-based, harness auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`).
-- If host ports are occupied, override: `PUBLIC_PORT`, `REDIS_HOST_PORT`, `POSTGRES_HOST_PORT`.
-
-## Root Package Manager Commands
-- `npm run dev`: runs server and web dev processes together.
-- `npm run dev:server`: runs backend only.
-- `npm run dev:web`: runs frontend only.
-- `npm run test`: canonical harness test run (`./scripts/harness/test.sh`).
-- `npm run typecheck`: alias to repository type checks (`npm run lint`).
-- `npm run build`: builds shared-types, server, and web.
-- `npm run lint`: TypeScript no-emit checks for server and web.
-
-Notes:
-- `setup.sh` only installs npm dependencies when `HARNESS_INSTALL_NPM_DEPS=1` is set.
-- On clean checkout, install dependencies before running `check.sh`, `test.sh`, or `pr-ready.sh`.
-- `pr-ready.sh` forces dependency installation automatically when `node_modules` is missing.
-- Harness setup installs dependencies with `npm ci --include=dev`.
-- `npm ci` requires `python3` in this repo because `node-pty` may need local native build steps.
-- `check.sh` and `pr-ready.sh` enforce human-gated flow evidence for active execution plans.
-- Set `HARNESS_REQUIRE_ACTIVE_EXEC_PLAN=1` to fail when no active execution plan exists.
-
-## Workspace Commands
-- Server (`@agentswarm/server`):
-  - `npm run -w @agentswarm/server dev`
-  - `npm run -w @agentswarm/server start`
-  - `npm run -w @agentswarm/server build`
-  - `npm run -w @agentswarm/server lint`
-  - `npm run -w @agentswarm/server test`
-  - `npm run -w @agentswarm/server db:migrate`
-  - `npm run -w @agentswarm/server db:backfill:redis-to-postgres`
-- Web (`@agentswarm/web`):
-  - `npm run -w @agentswarm/web dev`
-  - `npm run -w @agentswarm/web start`
-  - `npm run -w @agentswarm/web build`
-  - `npm run -w @agentswarm/web lint`
-  - `npm run -w @agentswarm/web test`
-- Shared types (`@agentswarm/shared-types`):
-  - `npm run -w @agentswarm/shared-types build`
-
-## Existing Docker Control Commands
-- `./agentswarm.sh init`
-- `./agentswarm.sh start`
-- `./agentswarm.sh rebuild`
-- `./agentswarm.sh stop`
-
-## CI / Local Parity Notes
-- CI workflow: `.github/workflows/harness-check.yml`.
-- CI runs:
-  - `./scripts/harness/doctor.sh` when Docker is available on the runner.
-  - `./scripts/harness/check.sh`.
-  - `./scripts/harness/test.sh`.
-- CI does **not** run `./scripts/harness/pr-ready.sh` because that would duplicate expensive checks already covered by doctor/check/test.
-- Local pre-PR flow remains:
-  - `./scripts/harness/pr-ready.sh`
-
-## TODO
-- TODO: Add a canonical root format-check command (`format:check` or `fmt:check`) if/when a formatter is adopted.
-````
-
-## File: docs/development/pr-workflow.md
-````markdown
-# PR Workflow
-
-This page describes the expected pull request readiness flow for this repository.
-
-## Recommended Sequence
-1. Run `./scripts/harness/doctor.sh`.
-2. Run `./scripts/harness/setup.sh` if dependencies changed.
-3. Run `./scripts/harness/pr-ready.sh`.
-4. If checks pass, open a pull request and complete the PR template.
-
-Note:
-- `pr-ready.sh` auto-runs setup when dependencies are missing and forces npm dependency installation.
-
-## What `pr-ready.sh` checks
-- Human-gated flow evidence in active execution plans.
-  - optional strict mode: set `HARNESS_REQUIRE_ACTIVE_EXEC_PLAN=1` to fail if there is no active plan.
-- Format check:
-  - runs `format:check` or `fmt:check` if defined at root
-  - skips by default when no format-check script exists
-  - can be enforced by setting `HARNESS_REQUIRE_FORMAT_CHECK=1`
-- Boundary checks.
-- Lint checks.
-- Type checks.
-- Tests (server and web).
-- Build.
-- Repo-specific check: Docker Compose config validation when Docker is available.
-
-## Current limitation
-- This repository does not currently define a root format-check command.
-- Result: format-check step is skipped unless a format-check script is added.
-
-## TODO
-- TODO: Add a canonical root format-check script (for example `format:check`) and wire it into the harness.
-````
-
-## File: docs/exec-plans/completed/2026-05-27-task-flow-unification.md
-````markdown
-# Execution Plan
-
-## Title
-- Task Flow Unification: Start Lifecycle, Mutation Guards, and Git/Checkpoint Actions
-
-## Goal
-- Unify task execution behavior across new-task creation, existing build/ask actions, and Git/checkpoint mutations so behavior is consistent, predictable, and easier to debug.
-
-## Non-goals
-- No UI redesign beyond behavior consistency and message parity.
-- No provider/model behavior changes (Codex/Claude execution internals stay unchanged).
-- No large schema rewrite of historical task records in this phase.
-
-## Current State
-- Task start logic is split across `createTask`, legacy start-mode handling, scheduler triggers, imports, and webhook entry points.
-- Git mutation checks (pull/push/merge/checkpoint actions) are repeated across multiple handlers with similar-but-not-identical conditions.
-- Sequence checkpoint resume is implemented as follow-up logic after mutation routes rather than first-class transition handling.
-- Task detail behavior has required multiple point-fixes to maintain parity between creation-time execution states.
-
-## Acceptance Criteria
-- One shared start orchestration API is used by task create/import/webhook and explicit action triggers.
-- One shared mutation guard policy is used by pull/push/merge/checkpoint endpoints and returns stable reason codes.
-- Checkpoint resolution and sequence resume run through one explicit transition path.
-- Git operation command handling is centralized with consistent response shape and logging.
-- Task detail renders from a consistent lifecycle view-model without mode-specific drift.
-- Regression tests cover new task, existing build, existing ask, and Git/checkpoint transitions.
-
-## Affected Files
-- Legacy task-start helper code, since removed
-- `apps/server/src/routes/tasks.ts`
-- `apps/server/src/routes/imports.ts`
-- `apps/server/src/routes/github-webhooks.ts`
-- `apps/server/src/lib/task-mutation-guards.ts`
-- `apps/server/src/services/scheduler.ts`
-- `apps/server/src/services/task-store.ts`
-- `apps/server/src/services/sequence-execution-service.ts`
-- `apps/web/components/task-detail-page.tsx`
-- `apps/web/src/api/client.ts`
-- `apps/server/src/services/*.test.ts`
-- `apps/web/components/*.test.*` (as needed)
-- `docs/product/user-flows.md`
-
-## Step-by-Step Plan
-1. Baseline and Test Inventory
-- Enumerate all task-entry paths (create/import/webhook/manual actions).
-- Add/expand failing-first tests for inconsistencies in start and mutation behavior.
-
-2. Start Orchestrator Extraction
-- Introduce a single server-side orchestrator for task start intents.
-- Refactor `/tasks`, `/imports/*`, and webhook-triggered task starts to call the orchestrator.
-- Preserve current external API contracts.
-
-3. Shared Mutation Guard Policy
-- Define one guard API returning machine-readable reason codes plus user-facing messages.
-- Replace ad-hoc pull/push/merge/checkpoint condition checks with shared guard calls.
-
-4. Checkpoint + Sequence Transition Unification
-- Consolidate checkpoint resolution and auto-apply sequence resume into one transition function.
-- Ensure apply/reject/revert all use the same continuation contract.
-
-5. Git Command Unification
-- Add an internal shared command handler for pull/push/merge operations.
-- Normalize operation logging, retries, and response payload assembly.
-
-6. Lifecycle View-Model Unification (Web)
-- Drive task detail sections from one lifecycle model mapping (`status`, `enqueued`, blockers).
-- Remove duplicated conditional rendering paths that diverge by mode.
-
-7. Hardening and Regression Pass
-- Run full harness checks/tests.
-- Validate key scenarios: new task creation, existing build, existing ask, checkpoint blocked, post-checkpoint resume, pull/push/merge guard outcomes.
-
-## Step 1 Inventory Snapshot
-- New task create route:
-`POST /tasks` in `apps/server/src/routes/tasks.ts` (creates task, starts execution, optionally initializes sequence execution).
-- Existing task manual action route:
-`POST /tasks/:id/actions` in `apps/server/src/routes/tasks.ts` (manual build/ask triggers through scheduler).
-- Import routes:
-`POST /imports/issue` and `POST /imports/pull-request` in `apps/server/src/routes/imports.ts` (create task from GitHub import, then start execution).
-- Webhook routes:
-`POST /github/webhooks/:repositoryId` in `apps/server/src/routes/github-webhooks.ts` (issues/PR/comment/reaction paths that create tasks and start execution).
-- Git mutation routes:
-`POST /tasks/:id/push`, `POST /tasks/:id/pull`, `POST /tasks/:id/merge` in `apps/server/src/routes/tasks.ts`.
-- Checkpoint mutation routes:
-`POST /tasks/:id/change-proposals/:proposalId/apply|revert|revert-file|reject` in `apps/server/src/routes/tasks.ts`.
-
-## Validation Commands
-- `./scripts/harness/check.sh`
-- `./scripts/harness/test.sh`
-- `npm run lint -w @agentswarm/server`
-- `npm run lint -w @agentswarm/web`
-- Targeted tests for scheduler/task-store/routes/sequence execution.
-
-## Risks
-- Behavior drift during refactor of route handlers.
-- Hidden coupling between scheduler queue semantics and UI assumptions.
-- Sequence auto-apply regressions if checkpoint transitions are not fully covered by tests.
-
-## Rollback Plan
-- Keep refactor split into small commits by phase.
-- If regressions appear, rollback phase commits in reverse order while preserving test additions.
-- Feature-flag orchestrator/guard usage if partial rollout is required.
-
-## Progress Log
-- 2026-05-27 19:20 UTC: Plan created; no implementation changes started yet.
-- 2026-05-27 17:47 UTC: Step 1 started. Added baseline coverage for the previous start-mode helper behavior.
-- 2026-05-27 17:48 UTC: Captured task-entry inventory snapshot for create/import/webhook/manual actions and git/checkpoint mutation endpoints.
-- 2026-05-27 17:53 UTC: Started Step 3 incrementally by introducing shared mutation guard reason codes in `apps/server/src/lib/task-mutation-guards.ts` and wiring `/tasks` mutation/action endpoints to return `{ message, reasonCode }` for blocked mutations.
-- 2026-05-27 17:54 UTC: Added guard coverage in `apps/server/src/lib/task-mutation-guards.test.ts` for blocker code priority (`pending_checkpoint` over `active_terminal_session`).
-- 2026-05-27 17:56 UTC: `npm run test -w @agentswarm/server` completed with one existing environment-sensitive failure in `spawner.workspace-provisioning.test.ts` (ask workspace path assertion), unrelated to changed files.
-- 2026-05-27 18:02 UTC: Step 2 started. Added shared start orchestrator in `apps/server/src/lib/task-start-orchestrator.ts` and baseline tests in `apps/server/src/lib/task-start-orchestrator.test.ts`.
-- 2026-05-27 18:03 UTC: Refactored task start entry points to use orchestrator: `POST /tasks`, import routes, and webhook-created task starts.
-- 2026-05-27 18:04 UTC: `npm run lint -w @agentswarm/server` and targeted orchestrator/start/guard tests passed; full server test run still has the same existing `spawner.workspace-provisioning.test.ts` environment-sensitive failure.
-- 2026-05-27 18:08 UTC: Began Step 4 consolidation by introducing a shared checkpoint transition helper in `apps/server/src/routes/tasks.ts` so apply/reject/revert/revert-file now all follow one continuation path (resume-check + refreshed response).
-- 2026-05-27 18:09 UTC: Re-ran server lint and full server tests; lint passed and full test run still only fails at the same known environment-sensitive `spawner.workspace-provisioning.test.ts` assertion.
-- 2026-05-27 18:17 UTC: Completed Step 5 by adding shared Git mutation handling helpers in `apps/server/src/routes/tasks.ts` (`ensureGitMutationAllowed`, `runGitCommand`) and applying them to pull/push/merge routes with consistent error responses.
-- 2026-05-27 18:19 UTC: Completed Step 6 by introducing lifecycle mapping utility `apps/web/src/utils/task-lifecycle-view-model.ts` and updating `apps/web/components/task-detail-page.tsx` to consume one lifecycle view-model.
-- 2026-05-27 18:21 UTC: Added lifecycle utility coverage in `apps/web/src/utils/task-lifecycle-view-model.test.ts` and included it in `apps/web/package.json` test command.
-- 2026-05-27 18:24 UTC: Extended shared start orchestration coverage for explicit task action triggers via `orchestrateTaskActionStart` in `apps/server/src/lib/task-start-orchestrator.ts`, applied in `/tasks/:id/actions`.
-- 2026-05-27 18:25 UTC: Added `orchestrateTaskActionStart` tests in `apps/server/src/lib/task-start-orchestrator.test.ts`.
-- 2026-05-27 18:27 UTC: Fixed `spawner.workspace-provisioning.test.ts` host-path assertion setup to match current workspace host path resolution and restored full server test pass.
-- 2026-05-27 18:29 UTC: Hardening run complete: `./scripts/harness/check.sh` passed; `TEST_SCOPE=integration ./scripts/harness/test.sh` passed; `npm run test -w @agentswarm/server` passed; `npm run test -w @agentswarm/web` passed.
-
-## Decisions
-- 2026-05-27: Use incremental refactor with contract-preserving route APIs first, then internal consolidation.
-- 2026-05-27: Introduce stable internal guard reason codes now, while preserving existing `message` field in route responses for backward compatibility.
-- 2026-05-27: Route-level Git mutation handling should use shared helpers for guarding and operation error mapping to keep responses uniform.
-- 2026-05-27: Task detail lifecycle UI state should come from a dedicated utility to avoid mode-specific rendering drift.
-
-## Completion Notes
-- Completed.
-- Acceptance criteria met:
-- Shared start orchestration is used across task create/import/webhook paths and explicit task action triggers.
-- Shared mutation guard policy with reason codes is applied across pull/push/merge/checkpoint mutation endpoints.
-- Checkpoint mutation continuation (resume + refresh) is unified through one helper path.
-- Git operation route handling is centralized for guard/error/response consistency.
-- Task detail lifecycle rendering now uses one lifecycle view-model mapping.
-- Regression coverage expanded with new server/web tests; all local server/web test suites passed.
-- Environment note:
-- `./scripts/harness/test.sh` with full scope (`TEST_SCOPE=all`) still requires Docker for app boot in this environment, so integration scope was used for harness regression validation.
-````
-
-## File: docs/exec-plans/completed/2026-06-01-env-file-upload-vars-secrets.md
-````markdown
-# Execution Plan
-
-## Title
-- Text/File Support for Repository Environment Variables and Secrets
-
-## Goal
-- Let repository environment variables and secrets be either text values or uploaded files, with secure storage and runtime mounting for both Codex and Claude.
-
-## Non-goals
-- Parsing uploaded files into structured config objects.
-- Changing non-repository secret systems (for example webhook secret handling).
-
-## Current State
-- Repository editor supported plain text values and converted uploaded files into inline text/Base64.
-- Runtime injected repository env values directly as strings.
-- No secure persistent file-backed path existed for repository env values.
-
-## Acceptance Criteria
-- Users can choose `Text` or `File` for env vars and env secrets.
-- File uploads are stored securely and never returned in plaintext from API/UI.
-- Runtime mounts generated files for both Codex and Claude and sets env var values to mounted file paths.
-- Manual text behavior remains unchanged.
-- Missing/invalid files fail with clear errors.
-- Backend enforces constraints and permissions (scope checks already in repository routes).
-
-## Affected Files
-- `packages/shared-types/src/index.ts`
-- `apps/server/src/config/env.ts`
-- `apps/server/src/services/repository-env-file-store.ts`
-- `apps/server/src/lib/repository-runtime-env.ts`
-- `apps/server/src/services/repository-store.ts`
-- `apps/server/src/routes/repositories.ts`
-- `apps/server/src/services/spawner.ts`
-- `apps/server/src/lib/task-interactive-terminal.ts`
-- `apps/server/src/lib/task-interactive-terminal-git-env.ts`
-- `apps/server/src/lib/task-interactive-terminal.test.ts`
-- `apps/web/components/repository-editor-page.tsx`
-
-## Step-by-Step Plan
-1. Add shared model types for text/file env entries.
-2. Add secure encrypted file store for repository env files.
-3. Update repository persistence and API normalization for text/file entries.
-4. Update runtime spawning and interactive terminals to materialize/mount file entries.
-5. Update repository editor UI with Text/File selector and upload flow.
-6. Run lint/build/test/harness verification.
-
-## Human-Gated Flow Evidence
-- Requirements Read: YES
-- Requirements Understood: YES
-- Repository Research Complete: YES
-- Uncertainties Logged: YES (selected encrypted-at-rest file storage with runtime materialization)
-- Human Review Completed: NO (pending maintainer review)
-- User Approval To Start: YES (issue request)
-- Baseline Checks Run: YES (`REMOTE_BUILD=0 ./scripts/harness/check.sh`)
-- Visible Task List Updated: YES
-- Task-Level Tests/Lint/Build: YES (`npm run build -w @agentswarm/server`, `npm run build -w @agentswarm/web`, package tests, harness check)
-- Self Review Complete: YES
-- Code Review Complete: NO (pending maintainer review)
-- Final Verification Complete: YES (repository check pipeline completed successfully)
-- Security/Privacy Review Complete: YES (file contents encrypted at rest and never surfaced in API/UI)
-- Docs/Changelog Updated: YES (execution plan documentation updated)
-
-## Validation Commands
-- `npm run lint -w @agentswarm/server`
-- `npm run test -w @agentswarm/server`
-- `npm run build -w @agentswarm/server`
-- `npm run lint -w @agentswarm/web`
-- `npm run test -w @agentswarm/web`
-- `npm run build -w @agentswarm/web`
-- `REMOTE_BUILD=0 ./scripts/harness/check.sh`
-- `REMOTE_BUILD=0 ./scripts/harness/test.sh` (fails in this environment because Docker Compose is unavailable)
-
-## Risks
-- Orphaned encrypted files if write failures are not cleaned up.
-- Runtime failure if stored file reference is missing on disk.
-
-## Rollback Plan
-- Revert shared type changes for env entries.
-- Remove repository env file store/materialization and use text-only env injection.
-- Re-run lint/build/tests to confirm fallback state.
-
-## Progress Log
-- 2026-06-01 09:00 UTC: Created execution plan.
-- 2026-06-01 10:10 UTC: Implemented secure repository env file store and updated repository persistence model.
-- 2026-06-01 10:40 UTC: Implemented runtime materialization for task runs and interactive terminals.
-- 2026-06-01 11:05 UTC: Updated repository editor with Text/File controls and file upload states.
-- 2026-06-01 11:30 UTC: Completed lint/build/tests and harness checks.
-
-## Decisions
-- 2026-06-01: File-backed env entries are encrypted at rest using the existing server key and materialized only at runtime.
-- 2026-06-01: File upload limit set to 256 KiB; text limit remains 8192 characters.
-
-## Completion Notes
-- Added full text/file model support for repository env vars and env secrets.
-- Added secure encrypted-at-rest file persistence for uploaded values.
-- Runtime now mounts generated files and sets env variables to those mounted paths.
-- Interactive terminal modes now use the same file-backed behavior.
-- UI now supports type selection, file upload, “file set” states, and clear error messaging.
-````
-
-## File: docs/exec-plans/template.md
-````markdown
-# Execution Plan Template
-
-## Title
-- TODO
-
-## Goal
-- TODO
-
-## Non-goals
-- TODO
-
-## Current State
-- TODO
-
-## Acceptance Criteria
-- TODO
-
-## Affected Files
-- TODO
-
-## Step-by-Step Plan
-1. TODO
-2. TODO
-3. TODO
-
-## Human-Gated Flow Evidence
-- Requirements Read: TODO
-- Requirements Understood: TODO
-- Repository Research Complete: TODO
-- Uncertainties Logged: TODO
-- Human Review Completed: TODO
-- User Approval To Start: TODO
-- Baseline Checks Run: TODO
-- Visible Task List Updated: TODO
-- Task-Level Tests/Lint/Build: TODO
-- Self Review Complete: TODO
-- Code Review Complete: TODO
-- Final Verification Complete: TODO
-- Security/Privacy Review Complete: TODO
-- Docs/Changelog Updated: TODO
-
-## Validation Commands
-- TODO
-
-## Risks
-- TODO
-
-## Rollback Plan
-- TODO
-
-## Progress Log
-- YYYY-MM-DD HH:MM UTC: TODO
-
-## Decisions
-- YYYY-MM-DD: TODO
-
-## Completion Notes
-- TODO
-````
-
-## File: docs/quality/tech-debt.md
-````markdown
-# Tech Debt Register
-
-Top gaps are prioritized from `docs/quality/scorecard.md`.
-
-## 1) Shared Types Have No Direct Tests
-- Impact: contract regressions can break both server and web at once.
-- Evidence: `packages/shared-types/src/index.ts` has no `*.test.*` files.
-- Suggested fix: add a small contract test suite (shape/enum compatibility checks) and run it from harness test flow.
-
-## 2) Runtime Domain Has Very Low Verification
-- Impact: agent runtime failures are harder to detect before real task execution.
-- Evidence: no runtime tests found under `agent-runtime*` or `tools/codex-web-terminal`.
-- Suggested fix: add smoke checks for runtime startup + command execution, and include them in PR readiness.
-
-## 3) Web Coverage Is Shallow For Core Flows
-- Impact: high-risk UI flows can regress even when utility tests pass.
-- Evidence: current browser coverage is one file (`apps/web/e2e/auth.smoke.spec.ts`) with login-focused checks.
-- Suggested fix: add e2e happy-path tests for task creation, task detail load, and repository flow.
-
-## 4) CI Does Not Run Full PR-Readiness Sequence
-- Impact: merges can pass CI without running tests/build parity used locally in `pr-ready.sh`.
-- Evidence: `.github/workflows/harness-check.yml` runs `./scripts/harness/check.sh` only.
-- Suggested fix: add a CI job for `./scripts/harness/pr-ready.sh` (or equivalent staged subset including tests).
-
-## 5) Documentation Drift Exists In Quality Docs
-- Impact: agents and maintainers can follow outdated guidance.
-- Evidence: `docs/quality/known-issues.md` still states no CI workflow exists.
-- Suggested fix: align `known-issues.md` with current repository state and keep it updated with each harness change.
-
-## 6) Legacy Task Status Is Overloaded
-- Impact: Kanban planning and task lifecycle UI have to interpret a single `status` field that mixes workflow state, execution state, and legacy result state.
-- Evidence: tasks now expose `workflowStatus`, `executionStatus`, `executionAction`, and `reviewReason`, but `status` remains for compatibility.
-- Suggested fix: migrate callers to the new fields, backfill persisted tasks if needed, then remove legacy `completed`/`answered`/`accepted` values and eventually retire overloaded `status`.
-
-## TODO
-- TODO: assign owner and target date for each item.
-- TODO: track status (`open`, `in progress`, `done`) for each item.
-````
-
-## File: docs/github-sync-ownership-model.md
-````markdown
-# GitHub Sync Ownership Model (MVP)
-
-## Goal
-Make GitHub sync behavior predictable by defining exactly which system is authoritative for each field and how conflicts are resolved.
-
-## Models Compared
-
-### 1) `github_authoritative`
-- GitHub is the source of truth for synced fields.
-- Internal edits to synced fields are treated as temporary and will be overwritten by incoming GitHub events.
-
-Pros:
-- Matches what users already expect from GitHub.
-- Lower risk of drift for issue state/metadata.
-
-Cons:
-- Internal edits may appear to "disappear" unless clearly marked as local-only.
-- Requires good webhook reliability.
-
-### 2) `internal_authoritative`
-- Internal task system is the source of truth for synced fields.
-- GitHub changes are informational and do not automatically override internal state.
-
-Pros:
-- Full control inside the product.
-- Works even when GitHub data is delayed.
-
-Cons:
-- High drift risk from GitHub.
-- Harder to explain for GitHub-first teams.
-
-### 3) `hybrid_sync`
-- Ownership differs by field (some GitHub-owned, some internal-owned).
-- Bidirectional updates are allowed only for explicitly shared fields.
-
-Pros:
-- Flexible and practical for mixed workflows.
-- Preserves internal workflow while staying aligned with GitHub metadata.
-
-Cons:
-- More rules to explain.
-- Needs clear UI audit trail.
-
-## Recommended MVP Default
-Use `hybrid_sync` as default, with strict per-field ownership.
-
-Reason:
-- It minimizes user surprise in day-to-day use.
-- It avoids forcing all behavior into a single system.
-- It supports current webhook/import flows and allows gradual expansion.
-
-## Source-of-Truth Mapping (MVP)
-
-| Field | Source of Truth | Direction | Notes |
-|---|---|---|---|
-| GitHub issue/PR number, URL | GitHub | GitHub -> internal | Immutable link fields after task creation. |
-| Title (imported task title) | Internal | Internal -> GitHub (optional later) | Internal title can diverge; show "custom title" badge if changed. |
-| Status/state | Internal (execution), GitHub (issue/PR lifecycle) | Bidirectional with mapping rules | Internal run status and GitHub open/closed are related but not identical. |
-| Labels | GitHub (for GitHub-prefixed labels), Internal (for internal-prefixed labels) | Bidirectional by namespace | Reserve `gh:*` for GitHub mirror, `as:*` for internal-only labels. |
-| Comments | Dual ownership by origin | Bidirectional append-only | Never edit/delete remote comments during MVP sync. |
-| Assignee | Internal | Internal -> GitHub (optional later) | Keep assignment stable for internal permission model. |
-| Description/body snapshot | GitHub at import time | GitHub -> internal (manual refresh only) | Treated as imported context, not live-synced text. |
-
-## Conflict Resolution Rules
-
-### Status
-- Maintain a mapping table:
-  - GitHub `open` -> internal `open` (or keep current running state if actively executing).
-  - GitHub `closed` -> internal `done` only if task is not running.
-- If internal task is running and GitHub closes issue/PR:
-  - Keep internal state unchanged.
-  - Add sync alert: `GitHub closed while task running`.
-  - Ask user to resolve with explicit action (`stop`, `complete`, or `reopen on GitHub`).
-
-### Labels
-- Namespace labels:
-  - `gh:*` labels are GitHub-owned mirrors and are overwritten by latest GitHub payload.
-  - `as:*` labels are internal-owned and never overwritten by GitHub.
-- If same semantic label exists in both systems without prefix:
-  - Convert during sync to `gh:<name>` to prevent future ambiguity.
-
-### Comments
-- Append-only sync for MVP:
-  - GitHub comments import as external entries with source metadata.
-  - Internal comments sync out only when user marks them as "publish to GitHub".
-- Never mutate existing comment content across systems in MVP.
-- On duplicate detection (same source id), keep first and skip duplicates.
-
-## Fallback When Systems Disagree
-
-1. Detect disagreement by field (`status`, `labels`, `comments`) and record timestamp/source.
-2. Apply deterministic winner based on mapping table above.
-3. Store a sync event log entry with:
-   - field
-   - local value
-   - remote value
-   - winning value
-   - rule used
-4. Surface a plain-language UI notice:
-   - Example: `GitHub label set won for gh:* labels at 2026-05-21 14:00 UTC.`
-5. If no rule safely applies, do not auto-merge:
-   - mark as `needs_manual_resolution`
-   - keep both values visible
-   - provide one-click user choice
-
-## UX Transparency Requirements
-- Every sync-driven overwrite must show:
-  - what changed
-  - which system won
-  - why (rule name)
-  - when it happened (UTC timestamp)
-- Users should always be able to filter history by `sync events`.
-- Avoid hidden automatic edits; all automatic conflict outcomes must be auditable.
-
-## Task-to-GitHub Status Mapping (Issue #22)
-
-### Scope
-- This mapping controls when internal task status changes create GitHub updates (labels and comments).
-- Goal: useful progress signals with low noise.
-
-### Repo-Level Switch
-- Add optional repository setting: `sync_status_enabled` (default: `false`).
-- If `sync_status_enabled=false`:
-  - no automatic status label updates are sent to GitHub
-  - no automatic status comments are sent to GitHub
-  - manual user comments can still be posted when explicitly requested
-- If `sync_status_enabled=true`:
-  - apply the milestone-only policy below
-
-### GitHub Labels Used for Status
-- Use exactly one active label from:
-  - `as:queued`
-  - `as:in-progress`
-  - `as:blocked`
-  - `as:done`
-- On change, remove the previous `as:*` status label and apply the new one.
-
-### Milestone-Only Posting Policy
-- Post only on meaningful milestones:
-  - work started
-  - blocked waiting on input/dependency
-  - unblocked and resumed
-  - completed
-  - failed/cancelled with clear outcome
-- Do not post for routine churn:
-  - retries
-  - step-level progress
-  - short-lived state flips
-  - background sync-only adjustments
-
-### Internal Status -> GitHub Action Mapping
-
-| Internal Transition | Update GitHub Label | Post GitHub Comment | Comment Template (short) |
-|---|---|---|---|
-| `queued -> in_progress` | `as:in-progress` | Yes | `Work started.` |
-| `in_progress -> blocked` | `as:blocked` | Yes | `Work blocked: <reason>.` |
-| `blocked -> in_progress` | `as:in-progress` | Yes | `Work resumed after unblock.` |
-| `in_progress -> done` | `as:done` | Yes | `Work completed.` |
-| `in_progress -> failed` | keep `as:in-progress` or set `as:blocked` (team choice) | Yes | `Work stopped: <failure summary>.` |
-| `in_progress -> cancelled` | keep current or set `as:queued` (team choice) | Yes | `Work cancelled.` |
-| `queued -> cancelled` | `as:queued` (unchanged) | No | n/a |
-| `queued -> queued` | none | No | n/a |
-| `in_progress -> in_progress` | none | No | n/a |
-| `blocked -> blocked` | none | No | n/a |
-| `done -> done` | none | No | n/a |
-
-### Transitions That Must Not Post Updates
-- Any transition where source and destination are the same.
-- Automatic retry state changes that return to the same milestone stage.
-- Internal-only housekeeping transitions (for example: scheduler rebalance, worker handoff).
-- Bulk backfill/import reconciliation updates.
-- Any status change while `sync_status_enabled=false`.
-
-### Sample Timeline: Issue Flow
-1. Issue imported -> task created as `queued` (no comment posted).
-2. Agent begins work -> set `as:in-progress`; post `Work started.`
-3. Missing requirement found -> set `as:blocked`; post `Work blocked: waiting for acceptance criteria.`
-4. User provides answer -> set `as:in-progress`; post `Work resumed after unblock.`
-5. Work completes -> set `as:done`; post `Work completed.`
-
-### Sample Timeline: PR Flow
-1. PR imported -> task `queued` (no comment posted).
-2. Agent starts edits -> `as:in-progress`; post `Work started.`
-3. CI failure blocks merge -> `as:blocked`; post `Work blocked: CI failing on test suite.`
-4. Fix applied and CI passes -> `as:in-progress`; post `Work resumed after unblock.`
-5. PR ready/merged -> `as:done`; post `Work completed.`
-````
-
-## File: docs/index.md
-````markdown
-# Documentation Index
-
-## Getting Started
-- [Development setup](development/setup.md)
-- [Development commands](development/commands.md)
-- [Human-gated taskwise delivery flow](development/human-gated-taskwise-delivery-flow.md)
-- [Testing](development/testing.md)
-- [Debugging](development/debugging.md)
-
-## Architecture
-- [Architecture index](architecture/index.md)
-- [Domains](architecture/domains.md)
-- [Boundaries](architecture/boundaries.md)
-- [GitHub sync ownership model](github-sync-ownership-model.md)
-
-## Product
-- [Product index](product/index.md)
-- [Terminology](product/terminology.md)
-
-## Quality
-- [Scorecard](quality/scorecard.md)
-- [Known issues](quality/known-issues.md)
-- [Tech debt](quality/tech-debt.md)
-
-## Execution Plans
-- Active plans: `docs/exec-plans/active/`
-- Completed plans: `docs/exec-plans/completed/`
-````
-
-## File: examples/github-automations.comment-triggers.json
-````json
-[
-  {
-    "id": "ai-issue-opened",
-    "name": "AI issue -> build task",
-    "enabled": true,
-    "trigger": "issue_opened",
-    "labelFilter": {
-      "labelsAny": ["ai"],
-      "labelsNone": ["wip"]
-    },
-    "task": {
-      "assigneeEmail": "dev@company.com",
-      "taskType": "build",
-      "provider": "codex",
-      "providerProfile": "high",
-      "modelOverride": "gpt-5.4",
-      "codexCredentialSource": "profile"
-    }
-  },
-  {
-    "id": "ai-comment-triggers-on-issues",
-    "name": "Issue comments can intentionally trigger automation",
-    "enabled": true,
-    "trigger": "issue_opened",
-    "automationEnabled": true,
-    "allowedTriggers": ["emoji_reaction", "slash_command", "bot_mention"],
-    "allowedReactions": ["🤖", "eyes"],
-    "allowedCommands": ["/agent run"],
-    "allowedActorLogins": ["repo-admin", "maintainer-1"],
-    "labelFilter": {
-      "labelsAny": ["ai"],
-      "labelsNone": ["wip"]
-    },
-    "task": {
-      "assigneeEmail": "dev@company.com",
-      "taskType": "build",
-      "includeComments": true,
-      "provider": "codex",
-      "providerProfile": "high"
-    }
-  },
-  {
-    "id": "ai-comment-triggers-on-prs",
-    "name": "PR comments can intentionally trigger automation",
-    "enabled": true,
-    "trigger": "pull_request_opened",
-    "automationEnabled": true,
-    "allowedTriggers": ["emoji_reaction", "slash_command", "bot_mention"],
-    "allowedReactions": ["🤖", "rocket"],
-    "allowedCommands": ["/agent run"],
-    "allowedActorLogins": ["repo-admin", "maintainer-1"],
-    "task": {
-      "assigneeEmail": "dev@company.com",
-      "provider": "codex",
-      "providerProfile": "high"
-    }
-  }
-]
-````
-
-## File: scripts/harness/check.sh
-````bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-
-source "${SCRIPT_DIR}/lib/remote-build.sh"
-ensure_remote_build_execution "$REPO_ROOT" "./scripts/harness/check.sh" "$@"
-
-cd "$REPO_ROOT"
-
-echo "[harness:check] repo root: $REPO_ROOT"
-echo "[harness:check] running docs checks"
-./scripts/harness/check-docs.sh
-
-echo "[harness:check] running human-gated flow checks"
-./scripts/harness/check-human-gated-flow.sh
-
-echo "[harness:check] running boundary checks"
-node ./scripts/harness/boundary-check.mjs
-
-echo "[harness:check] running lint"
-npm run lint
-
-echo "[harness:check] running build"
-npm run build
-
-echo "[harness:check] done"
-````
-
-## File: scripts/harness/pr-ready.sh
-````bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-
-source "${SCRIPT_DIR}/lib/remote-build.sh"
-ensure_remote_build_execution "$REPO_ROOT" "./scripts/harness/pr-ready.sh" "$@"
-
-cd "$REPO_ROOT"
-
-step() {
-  echo "[harness:pr-ready] $1"
-}
-
-run() {
-  step "running: $*"
-  "$@"
-}
-
-has_root_script() {
-  local script_name="$1"
-  node -e '
-const fs = require("fs");
-const name = process.argv[1];
-const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-process.exit(pkg && pkg.scripts && Object.prototype.hasOwnProperty.call(pkg.scripts, name) ? 0 : 1);
-' "$script_name"
-}
-
-step "repo root: $REPO_ROOT"
-
-if [[ ! -d node_modules ]]; then
-  step "dependencies missing (node_modules not found); running setup first"
-  run env HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-fi
-
-step "1/9 doctor"
-run ./scripts/harness/doctor.sh
-
-step "2/9 format check"
-format_check_required="${HARNESS_REQUIRE_FORMAT_CHECK:-0}"
-if has_root_script "format:check"; then
-  run npm run format:check
-elif has_root_script "fmt:check"; then
-  run npm run fmt:check
-elif [[ "$format_check_required" == "1" ]]; then
-  echo "[harness:pr-ready] error: HARNESS_REQUIRE_FORMAT_CHECK=1 but no root format-check script is defined." >&2
-  echo "[harness:pr-ready] fix: add package.json script 'format:check' (or 'fmt:check') and retry." >&2
-  exit 1
-else
-  step "no root format-check script found; skipping (set HARNESS_REQUIRE_FORMAT_CHECK=1 to enforce)"
-fi
-
-step "3/9 human-gated flow checks"
-run ./scripts/harness/check-human-gated-flow.sh
-
-step "4/9 boundary checks"
-run node ./scripts/harness/boundary-check.mjs
-
-step "5/9 lint"
-run npm run lint
-
-step "6/9 typecheck"
-# In this repo, lint commands are TypeScript no-emit checks.
-run npm run -w @agentswarm/server lint
-run npm run -w @agentswarm/web lint
-
-step "7/9 tests"
-run ./scripts/harness/test.sh
-
-step "8/9 build"
-run npm run build
-
-step "9/9 repo-specific checks"
-# Validate Compose config when Docker is available.
-if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-  run docker compose config >/dev/null
-  step "docker compose config is valid"
-else
-  step "docker compose not available; skipped compose config validation"
-fi
-
-step "PR readiness checks passed"
-````
-
-## File: scripts/harness/test.sh
-````bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-
-source "${SCRIPT_DIR}/lib/remote-build.sh"
-ensure_remote_build_execution "$REPO_ROOT" "./scripts/harness/test.sh" "$@"
-
-cd "$REPO_ROOT"
-
-TEST_SCOPE="${TEST_SCOPE:-all}"
-
-case "$TEST_SCOPE" in
-  all|unit|integration|e2e)
-    ;;
-  *)
-    echo "[harness:test] error: invalid TEST_SCOPE='$TEST_SCOPE' (use: all|unit|integration|e2e)" >&2
-    exit 2
-    ;;
-esac
-
-# Deterministic runtime defaults for CI and local agents.
-export CI="${CI:-1}"
-export NODE_ENV="${NODE_ENV:-test}"
-export TZ="${TZ:-UTC}"
-export LANG="${LANG:-C}"
-export LC_ALL="${LC_ALL:-C}"
-export NO_COLOR="${NO_COLOR:-1}"
-export FORCE_COLOR="${FORCE_COLOR:-0}"
-export AGENTSWARM_TEST_SEED="${AGENTSWARM_TEST_SEED:-20260523}"
-
-if ! node -e 'require.resolve("tsx/package.json")' >/dev/null 2>&1; then
-  echo "[harness:test] error: required test dependency 'tsx' is not installed" >&2
-  echo "[harness:test] fix: run npm ci (or HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh)" >&2
-  exit 1
-fi
-
-FIXTURE_ROOT="${REPO_ROOT}/.tmp/harness-tests"
-rm -rf "$FIXTURE_ROOT"
-mkdir -p "$FIXTURE_ROOT"
-export AGENTSWARM_TEST_FIXTURE_ROOT="$FIXTURE_ROOT"
-
-CURRENT_PHASE="initializing"
-CURRENT_CMD=""
-
-on_error() {
-  local exit_code=$?
-  echo "[harness:test]"
-  echo "[harness:test] failed during phase: ${CURRENT_PHASE}" >&2
-  if [[ -n "$CURRENT_CMD" ]]; then
-    echo "[harness:test] command: ${CURRENT_CMD}" >&2
-    echo "[harness:test] rerun: ${CURRENT_CMD}" >&2
-  fi
-  echo "[harness:test] tips:" >&2
-  echo "[harness:test] - run only one scope: TEST_SCOPE=unit ./scripts/harness/test.sh" >&2
-  echo "[harness:test] - read docs: docs/development/testing.md" >&2
-  exit "$exit_code"
-}
-
-trap on_error ERR
-
-run_phase() {
-  local phase="$1"
-  shift
-  CURRENT_PHASE="$phase"
-  CURRENT_CMD="$*"
-  echo "[harness:test]"
-  echo "[harness:test] phase: $phase"
-  echo "[harness:test] running: $*"
-  "$@"
-  echo "[harness:test] phase passed: $phase"
-}
-
-http_check() {
-  local url="$1"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsS "$url" >/dev/null
-    return $?
-  fi
-  if command -v wget >/dev/null 2>&1; then
-    wget -q -O /dev/null "$url"
-    return $?
-  fi
-  if command -v node >/dev/null 2>&1; then
-    node -e 'fetch(process.argv[1]).then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))' "$url"
-    return $?
-  fi
-  return 1
-}
-
-resolve_public_port() {
-  if [[ -n "${PUBLIC_PORT:-}" ]]; then
-    echo "$PUBLIC_PORT"
-    return
-  fi
-
-  if [[ -f .env ]]; then
-    local from_env
-    from_env="$(awk -F= '/^PUBLIC_PORT=/{print $2; exit}' .env | tr -d '[:space:]')"
-    if [[ -n "$from_env" ]]; then
-      echo "$from_env"
-      return
-    fi
-  fi
-
-  echo "3217"
-}
-
-ensure_ui_for_playwright() {
-  local ui_base_url="$1"
-  local health_url="${ui_base_url%/}/api/health"
-
-  if http_check "$health_url"; then
-    echo "[harness:test] e2e app health check already passing: $health_url"
-    return
-  fi
-
-  echo "[harness:test] e2e app not healthy yet; starting stack"
-  run_phase "e2e:boot-app" ./scripts/harness/start.sh
-
-  if ! http_check "$health_url"; then
-    echo "[harness:test] error: e2e app health endpoint is not reachable: $health_url" >&2
-    exit 1
-  fi
-
-  echo "[harness:test] e2e app health check passed: $health_url"
-}
-
-all_tests=()
-unit_tests=()
-integration_tests=()
-e2e_tests=()
-
-while IFS= read -r test_file; do
-  all_tests+=("$test_file")
-
-  case "$test_file" in
-    apps/server/src/lib/*.test.ts|apps/web/src/utils/*.test.ts)
-      unit_tests+=("$test_file")
-      ;;
-    */e2e/*|*.e2e.test.ts|*.e2e.test.tsx|*.e2e.test.js|*.e2e.test.mjs|*.e2e.spec.ts|*.e2e.spec.tsx|*.e2e.spec.js|*.e2e.spec.mjs)
-      e2e_tests+=("$test_file")
-      ;;
-    apps/server/src/services/*.test.ts|apps/server/src/routes/*.test.ts)
-      integration_tests+=("$test_file")
-      ;;
-    *)
-      # Conservative default: treat unknown test locations as integration-level.
-      integration_tests+=("$test_file")
-      ;;
-  esac
-done < <(
-  find apps \
-    \( -path '*/node_modules/*' -o -path '*/dist/*' -o -path '*/build/*' -o -path '*/.next/*' \) -prune -o \
-    -type f \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.test.mjs' \) -print |
-    sort
-)
-
-run_node_tests() {
-  local group_name="$1"
-  shift
-
-  if [[ "$#" -eq 0 ]]; then
-    echo "[harness:test]"
-    echo "[harness:test] phase: ${group_name}"
-    echo "[harness:test] no tests found for this group, skipping"
-    return
-  fi
-
-  run_phase "$group_name" node --import tsx --test "$@"
-}
-
-run_playwright_e2e() {
-  if [[ ! -f playwright.config.ts ]]; then
-    echo "[harness:test]"
-    echo "[harness:test] phase: e2e:playwright"
-    echo "[harness:test] playwright config not found, skipping"
-    return
-  fi
-
-  if ! find apps/web/e2e -type f -name '*.spec.ts' | grep -q .; then
-    echo "[harness:test]"
-    echo "[harness:test] phase: e2e:playwright"
-    echo "[harness:test] no Playwright spec files found, skipping"
-    return
-  fi
-
-  if ! node -e 'require.resolve("@playwright/test/package.json")' >/dev/null 2>&1; then
-    echo "[harness:test] error: @playwright/test is not installed in node_modules" >&2
-    echo "[harness:test] run npm ci (or HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh) and retry" >&2
-    exit 1
-  fi
-
-  local public_port
-  public_port="$(resolve_public_port)"
-  local default_ui_host="localhost"
-  if [[ "${HARNESS_REMOTE_EXECUTING:-0}" == "1" ]]; then
-    default_ui_host="host.docker.internal"
-  fi
-  local ui_base_url="${AGENTSWARM_UI_BASE_URL:-http://${default_ui_host}:${public_port}}"
-
-  ensure_ui_for_playwright "$ui_base_url"
-
-  local remote_runner_is_musl=0
-  if [[ "${HARNESS_REMOTE_EXECUTING:-0}" == "1" ]] && command -v ldd >/dev/null 2>&1; then
-    if ldd --version 2>&1 | grep -qi "musl"; then
-      remote_runner_is_musl=1
-    fi
-  fi
-
-  if [[ "$remote_runner_is_musl" == "1" ]] && command -v docker >/dev/null 2>&1; then
-    local musl_playwright_docker_image="${PLAYWRIGHT_DOCKER_IMAGE:-mcr.microsoft.com/playwright:v1.60.0-noble}"
-    local musl_docker_workspace_mount="$REPO_ROOT"
-    if [[ -n "${TASK_WORKSPACE_PATH:-}" ]]; then
-      musl_docker_workspace_mount="$TASK_WORKSPACE_PATH"
-    fi
-    echo "[harness:test] remote runner uses musl libc; running Playwright in containerized fallback"
-    run_phase \
-      "e2e:playwright:docker" \
-      docker run --rm \
-        -w /workspace \
-        -v "$musl_docker_workspace_mount:/workspace" \
-        -e AGENTSWARM_UI_BASE_URL="$ui_base_url" \
-        -e CI="${CI:-1}" \
-        -e NO_COLOR="${NO_COLOR:-1}" \
-        -e FORCE_COLOR="${FORCE_COLOR:-0}" \
-        -e PLAYWRIGHT_CAPTURE_VIDEO="${PLAYWRIGHT_CAPTURE_VIDEO:-0}" \
-        "$musl_playwright_docker_image" \
-        sh -lc "npx playwright test --config playwright.config.ts"
-    return
-  fi
-
-  if [[ "${PLAYWRIGHT_SKIP_INSTALL:-0}" != "1" ]]; then
-    if command -v apt-get >/dev/null 2>&1; then
-      run_phase "e2e:playwright-install" npx playwright install --with-deps chromium --only-shell
-    else
-      echo "[harness:test] apt-get not found; installing Playwright browser without OS package install"
-      run_phase "e2e:playwright-install" npx playwright install chromium --only-shell
-    fi
-  else
-    echo "[harness:test] skipping browser install (PLAYWRIGHT_SKIP_INSTALL=1)"
-  fi
-
-  if env AGENTSWARM_UI_BASE_URL="$ui_base_url" node -e 'const { chromium } = require("@playwright/test"); chromium.launch({ headless: true }).then((browser) => browser.close()).then(() => process.exit(0)).catch(() => process.exit(1));'; then
-    run_phase "e2e:playwright" env AGENTSWARM_UI_BASE_URL="$ui_base_url" npx playwright test --config playwright.config.ts
-    return
-  fi
-
-  if [[ "${HARNESS_REMOTE_EXECUTING:-0}" == "1" ]] && command -v docker >/dev/null 2>&1; then
-    local playwright_docker_image="${PLAYWRIGHT_DOCKER_IMAGE:-mcr.microsoft.com/playwright:v1.60.0-noble}"
-    local docker_workspace_mount="$REPO_ROOT"
-    if [[ -n "${TASK_WORKSPACE_PATH:-}" ]]; then
-      docker_workspace_mount="$TASK_WORKSPACE_PATH"
-    fi
-    echo "[harness:test] local Playwright launch probe failed in remote runner; falling back to containerized Playwright"
-    run_phase \
-      "e2e:playwright:docker" \
-      docker run --rm \
-        -w /workspace \
-        -v "$docker_workspace_mount:/workspace" \
-        -e AGENTSWARM_UI_BASE_URL="$ui_base_url" \
-        -e CI="${CI:-1}" \
-        -e NO_COLOR="${NO_COLOR:-1}" \
-        -e FORCE_COLOR="${FORCE_COLOR:-0}" \
-        -e PLAYWRIGHT_CAPTURE_VIDEO="${PLAYWRIGHT_CAPTURE_VIDEO:-0}" \
-        "$playwright_docker_image" \
-        sh -lc "npx playwright test --config playwright.config.ts"
-    return
-  fi
-
-  echo "[harness:test] error: Playwright browser launch probe failed" >&2
-  echo "[harness:test] fix: use a glibc-based runtime (or set PLAYWRIGHT_DOCKER_IMAGE and run in remote mode)" >&2
-  exit 1
-}
-
-echo "[harness:test] repo root: $REPO_ROOT"
-echo "[harness:test] scope: $TEST_SCOPE"
-echo "[harness:test] deterministic seed: $AGENTSWARM_TEST_SEED"
-echo "[harness:test] fixture root: $AGENTSWARM_TEST_FIXTURE_ROOT"
-echo "[harness:test] discovered tests: total=${#all_tests[@]}, unit=${#unit_tests[@]}, integration=${#integration_tests[@]}, e2e=${#e2e_tests[@]}"
-
-case "$TEST_SCOPE" in
-  all)
-    if [[ "${#unit_tests[@]}" -eq 0 ]]; then run_node_tests "unit"; else run_node_tests "unit" "${unit_tests[@]}"; fi
-    if [[ "${#integration_tests[@]}" -eq 0 ]]; then run_node_tests "integration"; else run_node_tests "integration" "${integration_tests[@]}"; fi
-    if [[ "${#e2e_tests[@]}" -eq 0 ]]; then run_node_tests "e2e:node"; else run_node_tests "e2e:node" "${e2e_tests[@]}"; fi
-    run_playwright_e2e
-    ;;
-  unit)
-    if [[ "${#unit_tests[@]}" -eq 0 ]]; then run_node_tests "unit"; else run_node_tests "unit" "${unit_tests[@]}"; fi
-    ;;
-  integration)
-    if [[ "${#integration_tests[@]}" -eq 0 ]]; then run_node_tests "integration"; else run_node_tests "integration" "${integration_tests[@]}"; fi
-    ;;
-  e2e)
-    if [[ "${#e2e_tests[@]}" -eq 0 ]]; then run_node_tests "e2e:node"; else run_node_tests "e2e:node" "${e2e_tests[@]}"; fi
-    run_playwright_e2e
-    ;;
-esac
-
-echo "[harness:test]"
-echo "[harness:test] all requested test phases passed"
-````
-
-## File: apps/server/src/lib/task-interactive-terminal.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { spawnSync } from "node:child_process";
-import { describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
-
-import { buildGitTerminalDockerEnvEntries, buildGitTerminalEnvEntries } from "./task-interactive-terminal-git-env.js";
-import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
-
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
-const gitTerminalShellPath = path.join(repoRoot, "tools/codex-web-terminal/git-terminal-shell.sh");
-const gitTerminalDockerfilePath = path.join(repoRoot, "tools/codex-web-terminal/Dockerfile.git");
-
-describe("buildGitTerminalStartScript", () => {
-  it("generates shell syntax that parses under sh", () => {
-    const script = buildGitTerminalStartScript();
-    const result = spawnSync("sh", ["-n", "-c", script], { encoding: "utf8" });
-
-    assert.equal(result.status, 0, result.stderr || "expected sh -n to accept git terminal start script");
-    assert.match(script, /\n\s+printf '%s\\n'/);
-    assert.doesNotMatch(script, /then;\s/);
-    assert.match(script, /exec git-terminal-shell$/);
-  });
-
-  it("ships the git terminal wrapper with a restricted bash shell", () => {
-    const shellScript = readFileSync(gitTerminalShellPath, "utf8");
-    const dockerfile = readFileSync(gitTerminalDockerfilePath, "utf8");
-    const result = spawnSync("sh", ["-n", gitTerminalShellPath], { encoding: "utf8" });
-
-    assert.equal(result.status, 0, result.stderr || "expected sh -n to accept git terminal shell wrapper");
-    assert.match(shellScript, /exec \/bin\/bash --noprofile --norc --restricted -i/);
-    assert.match(dockerfile, /\bapk add --no-cache bash git vim( neovim)? diffutils ca-certificates\b/);
-  });
-});
-
-describe("buildGitTerminalEnvEntries", () => {
-  it("injects git identity as transient config for interactive commits", () => {
-    const env = Object.fromEntries(
-      buildGitTerminalEnvEntries({
-        workspacePath: "/workspace",
-        gitIdentity: {
-          name: "Ada Lovelace",
-          email: "ada@example.com"
-        }
-      })
-    );
-
-    assert.equal(env.GIT_CONFIG_COUNT, "3");
-    assert.equal(env.GIT_CONFIG_KEY_0, "safe.directory");
-    assert.equal(env.GIT_CONFIG_VALUE_0, "/workspace");
-    assert.equal(env.GIT_CONFIG_KEY_1, "user.name");
-    assert.equal(env.GIT_CONFIG_VALUE_1, "Ada Lovelace");
-    assert.equal(env.GIT_CONFIG_KEY_2, "user.email");
-    assert.equal(env.GIT_CONFIG_VALUE_2, "ada@example.com");
-    assert.equal(env.GIT_AUTHOR_NAME, "Ada Lovelace");
-    assert.equal(env.GIT_AUTHOR_EMAIL, "ada@example.com");
-    assert.equal(env.GIT_COMMITTER_NAME, "Ada Lovelace");
-    assert.equal(env.GIT_COMMITTER_EMAIL, "ada@example.com");
-  });
-
-  it("keeps token auth and safe.directory when identity is unavailable", () => {
-    const env = Object.fromEntries(
-      buildGitTerminalEnvEntries({
-        workspacePath: "/workspace",
-        githubToken: "secret-token",
-        gitUsername: "octocat"
-      })
-    );
-
-    assert.equal(env.GIT_CONFIG_COUNT, "1");
-    assert.equal(env.GIT_CONFIG_KEY_0, "safe.directory");
-    assert.equal(env.GIT_CONFIG_VALUE_0, "/workspace");
-    assert.equal(env.GIT_TOKEN, "secret-token");
-    assert.equal(env.GIT_USERNAME, "octocat");
-    assert.equal(env.GIT_AUTHOR_NAME, undefined);
-    assert.equal(env.GIT_AUTHOR_EMAIL, undefined);
-    assert.equal(env.GIT_COMMITTER_NAME, undefined);
-    assert.equal(env.GIT_COMMITTER_EMAIL, undefined);
-  });
-});
-
-describe("buildGitTerminalDockerEnvEntries", () => {
-  it("appends repository runtime env entries to git terminal runtime env entries", () => {
-    const envEntries = buildGitTerminalDockerEnvEntries({
-      runtimeEnvEntries: [
-        ["TERM", "xterm-256color"],
-        ["TASK_INTERACTIVE_WORKSPACE", "/workspace"]
-      ],
-      repositoryEnvEntries: [
-        ["FOO", "bar"],
-        ["EMPTY_OK", ""],
-        ["API_TOKEN", "token-123"]
-      ]
-    });
-
-    assert.deepEqual(envEntries, [
-      ["TERM", "xterm-256color"],
-      ["TASK_INTERACTIVE_WORKSPACE", "/workspace"],
-      ["FOO", "bar"],
-      ["EMPTY_OK", ""],
-      ["API_TOKEN", "token-123"]
-    ]);
-  });
-});
-````
-
-## File: apps/server/src/lib/task-status.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import {
-  normalizeTaskLifecycleStatus,
-  reconcileTaskStatusWithPendingCheckpoint,
-  resolveTaskReadyStatus
-} from "./task-status.js";
-
-describe("resolveTaskReadyStatus", () => {
-  it("returns open when no checkpoint is pending", () => {
-    assert.equal(resolveTaskReadyStatus(false), "open");
-  });
-
-  it("returns awaiting_review when a checkpoint is pending", () => {
-    assert.equal(resolveTaskReadyStatus(true), "awaiting_review");
-  });
-});
-
-describe("normalizeTaskLifecycleStatus", () => {
-  it("maps legacy successful statuses into the new ready states", () => {
-    assert.equal(normalizeTaskLifecycleStatus("completed", "build", true), "open");
-    assert.equal(normalizeTaskLifecycleStatus("answered", "ask", false), "open");
-    assert.equal(normalizeTaskLifecycleStatus("accepted", "build", false), "open");
-  });
-
-  it("preserves explicit done state", () => {
-    assert.equal(normalizeTaskLifecycleStatus("done", "build", false), "done");
-  });
-
-  it("preserves explicit in_review state", () => {
-    assert.equal(normalizeTaskLifecycleStatus("in_review", "build", false), "in_review");
-  });
-
-  it("maps queued and active execution statuses back to open Kanban state", () => {
-    assert.equal(normalizeTaskLifecycleStatus("scheduled", "build", false), "scheduled");
-    assert.equal(normalizeTaskLifecycleStatus("build_queued", "build", false), "open");
-    assert.equal(normalizeTaskLifecycleStatus("asking", "ask", false), "open");
-  });
-});
-
-describe("reconcileTaskStatusWithPendingCheckpoint", () => {
-  it("does not move Kanban state when a checkpoint is pending", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("failed", true), "open");
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("open", true), "open");
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", true), "in_review");
-  });
-
-  it("returns legacy-ready states to open when no checkpoint is pending", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("accepted", false), "open");
-  });
-
-  it("preserves explicit in_review and done states when no checkpoint is pending", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", false), "in_review");
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("done", false), "done");
-  });
-
-  it("returns awaiting_review to open when no checkpoint is pending", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("awaiting_review", false), "open");
-  });
-
-  it("keeps archived tasks unchanged", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("archived", true), "archived");
-  });
-
-  it("keeps scheduled tasks unchanged", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("scheduled", true), "scheduled");
-  });
-});
-````
-
-## File: apps/server/src/routes/sequences.ts
-````typescript
-import type { FastifyInstance } from "fastify";
-import { z } from "zod";
-import type { AuthService } from "../lib/auth.js";
-import type { SequenceStore } from "../services/sequence-store.js";
-
-const sequenceVariableSchema = z
-  .object({
-    name: z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(128),
-    type: z.enum(["text", "multiline"]),
-    title: z.string().trim().max(200).default(""),
-    description: z.string().trim().max(200).default(""),
-    defaultValue: z.string().max(2000).default("")
-  })
-  .superRefine((value, ctx) => {
-    if (value.type === "text" && /[\r\n]/.test(value.defaultValue)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["defaultValue"],
-        message: "Default value for text variables must be a single line."
-      });
-    }
-  });
-
-const sequenceStepSchema = z
-  .object({
-    id: z.string().trim().min(1).max(80).optional(),
-    type: z.enum(["inline", "snippet"]),
-    prompt: z.string().max(20_000).default(""),
-    snippetId: z.string().trim().min(1).max(120).optional()
-  })
-  .superRefine((step, ctx) => {
-    if (step.type === "inline" && step.prompt.trim().length === 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["prompt"],
-        message: "Inline steps must include prompt content."
-      });
-    }
-    if (step.type === "snippet" && !step.snippetId) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["snippetId"],
-        message: "Snippet steps must include snippetId."
-      });
-    }
-  });
-
-const sequenceSchema = z
-  .object({
-    name: z.string().trim().min(1).max(120),
-    executionMode: z.enum(["auto_apply_changes", "approve_before_continuing"]).optional().default("auto_apply_changes"),
-    steps: z.array(sequenceStepSchema).min(1).max(100),
-    variables: z.array(sequenceVariableSchema).max(100).optional()
-  })
-  .superRefine((value, ctx) => {
-    const variableNames = new Set<string>();
-    for (const variable of value.variables ?? []) {
-      if (variableNames.has(variable.name)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["variables"],
-          message: `Duplicate variable name: ${variable.name}`
-        });
-      }
-      variableNames.add(variable.name);
-    }
-    const stepIds = new Set<string>();
-    for (const [index, step] of value.steps.entries()) {
-      const stepId = step.id?.trim();
-      if (!stepId) {
-        continue;
-      }
-      if (stepIds.has(stepId)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["steps", index, "id"],
-          message: `Duplicate step id: ${stepId}`
-        });
-      }
-      stepIds.add(stepId);
-    }
-  });
-
-export const registerSequenceRoutes = (
-  app: FastifyInstance,
-  deps: {
-    sequenceStore: SequenceStore;
-    auth: AuthService;
-  }
-): void => {
-  const normalizeInput = (input: z.infer<typeof sequenceSchema>) => ({
-    ...input,
-    steps: input.steps.map((step, index) => ({
-      ...step,
-      id: step.id?.trim() || `step_${index + 1}`
-    }))
-  });
-
-  app.get("/sequences", { preHandler: deps.auth.requireAllScopes(["sequence:list"]) }, async () => deps.sequenceStore.listSequences());
-
-  app.get<{ Params: { id: string } }>("/sequences/:id", { preHandler: deps.auth.requireAllScopes(["sequence:read"]) }, async (request, reply) => {
-    const sequence = await deps.sequenceStore.getSequence(request.params.id);
-    if (!sequence) {
-      return reply.status(404).send({ message: "Sequence not found" });
-    }
-    return reply.send(sequence);
-  });
-
-  app.post("/sequences", { preHandler: deps.auth.requireAllScopes(["sequence:create"]) }, async (request, reply) => {
-    const parsed = sequenceSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-    const sequence = await deps.sequenceStore.createSequence(normalizeInput(parsed.data));
-    return reply.status(201).send(sequence);
-  });
-
-  app.post<{ Params: { id: string } }>("/sequences/:id/duplicate", { preHandler: deps.auth.requireAllScopes(["sequence:create"]) }, async (request, reply) => {
-    const source = await deps.sequenceStore.getSequence(request.params.id);
-    if (!source) {
-      return reply.status(404).send({ message: "Sequence not found" });
-    }
-
-    const duplicated = await deps.sequenceStore.createSequence({
-      name: `Copy of ${source.name}`,
-      executionMode: source.executionMode,
-      steps: source.steps.map((step) => ({
-        id: step.id,
-        type: step.type,
-        prompt: step.prompt,
-        ...(step.snippetId ? { snippetId: step.snippetId } : {})
-      })),
-      variables: source.variables
-    });
-    return reply.status(201).send(duplicated);
-  });
-
-  app.patch<{ Params: { id: string } }>("/sequences/:id", { preHandler: deps.auth.requireAllScopes(["sequence:edit"]) }, async (request, reply) => {
-    const parsed = sequenceSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-    const sequence = await deps.sequenceStore.updateSequence(request.params.id, normalizeInput(parsed.data));
-    if (!sequence) {
-      return reply.status(404).send({ message: "Sequence not found" });
-    }
-    return reply.send(sequence);
-  });
-
-  app.delete<{ Params: { id: string } }>("/sequences/:id", { preHandler: deps.auth.requireAllScopes(["sequence:delete"]) }, async (request, reply) => {
-    const deleted = await deps.sequenceStore.deleteSequence(request.params.id);
-    if (!deleted) {
-      return reply.status(404).send({ message: "Sequence not found" });
-    }
-    return reply.status(204).send();
-  });
-};
-````
-
-## File: apps/server/src/routes/settings.ts
-````typescript
-import { z } from "zod";
-import type { FastifyInstance } from "fastify";
-import type { AgentProvider } from "@agentswarm/shared-types";
-import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
-import type { AuthService } from "../lib/auth.js";
-import type { SchedulerService } from "../services/scheduler.js";
-import type { SettingsStore } from "../services/settings-store.js";
-
-interface ProviderModelEntry {
-  label: string;
-  value: string;
-}
-
-async function fetchOpenAiModels(apiKey: string, baseUrl: string | null): Promise<ProviderModelEntry[]> {
-  const base = (baseUrl?.replace(/\/$/, "") ?? "https://api.openai.com") + "/v1";
-  const response = await fetch(`${base}/models`, {
-    headers: { Authorization: `Bearer ${apiKey}` }
-  });
-
-  if (!response.ok) {
-    throw new Error(`OpenAI models API returned ${response.status}`);
-  }
-
-  const data = await response.json() as { data: Array<{ id: string }> };
-  return data.data
-    .map((m) => ({ label: m.id, value: m.id }))
-    .sort((a, b) => a.value.localeCompare(b.value));
-}
-
-async function fetchAnthropicModels(apiKey: string): Promise<ProviderModelEntry[]> {
-  const response = await fetch("https://api.anthropic.com/v1/models", {
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01"
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`Anthropic models API returned ${response.status}`);
-  }
-
-  const data = await response.json() as { data: Array<{ id: string; display_name: string }> };
-  return data.data
-    .map((m) => ({ label: m.display_name || m.id, value: m.id }))
-    .sort((a, b) => a.value.localeCompare(b.value));
-}
-
-const mcpServerSchema = z.discriminatedUnion("transport", [
-  z.object({
-    name: z.string().trim().min(1).max(120),
-    enabled: z.boolean(),
-    transport: z.literal("stdio"),
-    command: z.string().trim().min(1).max(300),
-    args: z.array(z.string().trim().min(1).max(300)).max(40).optional()
-  }),
-  z.object({
-    name: z.string().trim().min(1).max(120),
-    enabled: z.boolean(),
-    transport: z.literal("http"),
-    url: z.string().trim().url(),
-    bearerTokenEnvVar: z
-      .string()
-      .trim()
-      .min(1)
-      .max(120)
-      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
-      .nullable()
-      .optional()
-  })
-]);
-
-const providerProfileEnum = z.enum(["low", "medium", "high", "max"]);
-const responsePreferenceSchema = z
-  .object({
-    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
-    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
-    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
-    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
-    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
-    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
-    extraInstructions: z.string().trim().max(2000).optional()
-  });
-const responsePreferencePresetSchema = z.object({
-  id: z.string().trim().min(1).max(120).optional(),
-  name: z.string().trim().min(1).max(120),
-  description: z.string().trim().max(500).optional(),
-  preference: responsePreferenceSchema
-});
-
-const updateSettingsSchema = z.object({
-  defaultProvider: z.enum(["codex", "claude"]).optional(),
-  maxAgents: z.coerce.number().int().min(1).max(20).optional(),
-  branchPrefix: z.string().trim().min(1).max(80).optional(),
-  workspaceProvisioningMode: z.enum(["clone_only", "hybrid"]).optional(),
-  gitUsername: z.string().trim().min(1).max(120).optional(),
-  mcpServers: z.array(mcpServerSchema).max(25).optional(),
-  openaiBaseUrl: z.string().trim().url().nullable().optional(),
-  taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
-  taskPromptMagicTemplate: z.string().trim().min(1).max(12_000).optional(),
-  codexDefaultModel: z.string().trim().min(1).max(120).optional(),
-  codexDefaultEffort: providerProfileEnum.optional(),
-  claudeDefaultModel: z.string().trim().min(1).max(120).optional(),
-  claudeDefaultEffort: providerProfileEnum.optional(),
-  responsePreferencePresets: z.array(responsePreferencePresetSchema).max(50).optional()
-});
-
-const updateCredentialsSchema = z.object({
-  githubToken: z.string().trim().min(1).optional(),
-  openaiApiKey: z.string().trim().min(1).optional(),
-  anthropicApiKey: z.string().trim().min(1).optional(),
-  clearGithubToken: z.boolean().optional(),
-  clearOpenAiApiKey: z.boolean().optional(),
-  clearAnthropicApiKey: z.boolean().optional()
-});
-
-const updateUserNotesSchema = z.object({
-  notes: z.string().max(200_000)
-});
-
-export const registerSettingsRoutes = (
-  app: FastifyInstance,
-  deps: {
-    settingsStore: SettingsStore;
-    scheduler: SchedulerService;
-    auth: AuthService;
-  }
-): void => {
-  app.get("/settings", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => deps.settingsStore.getSettings());
-
-  app.get("/settings/models", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async (request, reply) => {
-    const providerParam = (request.query as Record<string, string>).provider as AgentProvider | undefined;
-    const provider = providerParam === "claude" ? "claude" : "codex";
-
-    const credentials = await deps.settingsStore.getRuntimeCredentials();
-    const settings = await deps.settingsStore.getSettings();
-    const fallback = provider === "claude" ? [...CLAUDE_MODELS] : [...CODEX_MODELS];
-
-    try {
-      if (provider === "claude") {
-        if (!credentials.anthropicApiKey) {
-          return reply.send({ models: fallback, source: "static" });
-        }
-        const models = await fetchAnthropicModels(credentials.anthropicApiKey);
-        return reply.send({ models, source: "api" });
-      }
-
-      if (!credentials.openaiApiKey) {
-        return reply.send({ models: fallback, source: "static" });
-      }
-      const models = await fetchOpenAiModels(credentials.openaiApiKey, settings.openaiBaseUrl);
-      return reply.send({ models, source: "api" });
-    } catch {
-      return reply.send({ models: fallback, source: "static" });
-    }
-  });
-
-  app.patch("/settings", { preHandler: deps.auth.requireAllScopes(["settings:edit"]) }, async (request, reply) => {
-    const parsed = updateSettingsSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const settings = await deps.settingsStore.updateSettings(parsed.data);
-    await deps.scheduler.onSettingsChanged();
-    return reply.send(settings);
-  });
-
-  app.patch("/settings/credentials", { preHandler: deps.auth.requireAllScopes(["settings:edit"]) }, async (request, reply) => {
-    const parsed = updateCredentialsSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const settings = await deps.settingsStore.updateCredentials(parsed.data);
-    return reply.send(settings);
-  });
-
-  app.get("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request) =>
-    deps.settingsStore.getUserNotes(request.auth!.user.id)
-  );
-
-  app.patch("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const parsed = updateUserNotesSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const next = await deps.settingsStore.updateUserNotes(request.auth!.user.id, parsed.data.notes);
-    return reply.send(next);
-  });
-};
-````
-
-## File: apps/server/src/routes/snippets.ts
-````typescript
-import type { FastifyInstance } from "fastify";
-import { z } from "zod";
-import type { AuthService } from "../lib/auth.js";
-import type { SnippetStore } from "../services/snippet-store.js";
-
-const snippetSchema = z.object({
-  name: z.string().trim().min(1).max(120),
-  content: z.string().trim().min(1).max(20000),
-  variables: z
-    .array(
-      z
-        .object({
-          name: z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(128),
-          type: z.enum(["text", "multiline"]),
-          title: z.string().trim().max(200).default(""),
-          description: z.string().trim().max(200).default(""),
-          defaultValue: z.string().max(2000).default("")
-        })
-        .superRefine((value, ctx) => {
-          if (value.type === "text" && /[\r\n]/.test(value.defaultValue)) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["defaultValue"],
-              message: "Default value for text variables must be a single line."
-            });
-          }
-        })
-    )
-    .max(100)
-    .optional()
-});
-
-export const registerSnippetRoutes = (
-  app: FastifyInstance,
-  deps: {
-    snippetStore: SnippetStore;
-    auth: AuthService;
-  }
-): void => {
-  app.get("/snippets", { preHandler: deps.auth.requireAllScopes(["snippet:list"]) }, async () => deps.snippetStore.listSnippets());
-
-  app.get<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:read"]) }, async (request, reply) => {
-    const snippet = await deps.snippetStore.getSnippet(request.params.id);
-    if (!snippet) {
-      return reply.status(404).send({ message: "Snippet not found" });
-    }
-
-    return reply.send(snippet);
-  });
-
-  app.post("/snippets", { preHandler: deps.auth.requireAllScopes(["snippet:create"]) }, async (request, reply) => {
-    const parsed = snippetSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const snippet = await deps.snippetStore.createSnippet(parsed.data);
-    return reply.status(201).send(snippet);
-  });
-
-  app.post<{ Params: { id: string } }>("/snippets/:id/duplicate", { preHandler: deps.auth.requireAllScopes(["snippet:create"]) }, async (request, reply) => {
-    const source = await deps.snippetStore.getSnippet(request.params.id);
-    if (!source) {
-      return reply.status(404).send({ message: "Snippet not found" });
-    }
-
-    const duplicated = await deps.snippetStore.createSnippet({
-      name: `Copy of ${source.name}`,
-      content: source.content,
-      variables: source.variables
-    });
-    return reply.status(201).send(duplicated);
-  });
-
-  app.patch<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:edit"]) }, async (request, reply) => {
-    const parsed = snippetSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const snippet = await deps.snippetStore.updateSnippet(request.params.id, parsed.data);
-    if (!snippet) {
-      return reply.status(404).send({ message: "Snippet not found" });
-    }
-
-    return reply.send(snippet);
-  });
-
-  app.delete<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:delete"]) }, async (request, reply) => {
-    const deleted = await deps.snippetStore.deleteSnippet(request.params.id);
-    if (!deleted) {
-      return reply.status(404).send({ message: "Snippet not found" });
-    }
-
-    return reply.status(204).send();
-  });
-};
-````
-
-## File: apps/server/src/services/app-stores.ts
-````typescript
-import type { CredentialStore } from "./credential-store.js";
-import type { RepositoryStore } from "./repository-store.js";
-import type { RoleStore } from "./role-store.js";
-import type { SessionStore } from "./session-store.js";
-import type { SettingsStore } from "./settings-store.js";
-import type { SnippetStore } from "./snippet-store.js";
-import type { SequenceStore } from "./sequence-store.js";
-import type { TaskQueueStore } from "./task-queue-store.js";
-import type { TaskDraftStore } from "./task-draft-store.js";
-import type { TaskStore } from "./task-store.js";
-import type { UserStore } from "./user-store.js";
-import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
-import type { GitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
-
-export interface AppStores {
-  taskStore: TaskStore;
-  taskDraftStore: TaskDraftStore;
-  taskQueueStore: TaskQueueStore;
-  githubOutboundQueueStore: GitHubOutboundQueueStore;
-  webhookDeliveryStore: WebhookDeliveryStore;
-  snippetStore: SnippetStore;
-  sequenceStore: SequenceStore;
-  repositoryStore: RepositoryStore;
-  credentialStore: CredentialStore;
-  roleStore: RoleStore;
-  userStore: UserStore;
-  sessionStore: SessionStore;
-  settingsStore: SettingsStore;
-}
-````
-
-## File: apps/server/src/services/create-postgres-stores.ts
-````typescript
-import type { Pool } from "pg";
-import type { EventBus } from "../lib/events.js";
-import type { RedisClients } from "../lib/redis.js";
-import type { AppStores } from "./app-stores.js";
-import { PostgresCredentialStore } from "./credential-store.js";
-import { PostgresRepositoryStore } from "./repository-store.js";
-import { PostgresRoleStore } from "./role-store.js";
-import { RedisSessionStore } from "./session-store.js";
-import { PostgresSettingsStore } from "./settings-store.js";
-import { PostgresSnippetStore } from "./snippet-store.js";
-import { PostgresSequenceStore } from "./sequence-store.js";
-import { RedisTaskQueueStore } from "./task-queue-store.js";
-import { PostgresTaskDraftStore } from "./task-draft-store.js";
-import { PostgresTaskStore } from "./task-store.js";
-import { PostgresUserStore } from "./user-store.js";
-import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
-import { RedisGitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
-
-export const createPostgresStores = (
-  pool: Pool,
-  redisClients: RedisClients,
-  eventBus: EventBus,
-  sessionTtlDays: number
-): AppStores => {
-  const taskStore = new PostgresTaskStore(pool, eventBus);
-  const taskDraftStore = new PostgresTaskDraftStore(pool);
-  const taskQueueStore = new RedisTaskQueueStore(redisClients.command);
-  const githubOutboundQueueStore = new RedisGitHubOutboundQueueStore(redisClients.command);
-  const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
-  const snippetStore = new PostgresSnippetStore(pool, eventBus);
-  const sequenceStore = new PostgresSequenceStore(pool, eventBus);
-  const repositoryStore = new PostgresRepositoryStore(pool, eventBus);
-  const credentialStore = new PostgresCredentialStore(pool);
-  const roleStore = new PostgresRoleStore(pool);
-  const userStore = new PostgresUserStore(pool, roleStore, repositoryStore);
-  const sessionStore = new RedisSessionStore(redisClients.command, sessionTtlDays);
-  const settingsStore = new PostgresSettingsStore(pool, eventBus, credentialStore);
-
-  return {
-    taskStore,
-    taskDraftStore,
-    taskQueueStore,
-    githubOutboundQueueStore,
-    webhookDeliveryStore,
-    snippetStore,
-    sequenceStore,
-    repositoryStore,
-    credentialStore,
-    roleStore,
-    userStore,
-    sessionStore,
-    settingsStore
-  };
-};
-````
-
-## File: apps/server/src/services/task-store.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import type { CreateTaskInput, Repository } from "@agentswarm/shared-types";
-import { RedisTaskStore } from "./task-store.js";
-
-class FakeRedis {
-  private readonly kv = new Map<string, string>();
-  private readonly lists = new Map<string, string[]>();
-  private readonly sets = new Map<string, Set<string>>();
-
-  private getList(key: string): string[] {
-    let current = this.lists.get(key);
-    if (!current) {
-      current = [];
-      this.lists.set(key, current);
-    }
-    return current;
-  }
-
-  private getSet(key: string): Set<string> {
-    let current = this.sets.get(key);
-    if (!current) {
-      current = new Set<string>();
-      this.sets.set(key, current);
-    }
-    return current;
-  }
-
-  private normalizeIndex(length: number, index: number): number {
-    return index < 0 ? Math.max(length + index, 0) : Math.min(index, length);
-  }
-
-  async set(key: string, value: string): Promise<"OK"> {
-    this.kv.set(key, value);
-    return "OK";
-  }
-
-  async get(key: string): Promise<string | null> {
-    return this.kv.get(key) ?? null;
-  }
-
-  async lrange(key: string, start: number, stop: number): Promise<string[]> {
-    const list = this.getList(key);
-    const normalizedStart = this.normalizeIndex(list.length, start);
-    const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
-    if (normalizedStop < normalizedStart) {
-      return [];
-    }
-    return list.slice(normalizedStart, normalizedStop + 1);
-  }
-
-  async rpush(key: string, ...values: string[]): Promise<number> {
-    const list = this.getList(key);
-    list.push(...values);
-    return list.length;
-  }
-
-  async ltrim(key: string, start: number, stop: number): Promise<"OK"> {
-    const list = this.getList(key);
-    const normalizedStart = this.normalizeIndex(list.length, start);
-    const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
-    const next = normalizedStop < normalizedStart ? [] : list.slice(normalizedStart, normalizedStop + 1);
-    this.lists.set(key, next);
-    return "OK";
-  }
-
-  async sadd(key: string, ...members: string[]): Promise<number> {
-    const set = this.getSet(key);
-    let added = 0;
-    for (const member of members) {
-      if (!set.has(member)) {
-        set.add(member);
-        added += 1;
-      }
-    }
-    return added;
-  }
-
-  async smembers(key: string): Promise<string[]> {
-    return [...this.getSet(key)];
-  }
-
-  async del(...keys: string[]): Promise<number> {
-    let deleted = 0;
-    for (const key of keys) {
-      deleted += Number(this.kv.delete(key));
-      deleted += Number(this.lists.delete(key));
-      deleted += Number(this.sets.delete(key));
-    }
-    return deleted;
-  }
-
-  multi(): {
-    set: (key: string, value: string) => unknown;
-    rpush: (key: string, ...values: string[]) => unknown;
-    ltrim: (key: string, start: number, stop: number) => unknown;
-    sadd: (key: string, ...members: string[]) => unknown;
-    del: (...keys: string[]) => unknown;
-    exec: () => Promise<unknown[]>;
-  } {
-    const operations: Array<() => void> = [];
-    const chain = {
-      set: (key: string, value: string) => {
-        operations.push(() => {
-          this.kv.set(key, value);
-        });
-        return chain;
-      },
-      rpush: (key: string, ...values: string[]) => {
-        operations.push(() => {
-          this.getList(key).push(...values);
-        });
-        return chain;
-      },
-      ltrim: (key: string, start: number, stop: number) => {
-        operations.push(() => {
-          const list = this.getList(key);
-          const normalizedStart = this.normalizeIndex(list.length, start);
-          const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
-          this.lists.set(key, normalizedStop < normalizedStart ? [] : list.slice(normalizedStart, normalizedStop + 1));
-        });
-        return chain;
-      },
-      sadd: (key: string, ...members: string[]) => {
-        operations.push(() => {
-          const set = this.getSet(key);
-          for (const member of members) {
-            set.add(member);
-          }
-        });
-        return chain;
-      },
-      del: (...keys: string[]) => {
-        operations.push(() => {
-          for (const key of keys) {
-            this.kv.delete(key);
-            this.lists.delete(key);
-            this.sets.delete(key);
-          }
-        });
-        return chain;
-      },
-      exec: async () => {
-        for (const operation of operations) {
-          operation();
-        }
-        return [] as unknown[];
-      }
-    };
-    return chain;
-  }
-
-  pipeline() {
-    return this.multi();
-  }
-}
-
-const repository: Repository = {
-  id: "repo-1",
-  name: "Repo",
-  url: "https://github.com/example/repo.git",
-  defaultBranch: "main",
-  envVars: [],
-  webhookUrl: null,
-  webhookEnabled: false,
-  webhookSecretConfigured: false,
-  webhookLastAttemptAt: null,
-  webhookLastStatus: null,
-  webhookLastError: null,
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:00.000Z"
-};
-
-const createTaskInput: CreateTaskInput = {
-  title: "Persist context",
-  repoId: repository.id,
-  prompt: "Initial prompt",
-  taskType: "build"
-};
-
-describe("TaskStore.appendMessage", () => {
-  it("persists user messages", async () => {
-    const redis = new FakeRedis();
-    const publishedEvents: unknown[] = [];
-    const taskStore = new RedisTaskStore(redis as never, {
-      publish: async (event: unknown) => {
-        publishedEvents.push(event);
-      }
-    } as never);
-    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
-    await taskStore.appendMessage(task.id, {
-      role: "user",
-      action: "ask",
-      content: "What changed?"
-    });
-
-    const messages = await taskStore.listMessages(task.id);
-    assert.equal(messages.length, 2);
-    assert.equal(messages[1]?.content, "What changed?");
-    assert.equal(messages[1]?.action, "ask");
-    assert.equal(publishedEvents.length, 3);
-  });
-});
-
-describe("TaskStore.createTask", () => {
-  it("creates new build tasks in the build queue", async () => {
-    const redis = new FakeRedis();
-    const taskStore = new RedisTaskStore(redis as never, {
-      publish: async () => {}
-    } as never);
-    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
-
-    assert.equal(task.status, "open");
-    assert.equal(task.executionStatus, "queued");
-    assert.equal(task.executionAction, "build");
-    assert.equal(task.startedAt, null);
-  });
-});
-````
-
-## File: apps/server/src/services/webhook-delivery-service.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
-import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
-import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
-import { WebhookDeliveryService } from "./webhook-delivery-service.js";
-
-class FakeRedis {
-  private readonly kv = new Map<string, string>();
-  private readonly zsets = new Map<string, Map<string, number>>();
-
-  private getZset(key: string): Map<string, number> {
-    let current = this.zsets.get(key);
-    if (!current) {
-      current = new Map<string, number>();
-      this.zsets.set(key, current);
-    }
-    return current;
-  }
-
-  async set(key: string, value: string): Promise<"OK"> {
-    this.kv.set(key, value);
-    return "OK";
-  }
-
-  async get(key: string): Promise<string | null> {
-    return this.kv.get(key) ?? null;
-  }
-
-  async del(...keys: string[]): Promise<number> {
-    let deleted = 0;
-    for (const key of keys) {
-      if (this.kv.delete(key)) {
-        deleted += 1;
-      }
-    }
-    return deleted;
-  }
-
-  async zadd(key: string, score: number, member: string): Promise<number> {
-    this.getZset(key).set(member, score);
-    return 1;
-  }
-
-  async zrem(key: string, member: string): Promise<number> {
-    const zset = this.getZset(key);
-    const existed = zset.delete(member);
-    return existed ? 1 : 0;
-  }
-
-  async zrangebyscore(
-    key: string,
-    min: number,
-    max: number,
-    _limitKeyword?: string,
-    offset?: number,
-    count?: number
-  ): Promise<string[]> {
-    const parsedOffset = Number.isFinite(offset) ? Number(offset) : 0;
-    const parsedCount = Number.isFinite(count) ? Number(count) : Number.MAX_SAFE_INTEGER;
-    return [...this.getZset(key).entries()]
-      .filter(([, score]) => score >= min && score <= max)
-      .sort((a, b) => a[1] - b[1])
-      .slice(parsedOffset, parsedOffset + parsedCount)
-      .map(([member]) => member);
-  }
-
-  multi(): {
-    set: (key: string, value: string) => unknown;
-    zadd: (key: string, score: number, member: string) => unknown;
-    zrem: (key: string, member: string) => unknown;
-    del: (...keys: string[]) => unknown;
-    exec: () => Promise<unknown[]>;
-  } {
-    const operations: Array<() => void> = [];
-    const chain = {
-      set: (key: string, value: string) => {
-        operations.push(() => {
-          this.kv.set(key, value);
-        });
-        return chain;
-      },
-      zadd: (key: string, score: number, member: string) => {
-        operations.push(() => {
-          this.getZset(key).set(member, score);
-        });
-        return chain;
-      },
-      zrem: (key: string, member: string) => {
-        operations.push(() => {
-          this.getZset(key).delete(member);
-        });
-        return chain;
-      },
-      del: (...keys: string[]) => {
-        operations.push(() => {
-          for (const key of keys) {
-            this.kv.delete(key);
-          }
-        });
-        return chain;
-      },
-      exec: async () => {
-        for (const operation of operations) {
-          operation();
-        }
-        return [] as unknown[];
-      }
-    };
-    return chain;
-  }
-}
-
-const baseTask = (): Task => ({
-  id: "task-1",
-  title: "Example task",
-  pinned: false,
-  hasPendingCheckpoint: false,
-  ownerUserId: "user-1",
-  repoId: "repo-1",
-  repoName: "Repo",
-  repoUrl: "https://github.com/example/repo.git",
-  repoDefaultBranch: "main",
-  taskType: "build",
-  provider: "codex",
-  providerProfile: "medium",
-  modelOverride: null,
-  baseBranch: "main",
-  branchStrategy: "feature_branch",
-  complexity: "normal",
-  branchName: "agentswarm/task-1",
-  workspaceBaseRef: null,
-  prompt: "Do it",
-  resultMarkdown: null,
-  executionSummary: "Do it",
-  branchDiff: null,
-  lastAction: "build",
-  status: "build_queued",
-  workflowStatus: "ready",
-  executionStatus: "queued",
-  executionAction: "build",
-  reviewReason: null,
-  logs: [],
-  enqueued: false,
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:00.000Z",
-  startedAt: null,
-  finishedAt: null,
-  errorMessage: null
-});
-
-const baseRepository = (): Repository => ({
-  id: "repo-1",
-  name: "Repo",
-  url: "https://github.com/example/repo.git",
-  defaultBranch: "main",
-  envVars: [],
-  webhookUrl: "https://example.com/webhook",
-  webhookEnabled: true,
-  webhookSecretConfigured: true,
-  webhookLastAttemptAt: null,
-  webhookLastStatus: null,
-  webhookLastError: null,
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:00.000Z"
-});
-
-describe("WebhookDeliveryService", () => {
-  const originalFetch = globalThis.fetch;
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("delivers created events and records successful delivery", async () => {
-    const redis = new FakeRedis();
-    const deliveryResults: Array<{ status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }> = [];
-    const repositoryStore = {
-      getRepositoryWebhookTarget: async () => ({
-        repository: baseRepository(),
-        webhookUrl: "https://example.com/webhook",
-        webhookSecret: "super-secret"
-      }),
-      recordWebhookDeliveryResult: async (
-        _repoId: string,
-        input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
-      ) => {
-        deliveryResults.push(input);
-        return baseRepository();
-      }
-    };
-    const fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
-    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
-      fetchCalls.push({ url: String(url), init });
-      return new Response("ok", { status: 200 });
-    }) as typeof fetch;
-
-    const store = new RedisWebhookDeliveryStore(redis as never);
-    const event: RealtimeEvent = { type: "task:created", payload: baseTask() };
-    const service = new WebhookDeliveryService(store, repositoryStore as never);
-    await service.handleRealtimeEvent(event);
-    await (service as unknown as { processDueJobs: () => Promise<void> }).processDueJobs();
-
-    assert.equal(fetchCalls.length, 1);
-    assert.equal(fetchCalls[0]?.url, "https://example.com/webhook");
-    const headers = fetchCalls[0]?.init?.headers as Record<string, string>;
-    assert.equal(headers["x-agentswarm-event"], "created");
-    assert.equal(typeof headers["x-agentswarm-signature"], "string");
-    assert.equal(deliveryResults.length, 1);
-    assert.equal(deliveryResults[0]?.status, "success");
-  });
-
-  it("queues updated events only when status changes", async () => {
-    const redis = new FakeRedis();
-    const repositoryStore = {
-      getRepositoryWebhookTarget: async () => null,
-      recordWebhookDeliveryResult: async () => null
-    };
-    const store = new RedisWebhookDeliveryStore(redis as never);
-    const service = new WebhookDeliveryService(store, repositoryStore as never);
-    const task = baseTask();
-
-    await service.handleRealtimeEvent({ type: "task:created", payload: task });
-    await service.handleRealtimeEvent({ type: "task:updated", payload: { ...task, updatedAt: "2026-01-01T00:01:00.000Z" } });
-    await service.handleRealtimeEvent({
-      type: "task:updated",
-      payload: {
-        ...task,
-        status: "building",
-        updatedAt: "2026-01-01T00:02:00.000Z"
-      }
-    });
-
-    const queued = await redis.zrangebyscore("agentswarm:webhook_delivery_queue", 0, Number.MAX_SAFE_INTEGER);
-    assert.equal(queued.length, 2);
-  });
-});
-````
-
-## File: apps/web/components/sequence-analytics-tracker.tsx
-````typescript
-"use client";
-
-import { useEffect, useRef } from "react";
-import type { SequenceRun, TaskRun } from "@agentswarm/shared-types";
-import { useSocket } from "../src/hooks/useSocket";
-import { trackEvent } from "../src/utils/analytics";
-import { useAuth } from "./auth-provider";
-
-interface RunSnapshot {
-  status: SequenceRun["status"];
-  failedStepIndex: number | null;
-  waitingForApprovalAfterStepIndex: number | null;
-  stepStates: SequenceRun["steps"][number]["state"][];
-}
-
-export function SequenceAnalyticsTracker() {
-  const socket = useSocket();
-  const { can } = useAuth();
-  const canReadTasks = can("task:read");
-  const snapshotsRef = useRef(new Map<string, RunSnapshot>());
-  const taskRunsByIdRef = useRef(new Map<string, Pick<TaskRun, "action" | "changeOutcome">>());
-
-  useEffect(() => {
-    if (!socket || !canReadTasks) {
-      return;
-    }
-
-    const onRunUpdated = (run: SequenceRun) => {
-      const previous = snapshotsRef.current.get(run.id);
-      const currentStepStates = run.steps.map((step) => step.state);
-
-      if (!previous && run.status === "running") {
-        trackEvent("sequence_run_started", { step_count: run.stepCount });
-      }
-
-      run.steps.forEach((step, index) => {
-        const previousState = previous?.stepStates[index];
-        if (step.state === "succeeded" && previousState !== "succeeded") {
-          trackEvent("sequence_step_completed", {
-            step_count: run.stepCount,
-            step_index: index
-          });
-
-          const taskRunId = step.taskRunId?.trim();
-          const taskRun = taskRunId ? taskRunsByIdRef.current.get(taskRunId) : undefined;
-          const nextStepIndex = index + 1;
-          if (taskRun?.action === "build" && taskRun.changeOutcome === "no_change") {
-            trackEvent("sequence_no_change", {
-              step_count: run.stepCount,
-              step_index: index
-            });
-          }
-          if (nextStepIndex < run.stepCount && run.executionMode === "auto_apply_changes") {
-            trackEvent("sequence_auto_advanced", {
-              step_count: run.stepCount,
-              from_step_index: index,
-              to_step_index: nextStepIndex
-            });
-          }
-        }
-
-        if (step.state === "failed" && previousState !== "failed") {
-          trackEvent("sequence_step_failed", {
-            step_count: run.stepCount,
-            failed_step_index: index
-          });
-        }
-      });
-
-      if (run.status === "failed" && previous?.status !== "failed") {
-        const failedStep = run.failedStepIndex !== null ? run.steps[run.failedStepIndex] : null;
-        trackEvent("sequence_stalled", {
-          step_count: run.stepCount,
-          failed_step_index: run.failedStepIndex,
-          reason: failedStep?.errorMessage ?? null
-        });
-        trackEvent("sequence_run_failed", {
-          step_count: run.stepCount,
-          failed_step_index: run.failedStepIndex
-        });
-      }
-
-      if (run.status === "succeeded" && previous?.status !== "succeeded") {
-        trackEvent("sequence_run_succeeded", { step_count: run.stepCount });
-      }
-
-      if (run.status === "waiting_for_approval" && previous?.status !== "waiting_for_approval") {
-        trackEvent("sequence_paused_for_approval", {
-          step_count: run.stepCount,
-          after_step_index: run.waitingForApprovalAfterStepIndex
-        });
-      }
-
-      if (run.status === "running" && previous?.status === "waiting_for_approval") {
-        trackEvent("sequence_resumed", {
-          step_count: run.stepCount,
-          after_step_index: previous.waitingForApprovalAfterStepIndex
-        });
-      }
-
-      snapshotsRef.current.set(run.id, {
-        status: run.status,
-        failedStepIndex: run.failedStepIndex,
-        waitingForApprovalAfterStepIndex: run.waitingForApprovalAfterStepIndex,
-        stepStates: currentStepStates
-      });
-    };
-    const onTaskRunUpdated = (run: TaskRun) => {
-      taskRunsByIdRef.current.set(run.id, {
-        action: run.action,
-        changeOutcome: run.changeOutcome ?? null
-      });
-    };
-
-    socket.on("sequence:run_updated", onRunUpdated);
-    socket.on("task:run_updated", onTaskRunUpdated);
-    return () => {
-      socket.off("sequence:run_updated", onRunUpdated);
-      socket.off("task:run_updated", onTaskRunUpdated);
-    };
-  }, [socket, canReadTasks]);
-
-  return null;
 }
 ````
 
@@ -30099,6 +30066,39 @@ export async function orchestrateTaskActionStart(
   }
 
   return { ok: true };
+}
+````
+
+## File: apps/server/src/services/app-stores.ts
+````typescript
+import type { CredentialStore } from "./credential-store.js";
+import type { RepositoryStore } from "./repository-store.js";
+import type { RoleStore } from "./role-store.js";
+import type { SessionStore } from "./session-store.js";
+import type { SettingsStore } from "./settings-store.js";
+import type { SnippetStore } from "./snippet-store.js";
+import type { SequenceStore } from "./sequence-store.js";
+import type { TaskQueueStore } from "./task-queue-store.js";
+import type { TaskDraftStore } from "./task-draft-store.js";
+import type { TaskStore } from "./task-store.js";
+import type { UserStore } from "./user-store.js";
+import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
+import type { GitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
+
+export interface AppStores {
+  taskStore: TaskStore;
+  taskDraftStore: TaskDraftStore;
+  taskQueueStore: TaskQueueStore;
+  githubOutboundQueueStore: GitHubOutboundQueueStore;
+  webhookDeliveryStore: WebhookDeliveryStore;
+  snippetStore: SnippetStore;
+  sequenceStore: SequenceStore;
+  repositoryStore: RepositoryStore;
+  credentialStore: CredentialStore;
+  roleStore: RoleStore;
+  userStore: UserStore;
+  sessionStore: SessionStore;
+  settingsStore: SettingsStore;
 }
 ````
 
@@ -32379,114 +32379,6 @@ export function buildTaskHistoryEntries(input: {
 }
 ````
 
-## File: AGENTS.md
-````markdown
-# Agent Harness Guide
-
-This file is a short operating guide for coding agents in this repository.
-
-## Start Here
-- If `REMOTE_BUILD=1`, export `REMOTE_BUILD_IMAGE` first.
-- Run `./scripts/harness/doctor.sh`
-- Run `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh` on clean checkout
-- Run `./scripts/harness/check-human-gated-flow.sh`
-- Run `./scripts/harness/check.sh`
-- Run `./scripts/harness/test.sh` (canonical test command)
-- Run `./scripts/harness/start.sh` (foreground dev mode)
-
-## Expected PR Workflow
-1. Run `./scripts/harness/pr-ready.sh`.
-2. Fix any failing checks.
-3. Complete the agent self-review checklist: `docs/development/agent-review.md`.
-4. Open a PR using `.github/pull_request_template.md`.
-5. Confirm docs are updated when behavior changes.
-
-Note:
-- `pr-ready.sh` includes architecture boundary checks.
-- `test.sh` supports `TEST_SCOPE=unit|integration|e2e|all`.
-
-## Documentation Table of Contents
-- [Architecture Summary](ARCHITECTURE.md)
-- [Docs Home](docs/index.md)
-- [Development Setup](docs/development/setup.md)
-- [Development Commands](docs/development/commands.md)
-- [Human-Gated Flow](docs/development/human-gated-taskwise-delivery-flow.md)
-- [Testing](docs/development/testing.md)
-- [Debugging](docs/development/debugging.md)
-- [Agent Self-Review](docs/development/agent-review.md)
-- [PR Workflow](docs/development/pr-workflow.md)
-- [Architecture Docs](docs/architecture/index.md)
-- [Product Docs](docs/product/index.md)
-- [Quality Docs](docs/quality/scorecard.md)
-- [Golden Principles](docs/quality/golden-principles.md)
-
-## Execution Plans
-- Small tasks can use inline plans in the task conversation.
-- Non-trivial tasks must use the Non-Trivial Task Flow below.
-- Complex tasks must create an execution plan using `docs/exec-plans/template.md`.
-- Plans must be updated during work as steps complete or scope changes.
-- Completed plans move from `docs/exec-plans/active/` to `docs/exec-plans/completed/`.
-- Complex task plans must include the required `Human-Gated Flow Evidence` checklist from the template.
-- Flow reference: `docs/development/human-gated-taskwise-delivery-flow.md`.
-
-## Non-Trivial Task Flow
-Use this flow for any task that requires repository changes beyond a tiny, obvious edit, touches multiple files, changes behavior, affects tests or build output, or has ambiguous requirements.
-
-```mermaid
-flowchart TB
-    A["Read Requirements"] --> B["Quick Repo Research"]
-    B --> C{"Clear Enough?"}
-    C -- No --> D["Ask Clarifying Questions"]
-    D --> A
-    C -- Yes --> E["Create Short Plan + Task List"]
-    E --> F["Human Review / Approval"]
-    F --> G{"Approved?"}
-    G -- No --> A
-    G -- Yes --> H["Run Baseline Checks"]
-    H --> I["Implement Next Task"]
-    I --> J["Run Tests / Build"]
-    J --> K{"Passed?"}
-    K -- No --> I
-    K -- Yes --> L["Self Review"]
-    L --> M{"More Tasks?"}
-    M -- Yes --> I
-    M -- No --> N["Final Verification"]
-    N --> R["Complete"]
-```
-
-## Operating Rules
-- Prefer harness scripts in `scripts/harness/`.
-- Treat non-zero exit codes as failures.
-- Do not assume behavior that is not documented in this repository.
-- Mark missing evidence as `TODO` instead of guessing.
-- Before starting work, inspect `docs/repomix.md` for the current repository context bundle.
-- After any agent run that changes code or repository files, execute `npx repomix --style markdown --output docs/repomix.md` to refresh the repository context bundle.
-- Keep `docs/repomix.md` as the canonical Repomix output referenced by agents.
-
-## Remote Build Runner
-Use `http://host.docker.internal:38127` and call `POST /run` with:
-- `image`
-- `workdir`
-- `cmd` (non-empty string array, for example `["sh","-lc","echo ok"]`)
-
-For `workdir`, prefer `TASK_WORKSPACE_PATH`.
-
-Runner mount support:
-- `dockerSocketContainerPath`: `/var/run/docker.sock` (available for mounting Docker into the runner container)
-
-Harness remote mode:
-- Set `REMOTE_BUILD=1` to force harness scripts to run in Remote Build Runner.
-- Set `REMOTE_BUILD_IMAGE` to the container image used by the runner request.
-- Optional: set `REMOTE_BUILD_RUNNER_URL` (defaults to `http://host.docker.internal:38127`).
-- Harness scripts auto-route to `POST /run` before local execution when remote mode is enabled.
-- Set `REMOTE_BUILD=0` (or unset it) to run harness scripts locally.
-- Use a remote image that has: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
-- `test.sh` auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`) for browser E2E when the remote runner cannot launch Playwright locally.
-
-## Sync Policy Reference
-- GitHub sync ownership and conflict policy: [docs/github-sync-ownership-model.md](docs/github-sync-ownership-model.md)
-````
-
 ## File: apps/server/src/db/backfill-redis-to-postgres.ts
 ````typescript
 import type Redis from "ioredis";
@@ -34385,712 +34277,6 @@ describe("SequenceExecutionService", () => {
 });
 ````
 
-## File: apps/server/src/services/settings-store.ts
-````typescript
-import { randomUUID } from "node:crypto";
-import type Redis from "ioredis";
-import type { Pool } from "pg";
-import type {
-  AgentProvider,
-  AgentResponsePreference,
-  AudienceType,
-  SystemDataStores,
-  McpServerConfig,
-  ProviderProfile,
-  WorkspaceProvisioningMode,
-  ResponsePreferencePreset,
-  ResponsePreferencePresetInput,
-  SystemSettings,
-  UserNotes,
-  UpdateCredentialSettingsInput,
-  UpdateSettingsInput
-} from "@agentswarm/shared-types";
-import { EventBus } from "../lib/events.js";
-import { normalizeProvider, DEFAULT_PROVIDER, normalizeProviderProfile } from "../lib/provider-config.js";
-import { defaultModelForProvider } from "../lib/provider-config.js";
-import type { CredentialStore, RuntimeCredentials } from "./credential-store.js";
-
-const SETTINGS_KEY = "agentswarm:settings";
-const USER_NOTES_KEY_PREFIX = "agentswarm:user-notes:";
-const SYSTEM_RESPONSE_PREFERENCE_PRESET_ID = "neutral";
-
-const DEFAULT_CODEX_EFFORT: ProviderProfile = "high";
-const DEFAULT_CLAUDE_EFFORT: ProviderProfile = "high";
-const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
-
-const nowIso = (): string => new Date().toISOString();
-
-const buildSystemResponsePreferencePreset = (): ResponsePreferencePreset => ({
-  id: SYSTEM_RESPONSE_PREFERENCE_PRESET_ID,
-  name: "Neutral",
-  description: "No tailored response style. The agent responds normally.",
-  preference: DEFAULT_AGENT_RESPONSE_PREFERENCE,
-  isSystem: true,
-  createdAt: "2026-05-07T00:00:00.000Z",
-  updatedAt: "2026-05-07T00:00:00.000Z"
-});
-
-const buildSystemDataStores = (): SystemDataStores => ({
-  taskStore: "postgres",
-  snippetStore: "postgres",
-  sequenceStore: "postgres",
-  repositoryStore: "postgres",
-  credentialStore: "postgres",
-  roleStore: "postgres",
-  userStore: "postgres",
-  settingsStore: "postgres",
-  taskQueueStore: "redis",
-  webhookDeliveryStore: "redis",
-  sessionStore: "redis",
-  eventBus: "redis"
-});
-
-const defaultSettings: SystemSettings = {
-  defaultProvider: DEFAULT_PROVIDER,
-  maxAgents: 2,
-  branchPrefix: "agentswarm",
-  workspaceProvisioningMode: "clone_only",
-  gitUsername: "x-access-token",
-  mcpServers: [],
-  openaiBaseUrl: null,
-  taskPromptMagicModel: "gpt-5.4-mini",
-  taskPromptMagicTemplate:
-    "You are an expert prompt editor for software engineering tasks.\nRewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.\n\nRequirements:\n- Preserve intent and constraints.\n- Make it specific and actionable.\n- Include acceptance criteria when implied.\n- Avoid changing requested scope.\n- Return plain text only, no markdown fences.\n\nUser request:\n{{user_request}}\n",
-  githubTokenConfigured: false,
-  openaiApiKeyConfigured: false,
-  anthropicApiKeyConfigured: false,
-  codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.4",
-  codexDefaultEffort: DEFAULT_CODEX_EFFORT,
-  claudeDefaultModel: defaultModelForProvider("claude", DEFAULT_CLAUDE_EFFORT) ?? "claude-sonnet-4-5",
-  claudeDefaultEffort: DEFAULT_CLAUDE_EFFORT,
-  responsePreferencePresets: [buildSystemResponsePreferencePreset()],
-  dataStores: buildSystemDataStores()
-};
-
-const normalizeBranchPrefix = (value: string | undefined): string => {
-  const cleaned = (value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9/_-]+/g, "-")
-    .replace(/\/+/g, "/")
-    .replace(/^\/+|\/+$/g, "");
-
-  return cleaned || defaultSettings.branchPrefix;
-};
-
-const normalizeGitUsername = (value: string | undefined): string => {
-  const cleaned = (value ?? "").trim();
-  return cleaned || defaultSettings.gitUsername;
-};
-
-const normalizeDefaultProvider = (value: AgentProvider | string | undefined): AgentProvider =>
-  normalizeProvider(value ?? defaultSettings.defaultProvider);
-
-const normalizeWorkspaceProvisioningMode = (value: WorkspaceProvisioningMode | string | undefined): WorkspaceProvisioningMode =>
-  value === "hybrid" ? "hybrid" : "clone_only";
-
-const normalizeMcpServerName = (value: string | undefined): string =>
-  (value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-const normalizeMcpServerArgs = (value: string[] | undefined): string[] =>
-  (value ?? []).map((item) => item.trim()).filter(Boolean);
-
-const MCP_BEARER_TOKEN_ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-const normalizeMcpBearerTokenEnvVar = (value: string | null | undefined): string | null => {
-  const trimmed = value?.trim() ?? "";
-  if (!trimmed || !MCP_BEARER_TOKEN_ENV_VAR_PATTERN.test(trimmed)) {
-    return null;
-  }
-  return trimmed;
-};
-
-const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerConfig[] => {
-  const normalized: McpServerConfig[] = [];
-  const seenNames = new Set<string>();
-
-  for (const server of value ?? []) {
-    const name = normalizeMcpServerName(server.name);
-    if (!name || seenNames.has(name)) {
-      continue;
-    }
-
-    const transport = server.transport === "http" ? "http" : "stdio";
-    const baseServer: McpServerConfig = {
-      name,
-      enabled: server.enabled !== false,
-      transport
-    };
-
-    if (transport === "http") {
-      const url = server.url?.trim() || null;
-      if (!url) {
-        continue;
-      }
-
-      normalized.push({
-        ...baseServer,
-        url,
-        bearerTokenEnvVar: normalizeMcpBearerTokenEnvVar(server.bearerTokenEnvVar)
-      });
-    } else {
-      const command = server.command?.trim() || null;
-      if (!command) {
-        continue;
-      }
-
-      normalized.push({
-        ...baseServer,
-        command,
-        args: normalizeMcpServerArgs(server.args)
-      });
-    }
-
-    seenNames.add(name);
-  }
-
-  return normalized;
-};
-
-const normalizeResponsePreferencePresetName = (value: string | undefined): string =>
-  (value ?? "").trim().replace(/\s+/g, " ");
-
-const normalizeResponsePreferencePresetDescription = (value: string | undefined): string => (value ?? "").trim();
-
-const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
-const RESPONSE_EXPLANATION_DEPTH = new Set(["one_line", "brief", "standard", "detailed", "deep_dive"]);
-const RESPONSE_JARGON_LEVEL = new Set(["avoid", "balanced", "expert"]);
-const RESPONSE_CODE_PREFERENCE = new Set(["only_when_needed", "prefer_examples", "avoid_code"]);
-const RESPONSE_CLARIFY_BEHAVIOR = new Set(["ask_when_ambiguous", "make_reasonable_assumptions"]);
-const RESPONSE_FORMATTING_STYLE = new Set(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]);
-
-const normalizeAgentResponsePreference = (
-  value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined
-): AgentResponsePreference => ({
-  audience: (() => {
-    if (typeof value?.audience === "string" && RESPONSE_AUDIENCES.has(value.audience as AudienceType)) {
-      return value.audience as AudienceType;
-    }
-    if ((value as { style?: string } | undefined)?.style === "technical" || (value as { style?: string } | undefined)?.style === "non_technical") {
-      return (value as { style?: AudienceType }).style;
-    }
-    return undefined;
-  })(),
-  explanationDepth:
-    typeof value?.explanationDepth === "string" && RESPONSE_EXPLANATION_DEPTH.has(value.explanationDepth)
-      ? value.explanationDepth
-      : undefined,
-  jargonLevel:
-    typeof value?.jargonLevel === "string" && RESPONSE_JARGON_LEVEL.has(value.jargonLevel)
-      ? value.jargonLevel
-      : undefined,
-  codePreference:
-    typeof value?.codePreference === "string" && RESPONSE_CODE_PREFERENCE.has(value.codePreference)
-      ? value.codePreference
-      : undefined,
-  clarifyBehavior:
-    typeof value?.clarifyBehavior === "string" && RESPONSE_CLARIFY_BEHAVIOR.has(value.clarifyBehavior)
-      ? value.clarifyBehavior
-      : undefined,
-  formattingStyle:
-    typeof value?.formattingStyle === "string" && RESPONSE_FORMATTING_STYLE.has(value.formattingStyle)
-      ? value.formattingStyle
-      : undefined,
-  extraInstructions: value?.extraInstructions?.trim() || undefined
-});
-
-const normalizeResponsePreferencePresets = (
-  value: ResponsePreferencePresetInput[] | ResponsePreferencePreset[] | undefined
-): ResponsePreferencePreset[] => {
-  const systemPreset = buildSystemResponsePreferencePreset();
-  const presets: ResponsePreferencePreset[] = [];
-  const seenIds = new Set<string>([systemPreset.id]);
-  const seenNames = new Set<string>([systemPreset.name.toLowerCase()]);
-
-  for (const rawPreset of value ?? []) {
-    const presetId = typeof rawPreset.id === "string" && rawPreset.id.trim() ? rawPreset.id.trim() : randomUUID();
-    if (presetId === systemPreset.id || seenIds.has(presetId)) {
-      continue;
-    }
-
-    const name = normalizeResponsePreferencePresetName(rawPreset.name);
-    const normalizedNameKey = name.toLowerCase();
-    if (!name || seenNames.has(normalizedNameKey)) {
-      continue;
-    }
-
-    presets.push({
-      id: presetId,
-      name,
-      description: normalizeResponsePreferencePresetDescription(rawPreset.description),
-      preference: normalizeAgentResponsePreference(rawPreset.preference),
-      isSystem: false,
-      createdAt: "createdAt" in rawPreset && typeof rawPreset.createdAt === "string" ? rawPreset.createdAt : nowIso(),
-      updatedAt: nowIso()
-    });
-    seenIds.add(presetId);
-    seenNames.add(normalizedNameKey);
-  }
-
-  return [systemPreset, ...presets].sort((left, right) => {
-    if (left.isSystem !== right.isSystem) {
-      return left.isSystem ? -1 : 1;
-    }
-    return left.name.localeCompare(right.name);
-  });
-};
-
-export interface SettingsRuntimeCredentials extends RuntimeCredentials {
-  gitUsername: string;
-  openaiBaseUrl: string | null;
-  defaultProvider: AgentProvider;
-}
-
-export interface SettingsStore {
-  getSettings(): Promise<SystemSettings>;
-  updateSettings(input: UpdateSettingsInput): Promise<SystemSettings>;
-  updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings>;
-  getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials>;
-  getUserNotes(userId: string): Promise<UserNotes>;
-  updateUserNotes(userId: string, notes: string): Promise<UserNotes>;
-}
-
-export class RedisSettingsStore implements SettingsStore {
-  constructor(
-    private readonly redis: Redis,
-    private readonly eventBus: EventBus,
-    private readonly credentialStore: CredentialStore
-  ) {}
-
-  private async publishSettings(settings: SystemSettings): Promise<void> {
-    await this.eventBus.publish({ type: "settings:updated", payload: settings });
-  }
-
-  async getSettings(): Promise<SystemSettings> {
-    const raw = await this.redis.get(SETTINGS_KEY);
-    if (!raw) {
-      const baseSettings = {
-        defaultProvider: defaultSettings.defaultProvider,
-        maxAgents: defaultSettings.maxAgents,
-        branchPrefix: defaultSettings.branchPrefix,
-        workspaceProvisioningMode: defaultSettings.workspaceProvisioningMode,
-        gitUsername: defaultSettings.gitUsername,
-        mcpServers: defaultSettings.mcpServers,
-        openaiBaseUrl: defaultSettings.openaiBaseUrl,
-        taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
-        taskPromptMagicTemplate: defaultSettings.taskPromptMagicTemplate,
-        codexDefaultModel: defaultSettings.codexDefaultModel,
-        codexDefaultEffort: defaultSettings.codexDefaultEffort,
-        claudeDefaultModel: defaultSettings.claudeDefaultModel,
-        claudeDefaultEffort: defaultSettings.claudeDefaultEffort,
-        responsePreferencePresets: defaultSettings.responsePreferencePresets
-      };
-      await this.redis.set(SETTINGS_KEY, JSON.stringify(baseSettings));
-    }
-
-    const parsed = raw ? (JSON.parse(raw) as Partial<SystemSettings> & { agentRules?: string; autoModeEnabled?: boolean }) : {};
-    const normalizedBase = {
-      defaultProvider: normalizeDefaultProvider(parsed.defaultProvider),
-      maxAgents: parsed.maxAgents ?? defaultSettings.maxAgents,
-      branchPrefix: normalizeBranchPrefix(parsed.branchPrefix),
-      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(parsed.workspaceProvisioningMode),
-      gitUsername: normalizeGitUsername(parsed.gitUsername),
-      mcpServers: normalizeMcpServers(parsed.mcpServers),
-      openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null,
-      taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
-      taskPromptMagicTemplate: parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate,
-      codexDefaultModel: parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel,
-      codexDefaultEffort: normalizeProviderProfile(parsed.codexDefaultEffort) ?? defaultSettings.codexDefaultEffort,
-      claudeDefaultModel: parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(parsed.claudeDefaultEffort) ?? defaultSettings.claudeDefaultEffort,
-      responsePreferencePresets: normalizeResponsePreferencePresets(parsed.responsePreferencePresets)
-    };
-
-    if (
-      Object.prototype.hasOwnProperty.call(parsed, "autoModeEnabled") ||
-      Object.prototype.hasOwnProperty.call(parsed, "agentRules") ||
-      parsed.defaultProvider !== normalizedBase.defaultProvider ||
-      parsed.maxAgents !== normalizedBase.maxAgents ||
-      parsed.branchPrefix !== normalizedBase.branchPrefix ||
-      parsed.workspaceProvisioningMode !== normalizedBase.workspaceProvisioningMode ||
-      parsed.gitUsername !== normalizedBase.gitUsername ||
-      JSON.stringify(parsed.mcpServers ?? []) !== JSON.stringify(normalizedBase.mcpServers) ||
-      (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl ||
-      (parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel) !== normalizedBase.taskPromptMagicModel ||
-      (parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate) !== normalizedBase.taskPromptMagicTemplate ||
-      JSON.stringify(parsed.responsePreferencePresets ?? []) !== JSON.stringify(normalizedBase.responsePreferencePresets)
-    ) {
-      await this.redis.set(SETTINGS_KEY, JSON.stringify(normalizedBase));
-    }
-
-    const credentialStatus = await this.credentialStore.getCredentialStatus();
-    return {
-      ...normalizedBase,
-      ...credentialStatus,
-      dataStores: buildSystemDataStores()
-    };
-  }
-
-  async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
-    const current = await this.getSettings();
-    const nextBase = {
-      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
-      maxAgents: input.maxAgents ?? current.maxAgents,
-      branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
-      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
-        input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
-      ),
-      gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
-      mcpServers:
-        input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
-      openaiBaseUrl:
-        input.openaiBaseUrl === undefined
-          ? current.openaiBaseUrl
-          : input.openaiBaseUrl?.trim()
-            ? input.openaiBaseUrl.trim()
-            : null,
-      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
-      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
-      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
-      codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
-      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
-      responsePreferencePresets:
-        input.responsePreferencePresets === undefined
-          ? current.responsePreferencePresets
-          : normalizeResponsePreferencePresets(input.responsePreferencePresets)
-    };
-
-    await this.redis.set(SETTINGS_KEY, JSON.stringify(nextBase));
-    const next = await this.getSettings();
-    await this.publishSettings(next);
-    return next;
-  }
-
-  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings> {
-    await this.credentialStore.updateCredentials(input);
-    const settings = await this.getSettings();
-    await this.publishSettings(settings);
-    return settings;
-  }
-
-  async getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials> {
-    const [credentials, settings] = await Promise.all([
-      this.credentialStore.getCredentials(),
-      this.getSettings()
-    ]);
-    const codexAuthJson = userId?.trim()
-      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
-      : null;
-
-    return {
-      ...credentials,
-      codexAuthJson: codexAuthJson || null,
-      gitUsername: settings.gitUsername,
-      openaiBaseUrl: settings.openaiBaseUrl,
-      defaultProvider: settings.defaultProvider
-    };
-  }
-
-  async getUserNotes(userId: string): Promise<UserNotes> {
-    const key = `${USER_NOTES_KEY_PREFIX}${userId}`;
-    const raw = await this.redis.get(key);
-    if (!raw) {
-      const initial: UserNotes = { notes: "", updatedAt: nowIso() };
-      await this.redis.set(key, JSON.stringify(initial));
-      return initial;
-    }
-
-    const parsed = JSON.parse(raw) as Partial<UserNotes> | null;
-    return {
-      notes: typeof parsed?.notes === "string" ? parsed.notes : "",
-      updatedAt: typeof parsed?.updatedAt === "string" && parsed.updatedAt.trim().length > 0 ? parsed.updatedAt : nowIso()
-    };
-  }
-
-  async updateUserNotes(userId: string, notes: string): Promise<UserNotes> {
-    const key = `${USER_NOTES_KEY_PREFIX}${userId}`;
-    const next: UserNotes = {
-      notes,
-      updatedAt: nowIso()
-    };
-    await this.redis.set(key, JSON.stringify(next));
-    return next;
-  }
-}
-
-export class PostgresSettingsStore implements SettingsStore {
-  constructor(
-    private readonly pool: Pool,
-    private readonly eventBus: EventBus,
-    private readonly credentialStore: CredentialStore
-  ) {}
-
-  private async publishSettings(settings: SystemSettings): Promise<void> {
-    await this.eventBus.publish({ type: "settings:updated", payload: settings });
-  }
-
-  private async ensureBaseSettingsRow(): Promise<void> {
-    await this.pool.query(
-      `
-        INSERT INTO system_settings (
-          singleton_id,
-          default_provider,
-          max_agents,
-          branch_prefix,
-          workspace_provisioning_mode,
-          git_username,
-          mcp_servers,
-          openai_base_url,
-          task_prompt_magic_model,
-          task_prompt_magic_template,
-          codex_default_model,
-          codex_default_effort,
-          claude_default_model,
-          claude_default_effort,
-          response_preference_presets
-        )
-        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
-        ON CONFLICT (singleton_id) DO NOTHING
-      `,
-      [
-        defaultSettings.defaultProvider,
-        defaultSettings.maxAgents,
-        defaultSettings.branchPrefix,
-        defaultSettings.workspaceProvisioningMode,
-        defaultSettings.gitUsername,
-        JSON.stringify(defaultSettings.mcpServers),
-        defaultSettings.openaiBaseUrl,
-        defaultSettings.taskPromptMagicModel,
-        defaultSettings.taskPromptMagicTemplate,
-        defaultSettings.codexDefaultModel,
-        defaultSettings.codexDefaultEffort,
-        defaultSettings.claudeDefaultModel,
-        defaultSettings.claudeDefaultEffort,
-        JSON.stringify(defaultSettings.responsePreferencePresets)
-      ]
-    );
-  }
-
-  async getSettings(): Promise<SystemSettings> {
-    await this.ensureBaseSettingsRow();
-    const result = await this.pool.query(
-      `
-        SELECT
-          default_provider,
-          max_agents,
-          branch_prefix,
-          workspace_provisioning_mode,
-          git_username,
-          mcp_servers,
-          openai_base_url,
-          task_prompt_magic_model,
-          task_prompt_magic_template,
-          codex_default_model,
-          codex_default_effort,
-          claude_default_model,
-          claude_default_effort,
-          response_preference_presets
-        FROM system_settings
-        WHERE singleton_id = 1
-      `
-    );
-    const row = result.rows[0];
-    const normalizedBase = {
-      defaultProvider: normalizeDefaultProvider(row?.default_provider),
-      maxAgents: typeof row?.max_agents === "number" ? row.max_agents : defaultSettings.maxAgents,
-      branchPrefix: normalizeBranchPrefix(typeof row?.branch_prefix === "string" ? row.branch_prefix : undefined),
-      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(row?.workspace_provisioning_mode),
-      gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
-      mcpServers: normalizeMcpServers(Array.isArray(row?.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined),
-      openaiBaseUrl: typeof row?.openai_base_url === "string" && row.openai_base_url.trim().length > 0 ? row.openai_base_url.trim() : null,
-      taskPromptMagicModel:
-        typeof row?.task_prompt_magic_model === "string" && row.task_prompt_magic_model.trim().length > 0
-          ? row.task_prompt_magic_model.trim()
-          : defaultSettings.taskPromptMagicModel,
-      taskPromptMagicTemplate:
-        typeof row?.task_prompt_magic_template === "string" && row.task_prompt_magic_template.trim().length > 0
-          ? row.task_prompt_magic_template.trim()
-          : defaultSettings.taskPromptMagicTemplate,
-      codexDefaultModel:
-        typeof row?.codex_default_model === "string" && row.codex_default_model.trim().length > 0
-          ? row.codex_default_model.trim()
-          : defaultSettings.codexDefaultModel,
-      codexDefaultEffort: normalizeProviderProfile(row?.codex_default_effort) ?? defaultSettings.codexDefaultEffort,
-      claudeDefaultModel:
-        typeof row?.claude_default_model === "string" && row.claude_default_model.trim().length > 0
-          ? row.claude_default_model.trim()
-          : defaultSettings.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(row?.claude_default_effort) ?? defaultSettings.claudeDefaultEffort,
-      responsePreferencePresets: normalizeResponsePreferencePresets(
-        Array.isArray(row?.response_preference_presets) ? (row.response_preference_presets as ResponsePreferencePreset[]) : undefined
-      )
-    };
-
-    const credentialStatus = await this.credentialStore.getCredentialStatus();
-    return {
-      ...normalizedBase,
-      ...credentialStatus,
-      dataStores: buildSystemDataStores()
-    };
-  }
-
-  async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
-    const current = await this.getSettings();
-    const nextBase = {
-      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
-      maxAgents: input.maxAgents ?? current.maxAgents,
-      branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
-      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
-        input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
-      ),
-      gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
-      mcpServers: input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
-      openaiBaseUrl:
-        input.openaiBaseUrl === undefined
-          ? current.openaiBaseUrl
-          : input.openaiBaseUrl?.trim()
-            ? input.openaiBaseUrl.trim()
-            : null,
-      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
-      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
-      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
-      codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
-      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
-      responsePreferencePresets:
-        input.responsePreferencePresets === undefined
-          ? current.responsePreferencePresets
-          : normalizeResponsePreferencePresets(input.responsePreferencePresets)
-    };
-
-    await this.pool.query(
-      `
-        INSERT INTO system_settings (
-          singleton_id,
-          default_provider,
-          max_agents,
-          branch_prefix,
-          workspace_provisioning_mode,
-          git_username,
-          mcp_servers,
-          openai_base_url,
-          task_prompt_magic_model,
-          task_prompt_magic_template,
-          codex_default_model,
-          codex_default_effort,
-          claude_default_model,
-          claude_default_effort,
-          response_preference_presets
-        )
-        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
-        ON CONFLICT (singleton_id) DO UPDATE
-        SET
-          default_provider = EXCLUDED.default_provider,
-          max_agents = EXCLUDED.max_agents,
-          branch_prefix = EXCLUDED.branch_prefix,
-          workspace_provisioning_mode = EXCLUDED.workspace_provisioning_mode,
-          git_username = EXCLUDED.git_username,
-          mcp_servers = EXCLUDED.mcp_servers,
-          openai_base_url = EXCLUDED.openai_base_url,
-          task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
-          task_prompt_magic_template = EXCLUDED.task_prompt_magic_template,
-          codex_default_model = EXCLUDED.codex_default_model,
-          codex_default_effort = EXCLUDED.codex_default_effort,
-          claude_default_model = EXCLUDED.claude_default_model,
-          claude_default_effort = EXCLUDED.claude_default_effort,
-          response_preference_presets = EXCLUDED.response_preference_presets
-      `,
-      [
-        nextBase.defaultProvider,
-        nextBase.maxAgents,
-        nextBase.branchPrefix,
-        nextBase.workspaceProvisioningMode,
-        nextBase.gitUsername,
-        JSON.stringify(nextBase.mcpServers),
-        nextBase.openaiBaseUrl,
-        nextBase.taskPromptMagicModel,
-        nextBase.taskPromptMagicTemplate,
-        nextBase.codexDefaultModel,
-        nextBase.codexDefaultEffort,
-        nextBase.claudeDefaultModel,
-        nextBase.claudeDefaultEffort,
-        JSON.stringify(nextBase.responsePreferencePresets)
-      ]
-    );
-    const next = await this.getSettings();
-    await this.publishSettings(next);
-    return next;
-  }
-
-  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings> {
-    await this.credentialStore.updateCredentials(input);
-    const settings = await this.getSettings();
-    await this.publishSettings(settings);
-    return settings;
-  }
-
-  async getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials> {
-    const [credentials, settings] = await Promise.all([
-      this.credentialStore.getCredentials(),
-      this.getSettings()
-    ]);
-    const codexAuthJson = userId?.trim()
-      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
-      : null;
-
-    return {
-      ...credentials,
-      codexAuthJson: codexAuthJson || null,
-      gitUsername: settings.gitUsername,
-      openaiBaseUrl: settings.openaiBaseUrl,
-      defaultProvider: settings.defaultProvider
-    };
-  }
-
-  async getUserNotes(userId: string): Promise<UserNotes> {
-    const result = await this.pool.query(
-      `
-        SELECT notes, updated_at
-        FROM user_notes
-        WHERE user_id = $1
-      `,
-      [userId]
-    );
-    const row = result.rows[0];
-    return {
-      notes: typeof row?.notes === "string" ? row.notes : "",
-      updatedAt:
-        typeof row?.updated_at === "string" && row.updated_at.trim().length > 0
-          ? row.updated_at
-          : nowIso()
-    };
-  }
-
-  async updateUserNotes(userId: string, notes: string): Promise<UserNotes> {
-    const next: UserNotes = {
-      notes,
-      updatedAt: nowIso()
-    };
-    await this.pool.query(
-      `
-        INSERT INTO user_notes (user_id, notes, updated_at)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (user_id) DO UPDATE
-        SET notes = EXCLUDED.notes, updated_at = EXCLUDED.updated_at
-      `,
-      [userId, next.notes, next.updatedAt]
-    );
-    return next;
-  }
-}
-````
-
 ## File: apps/web/components/repository-editor-page.tsx
 ````typescript
 "use client";
@@ -36968,1364 +36154,112 @@ export const buildTaskLifecycleViewModel = (task: Task | null | undefined): Task
 };
 ````
 
-## File: apps/server/src/index.ts
-````typescript
-import Fastify from "fastify";
-import { randomUUID } from "node:crypto";
-import cookie from "@fastify/cookie";
-import cors from "@fastify/cors";
-import * as Sentry from "@sentry/node";
-import { Server as SocketIOServer } from "socket.io";
-import type { RealtimeEvent } from "@agentswarm/shared-types";
-import { env } from "./config/env.js";
-import { createAuthService } from "./lib/auth.js";
-import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
-import { createRedisClients } from "./lib/redis.js";
-import { EventBus } from "./lib/events.js";
-import { createPostgresStores } from "./services/create-postgres-stores.js";
-import { registerAuthRoutes } from "./routes/auth.js";
-import { SpawnerService } from "./services/spawner.js";
-import { SchedulerService } from "./services/scheduler.js";
-import { GitHubImportService } from "./services/github-import-service.js";
-import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
-import { GitHubOutboundService } from "./services/github-outbound-service.js";
-import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
-import { registerRoleRoutes } from "./routes/roles.js";
-import { registerTaskRoutes } from "./routes/tasks.js";
-import { registerTaskDraftRoutes } from "./routes/task-drafts.js";
-import { registerUserRoutes } from "./routes/users.js";
-import { registerSettingsRoutes } from "./routes/settings.js";
-import { registerRepositoryRoutes } from "./routes/repositories.js";
-import { registerImportRoutes } from "./routes/imports.js";
-import { registerSnippetRoutes } from "./routes/snippets.js";
-import { registerSequenceRoutes } from "./routes/sequences.js";
-import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
-import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
-
-const readHeaderValue = (value: string | string[] | undefined): string | null => {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  if (Array.isArray(value) && value.length > 0) {
-    const first = value[0]?.trim();
-    return first && first.length > 0 ? first : null;
-  }
-  return null;
-};
-
-const getOperationIdFromHeaders = (headers: Record<string, string | string[] | undefined>): string | null =>
-  readHeaderValue(headers["x-operation-id"]) ?? readHeaderValue(headers["x-agent-operation-id"]);
-
-const bootstrap = async (): Promise<void> => {
-  const sentryEnabled = env.SENTRY_ENABLED && env.SENTRY_DSN.trim().length > 0;
-  if (sentryEnabled) {
-    Sentry.init({
-      dsn: env.SENTRY_DSN,
-      tracesSampleRate: 1
-    });
-  }
-
-  const app = Fastify({
-    logger: {
-      level: process.env.LOG_LEVEL ?? "info",
-      base: { service: "agentswarm-server" }
-    },
-    disableRequestLogging: true,
-    requestIdHeader: "x-request-id",
-    genReqId: (rawRequest) => readHeaderValue(rawRequest.headers["x-request-id"]) ?? randomUUID(),
-    bodyLimit: 35 * 1024 * 1024
-  });
-  await app.register(cookie);
-  app.decorateRequest("auth", null);
-  await app.register(cors, {
-    origin: env.CORS_ORIGIN,
-    credentials: true
-  });
-  app.addHook("onRequest", async (request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    reply.header("x-request-id", request.id);
-    if (operationId) {
-      reply.header("x-operation-id", operationId);
-    }
-    request.log.info(
-      {
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url
-      },
-      "request.started"
-    );
-  });
-  app.addHook("onResponse", async (request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    request.log.info(
-      {
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url,
-        statusCode: reply.statusCode,
-        durationMs: reply.elapsedTime
-      },
-      "request.completed"
-    );
-  });
-  app.log.info(
-    {
-      event: "startup.config",
-      port: env.PORT,
-      corsOrigin: env.CORS_ORIGIN,
-      durableStores: "postgres",
-      runtimeServices: "redis",
-      postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
-      sentryEnabled,
-      taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
-      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
-    },
-    "Server configuration loaded"
-  );
-
-  const redisClients = createRedisClients(env.REDIS_URL);
-  const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
-  const postgresPool = createPostgresPool(env.DATABASE_URL);
-  if (env.POSTGRES_AUTO_MIGRATE) {
-    app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
-    await runPostgresMigrations(postgresPool);
-    app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
-  } else {
-    app.log.info({ event: "startup.migrations", mode: "manual" }, "Skipping auto-migrations");
-  }
-
-  const {
-    taskStore,
-    taskDraftStore,
-    taskQueueStore,
-    githubOutboundQueueStore,
-    webhookDeliveryStore,
-    snippetStore,
-    sequenceStore,
-    repositoryStore,
-    credentialStore,
-    roleStore,
-    userStore,
-    sessionStore,
-    settingsStore
-  } = createPostgresStores(
-    postgresPool,
-    redisClients,
-    eventBus,
-    env.AUTH_SESSION_TTL_DAYS
-  );
-  const auth = createAuthService({
-    userStore,
-    sessionStore,
-    cookieName: env.AUTH_COOKIE_NAME,
-    taskStore,
-    credentialStore
-  });
-  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
-  const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
-  const githubImportService = new GitHubImportService(settingsStore);
-  const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
-  const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
-  const githubStatusSyncService = new GitHubStatusSyncService(repositoryStore, githubOutboundService);
-
-  await roleStore.ensureDefaultAdminRole();
-  await userStore.ensureDefaultAdminUser({
-    name: env.DEFAULT_ADMIN_NAME,
-    email: env.DEFAULT_ADMIN_EMAIL,
-    password: env.DEFAULT_ADMIN_PASSWORD
-  });
-
-  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore });
-  registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
-  registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
-  registerTaskRoutes(app, {
-    taskStore,
-    taskQueueStore,
-    repositoryStore,
-    userStore,
-    scheduler,
-    spawner,
-    settingsStore,
-    sequenceStore,
-    snippetStore,
-    auth
-  });
-  registerTaskDraftRoutes(app, { taskDraftStore, auth });
-  registerSnippetRoutes(app, { snippetStore, auth });
-  registerSequenceRoutes(app, { sequenceStore, auth });
-  registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
-  registerSettingsRoutes(app, { settingsStore, scheduler, auth });
-  registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, userStore, scheduler, spawner, auth });
-  registerGitHubWebhookRoutes(app, {
-    repositoryStore,
-    githubImportService,
-    taskStore,
-    userStore,
-    scheduler,
-    spawner,
-    snippetStore
-  });
-
-  app.get("/health", async () => ({ ok: true }));
-
-  app.setErrorHandler((error, request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    request.log.error(
-      {
-        err: error,
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url
-      },
-      "request.failed"
-    );
-    if (sentryEnabled) {
-      Sentry.captureException(error, {
-        tags: {
-          route: request.routeOptions.url
-        },
-        extra: {
-          requestId: request.id,
-          operationId,
-          method: request.method,
-          url: request.url
-        }
-      });
-    }
-    void reply.send(error);
-  });
-
-  await app.ready();
-  attachTaskInteractiveTerminalUpgrade(app.server, {
-    auth,
-    taskStore,
-    settingsStore,
-    spawner,
-    userStore,
-    repositoryStore
-  });
-
-  const io = new SocketIOServer(app.server, {
-    cors: {
-      origin: env.CORS_ORIGIN,
-      credentials: true
-    }
-  });
-  io.use(auth.authorizeSocket());
-
-  io.on("connection", (socket) => {
-    auth.onSocketConnection(socket);
-    app.log.info({ socketId: socket.id }, "Socket client connected");
-  });
-
-  await redisClients.sub.subscribe(env.EVENT_CHANNEL);
-  redisClients.sub.on("message", (_channel, message) => {
-    try {
-      const event = JSON.parse(message) as RealtimeEvent;
-      void webhookDeliveryService.handleRealtimeEvent(event);
-      void githubStatusSyncService.handleRealtimeEvent(event);
-      void auth.emitScopedRealtimeEvent(io, event);
-    } catch (error) {
-      app.log.error({ error }, "Failed to parse event message");
-    }
-  });
-
-  webhookDeliveryService.start();
-  githubOutboundService.start();
-  await scheduler.bootstrap();
-
-  let closeStarted = false;
-  const close = async (): Promise<void> => {
-    if (closeStarted) {
-      return;
-    }
-    closeStarted = true;
-    scheduler.stop();
-    webhookDeliveryService.stop();
-    githubOutboundService.stop();
-    io.close();
-    await Promise.all([
-      ...(postgresPool ? [postgresPool.end()] : []),
-      redisClients.command.quit(),
-      redisClients.pub.quit(),
-      redisClients.sub.quit()
-    ]);
-    await app.close();
-    if (sentryEnabled) {
-      await Sentry.close(2_000);
-    }
-  };
-
-  process.on("SIGINT", () => {
-    app.log.warn({ signal: "SIGINT" }, "Shutdown signal received");
-    void close();
-  });
-  process.on("SIGTERM", () => {
-    app.log.warn({ signal: "SIGTERM" }, "Shutdown signal received");
-    void close();
-  });
-
-  process.on("uncaughtException", (error) => {
-    app.log.fatal({ err: error }, "Unhandled exception");
-    if (sentryEnabled) {
-      Sentry.captureException(error);
-    }
-    void close().finally(() => process.exit(1));
-  });
-  process.on("unhandledRejection", (reason) => {
-    app.log.fatal({ reason }, "Unhandled promise rejection");
-    if (sentryEnabled) {
-      Sentry.captureException(reason);
-    }
-    void close().finally(() => process.exit(1));
-  });
-
-  const listenAddress = await app.listen({ port: env.PORT, host: "0.0.0.0" });
-  app.log.info(
-    {
-      event: "startup.ready",
-      listenAddress,
-      healthPath: "/health",
-      proxyHealthPath: "/api/health"
-    },
-    "Server started"
-  );
-};
-
-void bootstrap().catch((error) => {
-  // Startup errors should stop the process so Docker restart policies can react.
-  const errorForLog =
-    error instanceof Error
-      ? { name: error.name, message: error.message, stack: error.stack }
-      : { message: String(error) };
-  console.error(
-    JSON.stringify({
-      level: "fatal",
-      event: "startup.bootstrap_failed",
-      error: errorForLog
-    })
-  );
-  process.exit(1);
-});
-````
-
-## File: apps/web/app/globals.css
-````css
-@import "@mdxeditor/editor/style.css";
-
-:root {
-  color-scheme: light;
-  --app-body-bg: #f4f8f5;
-  --app-body-text: #5a675d;
-  --diff-background-color: #fcfefd;
-  --diff-text-color: #415046;
-  --diff-selection-background-color: rgba(28, 128, 87, 0.12);
-  --diff-selection-text-color: var(--diff-text-color);
-  --diff-gutter-insert-background-color: #dff5e4;
-  --diff-gutter-insert-text-color: #2e6a48;
-  --diff-gutter-delete-background-color: #f5dde0;
-  --diff-gutter-delete-text-color: #8d4a53;
-  --diff-gutter-selected-background-color: #efe7c8;
-  --diff-gutter-selected-text-color: #5b5538;
-  --diff-code-insert-background-color: #ebf9ee;
-  --diff-code-insert-text-color: #274b35;
-  --diff-code-delete-background-color: #faecee;
-  --diff-code-delete-text-color: #6d3c43;
-  --diff-code-insert-edit-background-color: #c8e8d1;
-  --diff-code-insert-edit-text-color: #1f402c;
-  --diff-code-delete-edit-background-color: #efc0c7;
-  --diff-code-delete-edit-text-color: #5e2f36;
-  --diff-code-selected-background-color: #f3edcf;
-  --diff-code-selected-text-color: #4e4731;
-  --diff-omit-gutter-line-color: #c95c5c;
-}
-
-html[data-theme="dark"] {
-  color-scheme: dark;
-  --app-body-bg: #0e1411;
-  --app-body-text: #d8e2d9;
-  --diff-background-color: #141c18;
-  --diff-text-color: #d7e3d8;
-  --diff-selection-background-color: rgba(103, 196, 150, 0.18);
-  --diff-selection-text-color: #f4f8f5;
-  --diff-gutter-insert-background-color: #173624;
-  --diff-gutter-insert-text-color: #8fd9ae;
-  --diff-gutter-delete-background-color: #3a1f25;
-  --diff-gutter-delete-text-color: #e2a2ab;
-  --diff-gutter-selected-background-color: #3a3723;
-  --diff-gutter-selected-text-color: #efe2a0;
-  --diff-code-insert-background-color: #10251a;
-  --diff-code-insert-text-color: #cfeedd;
-  --diff-code-delete-background-color: #2c171c;
-  --diff-code-delete-text-color: #f2c4ca;
-  --diff-code-insert-edit-background-color: #27543e;
-  --diff-code-insert-edit-text-color: #e8fff1;
-  --diff-code-delete-edit-background-color: #7a3a47;
-  --diff-code-delete-edit-text-color: #fff0f2;
-  --diff-code-selected-background-color: #33311f;
-  --diff-code-selected-text-color: #f2e8b7;
-  --diff-omit-gutter-line-color: #d46c6c;
-}
-
-html[data-theme="cyber"] {
-  color-scheme: dark;
-  --app-body-bg: #181825;
-  --app-body-text: rgba(200, 182, 255, 0.9);
-  --diff-background-color: #1e1e2e;
-  --diff-text-color: #c8b6ff;
-  --diff-selection-background-color: rgba(157, 78, 221, 0.18);
-  --diff-selection-text-color: #f4eeff;
-  --diff-gutter-insert-background-color: #17353a;
-  --diff-gutter-insert-text-color: #72efdd;
-  --diff-gutter-delete-background-color: #3a1028;
-  --diff-gutter-delete-text-color: #ff8ab5;
-  --diff-gutter-selected-background-color: #3a3111;
-  --diff-gutter-selected-text-color: #ffd60a;
-  --diff-code-insert-background-color: #11272a;
-  --diff-code-insert-text-color: #d2fffb;
-  --diff-code-delete-background-color: #2a0c1b;
-  --diff-code-delete-text-color: #ffd1e4;
-  --diff-code-insert-edit-background-color: #1c4f56;
-  --diff-code-insert-edit-text-color: #effffd;
-  --diff-code-delete-edit-background-color: #6d1240;
-  --diff-code-delete-edit-text-color: #fff0f7;
-  --diff-code-selected-background-color: #3a3111;
-  --diff-code-selected-text-color: #ffe98a;
-  --diff-omit-gutter-line-color: #ff006e;
-}
-
-html[data-theme="forge"] {
-  color-scheme: dark;
-  --app-body-bg: #0d1117;
-  --app-body-text: rgba(201, 209, 217, 0.88);
-  --diff-background-color: #161b22;
-  --diff-text-color: #c9d1d9;
-  --diff-selection-background-color: rgba(255, 107, 53, 0.16);
-  --diff-selection-text-color: #f6f8fa;
-  --diff-gutter-insert-background-color: #0f302e;
-  --diff-gutter-insert-text-color: #59e1ce;
-  --diff-gutter-delete-background-color: #34191d;
-  --diff-gutter-delete-text-color: #ff9b9b;
-  --diff-gutter-selected-background-color: #3a2c16;
-  --diff-gutter-selected-text-color: #ffbf66;
-  --diff-code-insert-background-color: #0d2625;
-  --diff-code-insert-text-color: #d3fff8;
-  --diff-code-delete-background-color: #281316;
-  --diff-code-delete-text-color: #ffd7d7;
-  --diff-code-insert-edit-background-color: #13524d;
-  --diff-code-insert-edit-text-color: #effffb;
-  --diff-code-delete-edit-background-color: #7b2b31;
-  --diff-code-delete-edit-text-color: #fff1f1;
-  --diff-code-selected-background-color: #352915;
-  --diff-code-selected-text-color: #ffdca0;
-  --diff-omit-gutter-line-color: #ff5252;
-}
-
-html[data-theme="forge-light"] {
-  color-scheme: light;
-  --app-body-bg: #fff3eb;
-  --app-body-text: rgba(51, 40, 33, 0.92);
-  --diff-background-color: #ffffff;
-  --diff-text-color: #332821;
-  --diff-selection-background-color: rgba(255, 107, 53, 0.12);
-  --diff-selection-text-color: #332821;
-  --diff-gutter-insert-background-color: #e3f7f2;
-  --diff-gutter-insert-text-color: #0b7c69;
-  --diff-gutter-delete-background-color: #fff0ef;
-  --diff-gutter-delete-text-color: #dc2626;
-  --diff-gutter-selected-background-color: #fff0d8;
-  --diff-gutter-selected-text-color: #b96b00;
-  --diff-code-insert-background-color: #f0fffb;
-  --diff-code-insert-text-color: #0a5c4e;
-  --diff-code-delete-background-color: #fff5f4;
-  --diff-code-delete-text-color: #b91c1c;
-  --diff-code-insert-edit-background-color: #c7efe5;
-  --diff-code-insert-edit-text-color: #09483e;
-  --diff-code-delete-edit-background-color: #ffd6d1;
-  --diff-code-delete-edit-text-color: #991b1b;
-  --diff-code-selected-background-color: #ffe7c2;
-  --diff-code-selected-text-color: #9a5600;
-  --diff-omit-gutter-line-color: #dc2626;
-}
-
-html[data-theme="github"] {
-  color-scheme: dark;
-  --app-body-bg: #0d1117;
-  --app-body-text: #c9d1d9;
-  --diff-background-color: #161b22;
-  --diff-text-color: #c9d1d9;
-  --diff-selection-background-color: rgba(31, 111, 235, 0.18);
-  --diff-selection-text-color: #f0f6fc;
-  --diff-gutter-insert-background-color: #0f2419;
-  --diff-gutter-insert-text-color: #56d364;
-  --diff-gutter-delete-background-color: #2d1517;
-  --diff-gutter-delete-text-color: #ff7b72;
-  --diff-gutter-selected-background-color: #2b2415;
-  --diff-gutter-selected-text-color: #ffa657;
-  --diff-code-insert-background-color: #0d1f14;
-  --diff-code-insert-text-color: #aff5b4;
-  --diff-code-delete-background-color: #231417;
-  --diff-code-delete-text-color: #ffdcd7;
-  --diff-code-insert-edit-background-color: #1a3a24;
-  --diff-code-insert-edit-text-color: #d2ffd8;
-  --diff-code-delete-edit-background-color: #5d2023;
-  --diff-code-delete-edit-text-color: #fff1ee;
-  --diff-code-selected-background-color: #2b2415;
-  --diff-code-selected-text-color: #ffddb0;
-  --diff-omit-gutter-line-color: #f85149;
-}
-
-html[data-theme="github-light"] {
-  color-scheme: light;
-  --app-body-bg: #f6f8fa;
-  --app-body-text: #1f2328;
-  --diff-background-color: #ffffff;
-  --diff-text-color: #1f2328;
-  --diff-selection-background-color: rgba(9, 105, 218, 0.12);
-  --diff-selection-text-color: #1f2328;
-  --diff-gutter-insert-background-color: #dafbe1;
-  --diff-gutter-insert-text-color: #1a7f37;
-  --diff-gutter-delete-background-color: #ffebe9;
-  --diff-gutter-delete-text-color: #cf222e;
-  --diff-gutter-selected-background-color: #fff8c5;
-  --diff-gutter-selected-text-color: #9a6700;
-  --diff-code-insert-background-color: #ebfff0;
-  --diff-code-insert-text-color: #116329;
-  --diff-code-delete-background-color: #fff1f0;
-  --diff-code-delete-text-color: #a40e26;
-  --diff-code-insert-edit-background-color: #aceebb;
-  --diff-code-insert-edit-text-color: #0f5323;
-  --diff-code-delete-edit-background-color: #ffcecb;
-  --diff-code-delete-edit-text-color: #82071e;
-  --diff-code-selected-background-color: #fff1b8;
-  --diff-code-selected-text-color: #7d4e00;
-  --diff-omit-gutter-line-color: #cf222e;
-}
-
-html[data-theme="nord"] {
-  color-scheme: dark;
-  --app-body-bg: #2b303b;
-  --app-body-text: #e5e9f0;
-  --diff-background-color: #3b4252;
-  --diff-text-color: #e5e9f0;
-  --diff-selection-background-color: rgba(136, 192, 208, 0.18);
-  --diff-selection-text-color: #f7fafc;
-  --diff-gutter-insert-background-color: #334038;
-  --diff-gutter-insert-text-color: #a3be8c;
-  --diff-gutter-delete-background-color: #43343a;
-  --diff-gutter-delete-text-color: #d08770;
-  --diff-gutter-selected-background-color: #4a4437;
-  --diff-gutter-selected-text-color: #ebcb8b;
-  --diff-code-insert-background-color: #2f3933;
-  --diff-code-insert-text-color: #d8e7cb;
-  --diff-code-delete-background-color: #3a2f33;
-  --diff-code-delete-text-color: #f1c2b6;
-  --diff-code-insert-edit-background-color: #425046;
-  --diff-code-insert-edit-text-color: #f3faeb;
-  --diff-code-delete-edit-background-color: #6c4a52;
-  --diff-code-delete-edit-text-color: #fff1ef;
-  --diff-code-selected-background-color: #4a4437;
-  --diff-code-selected-text-color: #f5ddb0;
-  --diff-omit-gutter-line-color: #bf616a;
-}
-
-html[data-theme="solarized-light"] {
-  color-scheme: light;
-  --app-body-bg: #f4edd8;
-  --app-body-text: #586e75;
-  --diff-background-color: #fdf6e3;
-  --diff-text-color: #586e75;
-  --diff-selection-background-color: rgba(38, 139, 210, 0.12);
-  --diff-selection-text-color: #586e75;
-  --diff-gutter-insert-background-color: #eef6d2;
-  --diff-gutter-insert-text-color: #657b00;
-  --diff-gutter-delete-background-color: #f8e1dc;
-  --diff-gutter-delete-text-color: #c0392b;
-  --diff-gutter-selected-background-color: #f8efc8;
-  --diff-gutter-selected-text-color: #9a7400;
-  --diff-code-insert-background-color: #f5f9e7;
-  --diff-code-insert-text-color: #4e6400;
-  --diff-code-delete-background-color: #fbebe7;
-  --diff-code-delete-text-color: #a92b26;
-  --diff-code-insert-edit-background-color: #dfeab2;
-  --diff-code-insert-edit-text-color: #425300;
-  --diff-code-delete-edit-background-color: #f2c4ba;
-  --diff-code-delete-edit-text-color: #86211e;
-  --diff-code-selected-background-color: #f5e7a8;
-  --diff-code-selected-text-color: #7f5c00;
-  --diff-omit-gutter-line-color: #dc322f;
-}
-
-html[data-theme="gruvbox-dark"] {
-  color-scheme: dark;
-  --app-body-bg: #1d2021;
-  --app-body-text: #ebdbb2;
-  --diff-background-color: #32302f;
-  --diff-text-color: #ebdbb2;
-  --diff-selection-background-color: rgba(215, 153, 33, 0.18);
-  --diff-selection-text-color: #fbf1c7;
-  --diff-gutter-insert-background-color: #30361d;
-  --diff-gutter-insert-text-color: #b8bb26;
-  --diff-gutter-delete-background-color: #442726;
-  --diff-gutter-delete-text-color: #fb7c6d;
-  --diff-gutter-selected-background-color: #47341c;
-  --diff-gutter-selected-text-color: #fabd2f;
-  --diff-code-insert-background-color: #2a2f19;
-  --diff-code-insert-text-color: #dde79b;
-  --diff-code-delete-background-color: #3a2221;
-  --diff-code-delete-text-color: #ffd2cb;
-  --diff-code-insert-edit-background-color: #46511d;
-  --diff-code-insert-edit-text-color: #f4ffd1;
-  --diff-code-delete-edit-background-color: #7d3b34;
-  --diff-code-delete-edit-text-color: #fff0ed;
-  --diff-code-selected-background-color: #47341c;
-  --diff-code-selected-text-color: #ffd88a;
-  --diff-omit-gutter-line-color: #fb4934;
-}
-
-html[data-theme="high-contrast"] {
-  color-scheme: dark;
-  --app-body-bg: #000000;
-  --app-body-text: #ffffff;
-  --diff-background-color: #0f0f0f;
-  --diff-text-color: #ffffff;
-  --diff-selection-background-color: rgba(77, 163, 255, 0.26);
-  --diff-selection-text-color: #ffffff;
-  --diff-gutter-insert-background-color: #001d0d;
-  --diff-gutter-insert-text-color: #43f090;
-  --diff-gutter-delete-background-color: #2a0000;
-  --diff-gutter-delete-text-color: #ffb0b0;
-  --diff-gutter-selected-background-color: #241f00;
-  --diff-gutter-selected-text-color: #ffe14d;
-  --diff-code-insert-background-color: #002813;
-  --diff-code-insert-text-color: #b3ffd2;
-  --diff-code-delete-background-color: #300000;
-  --diff-code-delete-text-color: #ffe0e0;
-  --diff-code-insert-edit-background-color: #004d25;
-  --diff-code-insert-edit-text-color: #ecfff3;
-  --diff-code-delete-edit-background-color: #6b0000;
-  --diff-code-delete-edit-text-color: #fff5f5;
-  --diff-code-selected-background-color: #3d3500;
-  --diff-code-selected-text-color: #fff4a3;
-  --diff-omit-gutter-line-color: #ff5c5c;
-}
-
-html[data-theme="tokyo-night"] {
-  color-scheme: dark;
-  --app-body-bg: #16161e;
-  --app-body-text: #c0caf5;
-  --diff-background-color: #1f2335;
-  --diff-text-color: #c0caf5;
-  --diff-selection-background-color: rgba(122, 162, 247, 0.18);
-  --diff-selection-text-color: #eef2ff;
-  --diff-gutter-insert-background-color: #223126;
-  --diff-gutter-insert-text-color: #9ece6a;
-  --diff-gutter-delete-background-color: #3b2532;
-  --diff-gutter-delete-text-color: #f7768e;
-  --diff-gutter-selected-background-color: #393324;
-  --diff-gutter-selected-text-color: #e0af68;
-  --diff-code-insert-background-color: #1d2b22;
-  --diff-code-insert-text-color: #d8f2bc;
-  --diff-code-delete-background-color: #301f29;
-  --diff-code-delete-text-color: #ffc3ce;
-  --diff-code-insert-edit-background-color: #35503f;
-  --diff-code-insert-edit-text-color: #f0ffe5;
-  --diff-code-delete-edit-background-color: #6e4251;
-  --diff-code-delete-edit-text-color: #fff0f4;
-  --diff-code-selected-background-color: #393324;
-  --diff-code-selected-text-color: #f3d5a5;
-  --diff-omit-gutter-line-color: #f7768e;
-}
-
-html[data-theme="solarized-dark"] {
-  color-scheme: dark;
-  --app-body-bg: #001f27;
-  --app-body-text: #93a1a1;
-  --diff-background-color: #073642;
-  --diff-text-color: #93a1a1;
-  --diff-selection-background-color: rgba(38, 139, 210, 0.2);
-  --diff-selection-text-color: #eee8d5;
-  --diff-gutter-insert-background-color: #1b3314;
-  --diff-gutter-insert-text-color: #859900;
-  --diff-gutter-delete-background-color: #3b1712;
-  --diff-gutter-delete-text-color: #dc322f;
-  --diff-gutter-selected-background-color: #3a2d09;
-  --diff-gutter-selected-text-color: #b58900;
-  --diff-code-insert-background-color: #153016;
-  --diff-code-insert-text-color: #c3d269;
-  --diff-code-delete-background-color: #31130f;
-  --diff-code-delete-text-color: #ff9b94;
-  --diff-code-insert-edit-background-color: #31511d;
-  --diff-code-insert-edit-text-color: #eef7b3;
-  --diff-code-delete-edit-background-color: #723127;
-  --diff-code-delete-edit-text-color: #ffe5df;
-  --diff-code-selected-background-color: #3a2d09;
-  --diff-code-selected-text-color: #e8c65a;
-  --diff-omit-gutter-line-color: #dc322f;
-}
-
-html[data-theme="paper"] {
-  color-scheme: light;
-  --app-body-bg: #efe8d5;
-  --app-body-text: #4b463c;
-  --diff-background-color: #fffaf0;
-  --diff-text-color: #4b463c;
-  --diff-selection-background-color: rgba(70, 124, 138, 0.12);
-  --diff-selection-text-color: #4b463c;
-  --diff-gutter-insert-background-color: #edf2e3;
-  --diff-gutter-insert-text-color: #567038;
-  --diff-gutter-delete-background-color: #f5e3e1;
-  --diff-gutter-delete-text-color: #9d4f4f;
-  --diff-gutter-selected-background-color: #f6ead7;
-  --diff-gutter-selected-text-color: #9b6d2b;
-  --diff-code-insert-background-color: #f4f7eb;
-  --diff-code-insert-text-color: #445a2b;
-  --diff-code-delete-background-color: #faecea;
-  --diff-code-delete-text-color: #884646;
-  --diff-code-insert-edit-background-color: #dfe8d2;
-  --diff-code-insert-edit-text-color: #394b24;
-  --diff-code-delete-edit-background-color: #edd1ce;
-  --diff-code-delete-edit-text-color: #723b3b;
-  --diff-code-selected-background-color: #efddc0;
-  --diff-code-selected-text-color: #7f5b22;
-  --diff-omit-gutter-line-color: #b55d5d;
-}
-
-html,
-body {
-  margin: 0;
-  min-height: 100%;
-}
-
-body {
-  background: var(--app-body-bg);
-  color: var(--app-body-text);
-  transition:
-    background-color 160ms ease,
-    color 160ms ease;
-}
-
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: "SFMono-Regular", "Consolas", monospace;
-}
-
-.xterm .xterm-screen {
-  padding: 0;
-  box-sizing: border-box;
-}
-
-.diff {
-  background: var(--diff-background-color);
-  color: var(--diff-text-color);
-}
-
-.diff-hunk + .diff-hunk .diff-line:first-child td,
-.diff-hunk + .diff-hunk .diff-widget:first-child td,
-.diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
-}
-
-.diff-gutter {
-  color: rgba(90, 103, 93, 0.72);
-  background: rgba(0, 0, 0, 0.015);
-  border-right: 1px solid rgba(0, 0, 0, 0.05);
-}
-
-.diff-code-normal {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.diff-code,
-.diff-decoration-content,
-.diff-widget-content {
-  color: var(--diff-text-color);
-}
-
-.diff-decoration-content,
-.diff-widget-content {
-  background: rgba(0, 0, 0, 0.025);
-}
-
-html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="github"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="github"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="github"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(255, 255, 255, 0.06);
-}
-
-html[data-theme="dark"] .diff-gutter,
-html[data-theme="cyber"] .diff-gutter,
-html[data-theme="forge"] .diff-gutter,
-html[data-theme="github"] .diff-gutter,
-html[data-theme="nord"] .diff-gutter,
-html[data-theme="gruvbox-dark"] .diff-gutter,
-html[data-theme="high-contrast"] .diff-gutter,
-html[data-theme="tokyo-night"] .diff-gutter,
-html[data-theme="solarized-dark"] .diff-gutter {
-  color: #8ea394;
-  background: rgba(255, 255, 255, 0.02);
-  border-right-color: rgba(255, 255, 255, 0.06);
-}
-
-html[data-theme="dark"] .diff-code-normal,
-html[data-theme="cyber"] .diff-code-normal,
-html[data-theme="forge"] .diff-code-normal,
-html[data-theme="github"] .diff-code-normal,
-html[data-theme="nord"] .diff-code-normal,
-html[data-theme="gruvbox-dark"] .diff-code-normal,
-html[data-theme="high-contrast"] .diff-code-normal,
-html[data-theme="tokyo-night"] .diff-code-normal,
-html[data-theme="solarized-dark"] .diff-code-normal {
-  background: rgba(255, 255, 255, 0.01);
-}
-
-html[data-theme="dark"] .diff-decoration-content,
-html[data-theme="dark"] .diff-widget-content,
-html[data-theme="cyber"] .diff-decoration-content,
-html[data-theme="cyber"] .diff-widget-content,
-html[data-theme="forge"] .diff-decoration-content,
-html[data-theme="forge"] .diff-widget-content,
-html[data-theme="github"] .diff-decoration-content,
-html[data-theme="github"] .diff-widget-content,
-html[data-theme="nord"] .diff-decoration-content,
-html[data-theme="nord"] .diff-widget-content,
-html[data-theme="gruvbox-dark"] .diff-decoration-content,
-html[data-theme="gruvbox-dark"] .diff-widget-content,
-html[data-theme="high-contrast"] .diff-decoration-content,
-html[data-theme="high-contrast"] .diff-widget-content,
-html[data-theme="tokyo-night"] .diff-decoration-content,
-html[data-theme="tokyo-night"] .diff-widget-content,
-html[data-theme="solarized-dark"] .diff-decoration-content,
-html[data-theme="solarized-dark"] .diff-widget-content {
-  background: rgba(255, 255, 255, 0.03);
-  color: #9fb3a5;
-}
-
-html[data-theme="cyber"] .diff-gutter {
-  color: rgba(200, 182, 255, 0.65);
-  background: rgba(255, 255, 255, 0.025);
-  border-right-color: rgba(200, 182, 255, 0.08);
-}
-
-html[data-theme="cyber"] .diff-decoration-content,
-html[data-theme="cyber"] .diff-widget-content {
-  color: rgba(200, 182, 255, 0.72);
-}
-
-html[data-theme="forge"] .diff-gutter {
-  color: rgba(201, 209, 217, 0.62);
-  background: rgba(255, 255, 255, 0.02);
-  border-right-color: rgba(201, 209, 217, 0.07);
-}
-
-html[data-theme="forge"] .diff-decoration-content,
-html[data-theme="forge"] .diff-widget-content {
-  color: rgba(201, 209, 217, 0.72);
-}
-
-html[data-theme="github"] .diff-gutter {
-  color: #8b949e;
-  background: rgba(255, 255, 255, 0.02);
-  border-right-color: rgba(201, 209, 217, 0.08);
-}
-
-html[data-theme="github"] .diff-decoration-content,
-html[data-theme="github"] .diff-widget-content {
-  color: #8b949e;
-}
-
-html[data-theme="nord"] .diff-gutter {
-  color: #c2cad6;
-  background: rgba(236, 239, 244, 0.03);
-  border-right-color: rgba(236, 239, 244, 0.08);
-}
-
-html[data-theme="nord"] .diff-decoration-content,
-html[data-theme="nord"] .diff-widget-content {
-  color: #c2cad6;
-}
-
-html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(208, 215, 222, 0.7);
-}
-
-html[data-theme="github-light"] .diff-gutter {
-  color: #57606a;
-  background: rgba(246, 248, 250, 0.9);
-  border-right-color: rgba(208, 215, 222, 0.9);
-}
-
-html[data-theme="github-light"] .diff-code-normal {
-  background: rgba(246, 248, 250, 0.65);
-}
-
-html[data-theme="github-light"] .diff-decoration-content,
-html[data-theme="github-light"] .diff-widget-content {
-  background: rgba(246, 248, 250, 0.85);
-  color: #57606a;
-}
-
-html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(131, 148, 150, 0.35);
-}
-
-html[data-theme="solarized-light"] .diff-gutter {
-  color: #6b7f86;
-  background: rgba(253, 246, 227, 0.9);
-  border-right-color: rgba(215, 206, 181, 0.9);
-}
-
-html[data-theme="solarized-light"] .diff-code-normal {
-  background: rgba(255, 249, 233, 0.72);
-}
-
-html[data-theme="solarized-light"] .diff-decoration-content,
-html[data-theme="solarized-light"] .diff-widget-content {
-  background: rgba(255, 249, 233, 0.88);
-  color: #6b7f86;
-}
-
-html[data-theme="gruvbox-dark"] .diff-gutter {
-  color: #bdae93;
-  background: rgba(235, 219, 178, 0.03);
-  border-right-color: rgba(235, 219, 178, 0.08);
-}
-
-html[data-theme="gruvbox-dark"] .diff-decoration-content,
-html[data-theme="gruvbox-dark"] .diff-widget-content {
-  color: #bdae93;
-}
-
-html[data-theme="high-contrast"] .diff-gutter {
-  color: #d9d9d9;
-  background: rgba(255, 255, 255, 0.04);
-  border-right-color: rgba(255, 255, 255, 0.2);
-}
-
-html[data-theme="high-contrast"] .diff-code-normal {
-  background: rgba(255, 255, 255, 0.03);
-}
-
-html[data-theme="high-contrast"] .diff-decoration-content,
-html[data-theme="high-contrast"] .diff-widget-content {
-  background: rgba(255, 255, 255, 0.06);
-  color: #ffffff;
-}
-
-html[data-theme="tokyo-night"] .diff-gutter {
-  color: #a9b1d6;
-  background: rgba(192, 202, 245, 0.03);
-  border-right-color: rgba(192, 202, 245, 0.08);
-}
-
-html[data-theme="tokyo-night"] .diff-decoration-content,
-html[data-theme="tokyo-night"] .diff-widget-content {
-  color: #a9b1d6;
-}
-
-html[data-theme="solarized-dark"] .diff-gutter {
-  color: #839496;
-  background: rgba(147, 161, 161, 0.03);
-  border-right-color: rgba(147, 161, 161, 0.08);
-}
-
-html[data-theme="solarized-dark"] .diff-decoration-content,
-html[data-theme="solarized-dark"] .diff-widget-content {
-  color: #839496;
-}
-
-html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(216, 205, 182, 0.72);
-}
-
-html[data-theme="paper"] .diff-gutter {
-  color: #6a665c;
-  background: rgba(255, 250, 240, 0.86);
-  border-right-color: rgba(216, 205, 182, 0.92);
-}
-
-html[data-theme="paper"] .diff-code-normal {
-  background: rgba(255, 253, 247, 0.75);
-}
-
-html[data-theme="paper"] .diff-decoration-content,
-html[data-theme="paper"] .diff-widget-content {
-  background: rgba(255, 253, 247, 0.9);
-  color: #6a665c;
-}
-
-html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(231, 216, 205, 0.9);
-}
-
-html[data-theme="forge-light"] .diff-gutter {
-  color: #6d584b;
-  background: rgba(255, 250, 246, 0.92);
-  border-right-color: rgba(231, 216, 205, 0.96);
-}
-
-html[data-theme="forge-light"] .diff-code-normal {
-  background: rgba(255, 252, 249, 0.82);
-}
-
-html[data-theme="forge-light"] .diff-decoration-content,
-html[data-theme="forge-light"] .diff-widget-content {
-  background: rgba(255, 252, 249, 0.94);
-  color: #6d584b;
-}
-
-.task-notes-mdx-editor {
-  border: 0;
-  overflow: hidden;
-  color: var(--ant-colorText, inherit);
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar {
-  background: transparent !important;
-  border: 0;
-  color: var(--ant-colorTextSecondary, inherit);
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar button,
-.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] {
-  background: transparent !important;
-  border: 0;
-  color: var(--ant-colorTextSecondary, inherit) !important;
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar button:hover,
-.task-notes-mdx-editor .mdxeditor-toolbar [role="button"]:hover {
-  background: transparent !important;
-  color: var(--ant-colorText, inherit) !important;
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar button[aria-pressed="true"],
-.task-notes-mdx-editor .mdxeditor-toolbar [role="button"][aria-pressed="true"] {
-  color: var(--ant-colorPrimary, inherit) !important;
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar button svg,
-.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] svg {
-  color: inherit !important;
-  fill: currentColor !important;
-  stroke: none !important;
-}
-
-.task-notes-mdx-editor-content {
-  min-height: 380px;
-  color: var(--ant-colorText, inherit);
-  background: transparent;
-}
-
-.task-notes-mdx-editor-content ul,
-.task-notes-mdx-editor-content ol {
-  margin-inline-start: 0;
-  padding-inline-start: 15px;
-}
-````
-
-## File: apps/web/components/snippets-page.tsx
-````typescript
-"use client";
-
-import { useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import dayjs from "dayjs";
-import type { Snippet } from "@agentswarm/shared-types";
-import { CopyOutlined } from "@ant-design/icons";
-import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
-import { api } from "../src/api/client";
-import { useSnippets } from "../src/hooks/useSnippets";
-import { useAuth } from "./auth-provider";
-import { trackEvent } from "../src/utils/analytics";
-
-const summarizeSnippet = (value: string): string => {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return "Empty";
-  }
-  return normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized;
-};
-
-export function SnippetsPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const { snippets, loading } = useSnippets();
-  const { can } = useAuth();
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [messageApi, contextHolder] = message.useMessage();
-  const canCreateSnippet = can("snippet:create");
-  const canEditSnippet = can("snippet:edit");
-  const canDeleteSnippet = can("snippet:delete");
-  const canDuplicateSnippet = can("snippet:create");
-  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
-
-  useEffect(() => {
-    const savedState = searchParams.get("saved");
-    if (!savedState) {
-      return;
-    }
-    if (savedState === "created") {
-      messageApi.success("Snippet created");
-    } else if (savedState === "updated") {
-      messageApi.success("Snippet updated");
-    }
-    router.replace("/snippets");
-  }, [messageApi, router, searchParams]);
-
-  const copySnippetToClipboard = async (content: string, label: string) => {
-    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-      messageApi.error("Clipboard access is unavailable in this browser.");
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(content);
-      messageApi.success(`${label} copied`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to copy snippet");
-    }
-  };
-
-  return (
-    <>
-      {contextHolder}
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
-        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-          <Flex vertical gap={0}>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              Snippets
-            </Typography.Title>
-            <Typography.Text type="secondary">
-              Store reusable text blocks and insert them into task prompts and follow-up messages.
-            </Typography.Text>
-          </Flex>
-          {canCreateSnippet ? (
-            <Button type="primary" onClick={() => router.push("/snippets/new?from=list")}>
-              Add Snippet
-            </Button>
-          ) : null}
-        </Flex>
-
-        <Card bordered={false}>
-          <Table<Snippet>
-            rowKey="id"
-            loading={loading}
-            dataSource={snippets}
-            pagination={{ pageSize: 10 }}
-            columns={[
-              {
-                title: "Name",
-                dataIndex: "name"
-              },
-              {
-                title: "Preview",
-                dataIndex: "content",
-                render: (value: string) => summarizeSnippet(value)
-              },
-              {
-                title: "Updated At",
-                dataIndex: "updatedAt",
-                sorter: (left, right) => left.updatedAt.localeCompare(right.updatedAt),
-                defaultSortOrder: "descend",
-                render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
-              },
-              {
-                title: "Actions",
-                key: "actions",
-                width: 280,
-                render: (_value, snippet) => (
-                  <Space size={8} wrap={false} style={{ whiteSpace: "nowrap" }}>
-                    <Button size="small" icon={<CopyOutlined />} onClick={() => void copySnippetToClipboard(snippet.content, snippet.name)}>
-                      Copy
-                    </Button>
-                    {canEditSnippet ? (
-                      <Button size="small" onClick={() => router.push(`/snippets/${snippet.id}/edit?from=list`)}>
-                        Edit
-                      </Button>
-                    ) : null}
-                    {canDuplicateSnippet ? (
-                      <Button
-                        size="small"
-                        loading={duplicatingId === snippet.id}
-                        onClick={async () => {
-                          setDuplicatingId(snippet.id);
-                          try {
-                            const duplicated = await api.duplicateSnippet(snippet.id);
-                            trackEvent("snippet_duplicated", { source: "list", snippet_id: snippet.id, duplicated_snippet_id: duplicated.id });
-                            messageApi.success("Snippet duplicated");
-                            router.push(`/snippets/${duplicated.id}/edit?from=duplicate`);
-                          } catch (error) {
-                            messageApi.error(error instanceof Error ? error.message : "Failed to duplicate snippet");
-                          } finally {
-                            setDuplicatingId(null);
-                          }
-                        }}
-                      >
-                        Duplicate
-                      </Button>
-                    ) : null}
-                    {canDeleteSnippet ? (
-                      <Popconfirm
-                        title="Delete snippet?"
-                        description={`Delete "${snippet.name}"?`}
-                        okText="Delete"
-                        okButtonProps={{ danger: true, loading: deletingId === snippet.id }}
-                        onConfirm={async () => {
-                          setDeletingId(snippet.id);
-                          try {
-                            await api.deleteSnippet(snippet.id);
-                            messageApi.success("Snippet deleted");
-                          } catch (error) {
-                            messageApi.error(error instanceof Error ? error.message : "Failed to delete snippet");
-                          } finally {
-                            setDeletingId(null);
-                          }
-                        }}
-                      >
-                        <Button danger size="small">
-                          Delete
-                        </Button>
-                      </Popconfirm>
-                    ) : null}
-                  </Space>
-                )
-              }
-            ]}
-          />
-        </Card>
-      </Space>
-    </>
-  );
-}
-````
-
-## File: apps/web/src/utils/task-lifecycle-view-model.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import type { Task } from "@agentswarm/shared-types";
-import { buildTaskLifecycleViewModel } from "./task-lifecycle-view-model";
-
-const createTask = (overrides: Partial<Task> = {}): Task =>
-  ({
-    id: "task-1",
-    title: "Task",
-    pinned: false,
-    hasPendingCheckpoint: false,
-    activeInteractiveSession: false,
-    activeTerminalSessionMode: null,
-    ownerUserId: null,
-    creatorName: null,
-    repoId: "repo-1",
-    repoName: "repo",
-    repoUrl: "https://github.com/example/repo.git",
-    repoDefaultBranch: "main",
-    taskType: "build",
-    provider: "codex",
-    providerProfile: "high",
-    modelOverride: null,
-    codexCredentialSource: "auto",
-    baseBranch: "main",
-    branchStrategy: "feature_branch",
-    complexity: "normal",
-    branchName: "feature/task-1",
-    workspaceBaseRef: null,
-    prompt: "Do the work",
-    notes: "",
-    executionSummary: "",
-    resultMarkdown: null,
-    branchDiff: null,
-    status: "open",
-    workflowStatus: "ready",
-    executionStatus: "idle",
-    executionAction: "build",
-    reviewReason: null,
-    logs: [],
-    createdAt: "2026-05-24T00:00:00.000Z",
-    updatedAt: "2026-05-24T00:00:00.000Z",
-    startedAt: null,
-    finishedAt: null,
-    errorMessage: null,
-    lastAction: "build",
-    enqueued: false,
-    ...overrides
-  }) satisfies Task as Task;
-
-describe("buildTaskLifecycleViewModel", () => {
-  it("maps preparing workspace state", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "preparing_workspace" }));
-    assert.equal(vm.isPreparingWorkspace, true);
-    assert.equal(vm.resultStatusText, "Preparing workspace");
-  });
-
-  it("maps queued build state", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "build_queued", taskType: "build" }));
-    assert.equal(vm.isQueued, true);
-    assert.equal(vm.resultStatusText, "Build queued");
-  });
-
-  it("maps queued ask state", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "ask_queued", taskType: "ask" }));
-    assert.equal(vm.isQueued, true);
-    assert.equal(vm.resultStatusText, "Question queued");
-  });
-
-  it("marks archived tasks", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "archived" }));
-    assert.equal(vm.isArchived, true);
-  });
-
-  it("marks checkpoint mutations as blocked while the task is running", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "building" }));
-    assert.equal(vm.checkpointDiffActionsBlocked, true);
-    assert.ok(vm.checkpointDiffActionsBlockedReason);
-  });
-});
+## File: AGENTS.md
+````markdown
+# Agent Harness Guide
+
+This file is a short operating guide for coding agents in this repository.
+
+## Start Here
+- If `REMOTE_BUILD=1`, export `REMOTE_BUILD_IMAGE` first.
+- Run `./scripts/harness/doctor.sh`
+- Run `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh` on clean checkout
+- Run `./scripts/harness/check-human-gated-flow.sh`
+- Run `./scripts/harness/check.sh`
+- Run `./scripts/harness/test.sh` (canonical test command)
+- Run `./scripts/harness/start.sh` (foreground dev mode)
+
+## Expected PR Workflow
+1. Run `./scripts/harness/pr-ready.sh`.
+2. Fix any failing checks.
+3. Complete the agent self-review checklist: `docs/development/agent-review.md`.
+4. Open a PR using `.github/pull_request_template.md`.
+5. Confirm docs are updated when behavior changes.
+
+Note:
+- `pr-ready.sh` includes architecture boundary checks.
+- `test.sh` supports `TEST_SCOPE=unit|integration|e2e|all`.
+
+## Documentation Table of Contents
+- [Architecture Summary](ARCHITECTURE.md)
+- [Docs Home](docs/index.md)
+- [Development Setup](docs/development/setup.md)
+- [Development Commands](docs/development/commands.md)
+- [Human-Gated Flow](docs/development/human-gated-taskwise-delivery-flow.md)
+- [Testing](docs/development/testing.md)
+- [Debugging](docs/development/debugging.md)
+- [Agent Self-Review](docs/development/agent-review.md)
+- [PR Workflow](docs/development/pr-workflow.md)
+- [Architecture Docs](docs/architecture/index.md)
+- [Product Docs](docs/product/index.md)
+- [Quality Docs](docs/quality/scorecard.md)
+- [Golden Principles](docs/quality/golden-principles.md)
+
+## Execution Plans
+- Small tasks can use inline plans in the task conversation.
+- Non-trivial tasks must use the Non-Trivial Task Flow below.
+- Complex tasks must create an execution plan using `docs/exec-plans/template.md`.
+- Plans must be updated during work as steps complete or scope changes.
+- Completed plans move from `docs/exec-plans/active/` to `docs/exec-plans/completed/`.
+- Complex task plans must include the required `Human-Gated Flow Evidence` checklist from the template.
+- Flow reference: `docs/development/human-gated-taskwise-delivery-flow.md`.
+
+## Non-Trivial Task Flow
+Use this flow for any task that requires repository changes beyond a tiny, obvious edit, touches multiple files, changes behavior, affects tests or build output, or has ambiguous requirements.
+
+```mermaid
+flowchart TB
+    A["Read Requirements"] --> B["Quick Repo Research"]
+    B --> C{"Clear Enough?"}
+    C -- No --> D["Ask Clarifying Questions"]
+    D --> A
+    C -- Yes --> E["Create Short Plan + Task List"]
+    E --> F["Human Review / Approval"]
+    F --> G{"Approved?"}
+    G -- No --> A
+    G -- Yes --> H["Run Baseline Checks"]
+    H --> I["Implement Next Task"]
+    I --> J["Run Tests / Build"]
+    J --> K{"Passed?"}
+    K -- No --> I
+    K -- Yes --> L["Self Review"]
+    L --> M{"More Tasks?"}
+    M -- Yes --> I
+    M -- No --> N["Final Verification"]
+    N --> R["Complete"]
+```
+
+## Operating Rules
+- Prefer harness scripts in `scripts/harness/`.
+- Treat non-zero exit codes as failures.
+- Do not assume behavior that is not documented in this repository.
+- Mark missing evidence as `TODO` instead of guessing.
+- Before starting work, inspect `docs/repomix.md` for the current repository context bundle.
+- After any agent run that changes code or repository files, execute `npx repomix --style markdown --output docs/repomix.md` to refresh the repository context bundle.
+- Keep `docs/repomix.md` as the canonical Repomix output referenced by agents.
+
+## Remote Build Runner
+Use `http://host.docker.internal:38127` and call `POST /run` with:
+- `image`
+- `workdir`
+- `cmd` (non-empty string array, for example `["sh","-lc","echo ok"]`)
+
+For `workdir`, prefer `TASK_WORKSPACE_PATH`.
+
+Runner mount support:
+- `dockerSocketContainerPath`: `/var/run/docker.sock` (available for mounting Docker into the runner container)
+
+Harness remote mode:
+- Set `REMOTE_BUILD=1` to force harness scripts to run in Remote Build Runner.
+- Set `REMOTE_BUILD_IMAGE` to the container image used by the runner request.
+- Optional: set `REMOTE_BUILD_RUNNER_URL` (defaults to `http://host.docker.internal:38127`).
+- Harness scripts auto-route to `POST /run` before local execution when remote mode is enabled.
+- Set `REMOTE_BUILD=0` (or unset it) to run harness scripts locally.
+- Use a remote image that has: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
+- `test.sh` auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`) for browser E2E when the remote runner cannot launch Playwright locally.
+
+## Sync Policy Reference
+- GitHub sync ownership and conflict policy: [docs/github-sync-ownership-model.md](docs/github-sync-ownership-model.md)
 ````
 
 ## File: apps/server/src/routes/github-webhooks.ts
@@ -40326,6 +38260,1726 @@ export class PostgresRepositoryStore implements RepositoryStore {
 }
 ````
 
+## File: apps/server/src/services/settings-store.ts
+````typescript
+import { randomUUID } from "node:crypto";
+import type Redis from "ioredis";
+import type { Pool } from "pg";
+import type {
+  AgentProvider,
+  AgentResponsePreference,
+  AudienceType,
+  SystemDataStores,
+  McpServerConfig,
+  ProviderProfile,
+  WorkspaceProvisioningMode,
+  ResponsePreferencePreset,
+  ResponsePreferencePresetInput,
+  SystemSettings,
+  UserNotes,
+  UpdateCredentialSettingsInput,
+  UpdateSettingsInput
+} from "@agentswarm/shared-types";
+import { EventBus } from "../lib/events.js";
+import { normalizeProvider, DEFAULT_PROVIDER, normalizeProviderProfile } from "../lib/provider-config.js";
+import { defaultModelForProvider } from "../lib/provider-config.js";
+import type { CredentialStore, RuntimeCredentials } from "./credential-store.js";
+
+const SETTINGS_KEY = "agentswarm:settings";
+const USER_NOTES_KEY_PREFIX = "agentswarm:user-notes:";
+const SYSTEM_RESPONSE_PREFERENCE_PRESET_ID = "neutral";
+
+const DEFAULT_CODEX_EFFORT: ProviderProfile = "high";
+const DEFAULT_CLAUDE_EFFORT: ProviderProfile = "high";
+const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
+
+const nowIso = (): string => new Date().toISOString();
+
+const buildSystemResponsePreferencePreset = (): ResponsePreferencePreset => ({
+  id: SYSTEM_RESPONSE_PREFERENCE_PRESET_ID,
+  name: "Neutral",
+  description: "No tailored response style. The agent responds normally.",
+  preference: DEFAULT_AGENT_RESPONSE_PREFERENCE,
+  isSystem: true,
+  createdAt: "2026-05-07T00:00:00.000Z",
+  updatedAt: "2026-05-07T00:00:00.000Z"
+});
+
+const buildSystemDataStores = (): SystemDataStores => ({
+  taskStore: "postgres",
+  snippetStore: "postgres",
+  sequenceStore: "postgres",
+  repositoryStore: "postgres",
+  credentialStore: "postgres",
+  roleStore: "postgres",
+  userStore: "postgres",
+  settingsStore: "postgres",
+  taskQueueStore: "redis",
+  webhookDeliveryStore: "redis",
+  sessionStore: "redis",
+  eventBus: "redis"
+});
+
+const defaultSettings: SystemSettings = {
+  defaultProvider: DEFAULT_PROVIDER,
+  maxAgents: 2,
+  branchPrefix: "agentswarm",
+  workspaceProvisioningMode: "clone_only",
+  gitUsername: "x-access-token",
+  mcpServers: [],
+  openaiBaseUrl: null,
+  taskPromptMagicModel: "gpt-5.4-mini",
+  taskPromptMagicTemplate:
+    "You are an expert prompt editor for software engineering tasks.\nRewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.\n\nRequirements:\n- Preserve intent and constraints.\n- Make it specific and actionable.\n- Include acceptance criteria when implied.\n- Avoid changing requested scope.\n- Return plain text only, no markdown fences.\n\nUser request:\n{{user_request}}\n",
+  githubTokenConfigured: false,
+  openaiApiKeyConfigured: false,
+  anthropicApiKeyConfigured: false,
+  codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.4",
+  codexDefaultEffort: DEFAULT_CODEX_EFFORT,
+  claudeDefaultModel: defaultModelForProvider("claude", DEFAULT_CLAUDE_EFFORT) ?? "claude-sonnet-4-5",
+  claudeDefaultEffort: DEFAULT_CLAUDE_EFFORT,
+  responsePreferencePresets: [buildSystemResponsePreferencePreset()],
+  dataStores: buildSystemDataStores()
+};
+
+const normalizeBranchPrefix = (value: string | undefined): string => {
+  const cleaned = (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9/_-]+/g, "-")
+    .replace(/\/+/g, "/")
+    .replace(/^\/+|\/+$/g, "");
+
+  return cleaned || defaultSettings.branchPrefix;
+};
+
+const normalizeGitUsername = (value: string | undefined): string => {
+  const cleaned = (value ?? "").trim();
+  return cleaned || defaultSettings.gitUsername;
+};
+
+const normalizeDefaultProvider = (value: AgentProvider | string | undefined): AgentProvider =>
+  normalizeProvider(value ?? defaultSettings.defaultProvider);
+
+const normalizeWorkspaceProvisioningMode = (value: WorkspaceProvisioningMode | string | undefined): WorkspaceProvisioningMode =>
+  value === "hybrid" ? "hybrid" : "clone_only";
+
+const normalizeMcpServerName = (value: string | undefined): string =>
+  (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const normalizeMcpServerArgs = (value: string[] | undefined): string[] =>
+  (value ?? []).map((item) => item.trim()).filter(Boolean);
+
+const MCP_BEARER_TOKEN_ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+const normalizeMcpBearerTokenEnvVar = (value: string | null | undefined): string | null => {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed || !MCP_BEARER_TOKEN_ENV_VAR_PATTERN.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+};
+
+const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerConfig[] => {
+  const normalized: McpServerConfig[] = [];
+  const seenNames = new Set<string>();
+
+  for (const server of value ?? []) {
+    const name = normalizeMcpServerName(server.name);
+    if (!name || seenNames.has(name)) {
+      continue;
+    }
+
+    const transport = server.transport === "http" ? "http" : "stdio";
+    const baseServer: McpServerConfig = {
+      name,
+      enabled: server.enabled !== false,
+      transport
+    };
+
+    if (transport === "http") {
+      const url = server.url?.trim() || null;
+      if (!url) {
+        continue;
+      }
+
+      normalized.push({
+        ...baseServer,
+        url,
+        bearerTokenEnvVar: normalizeMcpBearerTokenEnvVar(server.bearerTokenEnvVar)
+      });
+    } else {
+      const command = server.command?.trim() || null;
+      if (!command) {
+        continue;
+      }
+
+      normalized.push({
+        ...baseServer,
+        command,
+        args: normalizeMcpServerArgs(server.args)
+      });
+    }
+
+    seenNames.add(name);
+  }
+
+  return normalized;
+};
+
+const normalizeResponsePreferencePresetName = (value: string | undefined): string =>
+  (value ?? "").trim().replace(/\s+/g, " ");
+
+const normalizeResponsePreferencePresetDescription = (value: string | undefined): string => (value ?? "").trim();
+
+const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
+const RESPONSE_EXPLANATION_DEPTH = new Set(["one_line", "brief", "standard", "detailed", "deep_dive"]);
+const RESPONSE_JARGON_LEVEL = new Set(["avoid", "balanced", "expert"]);
+const RESPONSE_CODE_PREFERENCE = new Set(["only_when_needed", "prefer_examples", "avoid_code"]);
+const RESPONSE_CLARIFY_BEHAVIOR = new Set(["ask_when_ambiguous", "make_reasonable_assumptions"]);
+const RESPONSE_FORMATTING_STYLE = new Set(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]);
+
+const normalizeAgentResponsePreference = (
+  value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined
+): AgentResponsePreference => ({
+  audience: (() => {
+    if (typeof value?.audience === "string" && RESPONSE_AUDIENCES.has(value.audience as AudienceType)) {
+      return value.audience as AudienceType;
+    }
+    if ((value as { style?: string } | undefined)?.style === "technical" || (value as { style?: string } | undefined)?.style === "non_technical") {
+      return (value as { style?: AudienceType }).style;
+    }
+    return undefined;
+  })(),
+  explanationDepth:
+    typeof value?.explanationDepth === "string" && RESPONSE_EXPLANATION_DEPTH.has(value.explanationDepth)
+      ? value.explanationDepth
+      : undefined,
+  jargonLevel:
+    typeof value?.jargonLevel === "string" && RESPONSE_JARGON_LEVEL.has(value.jargonLevel)
+      ? value.jargonLevel
+      : undefined,
+  codePreference:
+    typeof value?.codePreference === "string" && RESPONSE_CODE_PREFERENCE.has(value.codePreference)
+      ? value.codePreference
+      : undefined,
+  clarifyBehavior:
+    typeof value?.clarifyBehavior === "string" && RESPONSE_CLARIFY_BEHAVIOR.has(value.clarifyBehavior)
+      ? value.clarifyBehavior
+      : undefined,
+  formattingStyle:
+    typeof value?.formattingStyle === "string" && RESPONSE_FORMATTING_STYLE.has(value.formattingStyle)
+      ? value.formattingStyle
+      : undefined,
+  extraInstructions: value?.extraInstructions?.trim() || undefined
+});
+
+const normalizeResponsePreferencePresets = (
+  value: ResponsePreferencePresetInput[] | ResponsePreferencePreset[] | undefined
+): ResponsePreferencePreset[] => {
+  const systemPreset = buildSystemResponsePreferencePreset();
+  const presets: ResponsePreferencePreset[] = [];
+  const seenIds = new Set<string>([systemPreset.id]);
+  const seenNames = new Set<string>([systemPreset.name.toLowerCase()]);
+
+  for (const rawPreset of value ?? []) {
+    const presetId = typeof rawPreset.id === "string" && rawPreset.id.trim() ? rawPreset.id.trim() : randomUUID();
+    if (presetId === systemPreset.id || seenIds.has(presetId)) {
+      continue;
+    }
+
+    const name = normalizeResponsePreferencePresetName(rawPreset.name);
+    const normalizedNameKey = name.toLowerCase();
+    if (!name || seenNames.has(normalizedNameKey)) {
+      continue;
+    }
+
+    presets.push({
+      id: presetId,
+      name,
+      description: normalizeResponsePreferencePresetDescription(rawPreset.description),
+      preference: normalizeAgentResponsePreference(rawPreset.preference),
+      isSystem: false,
+      createdAt: "createdAt" in rawPreset && typeof rawPreset.createdAt === "string" ? rawPreset.createdAt : nowIso(),
+      updatedAt: nowIso()
+    });
+    seenIds.add(presetId);
+    seenNames.add(normalizedNameKey);
+  }
+
+  return [systemPreset, ...presets].sort((left, right) => {
+    if (left.isSystem !== right.isSystem) {
+      return left.isSystem ? -1 : 1;
+    }
+    return left.name.localeCompare(right.name);
+  });
+};
+
+export interface SettingsRuntimeCredentials extends RuntimeCredentials {
+  gitUsername: string;
+  openaiBaseUrl: string | null;
+  defaultProvider: AgentProvider;
+}
+
+export interface SettingsStore {
+  getSettings(): Promise<SystemSettings>;
+  updateSettings(input: UpdateSettingsInput): Promise<SystemSettings>;
+  updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings>;
+  getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials>;
+  getUserNotes(userId: string): Promise<UserNotes>;
+  updateUserNotes(userId: string, notes: string): Promise<UserNotes>;
+}
+
+export class RedisSettingsStore implements SettingsStore {
+  constructor(
+    private readonly redis: Redis,
+    private readonly eventBus: EventBus,
+    private readonly credentialStore: CredentialStore
+  ) {}
+
+  private async publishSettings(settings: SystemSettings): Promise<void> {
+    await this.eventBus.publish({ type: "settings:updated", payload: settings });
+  }
+
+  async getSettings(): Promise<SystemSettings> {
+    const raw = await this.redis.get(SETTINGS_KEY);
+    if (!raw) {
+      const baseSettings = {
+        defaultProvider: defaultSettings.defaultProvider,
+        maxAgents: defaultSettings.maxAgents,
+        branchPrefix: defaultSettings.branchPrefix,
+        workspaceProvisioningMode: defaultSettings.workspaceProvisioningMode,
+        gitUsername: defaultSettings.gitUsername,
+        mcpServers: defaultSettings.mcpServers,
+        openaiBaseUrl: defaultSettings.openaiBaseUrl,
+        taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
+        taskPromptMagicTemplate: defaultSettings.taskPromptMagicTemplate,
+        codexDefaultModel: defaultSettings.codexDefaultModel,
+        codexDefaultEffort: defaultSettings.codexDefaultEffort,
+        claudeDefaultModel: defaultSettings.claudeDefaultModel,
+        claudeDefaultEffort: defaultSettings.claudeDefaultEffort,
+        responsePreferencePresets: defaultSettings.responsePreferencePresets
+      };
+      await this.redis.set(SETTINGS_KEY, JSON.stringify(baseSettings));
+    }
+
+    const parsed = raw ? (JSON.parse(raw) as Partial<SystemSettings> & { agentRules?: string; autoModeEnabled?: boolean }) : {};
+    const normalizedBase = {
+      defaultProvider: normalizeDefaultProvider(parsed.defaultProvider),
+      maxAgents: parsed.maxAgents ?? defaultSettings.maxAgents,
+      branchPrefix: normalizeBranchPrefix(parsed.branchPrefix),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(parsed.workspaceProvisioningMode),
+      gitUsername: normalizeGitUsername(parsed.gitUsername),
+      mcpServers: normalizeMcpServers(parsed.mcpServers),
+      openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null,
+      taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
+      taskPromptMagicTemplate: parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate,
+      codexDefaultModel: parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(parsed.codexDefaultEffort) ?? defaultSettings.codexDefaultEffort,
+      claudeDefaultModel: parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(parsed.claudeDefaultEffort) ?? defaultSettings.claudeDefaultEffort,
+      responsePreferencePresets: normalizeResponsePreferencePresets(parsed.responsePreferencePresets)
+    };
+
+    if (
+      Object.prototype.hasOwnProperty.call(parsed, "autoModeEnabled") ||
+      Object.prototype.hasOwnProperty.call(parsed, "agentRules") ||
+      parsed.defaultProvider !== normalizedBase.defaultProvider ||
+      parsed.maxAgents !== normalizedBase.maxAgents ||
+      parsed.branchPrefix !== normalizedBase.branchPrefix ||
+      parsed.workspaceProvisioningMode !== normalizedBase.workspaceProvisioningMode ||
+      parsed.gitUsername !== normalizedBase.gitUsername ||
+      JSON.stringify(parsed.mcpServers ?? []) !== JSON.stringify(normalizedBase.mcpServers) ||
+      (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl ||
+      (parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel) !== normalizedBase.taskPromptMagicModel ||
+      (parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate) !== normalizedBase.taskPromptMagicTemplate ||
+      JSON.stringify(parsed.responsePreferencePresets ?? []) !== JSON.stringify(normalizedBase.responsePreferencePresets)
+    ) {
+      await this.redis.set(SETTINGS_KEY, JSON.stringify(normalizedBase));
+    }
+
+    const credentialStatus = await this.credentialStore.getCredentialStatus();
+    return {
+      ...normalizedBase,
+      ...credentialStatus,
+      dataStores: buildSystemDataStores()
+    };
+  }
+
+  async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
+    const current = await this.getSettings();
+    const nextBase = {
+      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
+      maxAgents: input.maxAgents ?? current.maxAgents,
+      branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
+        input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
+      ),
+      gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
+      mcpServers:
+        input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
+      openaiBaseUrl:
+        input.openaiBaseUrl === undefined
+          ? current.openaiBaseUrl
+          : input.openaiBaseUrl?.trim()
+            ? input.openaiBaseUrl.trim()
+            : null,
+      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
+      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
+      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
+      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
+      responsePreferencePresets:
+        input.responsePreferencePresets === undefined
+          ? current.responsePreferencePresets
+          : normalizeResponsePreferencePresets(input.responsePreferencePresets)
+    };
+
+    await this.redis.set(SETTINGS_KEY, JSON.stringify(nextBase));
+    const next = await this.getSettings();
+    await this.publishSettings(next);
+    return next;
+  }
+
+  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings> {
+    await this.credentialStore.updateCredentials(input);
+    const settings = await this.getSettings();
+    await this.publishSettings(settings);
+    return settings;
+  }
+
+  async getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials> {
+    const [credentials, settings] = await Promise.all([
+      this.credentialStore.getCredentials(),
+      this.getSettings()
+    ]);
+    const codexAuthJson = userId?.trim()
+      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
+      : null;
+
+    return {
+      ...credentials,
+      codexAuthJson: codexAuthJson || null,
+      gitUsername: settings.gitUsername,
+      openaiBaseUrl: settings.openaiBaseUrl,
+      defaultProvider: settings.defaultProvider
+    };
+  }
+
+  async getUserNotes(userId: string): Promise<UserNotes> {
+    const key = `${USER_NOTES_KEY_PREFIX}${userId}`;
+    const raw = await this.redis.get(key);
+    if (!raw) {
+      const initial: UserNotes = { notes: "", updatedAt: nowIso() };
+      await this.redis.set(key, JSON.stringify(initial));
+      return initial;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<UserNotes> | null;
+    return {
+      notes: typeof parsed?.notes === "string" ? parsed.notes : "",
+      updatedAt: typeof parsed?.updatedAt === "string" && parsed.updatedAt.trim().length > 0 ? parsed.updatedAt : nowIso()
+    };
+  }
+
+  async updateUserNotes(userId: string, notes: string): Promise<UserNotes> {
+    const key = `${USER_NOTES_KEY_PREFIX}${userId}`;
+    const next: UserNotes = {
+      notes,
+      updatedAt: nowIso()
+    };
+    await this.redis.set(key, JSON.stringify(next));
+    return next;
+  }
+}
+
+export class PostgresSettingsStore implements SettingsStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly eventBus: EventBus,
+    private readonly credentialStore: CredentialStore
+  ) {}
+
+  private async publishSettings(settings: SystemSettings): Promise<void> {
+    await this.eventBus.publish({ type: "settings:updated", payload: settings });
+  }
+
+  private async ensureBaseSettingsRow(): Promise<void> {
+    await this.pool.query(
+      `
+        INSERT INTO system_settings (
+          singleton_id,
+          default_provider,
+          max_agents,
+          branch_prefix,
+          workspace_provisioning_mode,
+          git_username,
+          mcp_servers,
+          openai_base_url,
+          task_prompt_magic_model,
+          task_prompt_magic_template,
+          codex_default_model,
+          codex_default_effort,
+          claude_default_model,
+          claude_default_effort,
+          response_preference_presets
+        )
+        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+        ON CONFLICT (singleton_id) DO NOTHING
+      `,
+      [
+        defaultSettings.defaultProvider,
+        defaultSettings.maxAgents,
+        defaultSettings.branchPrefix,
+        defaultSettings.workspaceProvisioningMode,
+        defaultSettings.gitUsername,
+        JSON.stringify(defaultSettings.mcpServers),
+        defaultSettings.openaiBaseUrl,
+        defaultSettings.taskPromptMagicModel,
+        defaultSettings.taskPromptMagicTemplate,
+        defaultSettings.codexDefaultModel,
+        defaultSettings.codexDefaultEffort,
+        defaultSettings.claudeDefaultModel,
+        defaultSettings.claudeDefaultEffort,
+        JSON.stringify(defaultSettings.responsePreferencePresets)
+      ]
+    );
+  }
+
+  async getSettings(): Promise<SystemSettings> {
+    await this.ensureBaseSettingsRow();
+    const result = await this.pool.query(
+      `
+        SELECT
+          default_provider,
+          max_agents,
+          branch_prefix,
+          workspace_provisioning_mode,
+          git_username,
+          mcp_servers,
+          openai_base_url,
+          task_prompt_magic_model,
+          task_prompt_magic_template,
+          codex_default_model,
+          codex_default_effort,
+          claude_default_model,
+          claude_default_effort,
+          response_preference_presets
+        FROM system_settings
+        WHERE singleton_id = 1
+      `
+    );
+    const row = result.rows[0];
+    const normalizedBase = {
+      defaultProvider: normalizeDefaultProvider(row?.default_provider),
+      maxAgents: typeof row?.max_agents === "number" ? row.max_agents : defaultSettings.maxAgents,
+      branchPrefix: normalizeBranchPrefix(typeof row?.branch_prefix === "string" ? row.branch_prefix : undefined),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(row?.workspace_provisioning_mode),
+      gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
+      mcpServers: normalizeMcpServers(Array.isArray(row?.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined),
+      openaiBaseUrl: typeof row?.openai_base_url === "string" && row.openai_base_url.trim().length > 0 ? row.openai_base_url.trim() : null,
+      taskPromptMagicModel:
+        typeof row?.task_prompt_magic_model === "string" && row.task_prompt_magic_model.trim().length > 0
+          ? row.task_prompt_magic_model.trim()
+          : defaultSettings.taskPromptMagicModel,
+      taskPromptMagicTemplate:
+        typeof row?.task_prompt_magic_template === "string" && row.task_prompt_magic_template.trim().length > 0
+          ? row.task_prompt_magic_template.trim()
+          : defaultSettings.taskPromptMagicTemplate,
+      codexDefaultModel:
+        typeof row?.codex_default_model === "string" && row.codex_default_model.trim().length > 0
+          ? row.codex_default_model.trim()
+          : defaultSettings.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(row?.codex_default_effort) ?? defaultSettings.codexDefaultEffort,
+      claudeDefaultModel:
+        typeof row?.claude_default_model === "string" && row.claude_default_model.trim().length > 0
+          ? row.claude_default_model.trim()
+          : defaultSettings.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(row?.claude_default_effort) ?? defaultSettings.claudeDefaultEffort,
+      responsePreferencePresets: normalizeResponsePreferencePresets(
+        Array.isArray(row?.response_preference_presets) ? (row.response_preference_presets as ResponsePreferencePreset[]) : undefined
+      )
+    };
+
+    const credentialStatus = await this.credentialStore.getCredentialStatus();
+    return {
+      ...normalizedBase,
+      ...credentialStatus,
+      dataStores: buildSystemDataStores()
+    };
+  }
+
+  async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
+    const current = await this.getSettings();
+    const nextBase = {
+      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
+      maxAgents: input.maxAgents ?? current.maxAgents,
+      branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
+        input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
+      ),
+      gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
+      mcpServers: input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
+      openaiBaseUrl:
+        input.openaiBaseUrl === undefined
+          ? current.openaiBaseUrl
+          : input.openaiBaseUrl?.trim()
+            ? input.openaiBaseUrl.trim()
+            : null,
+      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
+      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
+      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
+      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
+      responsePreferencePresets:
+        input.responsePreferencePresets === undefined
+          ? current.responsePreferencePresets
+          : normalizeResponsePreferencePresets(input.responsePreferencePresets)
+    };
+
+    await this.pool.query(
+      `
+        INSERT INTO system_settings (
+          singleton_id,
+          default_provider,
+          max_agents,
+          branch_prefix,
+          workspace_provisioning_mode,
+          git_username,
+          mcp_servers,
+          openai_base_url,
+          task_prompt_magic_model,
+          task_prompt_magic_template,
+          codex_default_model,
+          codex_default_effort,
+          claude_default_model,
+          claude_default_effort,
+          response_preference_presets
+        )
+        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+        ON CONFLICT (singleton_id) DO UPDATE
+        SET
+          default_provider = EXCLUDED.default_provider,
+          max_agents = EXCLUDED.max_agents,
+          branch_prefix = EXCLUDED.branch_prefix,
+          workspace_provisioning_mode = EXCLUDED.workspace_provisioning_mode,
+          git_username = EXCLUDED.git_username,
+          mcp_servers = EXCLUDED.mcp_servers,
+          openai_base_url = EXCLUDED.openai_base_url,
+          task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
+          task_prompt_magic_template = EXCLUDED.task_prompt_magic_template,
+          codex_default_model = EXCLUDED.codex_default_model,
+          codex_default_effort = EXCLUDED.codex_default_effort,
+          claude_default_model = EXCLUDED.claude_default_model,
+          claude_default_effort = EXCLUDED.claude_default_effort,
+          response_preference_presets = EXCLUDED.response_preference_presets
+      `,
+      [
+        nextBase.defaultProvider,
+        nextBase.maxAgents,
+        nextBase.branchPrefix,
+        nextBase.workspaceProvisioningMode,
+        nextBase.gitUsername,
+        JSON.stringify(nextBase.mcpServers),
+        nextBase.openaiBaseUrl,
+        nextBase.taskPromptMagicModel,
+        nextBase.taskPromptMagicTemplate,
+        nextBase.codexDefaultModel,
+        nextBase.codexDefaultEffort,
+        nextBase.claudeDefaultModel,
+        nextBase.claudeDefaultEffort,
+        JSON.stringify(nextBase.responsePreferencePresets)
+      ]
+    );
+    const next = await this.getSettings();
+    await this.publishSettings(next);
+    return next;
+  }
+
+  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings> {
+    await this.credentialStore.updateCredentials(input);
+    const settings = await this.getSettings();
+    await this.publishSettings(settings);
+    return settings;
+  }
+
+  async getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials> {
+    const [credentials, settings] = await Promise.all([
+      this.credentialStore.getCredentials(),
+      this.getSettings()
+    ]);
+    const codexAuthJson = userId?.trim()
+      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
+      : null;
+
+    return {
+      ...credentials,
+      codexAuthJson: codexAuthJson || null,
+      gitUsername: settings.gitUsername,
+      openaiBaseUrl: settings.openaiBaseUrl,
+      defaultProvider: settings.defaultProvider
+    };
+  }
+
+  async getUserNotes(userId: string): Promise<UserNotes> {
+    const result = await this.pool.query(
+      `
+        SELECT notes, updated_at
+        FROM user_notes
+        WHERE user_id = $1
+      `,
+      [userId]
+    );
+    const row = result.rows[0];
+    return {
+      notes: typeof row?.notes === "string" ? row.notes : "",
+      updatedAt:
+        typeof row?.updated_at === "string" && row.updated_at.trim().length > 0
+          ? row.updated_at
+          : nowIso()
+    };
+  }
+
+  async updateUserNotes(userId: string, notes: string): Promise<UserNotes> {
+    const next: UserNotes = {
+      notes,
+      updatedAt: nowIso()
+    };
+    await this.pool.query(
+      `
+        INSERT INTO user_notes (user_id, notes, updated_at)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id) DO UPDATE
+        SET notes = EXCLUDED.notes, updated_at = EXCLUDED.updated_at
+      `,
+      [userId, next.notes, next.updatedAt]
+    );
+    return next;
+  }
+}
+````
+
+## File: apps/web/app/globals.css
+````css
+@import "@mdxeditor/editor/style.css";
+
+:root {
+  color-scheme: light;
+  --app-body-bg: #f4f8f5;
+  --app-body-text: #5a675d;
+  --diff-background-color: #fcfefd;
+  --diff-text-color: #415046;
+  --diff-selection-background-color: rgba(28, 128, 87, 0.12);
+  --diff-selection-text-color: var(--diff-text-color);
+  --diff-gutter-insert-background-color: #dff5e4;
+  --diff-gutter-insert-text-color: #2e6a48;
+  --diff-gutter-delete-background-color: #f5dde0;
+  --diff-gutter-delete-text-color: #8d4a53;
+  --diff-gutter-selected-background-color: #efe7c8;
+  --diff-gutter-selected-text-color: #5b5538;
+  --diff-code-insert-background-color: #ebf9ee;
+  --diff-code-insert-text-color: #274b35;
+  --diff-code-delete-background-color: #faecee;
+  --diff-code-delete-text-color: #6d3c43;
+  --diff-code-insert-edit-background-color: #c8e8d1;
+  --diff-code-insert-edit-text-color: #1f402c;
+  --diff-code-delete-edit-background-color: #efc0c7;
+  --diff-code-delete-edit-text-color: #5e2f36;
+  --diff-code-selected-background-color: #f3edcf;
+  --diff-code-selected-text-color: #4e4731;
+  --diff-omit-gutter-line-color: #c95c5c;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --app-body-bg: #0e1411;
+  --app-body-text: #d8e2d9;
+  --diff-background-color: #141c18;
+  --diff-text-color: #d7e3d8;
+  --diff-selection-background-color: rgba(103, 196, 150, 0.18);
+  --diff-selection-text-color: #f4f8f5;
+  --diff-gutter-insert-background-color: #173624;
+  --diff-gutter-insert-text-color: #8fd9ae;
+  --diff-gutter-delete-background-color: #3a1f25;
+  --diff-gutter-delete-text-color: #e2a2ab;
+  --diff-gutter-selected-background-color: #3a3723;
+  --diff-gutter-selected-text-color: #efe2a0;
+  --diff-code-insert-background-color: #10251a;
+  --diff-code-insert-text-color: #cfeedd;
+  --diff-code-delete-background-color: #2c171c;
+  --diff-code-delete-text-color: #f2c4ca;
+  --diff-code-insert-edit-background-color: #27543e;
+  --diff-code-insert-edit-text-color: #e8fff1;
+  --diff-code-delete-edit-background-color: #7a3a47;
+  --diff-code-delete-edit-text-color: #fff0f2;
+  --diff-code-selected-background-color: #33311f;
+  --diff-code-selected-text-color: #f2e8b7;
+  --diff-omit-gutter-line-color: #d46c6c;
+}
+
+html[data-theme="cyber"] {
+  color-scheme: dark;
+  --app-body-bg: #181825;
+  --app-body-text: rgba(200, 182, 255, 0.9);
+  --diff-background-color: #1e1e2e;
+  --diff-text-color: #c8b6ff;
+  --diff-selection-background-color: rgba(157, 78, 221, 0.18);
+  --diff-selection-text-color: #f4eeff;
+  --diff-gutter-insert-background-color: #17353a;
+  --diff-gutter-insert-text-color: #72efdd;
+  --diff-gutter-delete-background-color: #3a1028;
+  --diff-gutter-delete-text-color: #ff8ab5;
+  --diff-gutter-selected-background-color: #3a3111;
+  --diff-gutter-selected-text-color: #ffd60a;
+  --diff-code-insert-background-color: #11272a;
+  --diff-code-insert-text-color: #d2fffb;
+  --diff-code-delete-background-color: #2a0c1b;
+  --diff-code-delete-text-color: #ffd1e4;
+  --diff-code-insert-edit-background-color: #1c4f56;
+  --diff-code-insert-edit-text-color: #effffd;
+  --diff-code-delete-edit-background-color: #6d1240;
+  --diff-code-delete-edit-text-color: #fff0f7;
+  --diff-code-selected-background-color: #3a3111;
+  --diff-code-selected-text-color: #ffe98a;
+  --diff-omit-gutter-line-color: #ff006e;
+}
+
+html[data-theme="forge"] {
+  color-scheme: dark;
+  --app-body-bg: #0d1117;
+  --app-body-text: rgba(201, 209, 217, 0.88);
+  --diff-background-color: #161b22;
+  --diff-text-color: #c9d1d9;
+  --diff-selection-background-color: rgba(255, 107, 53, 0.16);
+  --diff-selection-text-color: #f6f8fa;
+  --diff-gutter-insert-background-color: #0f302e;
+  --diff-gutter-insert-text-color: #59e1ce;
+  --diff-gutter-delete-background-color: #34191d;
+  --diff-gutter-delete-text-color: #ff9b9b;
+  --diff-gutter-selected-background-color: #3a2c16;
+  --diff-gutter-selected-text-color: #ffbf66;
+  --diff-code-insert-background-color: #0d2625;
+  --diff-code-insert-text-color: #d3fff8;
+  --diff-code-delete-background-color: #281316;
+  --diff-code-delete-text-color: #ffd7d7;
+  --diff-code-insert-edit-background-color: #13524d;
+  --diff-code-insert-edit-text-color: #effffb;
+  --diff-code-delete-edit-background-color: #7b2b31;
+  --diff-code-delete-edit-text-color: #fff1f1;
+  --diff-code-selected-background-color: #352915;
+  --diff-code-selected-text-color: #ffdca0;
+  --diff-omit-gutter-line-color: #ff5252;
+}
+
+html[data-theme="forge-light"] {
+  color-scheme: light;
+  --app-body-bg: #fff3eb;
+  --app-body-text: rgba(51, 40, 33, 0.92);
+  --diff-background-color: #ffffff;
+  --diff-text-color: #332821;
+  --diff-selection-background-color: rgba(255, 107, 53, 0.12);
+  --diff-selection-text-color: #332821;
+  --diff-gutter-insert-background-color: #e3f7f2;
+  --diff-gutter-insert-text-color: #0b7c69;
+  --diff-gutter-delete-background-color: #fff0ef;
+  --diff-gutter-delete-text-color: #dc2626;
+  --diff-gutter-selected-background-color: #fff0d8;
+  --diff-gutter-selected-text-color: #b96b00;
+  --diff-code-insert-background-color: #f0fffb;
+  --diff-code-insert-text-color: #0a5c4e;
+  --diff-code-delete-background-color: #fff5f4;
+  --diff-code-delete-text-color: #b91c1c;
+  --diff-code-insert-edit-background-color: #c7efe5;
+  --diff-code-insert-edit-text-color: #09483e;
+  --diff-code-delete-edit-background-color: #ffd6d1;
+  --diff-code-delete-edit-text-color: #991b1b;
+  --diff-code-selected-background-color: #ffe7c2;
+  --diff-code-selected-text-color: #9a5600;
+  --diff-omit-gutter-line-color: #dc2626;
+}
+
+html[data-theme="github"] {
+  color-scheme: dark;
+  --app-body-bg: #0d1117;
+  --app-body-text: #c9d1d9;
+  --diff-background-color: #161b22;
+  --diff-text-color: #c9d1d9;
+  --diff-selection-background-color: rgba(31, 111, 235, 0.18);
+  --diff-selection-text-color: #f0f6fc;
+  --diff-gutter-insert-background-color: #0f2419;
+  --diff-gutter-insert-text-color: #56d364;
+  --diff-gutter-delete-background-color: #2d1517;
+  --diff-gutter-delete-text-color: #ff7b72;
+  --diff-gutter-selected-background-color: #2b2415;
+  --diff-gutter-selected-text-color: #ffa657;
+  --diff-code-insert-background-color: #0d1f14;
+  --diff-code-insert-text-color: #aff5b4;
+  --diff-code-delete-background-color: #231417;
+  --diff-code-delete-text-color: #ffdcd7;
+  --diff-code-insert-edit-background-color: #1a3a24;
+  --diff-code-insert-edit-text-color: #d2ffd8;
+  --diff-code-delete-edit-background-color: #5d2023;
+  --diff-code-delete-edit-text-color: #fff1ee;
+  --diff-code-selected-background-color: #2b2415;
+  --diff-code-selected-text-color: #ffddb0;
+  --diff-omit-gutter-line-color: #f85149;
+}
+
+html[data-theme="github-light"] {
+  color-scheme: light;
+  --app-body-bg: #f6f8fa;
+  --app-body-text: #1f2328;
+  --diff-background-color: #ffffff;
+  --diff-text-color: #1f2328;
+  --diff-selection-background-color: rgba(9, 105, 218, 0.12);
+  --diff-selection-text-color: #1f2328;
+  --diff-gutter-insert-background-color: #dafbe1;
+  --diff-gutter-insert-text-color: #1a7f37;
+  --diff-gutter-delete-background-color: #ffebe9;
+  --diff-gutter-delete-text-color: #cf222e;
+  --diff-gutter-selected-background-color: #fff8c5;
+  --diff-gutter-selected-text-color: #9a6700;
+  --diff-code-insert-background-color: #ebfff0;
+  --diff-code-insert-text-color: #116329;
+  --diff-code-delete-background-color: #fff1f0;
+  --diff-code-delete-text-color: #a40e26;
+  --diff-code-insert-edit-background-color: #aceebb;
+  --diff-code-insert-edit-text-color: #0f5323;
+  --diff-code-delete-edit-background-color: #ffcecb;
+  --diff-code-delete-edit-text-color: #82071e;
+  --diff-code-selected-background-color: #fff1b8;
+  --diff-code-selected-text-color: #7d4e00;
+  --diff-omit-gutter-line-color: #cf222e;
+}
+
+html[data-theme="nord"] {
+  color-scheme: dark;
+  --app-body-bg: #2b303b;
+  --app-body-text: #e5e9f0;
+  --diff-background-color: #3b4252;
+  --diff-text-color: #e5e9f0;
+  --diff-selection-background-color: rgba(136, 192, 208, 0.18);
+  --diff-selection-text-color: #f7fafc;
+  --diff-gutter-insert-background-color: #334038;
+  --diff-gutter-insert-text-color: #a3be8c;
+  --diff-gutter-delete-background-color: #43343a;
+  --diff-gutter-delete-text-color: #d08770;
+  --diff-gutter-selected-background-color: #4a4437;
+  --diff-gutter-selected-text-color: #ebcb8b;
+  --diff-code-insert-background-color: #2f3933;
+  --diff-code-insert-text-color: #d8e7cb;
+  --diff-code-delete-background-color: #3a2f33;
+  --diff-code-delete-text-color: #f1c2b6;
+  --diff-code-insert-edit-background-color: #425046;
+  --diff-code-insert-edit-text-color: #f3faeb;
+  --diff-code-delete-edit-background-color: #6c4a52;
+  --diff-code-delete-edit-text-color: #fff1ef;
+  --diff-code-selected-background-color: #4a4437;
+  --diff-code-selected-text-color: #f5ddb0;
+  --diff-omit-gutter-line-color: #bf616a;
+}
+
+html[data-theme="solarized-light"] {
+  color-scheme: light;
+  --app-body-bg: #f4edd8;
+  --app-body-text: #586e75;
+  --diff-background-color: #fdf6e3;
+  --diff-text-color: #586e75;
+  --diff-selection-background-color: rgba(38, 139, 210, 0.12);
+  --diff-selection-text-color: #586e75;
+  --diff-gutter-insert-background-color: #eef6d2;
+  --diff-gutter-insert-text-color: #657b00;
+  --diff-gutter-delete-background-color: #f8e1dc;
+  --diff-gutter-delete-text-color: #c0392b;
+  --diff-gutter-selected-background-color: #f8efc8;
+  --diff-gutter-selected-text-color: #9a7400;
+  --diff-code-insert-background-color: #f5f9e7;
+  --diff-code-insert-text-color: #4e6400;
+  --diff-code-delete-background-color: #fbebe7;
+  --diff-code-delete-text-color: #a92b26;
+  --diff-code-insert-edit-background-color: #dfeab2;
+  --diff-code-insert-edit-text-color: #425300;
+  --diff-code-delete-edit-background-color: #f2c4ba;
+  --diff-code-delete-edit-text-color: #86211e;
+  --diff-code-selected-background-color: #f5e7a8;
+  --diff-code-selected-text-color: #7f5c00;
+  --diff-omit-gutter-line-color: #dc322f;
+}
+
+html[data-theme="gruvbox-dark"] {
+  color-scheme: dark;
+  --app-body-bg: #1d2021;
+  --app-body-text: #ebdbb2;
+  --diff-background-color: #32302f;
+  --diff-text-color: #ebdbb2;
+  --diff-selection-background-color: rgba(215, 153, 33, 0.18);
+  --diff-selection-text-color: #fbf1c7;
+  --diff-gutter-insert-background-color: #30361d;
+  --diff-gutter-insert-text-color: #b8bb26;
+  --diff-gutter-delete-background-color: #442726;
+  --diff-gutter-delete-text-color: #fb7c6d;
+  --diff-gutter-selected-background-color: #47341c;
+  --diff-gutter-selected-text-color: #fabd2f;
+  --diff-code-insert-background-color: #2a2f19;
+  --diff-code-insert-text-color: #dde79b;
+  --diff-code-delete-background-color: #3a2221;
+  --diff-code-delete-text-color: #ffd2cb;
+  --diff-code-insert-edit-background-color: #46511d;
+  --diff-code-insert-edit-text-color: #f4ffd1;
+  --diff-code-delete-edit-background-color: #7d3b34;
+  --diff-code-delete-edit-text-color: #fff0ed;
+  --diff-code-selected-background-color: #47341c;
+  --diff-code-selected-text-color: #ffd88a;
+  --diff-omit-gutter-line-color: #fb4934;
+}
+
+html[data-theme="high-contrast"] {
+  color-scheme: dark;
+  --app-body-bg: #000000;
+  --app-body-text: #ffffff;
+  --diff-background-color: #0f0f0f;
+  --diff-text-color: #ffffff;
+  --diff-selection-background-color: rgba(77, 163, 255, 0.26);
+  --diff-selection-text-color: #ffffff;
+  --diff-gutter-insert-background-color: #001d0d;
+  --diff-gutter-insert-text-color: #43f090;
+  --diff-gutter-delete-background-color: #2a0000;
+  --diff-gutter-delete-text-color: #ffb0b0;
+  --diff-gutter-selected-background-color: #241f00;
+  --diff-gutter-selected-text-color: #ffe14d;
+  --diff-code-insert-background-color: #002813;
+  --diff-code-insert-text-color: #b3ffd2;
+  --diff-code-delete-background-color: #300000;
+  --diff-code-delete-text-color: #ffe0e0;
+  --diff-code-insert-edit-background-color: #004d25;
+  --diff-code-insert-edit-text-color: #ecfff3;
+  --diff-code-delete-edit-background-color: #6b0000;
+  --diff-code-delete-edit-text-color: #fff5f5;
+  --diff-code-selected-background-color: #3d3500;
+  --diff-code-selected-text-color: #fff4a3;
+  --diff-omit-gutter-line-color: #ff5c5c;
+}
+
+html[data-theme="tokyo-night"] {
+  color-scheme: dark;
+  --app-body-bg: #16161e;
+  --app-body-text: #c0caf5;
+  --diff-background-color: #1f2335;
+  --diff-text-color: #c0caf5;
+  --diff-selection-background-color: rgba(122, 162, 247, 0.18);
+  --diff-selection-text-color: #eef2ff;
+  --diff-gutter-insert-background-color: #223126;
+  --diff-gutter-insert-text-color: #9ece6a;
+  --diff-gutter-delete-background-color: #3b2532;
+  --diff-gutter-delete-text-color: #f7768e;
+  --diff-gutter-selected-background-color: #393324;
+  --diff-gutter-selected-text-color: #e0af68;
+  --diff-code-insert-background-color: #1d2b22;
+  --diff-code-insert-text-color: #d8f2bc;
+  --diff-code-delete-background-color: #301f29;
+  --diff-code-delete-text-color: #ffc3ce;
+  --diff-code-insert-edit-background-color: #35503f;
+  --diff-code-insert-edit-text-color: #f0ffe5;
+  --diff-code-delete-edit-background-color: #6e4251;
+  --diff-code-delete-edit-text-color: #fff0f4;
+  --diff-code-selected-background-color: #393324;
+  --diff-code-selected-text-color: #f3d5a5;
+  --diff-omit-gutter-line-color: #f7768e;
+}
+
+html[data-theme="solarized-dark"] {
+  color-scheme: dark;
+  --app-body-bg: #001f27;
+  --app-body-text: #93a1a1;
+  --diff-background-color: #073642;
+  --diff-text-color: #93a1a1;
+  --diff-selection-background-color: rgba(38, 139, 210, 0.2);
+  --diff-selection-text-color: #eee8d5;
+  --diff-gutter-insert-background-color: #1b3314;
+  --diff-gutter-insert-text-color: #859900;
+  --diff-gutter-delete-background-color: #3b1712;
+  --diff-gutter-delete-text-color: #dc322f;
+  --diff-gutter-selected-background-color: #3a2d09;
+  --diff-gutter-selected-text-color: #b58900;
+  --diff-code-insert-background-color: #153016;
+  --diff-code-insert-text-color: #c3d269;
+  --diff-code-delete-background-color: #31130f;
+  --diff-code-delete-text-color: #ff9b94;
+  --diff-code-insert-edit-background-color: #31511d;
+  --diff-code-insert-edit-text-color: #eef7b3;
+  --diff-code-delete-edit-background-color: #723127;
+  --diff-code-delete-edit-text-color: #ffe5df;
+  --diff-code-selected-background-color: #3a2d09;
+  --diff-code-selected-text-color: #e8c65a;
+  --diff-omit-gutter-line-color: #dc322f;
+}
+
+html[data-theme="paper"] {
+  color-scheme: light;
+  --app-body-bg: #efe8d5;
+  --app-body-text: #4b463c;
+  --diff-background-color: #fffaf0;
+  --diff-text-color: #4b463c;
+  --diff-selection-background-color: rgba(70, 124, 138, 0.12);
+  --diff-selection-text-color: #4b463c;
+  --diff-gutter-insert-background-color: #edf2e3;
+  --diff-gutter-insert-text-color: #567038;
+  --diff-gutter-delete-background-color: #f5e3e1;
+  --diff-gutter-delete-text-color: #9d4f4f;
+  --diff-gutter-selected-background-color: #f6ead7;
+  --diff-gutter-selected-text-color: #9b6d2b;
+  --diff-code-insert-background-color: #f4f7eb;
+  --diff-code-insert-text-color: #445a2b;
+  --diff-code-delete-background-color: #faecea;
+  --diff-code-delete-text-color: #884646;
+  --diff-code-insert-edit-background-color: #dfe8d2;
+  --diff-code-insert-edit-text-color: #394b24;
+  --diff-code-delete-edit-background-color: #edd1ce;
+  --diff-code-delete-edit-text-color: #723b3b;
+  --diff-code-selected-background-color: #efddc0;
+  --diff-code-selected-text-color: #7f5b22;
+  --diff-omit-gutter-line-color: #b55d5d;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--app-body-bg);
+  color: var(--app-body-text);
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "SFMono-Regular", "Consolas", monospace;
+}
+
+.xterm .xterm-screen {
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.diff {
+  background: var(--diff-background-color);
+  color: var(--diff-text-color);
+}
+
+.diff-hunk + .diff-hunk .diff-line:first-child td,
+.diff-hunk + .diff-hunk .diff-widget:first-child td,
+.diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.diff-gutter {
+  color: rgba(90, 103, 93, 0.72);
+  background: rgba(0, 0, 0, 0.015);
+  border-right: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.diff-code-normal {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.diff-code,
+.diff-decoration-content,
+.diff-widget-content {
+  color: var(--diff-text-color);
+}
+
+.diff-decoration-content,
+.diff-widget-content {
+  background: rgba(0, 0, 0, 0.025);
+}
+
+html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="github"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="github"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="github"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme="dark"] .diff-gutter,
+html[data-theme="cyber"] .diff-gutter,
+html[data-theme="forge"] .diff-gutter,
+html[data-theme="github"] .diff-gutter,
+html[data-theme="nord"] .diff-gutter,
+html[data-theme="gruvbox-dark"] .diff-gutter,
+html[data-theme="high-contrast"] .diff-gutter,
+html[data-theme="tokyo-night"] .diff-gutter,
+html[data-theme="solarized-dark"] .diff-gutter {
+  color: #8ea394;
+  background: rgba(255, 255, 255, 0.02);
+  border-right-color: rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme="dark"] .diff-code-normal,
+html[data-theme="cyber"] .diff-code-normal,
+html[data-theme="forge"] .diff-code-normal,
+html[data-theme="github"] .diff-code-normal,
+html[data-theme="nord"] .diff-code-normal,
+html[data-theme="gruvbox-dark"] .diff-code-normal,
+html[data-theme="high-contrast"] .diff-code-normal,
+html[data-theme="tokyo-night"] .diff-code-normal,
+html[data-theme="solarized-dark"] .diff-code-normal {
+  background: rgba(255, 255, 255, 0.01);
+}
+
+html[data-theme="dark"] .diff-decoration-content,
+html[data-theme="dark"] .diff-widget-content,
+html[data-theme="cyber"] .diff-decoration-content,
+html[data-theme="cyber"] .diff-widget-content,
+html[data-theme="forge"] .diff-decoration-content,
+html[data-theme="forge"] .diff-widget-content,
+html[data-theme="github"] .diff-decoration-content,
+html[data-theme="github"] .diff-widget-content,
+html[data-theme="nord"] .diff-decoration-content,
+html[data-theme="nord"] .diff-widget-content,
+html[data-theme="gruvbox-dark"] .diff-decoration-content,
+html[data-theme="gruvbox-dark"] .diff-widget-content,
+html[data-theme="high-contrast"] .diff-decoration-content,
+html[data-theme="high-contrast"] .diff-widget-content,
+html[data-theme="tokyo-night"] .diff-decoration-content,
+html[data-theme="tokyo-night"] .diff-widget-content,
+html[data-theme="solarized-dark"] .diff-decoration-content,
+html[data-theme="solarized-dark"] .diff-widget-content {
+  background: rgba(255, 255, 255, 0.03);
+  color: #9fb3a5;
+}
+
+html[data-theme="cyber"] .diff-gutter {
+  color: rgba(200, 182, 255, 0.65);
+  background: rgba(255, 255, 255, 0.025);
+  border-right-color: rgba(200, 182, 255, 0.08);
+}
+
+html[data-theme="cyber"] .diff-decoration-content,
+html[data-theme="cyber"] .diff-widget-content {
+  color: rgba(200, 182, 255, 0.72);
+}
+
+html[data-theme="forge"] .diff-gutter {
+  color: rgba(201, 209, 217, 0.62);
+  background: rgba(255, 255, 255, 0.02);
+  border-right-color: rgba(201, 209, 217, 0.07);
+}
+
+html[data-theme="forge"] .diff-decoration-content,
+html[data-theme="forge"] .diff-widget-content {
+  color: rgba(201, 209, 217, 0.72);
+}
+
+html[data-theme="github"] .diff-gutter {
+  color: #8b949e;
+  background: rgba(255, 255, 255, 0.02);
+  border-right-color: rgba(201, 209, 217, 0.08);
+}
+
+html[data-theme="github"] .diff-decoration-content,
+html[data-theme="github"] .diff-widget-content {
+  color: #8b949e;
+}
+
+html[data-theme="nord"] .diff-gutter {
+  color: #c2cad6;
+  background: rgba(236, 239, 244, 0.03);
+  border-right-color: rgba(236, 239, 244, 0.08);
+}
+
+html[data-theme="nord"] .diff-decoration-content,
+html[data-theme="nord"] .diff-widget-content {
+  color: #c2cad6;
+}
+
+html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(208, 215, 222, 0.7);
+}
+
+html[data-theme="github-light"] .diff-gutter {
+  color: #57606a;
+  background: rgba(246, 248, 250, 0.9);
+  border-right-color: rgba(208, 215, 222, 0.9);
+}
+
+html[data-theme="github-light"] .diff-code-normal {
+  background: rgba(246, 248, 250, 0.65);
+}
+
+html[data-theme="github-light"] .diff-decoration-content,
+html[data-theme="github-light"] .diff-widget-content {
+  background: rgba(246, 248, 250, 0.85);
+  color: #57606a;
+}
+
+html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(131, 148, 150, 0.35);
+}
+
+html[data-theme="solarized-light"] .diff-gutter {
+  color: #6b7f86;
+  background: rgba(253, 246, 227, 0.9);
+  border-right-color: rgba(215, 206, 181, 0.9);
+}
+
+html[data-theme="solarized-light"] .diff-code-normal {
+  background: rgba(255, 249, 233, 0.72);
+}
+
+html[data-theme="solarized-light"] .diff-decoration-content,
+html[data-theme="solarized-light"] .diff-widget-content {
+  background: rgba(255, 249, 233, 0.88);
+  color: #6b7f86;
+}
+
+html[data-theme="gruvbox-dark"] .diff-gutter {
+  color: #bdae93;
+  background: rgba(235, 219, 178, 0.03);
+  border-right-color: rgba(235, 219, 178, 0.08);
+}
+
+html[data-theme="gruvbox-dark"] .diff-decoration-content,
+html[data-theme="gruvbox-dark"] .diff-widget-content {
+  color: #bdae93;
+}
+
+html[data-theme="high-contrast"] .diff-gutter {
+  color: #d9d9d9;
+  background: rgba(255, 255, 255, 0.04);
+  border-right-color: rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="high-contrast"] .diff-code-normal {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+html[data-theme="high-contrast"] .diff-decoration-content,
+html[data-theme="high-contrast"] .diff-widget-content {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+
+html[data-theme="tokyo-night"] .diff-gutter {
+  color: #a9b1d6;
+  background: rgba(192, 202, 245, 0.03);
+  border-right-color: rgba(192, 202, 245, 0.08);
+}
+
+html[data-theme="tokyo-night"] .diff-decoration-content,
+html[data-theme="tokyo-night"] .diff-widget-content {
+  color: #a9b1d6;
+}
+
+html[data-theme="solarized-dark"] .diff-gutter {
+  color: #839496;
+  background: rgba(147, 161, 161, 0.03);
+  border-right-color: rgba(147, 161, 161, 0.08);
+}
+
+html[data-theme="solarized-dark"] .diff-decoration-content,
+html[data-theme="solarized-dark"] .diff-widget-content {
+  color: #839496;
+}
+
+html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(216, 205, 182, 0.72);
+}
+
+html[data-theme="paper"] .diff-gutter {
+  color: #6a665c;
+  background: rgba(255, 250, 240, 0.86);
+  border-right-color: rgba(216, 205, 182, 0.92);
+}
+
+html[data-theme="paper"] .diff-code-normal {
+  background: rgba(255, 253, 247, 0.75);
+}
+
+html[data-theme="paper"] .diff-decoration-content,
+html[data-theme="paper"] .diff-widget-content {
+  background: rgba(255, 253, 247, 0.9);
+  color: #6a665c;
+}
+
+html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(231, 216, 205, 0.9);
+}
+
+html[data-theme="forge-light"] .diff-gutter {
+  color: #6d584b;
+  background: rgba(255, 250, 246, 0.92);
+  border-right-color: rgba(231, 216, 205, 0.96);
+}
+
+html[data-theme="forge-light"] .diff-code-normal {
+  background: rgba(255, 252, 249, 0.82);
+}
+
+html[data-theme="forge-light"] .diff-decoration-content,
+html[data-theme="forge-light"] .diff-widget-content {
+  background: rgba(255, 252, 249, 0.94);
+  color: #6d584b;
+}
+
+.task-notes-mdx-editor {
+  border: 0;
+  overflow: hidden;
+  color: var(--ant-colorText, inherit);
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar {
+  background: transparent !important;
+  border: 0;
+  color: var(--ant-colorTextSecondary, inherit);
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button,
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] {
+  background: transparent !important;
+  border: 0;
+  color: var(--ant-colorTextSecondary, inherit) !important;
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button:hover,
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"]:hover {
+  background: transparent !important;
+  color: var(--ant-colorText, inherit) !important;
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button[aria-pressed="true"],
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"][aria-pressed="true"] {
+  color: var(--ant-colorPrimary, inherit) !important;
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button svg,
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] svg {
+  color: inherit !important;
+  fill: currentColor !important;
+  stroke: none !important;
+}
+
+.task-notes-mdx-editor-content {
+  min-height: 380px;
+  color: var(--ant-colorText, inherit);
+  background: transparent;
+}
+
+.task-notes-mdx-editor-content ul,
+.task-notes-mdx-editor-content ol {
+  margin-inline-start: 0;
+  padding-inline-start: 15px;
+}
+````
+
+## File: apps/web/components/snippets-page.tsx
+````typescript
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import dayjs from "dayjs";
+import type { Snippet } from "@agentswarm/shared-types";
+import { CopyOutlined } from "@ant-design/icons";
+import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
+import { api } from "../src/api/client";
+import { useSnippets } from "../src/hooks/useSnippets";
+import { useAuth } from "./auth-provider";
+import { trackEvent } from "../src/utils/analytics";
+
+const summarizeSnippet = (value: string): string => {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "Empty";
+  }
+  return normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized;
+};
+
+export function SnippetsPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { snippets, loading } = useSnippets();
+  const { can } = useAuth();
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [messageApi, contextHolder] = message.useMessage();
+  const canCreateSnippet = can("snippet:create");
+  const canEditSnippet = can("snippet:edit");
+  const canDeleteSnippet = can("snippet:delete");
+  const canDuplicateSnippet = can("snippet:create");
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const savedState = searchParams.get("saved");
+    if (!savedState) {
+      return;
+    }
+    if (savedState === "created") {
+      messageApi.success("Snippet created");
+    } else if (savedState === "updated") {
+      messageApi.success("Snippet updated");
+    }
+    router.replace("/snippets");
+  }, [messageApi, router, searchParams]);
+
+  const copySnippetToClipboard = async (content: string, label: string) => {
+    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      messageApi.error("Clipboard access is unavailable in this browser.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(content);
+      messageApi.success(`${label} copied`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to copy snippet");
+    }
+  };
+
+  return (
+    <>
+      {contextHolder}
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
+          <Flex vertical gap={0}>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              Snippets
+            </Typography.Title>
+            <Typography.Text type="secondary">
+              Store reusable text blocks and insert them into task prompts and follow-up messages.
+            </Typography.Text>
+          </Flex>
+          {canCreateSnippet ? (
+            <Button type="primary" onClick={() => router.push("/snippets/new?from=list")}>
+              Add Snippet
+            </Button>
+          ) : null}
+        </Flex>
+
+        <Card bordered={false}>
+          <Table<Snippet>
+            rowKey="id"
+            loading={loading}
+            dataSource={snippets}
+            pagination={{ pageSize: 10 }}
+            columns={[
+              {
+                title: "Name",
+                dataIndex: "name"
+              },
+              {
+                title: "Preview",
+                dataIndex: "content",
+                render: (value: string) => summarizeSnippet(value)
+              },
+              {
+                title: "Updated At",
+                dataIndex: "updatedAt",
+                sorter: (left, right) => left.updatedAt.localeCompare(right.updatedAt),
+                defaultSortOrder: "descend",
+                render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
+              },
+              {
+                title: "Actions",
+                key: "actions",
+                width: 280,
+                render: (_value, snippet) => (
+                  <Space size={8} wrap={false} style={{ whiteSpace: "nowrap" }}>
+                    <Button size="small" icon={<CopyOutlined />} onClick={() => void copySnippetToClipboard(snippet.content, snippet.name)}>
+                      Copy
+                    </Button>
+                    {canEditSnippet ? (
+                      <Button size="small" onClick={() => router.push(`/snippets/${snippet.id}/edit?from=list`)}>
+                        Edit
+                      </Button>
+                    ) : null}
+                    {canDuplicateSnippet ? (
+                      <Button
+                        size="small"
+                        loading={duplicatingId === snippet.id}
+                        onClick={async () => {
+                          setDuplicatingId(snippet.id);
+                          try {
+                            const duplicated = await api.duplicateSnippet(snippet.id);
+                            trackEvent("snippet_duplicated", { source: "list", snippet_id: snippet.id, duplicated_snippet_id: duplicated.id });
+                            messageApi.success("Snippet duplicated");
+                            router.push(`/snippets/${duplicated.id}/edit?from=duplicate`);
+                          } catch (error) {
+                            messageApi.error(error instanceof Error ? error.message : "Failed to duplicate snippet");
+                          } finally {
+                            setDuplicatingId(null);
+                          }
+                        }}
+                      >
+                        Duplicate
+                      </Button>
+                    ) : null}
+                    {canDeleteSnippet ? (
+                      <Popconfirm
+                        title="Delete snippet?"
+                        description={`Delete "${snippet.name}"?`}
+                        okText="Delete"
+                        okButtonProps={{ danger: true, loading: deletingId === snippet.id }}
+                        onConfirm={async () => {
+                          setDeletingId(snippet.id);
+                          try {
+                            await api.deleteSnippet(snippet.id);
+                            messageApi.success("Snippet deleted");
+                          } catch (error) {
+                            messageApi.error(error instanceof Error ? error.message : "Failed to delete snippet");
+                          } finally {
+                            setDeletingId(null);
+                          }
+                        }}
+                      >
+                        <Button danger size="small">
+                          Delete
+                        </Button>
+                      </Popconfirm>
+                    ) : null}
+                  </Space>
+                )
+              }
+            ]}
+          />
+        </Card>
+      </Space>
+    </>
+  );
+}
+````
+
+## File: apps/web/src/utils/task-lifecycle-view-model.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import type { Task } from "@agentswarm/shared-types";
+import { buildTaskLifecycleViewModel } from "./task-lifecycle-view-model";
+
+const createTask = (overrides: Partial<Task> = {}): Task =>
+  ({
+    id: "task-1",
+    title: "Task",
+    pinned: false,
+    hasPendingCheckpoint: false,
+    activeInteractiveSession: false,
+    activeTerminalSessionMode: null,
+    ownerUserId: null,
+    creatorName: null,
+    repoId: "repo-1",
+    repoName: "repo",
+    repoUrl: "https://github.com/example/repo.git",
+    repoDefaultBranch: "main",
+    taskType: "build",
+    provider: "codex",
+    providerProfile: "high",
+    modelOverride: null,
+    codexCredentialSource: "auto",
+    baseBranch: "main",
+    branchStrategy: "feature_branch",
+    complexity: "normal",
+    branchName: "feature/task-1",
+    workspaceBaseRef: null,
+    prompt: "Do the work",
+    notes: "",
+    executionSummary: "",
+    resultMarkdown: null,
+    branchDiff: null,
+    status: "open",
+    workflowStatus: "ready",
+    executionStatus: "idle",
+    executionAction: "build",
+    reviewReason: null,
+    logs: [],
+    createdAt: "2026-05-24T00:00:00.000Z",
+    updatedAt: "2026-05-24T00:00:00.000Z",
+    startedAt: null,
+    finishedAt: null,
+    errorMessage: null,
+    lastAction: "build",
+    enqueued: false,
+    ...overrides
+  }) satisfies Task as Task;
+
+describe("buildTaskLifecycleViewModel", () => {
+  it("maps preparing workspace state", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "preparing_workspace" }));
+    assert.equal(vm.isPreparingWorkspace, true);
+    assert.equal(vm.resultStatusText, "Preparing workspace");
+  });
+
+  it("maps queued build state", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "build_queued", taskType: "build" }));
+    assert.equal(vm.isQueued, true);
+    assert.equal(vm.resultStatusText, "Build queued");
+  });
+
+  it("maps queued ask state", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "ask_queued", taskType: "ask" }));
+    assert.equal(vm.isQueued, true);
+    assert.equal(vm.resultStatusText, "Question queued");
+  });
+
+  it("marks archived tasks", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "archived" }));
+    assert.equal(vm.isArchived, true);
+  });
+
+  it("marks checkpoint mutations as blocked while the task is running", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "building" }));
+    assert.equal(vm.checkpointDiffActionsBlocked, true);
+    assert.ok(vm.checkpointDiffActionsBlockedReason);
+  });
+});
+````
+
 ## File: apps/server/src/services/sequence-execution-service.ts
 ````typescript
 import { type SequenceExecutionMode, type SequenceRunStep, type TaskAction } from "@agentswarm/shared-types";
@@ -40707,6 +40361,352 @@ export class SequenceExecutionService {
     return "Step could not be started. The task is currently unavailable for execution.";
   }
 }
+````
+
+## File: apps/server/src/index.ts
+````typescript
+import Fastify from "fastify";
+import { randomUUID } from "node:crypto";
+import cookie from "@fastify/cookie";
+import cors from "@fastify/cors";
+import * as Sentry from "@sentry/node";
+import { Server as SocketIOServer } from "socket.io";
+import type { RealtimeEvent } from "@agentswarm/shared-types";
+import { env } from "./config/env.js";
+import { createAuthService } from "./lib/auth.js";
+import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
+import { createRedisClients } from "./lib/redis.js";
+import { EventBus } from "./lib/events.js";
+import { createPostgresStores } from "./services/create-postgres-stores.js";
+import { registerAuthRoutes } from "./routes/auth.js";
+import { SpawnerService } from "./services/spawner.js";
+import { SchedulerService } from "./services/scheduler.js";
+import { GitHubImportService } from "./services/github-import-service.js";
+import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
+import { GitHubOutboundService } from "./services/github-outbound-service.js";
+import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
+import { registerRoleRoutes } from "./routes/roles.js";
+import { registerTaskRoutes } from "./routes/tasks.js";
+import { registerTaskDraftRoutes } from "./routes/task-drafts.js";
+import { registerUserRoutes } from "./routes/users.js";
+import { registerSettingsRoutes } from "./routes/settings.js";
+import { registerRepositoryRoutes } from "./routes/repositories.js";
+import { registerImportRoutes } from "./routes/imports.js";
+import { registerSnippetRoutes } from "./routes/snippets.js";
+import { registerSequenceRoutes } from "./routes/sequences.js";
+import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
+import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
+
+const readHeaderValue = (value: string | string[] | undefined): string | null => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (Array.isArray(value) && value.length > 0) {
+    const first = value[0]?.trim();
+    return first && first.length > 0 ? first : null;
+  }
+  return null;
+};
+
+const getOperationIdFromHeaders = (headers: Record<string, string | string[] | undefined>): string | null =>
+  readHeaderValue(headers["x-operation-id"]) ?? readHeaderValue(headers["x-agent-operation-id"]);
+
+const bootstrap = async (): Promise<void> => {
+  const sentryEnabled = env.SENTRY_ENABLED && env.SENTRY_DSN.trim().length > 0;
+  if (sentryEnabled) {
+    Sentry.init({
+      dsn: env.SENTRY_DSN,
+      tracesSampleRate: 1
+    });
+  }
+
+  const app = Fastify({
+    logger: {
+      level: process.env.LOG_LEVEL ?? "info",
+      base: { service: "agentswarm-server" }
+    },
+    disableRequestLogging: true,
+    requestIdHeader: "x-request-id",
+    genReqId: (rawRequest) => readHeaderValue(rawRequest.headers["x-request-id"]) ?? randomUUID(),
+    bodyLimit: 35 * 1024 * 1024
+  });
+  await app.register(cookie);
+  app.decorateRequest("auth", null);
+  await app.register(cors, {
+    origin: env.CORS_ORIGIN,
+    credentials: true
+  });
+  app.addHook("onRequest", async (request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    reply.header("x-request-id", request.id);
+    if (operationId) {
+      reply.header("x-operation-id", operationId);
+    }
+    request.log.info(
+      {
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url
+      },
+      "request.started"
+    );
+  });
+  app.addHook("onResponse", async (request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    request.log.info(
+      {
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url,
+        statusCode: reply.statusCode,
+        durationMs: reply.elapsedTime
+      },
+      "request.completed"
+    );
+  });
+  app.log.info(
+    {
+      event: "startup.config",
+      port: env.PORT,
+      corsOrigin: env.CORS_ORIGIN,
+      durableStores: "postgres",
+      runtimeServices: "redis",
+      postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
+      sentryEnabled,
+      taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
+      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
+    },
+    "Server configuration loaded"
+  );
+
+  const redisClients = createRedisClients(env.REDIS_URL);
+  const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
+  const postgresPool = createPostgresPool(env.DATABASE_URL);
+  if (env.POSTGRES_AUTO_MIGRATE) {
+    app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
+    await runPostgresMigrations(postgresPool);
+    app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
+  } else {
+    app.log.info({ event: "startup.migrations", mode: "manual" }, "Skipping auto-migrations");
+  }
+
+  const {
+    taskStore,
+    taskDraftStore,
+    taskQueueStore,
+    githubOutboundQueueStore,
+    webhookDeliveryStore,
+    snippetStore,
+    sequenceStore,
+    repositoryStore,
+    credentialStore,
+    roleStore,
+    userStore,
+    sessionStore,
+    settingsStore
+  } = createPostgresStores(
+    postgresPool,
+    redisClients,
+    eventBus,
+    env.AUTH_SESSION_TTL_DAYS
+  );
+  const auth = createAuthService({
+    userStore,
+    sessionStore,
+    cookieName: env.AUTH_COOKIE_NAME,
+    taskStore,
+    credentialStore
+  });
+  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
+  const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
+  const githubImportService = new GitHubImportService(settingsStore);
+  const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
+  const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
+  const githubStatusSyncService = new GitHubStatusSyncService(repositoryStore, githubOutboundService);
+
+  await roleStore.ensureDefaultAdminRole();
+  await userStore.ensureDefaultAdminUser({
+    name: env.DEFAULT_ADMIN_NAME,
+    email: env.DEFAULT_ADMIN_EMAIL,
+    password: env.DEFAULT_ADMIN_PASSWORD
+  });
+
+  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore });
+  registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
+  registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
+  registerTaskRoutes(app, {
+    taskStore,
+    taskQueueStore,
+    repositoryStore,
+    userStore,
+    scheduler,
+    spawner,
+    settingsStore,
+    sequenceStore,
+    snippetStore,
+    auth
+  });
+  registerTaskDraftRoutes(app, { taskDraftStore, auth });
+  registerSnippetRoutes(app, { snippetStore, auth });
+  registerSequenceRoutes(app, { sequenceStore, auth });
+  registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
+  registerSettingsRoutes(app, { settingsStore, scheduler, auth });
+  registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, userStore, scheduler, spawner, auth });
+  registerGitHubWebhookRoutes(app, {
+    repositoryStore,
+    githubImportService,
+    taskStore,
+    userStore,
+    scheduler,
+    spawner,
+    snippetStore
+  });
+
+  app.get("/health", async () => ({ ok: true }));
+
+  app.setErrorHandler((error, request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    request.log.error(
+      {
+        err: error,
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url
+      },
+      "request.failed"
+    );
+    if (sentryEnabled) {
+      Sentry.captureException(error, {
+        tags: {
+          route: request.routeOptions.url
+        },
+        extra: {
+          requestId: request.id,
+          operationId,
+          method: request.method,
+          url: request.url
+        }
+      });
+    }
+    void reply.send(error);
+  });
+
+  await app.ready();
+  attachTaskInteractiveTerminalUpgrade(app.server, {
+    auth,
+    taskStore,
+    settingsStore,
+    spawner,
+    userStore,
+    repositoryStore
+  });
+
+  const io = new SocketIOServer(app.server, {
+    cors: {
+      origin: env.CORS_ORIGIN,
+      credentials: true
+    }
+  });
+  io.use(auth.authorizeSocket());
+
+  io.on("connection", (socket) => {
+    auth.onSocketConnection(socket);
+    app.log.info({ socketId: socket.id }, "Socket client connected");
+  });
+
+  await redisClients.sub.subscribe(env.EVENT_CHANNEL);
+  redisClients.sub.on("message", (_channel, message) => {
+    try {
+      const event = JSON.parse(message) as RealtimeEvent;
+      void webhookDeliveryService.handleRealtimeEvent(event);
+      void githubStatusSyncService.handleRealtimeEvent(event);
+      void auth.emitScopedRealtimeEvent(io, event);
+    } catch (error) {
+      app.log.error({ error }, "Failed to parse event message");
+    }
+  });
+
+  webhookDeliveryService.start();
+  githubOutboundService.start();
+  await scheduler.bootstrap();
+
+  let closeStarted = false;
+  const close = async (): Promise<void> => {
+    if (closeStarted) {
+      return;
+    }
+    closeStarted = true;
+    scheduler.stop();
+    webhookDeliveryService.stop();
+    githubOutboundService.stop();
+    io.close();
+    await Promise.all([
+      ...(postgresPool ? [postgresPool.end()] : []),
+      redisClients.command.quit(),
+      redisClients.pub.quit(),
+      redisClients.sub.quit()
+    ]);
+    await app.close();
+    if (sentryEnabled) {
+      await Sentry.close(2_000);
+    }
+  };
+
+  process.on("SIGINT", () => {
+    app.log.warn({ signal: "SIGINT" }, "Shutdown signal received");
+    void close();
+  });
+  process.on("SIGTERM", () => {
+    app.log.warn({ signal: "SIGTERM" }, "Shutdown signal received");
+    void close();
+  });
+
+  process.on("uncaughtException", (error) => {
+    app.log.fatal({ err: error }, "Unhandled exception");
+    if (sentryEnabled) {
+      Sentry.captureException(error);
+    }
+    void close().finally(() => process.exit(1));
+  });
+  process.on("unhandledRejection", (reason) => {
+    app.log.fatal({ reason }, "Unhandled promise rejection");
+    if (sentryEnabled) {
+      Sentry.captureException(reason);
+    }
+    void close().finally(() => process.exit(1));
+  });
+
+  const listenAddress = await app.listen({ port: env.PORT, host: "0.0.0.0" });
+  app.log.info(
+    {
+      event: "startup.ready",
+      listenAddress,
+      healthPath: "/health",
+      proxyHealthPath: "/api/health"
+    },
+    "Server started"
+  );
+};
+
+void bootstrap().catch((error) => {
+  // Startup errors should stop the process so Docker restart policies can react.
+  const errorForLog =
+    error instanceof Error
+      ? { name: error.name, message: error.message, stack: error.stack }
+      : { message: String(error) };
+  console.error(
+    JSON.stringify({
+      level: "fatal",
+      event: "startup.bootstrap_failed",
+      error: errorForLog
+    })
+  );
+  process.exit(1);
+});
 ````
 
 ## File: apps/web/components/app-shell.tsx
@@ -41420,6 +41420,314 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 ````
 
+## File: apps/server/src/routes/repositories.ts
+````typescript
+import { z } from "zod";
+import type { FastifyInstance } from "fastify";
+import type { CreateRepositoryInput, GitHubAutomationRule, UpdateRepositoryInput } from "@agentswarm/shared-types";
+import type { AuthService } from "../lib/auth.js";
+import { sendHttpError } from "../lib/http-error.js";
+import { canUserAccessRepository } from "../lib/task-ownership.js";
+import type { RepositoryStore } from "../services/repository-store.js";
+import type { UserStore } from "../services/user-store.js";
+
+const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
+const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
+const REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH = 8192;
+const REPOSITORY_ENV_FILE_NAME_MAX_LENGTH = 255;
+const REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH = 350_000;
+const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
+const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
+const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
+const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
+
+const repositoryEnvKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(REPOSITORY_ENV_VAR_KEY_MAX_LENGTH)
+  .regex(REPOSITORY_ENV_VAR_KEY_PATTERN, "Names must match /^[A-Za-z_][A-Za-z0-9_]*$/.");
+
+const repositoryEnvVarsSchema = z
+  .array(
+    z.union([
+      z.object({
+        key: repositoryEnvKeySchema,
+        type: z.literal("text").optional(),
+        value: z.string().max(REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH)
+      }),
+      z.object({
+        key: repositoryEnvKeySchema,
+        type: z.literal("file"),
+        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
+        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
+      })
+    ])
+  )
+  .max(REPOSITORY_ENV_VAR_MAX_COUNT)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const key = entries[index]?.key;
+      if (!key) {
+        continue;
+      }
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "key"],
+          message: `Duplicate variable name: ${key}`
+        });
+      } else {
+        seen.add(key);
+      }
+    }
+  });
+
+const repositoryEnvSecretsSchema = z
+  .array(
+    z.union([
+      z.object({
+        key: repositoryEnvKeySchema
+          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
+          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
+        type: z.literal("text").optional(),
+        value: z.string().max(REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH).optional()
+      }),
+      z.object({
+        key: repositoryEnvKeySchema
+          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
+          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
+        type: z.literal("file"),
+        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
+        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
+      })
+    ])
+  )
+  .max(REPOSITORY_ENV_SECRET_MAX_COUNT)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const key = entries[index]?.key;
+      if (!key) {
+        continue;
+      }
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "key"],
+          message: `Duplicate secret name: ${key}`
+        });
+      } else {
+        seen.add(key);
+      }
+    }
+  });
+
+const createRepositorySchema = z.object({
+  name: z.string().min(1),
+  url: z.string().min(1),
+  defaultBranch: z.string().min(1).optional(),
+  syncStatusEnabled: z.boolean().optional(),
+  envVars: repositoryEnvVarsSchema.optional(),
+  envSecrets: repositoryEnvSecretsSchema.optional(),
+  webhookUrl: z.string().trim().url().nullable().optional(),
+  webhookEnabled: z.boolean().optional(),
+  webhookSecret: z.string().trim().min(1).optional(),
+  githubWebhookSecret: z.string().trim().min(1).optional(),
+  githubAutomations: z
+    .array(
+      z.object({
+        id: z.string().trim().min(1),
+        name: z.string().trim().min(1).max(160),
+        enabled: z.boolean().optional(),
+        trigger: z.enum(["issue_opened", "pull_request_opened"]),
+        syncStatusEnabled: z.boolean().optional(),
+        automationEnabled: z.boolean().optional(),
+        allowedTriggers: z.array(z.enum(["emoji_reaction", "slash_command", "bot_mention"])).optional(),
+        allowedReactions: z.array(z.string().trim().min(1)).optional(),
+        allowedCommands: z.array(z.string().trim().min(1)).optional(),
+        allowedActorLogins: z.array(z.string().trim().min(1)).optional(),
+        labelFilter: z
+          .object({
+            labelsAny: z.array(z.string().trim().min(1)).optional(),
+            labelsAll: z.array(z.string().trim().min(1)).optional(),
+            labelsNone: z.array(z.string().trim().min(1)).optional()
+          })
+          .optional(),
+        task: z
+          .object({
+            assigneeEmail: z.string().trim().email().optional(),
+            codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+            taskType: z.enum(["build", "ask"]).optional(),
+            includeComments: z.boolean().optional(),
+            titleTemplate: z.string().optional(),
+            notes: z.string().optional(),
+            provider: z.enum(["codex", "claude"]).optional(),
+            providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+            modelOverride: z.string().nullable().optional(),
+            baseBranch: z.string().optional(),
+            branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+            snippetId: z.string().optional()
+          })
+          .strict()
+      })
+    )
+    .optional()
+});
+
+const updateRepositorySchema = createRepositorySchema.partial().extend({
+  clearWebhookSecret: z.boolean().optional(),
+  clearGithubWebhookSecret: z.boolean().optional()
+});
+
+type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;
+type ParsedRepositoryUpdateInput = z.infer<typeof updateRepositorySchema>;
+type ParsedGitHubAutomationRule = NonNullable<ParsedRepositoryInput["githubAutomations"]>[number];
+
+const nowIso = (): string => new Date().toISOString();
+
+const toGitHubAutomationRule = (rule: ParsedGitHubAutomationRule, now: string): GitHubAutomationRule => ({
+  id: rule.id,
+  name: rule.name,
+  enabled: rule.enabled ?? true,
+  trigger: rule.trigger,
+  syncStatusEnabled: rule.syncStatusEnabled,
+  automationEnabled: rule.automationEnabled,
+  allowedTriggers: rule.allowedTriggers,
+  allowedReactions: rule.allowedReactions,
+  allowedCommands: rule.allowedCommands,
+  allowedActorLogins: rule.allowedActorLogins,
+  labelFilter: rule.labelFilter,
+  task: rule.task,
+  createdAt: now,
+  updatedAt: now
+});
+
+const normalizeGitHubAutomations = (
+  rules: ParsedRepositoryInput["githubAutomations"] | ParsedRepositoryUpdateInput["githubAutomations"]
+): GitHubAutomationRule[] | undefined => {
+  if (!rules) {
+    return undefined;
+  }
+  const now = nowIso();
+  return rules.map((rule) => toGitHubAutomationRule(rule, now));
+};
+
+const toCreateRepositoryInput = (input: ParsedRepositoryInput): CreateRepositoryInput => ({
+  ...input,
+  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
+});
+
+const toUpdateRepositoryInput = (input: ParsedRepositoryUpdateInput): UpdateRepositoryInput => ({
+  ...input,
+  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
+});
+
+export const registerRepositoryRoutes = (
+  app: FastifyInstance,
+  deps: {
+    repositoryStore: RepositoryStore;
+    auth: AuthService;
+    userStore: UserStore;
+  }
+): void => {
+  app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async (request) => {
+    const repositories = await deps.repositoryStore.listRepositories();
+    return repositories.filter((repository) => canUserAccessRepository(request.auth?.user, repository.id));
+  });
+
+  app.get<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repository = await deps.repositoryStore.getRepository(request.params.id);
+    if (!repository || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    return reply.send(repository);
+  });
+
+  app.post("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:create"]) }, async (request, reply) => {
+    const parsed = createRepositorySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    try {
+      const createInput: CreateRepositoryInput = toCreateRepositoryInput(parsed.data);
+      const repository = await deps.repositoryStore.createRepository(createInput);
+      const authUser = request.auth?.user;
+      if (authUser) {
+        const creator = await deps.userStore.getUser(authUser.id);
+        if (creator) {
+          const resolvedRepositoryIds = await Promise.all(
+            creator.repositoryIds.map(async (repositoryId) =>
+              (await deps.repositoryStore.getRepository(repositoryId)) ? repositoryId : null
+            )
+          );
+          const nextRepositoryIds = resolvedRepositoryIds.filter((repositoryId): repositoryId is string => Boolean(repositoryId));
+          if (!nextRepositoryIds.includes(repository.id)) {
+            nextRepositoryIds.push(repository.id);
+          }
+          await deps.userStore.updateUser(creator.id, {
+            repositoryIds: nextRepositoryIds
+          });
+        }
+      }
+      return reply.status(201).send(repository);
+    } catch (error) {
+      const sent = sendHttpError(reply, error);
+      if (sent) {
+        return sent;
+      }
+      throw error;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:edit"]) }, async (request, reply) => {
+    const parsed = updateRepositorySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    try {
+      const current = await deps.repositoryStore.getRepository(request.params.id);
+      if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+        return reply.status(404).send({ message: "Repository not found" });
+      }
+
+      const updateInput: UpdateRepositoryInput = toUpdateRepositoryInput(parsed.data);
+      const updated = await deps.repositoryStore.updateRepository(request.params.id, updateInput);
+      if (!updated) {
+        return reply.status(404).send({ message: "Repository not found" });
+      }
+
+      return reply.send(updated);
+    } catch (error) {
+      const sent = sendHttpError(reply, error);
+      if (sent) {
+        return sent;
+      }
+      throw error;
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:delete"]) }, async (request, reply) => {
+    const current = await deps.repositoryStore.getRepository(request.params.id);
+    if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    const deleted = await deps.repositoryStore.deleteRepository(request.params.id);
+    if (!deleted) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    return reply.status(204).send();
+  });
+};
+````
+
 ## File: apps/server/src/services/spawner.workspace-provisioning.test.ts
 ````typescript
 import assert from "node:assert/strict";
@@ -41929,314 +42237,6 @@ flowchart TD
   G25 -- Yes --> G26
   G25 -- No --> G24
 ```
-````
-
-## File: apps/server/src/routes/repositories.ts
-````typescript
-import { z } from "zod";
-import type { FastifyInstance } from "fastify";
-import type { CreateRepositoryInput, GitHubAutomationRule, UpdateRepositoryInput } from "@agentswarm/shared-types";
-import type { AuthService } from "../lib/auth.js";
-import { sendHttpError } from "../lib/http-error.js";
-import { canUserAccessRepository } from "../lib/task-ownership.js";
-import type { RepositoryStore } from "../services/repository-store.js";
-import type { UserStore } from "../services/user-store.js";
-
-const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
-const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
-const REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH = 8192;
-const REPOSITORY_ENV_FILE_NAME_MAX_LENGTH = 255;
-const REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH = 350_000;
-const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
-const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
-const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
-const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
-
-const repositoryEnvKeySchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(REPOSITORY_ENV_VAR_KEY_MAX_LENGTH)
-  .regex(REPOSITORY_ENV_VAR_KEY_PATTERN, "Names must match /^[A-Za-z_][A-Za-z0-9_]*$/.");
-
-const repositoryEnvVarsSchema = z
-  .array(
-    z.union([
-      z.object({
-        key: repositoryEnvKeySchema,
-        type: z.literal("text").optional(),
-        value: z.string().max(REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH)
-      }),
-      z.object({
-        key: repositoryEnvKeySchema,
-        type: z.literal("file"),
-        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
-        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
-      })
-    ])
-  )
-  .max(REPOSITORY_ENV_VAR_MAX_COUNT)
-  .superRefine((entries, ctx) => {
-    const seen = new Set<string>();
-    for (let index = 0; index < entries.length; index += 1) {
-      const key = entries[index]?.key;
-      if (!key) {
-        continue;
-      }
-      if (seen.has(key)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: [index, "key"],
-          message: `Duplicate variable name: ${key}`
-        });
-      } else {
-        seen.add(key);
-      }
-    }
-  });
-
-const repositoryEnvSecretsSchema = z
-  .array(
-    z.union([
-      z.object({
-        key: repositoryEnvKeySchema
-          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
-          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
-        type: z.literal("text").optional(),
-        value: z.string().max(REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH).optional()
-      }),
-      z.object({
-        key: repositoryEnvKeySchema
-          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
-          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
-        type: z.literal("file"),
-        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
-        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
-      })
-    ])
-  )
-  .max(REPOSITORY_ENV_SECRET_MAX_COUNT)
-  .superRefine((entries, ctx) => {
-    const seen = new Set<string>();
-    for (let index = 0; index < entries.length; index += 1) {
-      const key = entries[index]?.key;
-      if (!key) {
-        continue;
-      }
-      if (seen.has(key)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: [index, "key"],
-          message: `Duplicate secret name: ${key}`
-        });
-      } else {
-        seen.add(key);
-      }
-    }
-  });
-
-const createRepositorySchema = z.object({
-  name: z.string().min(1),
-  url: z.string().min(1),
-  defaultBranch: z.string().min(1).optional(),
-  syncStatusEnabled: z.boolean().optional(),
-  envVars: repositoryEnvVarsSchema.optional(),
-  envSecrets: repositoryEnvSecretsSchema.optional(),
-  webhookUrl: z.string().trim().url().nullable().optional(),
-  webhookEnabled: z.boolean().optional(),
-  webhookSecret: z.string().trim().min(1).optional(),
-  githubWebhookSecret: z.string().trim().min(1).optional(),
-  githubAutomations: z
-    .array(
-      z.object({
-        id: z.string().trim().min(1),
-        name: z.string().trim().min(1).max(160),
-        enabled: z.boolean().optional(),
-        trigger: z.enum(["issue_opened", "pull_request_opened"]),
-        syncStatusEnabled: z.boolean().optional(),
-        automationEnabled: z.boolean().optional(),
-        allowedTriggers: z.array(z.enum(["emoji_reaction", "slash_command", "bot_mention"])).optional(),
-        allowedReactions: z.array(z.string().trim().min(1)).optional(),
-        allowedCommands: z.array(z.string().trim().min(1)).optional(),
-        allowedActorLogins: z.array(z.string().trim().min(1)).optional(),
-        labelFilter: z
-          .object({
-            labelsAny: z.array(z.string().trim().min(1)).optional(),
-            labelsAll: z.array(z.string().trim().min(1)).optional(),
-            labelsNone: z.array(z.string().trim().min(1)).optional()
-          })
-          .optional(),
-        task: z
-          .object({
-            assigneeEmail: z.string().trim().email().optional(),
-            codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-            taskType: z.enum(["build", "ask"]).optional(),
-            includeComments: z.boolean().optional(),
-            titleTemplate: z.string().optional(),
-            notes: z.string().optional(),
-            provider: z.enum(["codex", "claude"]).optional(),
-            providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-            modelOverride: z.string().nullable().optional(),
-            baseBranch: z.string().optional(),
-            branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-            snippetId: z.string().optional()
-          })
-          .strict()
-      })
-    )
-    .optional()
-});
-
-const updateRepositorySchema = createRepositorySchema.partial().extend({
-  clearWebhookSecret: z.boolean().optional(),
-  clearGithubWebhookSecret: z.boolean().optional()
-});
-
-type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;
-type ParsedRepositoryUpdateInput = z.infer<typeof updateRepositorySchema>;
-type ParsedGitHubAutomationRule = NonNullable<ParsedRepositoryInput["githubAutomations"]>[number];
-
-const nowIso = (): string => new Date().toISOString();
-
-const toGitHubAutomationRule = (rule: ParsedGitHubAutomationRule, now: string): GitHubAutomationRule => ({
-  id: rule.id,
-  name: rule.name,
-  enabled: rule.enabled ?? true,
-  trigger: rule.trigger,
-  syncStatusEnabled: rule.syncStatusEnabled,
-  automationEnabled: rule.automationEnabled,
-  allowedTriggers: rule.allowedTriggers,
-  allowedReactions: rule.allowedReactions,
-  allowedCommands: rule.allowedCommands,
-  allowedActorLogins: rule.allowedActorLogins,
-  labelFilter: rule.labelFilter,
-  task: rule.task,
-  createdAt: now,
-  updatedAt: now
-});
-
-const normalizeGitHubAutomations = (
-  rules: ParsedRepositoryInput["githubAutomations"] | ParsedRepositoryUpdateInput["githubAutomations"]
-): GitHubAutomationRule[] | undefined => {
-  if (!rules) {
-    return undefined;
-  }
-  const now = nowIso();
-  return rules.map((rule) => toGitHubAutomationRule(rule, now));
-};
-
-const toCreateRepositoryInput = (input: ParsedRepositoryInput): CreateRepositoryInput => ({
-  ...input,
-  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
-});
-
-const toUpdateRepositoryInput = (input: ParsedRepositoryUpdateInput): UpdateRepositoryInput => ({
-  ...input,
-  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
-});
-
-export const registerRepositoryRoutes = (
-  app: FastifyInstance,
-  deps: {
-    repositoryStore: RepositoryStore;
-    auth: AuthService;
-    userStore: UserStore;
-  }
-): void => {
-  app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async (request) => {
-    const repositories = await deps.repositoryStore.listRepositories();
-    return repositories.filter((repository) => canUserAccessRepository(request.auth?.user, repository.id));
-  });
-
-  app.get<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repository = await deps.repositoryStore.getRepository(request.params.id);
-    if (!repository || !canUserAccessRepository(request.auth?.user, request.params.id)) {
-      return reply.status(404).send({ message: "Repository not found" });
-    }
-
-    return reply.send(repository);
-  });
-
-  app.post("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:create"]) }, async (request, reply) => {
-    const parsed = createRepositorySchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    try {
-      const createInput: CreateRepositoryInput = toCreateRepositoryInput(parsed.data);
-      const repository = await deps.repositoryStore.createRepository(createInput);
-      const authUser = request.auth?.user;
-      if (authUser) {
-        const creator = await deps.userStore.getUser(authUser.id);
-        if (creator) {
-          const resolvedRepositoryIds = await Promise.all(
-            creator.repositoryIds.map(async (repositoryId) =>
-              (await deps.repositoryStore.getRepository(repositoryId)) ? repositoryId : null
-            )
-          );
-          const nextRepositoryIds = resolvedRepositoryIds.filter((repositoryId): repositoryId is string => Boolean(repositoryId));
-          if (!nextRepositoryIds.includes(repository.id)) {
-            nextRepositoryIds.push(repository.id);
-          }
-          await deps.userStore.updateUser(creator.id, {
-            repositoryIds: nextRepositoryIds
-          });
-        }
-      }
-      return reply.status(201).send(repository);
-    } catch (error) {
-      const sent = sendHttpError(reply, error);
-      if (sent) {
-        return sent;
-      }
-      throw error;
-    }
-  });
-
-  app.patch<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:edit"]) }, async (request, reply) => {
-    const parsed = updateRepositorySchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    try {
-      const current = await deps.repositoryStore.getRepository(request.params.id);
-      if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
-        return reply.status(404).send({ message: "Repository not found" });
-      }
-
-      const updateInput: UpdateRepositoryInput = toUpdateRepositoryInput(parsed.data);
-      const updated = await deps.repositoryStore.updateRepository(request.params.id, updateInput);
-      if (!updated) {
-        return reply.status(404).send({ message: "Repository not found" });
-      }
-
-      return reply.send(updated);
-    } catch (error) {
-      const sent = sendHttpError(reply, error);
-      if (sent) {
-        return sent;
-      }
-      throw error;
-    }
-  });
-
-  app.delete<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:delete"]) }, async (request, reply) => {
-    const current = await deps.repositoryStore.getRepository(request.params.id);
-    if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
-      return reply.status(404).send({ message: "Repository not found" });
-    }
-
-    const deleted = await deps.repositoryStore.deleteRepository(request.params.id);
-    if (!deleted) {
-      return reply.status(404).send({ message: "Repository not found" });
-    }
-
-    return reply.status(204).send();
-  });
-};
 ````
 
 ## File: apps/server/package.json
@@ -56215,8 +56215,7 @@ import {
   type TaskWorkspaceFilePreview,
   type TaskGitOperation,
   type CodexCredentialSource,
-  type User,
-  type UserNotes
+  type User
 } from "@agentswarm/shared-types";
 import {
   Alert,
@@ -56226,11 +56225,9 @@ import {
   Collapse,
   Descriptions,
   Divider,
-  Drawer,
   Dropdown,
   Empty,
   Flex,
-  FloatButton,
   Form,
   Grid,
   Input,
@@ -56253,7 +56250,6 @@ import {
 } from "antd";
 import { ArrowRightOutlined, CopyOutlined, EditOutlined, LoadingOutlined, MoreOutlined, RobotOutlined, RollbackOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
-import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import { Highlight, type Language } from "prism-react-renderer";
@@ -56290,7 +56286,6 @@ import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 import { useThemeMode } from "./theme-provider";
 import { getPrismTheme } from "../src/theme/code-highlighting";
-import { useAppRightPanel } from "./app-right-panel-context";
 
 const runStatusColor: Record<TaskRun["status"], string> = {
   running: "processing",
@@ -56308,14 +56303,6 @@ const OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS = 48_000;
 const SYSTEM_ADMIN_ROLE_ID = "admin";
 const HISTORY_PAGE_SIZE = 5;
 const getComposerDraftStorageKey = (taskId: string): string => `agentswarm:task:${taskId}:composerDraft`;
-
-const NotesMarkdownEditor = dynamic(
-  () => import("./notes-markdown-editor").then((mod) => mod.NotesMarkdownEditor),
-  {
-    ssr: false,
-    loading: () => <Skeleton active title={false} paragraph={{ rows: 8 }} />
-  }
-);
 
 function normalizeAiCommitSubject(raw: string): string {
   const firstLine = raw
@@ -56874,7 +56861,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { token } = antTheme.useToken();
   const screens = Grid.useBreakpoint();
   const isDesktopWorkspaceLayout = screens.lg ?? false;
-  const { setRightPanel } = useAppRightPanel();
   const { mode } = useThemeMode();
   const prismTheme = useMemo(() => getPrismTheme(mode, token), [mode, token]);
   const historyCardHeadStyle: CSSProperties = {
@@ -57093,12 +57079,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [taskStateDraft, setTaskStateDraft] = useState<EditableTaskState>("open");
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
-  const [workspaceNotes, setWorkspaceNotes] = useState<UserNotes | null>(null);
-  const [workspaceNotesDraft, setWorkspaceNotesDraft] = useState("");
-  const [workspaceNotesLoading, setWorkspaceNotesLoading] = useState(true);
-  const [workspaceNotesSaving, setWorkspaceNotesSaving] = useState(false);
-  const [workspaceNotesMobileOpen, setWorkspaceNotesMobileOpen] = useState(false);
-  const [workspaceNotesStatus, setWorkspaceNotesStatus] = useState<"saved" | "saving" | "error">("saved");
   const [applyCheckpointModalProposal, setApplyCheckpointModalProposal] = useState<TaskChangeProposal | null>(null);
   const [applyCheckpointCommitMessage, setApplyCheckpointCommitMessage] = useState("");
   const [applyCheckpointCommitMessageGenerating, setApplyCheckpointCommitMessageGenerating] = useState(false);
@@ -57145,8 +57125,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [filesTabOpenTarget, setFilesTabOpenTarget] = useState<WorkspaceFileLinkTarget | null>(null);
   const executionConfigAutosaveTimeoutRef = useRef<number | null>(null);
   const executionConfigSaveRequestIdRef = useRef(0);
-  const workspaceNotesAutosaveTimeoutRef = useRef<number | null>(null);
-  const workspaceNotesSaveRequestIdRef = useRef(0);
   const fileMentionSearchRequestIdRef = useRef(0);
   const fileMentionSearchTimerRef = useRef<number | null>(null);
   const bottomScrollAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -57244,72 +57222,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       // Ignore localStorage write errors.
     }
   }, [chatInput, chatInputDraftReady, taskId]);
-
-  useEffect(() => {
-    setWorkspaceNotesLoading(true);
-    void api
-      .getUserNotes()
-      .then((next) => {
-        setWorkspaceNotes(next);
-        setWorkspaceNotesDraft(next.notes);
-        setWorkspaceNotesStatus("saved");
-      })
-      .catch((error) => {
-        setWorkspaceNotesStatus("error");
-        showTaskActionError(error, "Failed to load workspace notes");
-      })
-      .finally(() => {
-        setWorkspaceNotesLoading(false);
-      });
-  }, [showTaskActionError]);
-
-  useEffect(() => {
-    if (workspaceNotesAutosaveTimeoutRef.current !== null) {
-      window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
-      workspaceNotesAutosaveTimeoutRef.current = null;
-    }
-    if (!workspaceNotes || workspaceNotesDraft === workspaceNotes.notes) {
-      setWorkspaceNotesStatus("saved");
-      return;
-    }
-
-    setWorkspaceNotesStatus("saving");
-    workspaceNotesAutosaveTimeoutRef.current = window.setTimeout(() => {
-      workspaceNotesAutosaveTimeoutRef.current = null;
-      const requestId = workspaceNotesSaveRequestIdRef.current + 1;
-      workspaceNotesSaveRequestIdRef.current = requestId;
-      setWorkspaceNotesSaving(true);
-      void api
-        .updateUserNotes({ notes: workspaceNotesDraft })
-        .then((next) => {
-          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
-            return;
-          }
-          setWorkspaceNotes(next);
-          setWorkspaceNotesDraft(next.notes);
-          setWorkspaceNotesStatus("saved");
-        })
-        .catch((error) => {
-          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
-            return;
-          }
-          setWorkspaceNotesStatus("error");
-          showTaskActionError(error, "Failed to save workspace notes");
-        })
-        .finally(() => {
-          if (workspaceNotesSaveRequestIdRef.current === requestId) {
-            setWorkspaceNotesSaving(false);
-          }
-        });
-    }, 700);
-
-    return () => {
-      if (workspaceNotesAutosaveTimeoutRef.current !== null) {
-        window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
-        workspaceNotesAutosaveTimeoutRef.current = null;
-      }
-    };
-  }, [workspaceNotes, workspaceNotesDraft, showTaskActionError]);
 
   const taskType = task?.taskType ?? "build";
   const isBuildTask = taskType === "build";
@@ -61260,45 +61172,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
   ];
 
-  useEffect(() => {
-    if (!task || !isDesktopWorkspaceLayout) {
-      setRightPanel(null);
-      return;
-    }
-
-    setRightPanel({
-      title: "Notes",
-      extra: (
-        <Typography.Text type={workspaceNotesStatus === "error" ? "danger" : "secondary"}>
-          {workspaceNotesStatus === "saving" ? "Saving…" : workspaceNotesStatus === "error" ? "Save failed" : "Saved"}
-        </Typography.Text>
-      ),
-      content: (
-        <Flex vertical gap={12}>
-          {workspaceNotesLoading ? (
-            <Skeleton active title={false} paragraph={{ rows: 12 }} />
-          ) : (
-            <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={!canEditTask || workspaceNotesSaving} />
-          )}
-        </Flex>
-      )
-    });
-
-    return () => {
-      setRightPanel(null);
-    };
-  }, [
-    task,
-    isDesktopWorkspaceLayout,
-    setRightPanel,
-    workspaceNotesStatus,
-    workspaceNotesLoading,
-    workspaceNotesDraft,
-    canEditTask,
-    workspaceNotesSaving,
-    workspaceNotes?.updatedAt
-  ]);
-
   if (isDeletingTask) {
     return (
       <Flex justify="center" align="center" style={{ minHeight: 240 }}>
@@ -61481,29 +61354,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           style={{ resize: "vertical" }}
         />
       </Modal>
-      <Drawer
-        title="Notes"
-        placement="right"
-        width="min(640px, calc(100vw - 24px))"
-        open={workspaceNotesMobileOpen}
-        onClose={() => setWorkspaceNotesMobileOpen(false)}
-        destroyOnClose={false}
-      >
-        <Flex vertical gap={12}>
-          <Typography.Text type={workspaceNotesStatus === "error" ? "danger" : "secondary"}>
-            {workspaceNotesStatus === "saving"
-              ? "Saving…"
-              : workspaceNotesStatus === "error"
-                ? "Save failed. Keep this page open; retrying on next edit."
-                : "Saved"}
-          </Typography.Text>
-          {workspaceNotesLoading ? (
-            <Skeleton active title={false} paragraph={{ rows: 10 }} />
-          ) : (
-            <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={!canEditTask || workspaceNotesSaving} />
-          )}
-        </Flex>
-      </Drawer>
       <Modal
         title={applyCheckpointModalProposal?.status === "reverted" ? "Apply Checkpoint Again" : "Apply Checkpoint"}
         open={applyCheckpointModalProposal !== null}
@@ -61797,16 +61647,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           ) : null}
         </div>
       </Flex>
-      {task && !isDesktopWorkspaceLayout ? (
-        <FloatButton
-          icon={<EditOutlined />}
-          tooltip="Notes"
-          type="primary"
-          style={{ right: 24, top: 80, bottom: "auto" }}
-          onClick={() => setWorkspaceNotesMobileOpen(true)}
-        />
-      ) : null}
-
       <Modal
         open={killTerminalConfirmOpen}
         title={`Stop ${activeTerminalSentenceLabel.toLowerCase()} session?`}

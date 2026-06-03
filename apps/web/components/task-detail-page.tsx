@@ -36,8 +36,7 @@ import {
   type TaskWorkspaceFilePreview,
   type TaskGitOperation,
   type CodexCredentialSource,
-  type User,
-  type UserNotes
+  type User
 } from "@agentswarm/shared-types";
 import {
   Alert,
@@ -47,11 +46,9 @@ import {
   Collapse,
   Descriptions,
   Divider,
-  Drawer,
   Dropdown,
   Empty,
   Flex,
-  FloatButton,
   Form,
   Grid,
   Input,
@@ -74,7 +71,6 @@ import {
 } from "antd";
 import { ArrowRightOutlined, CopyOutlined, EditOutlined, LoadingOutlined, MoreOutlined, RobotOutlined, RollbackOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
-import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import { Highlight, type Language } from "prism-react-renderer";
@@ -111,7 +107,6 @@ import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 import { useThemeMode } from "./theme-provider";
 import { getPrismTheme } from "../src/theme/code-highlighting";
-import { useAppRightPanel } from "./app-right-panel-context";
 
 const runStatusColor: Record<TaskRun["status"], string> = {
   running: "processing",
@@ -129,14 +124,6 @@ const OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS = 48_000;
 const SYSTEM_ADMIN_ROLE_ID = "admin";
 const HISTORY_PAGE_SIZE = 5;
 const getComposerDraftStorageKey = (taskId: string): string => `agentswarm:task:${taskId}:composerDraft`;
-
-const NotesMarkdownEditor = dynamic(
-  () => import("./notes-markdown-editor").then((mod) => mod.NotesMarkdownEditor),
-  {
-    ssr: false,
-    loading: () => <Skeleton active title={false} paragraph={{ rows: 8 }} />
-  }
-);
 
 function normalizeAiCommitSubject(raw: string): string {
   const firstLine = raw
@@ -695,7 +682,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { token } = antTheme.useToken();
   const screens = Grid.useBreakpoint();
   const isDesktopWorkspaceLayout = screens.lg ?? false;
-  const { setRightPanel } = useAppRightPanel();
   const { mode } = useThemeMode();
   const prismTheme = useMemo(() => getPrismTheme(mode, token), [mode, token]);
   const historyCardHeadStyle: CSSProperties = {
@@ -914,12 +900,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [taskStateDraft, setTaskStateDraft] = useState<EditableTaskState>("open");
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
-  const [workspaceNotes, setWorkspaceNotes] = useState<UserNotes | null>(null);
-  const [workspaceNotesDraft, setWorkspaceNotesDraft] = useState("");
-  const [workspaceNotesLoading, setWorkspaceNotesLoading] = useState(true);
-  const [workspaceNotesSaving, setWorkspaceNotesSaving] = useState(false);
-  const [workspaceNotesMobileOpen, setWorkspaceNotesMobileOpen] = useState(false);
-  const [workspaceNotesStatus, setWorkspaceNotesStatus] = useState<"saved" | "saving" | "error">("saved");
   const [applyCheckpointModalProposal, setApplyCheckpointModalProposal] = useState<TaskChangeProposal | null>(null);
   const [applyCheckpointCommitMessage, setApplyCheckpointCommitMessage] = useState("");
   const [applyCheckpointCommitMessageGenerating, setApplyCheckpointCommitMessageGenerating] = useState(false);
@@ -966,8 +946,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [filesTabOpenTarget, setFilesTabOpenTarget] = useState<WorkspaceFileLinkTarget | null>(null);
   const executionConfigAutosaveTimeoutRef = useRef<number | null>(null);
   const executionConfigSaveRequestIdRef = useRef(0);
-  const workspaceNotesAutosaveTimeoutRef = useRef<number | null>(null);
-  const workspaceNotesSaveRequestIdRef = useRef(0);
   const fileMentionSearchRequestIdRef = useRef(0);
   const fileMentionSearchTimerRef = useRef<number | null>(null);
   const bottomScrollAnchorRef = useRef<HTMLDivElement | null>(null);
@@ -1065,72 +1043,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       // Ignore localStorage write errors.
     }
   }, [chatInput, chatInputDraftReady, taskId]);
-
-  useEffect(() => {
-    setWorkspaceNotesLoading(true);
-    void api
-      .getUserNotes()
-      .then((next) => {
-        setWorkspaceNotes(next);
-        setWorkspaceNotesDraft(next.notes);
-        setWorkspaceNotesStatus("saved");
-      })
-      .catch((error) => {
-        setWorkspaceNotesStatus("error");
-        showTaskActionError(error, "Failed to load workspace notes");
-      })
-      .finally(() => {
-        setWorkspaceNotesLoading(false);
-      });
-  }, [showTaskActionError]);
-
-  useEffect(() => {
-    if (workspaceNotesAutosaveTimeoutRef.current !== null) {
-      window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
-      workspaceNotesAutosaveTimeoutRef.current = null;
-    }
-    if (!workspaceNotes || workspaceNotesDraft === workspaceNotes.notes) {
-      setWorkspaceNotesStatus("saved");
-      return;
-    }
-
-    setWorkspaceNotesStatus("saving");
-    workspaceNotesAutosaveTimeoutRef.current = window.setTimeout(() => {
-      workspaceNotesAutosaveTimeoutRef.current = null;
-      const requestId = workspaceNotesSaveRequestIdRef.current + 1;
-      workspaceNotesSaveRequestIdRef.current = requestId;
-      setWorkspaceNotesSaving(true);
-      void api
-        .updateUserNotes({ notes: workspaceNotesDraft })
-        .then((next) => {
-          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
-            return;
-          }
-          setWorkspaceNotes(next);
-          setWorkspaceNotesDraft(next.notes);
-          setWorkspaceNotesStatus("saved");
-        })
-        .catch((error) => {
-          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
-            return;
-          }
-          setWorkspaceNotesStatus("error");
-          showTaskActionError(error, "Failed to save workspace notes");
-        })
-        .finally(() => {
-          if (workspaceNotesSaveRequestIdRef.current === requestId) {
-            setWorkspaceNotesSaving(false);
-          }
-        });
-    }, 700);
-
-    return () => {
-      if (workspaceNotesAutosaveTimeoutRef.current !== null) {
-        window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
-        workspaceNotesAutosaveTimeoutRef.current = null;
-      }
-    };
-  }, [workspaceNotes, workspaceNotesDraft, showTaskActionError]);
 
   const taskType = task?.taskType ?? "build";
   const isBuildTask = taskType === "build";
@@ -5081,45 +4993,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
   ];
 
-  useEffect(() => {
-    if (!task || !isDesktopWorkspaceLayout) {
-      setRightPanel(null);
-      return;
-    }
-
-    setRightPanel({
-      title: "Notes",
-      extra: (
-        <Typography.Text type={workspaceNotesStatus === "error" ? "danger" : "secondary"}>
-          {workspaceNotesStatus === "saving" ? "Saving…" : workspaceNotesStatus === "error" ? "Save failed" : "Saved"}
-        </Typography.Text>
-      ),
-      content: (
-        <Flex vertical gap={12}>
-          {workspaceNotesLoading ? (
-            <Skeleton active title={false} paragraph={{ rows: 12 }} />
-          ) : (
-            <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={!canEditTask || workspaceNotesSaving} />
-          )}
-        </Flex>
-      )
-    });
-
-    return () => {
-      setRightPanel(null);
-    };
-  }, [
-    task,
-    isDesktopWorkspaceLayout,
-    setRightPanel,
-    workspaceNotesStatus,
-    workspaceNotesLoading,
-    workspaceNotesDraft,
-    canEditTask,
-    workspaceNotesSaving,
-    workspaceNotes?.updatedAt
-  ]);
-
   if (isDeletingTask) {
     return (
       <Flex justify="center" align="center" style={{ minHeight: 240 }}>
@@ -5302,29 +5175,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           style={{ resize: "vertical" }}
         />
       </Modal>
-      <Drawer
-        title="Notes"
-        placement="right"
-        width="min(640px, calc(100vw - 24px))"
-        open={workspaceNotesMobileOpen}
-        onClose={() => setWorkspaceNotesMobileOpen(false)}
-        destroyOnClose={false}
-      >
-        <Flex vertical gap={12}>
-          <Typography.Text type={workspaceNotesStatus === "error" ? "danger" : "secondary"}>
-            {workspaceNotesStatus === "saving"
-              ? "Saving…"
-              : workspaceNotesStatus === "error"
-                ? "Save failed. Keep this page open; retrying on next edit."
-                : "Saved"}
-          </Typography.Text>
-          {workspaceNotesLoading ? (
-            <Skeleton active title={false} paragraph={{ rows: 10 }} />
-          ) : (
-            <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={!canEditTask || workspaceNotesSaving} />
-          )}
-        </Flex>
-      </Drawer>
       <Modal
         title={applyCheckpointModalProposal?.status === "reverted" ? "Apply Checkpoint Again" : "Apply Checkpoint"}
         open={applyCheckpointModalProposal !== null}
@@ -5618,16 +5468,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           ) : null}
         </div>
       </Flex>
-      {task && !isDesktopWorkspaceLayout ? (
-        <FloatButton
-          icon={<EditOutlined />}
-          tooltip="Notes"
-          type="primary"
-          style={{ right: 24, top: 80, bottom: "auto" }}
-          onClick={() => setWorkspaceNotesMobileOpen(true)}
-        />
-      ) : null}
-
       <Modal
         open={killTerminalConfirmOpen}
         title={`Stop ${activeTerminalSentenceLabel.toLowerCase()} session?`}
