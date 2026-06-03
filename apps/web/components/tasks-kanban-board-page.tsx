@@ -4,6 +4,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
+import { PlusOutlined } from "@ant-design/icons";
 import {
   getTaskExecutionStatusLabel,
   getTaskTypeLabel,
@@ -17,6 +18,8 @@ import dayjs from "dayjs";
 import { api } from "../src/api/client";
 import { useTaskDrafts } from "../src/hooks/useTaskDrafts";
 import { useTasks } from "../src/hooks/useTasks";
+import { useAuth } from "./auth-provider";
+import { TaskCreateModal } from "./task-create-modal";
 
 type BoardColumnId = "backlog" | "ready" | "in_progress" | "review" | "done";
 type BoardTaskStatus = UpdateTaskStateInput["status"];
@@ -47,9 +50,13 @@ const taskColumn = (task: Task): BoardColumnId => {
 
 function KanbanColumn({
   column,
+  canCreate,
+  onAdd,
   children
 }: {
   column: (typeof columns)[number];
+  canCreate: boolean;
+  onAdd: (column: (typeof columns)[number]) => void;
   children: ReactNode;
 }) {
   const { token } = antTheme.useToken();
@@ -75,6 +82,16 @@ function KanbanColumn({
       <Flex vertical gap={12}>
         <Flex justify="space-between" align="center">
           <Typography.Text strong>{column.title}</Typography.Text>
+          {canCreate ? (
+            <Button
+              type="text"
+              size="small"
+              icon={<PlusOutlined />}
+              aria-label={`Create in ${column.title}`}
+              title={`Create in ${column.title}`}
+              onClick={() => onAdd(column)}
+            />
+          ) : null}
         </Flex>
         {children}
       </Flex>
@@ -133,12 +150,15 @@ function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardIte
 
 export function TasksKanbanBoardPage() {
   const router = useRouter();
+  const { can } = useAuth();
   const [messageApi, contextHolder] = message.useMessage();
   const { tasks, setTasks, loading: tasksLoading } = useTasks({ view: "active" });
-  const { drafts, loading: draftsLoading } = useTaskDrafts();
+  const { drafts, setDrafts, loading: draftsLoading } = useTaskDrafts();
   const [movingTaskId, setMovingTaskId] = useState<string | null>(null);
+  const [taskCreateModalOpen, setTaskCreateModalOpen] = useState(false);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const loading = tasksLoading || draftsLoading;
+  const canCreateTask = can("task:create");
 
   const items = useMemo<BoardItem[]>(() => {
     const taskItems: BoardItem[] = tasks
@@ -195,7 +215,7 @@ export function TasksKanbanBoardPage() {
           </Flex>
           <Space>
             <Button onClick={() => router.push("/tasks")}>Table</Button>
-            <Button type="primary" onClick={() => router.push("/tasks/new")}>New Task</Button>
+            {canCreateTask ? <Button type="primary" onClick={() => setTaskCreateModalOpen(true)}>New Task</Button> : null}
           </Space>
         </Flex>
         {loading ? (
@@ -206,7 +226,7 @@ export function TasksKanbanBoardPage() {
           <DndContext sensors={sensors} onDragEnd={(event) => void handleDragEnd(event)}>
             <Flex gap={16} align="stretch" style={{ overflowX: "auto", paddingBottom: 12 }}>
               {columns.map((column) => (
-                <KanbanColumn key={column.id} column={column}>
+                <KanbanColumn key={column.id} column={column} canCreate={canCreateTask} onAdd={() => setTaskCreateModalOpen(true)}>
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                     {itemsByColumn[column.id].length} item{itemsByColumn[column.id].length === 1 ? "" : "s"}
                   </Typography.Text>
@@ -226,6 +246,16 @@ export function TasksKanbanBoardPage() {
         )}
         {movingTaskId ? <Typography.Text type="secondary">Moving task...</Typography.Text> : null}
       </Flex>
+      <TaskCreateModal
+        open={taskCreateModalOpen}
+        onClose={() => setTaskCreateModalOpen(false)}
+        onCreated={(task) => {
+          setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+        }}
+        onDraftCreated={(draft) => {
+          setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
+        }}
+      />
     </>
   );
 }

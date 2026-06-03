@@ -8,6 +8,7 @@ export interface NavigationRoute {
 
 export const navigationRoutes: NavigationRoute[] = [
   { key: "/tasks", label: "Tasks", requiredScopes: ["task:list"] },
+  { key: "/tasks/board", label: "Board", requiredScopes: ["task:list"] },
   { key: "/snippets", label: "Snippets", requiredScopes: ["snippet:list"] },
   { key: "/sequences", label: "Sequences", requiredScopes: ["sequence:list"] },
   { key: "/repositories", label: "Repositories", requiredScopes: ["repo:list"] },
@@ -21,7 +22,7 @@ export const isTaskInteractiveFullscreenPath = (pathname: string): boolean =>
   /^\/tasks\/[^/]+\/interactive$/.test(pathname);
 
 export const getRequiredScopesForPathname = (pathname: string): PermissionScope[] => {
-  if (pathname === "/tasks") {
+  if (pathname === "/tasks" || pathname === "/tasks/board") {
     return ["task:list"];
   }
 
@@ -87,6 +88,10 @@ export const resolveDefaultPath = (grantedScopes: Iterable<PermissionScope>): st
 };
 
 export const getSelectedNavigationKey = (pathname: string): string => {
+  if (pathname === "/tasks/board" || pathname.startsWith("/tasks/drafts")) {
+    return "/tasks/board";
+  }
+
   if (pathname.startsWith("/tasks")) {
     return "/tasks";
   }

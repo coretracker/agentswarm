@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Task, TaskSourceType } from "@agentswarm/shared-types";
+import type { Task, TaskDraft, TaskSourceType } from "@agentswarm/shared-types";
 import { App, Button, Form, Modal } from "antd";
 import { api } from "../src/api/client";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
@@ -20,9 +20,10 @@ interface TaskCreateModalProps {
   open: boolean;
   onClose: () => void;
   onCreated?: (task: Task) => void;
+  onDraftCreated?: (draft: TaskDraft) => void;
 }
 
-export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalProps) {
+export function TaskCreateModal({ open, onClose, onCreated, onDraftCreated }: TaskCreateModalProps) {
   const { message } = App.useApp();
   const { can } = useAuth();
   const [form] = Form.useForm<TaskDefinitionFormValues>();
@@ -74,13 +75,14 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
     setSavingDraft(true);
     try {
       const definition = await buildTaskDraftDefinition(values, promptImageFiles);
-      await api.createTaskDraft({
+      const draft = await api.createTaskDraft({
         title: values.title?.trim() || definition.prompt?.trim().split(/\r?\n/u)[0]?.slice(0, 120) || "Untitled Draft",
         definition
       });
       form.resetFields();
       setPromptImageFiles([]);
       onClose();
+      onDraftCreated?.(draft);
       message.success("Draft saved");
     } catch (error) {
       message.error(error instanceof Error ? error.message : "Failed to save draft");

@@ -187,7 +187,6 @@ export function TasksPage() {
             </Space>
           </Flex>
           <Space>
-            {!archivedView ? <Button onClick={() => router.push("/tasks/board")}>Board</Button> : null}
             {canCreateTask ? (
               <Button type="primary" onClick={() => router.push("/tasks/new")}>
                 New Task
