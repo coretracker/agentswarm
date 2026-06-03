@@ -28,7 +28,7 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
   const [submitting, setSubmitting] = useState(false);
   const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
-  const canCreateAnyTaskMode = can("task:build") || can("task:ask") || can("task:interactive");
+  const canCreateAnyTaskMode = can("task:build") || can("task:ask");
   const canUseSnippets = can("snippet:list");
   const { snippets } = useSnippets(canUseSnippets);
 

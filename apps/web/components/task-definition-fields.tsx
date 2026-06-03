@@ -367,6 +367,9 @@ export function TaskDefinitionFields({
   }, [form, providerSelectOptions, selectedProvider]);
 
   useEffect(() => {
+    if (providerModelsLoading) {
+      return;
+    }
     if (allowedModelOptions.length === 0) {
       return;
     }
@@ -374,7 +377,7 @@ export function TaskDefinitionFields({
       return;
     }
     form.setFieldValue("model", allowedModelOptions[0]?.value);
-  }, [allowedModelOptions, form, selectedModel]);
+  }, [allowedModelOptions, form, providerModelsLoading, selectedModel]);
 
   useEffect(() => {
     if (allowedEffortOptions.length === 0) {
