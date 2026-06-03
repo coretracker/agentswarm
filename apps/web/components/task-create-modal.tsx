@@ -3,7 +3,9 @@
 import { useState } from "react";
 import type { Task, TaskSourceType } from "@agentswarm/shared-types";
 import { App, Button, Form, Modal } from "antd";
+import { api } from "../src/api/client";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
+import { buildTaskDraftDefinition } from "../src/utils/task-drafts";
 import { trackEvent } from "../src/utils/analytics";
 import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
@@ -25,6 +27,7 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
   const { can } = useAuth();
   const [form] = Form.useForm<TaskDefinitionFormValues>();
   const [submitting, setSubmitting] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
   const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const canCreateAnyTaskMode = can("task:build") || can("task:ask");
@@ -66,6 +69,26 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
     }
   };
 
+  const handleSaveDraft = async () => {
+    const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
+    setSavingDraft(true);
+    try {
+      const definition = await buildTaskDraftDefinition(values, promptImageFiles);
+      await api.createTaskDraft({
+        title: values.title?.trim() || definition.prompt?.trim().split(/\r?\n/u)[0]?.slice(0, 120) || "Untitled Draft",
+        definition
+      });
+      form.resetFields();
+      setPromptImageFiles([]);
+      onClose();
+      message.success("Draft saved");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to save draft");
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
   return (
     <Modal
       open={open}
@@ -85,6 +108,9 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
       footer={[
         <Button key="cancel" onClick={handleCancel} disabled={submitting}>
           Cancel
+        </Button>,
+        <Button key="draft" loading={savingDraft} disabled={submitting} onClick={() => void handleSaveDraft()}>
+          Save Draft
         </Button>,
         <Button
           key="submit"

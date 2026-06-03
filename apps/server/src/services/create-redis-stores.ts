@@ -16,6 +16,7 @@ import { RedisSnippetStore } from "./snippet-store.js";
 import { RedisSequenceStore } from "./sequence-store.js";
 import type { TaskQueueStore } from "./task-queue-store.js";
 import { RedisTaskQueueStore } from "./task-queue-store.js";
+import { RedisTaskDraftStore } from "./task-draft-store.js";
 import type { TaskStore } from "./task-store.js";
 import { RedisTaskStore } from "./task-store.js";
 import type { UserStore } from "./user-store.js";
@@ -29,6 +30,7 @@ export const createRedisStores = (
   sessionTtlDays: number
 ): AppStores => {
   const taskStore = new RedisTaskStore(redisClients.command, eventBus);
+  const taskDraftStore = new RedisTaskDraftStore(redisClients.command);
   const taskQueueStore = new RedisTaskQueueStore(redisClients.command);
   const githubOutboundQueueStore = new RedisGitHubOutboundQueueStore(redisClients.command);
   const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
@@ -43,6 +45,7 @@ export const createRedisStores = (
 
   return {
     taskStore,
+    taskDraftStore,
     taskQueueStore,
     githubOutboundQueueStore,
     webhookDeliveryStore,

@@ -28,6 +28,10 @@ Notes:
 
 ## Task Flows (New + Existing)
 
+Notes:
+- `/tasks/board` shows saved task drafts in Backlog and active tasks in Ready, In Progress, Review, and Done columns.
+- Saving a draft stores the same task definition fields used by the new task form; opening a draft reuses the same form and can create the runnable task.
+
 ```mermaid
 flowchart TD
   subgraph A[New Task Flow]

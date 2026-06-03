@@ -179,6 +179,17 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         transcript_data jsonb NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS task_drafts (
+        id text PRIMARY KEY,
+        owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title text NOT NULL,
+        definition jsonb NOT NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_drafts_owner_updated_at_idx ON task_drafts(owner_user_id, updated_at DESC);
     `
   },
   {
@@ -389,6 +400,21 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
 
       ALTER TABLE system_settings
       ADD COLUMN IF NOT EXISTS task_prompt_magic_template text NOT NULL DEFAULT '';
+    `
+  },
+  {
+    id: "20260603_01_task_drafts",
+    sql: `
+      CREATE TABLE IF NOT EXISTS task_drafts (
+        id text PRIMARY KEY,
+        owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title text NOT NULL,
+        definition jsonb NOT NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_drafts_owner_updated_at_idx ON task_drafts(owner_user_id, updated_at DESC);
     `
   }
 ];

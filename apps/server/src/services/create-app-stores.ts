@@ -10,6 +10,7 @@ import { PostgresSettingsStore, RedisSettingsStore } from "./settings-store.js";
 import { PostgresSnippetStore, RedisSnippetStore } from "./snippet-store.js";
 import { PostgresSequenceStore, RedisSequenceStore } from "./sequence-store.js";
 import { RedisTaskQueueStore } from "./task-queue-store.js";
+import { PostgresTaskDraftStore, RedisTaskDraftStore } from "./task-draft-store.js";
 import { PostgresTaskStore, RedisTaskStore } from "./task-store.js";
 import { PostgresUserStore, RedisUserStore } from "./user-store.js";
 import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
@@ -61,6 +62,9 @@ export const createAppStores = ({
   const taskStore = backends.taskStore === "postgres"
     ? new PostgresTaskStore(requirePool(pool, "taskStore"), eventBus)
     : new RedisTaskStore(redisClients.command, eventBus);
+  const taskDraftStore = backends.taskStore === "postgres"
+    ? new PostgresTaskDraftStore(requirePool(pool, "taskStore"))
+    : new RedisTaskDraftStore(redisClients.command);
   const snippetStore = backends.snippetStore === "postgres"
     ? new PostgresSnippetStore(requirePool(pool, "snippetStore"), eventBus)
     : new RedisSnippetStore(redisClients.command, eventBus);
@@ -83,6 +87,7 @@ export const createAppStores = ({
 
   return {
     taskStore,
+    taskDraftStore,
     taskQueueStore,
     githubOutboundQueueStore,
     webhookDeliveryStore,
