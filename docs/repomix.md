@@ -27187,13 +27187,11 @@ import type {
   AgentFormattingStyle,
   AgentJargonLevel,
   AudienceType,
-  DataStoreBackend,
   McpServerTransport,
   PermissionScope,
   ProviderProfile,
   ResponsePreferencePreset,
   Role,
-  SystemDataStores,
   SystemSettings
 } from "@agentswarm/shared-types";
 import {
@@ -27293,18 +27291,6 @@ const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: getAgentProviderLabel("claude"), value: "claude" }
 ];
 
-const backendTagColor: Record<DataStoreBackend, string> = {
-  postgres: "geekblue",
-  redis: "orange"
-};
-
-interface DataStoreRow {
-  key: string;
-  label: string;
-  backend: DataStoreBackend;
-  note: string;
-}
-
 const summarizeAllowlist = (label: string, values: string[]): string => `${label}: ${values.length === 0 ? "All" : values.join(", ")}`;
 const toSentenceValue = (value: string): string => value.replace(/_/g, " ");
 const summarizeResponsePreference = (preset: ResponsePreferencePreset): string => {
@@ -27344,31 +27330,6 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   claudeDefaultEffort: settings.claudeDefaultEffort
 });
 
-const buildDataStoreSections = (dataStores?: SystemDataStores): { durable: DataStoreRow[]; runtime: DataStoreRow[] } => {
-  if (!dataStores) {
-    return { durable: [], runtime: [] };
-  }
-
-  return {
-    durable: [
-      { key: "taskStore", label: "Tasks", backend: dataStores.taskStore, note: "Tasks, runs, messages, logs, proposals, transcripts" },
-      { key: "snippetStore", label: "Snippets", backend: dataStores.snippetStore, note: "Prompt and command snippets" },
-      { key: "sequenceStore", label: "Sequences", backend: dataStores.sequenceStore, note: "Reusable ordered prompt flows and run state" },
-      { key: "repositoryStore", label: "Repositories", backend: dataStores.repositoryStore, note: "Repository metadata and webhook settings" },
-      { key: "credentialStore", label: "Credentials", backend: dataStores.credentialStore, note: "Encrypted provider and GitHub credentials" },
-      { key: "roleStore", label: "Roles", backend: dataStores.roleStore, note: "RBAC role definitions" },
-      { key: "userStore", label: "Users", backend: dataStores.userStore, note: "Users, passwords, and role assignments" },
-      { key: "settingsStore", label: "Settings", backend: dataStores.settingsStore, note: "Runtime defaults and MCP configuration" }
-    ],
-    runtime: [
-      { key: "taskQueueStore", label: "Task Queue", backend: dataStores.taskQueueStore, note: "Execution queue remains on Redis" },
-      { key: "webhookDeliveryStore", label: "Webhook Jobs", backend: dataStores.webhookDeliveryStore, note: "Webhook delivery queue remains on Redis" },
-      { key: "sessionStore", label: "Sessions", backend: dataStores.sessionStore, note: "Browser auth sessions remain on Redis" },
-      { key: "eventBus", label: "Realtime Events", backend: dataStores.eventBus, note: "Pub/Sub fan-out remains on Redis" }
-    ]
-  };
-};
-
 export function SettingsPage() {
   const { message } = App.useApp();
   const { can } = useAuth();
@@ -27401,27 +27362,6 @@ export function SettingsPage() {
     ).values()
   );
   const responsePreferencePresets = settings?.responsePreferencePresets ?? [];
-  const dataStoreSections = buildDataStoreSections(settings?.dataStores);
-  const dataStoreColumns = [
-    {
-      title: "Area",
-      dataIndex: "label",
-      key: "label",
-      render: (value: string) => <Typography.Text strong>{value}</Typography.Text>
-    },
-    {
-      title: "Backend",
-      dataIndex: "backend",
-      key: "backend",
-      render: (value: DataStoreBackend) => <Tag color={backendTagColor[value]}>{value === "postgres" ? "Postgres" : "Redis"}</Tag>
-    },
-    {
-      title: "Notes",
-      dataIndex: "note",
-      key: "note",
-      render: (value: string) => <Typography.Text type="secondary">{value}</Typography.Text>
-    }
-  ];
 
   const loadRoles = async () => {
     setRolesLoading(true);
@@ -27504,39 +27444,6 @@ export function SettingsPage() {
             description="This account can view system configuration and roles, but it cannot change them."
           />
         ) : null}
-
-        <Card bordered={false} loading={loading} title="Data Stores">
-          <Space direction="vertical" size={16} style={{ width: "100%" }}>
-            <Alert
-              type="info"
-              showIcon
-              message="Current backend wiring"
-              description="Durable stores run on Postgres. Queueing, sessions, webhook jobs, and realtime pub/sub remain on Redis."
-            />
-            <div>
-              <Typography.Text strong>Durable Stores</Typography.Text>
-              <Table<DataStoreRow>
-                rowKey="key"
-                size="small"
-                pagination={false}
-                style={{ marginTop: 8 }}
-                dataSource={dataStoreSections.durable}
-                columns={dataStoreColumns}
-              />
-            </div>
-            <div>
-              <Typography.Text strong>Runtime Services</Typography.Text>
-              <Table<DataStoreRow>
-                rowKey="key"
-                size="small"
-                pagination={false}
-                style={{ marginTop: 8 }}
-                dataSource={dataStoreSections.runtime}
-                columns={dataStoreColumns}
-              />
-            </div>
-          </Space>
-        </Card>
 
         <Form
           form={generalForm}
