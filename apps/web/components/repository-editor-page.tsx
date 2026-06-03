@@ -806,7 +806,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   }
                 }
               ]}
-              extra='Example trigger with label filter: [{"id":"bug-opened","name":"Bug Issue","enabled":true,"trigger":"issue_opened","labelFilter":{"labelsAny":["bug"],"labelsNone":["wip"]},"task":{"taskType":"build","startMode":"run_now"}}]'
+              extra='Example trigger with label filter: [{"id":"bug-opened","name":"Bug Issue","enabled":true,"trigger":"issue_opened","labelFilter":{"labelsAny":["bug"],"labelsNone":["wip"]},"task":{"taskType":"build"}}]'
             >
               <Input.TextArea rows={10} />
             </Form.Item>

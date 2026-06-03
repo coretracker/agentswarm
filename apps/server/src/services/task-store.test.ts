@@ -203,20 +203,14 @@ describe("TaskStore.appendMessage", () => {
 });
 
 describe("TaskStore.createTask", () => {
-  it("persists task start mode on the task record", async () => {
+  it("creates new build tasks in the build queue", async () => {
     const redis = new FakeRedis();
     const taskStore = new RedisTaskStore(redis as never, {
       publish: async () => {}
     } as never);
-    const task = await taskStore.createTask(
-      {
-        ...createTaskInput,
-        startMode: "prepare_workspace"
-      },
-      repository,
-      "user-1"
-    );
+    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
 
-    assert.equal(task.startMode, "prepare_workspace");
+    assert.equal(task.status, "build_queued");
+    assert.equal(task.startedAt, null);
   });
 });

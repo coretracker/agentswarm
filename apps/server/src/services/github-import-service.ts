@@ -247,7 +247,6 @@ export class GitHubImportService {
       prompt,
       notes: input.notes?.trim() ?? "",
       taskType,
-      startMode: input.startMode,
       provider: input.provider,
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,

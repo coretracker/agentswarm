@@ -1,7 +1,4 @@
 export type TaskType = "build" | "ask";
-
-/** What happens immediately after a task row is created. */
-export type TaskStartMode = "run_now" | "prepare_workspace" | "idle";
 export type AgentProvider = "codex" | "claude";
 
 /** Native effort values from providers. "max" is Claude-only. */
@@ -203,7 +200,7 @@ export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
   { label: "Users", scopes: ["user:list", "user:create", "user:read", "user:edit", "user:delete"] }
 ];
 
-export type TaskCapabilityScope = Extract<PermissionScope, "task:build" | "task:ask" | "task:interactive">;
+export type TaskCapabilityScope = Extract<PermissionScope, "task:build" | "task:ask">;
 
 export const getTaskCapabilityScopeForTaskType = (taskType: TaskType): TaskCapabilityScope =>
   taskType === "ask" ? "task:ask" : "task:build";
@@ -211,14 +208,13 @@ export const getTaskCapabilityScopeForTaskType = (taskType: TaskType): TaskCapab
 export const getTaskCapabilityScopeForTaskAction = (action: TaskAction): TaskCapabilityScope =>
   action === "ask" ? "task:ask" : "task:build";
 
-export const getRequiredTaskCapabilityScopes = (input: { taskType?: TaskType; startMode?: TaskStartMode }): TaskCapabilityScope[] =>
-  input.startMode === "prepare_workspace"
-    ? ["task:interactive", getTaskCapabilityScopeForTaskType(input.taskType ?? "build")]
-    : [getTaskCapabilityScopeForTaskType(input.taskType ?? "build")];
+export const getRequiredTaskCapabilityScopes = (input: { taskType?: TaskType }): TaskCapabilityScope[] => [
+  getTaskCapabilityScopeForTaskType(input.taskType ?? "build")
+];
 
 export const hasRequiredTaskCapabilities = (
   grantedScopes: Iterable<PermissionScope>,
-  input: { taskType?: TaskType; startMode?: TaskStartMode }
+  input: { taskType?: TaskType }
 ): boolean => {
   const granted = new Set(grantedScopes);
   return getRequiredTaskCapabilityScopes(input).every((scope) => granted.has(scope));
@@ -226,10 +222,9 @@ export const hasRequiredTaskCapabilities = (
 
 export const getRequiredTaskCapabilityScopesForDefinition = (definition: TaskDefinitionInput): TaskCapabilityScope[] =>
   definition.sourceType === "pull_request"
-    ? getRequiredTaskCapabilityScopes({ taskType: "build", startMode: "run_now" })
+    ? getRequiredTaskCapabilityScopes({ taskType: "build" })
     : getRequiredTaskCapabilityScopes({
-        taskType: definition.taskType,
-        startMode: definition.startMode
+        taskType: definition.taskType
       });
 
 export const hasRequiredTaskCapabilitiesForDefinition = (
@@ -401,7 +396,6 @@ export interface GitHubAutomationTaskConfig {
   assigneeEmail?: string;
   codexCredentialSource?: CodexCredentialSource;
   taskType?: Extract<TaskType, "build" | "ask">;
-  startMode?: TaskStartMode;
   includeComments?: boolean;
   titleTemplate?: string;
   notes?: string;
@@ -467,7 +461,6 @@ export interface Task {
   repoUrl: string;
   repoDefaultBranch: string;
   taskType: TaskType;
-  startMode: TaskStartMode;
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride: string | null;
@@ -843,8 +836,6 @@ export interface CreateTaskInput {
   notes?: string;
   attachments?: CreateTaskPromptAttachmentInput[];
   taskType?: TaskType;
-  /** Default `run_now`. `prepare_workspace` clones/checks out only (no agent run). `idle` is accepted for API compatibility but not offered in the UI. */
-  startMode?: TaskStartMode;
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
@@ -857,7 +848,6 @@ export interface CreateTaskInput {
   snippet_id?: string;
   sequence_id?: string;
   sequence_variables?: Record<string, string>;
-  start_mode_locked?: boolean;
 }
 
 export type TaskSourceType = "blank" | "snippet" | "sequence" | "issue" | "pull_request";
@@ -870,7 +860,6 @@ export interface BlankTaskDefinitionInput {
   notes?: string;
   attachments?: CreateTaskPromptAttachmentInput[];
   taskType: TaskType;
-  startMode?: TaskStartMode;
   provider: AgentProvider;
   model: string;
   providerProfile: ProviderProfile;
@@ -887,7 +876,6 @@ export interface IssueTaskDefinitionInput {
   issueNumber: number;
   includeComments: boolean;
   taskType: Extract<TaskType, "build" | "ask">;
-  startMode?: TaskStartMode;
   provider: AgentProvider;
   model: string;
   providerProfile: ProviderProfile;
@@ -917,7 +905,6 @@ export interface SnippetTaskDefinitionInput {
   notes?: string;
   attachments?: CreateTaskPromptAttachmentInput[];
   taskType: TaskType;
-  startMode?: TaskStartMode;
   provider: AgentProvider;
   model: string;
   providerProfile: ProviderProfile;
@@ -935,7 +922,6 @@ export interface SequenceTaskDefinitionInput {
   notes?: string;
   attachments?: CreateTaskPromptAttachmentInput[];
   taskType: TaskType;
-  startMode?: TaskStartMode;
   provider: AgentProvider;
   model: string;
   providerProfile: ProviderProfile;
@@ -1049,7 +1035,6 @@ export interface CreateTaskFromIssueInput {
   includeComments?: boolean;
   notes?: string;
   taskType?: Extract<TaskType, "build" | "ask">;
-  startMode?: TaskStartMode;
   title?: string;
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
@@ -1215,13 +1200,6 @@ export function getCheckpointMutationBlockedReason(status: TaskStatus): string |
 
 export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
   status === "archived";
-
-export const getTaskStartModeLabel = (startMode: TaskStartMode): string =>
-  ({
-    run_now: "Run Agent",
-    prepare_workspace: "Prepare Workspace",
-    idle: "Manual Start"
-  })[startMode];
 
 export const getTaskStatusLabel = (status: TaskStatus): string =>
   ({

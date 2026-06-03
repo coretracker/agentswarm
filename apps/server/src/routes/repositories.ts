@@ -132,21 +132,22 @@ const createRepositorySchema = z.object({
             labelsNone: z.array(z.string().trim().min(1)).optional()
           })
           .optional(),
-        task: z.object({
-          assigneeEmail: z.string().trim().email().optional(),
-          codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-          taskType: z.enum(["build", "ask"]).optional(),
-          startMode: z.enum(["run_now", "prepare_workspace", "idle"]).optional(),
-          includeComments: z.boolean().optional(),
-          titleTemplate: z.string().optional(),
-          notes: z.string().optional(),
-          provider: z.enum(["codex", "claude"]).optional(),
-          providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-          modelOverride: z.string().nullable().optional(),
-          baseBranch: z.string().optional(),
-          branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-          snippetId: z.string().optional()
-        })
+        task: z
+          .object({
+            assigneeEmail: z.string().trim().email().optional(),
+            codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+            taskType: z.enum(["build", "ask"]).optional(),
+            includeComments: z.boolean().optional(),
+            titleTemplate: z.string().optional(),
+            notes: z.string().optional(),
+            provider: z.enum(["codex", "claude"]).optional(),
+            providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+            modelOverride: z.string().nullable().optional(),
+            baseBranch: z.string().optional(),
+            branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+            snippetId: z.string().optional()
+          })
+          .strict()
       })
     )
     .optional()

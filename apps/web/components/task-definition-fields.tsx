@@ -16,7 +16,6 @@ import type {
   TaskBranchStrategy,
   TaskDefinitionInput,
   TaskSourceType,
-  TaskStartMode,
   TaskType
 } from "@agentswarm/shared-types";
 import {
@@ -45,7 +44,6 @@ export type TaskDefinitionFormValues = {
   repoId?: string;
   prompt?: string;
   notes?: string;
-  startMode?: TaskStartMode;
   taskType?: TaskType;
   provider?: AgentProvider;
   model?: string;
@@ -120,8 +118,7 @@ export const getTaskDefinitionInitialValues = (
     providerProfile: getProviderDefaultProfile(provider, settings),
     codexCredentialSource: "auto",
     branchStrategy: "feature_branch",
-    includeComments: true,
-    startMode: "prepare_workspace"
+    includeComments: true
   };
 };
 
@@ -142,7 +139,6 @@ export const buildTaskDefinitionInput = (
       prompt: values.prompt?.trim() ?? "",
       notes: values.notes?.trim() ?? "",
       ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
-      startMode: values.startMode ?? "run_now",
       taskType: values.taskType ?? "build",
       provider,
       model: values.model?.trim() ?? "",
@@ -161,7 +157,6 @@ export const buildTaskDefinitionInput = (
       repoId: values.repoId ?? "",
       issueNumber: values.issueNumber ?? 0,
       includeComments: values.includeComments ?? true,
-      startMode: values.startMode ?? "run_now",
       taskType: values.taskType === "build" || values.taskType === "ask" ? values.taskType : "build",
       provider,
       model: values.model?.trim() ?? "",
@@ -182,7 +177,6 @@ export const buildTaskDefinitionInput = (
       prompt: renderedPrompt.trim(),
       notes: values.notes?.trim() ?? "",
       ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
-      startMode: "run_now",
       taskType: values.taskType ?? "build",
       provider,
       model: values.model?.trim() ?? "",
@@ -202,7 +196,6 @@ export const buildTaskDefinitionInput = (
       sequenceVariables: values.sequenceVariables ?? {},
       notes: values.notes?.trim() ?? "",
       ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
-      startMode: "run_now",
       taskType: values.taskType ?? "build",
       provider,
       model: values.model?.trim() ?? "",
@@ -243,7 +236,6 @@ export function TaskDefinitionFields({
   const canReadRepositoryMetadata = can("repo:read");
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
-  const canUseInteractiveTerminal = can("task:interactive");
   const canRunAutomatedTask = canBuildTasks || canAskTasks;
   const canUseSnippets = can("snippet:list");
   const canUseSequences = can("sequence:list");
@@ -253,7 +245,6 @@ export function TaskDefinitionFields({
   const selectedBaseBranch = Form.useWatch("baseBranch", form);
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
-  const selectedStartMode = (Form.useWatch("startMode", form) as TaskStartMode | undefined) ?? "prepare_workspace";
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
   const selectedIssueNumber = Form.useWatch("issueNumber", form);
   const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
@@ -308,10 +299,6 @@ export function TaskDefinitionFields({
           ...(canBuildTasks ? [{ label: "From Pull Request", value: "pull_request" as const }] : [])
         ]
       : [])
-  ];
-  const startModeOptions: Array<{ label: string; value: TaskStartMode }> = [
-    ...(canRunAutomatedTask ? [{ label: "Run automated agent now", value: "run_now" as const }] : []),
-    ...(canUseInteractiveTerminal ? [{ label: "Prepare workspace only", value: "prepare_workspace" as const }] : [])
   ];
   const taskTypeOptions: Array<{ label: string; value: TaskType }> = [
     ...(canBuildTasks ? [{ label: "Build", value: "build" as const }] : []),
@@ -412,12 +399,6 @@ export function TaskDefinitionFields({
   }, [form, selectedProvider]);
 
   useEffect(() => {
-    if ((isBlankSource || isSnippetSource || isSequenceSource || isIssueSource) && selectedStartMode === "prepare_workspace" && selectedTaskType !== "build") {
-      form.setFieldValue("taskType", "build");
-    }
-  }, [form, isBlankSource, isSnippetSource, isSequenceSource, isIssueSource, selectedStartMode, selectedTaskType]);
-
-  useEffect(() => {
     if (selectedTaskType === "build" && !canBuildTasks && canAskTasks) {
       form.setFieldValue("taskType", "ask");
       return;
@@ -427,36 +408,6 @@ export function TaskDefinitionFields({
       form.setFieldValue("taskType", "build");
     }
   }, [canAskTasks, canBuildTasks, form, selectedTaskType]);
-
-  useEffect(() => {
-    if (!(isBlankSource || isSnippetSource || isSequenceSource || isIssueSource)) {
-      return;
-    }
-
-    if (selectedStartMode === "prepare_workspace" && !canUseInteractiveTerminal) {
-      form.setFieldValue("startMode", "run_now");
-      return;
-    }
-
-    if (selectedStartMode !== "prepare_workspace" && !canRunAutomatedTask && canUseInteractiveTerminal) {
-      form.setFieldValue("startMode", "prepare_workspace");
-    }
-  }, [canRunAutomatedTask, canUseInteractiveTerminal, form, isBlankSource, isSnippetSource, isSequenceSource, isIssueSource, selectedStartMode]);
-
-  useEffect(() => {
-    if ((isBlankSource || isSnippetSource || isSequenceSource || isIssueSource) && selectedStartMode === "idle") {
-      form.setFieldValue("startMode", "run_now");
-    }
-  }, [form, isBlankSource, isSnippetSource, isSequenceSource, isIssueSource, selectedStartMode]);
-
-  useEffect(() => {
-    if (!isSnippetSource && !isSequenceSource) {
-      return;
-    }
-    if (selectedStartMode !== "run_now") {
-      form.setFieldValue("startMode", "run_now");
-    }
-  }, [form, isSnippetSource, isSequenceSource, selectedStartMode]);
 
   useEffect(() => {
     if (!isSnippetSource || !selectedSnippet) {
@@ -512,10 +463,8 @@ export function TaskDefinitionFields({
       : isSequenceSource
         ? "Sequence Variables"
         : "Imported Context";
-  const requirePromptForBlank = selectedStartMode === "run_now";
-  const disableBlankPromptInput = isBlankSource && selectedStartMode === "prepare_workspace";
-  const canAttachPromptImages = isBlankSource && selectedStartMode === "run_now";
-  const canUsePromptMagic = isBlankSource && !disableBlankPromptInput;
+  const canAttachPromptImages = isBlankSource;
+  const canUsePromptMagic = isBlankSource;
   const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
 
   const handleGeneratePromptMagic = async (): Promise<void> => {
@@ -584,17 +533,6 @@ export function TaskDefinitionFields({
           </Form.Item>
           <Form.Item
             label={promptPanelTitle}
-            extra={
-              disableBlankPromptInput ? (
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  Disabled for workspace preparation only. Switch to run now to enter a prompt.
-                </Typography.Text>
-              ) : !requirePromptForBlank ? (
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  Optional for this start mode — you can describe intent later or work only in Interactive.
-                </Typography.Text>
-              ) : undefined
-            }
             style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
           >
             <Flex vertical gap={12} style={{ flex: 1 }}>
@@ -618,26 +556,15 @@ export function TaskDefinitionFields({
                 <Form.Item
                   name="prompt"
                   style={{ marginBottom: 0 }}
-                  rules={
-                    requirePromptForBlank
-                      ? [{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]
-                      : []
-                  }
+                  rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]}
                 >
                   <Input.TextArea
                     autoSize={{ minRows: 12, maxRows: 28 }}
                     style={{ resize: "none", paddingRight: 44, paddingBottom: 38 }}
-                    disabled={disableBlankPromptInput}
                     placeholder={
-                      disableBlankPromptInput
-                        ? "Prompt is disabled while preparing the workspace only."
-                        : effectiveTaskType === "ask"
-                        ? requirePromptForBlank
-                          ? "Ask a repository question."
-                          : "Optional question for the agent when you start a run."
-                        : requirePromptForBlank
-                          ? "Describe the goal, constraints, and expected outcome in your prompt."
-                          : "Optional — add a goal now or open Interactive after the workspace is prepared."
+                      effectiveTaskType === "ask"
+                        ? "Ask a repository question."
+                        : "Describe the goal, constraints, and expected outcome in your prompt."
                     }
                   />
                 </Form.Item>
@@ -896,17 +823,11 @@ export function TaskDefinitionFields({
                 if (value === "pull_request") {
                   form.setFieldValue("taskType", "build");
                   form.setFieldValue("branchStrategy", "work_on_branch");
-                  form.setFieldValue("startMode", "run_now");
-                }
-                if (value === "issue") {
-                  form.setFieldValue("startMode", "run_now");
                 }
                 if (value === "snippet") {
-                  form.setFieldValue("startMode", "run_now");
                   form.setFieldValue("taskType", "build");
                 }
                 if (value === "sequence") {
-                  form.setFieldValue("startMode", "run_now");
                   form.setFieldValue("taskType", "build");
                 }
 
@@ -980,33 +901,18 @@ export function TaskDefinitionFields({
             </>
           ) : null}
 
-          {isBlankSource || isSnippetSource || isSequenceSource || isIssueSource ? (
-            <Form.Item name="startMode" label="Start mode" rules={[{ required: true }]}>
-              {isSnippetSource || isSequenceSource ? (
-                <>
-                  <Input value="Automatic" readOnly />
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    Locked because snippet and sequence tasks always start automatically.
-                  </Typography.Text>
-                </>
-              ) : (
-                <Select options={startModeOptions} />
-              )}
-            </Form.Item>
-          ) : null}
-
-          {(isBlankSource || isSnippetSource || isSequenceSource) && selectedStartMode !== "prepare_workspace" ? (
+          {isBlankSource || isSnippetSource || isSequenceSource ? (
             <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
               <Select options={taskTypeOptions} />
             </Form.Item>
           ) : null}
 
-          {!canRunAutomatedTask && !canUseInteractiveTerminal ? (
+          {!canRunAutomatedTask ? (
             <Alert
               type="warning"
               showIcon
               style={{ marginBottom: 16 }}
-              message="This role cannot create build, ask, or interactive tasks."
+              message="This role cannot create build or ask tasks."
               description="Ask an administrator to grant task mode permissions in Settings."
             />
           ) : null}
@@ -1056,13 +962,9 @@ export function TaskDefinitionFields({
           ) : null}
 
           {isIssueSource ? (
-            <>
-              {selectedStartMode !== "prepare_workspace" ? (
-                <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
-                  <Select options={taskTypeOptions} />
-                </Form.Item>
-              ) : null}
-            </>
+            <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
+              <Select options={taskTypeOptions} />
+            </Form.Item>
           ) : null}
 
           {(isBlankSource || isSnippetSource || isSequenceSource || isIssueSource) && baseBranchLabel ? (

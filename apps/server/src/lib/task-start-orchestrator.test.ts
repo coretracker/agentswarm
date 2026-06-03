@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Task } from "@agentswarm/shared-types";
-import { orchestrateTaskActionStart, orchestrateTaskStart, taskStartFailureStatusCode } from "./task-start-orchestrator.js";
+import { getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "./task-start-orchestrator.js";
 
 const createTask = (overrides: Partial<Task> = {}): Task =>
   ({
@@ -18,7 +18,6 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     repoUrl: "https://github.com/example/repo.git",
     repoDefaultBranch: "main",
     taskType: "build",
-    startMode: "run_now",
     provider: "codex",
     providerProfile: "high",
     modelOverride: null,
@@ -45,29 +44,29 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     ...overrides
   }) satisfies Task as Task;
 
-describe("taskStartFailureStatusCode", () => {
-  it("maps run_now failures to 409", () => {
-    assert.equal(taskStartFailureStatusCode("run_now"), 409);
-  });
-
-  it("maps non run_now failures to 500", () => {
-    assert.equal(taskStartFailureStatusCode("prepare_workspace"), 500);
-    assert.equal(taskStartFailureStatusCode("idle"), 500);
-  });
-});
-
 describe("orchestrateTaskStart", () => {
-  it("returns started task when start succeeds", async () => {
+  it("prepares workspace and returns started task when start succeeds", async () => {
     const task = createTask();
+    const prepared: string[] = [];
+    const triggered: Array<{ taskId: string; action: string }> = [];
     const result = await orchestrateTaskStart(
       {
         taskStore: { getTask: async () => task } as never,
-        scheduler: { triggerAction: async () => true } as never,
-        spawner: { prepareTaskWorkspaceOnly: async () => task } as never
+        scheduler: {
+          triggerAction: async (taskId: string, action: string) => {
+            triggered.push({ taskId, action });
+            return true;
+          }
+        } as never,
+        spawner: {
+          prepareTaskWorkspaceOnly: async (input: Task) => {
+            prepared.push(input.id);
+            return task;
+          }
+        } as never
       },
       {
         task,
-        startMode: "run_now",
         fallbackMessage: "Task follow-up failed"
       }
     );
@@ -76,9 +75,11 @@ describe("orchestrateTaskStart", () => {
     if (result.ok) {
       assert.equal(result.task.id, task.id);
     }
+    assert.deepEqual(prepared, [task.id]);
+    assert.deepEqual(triggered, [{ taskId: task.id, action: "build" }]);
   });
 
-  it("returns 409 for run_now start failures", async () => {
+  it("returns 409 for start failures", async () => {
     const task = createTask();
     const result = await orchestrateTaskStart(
       {
@@ -88,7 +89,6 @@ describe("orchestrateTaskStart", () => {
       },
       {
         task,
-        startMode: "run_now",
         fallbackMessage: "Task follow-up failed"
       }
     );
@@ -100,42 +100,9 @@ describe("orchestrateTaskStart", () => {
     }
   });
 
-  it("records prepare workspace failure state for non-run_now failures", async () => {
-    const task = createTask();
-    const patched: Array<{ taskId: string; status: string | undefined }> = [];
-    const logs: Array<{ taskId: string; line: string }> = [];
-    const result = await orchestrateTaskStart(
-      {
-        taskStore: {
-          getTask: async () => {
-            throw new Error("task reload failed");
-          },
-          patchTask: async (taskId: string, patch: { status?: string }) => {
-            patched.push({ taskId, status: patch.status });
-            return task;
-          },
-          appendLog: async (taskId: string, line: string) => {
-            logs.push({ taskId, line });
-          }
-        } as never,
-        scheduler: { triggerAction: async () => true } as never,
-        spawner: { prepareTaskWorkspaceOnly: async () => task } as never
-      },
-      {
-        task,
-        startMode: "prepare_workspace",
-        fallbackMessage: "Task follow-up failed",
-        setPrepareWorkspaceFailureState: true
-      }
-    );
-
-    assert.equal(result.ok, false);
-    if (!result.ok) {
-      assert.equal(result.statusCode, 500);
-      assert.equal(result.message, "task reload failed");
-    }
-    assert.equal(patched.length, 1);
-    assert.equal(logs.length, 1);
+  it("maps new task action from task type", () => {
+    assert.equal(getTriggerActionForNewTask(createTask({ taskType: "build" })), "build");
+    assert.equal(getTriggerActionForNewTask(createTask({ taskType: "ask" })), "ask");
   });
 });
 

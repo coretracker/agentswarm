@@ -12,10 +12,10 @@
 - No large schema rewrite of historical task records in this phase.
 
 ## Current State
-- Task start logic is split across `createTask`, `applyTaskStartMode`, scheduler triggers, imports, and webhook entry points.
+- Task start logic is split across `createTask`, legacy start-mode handling, scheduler triggers, imports, and webhook entry points.
 - Git mutation checks (pull/push/merge/checkpoint actions) are repeated across multiple handlers with similar-but-not-identical conditions.
 - Sequence checkpoint resume is implemented as follow-up logic after mutation routes rather than first-class transition handling.
-- Task detail behavior has required multiple point-fixes to maintain parity between `run_now` and `prepare_workspace` states.
+- Task detail behavior has required multiple point-fixes to maintain parity between creation-time execution states.
 
 ## Acceptance Criteria
 - One shared start orchestration API is used by task create/import/webhook and explicit action triggers.
@@ -26,7 +26,7 @@
 - Regression tests cover new task, existing build, existing ask, and Git/checkpoint transitions.
 
 ## Affected Files
-- `apps/server/src/lib/task-start-mode.ts`
+- Legacy task-start helper code, since removed
 - `apps/server/src/routes/tasks.ts`
 - `apps/server/src/routes/imports.ts`
 - `apps/server/src/routes/github-webhooks.ts`
@@ -68,17 +68,17 @@
 
 7. Hardening and Regression Pass
 - Run full harness checks/tests.
-- Validate key scenarios: new run-now, prepare-workspace, existing build, existing ask, checkpoint blocked, post-checkpoint resume, pull/push/merge guard outcomes.
+- Validate key scenarios: new task creation, existing build, existing ask, checkpoint blocked, post-checkpoint resume, pull/push/merge guard outcomes.
 
 ## Step 1 Inventory Snapshot
 - New task create route:
-`POST /tasks` in `apps/server/src/routes/tasks.ts` (creates task, applies start mode, optionally initializes sequence execution).
+`POST /tasks` in `apps/server/src/routes/tasks.ts` (creates task, starts execution, optionally initializes sequence execution).
 - Existing task manual action route:
 `POST /tasks/:id/actions` in `apps/server/src/routes/tasks.ts` (manual build/ask triggers through scheduler).
 - Import routes:
-`POST /imports/issue` and `POST /imports/pull-request` in `apps/server/src/routes/imports.ts` (create task from GitHub import, then apply start mode).
+`POST /imports/issue` and `POST /imports/pull-request` in `apps/server/src/routes/imports.ts` (create task from GitHub import, then start execution).
 - Webhook routes:
-`POST /github/webhooks/:repositoryId` in `apps/server/src/routes/github-webhooks.ts` (issues/PR/comment/reaction paths that create tasks and apply start mode).
+`POST /github/webhooks/:repositoryId` in `apps/server/src/routes/github-webhooks.ts` (issues/PR/comment/reaction paths that create tasks and start execution).
 - Git mutation routes:
 `POST /tasks/:id/push`, `POST /tasks/:id/pull`, `POST /tasks/:id/merge` in `apps/server/src/routes/tasks.ts`.
 - Checkpoint mutation routes:
@@ -103,7 +103,7 @@
 
 ## Progress Log
 - 2026-05-27 19:20 UTC: Plan created; no implementation changes started yet.
-- 2026-05-27 17:47 UTC: Step 1 started. Added baseline start-mode coverage in `apps/server/src/lib/task-start-mode.test.ts` (run_now default/order/failure + idle + prepare_workspace + trigger action mapping).
+- 2026-05-27 17:47 UTC: Step 1 started. Added baseline coverage for the previous start-mode helper behavior.
 - 2026-05-27 17:48 UTC: Captured task-entry inventory snapshot for create/import/webhook/manual actions and git/checkpoint mutation endpoints.
 - 2026-05-27 17:53 UTC: Started Step 3 incrementally by introducing shared mutation guard reason codes in `apps/server/src/lib/task-mutation-guards.ts` and wiring `/tasks` mutation/action endpoints to return `{ message, reasonCode }` for blocked mutations.
 - 2026-05-27 17:54 UTC: Added guard coverage in `apps/server/src/lib/task-mutation-guards.test.ts` for blocker code priority (`pending_checkpoint` over `active_terminal_session`).

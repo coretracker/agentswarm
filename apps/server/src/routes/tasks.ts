@@ -20,8 +20,7 @@ import type { SequenceStore } from "../services/sequence-store.js";
 import type { SnippetStore } from "../services/snippet-store.js";
 import type { UserStore } from "../services/user-store.js";
 import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
-import { getTriggerActionForNewTask } from "../lib/task-start-mode.js";
-import { orchestrateTaskActionStart, orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
+import { getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
 import { executeOpenAiDiffAssist } from "../services/openai-diff-assist-service.js";
 import { executeTaskPromptMagic } from "../services/openai-task-prompt-magic-service.js";
 import type { SettingsStore } from "../services/settings-store.js";
@@ -45,8 +44,6 @@ import { env } from "../config/env.js";
 import { normalizeProvider } from "../lib/provider-config.js";
 import { resolveTaskProviderStatePaths } from "../lib/task-provider-state.js";
 
-const taskStartModeSchema = z.enum(["run_now", "prepare_workspace", "idle"]);
-
 const taskPromptAttachmentInputSchema = z.object({
   name: z.string().trim().min(1).max(255),
   mimeType: z.string().trim().min(1).max(120),
@@ -60,7 +57,6 @@ const createTaskSchema = z
     prompt: z.string().default(""),
     notes: z.string().max(40_000).optional(),
     attachments: z.array(taskPromptAttachmentInputSchema).max(TASK_PROMPT_ATTACHMENT_MAX_COUNT).optional(),
-    startMode: taskStartModeSchema.optional().default("run_now"),
     taskType: z.enum(["build", "ask"]).optional(),
     provider: z.enum(["codex", "claude"]).optional(),
     providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
@@ -73,9 +69,9 @@ const createTaskSchema = z
     task_source: z.enum(["blank", "snippet", "sequence"]).optional(),
     snippet_id: z.string().trim().min(1).optional(),
     sequence_id: z.string().trim().min(1).optional(),
-    sequence_variables: z.record(z.string().max(2000)).optional(),
-    start_mode_locked: z.boolean().optional()
+    sequence_variables: z.record(z.string().max(2000)).optional()
   })
+  .strict()
   .superRefine((data, ctx) => {
     if (data.task_source === "snippet") {
       if (!data.snippet_id) {
@@ -83,20 +79,6 @@ const createTaskSchema = z
           code: z.ZodIssueCode.custom,
           message: "snippet_id is required when task_source is snippet",
           path: ["snippet_id"]
-        });
-      }
-      if (data.start_mode_locked !== true) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "start_mode_locked must be true when task_source is snippet",
-          path: ["start_mode_locked"]
-        });
-      }
-      if (data.startMode !== "run_now") {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Snippet tasks must use automatic start mode",
-          path: ["startMode"]
         });
       }
     }
@@ -108,25 +90,11 @@ const createTaskSchema = z
           path: ["sequence_id"]
         });
       }
-      if (data.start_mode_locked !== true) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "start_mode_locked must be true when task_source is sequence",
-          path: ["start_mode_locked"]
-        });
-      }
-      if (data.startMode !== "run_now") {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Sequence tasks must use automatic start mode",
-          path: ["startMode"]
-        });
-      }
     }
-    if (data.startMode === "run_now" && data.task_source !== "sequence" && data.prompt.trim().length === 0) {
+    if (data.task_source !== "sequence" && data.prompt.trim().length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Prompt is required when start mode is Run now",
+        message: "Prompt is required",
         path: ["prompt"]
       });
     }
@@ -1225,11 +1193,9 @@ export const registerTaskRoutes = (
     }
 
     const {
-      startMode,
       attachments: attachmentUploads = [],
       ...rawCreatePayload
     } = parsed.data;
-    const effectiveStartMode = startMode;
     const settings = await deps.settingsStore.getSettings();
     const createPayload = applyCreateDefaultsFromSettings(rawCreatePayload, settings);
     let sequenceStepPrompts: string[] = [];
@@ -1258,13 +1224,9 @@ export const registerTaskRoutes = (
       sequenceExecutionMode = sequence.executionMode;
       createPayload.prompt = sequenceStepPrompts[0] ?? "";
     }
-    if (attachmentUploads.length > 0 && effectiveStartMode !== "run_now") {
-      return reply.status(400).send({ message: "Image attachments are only supported when start mode is Run now." });
-    }
     if (
       !requireTaskCapabilityAccess(request, reply, {
-        taskType: createPayload.taskType ?? "build",
-        startMode: effectiveStartMode
+        taskType: createPayload.taskType ?? "build"
       })
     ) {
       return;
@@ -1277,8 +1239,7 @@ export const registerTaskRoutes = (
       {
         ...createPayload,
         prompt: createPayload.prompt.trim(),
-        notes: createPayload.notes?.trim() ?? "",
-        startMode: effectiveStartMode
+        notes: createPayload.notes?.trim() ?? ""
       },
       repository,
       request.auth!.user.id
@@ -1326,9 +1287,7 @@ export const registerTaskRoutes = (
       },
       {
         task: createdTask,
-        startMode: effectiveStartMode,
         fallbackMessage: "Task follow-up failed",
-        setPrepareWorkspaceFailureState: true,
         input: {
           content: createPayload.prompt.trim(),
           ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})

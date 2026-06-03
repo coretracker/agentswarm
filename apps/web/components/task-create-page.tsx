@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import type { TaskSourceType, TaskStartMode, TaskType } from "@agentswarm/shared-types";
+import type { TaskSourceType, TaskType } from "@agentswarm/shared-types";
 import { Button, Flex, Form, Space, Typography, message } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
 import { useSnippets } from "../src/hooks/useSnippets";
@@ -24,26 +24,19 @@ export function TaskCreatePage() {
   const [messageApi, contextHolder] = message.useMessage();
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
-  const selectedStartMode = (Form.useWatch("startMode", form) as TaskStartMode | undefined) ?? "prepare_workspace";
   const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const isIssueSource = selectedSourceType === "issue";
   const isPullRequestSource = selectedSourceType === "pull_request";
-  const isBlankOrIssueInteractivePrep =
-    (selectedSourceType === "blank" || selectedSourceType === "issue") && selectedStartMode === "prepare_workspace";
-  const canCreateAnyTaskMode = can("task:build") || can("task:ask") || can("task:interactive");
+  const canCreateAnyTaskMode = can("task:build") || can("task:ask");
   const canUseSnippets = can("snippet:list");
   const { snippets } = useSnippets(canUseSnippets);
 
   const pageTitle =
     selectedSourceType === "issue"
-      ? isBlankOrIssueInteractivePrep
-        ? "New Interactive Task From Issue"
-        : "New Task From Issue"
+      ? "New Task From Issue"
       : selectedSourceType === "pull_request"
         ? "New Task From Pull Request"
-        : isBlankOrIssueInteractivePrep
-          ? "New Interactive Task"
-          : selectedTaskType === "ask"
+        : selectedTaskType === "ask"
             ? "New Ask Task"
             : "New Build Task";
 

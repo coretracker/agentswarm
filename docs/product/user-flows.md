@@ -32,7 +32,7 @@ Notes:
 flowchart TD
   subgraph A[New Task Flow]
     A1[User opens Create Task]
-    A2[Fill config: source, repo, title, prompt, provider, mode]
+    A2[Fill config: source, repo, title, prompt, provider]
     A3{Optional: Magic Prompt?}
     A4[POST /tasks/prompt-magic]
     A5[Prompt returned + textarea/title updated]
@@ -42,12 +42,9 @@ flowchart TD
     A9[Issue -> POST /imports/issue]
     A10[PR -> POST /imports/pull-request]
     A11[Task row created in store]
-    A12{Start mode}
-    A13[run_now -> enqueue action via Scheduler]
-    A14[prepare_workspace -> clone/checkout only]
-    A15[idle -> no immediate execution]
-    A16[Task Detail opens]
-    A17[If preparing: spinner notice shown]
+    A12[Workspace prepared]
+    A13[Action enqueued via Scheduler]
+    A14[Task Detail opens]
   end
 
   A1 --> A2 --> A3
@@ -57,11 +54,7 @@ flowchart TD
   A7 --> A8 --> A11
   A7 --> A9 --> A11
   A7 --> A10 --> A11
-  A11 --> A12
-  A12 --> A13 --> A16
-  A12 --> A14 --> A16
-  A12 --> A15 --> A16
-  A14 --> A17
+  A11 --> A12 --> A13 --> A14
 
   subgraph B[Existing Build Flow]
     B1[Open existing task]
@@ -122,9 +115,8 @@ flowchart TD
     N8[server route: routes/tasks.ts or routes/imports.ts]
     N9[server: taskStore.createTask]
     N10[server: orchestrateTaskStart]
-    N11{startMode}
+    N11[spawner.prepareWorkspace]
     N12[scheduler.triggerAction]
-    N13[spawner.prepareWorkspace]
     N14[task persisted + events published]
   end
 
@@ -132,10 +124,7 @@ flowchart TD
   N4 -- blank/snippet/sequence --> N5 --> N8
   N4 -- issue --> N6 --> N8
   N4 -- pull_request --> N7 --> N8
-  N8 --> N9 --> N10 --> N11
-  N11 -- run_now --> N12 --> N14
-  N11 -- prepare_workspace --> N13 --> N14
-  N11 -- idle --> N14
+  N8 --> N9 --> N10 --> N11 --> N12 --> N14
 
   subgraph B[Existing Build - Code Path]
     B1[web: task-detail build action]

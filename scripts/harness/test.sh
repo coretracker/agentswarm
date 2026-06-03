@@ -150,7 +150,12 @@ while IFS= read -r test_file; do
       integration_tests+=("$test_file")
       ;;
   esac
-done < <(find apps -type f \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.test.mjs' \) | sort)
+done < <(
+  find apps \
+    \( -path '*/node_modules/*' -o -path '*/dist/*' -o -path '*/build/*' -o -path '*/.next/*' \) -prune -o \
+    -type f \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.test.mjs' \) -print |
+    sort
+)
 
 run_node_tests() {
   local group_name="$1"
@@ -277,19 +282,19 @@ echo "[harness:test] discovered tests: total=${#all_tests[@]}, unit=${#unit_test
 
 case "$TEST_SCOPE" in
   all)
-    run_node_tests "unit" "${unit_tests[@]}"
-    run_node_tests "integration" "${integration_tests[@]}"
-    run_node_tests "e2e:node" "${e2e_tests[@]}"
+    if [[ "${#unit_tests[@]}" -eq 0 ]]; then run_node_tests "unit"; else run_node_tests "unit" "${unit_tests[@]}"; fi
+    if [[ "${#integration_tests[@]}" -eq 0 ]]; then run_node_tests "integration"; else run_node_tests "integration" "${integration_tests[@]}"; fi
+    if [[ "${#e2e_tests[@]}" -eq 0 ]]; then run_node_tests "e2e:node"; else run_node_tests "e2e:node" "${e2e_tests[@]}"; fi
     run_playwright_e2e
     ;;
   unit)
-    run_node_tests "unit" "${unit_tests[@]}"
+    if [[ "${#unit_tests[@]}" -eq 0 ]]; then run_node_tests "unit"; else run_node_tests "unit" "${unit_tests[@]}"; fi
     ;;
   integration)
-    run_node_tests "integration" "${integration_tests[@]}"
+    if [[ "${#integration_tests[@]}" -eq 0 ]]; then run_node_tests "integration"; else run_node_tests "integration" "${integration_tests[@]}"; fi
     ;;
   e2e)
-    run_node_tests "e2e:node" "${e2e_tests[@]}"
+    if [[ "${#e2e_tests[@]}" -eq 0 ]]; then run_node_tests "e2e:node"; else run_node_tests "e2e:node" "${e2e_tests[@]}"; fi
     run_playwright_e2e
     ;;
 esac

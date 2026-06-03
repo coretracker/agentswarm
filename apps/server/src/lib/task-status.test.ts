@@ -39,7 +39,7 @@ describe("normalizeTaskLifecycleStatus", () => {
 });
 
 describe("reconcileTaskStatusWithPendingCheckpoint", () => {
-  it("moves idle tasks into review when a checkpoint is pending", () => {
+  it("moves inactive tasks into review when a checkpoint is pending", () => {
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("failed", true), "awaiting_review");
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("open", true), "awaiting_review");
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", true), "awaiting_review");

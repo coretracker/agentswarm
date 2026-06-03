@@ -575,7 +575,6 @@ const normalizeGitHubAutomations = (value: unknown): GitHubAutomationRule[] => {
             ? taskRaw.codexCredentialSource
             : undefined,
         taskType: taskRaw.taskType === "ask" ? "ask" : "build",
-        startMode: taskRaw.startMode === "prepare_workspace" ? "prepare_workspace" : taskRaw.startMode === "idle" ? "idle" : "run_now",
         includeComments: taskRaw.includeComments === true,
         titleTemplate: typeof taskRaw.titleTemplate === "string" ? taskRaw.titleTemplate.trim() : undefined,
         notes: typeof taskRaw.notes === "string" ? taskRaw.notes : undefined,

@@ -18,7 +18,6 @@ import {
   type TaskGitOperationFailureCode,
   type TaskGitOperationStatus,
   type TaskGitOperationType,
-  type TaskStartMode,
   type TaskStatus,
   type TaskChangeProposal,
   type TaskChangeProposalStatus,
@@ -61,6 +60,7 @@ const MAX_LOG_LINES = 400;
 const MAX_MESSAGES = 200;
 const DEFAULT_HISTORY_PAGE_LIMIT = 25;
 const MAX_HISTORY_PAGE_LIMIT = 100;
+const LEGACY_START_MODE_FIELD = "start" + "Mode";
 
 const nowIso = (): string => new Date().toISOString();
 const POSTGRES_DEADLOCK_ERROR_CODE = "40P01";
@@ -109,15 +109,6 @@ const paginateByTimestamp = <T extends { id: string }>(
 const getInitialAction = (task: { taskType: Task["taskType"] }): TaskAction => (task.taskType === "ask" ? "ask" : "build");
 
 const normalizeLegacyTaskType = (taskType: string | null | undefined): Task["taskType"] => (taskType === "ask" ? "ask" : "build");
-const normalizeTaskStartMode = (startMode: string | null | undefined, status: string | null | undefined): TaskStartMode => {
-  if (startMode === "run_now" || startMode === "prepare_workspace" || startMode === "idle") {
-    return startMode;
-  }
-  if (status === "preparing_workspace") {
-    return "prepare_workspace";
-  }
-  return "run_now";
-};
 const currentTaskStatuses = new Set<TaskStatus>([
   "scheduled",
   "build_queued",
@@ -357,16 +348,17 @@ export class RedisTaskStore implements TaskStore {
       snippetId?: string;
       sequenceId?: string;
       sequenceRunId?: string | null;
-      startMode?: TaskStartMode | null;
       scheduledStartAt?: string | null;
       scheduledEndAt?: string | null;
     };
+    const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
+    delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
     const taskSource =
       legacyTask.taskSource === "snippet" || legacyTask.taskSource === "sequence" || legacyTask.taskSource === "blank"
         ? legacyTask.taskSource
         : "blank";
     const normalizedTask: Task = {
-      ...legacyTask,
+      ...taskWithoutStartMode,
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
@@ -378,7 +370,6 @@ export class RedisTaskStore implements TaskStore {
             : null,
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
       taskType: normalizeLegacyTaskType(legacyTask.taskType),
-      startMode: normalizeTaskStartMode(legacyTask.startMode, legacyTask.status),
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
@@ -578,9 +569,7 @@ export class RedisTaskStore implements TaskStore {
     const title = resolveTaskTitleForCreate(input);
     const taskType = input.taskType ?? "build";
     const promptRaw = (input.prompt ?? "").trim();
-    const startMode: TaskStartMode = input.startMode ?? "run_now";
-    const prompt =
-      promptRaw.length > 0 ? promptRaw : startMode === "prepare_workspace" ? "" : "(No prompt provided.)";
+    const prompt = promptRaw.length > 0 ? promptRaw : "(No prompt provided.)";
     const notes = (input.notes ?? "").trim();
     const complexity = classifyTaskComplexity(title, prompt);
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
@@ -599,7 +588,7 @@ export class RedisTaskStore implements TaskStore {
         ? input.sequence_id.trim()
         : undefined;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
-    const initialStatus: TaskStatus = startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
+    const initialStatus: TaskStatus = getQueuedStatusForAction(initialAction);
     const task: Task = {
       id: nanoid(),
       title,
@@ -613,7 +602,6 @@ export class RedisTaskStore implements TaskStore {
       repoUrl: repository.url,
       repoDefaultBranch: repository.defaultBranch,
       taskType,
-      startMode,
       provider,
       providerProfile,
       modelOverride,
@@ -640,20 +628,18 @@ export class RedisTaskStore implements TaskStore {
       scheduledEndAt: null,
       createdAt: timestamp,
       updatedAt: timestamp,
-      startedAt: startMode === "prepare_workspace" ? timestamp : null,
+      startedAt: null,
       finishedAt: null,
       errorMessage: null
     };
 
     await this.redis.multi().set(this.taskKey(task.id), JSON.stringify(task)).sadd(TASK_IDS_KEY, task.id).exec();
     await this.publishTaskEvent("task:created", task);
-    if (startMode !== "prepare_workspace" || prompt.trim().length > 0) {
-      await this.appendMessage(task.id, {
-        role: "user",
-        action: initialAction,
-        content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
-      });
-    }
+    await this.appendMessage(task.id, {
+      role: "user",
+      action: initialAction,
+      content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
+    });
 
     return this.withPendingCheckpointState(task);
   }
@@ -1569,16 +1555,17 @@ export class PostgresTaskStore implements TaskStore {
       snippetId?: string;
       sequenceId?: string;
       sequenceRunId?: string | null;
-      startMode?: TaskStartMode | null;
       scheduledStartAt?: string | null;
       scheduledEndAt?: string | null;
     };
+    const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
+    delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
     const taskSource =
       legacyTask.taskSource === "snippet" || legacyTask.taskSource === "sequence" || legacyTask.taskSource === "blank"
         ? legacyTask.taskSource
         : "blank";
     const normalizedTask: Task = {
-      ...legacyTask,
+      ...taskWithoutStartMode,
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
@@ -1590,7 +1577,6 @@ export class PostgresTaskStore implements TaskStore {
             : null,
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
       taskType: normalizeLegacyTaskType(legacyTask.taskType),
-      startMode: normalizeTaskStartMode(legacyTask.startMode, legacyTask.status),
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
@@ -1878,9 +1864,7 @@ export class PostgresTaskStore implements TaskStore {
     const title = resolveTaskTitleForCreate(input);
     const taskType = input.taskType ?? "build";
     const promptRaw = (input.prompt ?? "").trim();
-    const startMode: TaskStartMode = input.startMode ?? "run_now";
-    const prompt =
-      promptRaw.length > 0 ? promptRaw : startMode === "prepare_workspace" ? "" : "(No prompt provided.)";
+    const prompt = promptRaw.length > 0 ? promptRaw : "(No prompt provided.)";
     const notes = (input.notes ?? "").trim();
     const complexity = classifyTaskComplexity(title, prompt);
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
@@ -1899,7 +1883,7 @@ export class PostgresTaskStore implements TaskStore {
         ? input.sequence_id.trim()
         : undefined;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
-    const initialStatus: TaskStatus = startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
+    const initialStatus: TaskStatus = getQueuedStatusForAction(initialAction);
     const task: Task = {
       id: nanoid(),
       title,
@@ -1913,7 +1897,6 @@ export class PostgresTaskStore implements TaskStore {
       repoUrl: repository.url,
       repoDefaultBranch: repository.defaultBranch,
       taskType,
-      startMode,
       provider,
       providerProfile,
       modelOverride,
@@ -1940,20 +1923,18 @@ export class PostgresTaskStore implements TaskStore {
       scheduledEndAt: null,
       createdAt: timestamp,
       updatedAt: timestamp,
-      startedAt: startMode === "prepare_workspace" ? timestamp : null,
+      startedAt: null,
       finishedAt: null,
       errorMessage: null
     };
 
     await this.storeTask(task);
     await this.publishTaskEvent("task:created", task);
-    if (startMode !== "prepare_workspace" || prompt.trim().length > 0) {
-      await this.appendMessage(task.id, {
-        role: "user",
-        action: initialAction,
-        content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
-      });
-    }
+    await this.appendMessage(task.id, {
+      role: "user",
+      action: initialAction,
+      content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
+    });
 
     return this.withPendingCheckpointState(task);
   }

@@ -1,9 +1,8 @@
-import { isActiveTaskStatus, type Task, type TaskAction, type TaskExecutionInput, type TaskStartMode } from "@agentswarm/shared-types";
+import { isActiveTaskStatus, type Task, type TaskAction, type TaskExecutionInput } from "@agentswarm/shared-types";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
 import { getMutationBlocked, type TaskMutationBlockedReasonCode } from "./task-mutation-guards.js";
-import { applyTaskStartMode } from "./task-start-mode.js";
 
 export interface TaskStartOrchestratorDeps {
   taskStore: TaskStore;
@@ -13,10 +12,8 @@ export interface TaskStartOrchestratorDeps {
 
 export interface OrchestrateTaskStartOptions {
   task: Task;
-  startMode: TaskStartMode | undefined;
   input?: TaskExecutionInput;
   fallbackMessage: string;
-  setPrepareWorkspaceFailureState?: boolean;
 }
 
 export type OrchestratedTaskStartResult =
@@ -45,18 +42,11 @@ const toErrorMessage = (error: unknown, fallbackMessage: string): string => {
   return fallbackMessage;
 };
 
-export const taskStartFailureStatusCode = (startMode: TaskStartMode | undefined): 409 | 500 => {
-  return (startMode ?? "run_now") === "run_now" ? 409 : 500;
-};
-
-const setPrepareWorkspaceFailureState = async (taskStore: TaskStore, taskId: string, message: string): Promise<void> => {
-  await taskStore.patchTask(taskId, {
-    status: "failed",
-    enqueued: false,
-    errorMessage: message,
-    finishedAt: new Date().toISOString()
-  });
-  await taskStore.appendLog(taskId, `Workspace preparation failed: ${message}`);
+export const getTriggerActionForNewTask = (task: Pick<Task, "taskType">): TaskAction => {
+  if (task.taskType === "ask") {
+    return "ask";
+  }
+  return "build";
 };
 
 export async function orchestrateTaskStart(
@@ -64,18 +54,22 @@ export async function orchestrateTaskStart(
   options: OrchestrateTaskStartOptions
 ): Promise<OrchestratedTaskStartResult> {
   try {
-    const startedTask = await applyTaskStartMode(options.task, options.startMode, deps, options.input);
-    return { ok: true, task: startedTask };
+    await deps.spawner.prepareTaskWorkspaceOnly(options.task);
+    const accepted = await deps.scheduler.triggerAction(
+      options.task.id,
+      getTriggerActionForNewTask(options.task),
+      options.input
+    );
+    if (!accepted) {
+      throw new Error("Task execution could not be started");
+    }
+    return { ok: true, task: (await deps.taskStore.getTask(options.task.id)) ?? options.task };
   } catch (error) {
     const message = toErrorMessage(error, options.fallbackMessage);
-    const mode = options.startMode ?? "run_now";
-    if (options.setPrepareWorkspaceFailureState === true && mode === "prepare_workspace") {
-      await setPrepareWorkspaceFailureState(deps.taskStore, options.task.id, message);
-    }
     return {
       ok: false,
       message,
-      statusCode: taskStartFailureStatusCode(mode)
+      statusCode: 409
     };
   }
 }

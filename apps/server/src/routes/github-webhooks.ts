@@ -309,7 +309,6 @@ export const registerGitHubWebhookRoutes = (
           includeComments: rule.task.includeComments ?? false,
           notes: rule.task.notes,
           taskType: rule.task.taskType ?? "build",
-          startMode: rule.task.startMode ?? "run_now",
           title: rule.task.titleTemplate,
           provider: rule.task.provider,
           providerProfile: rule.task.providerProfile,
@@ -335,9 +334,7 @@ export const registerGitHubWebhookRoutes = (
           },
           {
             task,
-            startMode: rule.task.startMode ?? "run_now",
-            fallbackMessage: "Webhook-created task follow-up failed",
-            setPrepareWorkspaceFailureState: true
+            fallbackMessage: "Webhook-created task execution could not be started"
           }
         );
         if (!startResult.ok) {
@@ -386,7 +383,6 @@ export const registerGitHubWebhookRoutes = (
           },
           {
             task,
-            startMode: "run_now",
             fallbackMessage: "Webhook-created task execution could not be started"
           }
         );
@@ -493,12 +489,11 @@ export const registerGitHubWebhookRoutes = (
               taskStore: deps.taskStore,
               scheduler: deps.scheduler,
               spawner: deps.spawner
-            },
-            {
-              task,
-              startMode: "run_now",
-              fallbackMessage: "Webhook-created task execution could not be started"
-            }
+          },
+          {
+            task,
+            fallbackMessage: "Webhook-created task execution could not be started"
+          }
           );
           if (!startResult.ok) {
             throw new Error(startResult.message);
@@ -511,7 +506,6 @@ export const registerGitHubWebhookRoutes = (
             includeComments: rule.task.includeComments ?? true,
             notes: [auditLine, rule.task.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n"),
             taskType: rule.task.taskType ?? "build",
-            startMode: rule.task.startMode ?? "run_now",
             title: rule.task.titleTemplate,
             provider: rule.task.provider,
             providerProfile: rule.task.providerProfile,
@@ -537,9 +531,7 @@ export const registerGitHubWebhookRoutes = (
             },
             {
               task,
-              startMode: rule.task.startMode ?? "run_now",
-              fallbackMessage: "Webhook-created task follow-up failed",
-              setPrepareWorkspaceFailureState: true
+              fallbackMessage: "Webhook-created task execution could not be started"
             }
           );
           if (!startResult.ok) {

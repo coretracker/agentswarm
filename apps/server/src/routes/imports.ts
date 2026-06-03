@@ -28,9 +28,8 @@ const issueImportSchema = z.object({
   baseBranch: z.string().trim().min(1).optional(),
   branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
   model: z.string().trim().min(1).optional(),
-  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
-  startMode: z.enum(["run_now", "prepare_workspace", "idle"]).optional().default("run_now")
-});
+  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
+}).strict();
 
 const pullRequestImportSchema = z.object({
   repoId: z.string().min(1),
@@ -181,13 +180,11 @@ export const registerImportRoutes = (
         return;
       }
 
-      const { startMode, ...rawIssueRest } = parsed.data;
       const settings = await deps.settingsStore.getSettings();
-      const issueRest = applyCreateDefaultsFromSettings(rawIssueRest, settings);
+      const issueRest = applyCreateDefaultsFromSettings(parsed.data, settings);
       if (
         !requireTaskCapabilityAccess(request, reply, {
-          taskType: issueRest.taskType ?? "build",
-          startMode
+          taskType: issueRest.taskType ?? "build"
         })
       ) {
         return;
@@ -196,10 +193,7 @@ export const registerImportRoutes = (
         return;
       }
 
-      const taskInput = await deps.githubImportService.buildTaskInputFromIssue(repository, {
-        ...issueRest,
-        startMode
-      });
+      const taskInput = await deps.githubImportService.buildTaskInputFromIssue(repository, issueRest);
       const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
       const taskWithCreator = await deps.taskStore.patchTask(task.id, {
         creatorName: request.auth!.user.name
@@ -216,9 +210,7 @@ export const registerImportRoutes = (
         },
         {
           task: createdTask,
-          startMode,
-          fallbackMessage: "Imported task follow-up failed",
-          setPrepareWorkspaceFailureState: true
+          fallbackMessage: "Imported task execution could not be started"
         }
       );
       if (!startResult.ok) {
@@ -246,7 +238,7 @@ export const registerImportRoutes = (
         return;
       }
 
-      if (!requireTaskCapabilityAccess(request, reply, { taskType: "build", startMode: "run_now" })) {
+      if (!requireTaskCapabilityAccess(request, reply, { taskType: "build" })) {
         return;
       }
       const settings = await deps.settingsStore.getSettings();
@@ -272,7 +264,6 @@ export const registerImportRoutes = (
         },
         {
           task: createdTask,
-          startMode: "run_now",
           fallbackMessage: "Imported task execution could not be started"
         }
       );
