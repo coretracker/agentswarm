@@ -16,7 +16,6 @@ import type {
   UpdateCredentialSettingsInput,
   UpdateSettingsInput
 } from "@agentswarm/shared-types";
-import { env } from "../config/env.js";
 import { EventBus } from "../lib/events.js";
 import { normalizeProvider, DEFAULT_PROVIDER, normalizeProviderProfile } from "../lib/provider-config.js";
 import { defaultModelForProvider } from "../lib/provider-config.js";
@@ -43,14 +42,14 @@ const buildSystemResponsePreferencePreset = (): ResponsePreferencePreset => ({
 });
 
 const buildSystemDataStores = (): SystemDataStores => ({
-  taskStore: env.STORE_BACKENDS.taskStore,
-  snippetStore: env.STORE_BACKENDS.snippetStore,
-  sequenceStore: env.STORE_BACKENDS.sequenceStore,
-  repositoryStore: env.STORE_BACKENDS.repositoryStore,
-  credentialStore: env.STORE_BACKENDS.credentialStore,
-  roleStore: env.STORE_BACKENDS.roleStore,
-  userStore: env.STORE_BACKENDS.userStore,
-  settingsStore: env.STORE_BACKENDS.settingsStore,
+  taskStore: "postgres",
+  snippetStore: "postgres",
+  sequenceStore: "postgres",
+  repositoryStore: "postgres",
+  credentialStore: "postgres",
+  roleStore: "postgres",
+  userStore: "postgres",
+  settingsStore: "postgres",
   taskQueueStore: "redis",
   webhookDeliveryStore: "redis",
   sessionStore: "redis",

@@ -76,17 +76,10 @@ Copy `.env.example` to `.env` and adjust it if needed.
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `STORE_BACKEND` | Default durable store backend | `redis` |
 | `DATABASE_URL` | Postgres connection string | `postgres://postgres:postgres@localhost:5432/agentswarm` |
 | `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start | `true` |
-| `TASK_STORE_BACKEND` | Override backend for task data only | inherit |
-| `SNIPPET_STORE_BACKEND` | Override backend for snippets | inherit |
-| `SEQUENCE_STORE_BACKEND` | Override backend for sequences | inherit |
-| `REPOSITORY_STORE_BACKEND` | Override backend for repositories | inherit |
-| `CREDENTIAL_STORE_BACKEND` | Override backend for encrypted credentials | inherit |
-| `ROLE_STORE_BACKEND` | Override backend for roles | inherit |
-| `USER_STORE_BACKEND` | Override backend for users | inherit |
-| `SETTINGS_STORE_BACKEND` | Override backend for settings | inherit |
+
+Durable application stores always use Postgres. Redis is still required for runtime services such as queueing, sessions, webhook jobs, and realtime pub/sub.
 
 ### Git / Workspace
 

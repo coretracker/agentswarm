@@ -69,7 +69,6 @@ Important values in template:
 - `NGINX_CONF_HOST_PATH` (optional absolute host path override)
 - `DEFAULT_ADMIN_EMAIL`
 - `DEFAULT_ADMIN_PASSWORD`
-- `STORE_BACKEND`
 - `DATABASE_URL`
 
 ## 3) Local Database Setup / Reset

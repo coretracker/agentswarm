@@ -333,7 +333,7 @@ export function SettingsPage() {
               type="info"
               showIcon
               message="Current backend wiring"
-              description="Durable stores can run on Redis or Postgres. Queueing, sessions, webhook jobs, and realtime pub/sub still remain on Redis."
+              description="Durable stores run on Postgres. Queueing, sessions, webhook jobs, and realtime pub/sub remain on Redis."
             />
             <div>
               <Typography.Text strong>Durable Stores</Typography.Text>

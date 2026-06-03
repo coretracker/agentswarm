@@ -39,17 +39,46 @@ Note:
 
 ## Execution Plans
 - Small tasks can use inline plans in the task conversation.
+- Non-trivial tasks must use the Non-Trivial Task Flow below.
 - Complex tasks must create an execution plan using `docs/exec-plans/template.md`.
 - Plans must be updated during work as steps complete or scope changes.
 - Completed plans move from `docs/exec-plans/active/` to `docs/exec-plans/completed/`.
 - Complex task plans must include the required `Human-Gated Flow Evidence` checklist from the template.
 - Flow reference: `docs/development/human-gated-taskwise-delivery-flow.md`.
 
+## Non-Trivial Task Flow
+Use this flow for any task that requires repository changes beyond a tiny, obvious edit, touches multiple files, changes behavior, affects tests or build output, or has ambiguous requirements.
+
+```mermaid
+flowchart TB
+    A["Read Requirements"] --> B["Quick Repo Research"]
+    B --> C{"Clear Enough?"}
+    C -- No --> D["Ask Clarifying Questions"]
+    D --> A
+    C -- Yes --> E["Create Short Plan + Task List"]
+    E --> F["Human Review / Approval"]
+    F --> G{"Approved?"}
+    G -- No --> A
+    G -- Yes --> H["Run Baseline Checks"]
+    H --> I["Implement Next Task"]
+    I --> J["Run Tests / Build"]
+    J --> K{"Passed?"}
+    K -- No --> I
+    K -- Yes --> L["Self Review"]
+    L --> M{"More Tasks?"}
+    M -- Yes --> I
+    M -- No --> N["Final Verification"]
+    N --> R["Complete"]
+```
+
 ## Operating Rules
 - Prefer harness scripts in `scripts/harness/`.
 - Treat non-zero exit codes as failures.
 - Do not assume behavior that is not documented in this repository.
 - Mark missing evidence as `TODO` instead of guessing.
+- Before starting work, inspect `docs/repomix.md` for the current repository context bundle.
+- After any agent run that changes code or repository files, execute `npx repomix --style markdown --output docs/repomix.md` to refresh the repository context bundle.
+- Keep `docs/repomix.md` as the canonical Repomix output referenced by agents.
 
 ## Remote Build Runner
 Use `http://host.docker.internal:38127` and call `POST /run` with:

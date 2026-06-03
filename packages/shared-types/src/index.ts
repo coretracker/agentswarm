@@ -810,14 +810,14 @@ export type DataStoreBackend = "redis" | "postgres";
 export type WorkspaceProvisioningMode = "clone_only" | "hybrid";
 
 export interface SystemDataStores {
-  taskStore: DataStoreBackend;
-  snippetStore: DataStoreBackend;
-  sequenceStore: DataStoreBackend;
-  repositoryStore: DataStoreBackend;
-  credentialStore: DataStoreBackend;
-  roleStore: DataStoreBackend;
-  userStore: DataStoreBackend;
-  settingsStore: DataStoreBackend;
+  taskStore: "postgres";
+  snippetStore: "postgres";
+  sequenceStore: "postgres";
+  repositoryStore: "postgres";
+  credentialStore: "postgres";
+  roleStore: "postgres";
+  userStore: "postgres";
+  settingsStore: "postgres";
   taskQueueStore: "redis";
   webhookDeliveryStore: "redis";
   sessionStore: "redis";

@@ -52,7 +52,7 @@ if [[ ! -f .env && ! -f .env.example ]]; then
 fi
 
 if [[ -f .env.example ]]; then
-  for required_key in DEFAULT_ADMIN_EMAIL DEFAULT_ADMIN_PASSWORD PUBLIC_PORT STORE_BACKEND; do
+  for required_key in DEFAULT_ADMIN_EMAIL DEFAULT_ADMIN_PASSWORD PUBLIC_PORT DATABASE_URL; do
     if ! grep -q "^${required_key}=" .env.example; then
       echo "[harness:doctor] error: .env.example is missing required key: ${required_key}" >&2
       exit 1

@@ -10,8 +10,7 @@ import { createAuthService } from "./lib/auth.js";
 import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
 import { createRedisClients } from "./lib/redis.js";
 import { EventBus } from "./lib/events.js";
-import { usesPostgresBackends } from "./services/app-stores.js";
-import { createAppStores } from "./services/create-app-stores.js";
+import { createPostgresStores } from "./services/create-postgres-stores.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { SpawnerService } from "./services/spawner.js";
 import { SchedulerService } from "./services/scheduler.js";
@@ -106,7 +105,8 @@ const bootstrap = async (): Promise<void> => {
       event: "startup.config",
       port: env.PORT,
       corsOrigin: env.CORS_ORIGIN,
-      storeBackends: env.STORE_BACKENDS,
+      durableStores: "postgres",
+      runtimeServices: "redis",
       postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
       sentryEnabled,
       taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
@@ -117,12 +117,12 @@ const bootstrap = async (): Promise<void> => {
 
   const redisClients = createRedisClients(env.REDIS_URL);
   const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
-  const postgresPool = usesPostgresBackends(env.STORE_BACKENDS) ? createPostgresPool(env.DATABASE_URL) : null;
-  if (postgresPool && env.POSTGRES_AUTO_MIGRATE) {
+  const postgresPool = createPostgresPool(env.DATABASE_URL);
+  if (env.POSTGRES_AUTO_MIGRATE) {
     app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
     await runPostgresMigrations(postgresPool);
     app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
-  } else if (postgresPool) {
+  } else {
     app.log.info({ event: "startup.migrations", mode: "manual" }, "Skipping auto-migrations");
   }
 
@@ -140,13 +140,12 @@ const bootstrap = async (): Promise<void> => {
     userStore,
     sessionStore,
     settingsStore
-  } = createAppStores({
-    pool: postgresPool,
+  } = createPostgresStores(
+    postgresPool,
     redisClients,
     eventBus,
-    sessionTtlDays: env.AUTH_SESSION_TTL_DAYS,
-    backends: env.STORE_BACKENDS
-  });
+    env.AUTH_SESSION_TTL_DAYS
+  );
   const auth = createAuthService({
     userStore,
     sessionStore,
