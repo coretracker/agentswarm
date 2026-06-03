@@ -1,4 +1,4 @@
-import { getCheckpointMutationBlockedReason, isActiveTaskStatus, isTaskWorking, type Task } from "@agentswarm/shared-types";
+import { isActiveTaskStatus, isQueuedTaskStatus, isTaskWorking, type Task } from "@agentswarm/shared-types";
 
 export interface TaskLifecycleViewModel {
   isArchived: boolean;
@@ -15,20 +15,23 @@ export const buildTaskLifecycleViewModel = (task: Task | null | undefined): Task
   const taskType = task?.taskType ?? "build";
   const executionStatus = task?.executionStatus;
   const isArchived = task?.workflowStatus === "archived" || task?.status === "archived";
-  const isQueued = executionStatus === "queued" || task?.status === "build_queued" || task?.status === "ask_queued";
+  const isQueued = executionStatus === "queued" || (task ? isQueuedTaskStatus(task.status) : false);
   const isActive = executionStatus === "preparing" || executionStatus === "running" || (task ? isActiveTaskStatus(task.status) : false);
   const hasTaskWorkingState = isActive || (task ? isTaskWorking(task) : false);
-  const checkpointDiffActionsBlockedReason = task ? getCheckpointMutationBlockedReason(task.status) : null;
+  const checkpointDiffActionsBlockedReason =
+    executionStatus === "queued" || executionStatus === "preparing" || executionStatus === "running" || (task ? isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status) : false)
+      ? "Checkpoint actions are unavailable while task execution is queued or running."
+      : null;
   const checkpointDiffActionsBlocked = checkpointDiffActionsBlockedReason !== null;
   const isPreparingWorkspace = executionStatus === "preparing" || task?.status === "preparing_workspace";
   const resultStatusText =
-    task?.status === "preparing_workspace"
+    isPreparingWorkspace
       ? "Preparing workspace"
       : taskType === "build"
-        ? task?.status === "build_queued"
+        ? isQueued
           ? "Build queued"
           : "Build in progress"
-        : task?.status === "ask_queued"
+        : isQueued
           ? "Question queued"
           : "Answer in progress";
 

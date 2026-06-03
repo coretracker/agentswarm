@@ -88,7 +88,9 @@ describe("SchedulerService.triggerAction", () => {
       listTasks: async () => [
         {
           id: "task-3",
-          status: "building",
+          status: "open",
+          executionStatus: "running",
+          executionAction: "build",
           lastAction: "build"
         }
       ],
@@ -104,7 +106,7 @@ describe("SchedulerService.triggerAction", () => {
         updatedRuns.push({ runId, patch });
         return null;
       },
-      setStatus: async (taskId: string, status: string, extra: unknown) => {
+      setExecutionState: async (taskId: string, status: string, extra: unknown) => {
         updatedStatuses.push({ taskId, status, extra });
         return null;
       },

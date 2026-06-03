@@ -484,10 +484,10 @@ export async function getTaskInteractiveTerminalStatus(
     return { available: false, reason: "Archived tasks are read-only." };
   }
 
-  if (isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {
+  if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
     return {
       available: false,
-      reason: `Terminal unavailable while the task is “${getTaskStatusLabel(task.status)}”. Finish or cancel that run first (one action at a time).`
+      reason: "Terminal unavailable while the task is queued or running. Finish or cancel that run first (one action at a time)."
     };
   }
 

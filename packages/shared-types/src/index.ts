@@ -64,6 +64,7 @@ export type TaskStatus =
   | "ask_queued"
   | "asking"
   | "open"
+  | "in_progress"
   | "in_review"
   | "awaiting_review"
   | "done"
@@ -1138,7 +1139,7 @@ export interface UpdateUserNotesInput {
 }
 
 export interface UpdateTaskStateInput {
-  status: Extract<TaskStatus, "open" | "in_review" | "awaiting_review" | "done">;
+  status: Extract<TaskStatus, "open" | "in_progress" | "in_review" | "awaiting_review" | "done">;
 }
 
 export interface UpdateTaskAssigneeInput {
@@ -1220,12 +1221,30 @@ export const isActiveTaskStatus = (status: TaskStatus): boolean =>
   status === "building" ||
   status === "asking";
 
-export const isTaskWorking = (task: Pick<Task, "status" | "activeInteractiveSession">): boolean =>
-  isActiveTaskStatus(task.status) || task.activeInteractiveSession === true;
+export const isTaskWorking = (task: Pick<Task, "status" | "activeInteractiveSession"> & { executionStatus?: TaskExecutionStatus }): boolean =>
+  task.executionStatus === "queued" ||
+  task.executionStatus === "preparing" ||
+  task.executionStatus === "running" ||
+  isActiveTaskStatus(task.status) ||
+  task.activeInteractiveSession === true;
 
-export const getTaskExecutionStatus = (task: Pick<Task, "status" | "activeInteractiveSession">): TaskExecutionStatus => {
+export const getTaskExecutionStatus = (
+  task: Pick<Task, "status" | "activeInteractiveSession"> & { executionStatus?: TaskExecutionStatus }
+): TaskExecutionStatus => {
   if (task.activeInteractiveSession === true) {
     return "running";
+  }
+
+  if (
+    task.executionStatus === "idle" ||
+    task.executionStatus === "scheduled" ||
+    task.executionStatus === "queued" ||
+    task.executionStatus === "preparing" ||
+    task.executionStatus === "running" ||
+    task.executionStatus === "failed" ||
+    task.executionStatus === "cancelled"
+  ) {
+    return task.executionStatus;
   }
 
   if (task.status === "scheduled") {
@@ -1256,10 +1275,14 @@ export const getTaskExecutionStatus = (task: Pick<Task, "status" | "activeIntera
 };
 
 export const getTaskExecutionAction = (
-  task: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode">
+  task: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode"> & { executionAction?: TaskExecutionAction }
 ): TaskExecutionAction => {
   if (task.activeInteractiveSession === true) {
     return task.activeTerminalSessionMode === "git" ? "terminal" : "interactive";
+  }
+
+  if (task.executionAction === "build" || task.executionAction === "ask" || task.executionAction === "interactive" || task.executionAction === "terminal") {
+    return task.executionAction;
   }
 
   if (task.status === "build_queued" || task.status === "preparing_workspace" || task.status === "building") {
@@ -1294,12 +1317,12 @@ export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingChe
     return "done";
   }
 
-  if (task.hasPendingCheckpoint || task.status === "awaiting_review" || task.status === "in_review" || task.status === "answered") {
-    return "review";
+  if (task.status === "in_progress") {
+    return "in_progress";
   }
 
-  if (isActiveTaskStatus(task.status)) {
-    return "in_progress";
+  if (task.status === "awaiting_review" || task.status === "in_review") {
+    return "review";
   }
 
   if (task.status === "scheduled") {
@@ -1347,6 +1370,7 @@ export const getTaskStatusLabel = (status: TaskStatus): string =>
     ask_queued: "Ask Queued",
     asking: "Answering",
     open: "Open",
+    in_progress: "In Progress",
     in_review: "In Review",
     awaiting_review: "Awaiting Review",
     done: "Done",

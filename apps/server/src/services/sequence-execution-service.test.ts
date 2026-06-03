@@ -86,7 +86,8 @@ describe("SequenceExecutionService", () => {
         getTaskCallCount += 1;
         return {
           id: "task-1",
-          status: getTaskCallCount === 1 ? "building" : "open",
+          status: "open",
+          executionStatus: getTaskCallCount === 1 ? "running" : "idle",
           hasPendingCheckpoint: false,
           activeInteractiveSession: false
         };

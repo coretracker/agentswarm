@@ -18,7 +18,7 @@ describe("resolveTaskReadyStatus", () => {
 
 describe("normalizeTaskLifecycleStatus", () => {
   it("maps legacy successful statuses into the new ready states", () => {
-    assert.equal(normalizeTaskLifecycleStatus("completed", "build", true), "awaiting_review");
+    assert.equal(normalizeTaskLifecycleStatus("completed", "build", true), "open");
     assert.equal(normalizeTaskLifecycleStatus("answered", "ask", false), "open");
     assert.equal(normalizeTaskLifecycleStatus("accepted", "build", false), "open");
   });
@@ -31,18 +31,18 @@ describe("normalizeTaskLifecycleStatus", () => {
     assert.equal(normalizeTaskLifecycleStatus("in_review", "build", false), "in_review");
   });
 
-  it("preserves queued and active statuses", () => {
+  it("maps queued and active execution statuses back to open Kanban state", () => {
     assert.equal(normalizeTaskLifecycleStatus("scheduled", "build", false), "scheduled");
-    assert.equal(normalizeTaskLifecycleStatus("build_queued", "build", false), "build_queued");
-    assert.equal(normalizeTaskLifecycleStatus("asking", "ask", false), "asking");
+    assert.equal(normalizeTaskLifecycleStatus("build_queued", "build", false), "open");
+    assert.equal(normalizeTaskLifecycleStatus("asking", "ask", false), "open");
   });
 });
 
 describe("reconcileTaskStatusWithPendingCheckpoint", () => {
-  it("moves inactive tasks into review when a checkpoint is pending", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("failed", true), "awaiting_review");
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("open", true), "awaiting_review");
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", true), "awaiting_review");
+  it("does not move Kanban state when a checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("failed", true), "open");
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("open", true), "open");
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", true), "in_review");
   });
 
   it("returns legacy-ready states to open when no checkpoint is pending", () => {

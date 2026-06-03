@@ -1492,14 +1492,15 @@ export class SpawnerService {
       return false;
     }
 
-    const nextStatus = activeRuns.some((run) => run.action === "build") ? "building" : "asking";
+    const executionAction = activeRuns.some((run) => run.action === "build") ? "build" : "ask";
     const earliestStartedAt = activeRuns.reduce(
       (earliest, run) => (run.startedAt < earliest ? run.startedAt : earliest),
       activeRuns[0]!.startedAt
     );
 
-    await this.taskStore.setStatus(taskId, nextStatus, {
+    await this.taskStore.setExecutionState(taskId, "running", {
       ...patch,
+      executionAction,
       startedAt: earliestStartedAt,
       finishedAt: null,
       errorMessage: null,
@@ -3051,12 +3052,9 @@ export class SpawnerService {
       return null;
     }
 
-    const nextStatus = reconcileTaskStatusWithPendingCheckpoint(task.status, task.hasPendingCheckpoint);
-    if (nextStatus === task.status) {
-      return task;
-    }
-
-    return this.taskStore.setStatus(task.id, nextStatus);
+    return this.taskStore.patchTask(task.id, {
+      hasPendingCheckpoint: task.hasPendingCheckpoint
+    });
   }
 
   async beginInteractiveTerminalSession(taskId: string, mode: TaskTerminalSessionMode = "interactive"): Promise<{ sessionId: string }> {
@@ -3067,10 +3065,8 @@ export class SpawnerService {
     if (task.status === "archived") {
       throw new Error("Archived tasks are read-only.");
     }
-    if (isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {
-      throw new Error(
-        `Terminal unavailable while the task is “${getTaskStatusLabel(task.status)}”. Finish or cancel that run first (one action at a time).`
-      );
+    if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
+      throw new Error("Terminal unavailable while the task is queued or running. Finish or cancel that run first (one action at a time).");
     }
     if (await this.taskStore.hasPendingChangeProposal(taskId)) {
       throw new Error("Apply or reject the pending checkpoint before opening a terminal.");
@@ -3326,7 +3322,10 @@ export class SpawnerService {
     if (!proposal || proposal.taskId !== task.id) {
       return { ok: false, message: "Proposal not found." };
     }
-    const checkpointBlocked = getCheckpointMutationBlockedReason(task.status);
+    const checkpointBlocked =
+      task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running"
+        ? "Checkpoint actions are unavailable while task execution is queued or running."
+        : null;
     if (checkpointBlocked) {
       return { ok: false, message: checkpointBlocked };
     }
@@ -3568,7 +3567,10 @@ export class SpawnerService {
     if (!proposal || proposal.taskId !== task.id) {
       return { ok: false, message: "Proposal not found." };
     }
-    const checkpointBlocked = getCheckpointMutationBlockedReason(task.status);
+    const checkpointBlocked =
+      task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running"
+        ? "Checkpoint actions are unavailable while task execution is queued or running."
+        : null;
     if (checkpointBlocked) {
       return { ok: false, message: checkpointBlocked };
     }
@@ -3627,7 +3629,10 @@ export class SpawnerService {
     if (!proposal || proposal.taskId !== task.id) {
       return { ok: false, message: "Proposal not found." };
     }
-    const checkpointBlocked = getCheckpointMutationBlockedReason(task.status);
+    const checkpointBlocked =
+      task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running"
+        ? "Checkpoint actions are unavailable while task execution is queued or running."
+        : null;
     if (checkpointBlocked) {
       return { ok: false, message: checkpointBlocked };
     }
@@ -3733,7 +3738,10 @@ export class SpawnerService {
     if (proposal.status !== "pending") {
       return { ok: false, message: "Proposal is not pending." };
     }
-    const checkpointBlocked = getCheckpointMutationBlockedReason(task.status);
+    const checkpointBlocked =
+      task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running"
+        ? "Checkpoint actions are unavailable while task execution is queued or running."
+        : null;
     if (checkpointBlocked) {
       return { ok: false, message: checkpointBlocked };
     }
@@ -4320,9 +4328,9 @@ export class SpawnerService {
       await this.ensureWorkspaceGitHooks(workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     }
 
-    const readyStatus = resolveTaskReadyStatus(false);
     await this.taskStore.patchTask(workingTask.id, {
-      status: readyStatus,
+      executionStatus: "idle",
+      executionAction: null,
       enqueued: false,
       errorMessage: null,
       finishedAt: new Date().toISOString()
@@ -4453,11 +4461,12 @@ export class SpawnerService {
           errorMessage: null
         }))
       ) {
-        await this.taskStore.setStatus(task.id, resolveTaskReadyStatus(hasPendingCheckpoint), {
+        await this.taskStore.setExecutionState(task.id, "idle", {
           finishedAt,
           enqueued: false,
           branchDiff: nextBranchDiff,
           lastAction: "build",
+          executionAction: null,
           branchName,
           errorMessage: null
         });
@@ -4487,7 +4496,7 @@ export class SpawnerService {
           lastAction: "build"
         }))
       ) {
-        await this.taskStore.setStatus(task.id, isCancelled ? "cancelled" : "failed", {
+        await this.taskStore.setExecutionState(task.id, isCancelled ? "cancelled" : "failed", {
           finishedAt,
           enqueued: false,
           errorMessage: isCancelled ? "Cancelled by user" : message,
@@ -4554,7 +4563,7 @@ export class SpawnerService {
       const appendRunLog = (line: string) => this.taskStore.appendLogForRun(task.id, line, runId);
       await this.syncTaskStatusForRunningRuns(task.id, {
         branchName,
-        ...(action === "ask" && isActiveTaskStatus(task.status) ? {} : { lastAction: action })
+        ...(action === "ask" && task.executionStatus === "running" ? {} : { lastAction: action })
       });
       this.ensureTaskNotCancelled(task.id);
       await appendRunLog("Spawner: using existing task workspace.");
@@ -4844,11 +4853,12 @@ export class SpawnerService {
             errorMessage: null
           }))
         ) {
-          await this.taskStore.setStatus(task.id, resolveTaskReadyStatus(false), {
+          await this.taskStore.setExecutionState(task.id, "idle", {
             finishedAt,
             enqueued: false,
             branchDiff,
             lastAction: action,
+            executionAction: null,
             errorMessage: null
           });
         }
@@ -4900,11 +4910,12 @@ export class SpawnerService {
             errorMessage: null
           }))
         ) {
-          await this.taskStore.setStatus(task.id, resolveTaskReadyStatus(hasPendingCheckpoint), {
+          await this.taskStore.setExecutionState(task.id, "idle", {
             finishedAt,
             enqueued: false,
             branchDiff: nextBranchDiff,
             lastAction: action,
+            executionAction: null,
             branchName,
             errorMessage: null
           });
@@ -4929,7 +4940,7 @@ export class SpawnerService {
           lastAction: action
         }))
       ) {
-        await this.taskStore.setStatus(task.id, isCancelled ? "cancelled" : "failed", {
+        await this.taskStore.setExecutionState(task.id, isCancelled ? "cancelled" : "failed", {
           finishedAt,
           enqueued: false,
           errorMessage: isCancelled ? "Cancelled by user" : message,

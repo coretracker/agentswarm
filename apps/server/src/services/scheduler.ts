@@ -1,4 +1,4 @@
-import { isActiveTaskStatus, isQueuedTaskStatus, type TaskAction, type TaskExecutionInput } from "@agentswarm/shared-types";
+import { type Task, type TaskAction, type TaskExecutionInput } from "@agentswarm/shared-types";
 import type { TaskStore } from "./task-store.js";
 import type { QueueEntry, TaskQueueStore } from "./task-queue-store.js";
 import type { SettingsStore } from "./settings-store.js";
@@ -10,6 +10,11 @@ const normalizeExecutionInput = (input?: TaskExecutionInput | string): TaskExecu
         content: input
       }
     : input;
+
+const isExecutionQueued = (task: Pick<Task, "executionStatus">): boolean => task.executionStatus === "queued";
+const isExecutionActive = (task: Pick<Task, "executionStatus">): boolean =>
+  task.executionStatus === "preparing" || task.executionStatus === "running";
+const isExecutionBusy = (task: Pick<Task, "executionStatus">): boolean => isExecutionQueued(task) || isExecutionActive(task);
 
 export class SchedulerService {
   private activeExecutionCount = 0;
@@ -58,8 +63,8 @@ export class SchedulerService {
       return false;
     }
 
-    const allowParallelAsk = action === "ask" && (task.status === "building" || task.status === "asking");
-    if ((!allowParallelAsk && isActiveTaskStatus(task.status)) || task.status === "archived") {
+    const allowParallelAsk = action === "ask" && task.executionStatus === "running" && (task.executionAction === "build" || task.executionAction === "ask");
+    if ((!allowParallelAsk && isExecutionBusy(task)) || task.status === "archived") {
       return false;
     }
 
@@ -103,7 +108,7 @@ export class SchedulerService {
       return false;
     }
 
-    if (isActiveTaskStatus(task.status) || task.status === "archived") {
+    if (isExecutionBusy(task) || task.status === "archived") {
       return false;
     }
 
@@ -131,20 +136,20 @@ export class SchedulerService {
       return false;
     }
 
-    if (!isQueuedTaskStatus(task.status) && !isActiveTaskStatus(task.status)) {
+    if (!isExecutionBusy(task)) {
       return false;
     }
 
     const finishedAt = new Date().toISOString();
 
-    await this.taskStore.setStatus(taskId, "cancelled", {
+    await this.taskStore.setExecutionState(taskId, "cancelled", {
       finishedAt,
       enqueued: false,
       errorMessage: "Cancelled by user"
     });
     await this.taskQueueStore.removeTask(taskId);
 
-    if (isQueuedTaskStatus(task.status)) {
+    if (isExecutionQueued(task)) {
       await this.taskStore.appendLog(taskId, "Scheduler: queued task cancelled by user.");
       await this.drainQueue();
       return true;
@@ -163,7 +168,7 @@ export class SchedulerService {
     for (const task of tasks) {
       const runs = await this.taskStore.listRuns(task.id);
       const staleRuns = runs.filter((run) => run.status === "running");
-      const shouldRecoverTask = staleRuns.length > 0 || isActiveTaskStatus(task.status);
+      const shouldRecoverTask = staleRuns.length > 0 || isExecutionActive(task);
 
       if (!shouldRecoverTask) {
         continue;
@@ -178,7 +183,7 @@ export class SchedulerService {
         });
       }
 
-      await this.taskStore.setStatus(task.id, "failed", {
+      await this.taskStore.setExecutionState(task.id, "failed", {
         finishedAt,
         enqueued: false,
         errorMessage: recoveryMessage,
@@ -207,7 +212,7 @@ export class SchedulerService {
           continue;
         }
 
-        if (!isQueuedTaskStatus(task.status)) {
+        if (!isExecutionQueued(task)) {
           continue;
         }
 
@@ -232,7 +237,7 @@ export class SchedulerService {
         return;
       }
 
-      if (requireQueuedStatus && !isQueuedTaskStatus(task.status)) {
+      if (requireQueuedStatus && !isExecutionQueued(task)) {
         if (task.status === "archived") {
           await this.taskStore.appendLog(taskId, "Scheduler: archived task skipped before execution.");
         }
@@ -242,7 +247,7 @@ export class SchedulerService {
       await this.spawner.runTask(task, queueEntry.action, queueEntry.input);
     } catch (error) {
       const task = await this.taskStore.getTask(taskId);
-      if (error instanceof CancelledTaskError || task?.status === "cancelled") {
+      if (error instanceof CancelledTaskError || task?.executionStatus === "cancelled") {
         await this.taskStore.appendLog(taskId, "Spawner: task cancelled by user.");
       } else {
         const message = error instanceof Error ? error.message : "Unknown runtime error";
@@ -264,7 +269,7 @@ export class SchedulerService {
       await this.spawner.runTaskPostflight(task);
     } catch (error) {
       const task = await this.taskStore.getTask(taskId);
-      if (error instanceof CancelledTaskError || task?.status === "cancelled") {
+      if (error instanceof CancelledTaskError || task?.executionStatus === "cancelled") {
         await this.taskStore.appendLog(taskId, "Spawner: task cancelled by user.");
       } else {
         const message = error instanceof Error ? error.message : "Unknown runtime error";

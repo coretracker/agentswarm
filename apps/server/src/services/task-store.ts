@@ -14,6 +14,8 @@ import {
   type Repository,
   type Task,
   type TaskAction,
+  type TaskExecutionAction,
+  type TaskExecutionStatus,
   type TaskMessage,
   type TaskPromptAttachment,
   type TaskReasoningEffort,
@@ -121,6 +123,7 @@ const currentTaskStatuses = new Set<TaskStatus>([
   "ask_queued",
   "asking",
   "open",
+  "in_progress",
   "in_review",
   "awaiting_review",
   "done",
@@ -163,11 +166,38 @@ const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
   };
 };
 
+const normalizeTaskExecutionStatus = (value: unknown, fallbackTask: Pick<Task, "status" | "activeInteractiveSession">): TaskExecutionStatus => {
+  if (
+    value === "idle" ||
+    value === "scheduled" ||
+    value === "queued" ||
+    value === "preparing" ||
+    value === "running" ||
+    value === "failed" ||
+    value === "cancelled"
+  ) {
+    return value;
+  }
+
+  return getTaskExecutionStatus(fallbackTask);
+};
+
+const normalizeTaskExecutionAction = (
+  value: unknown,
+  fallbackTask: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode">
+): TaskExecutionAction => {
+  if (value === "build" || value === "ask" || value === "interactive" || value === "terminal") {
+    return value;
+  }
+
+  return getTaskExecutionAction(fallbackTask);
+};
+
 const withDerivedTaskState = (task: Task): Task => ({
   ...task,
   workflowStatus: getTaskWorkflowStatus(task),
-  executionStatus: getTaskExecutionStatus(task),
-  executionAction: getTaskExecutionAction(task),
+  executionStatus: normalizeTaskExecutionStatus(task.executionStatus, task),
+  executionAction: normalizeTaskExecutionAction(task.executionAction, task),
   reviewReason: getTaskReviewReason(task)
 });
 
@@ -264,6 +294,8 @@ export type TaskMetadata = Pick<
   | "id"
   | "ownerUserId"
   | "status"
+  | "executionStatus"
+  | "executionAction"
   | "hasPendingCheckpoint"
   | "activeInteractiveSession"
   | "activeTerminalSessionMode"
@@ -305,6 +337,11 @@ export interface TaskStore {
   updateMessage(taskId: string, messageId: string, content: string): Promise<TaskMessage | null>;
   setMessageAttachments(taskId: string, messageId: string, attachments: TaskPromptAttachment[]): Promise<TaskMessage | null>;
   markQueuedForAction(taskId: string, action: TaskAction): Promise<Task | null>;
+  setExecutionState(
+    taskId: string,
+    executionStatus: TaskExecutionStatus,
+    extra?: Partial<Omit<Task, "id" | "createdAt" | "status">>
+  ): Promise<Task | null>;
   setStatus(taskId: string, status: TaskStatus, extra?: Partial<Task>): Promise<Task | null>;
   archiveTask(taskId: string): Promise<Task | null>;
   deleteTask(taskId: string): Promise<boolean>;
@@ -352,6 +389,8 @@ export class RedisTaskStore implements TaskStore {
       model?: string | null;
       reasoningEffort?: TaskReasoningEffort | null;
       lastAction?: string | null;
+      executionStatus?: TaskExecutionStatus;
+      executionAction?: TaskExecutionAction;
       // Legacy field kept for migration of stored tasks created before the prompt refactor.
       requirements?: string;
       prompt?: string;
@@ -417,13 +456,16 @@ export class RedisTaskStore implements TaskStore {
       notes: (legacyTask.notes ?? "").trim()
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
+    const legacyStatus = currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as TaskStatus) : "open";
     return withDerivedTaskState({
       ...normalizedTask,
       status: normalizeTaskLifecycleStatus(
         currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as string) : String(legacyTask.status ?? ""),
         fallbackAction,
         normalizedTask.hasPendingCheckpoint
-      )
+      ),
+      executionStatus: normalizeTaskExecutionStatus(legacyTask.executionStatus, { ...normalizedTask, status: legacyStatus }),
+      executionAction: normalizeTaskExecutionAction(legacyTask.executionAction, { ...normalizedTask, status: legacyStatus })
     });
   }
 
@@ -514,7 +556,6 @@ export class RedisTaskStore implements TaskStore {
     const hasPendingCheckpoint = task.hasPendingCheckpoint ?? false;
     return withDerivedTaskState({
       ...task,
-      status: reconcileTaskStatusWithPendingCheckpoint(task.status, hasPendingCheckpoint),
       hasPendingCheckpoint,
       activeInteractiveSession: task.activeInteractiveSession === true,
       activeTerminalSessionMode:
@@ -600,7 +641,7 @@ export class RedisTaskStore implements TaskStore {
         ? input.sequence_id.trim()
         : undefined;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
-    const initialStatus: TaskStatus = getQueuedStatusForAction(initialAction);
+    const initialStatus: TaskStatus = "open";
     const task: Task = {
       id: nanoid(),
       title,
@@ -679,6 +720,8 @@ export class RedisTaskStore implements TaskStore {
       id: task.id,
       ownerUserId: task.ownerUserId,
       status: task.status,
+      executionStatus: task.executionStatus,
+      executionAction: task.executionAction,
       hasPendingCheckpoint: task.hasPendingCheckpoint,
       activeInteractiveSession: task.activeInteractiveSession,
       activeTerminalSessionMode: task.activeTerminalSessionMode,
@@ -1124,13 +1167,38 @@ export class RedisTaskStore implements TaskStore {
 
     const next: Task = {
       ...task,
-      status: getQueuedStatusForAction(action),
+      executionStatus: "queued",
+      executionAction: action,
       enqueued: false,
       errorMessage: null,
       startedAt: null,
       finishedAt: null,
       lastAction: action,
       branchDiff: action === "build" ? task.branchDiff : null,
+      logs: [],
+      updatedAt: nowIso()
+    };
+
+    await this.redis.set(this.taskKey(taskId), JSON.stringify(next));
+    return this.publishTaskEvent("task:updated", next);
+  }
+
+  async setExecutionState(
+    taskId: string,
+    executionStatus: TaskExecutionStatus,
+    extra: Partial<Omit<Task, "id" | "createdAt" | "status">> = {}
+  ): Promise<Task | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    const next: Task = {
+      ...task,
+      ...extra,
+      status: task.status,
+      executionStatus,
+      executionAction: extra.executionAction ?? task.executionAction,
       logs: [],
       updatedAt: nowIso()
     };
@@ -1564,6 +1632,8 @@ export class PostgresTaskStore implements TaskStore {
       model?: string | null;
       reasoningEffort?: TaskReasoningEffort | null;
       lastAction?: string | null;
+      executionStatus?: TaskExecutionStatus;
+      executionAction?: TaskExecutionAction;
       requirements?: string;
       prompt?: string;
       notes?: string;
@@ -1627,13 +1697,16 @@ export class PostgresTaskStore implements TaskStore {
       notes: (legacyTask.notes ?? "").trim()
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
+    const legacyStatus = currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as TaskStatus) : "open";
     return withDerivedTaskState({
       ...normalizedTask,
       status: normalizeTaskLifecycleStatus(
         currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as string) : String(legacyTask.status ?? ""),
         fallbackAction,
         normalizedTask.hasPendingCheckpoint
-      )
+      ),
+      executionStatus: normalizeTaskExecutionStatus(legacyTask.executionStatus, { ...normalizedTask, status: legacyStatus }),
+      executionAction: normalizeTaskExecutionAction(legacyTask.executionAction, { ...normalizedTask, status: legacyStatus })
     });
   }
 
@@ -1641,7 +1714,6 @@ export class PostgresTaskStore implements TaskStore {
     const hasPendingCheckpoint = task.hasPendingCheckpoint ?? false;
     return withDerivedTaskState({
       ...task,
-      status: reconcileTaskStatusWithPendingCheckpoint(task.status, hasPendingCheckpoint),
       hasPendingCheckpoint,
       activeInteractiveSession: task.activeInteractiveSession === true,
       activeTerminalSessionMode:
@@ -1899,7 +1971,7 @@ export class PostgresTaskStore implements TaskStore {
         ? input.sequence_id.trim()
         : undefined;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
-    const initialStatus: TaskStatus = getQueuedStatusForAction(initialAction);
+    const initialStatus: TaskStatus = "open";
     const task: Task = {
       id: nanoid(),
       title,
@@ -1978,6 +2050,8 @@ export class PostgresTaskStore implements TaskStore {
       id: task.id,
       ownerUserId: task.ownerUserId,
       status: task.status,
+      executionStatus: task.executionStatus,
+      executionAction: task.executionAction,
       hasPendingCheckpoint: task.hasPendingCheckpoint,
       activeInteractiveSession: task.activeInteractiveSession,
       activeTerminalSessionMode: task.activeTerminalSessionMode,
@@ -2400,13 +2474,38 @@ export class PostgresTaskStore implements TaskStore {
 
     const next: Task = {
       ...task,
-      status: getQueuedStatusForAction(action),
+      executionStatus: "queued",
+      executionAction: action,
       enqueued: false,
       errorMessage: null,
       startedAt: null,
       finishedAt: null,
       lastAction: action,
       branchDiff: action === "build" ? task.branchDiff : null,
+      logs: [],
+      updatedAt: nowIso()
+    };
+
+    await this.storeTask(next);
+    return this.publishTaskEvent("task:updated", next);
+  }
+
+  async setExecutionState(
+    taskId: string,
+    executionStatus: TaskExecutionStatus,
+    extra: Partial<Omit<Task, "id" | "createdAt" | "status">> = {}
+  ): Promise<Task | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    const next: Task = {
+      ...task,
+      ...extra,
+      status: task.status,
+      executionStatus,
+      executionAction: extra.executionAction ?? task.executionAction,
       logs: [],
       updatedAt: nowIso()
     };

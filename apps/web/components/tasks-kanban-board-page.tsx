@@ -30,7 +30,7 @@ type BoardItem =
 const columns: Array<{ id: BoardColumnId; title: string; taskStatus?: BoardTaskStatus; acceptsTasks: boolean }> = [
   { id: "backlog", title: "Backlog", acceptsTasks: false },
   { id: "ready", title: getTaskWorkflowStatusLabel("ready"), taskStatus: "open", acceptsTasks: true },
-  { id: "in_progress", title: getTaskWorkflowStatusLabel("in_progress"), acceptsTasks: false },
+  { id: "in_progress", title: getTaskWorkflowStatusLabel("in_progress"), taskStatus: "in_progress", acceptsTasks: true },
   { id: "review", title: getTaskWorkflowStatusLabel("review"), taskStatus: "in_review", acceptsTasks: true },
   { id: "done", title: getTaskWorkflowStatusLabel("done"), taskStatus: "done", acceptsTasks: true }
 ];
@@ -42,7 +42,7 @@ const taskColumn = (task: Task): BoardColumnId => {
   if (task.workflowStatus === "review") {
     return "review";
   }
-  if (task.workflowStatus === "in_progress" || task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
+  if (task.workflowStatus === "in_progress") {
     return "in_progress";
   }
   return "ready";
@@ -102,13 +102,13 @@ function KanbanColumn({
 function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardItem) => void }) {
   const draggable = useDraggable({
     id: item.id,
-    disabled: item.type !== "task" || item.column === "in_progress",
+    disabled: item.type !== "task",
     data: item
   });
   const style = {
     transform: CSS.Translate.toString(draggable.transform),
     opacity: draggable.isDragging ? 0.65 : 1,
-    cursor: item.type === "task" && item.column !== "in_progress" ? "grab" : "pointer"
+    cursor: item.type === "task" ? "grab" : "pointer"
   };
   const task = item.type === "task" ? item.task : null;
   const draft = item.type === "draft" ? item.draft : null;

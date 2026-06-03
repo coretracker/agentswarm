@@ -1636,7 +1636,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   ]);
 
   useEffect(() => {
-    if (!task?.id || (!isActiveTaskStatus(task.status) && !task.activeInteractiveSession)) {
+    if (
+      !task?.id ||
+      (task.executionStatus !== "queued" &&
+        task.executionStatus !== "preparing" &&
+        task.executionStatus !== "running" &&
+        !task.activeInteractiveSession)
+    ) {
       return;
     }
 
@@ -2172,7 +2178,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive" && selectedChatAction !== "terminal";
   const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived";
   const promptMagicVisible = (selectedChatAction === "build" || selectedChatAction === "ask") && canCreateTask;
-  const parallelAskAllowed = selectedChatAction === "ask" && (task?.status === "building" || task?.status === "asking");
+  const parallelAskAllowed =
+    selectedChatAction === "ask" &&
+    task?.executionStatus === "running" &&
+    (task.executionAction === "build" || task.executionAction === "ask");
   const autoRunStartBlocked =
     selectedChatAction !== "comment" && (!!pendingChangeProposal || ((isQueued || isActive) && !parallelAskAllowed));
   const chatDisabled = chatClosed || interactiveTerminalRunning || autoRunStartBlocked;

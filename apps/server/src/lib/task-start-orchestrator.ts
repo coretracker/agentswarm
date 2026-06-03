@@ -88,7 +88,11 @@ export async function orchestrateTaskActionStart(
     };
   }
 
-  if (isActiveTaskStatus(options.task.status) && options.allowParallelAsk !== true) {
+  if (
+    ((options.task.executionStatus === "queued" || options.task.executionStatus === "preparing" || options.task.executionStatus === "running") ||
+      isActiveTaskStatus(options.task.status)) &&
+    options.allowParallelAsk !== true
+  ) {
     return {
       ok: false,
       statusCode: 409,

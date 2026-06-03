@@ -210,7 +210,9 @@ describe("TaskStore.createTask", () => {
     } as never);
     const task = await taskStore.createTask(createTaskInput, repository, "user-1");
 
-    assert.equal(task.status, "build_queued");
+    assert.equal(task.status, "open");
+    assert.equal(task.executionStatus, "queued");
+    assert.equal(task.executionAction, "build");
     assert.equal(task.startedAt, null);
   });
 });

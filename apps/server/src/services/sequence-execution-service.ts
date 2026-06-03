@@ -1,4 +1,4 @@
-import { isActiveTaskStatus, isQueuedTaskStatus, type SequenceExecutionMode, type SequenceRunStep, type TaskAction } from "@agentswarm/shared-types";
+import { type SequenceExecutionMode, type SequenceRunStep, type TaskAction } from "@agentswarm/shared-types";
 import type { SchedulerService } from "./scheduler.js";
 import type { SequenceStore } from "./sequence-store.js";
 import type { SpawnerService } from "./spawner.js";
@@ -343,7 +343,7 @@ export class SequenceExecutionService {
         };
       }
 
-      if (!isActiveTaskStatus(task.status) && !isQueuedTaskStatus(task.status)) {
+      if (task.executionStatus !== "queued" && task.executionStatus !== "preparing" && task.executionStatus !== "running") {
         return { ready: true };
       }
 

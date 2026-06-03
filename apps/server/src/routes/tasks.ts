@@ -125,7 +125,7 @@ const updateTaskNotesSchema = z.object({
 });
 
 const updateTaskStateSchema = z.object({
-  status: z.enum(["open", "in_review", "awaiting_review", "done"])
+  status: z.enum(["open", "in_progress", "in_review", "awaiting_review", "done"])
 });
 
 const updateTaskAssigneeSchema = z.object({
@@ -342,7 +342,7 @@ export const registerTaskRoutes = (
     if (!task || task.status === "archived") {
       return;
     }
-    if (isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {
+    if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
       return;
     }
     if (await deps.taskStore.hasPendingChangeProposal(task.id)) {
@@ -703,7 +703,7 @@ export const registerTaskRoutes = (
         return reply.status(409).send({ message: "Sequence is not waiting for approval." });
       }
 
-      if (isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {
+      if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
         return reply.status(409).send({ message: "Task is still finishing the previous step. Try again shortly." });
       }
       if (await deps.taskStore.hasPendingChangeProposal(task.id)) {
@@ -906,7 +906,10 @@ export const registerTaskRoutes = (
         return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
       }
 
-      const checkpointBlocked = getCheckpointMutationBlockedReason(task.status);
+      const checkpointBlocked =
+        task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running"
+          ? "Checkpoint actions are unavailable while task execution is queued or running."
+          : null;
       if (checkpointBlocked) {
         return reply.status(409).send({ message: checkpointBlocked });
       }
@@ -1366,7 +1369,10 @@ export const registerTaskRoutes = (
       return;
     }
 
-    const allowParallelAsk = parsed.data.action === "ask" && (task.status === "building" || task.status === "asking");
+    const allowParallelAsk =
+      parsed.data.action === "ask" &&
+      task.executionStatus === "running" &&
+      (task.executionAction === "build" || task.executionAction === "ask");
     const actionStartResult = await orchestrateTaskActionStart(
       {
         taskStore: deps.taskStore,
@@ -1407,7 +1413,7 @@ export const registerTaskRoutes = (
       return replyWithMutationBlocked(reply, blocked);
     }
 
-    if (isActiveTaskStatus(task.status)) {
+    if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
       return reply.status(409).send({ message: "Task is already running" });
     }
 
@@ -1441,7 +1447,7 @@ export const registerTaskRoutes = (
       return replyWithMutationBlocked(reply, blocked);
     }
 
-    if (isActiveTaskStatus(task.status)) {
+    if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
       return reply.status(409).send({ message: "Task is already running" });
     }
 
@@ -1602,7 +1608,7 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    if (isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {
+    if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
       return reply.status(409).send({ message: "Task state cannot be changed while the task is queued or running" });
     }
 
@@ -1686,10 +1692,17 @@ export const registerTaskRoutes = (
       return;
     }
 
-    const allowParallelAsk = action === "ask" && (task.status === "building" || task.status === "asking");
+    const allowParallelAsk =
+      action === "ask" &&
+      task.executionStatus === "running" &&
+      (task.executionAction === "build" || task.executionAction === "ask");
 
     // comments are treated as read-only messages; ask can also run in parallel with another ask/build.
-    if (action !== "comment" && isActiveTaskStatus(task.status) && !allowParallelAsk) {
+    if (
+      action !== "comment" &&
+      (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") &&
+      !allowParallelAsk
+    ) {
       return reply.status(409).send({ message: "Task is already running" });
     }
 
@@ -1963,7 +1976,7 @@ export const registerTaskRoutes = (
 
     const canPublishBuild =
       task.taskType === "build" &&
-      (task.status === "in_review" || task.status === "awaiting_review" || task.status === "open" || task.status === "done" || task.status === "failed");
+      (task.status === "in_review" || task.status === "awaiting_review" || task.status === "open" || task.status === "in_progress" || task.status === "done");
     const canAcceptAsk = task.taskType === "ask" && (task.status === "open" || task.status === "done") && Boolean(task.resultMarkdown?.trim());
     if (!canPublishBuild && !canAcceptAsk) {
       return reply.status(409).send({ message: "Only ready task results can be accepted" });
@@ -1997,7 +2010,7 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: "Task is already archived" });
     }
 
-    if (isActiveTaskStatus(task.status)) {
+    if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
       return reply.status(409).send({ message: "Active tasks cannot be archived" });
     }
 
@@ -2027,7 +2040,7 @@ export const registerTaskRoutes = (
       return;
     }
 
-    if (isActiveTaskStatus(task.status)) {
+    if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
       return reply.status(409).send({ message: "Active tasks cannot be deleted" });
     }
 

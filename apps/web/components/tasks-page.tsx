@@ -3,10 +3,9 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   getAgentProviderLabel,
-  getTaskStatusLabel,
+  getTaskExecutionStatusLabel,
   getTaskTerminalSessionLabel,
   getTaskTypeLabel,
-  isActiveTaskStatus,
   isTaskWorking,
   type Task
 } from "@agentswarm/shared-types";
@@ -25,7 +24,11 @@ function getWorkingIndicatorLabel(task: Task): string {
     return `${getTaskTerminalSessionLabel(task.activeTerminalSessionMode === "git" ? "git" : "interactive")} is running`;
   }
 
-  return isActiveTaskStatus(task.status) ? getTaskStatusLabel(task.status) : `${getTaskTypeLabel(task.taskType)} task is working`;
+  return task.executionStatus !== "idle" ? getTaskExecutionStatusLabel(task.executionStatus) : `${getTaskTypeLabel(task.taskType)} task is working`;
+}
+
+function isTaskExecutionBusy(task: Task): boolean {
+  return task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running";
 }
 
 function canOfferRemoteBranchDeletion(task: Task): boolean {
@@ -302,12 +305,12 @@ export function TasksPage() {
                 render: (_value, task) => (
                   <Space onClick={(event) => event.stopPropagation()}>
                     {canEditTask && !archivedView ? (
-                      <Button size="small" loading={archivingTaskId === task.id} disabled={isActiveTaskStatus(task.status)} onClick={() => confirmArchiveTask(task)}>
+                      <Button size="small" loading={archivingTaskId === task.id} disabled={isTaskExecutionBusy(task)} onClick={() => confirmArchiveTask(task)}>
                         Archive
                       </Button>
                     ) : null}
                     {canDeleteTask ? (
-                      <Button danger size="small" loading={deletingTaskId === task.id} disabled={isActiveTaskStatus(task.status)} onClick={() => confirmDeleteTask(task)}>
+                      <Button danger size="small" loading={deletingTaskId === task.id} disabled={isTaskExecutionBusy(task)} onClick={() => confirmDeleteTask(task)}>
                         Delete
                       </Button>
                     ) : null}
