@@ -27,6 +27,11 @@ Top gaps are prioritized from `docs/quality/scorecard.md`.
 - Evidence: `docs/quality/known-issues.md` still states no CI workflow exists.
 - Suggested fix: align `known-issues.md` with current repository state and keep it updated with each harness change.
 
+## 6) Legacy Task Status Is Overloaded
+- Impact: Kanban planning and task lifecycle UI have to interpret a single `status` field that mixes workflow state, execution state, and legacy result state.
+- Evidence: tasks now expose `workflowStatus`, `executionStatus`, `executionAction`, and `reviewReason`, but `status` remains for compatibility.
+- Suggested fix: migrate callers to the new fields, backfill persisted tasks if needed, then remove legacy `completed`/`answered`/`accepted` values and eventually retire overloaded `status`.
+
 ## TODO
 - TODO: assign owner and target date for each item.
 - TODO: track status (`open`, `in progress`, `done`) for each item.

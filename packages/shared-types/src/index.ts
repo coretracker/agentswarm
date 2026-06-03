@@ -74,7 +74,11 @@ export type TaskStatus =
   | "cancelled"
   | "failed";
 
+export type TaskWorkflowStatus = "backlog" | "ready" | "in_progress" | "review" | "done" | "archived";
+export type TaskExecutionStatus = "idle" | "scheduled" | "queued" | "preparing" | "running" | "failed" | "cancelled";
+export type TaskReviewReason = "checkpoint" | "answer" | "manual" | "merge" | null;
 export type TaskAction = "build" | "ask";
+export type TaskExecutionAction = TaskAction | "interactive" | "terminal" | null;
 export type TaskMessageAction = TaskAction | "comment";
 export const TASK_PROMPT_ATTACHMENT_MAX_COUNT = 6;
 export const TASK_PROMPT_ATTACHMENT_MAX_SIZE_BYTES = 6 * 1024 * 1024;
@@ -483,6 +487,10 @@ export interface Task {
   pushCount?: number;
   lastAction: TaskAction | null;
   status: TaskStatus;
+  workflowStatus: TaskWorkflowStatus;
+  executionStatus: TaskExecutionStatus;
+  executionAction: TaskExecutionAction;
+  reviewReason: TaskReviewReason;
   logs: string[];
   enqueued: boolean;
   scheduledStartAt?: string | null;
@@ -1173,6 +1181,92 @@ export const isActiveTaskStatus = (status: TaskStatus): boolean =>
 export const isTaskWorking = (task: Pick<Task, "status" | "activeInteractiveSession">): boolean =>
   isActiveTaskStatus(task.status) || task.activeInteractiveSession === true;
 
+export const getTaskExecutionStatus = (task: Pick<Task, "status" | "activeInteractiveSession">): TaskExecutionStatus => {
+  if (task.activeInteractiveSession === true) {
+    return "running";
+  }
+
+  if (task.status === "scheduled") {
+    return "scheduled";
+  }
+
+  if (isQueuedTaskStatus(task.status)) {
+    return "queued";
+  }
+
+  if (task.status === "preparing_workspace") {
+    return "preparing";
+  }
+
+  if (isActiveTaskStatus(task.status)) {
+    return "running";
+  }
+
+  if (task.status === "failed") {
+    return "failed";
+  }
+
+  if (task.status === "cancelled") {
+    return "cancelled";
+  }
+
+  return "idle";
+};
+
+export const getTaskExecutionAction = (
+  task: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode">
+): TaskExecutionAction => {
+  if (task.activeInteractiveSession === true) {
+    return task.activeTerminalSessionMode === "git" ? "terminal" : "interactive";
+  }
+
+  if (task.status === "build_queued" || task.status === "preparing_workspace" || task.status === "building") {
+    return "build";
+  }
+
+  if (task.status === "ask_queued" || task.status === "asking") {
+    return "ask";
+  }
+
+  return task.lastAction ?? null;
+};
+
+export const getTaskReviewReason = (task: Pick<Task, "status" | "hasPendingCheckpoint" | "taskType">): TaskReviewReason => {
+  if (task.hasPendingCheckpoint || task.status === "awaiting_review") {
+    return "checkpoint";
+  }
+
+  if (task.status === "in_review") {
+    return task.taskType === "ask" ? "answer" : "manual";
+  }
+
+  return null;
+};
+
+export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingCheckpoint" | "taskType">): TaskWorkflowStatus => {
+  if (task.status === "archived") {
+    return "archived";
+  }
+
+  if (task.status === "done" || task.status === "accepted") {
+    return "done";
+  }
+
+  if (task.hasPendingCheckpoint || task.status === "awaiting_review" || task.status === "in_review" || task.status === "answered") {
+    return "review";
+  }
+
+  if (isActiveTaskStatus(task.status)) {
+    return "in_progress";
+  }
+
+  if (task.status === "scheduled") {
+    return "backlog";
+  }
+
+  return "ready";
+};
+
 export const getTaskTerminalSessionLabel = (mode: TaskTerminalSessionMode): string =>
   mode === "git" ? "Git Terminal" : "Interactive Terminal";
 
@@ -1220,6 +1314,27 @@ export const getTaskStatusLabel = (status: TaskStatus): string =>
     archived: "Archived",
     cancelled: "Cancelled",
     failed: "Failed"
+  })[status];
+
+export const getTaskWorkflowStatusLabel = (status: TaskWorkflowStatus): string =>
+  ({
+    backlog: "Backlog",
+    ready: "Ready",
+    in_progress: "In Progress",
+    review: "Review",
+    done: "Done",
+    archived: "Archived"
+  })[status];
+
+export const getTaskExecutionStatusLabel = (status: TaskExecutionStatus): string =>
+  ({
+    idle: "Idle",
+    scheduled: "Scheduled",
+    queued: "Queued",
+    preparing: "Preparing",
+    running: "Running",
+    failed: "Failed",
+    cancelled: "Cancelled"
   })[status];
 
 export interface UpdateSettingsInput {

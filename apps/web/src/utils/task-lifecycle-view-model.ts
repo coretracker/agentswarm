@@ -13,13 +13,14 @@ export interface TaskLifecycleViewModel {
 
 export const buildTaskLifecycleViewModel = (task: Task | null | undefined): TaskLifecycleViewModel => {
   const taskType = task?.taskType ?? "build";
-  const isArchived = task?.status === "archived";
-  const isQueued = task?.status === "build_queued" || task?.status === "ask_queued";
-  const isActive = task ? isActiveTaskStatus(task.status) : false;
-  const hasTaskWorkingState = task ? isTaskWorking(task) : false;
+  const executionStatus = task?.executionStatus;
+  const isArchived = task?.workflowStatus === "archived" || task?.status === "archived";
+  const isQueued = executionStatus === "queued" || task?.status === "build_queued" || task?.status === "ask_queued";
+  const isActive = executionStatus === "preparing" || executionStatus === "running" || (task ? isActiveTaskStatus(task.status) : false);
+  const hasTaskWorkingState = isActive || (task ? isTaskWorking(task) : false);
   const checkpointDiffActionsBlockedReason = task ? getCheckpointMutationBlockedReason(task.status) : null;
   const checkpointDiffActionsBlocked = checkpointDiffActionsBlockedReason !== null;
-  const isPreparingWorkspace = task?.status === "preparing_workspace";
+  const isPreparingWorkspace = executionStatus === "preparing" || task?.status === "preparing_workspace";
   const resultStatusText =
     task?.status === "preparing_workspace"
       ? "Preparing workspace"

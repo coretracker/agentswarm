@@ -3,6 +3,10 @@ import type Redis from "ioredis";
 import type { Pool } from "pg";
 import {
   type CodexCredentialSource,
+  getTaskExecutionAction,
+  getTaskExecutionStatus,
+  getTaskReviewReason,
+  getTaskWorkflowStatus,
   getQueuedStatusForAction,
   type AgentProvider,
   type CreateTaskInput,
@@ -158,6 +162,14 @@ const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
     ...(sessionId !== null || "sessionId" in message ? { sessionId } : {})
   };
 };
+
+const withDerivedTaskState = (task: Task): Task => ({
+  ...task,
+  workflowStatus: getTaskWorkflowStatus(task),
+  executionStatus: getTaskExecutionStatus(task),
+  executionAction: getTaskExecutionAction(task),
+  reviewReason: getTaskReviewReason(task)
+});
 
 const normalizeCodexCredentialSource = (value: string | null | undefined): CodexCredentialSource => {
   if (value === "profile" || value === "global") {
@@ -405,14 +417,14 @@ export class RedisTaskStore implements TaskStore {
       notes: (legacyTask.notes ?? "").trim()
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
-    return {
+    return withDerivedTaskState({
       ...normalizedTask,
       status: normalizeTaskLifecycleStatus(
         currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as string) : String(legacyTask.status ?? ""),
         fallbackAction,
         normalizedTask.hasPendingCheckpoint
       )
-    };
+    });
   }
 
   private taskKey(taskId: string): string {
@@ -500,7 +512,7 @@ export class RedisTaskStore implements TaskStore {
 
   private withPendingCheckpointState(task: Task): Task {
     const hasPendingCheckpoint = task.hasPendingCheckpoint ?? false;
-    return {
+    return withDerivedTaskState({
       ...task,
       status: reconcileTaskStatusWithPendingCheckpoint(task.status, hasPendingCheckpoint),
       hasPendingCheckpoint,
@@ -511,7 +523,7 @@ export class RedisTaskStore implements TaskStore {
             ? "git"
             : "interactive"
           : null
-    };
+    });
   }
 
   private async publishTaskEvent(type: "task:created" | "task:updated", task: Task): Promise<Task> {
@@ -622,6 +634,10 @@ export class RedisTaskStore implements TaskStore {
       branchDiff: null,
       lastAction: initialAction,
       status: initialStatus,
+      workflowStatus: "ready",
+      executionStatus: "queued",
+      executionAction: initialAction,
+      reviewReason: null,
       logs: [],
       enqueued: false,
       scheduledStartAt: null,
@@ -1611,19 +1627,19 @@ export class PostgresTaskStore implements TaskStore {
       notes: (legacyTask.notes ?? "").trim()
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
-    return {
+    return withDerivedTaskState({
       ...normalizedTask,
       status: normalizeTaskLifecycleStatus(
         currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as string) : String(legacyTask.status ?? ""),
         fallbackAction,
         normalizedTask.hasPendingCheckpoint
       )
-    };
+    });
   }
 
   private withPendingCheckpointState(task: Task): Task {
     const hasPendingCheckpoint = task.hasPendingCheckpoint ?? false;
-    return {
+    return withDerivedTaskState({
       ...task,
       status: reconcileTaskStatusWithPendingCheckpoint(task.status, hasPendingCheckpoint),
       hasPendingCheckpoint,
@@ -1634,7 +1650,7 @@ export class PostgresTaskStore implements TaskStore {
             ? "git"
             : "interactive"
           : null
-    };
+    });
   }
 
   private async publishTaskEvent(type: "task:created" | "task:updated", task: Task): Promise<Task> {
@@ -1917,6 +1933,10 @@ export class PostgresTaskStore implements TaskStore {
       branchDiff: null,
       lastAction: initialAction,
       status: initialStatus,
+      workflowStatus: "ready",
+      executionStatus: "queued",
+      executionAction: initialAction,
+      reviewReason: null,
       logs: [],
       enqueued: false,
       scheduledStartAt: null,
