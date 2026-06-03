@@ -11,6 +11,7 @@ import type {
   GitHubPullRequestReference,
   ProviderProfile,
   Repository,
+  Snippet,
   SnippetVariable,
   SystemSettings,
   TaskBranchStrategy,
@@ -24,7 +25,7 @@ import {
   getEffortOptionsForProvider,
   getModelsForProvider
 } from "@agentswarm/shared-types";
-import { Alert, Button, Card, Checkbox, Col, Flex, Form, Input, Row, Select, Space, Typography, message } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Flex, Form, Input, Modal, Row, Select, Space, Typography, message } from "antd";
 import { RobotOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -33,7 +34,7 @@ import { useSequences } from "../src/hooks/useSequences";
 import { useSettings } from "../src/hooks/useSettings";
 import { useSnippets } from "../src/hooks/useSnippets";
 import { trackEvent } from "../src/utils/analytics";
-import { applySnippetVariables } from "../src/utils/snippets";
+import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
 import { type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
 import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
@@ -66,6 +67,8 @@ export interface TaskDefinitionFieldsProps {
   promptImageFiles?: SelectedTaskPromptImageFile[];
   onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
 }
+
+type SnippetVariableFormValues = Record<string, string>;
 
 const providerOptions = (
   hasOpenAi: boolean,
@@ -233,6 +236,10 @@ export function TaskDefinitionFields({
   const [githubBranches, setGitHubBranches] = useState<GitHubBranchReference[]>([]);
   const [githubOptionsLoading, setGitHubOptionsLoading] = useState(false);
   const [magicPromptLoading, setMagicPromptLoading] = useState(false);
+  const [selectedSnippetToInsertId, setSelectedSnippetToInsertId] = useState<string | null>(null);
+  const [pendingSnippetForInsert, setPendingSnippetForInsert] = useState<Snippet | null>(null);
+  const [snippetVariableModalOpen, setSnippetVariableModalOpen] = useState(false);
+  const [snippetVariableForm] = Form.useForm<SnippetVariableFormValues>();
   const canReadRepositoryMetadata = can("repo:read");
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
@@ -291,7 +298,6 @@ export function TaskDefinitionFields({
   );
   const sourceOptions: Array<{ label: string; value: TaskSourceType }> = [
     { label: "Blank", value: "blank" },
-    ...(canUseSnippets ? [{ label: "Snippet", value: "snippet" as const }] : []),
     ...(canUseSequences ? [{ label: "Sequence", value: "sequence" as const }] : []),
     ...(canReadRepositoryMetadata
       ? [
@@ -507,6 +513,64 @@ export function TaskDefinitionFields({
     }
   };
 
+  const insertIntoPrompt = (snippetContent: string | null | undefined): void => {
+    const currentPrompt = form.getFieldValue("prompt") as string | undefined;
+    const nextPrompt = insertSnippetContent(currentPrompt, snippetContent);
+    form.setFieldValue("prompt", nextPrompt);
+    form.setFields([{ name: "prompt", value: nextPrompt }]);
+  };
+
+  const handleInsertSelectedSnippet = (): void => {
+    if (!selectedSnippetToInsertId) {
+      return;
+    }
+
+    const snippet = snippets.find((item) => item.id === selectedSnippetToInsertId);
+    if (!snippet) {
+      void message.error("Selected snippet is no longer available.");
+      return;
+    }
+
+    if ((snippet.variables ?? []).length > 0) {
+      setPendingSnippetForInsert(snippet);
+      snippetVariableForm.resetFields();
+      const defaultValues = Object.fromEntries(
+        (snippet.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""])
+      );
+      snippetVariableForm.setFieldsValue(defaultValues);
+      setSnippetVariableModalOpen(true);
+      return;
+    }
+
+    insertIntoPrompt(snippet.content);
+    setSelectedSnippetToInsertId(null);
+  };
+
+  const handleConfirmSnippetVariableInsert = async (): Promise<void> => {
+    if (!pendingSnippetForInsert) {
+      return;
+    }
+
+    try {
+      const values = await snippetVariableForm.validateFields();
+      const rendered = applySnippetVariables(pendingSnippetForInsert.content, pendingSnippetForInsert.variables, values);
+      insertIntoPrompt(rendered);
+      setSnippetVariableModalOpen(false);
+      setPendingSnippetForInsert(null);
+      snippetVariableForm.resetFields();
+      setSelectedSnippetToInsertId(null);
+    } catch {
+      // Form-level validation messages are shown inline.
+    }
+  };
+
+  const handleCloseSnippetVariableModal = (): void => {
+    setSnippetVariableModalOpen(false);
+    setPendingSnippetForInsert(null);
+    snippetVariableForm.resetFields();
+    setSelectedSnippetToInsertId(null);
+  };
+
   useEffect(() => {
     if (selectedSourceType === "blank") {
       return;
@@ -572,6 +636,28 @@ export function TaskDefinitionFields({
                   />
                 </Form.Item>
               </div>
+              {canUseSnippets ? (
+                <Flex gap={8} wrap="wrap">
+                  <Select
+                    showSearch
+                    style={{ minWidth: 220, flex: 1 }}
+                    placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
+                    value={selectedSnippetToInsertId}
+                    onChange={(value) => setSelectedSnippetToInsertId(value)}
+                    optionFilterProp="label"
+                    allowClear
+                    loading={snippetsLoading}
+                    disabled={snippetsLoading || snippets.length === 0}
+                    options={snippets.map((snippet) => ({
+                      label: snippet.name,
+                      value: snippet.id
+                    }))}
+                  />
+                  <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetToInsertId}>
+                    Insert
+                  </Button>
+                </Flex>
+              ) : null}
               <TaskPromptAttachmentsInput
                 files={promptImageFiles}
                 onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
@@ -815,9 +901,10 @@ export function TaskDefinitionFields({
   };
 
   return (
-    <Row gutter={[24, 24]} align="stretch">
-      <Col xs={24} xl={8}>
-        <Card bordered={false} title="Configuration" styles={{ body: { display: "flex", flexDirection: "column", gap: 0 } }}>
+    <>
+      <Row gutter={[24, 24]} align="stretch">
+        <Col xs={24} xl={8}>
+          <Card bordered={false} title="Configuration" styles={{ body: { display: "flex", flexDirection: "column", gap: 0 } }}>
           <Form.Item name="sourceType" label="Source" rules={[{ required: true }]}>
             <Select
               options={sourceOptions}
@@ -1001,24 +1088,51 @@ export function TaskDefinitionFields({
               />
             </Form.Item>
           ) : null}
-        </Card>
-      </Col>
+          </Card>
+        </Col>
 
-      <Col xs={24} xl={16}>
-        <Card
-          bordered={false}
-          title={promptPanelTitle}
-          styles={{
-            body: {
-              display: "flex",
-              flexDirection: "column",
-              minHeight: 640
-            }
-          }}
-        >
-          {renderPromptPanel(selectedRepository)}
-        </Card>
-      </Col>
-    </Row>
+        <Col xs={24} xl={16}>
+          <Card
+            bordered={false}
+            title={promptPanelTitle}
+            styles={{
+              body: {
+                display: "flex",
+                flexDirection: "column",
+                minHeight: 640
+              }
+            }}
+          >
+            {renderPromptPanel(selectedRepository)}
+          </Card>
+        </Col>
+      </Row>
+      <Modal
+        title={pendingSnippetForInsert ? `Insert Snippet: ${pendingSnippetForInsert.name}` : "Insert Snippet"}
+        open={snippetVariableModalOpen}
+        onCancel={handleCloseSnippetVariableModal}
+        destroyOnClose
+        onOk={() => void handleConfirmSnippetVariableInsert()}
+        okText="Insert"
+      >
+        <Form form={snippetVariableForm} layout="vertical">
+          {(pendingSnippetForInsert?.variables ?? []).map((variable) => (
+            <Form.Item
+              key={variable.name}
+              name={variable.name}
+              label={variable.title.trim() || variable.name}
+              tooltip={variable.description.trim() || undefined}
+              rules={[{ required: true, message: `Enter ${variable.title.trim() || variable.name}` }]}
+            >
+              {variable.type === "multiline" ? (
+                <Input.TextArea rows={4} placeholder={variable.description.trim() || variable.name} />
+              ) : (
+                <Input placeholder={variable.description.trim() || variable.name} />
+              )}
+            </Form.Item>
+          ))}
+        </Form>
+      </Modal>
+    </>
   );
 }

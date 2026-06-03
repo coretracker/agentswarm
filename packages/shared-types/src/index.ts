@@ -1113,6 +1113,7 @@ export interface UpdateTaskWorkspaceFileInput {
 export interface MergeTaskInput {
   targetBranch: string;
   commitMessage?: string;
+  deleteRemoteBranch?: boolean;
 }
 
 export const getTaskBranchStrategyLabel = (strategy: TaskBranchStrategy): string =>

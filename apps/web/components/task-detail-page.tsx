@@ -43,6 +43,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Collapse,
   Descriptions,
   Divider,
@@ -507,6 +508,16 @@ function getTaskGitHubTargetBranch(task: Task): string | null {
   return task.branchName ?? task.baseBranch ?? null;
 }
 
+function canOfferRemoteBranchDeletion(task: Task): boolean {
+  const branchName = task.branchName?.trim();
+  return Boolean(
+    task.branchStrategy === "feature_branch" &&
+      branchName &&
+      branchName !== task.repoDefaultBranch &&
+      branchName !== task.baseBranch
+  );
+}
+
 function getGitHubDiffTarget(task: Task, existingPullRequest?: GitHubPullRequestReference | null): { href: string; label: string } | null {
   const repoBaseUrl = getGitHubRepositoryBaseUrl(task.repoUrl);
   if (!repoBaseUrl) {
@@ -897,6 +908,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [mergePreviewError, setMergePreviewError] = useState<string | null>(null);
   const [mergeCommitMessage, setMergeCommitMessage] = useState("");
   const [mergeCommitMessageGenerating, setMergeCommitMessageGenerating] = useState(false);
+  const [deleteRemoteBranchAfterMerge, setDeleteRemoteBranchAfterMerge] = useState(false);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
   const [taskStateModalOpen, setTaskStateModalOpen] = useState(false);
   const [taskStateDraft, setTaskStateDraft] = useState<EditableTaskState>("open");
@@ -2698,9 +2710,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
+    let deleteRemoteBranch = false;
+    const showBranchCleanup = canOfferRemoteBranchDeletion(task);
+
+    Modal.confirm({
+      title: "Archive task",
+      content: (
+        <Space direction="vertical" size={12}>
+          <Typography.Text>{`Archive "${task.title}"?`}</Typography.Text>
+          {showBranchCleanup ? (
+            <Checkbox onChange={(event) => {
+              deleteRemoteBranch = event.target.checked;
+            }}>
+              Delete remote branch <Typography.Text code>{task.branchName}</Typography.Text>
+            </Checkbox>
+          ) : null}
+        </Space>
+      ),
+      okText: "Archive",
+      onOk: async () => {
     setSubmitting("archive");
     try {
-      const updatedTask = await api.archiveTask(task.id);
+      const updatedTask = await api.archiveTask(task.id, { deleteRemoteBranch });
       setTask((current) =>
         current
           ? {
@@ -2717,6 +2748,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     } finally {
       setSubmitting(null);
     }
+      }
+    });
   };
   const openTaskStateModal = () => {
     if (!task) {
@@ -2904,14 +2937,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
     Modal.confirm({
       title: `Squash merge into ${mergeTargetBranch}?`,
-      content: `This will squash merge ${task.branchName} into ${mergeTargetBranch}, create one commit with your chosen message, and archive the task.`,
+      content: deleteRemoteBranchAfterMerge
+        ? `This will squash merge ${task.branchName} into ${mergeTargetBranch}, delete the remote task branch, create one commit with your chosen message, and archive the task.`
+        : `This will squash merge ${task.branchName} into ${mergeTargetBranch}, create one commit with your chosen message, and archive the task.`,
       okText: "Squash Merge and Archive",
       onOk: async () => {
         setSubmitting("merge");
         try {
           const updatedTask = await api.mergeTask(task.id, {
             targetBranch: mergeTargetBranch,
-            commitMessage: mergeCommitMessage.trim() || undefined
+            commitMessage: mergeCommitMessage.trim() || undefined,
+            deleteRemoteBranch: deleteRemoteBranchAfterMerge
           });
           setTask((current) =>
             current
@@ -2928,6 +2964,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           setMergePreview(null);
           setMergePreviewError(null);
           setMergeCommitMessage("");
+          setDeleteRemoteBranchAfterMerge(false);
           messageApi.success(`Squash merged into ${mergeTargetBranch}`);
         } catch (error) {
           showTaskActionError(error, "Failed to merge task branch");
@@ -5335,6 +5372,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           setMergePreview(null);
           setMergePreviewError(null);
           setMergeCommitMessage("");
+          setDeleteRemoteBranchAfterMerge(false);
         }}
         destroyOnClose
         footer={
@@ -5351,6 +5389,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 setMergePreview(null);
                 setMergePreviewError(null);
                 setMergeCommitMessage("");
+                setDeleteRemoteBranchAfterMerge(false);
               }}
             >
               Cancel
@@ -5402,6 +5441,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 disabled={mergeFooterBusy}
               />
             </Form.Item>
+            {task && canOfferRemoteBranchDeletion(task) ? (
+              <Form.Item style={{ marginBottom: 0 }}>
+                <Checkbox
+                  checked={deleteRemoteBranchAfterMerge}
+                  onChange={(event) => setDeleteRemoteBranchAfterMerge(event.target.checked)}
+                  disabled={mergeFooterBusy}
+                >
+                  Delete remote branch <Typography.Text code>{task.branchName}</Typography.Text> after merge
+                </Checkbox>
+              </Form.Item>
+            ) : null}
           </Form>
           {!mergeBranchesLoading && mergeBranches.length === 0 ? (
             <Alert type="info" showIcon message="No target branches available for merging." />

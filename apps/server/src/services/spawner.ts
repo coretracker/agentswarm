@@ -4181,6 +4181,36 @@ export class SpawnerService {
     return (await this.taskStore.getTask(task.id)) ?? task;
   }
 
+  async deleteTaskRemoteBranch(task: Task): Promise<void> {
+    const branchName = task.branchName?.trim();
+    if (task.branchStrategy !== "feature_branch" || !branchName) {
+      await this.taskStore.appendLog(task.id, "Spawner: skipped remote branch deletion because this task does not own a feature branch.");
+      return;
+    }
+
+    if (branchName === task.repoDefaultBranch || branchName === task.baseBranch) {
+      await this.taskStore.appendLog(task.id, `Spawner: skipped remote branch deletion for protected branch ${branchName}.`);
+      return;
+    }
+
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    await this.withFreshManagedRepo(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "delete_remote_branch", async (managedRepoPath) => {
+      const remoteBranchRef = `origin/${branchName}`;
+      if (!(await this.refExists(managedRepoPath, remoteBranchRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
+        await this.taskStore.appendLog(task.id, `Spawner: remote branch ${branchName} does not exist; nothing to delete.`);
+        return;
+      }
+
+      await this.gitCommand(
+        ["-C", managedRepoPath, "push", "--no-verify", "origin", "--delete", branchName],
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername
+      );
+    });
+
+    await this.taskStore.appendLog(task.id, `Spawner: deleted remote branch ${branchName} from origin.`);
+  }
+
   async publishAcceptedTask(task: Task): Promise<Task> {
     await this.pushTaskBranch(task);
     const published = await this.taskStore.setStatus(task.id, "open", {

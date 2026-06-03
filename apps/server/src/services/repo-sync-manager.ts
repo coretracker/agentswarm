@@ -6,6 +6,7 @@ export type RepoSyncOperation =
   | "push"
   | "pull"
   | "merge"
+  | "delete_remote_branch"
   | "merge_preview";
 
 interface RepoSyncState {
@@ -45,7 +46,7 @@ const DEFAULT_OPTIONS: RepoSyncManagerOptions = {
   jitterPercent: 0.15
 };
 
-const writeOperations = new Set<RepoSyncOperation>(["push", "pull", "merge", "merge_preview"]);
+const writeOperations = new Set<RepoSyncOperation>(["push", "pull", "merge", "delete_remote_branch", "merge_preview"]);
 
 const hashString = (value: string): number => {
   let hash = 2166136261;

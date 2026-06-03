@@ -156,7 +156,12 @@ const pushTaskBodySchema = z.object({
 
 const mergeTaskBodySchema = z.object({
   targetBranch: z.string().trim().min(1).max(255),
-  commitMessage: z.string().max(8000).optional()
+  commitMessage: z.string().max(8000).optional(),
+  deleteRemoteBranch: z.boolean().optional().default(false)
+});
+
+const taskBranchCleanupBodySchema = z.object({
+  deleteRemoteBranch: z.boolean().optional().default(false)
 });
 
 const mergePreviewQuerySchema = z.object({
@@ -1925,6 +1930,14 @@ export const registerTaskRoutes = (
       return reply.status(400).send({ message: mergeResult.message });
     }
     const merged = mergeResult.value;
+    if (parsed.data.deleteRemoteBranch) {
+      try {
+        await deps.spawner.deleteTaskRemoteBranch(task);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Remote branch deletion failed.";
+        await deps.taskStore.appendLog(merged.id, `Warning: ${message}`);
+      }
+    }
     await deps.taskStore.publishTaskMergedEvent({
       taskId: merged.id,
       sourceBranch: task.branchName,
@@ -1970,6 +1983,11 @@ export const registerTaskRoutes = (
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/archive", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = taskBranchCleanupBodySchema.safeParse((request.body as unknown) ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
     const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
       return;
@@ -1983,6 +2001,13 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: "Active tasks cannot be archived" });
     }
 
+    if (parsed.data.deleteRemoteBranch) {
+      const deleteResult = await runGitCommand(() => deps.spawner.deleteTaskRemoteBranch(task), "Remote branch deletion failed");
+      if (!deleteResult.ok) {
+        return reply.status(400).send({ message: deleteResult.message });
+      }
+    }
+
     await deps.spawner.cleanupTaskArtifacts(task);
     await deps.taskQueueStore.removeTask(task.id);
     await deps.taskStore.archiveTask(task.id);
@@ -1992,6 +2017,11 @@ export const registerTaskRoutes = (
   });
 
   app.delete<{ Params: { id: string } }>("/tasks/:id", { preHandler: deps.auth.requireAllScopes(["task:delete"]) }, async (request, reply) => {
+    const parsed = taskBranchCleanupBodySchema.safeParse((request.body as unknown) ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
     const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
     if (!task) {
       return;
@@ -1999,6 +2029,13 @@ export const registerTaskRoutes = (
 
     if (isActiveTaskStatus(task.status)) {
       return reply.status(409).send({ message: "Active tasks cannot be deleted" });
+    }
+
+    if (parsed.data.deleteRemoteBranch) {
+      const deleteResult = await runGitCommand(() => deps.spawner.deleteTaskRemoteBranch(task), "Remote branch deletion failed");
+      if (!deleteResult.ok) {
+        return reply.status(400).send({ message: deleteResult.message });
+      }
     }
 
     await deps.spawner.cleanupTaskArtifacts(task);

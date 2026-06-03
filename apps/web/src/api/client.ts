@@ -479,13 +479,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  archiveTask: (id: string) =>
+  archiveTask: (id: string, input?: { deleteRemoteBranch?: boolean }) =>
     request<Task>(`/tasks/${id}/archive`, {
-      method: "POST"
+      method: "POST",
+      body: JSON.stringify(input ?? {})
     }),
-  deleteTask: (id: string) =>
+  deleteTask: (id: string, input?: { deleteRemoteBranch?: boolean }) =>
     request<void>(`/tasks/${id}`, {
-      method: "DELETE"
+      method: "DELETE",
+      body: JSON.stringify(input ?? {})
     }),
   updateTaskConfig: (id: string, input: UpdateTaskConfigInput) =>
     request<Task>(`/tasks/${id}/config`, {
