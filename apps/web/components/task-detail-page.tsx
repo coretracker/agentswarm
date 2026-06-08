@@ -752,6 +752,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>(null);
   const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "diff" | "files">("chat");
   const [expandedRunKeys, setExpandedRunKeys] = useState<string[]>([]);
+  const [expandedRunTimelineKeys, setExpandedRunTimelineKeys] = useState<string[]>([]);
   const [selectedChatAction, setSelectedChatAction] = useState<ComposerAction>("build");
   const [submitting, setSubmitting] = useState<
     | null
@@ -4269,6 +4270,73 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     </div>
   );
 
+  const formatTimelineEventKind = (kind: string): string =>
+    kind
+      .split(".")
+      .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+      .join(" ");
+
+  const renderRunTimelinePanel = (run: TaskRun) => {
+    const events = run.timelineEvents ?? [];
+    if (events.length === 0) {
+      return <Typography.Text type="secondary">No parsed timeline events captured for this run.</Typography.Text>;
+    }
+
+    return (
+      <List
+        size="small"
+        dataSource={events}
+        renderItem={(event) => (
+          <List.Item style={{ alignItems: "flex-start", paddingLeft: 0, paddingRight: 0 }}>
+            <Space direction="vertical" size={2} style={{ width: "100%" }}>
+              <Space size={8} wrap>
+                <Tag>{formatTimelineEventKind(event.kind)}</Tag>
+                {event.status ? <Tag color={event.kind.includes("failed") ? "red" : undefined}>{event.status}</Tag> : null}
+                {event.toolName ? <Tag color="blue">{event.toolName}</Tag> : null}
+                {event.exitCode != null ? <Tag color={event.exitCode === 0 ? "green" : "red"}>exit {event.exitCode}</Tag> : null}
+              </Space>
+              <Typography.Text strong>{event.title}</Typography.Text>
+              {event.detail ? (
+                <Typography.Text code style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                  {event.detail}
+                </Typography.Text>
+              ) : null}
+              {event.message ? (
+                <Typography.Paragraph style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                  {event.message}
+                </Typography.Paragraph>
+              ) : null}
+              {event.filePath ? <Typography.Text type="secondary">{event.filePath}</Typography.Text> : null}
+            </Space>
+          </List.Item>
+        )}
+      />
+    );
+  };
+
+  const renderRunTimelineCollapse = (run: TaskRun) => {
+    const count = run.timelineEvents?.length ?? 0;
+    return (
+      <Collapse
+        size="small"
+        activeKey={expandedRunTimelineKeys.includes(run.id) ? [run.id] : []}
+        onChange={(keys) =>
+          setExpandedRunTimelineKeys((current) => {
+            const isOpen = Array.isArray(keys) ? keys.length > 0 : Boolean(keys);
+            return isOpen ? (current.includes(run.id) ? current : [...current, run.id]) : current.filter((key) => key !== run.id);
+          })
+        }
+        items={[
+          {
+            key: run.id,
+            label: `Timeline${count > 0 ? ` (${count})` : ""}`,
+            children: renderRunTimelinePanel(run)
+          }
+        ]}
+      />
+    );
+  };
+
   const renderRunLogsCollapse = (run: TaskRun) => (
     <Collapse
       size="small"
@@ -4726,6 +4794,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             Branch: <Typography.Text code>{run.branchName ?? "(pending)"}</Typography.Text>
           </Typography.Paragraph>
           {renderRunErrorNotice(run)}
+          {renderRunTimelineCollapse(run)}
           {renderRunLogsCollapse(run)}
           {renderRunNoChangeNotice(run)}
           {normalizedRunSummary ? (
@@ -4788,6 +4857,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             </ReactMarkdown>
           </div>
           {renderRunErrorNotice(entry.run)}
+          {renderRunTimelineCollapse(entry.run)}
           {renderRunLogsCollapse(entry.run)}
           <Collapse
             size="small"

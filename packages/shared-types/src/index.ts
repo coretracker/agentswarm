@@ -650,6 +650,46 @@ export interface TaskExecutionInput {
   attachments?: TaskPromptAttachment[];
 }
 
+export type NormalizedAgentEventKind =
+  | "run.started"
+  | "run.status"
+  | "run.completed"
+  | "run.failed"
+  | "turn.started"
+  | "turn.completed"
+  | "assistant.message"
+  | "assistant.message.delta"
+  | "tool.started"
+  | "tool.completed"
+  | "tool.failed"
+  | "file.changed"
+  | "subtask.started"
+  | "subtask.progress"
+  | "subtask.completed"
+  | "usage.reported"
+  | "unknown";
+
+export interface NormalizedAgentEvent {
+  id: string;
+  provider: AgentProvider;
+  kind: NormalizedAgentEventKind;
+  rawEventIndex: number;
+  title: string;
+  detail?: string;
+  message?: string;
+  status?: string;
+  sessionId?: string;
+  messageId?: string;
+  toolCallId?: string;
+  parentToolCallId?: string | null;
+  toolName?: string;
+  filePath?: string;
+  fileChangeKind?: string;
+  exitCode?: number | null;
+  usage?: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+}
+
 export interface TaskRun {
   id: string;
   taskId: string;
@@ -671,6 +711,7 @@ export interface TaskRun {
   changeProposalUntrackedPaths?: string[] | null;
   /** True when the provider's native JSONL stream has been captured for this run. */
   hasRawJson?: boolean;
+  timelineEvents?: NormalizedAgentEvent[];
   logs: string[];
 }
 

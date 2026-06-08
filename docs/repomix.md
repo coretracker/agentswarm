@@ -57,6 +57,8 @@ apps/
         migrate.ts
         migrations.ts
       lib/
+        agent-event-parser.test.ts
+        agent-event-parser.ts
         auth.ts
         branch.ts
         docker-socket-access.test.ts
@@ -420,6 +422,472 @@ void main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
+````
+
+## File: apps/server/src/lib/agent-event-parser.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { parseAgentJsonlEvents } from "./agent-event-parser.js";
+
+describe("parseAgentJsonlEvents", () => {
+  it("normalizes Codex command, file, message, and usage events", () => {
+    const raw = [
+      { type: "thread.started", thread_id: "thread-1" },
+      { type: "turn.started" },
+      { type: "item.started", item: { id: "item_1", type: "command_execution", command: "npm test", aggregated_output: "", exit_code: null, status: "in_progress" } },
+      { type: "item.completed", item: { id: "item_1", type: "command_execution", command: "npm test", aggregated_output: "ok", exit_code: 0, status: "completed" } },
+      { type: "item.completed", item: { id: "item_2", type: "file_change", changes: [{ path: "src/app.ts", kind: "update" }], status: "completed" } },
+      { type: "item.completed", item: { id: "item_3", type: "agent_message", text: "Done" } },
+      { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } }
+    ].map((event) => JSON.stringify(event)).join("\n");
+
+    const events = parseAgentJsonlEvents("codex", raw);
+
+    assert.equal(events.some((event) => event.kind === "tool.started" && event.detail === "npm test"), true);
+    assert.equal(events.some((event) => event.kind === "tool.completed" && event.message === "ok"), true);
+    assert.equal(events.some((event) => event.kind === "file.changed" && event.filePath === "src/app.ts"), true);
+    assert.equal(events.some((event) => event.kind === "assistant.message" && event.message === "Done"), true);
+    assert.equal(events.some((event) => event.kind === "usage.reported"), true);
+  });
+
+  it("normalizes Claude tool results and final result events", () => {
+    const raw = [
+      { type: "system", subtype: "init", session_id: "session-1", model: "claude-sonnet" },
+      { type: "assistant", session_id: "session-1", message: { id: "msg_1", content: [{ type: "tool_use", id: "tool_1", name: "Write", input: { file_path: "test.txt" } }] } },
+      { type: "user", session_id: "session-1", message: { content: [{ type: "tool_result", tool_use_id: "tool_1", content: "File created" }] }, tool_use_result: { type: "create" } },
+      { type: "stream_event", session_id: "session-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Done" } } },
+      { type: "result", subtype: "success", is_error: false, session_id: "session-1", result: "Done", usage: { input_tokens: 1 }, total_cost_usd: 0.01, terminal_reason: "completed" }
+    ].map((event) => JSON.stringify(event)).join("\n");
+
+    const events = parseAgentJsonlEvents("claude", raw);
+
+    assert.equal(events.some((event) => event.kind === "run.started" && event.sessionId === "session-1"), true);
+    assert.equal(events.some((event) => event.kind === "tool.started" && event.toolName === "Write"), true);
+    assert.equal(events.some((event) => event.kind === "tool.completed" && event.toolCallId === "tool_1"), true);
+    assert.equal(events.some((event) => event.kind === "assistant.message.delta" && event.message === "Done"), true);
+    assert.equal(events.some((event) => event.kind === "run.completed" && event.message === "Done"), true);
+    assert.equal(events.some((event) => event.kind === "usage.reported" && event.metrics?.total_cost_usd === 0.01), true);
+  });
+});
+````
+
+## File: apps/server/src/lib/agent-event-parser.ts
+````typescript
+import type { AgentProvider, NormalizedAgentEvent } from "@agentswarm/shared-types";
+
+type JsonObject = Record<string, unknown>;
+
+const isRecord = (value: unknown): value is JsonObject => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const asString = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+const asNumber = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+const asRecord = (value: unknown): JsonObject | undefined => (isRecord(value) ? value : undefined);
+
+const truncate = (value: string | undefined, maxLength = 800): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
+};
+
+const eventId = (provider: AgentProvider, index: number, suffix: string): string => `${provider}-${index}-${suffix}`;
+
+const push = (
+  events: NormalizedAgentEvent[],
+  provider: AgentProvider,
+  rawEventIndex: number,
+  suffix: string,
+  event: Omit<NormalizedAgentEvent, "id" | "provider" | "rawEventIndex">
+): void => {
+  events.push({
+    id: eventId(provider, rawEventIndex, suffix),
+    provider,
+    rawEventIndex,
+    ...event
+  });
+};
+
+export function parseAgentJsonlEvents(provider: AgentProvider, rawJsonl: string): NormalizedAgentEvent[] {
+  const events: NormalizedAgentEvent[] = [];
+  const lines = rawJsonl.split(/\r?\n/u).filter((line) => line.trim().length > 0);
+
+  lines.forEach((line, index) => {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line);
+    } catch (error) {
+      push(events, provider, index, "invalid-json", {
+        kind: "unknown",
+        title: "Invalid JSON event",
+        detail: error instanceof Error ? error.message : "Could not parse JSONL line."
+      });
+      return;
+    }
+
+    if (!isRecord(raw)) {
+      push(events, provider, index, "unknown-shape", {
+        kind: "unknown",
+        title: "Unknown event",
+        detail: "Event is not a JSON object."
+      });
+      return;
+    }
+
+    if (provider === "codex") {
+      parseCodexEvent(raw, index, events);
+    } else {
+      parseClaudeEvent(raw, index, events);
+    }
+  });
+
+  return events;
+}
+
+function parseCodexEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[]): void {
+  const type = asString(raw.type);
+  if (type === "thread.started") {
+    const threadId = asString(raw.thread_id);
+    push(events, "codex", index, "thread-started", {
+      kind: "run.started",
+      title: "Codex thread started",
+      sessionId: threadId
+    });
+    return;
+  }
+  if (type === "turn.started") {
+    push(events, "codex", index, "turn-started", {
+      kind: "turn.started",
+      title: "Turn started"
+    });
+    return;
+  }
+  if (type === "turn.completed") {
+    const usage = asRecord(raw.usage);
+    push(events, "codex", index, "turn-completed", {
+      kind: "turn.completed",
+      title: "Turn completed",
+      usage
+    });
+    if (usage) {
+      push(events, "codex", index, "usage", {
+        kind: "usage.reported",
+        title: "Usage reported",
+        usage
+      });
+    }
+    return;
+  }
+  if (type === "item.started" || type === "item.completed") {
+    parseCodexItem(raw, index, events);
+    return;
+  }
+
+  push(events, "codex", index, "unknown", {
+    kind: "unknown",
+    title: type ? `Unknown Codex event: ${type}` : "Unknown Codex event"
+  });
+}
+
+function parseCodexItem(raw: JsonObject, index: number, events: NormalizedAgentEvent[]): void {
+  const wrapperType = asString(raw.type);
+  const item = asRecord(raw.item);
+  const itemType = asString(item?.type);
+  const itemId = asString(item?.id);
+  const status = asString(item?.status);
+  const isCompleted = wrapperType === "item.completed";
+
+  if (itemType === "agent_message" && isCompleted) {
+    push(events, "codex", index, itemId ?? "agent-message", {
+      kind: "assistant.message",
+      title: "Assistant message",
+      message: asString(item?.text),
+      messageId: itemId
+    });
+    return;
+  }
+
+  if (itemType === "command_execution") {
+    const command = asString(item?.command);
+    const exitCode = asNumber(item?.exit_code);
+    const output = truncate(asString(item?.aggregated_output));
+    const kind = !isCompleted ? "tool.started" : exitCode === 0 ? "tool.completed" : "tool.failed";
+    push(events, "codex", index, itemId ?? "command", {
+      kind,
+      title: !isCompleted ? "Command started" : exitCode === 0 ? "Command completed" : "Command failed",
+      detail: command,
+      message: isCompleted ? output : undefined,
+      status: status ?? (!isCompleted ? "in_progress" : undefined),
+      toolCallId: itemId,
+      toolName: "command_execution",
+      exitCode: exitCode ?? null
+    });
+    return;
+  }
+
+  if (itemType === "file_change" && isCompleted) {
+    const changes = Array.isArray(item?.changes) ? item.changes : [];
+    changes.forEach((change, changeIndex) => {
+      const record = asRecord(change);
+      const filePath = asString(record?.path);
+      const fileChangeKind = asString(record?.kind);
+      push(events, "codex", index, `${itemId ?? "file-change"}-${changeIndex}`, {
+        kind: "file.changed",
+        title: fileChangeKind ? `File ${fileChangeKind}` : "File changed",
+        detail: filePath,
+        status,
+        toolCallId: itemId,
+        filePath,
+        fileChangeKind
+      });
+    });
+    return;
+  }
+
+  push(events, "codex", index, itemId ?? "unknown-item", {
+    kind: "unknown",
+    title: itemType ? `Unknown Codex item: ${itemType}` : "Unknown Codex item",
+    status,
+    toolCallId: itemId
+  });
+}
+
+function parseClaudeEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[]): void {
+  const type = asString(raw.type);
+  const sessionId = asString(raw.session_id);
+
+  if (type === "system") {
+    parseClaudeSystemEvent(raw, index, events, sessionId);
+    return;
+  }
+  if (type === "stream_event") {
+    parseClaudeStreamEvent(raw, index, events, sessionId);
+    return;
+  }
+  if (type === "assistant") {
+    parseClaudeAssistantEvent(raw, index, events, sessionId);
+    return;
+  }
+  if (type === "user") {
+    parseClaudeUserEvent(raw, index, events, sessionId);
+    return;
+  }
+  if (type === "result") {
+    parseClaudeResultEvent(raw, index, events, sessionId);
+    return;
+  }
+
+  push(events, "claude", index, "unknown", {
+    kind: "unknown",
+    title: type ? `Unknown Claude event: ${type}` : "Unknown Claude event",
+    sessionId
+  });
+}
+
+function parseClaudeSystemEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
+  const subtype = asString(raw.subtype);
+  if (subtype === "init") {
+    push(events, "claude", index, "init", {
+      kind: "run.started",
+      title: "Claude session started",
+      detail: asString(raw.model),
+      sessionId
+    });
+    return;
+  }
+  if (subtype === "status") {
+    const status = asString(raw.status);
+    push(events, "claude", index, "status", {
+      kind: "run.status",
+      title: status ? `Claude status: ${status}` : "Claude status",
+      status,
+      sessionId
+    });
+    return;
+  }
+  if (subtype === "task_started") {
+    push(events, "claude", index, asString(raw.task_id) ?? "task-started", {
+      kind: "subtask.started",
+      title: asString(raw.description) ?? "Subtask started",
+      status: asString(raw.status),
+      sessionId,
+      toolCallId: asString(raw.tool_use_id),
+      toolName: asString(raw.task_type)
+    });
+    return;
+  }
+  if (subtype === "task_progress") {
+    push(events, "claude", index, asString(raw.task_id) ?? "task-progress", {
+      kind: "subtask.progress",
+      title: asString(raw.description) ?? "Subtask progress",
+      detail: asString(raw.last_tool_name),
+      sessionId,
+      toolCallId: asString(raw.tool_use_id),
+      usage: asRecord(raw.usage)
+    });
+    return;
+  }
+  if (subtype === "task_notification") {
+    const status = asString(raw.status);
+    push(events, "claude", index, asString(raw.task_id) ?? "task-notification", {
+      kind: "subtask.completed",
+      title: asString(raw.summary) ?? "Subtask completed",
+      status,
+      sessionId,
+      toolCallId: asString(raw.tool_use_id),
+      usage: asRecord(raw.usage)
+    });
+    return;
+  }
+  push(events, "claude", index, "unknown-system", {
+    kind: "unknown",
+    title: subtype ? `Unknown Claude system event: ${subtype}` : "Unknown Claude system event",
+    sessionId
+  });
+}
+
+function parseClaudeStreamEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
+  const event = asRecord(raw.event);
+  const streamType = asString(event?.type);
+  if (streamType === "message_start") {
+    const message = asRecord(event?.message);
+    push(events, "claude", index, "message-start", {
+      kind: "assistant.message",
+      title: "Assistant message started",
+      sessionId,
+      messageId: asString(message?.id),
+      usage: asRecord(message?.usage)
+    });
+    return;
+  }
+  if (streamType === "content_block_delta") {
+    const delta = asRecord(event?.delta);
+    if (asString(delta?.type) === "text_delta") {
+      push(events, "claude", index, "text-delta", {
+        kind: "assistant.message.delta",
+        title: "Assistant message delta",
+        message: asString(delta?.text),
+        sessionId
+      });
+    }
+    return;
+  }
+  if (streamType === "message_delta") {
+    const delta = asRecord(event?.delta);
+    const usage = asRecord(event?.usage);
+    push(events, "claude", index, "message-delta", {
+      kind: "assistant.message",
+      title: "Assistant message completed",
+      status: asString(delta?.stop_reason),
+      sessionId,
+      usage
+    });
+    if (usage) {
+      push(events, "claude", index, "usage", {
+        kind: "usage.reported",
+        title: "Usage reported",
+        status: asString(delta?.stop_reason),
+        sessionId,
+        usage
+      });
+    }
+  }
+}
+
+function parseClaudeAssistantEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
+  const message = asRecord(raw.message);
+  const messageId = asString(message?.id);
+  const content = Array.isArray(message?.content) ? message.content : [];
+
+  content.forEach((block, blockIndex) => {
+    const record = asRecord(block);
+    if (!record) {
+      return;
+    }
+    const type = asString(record?.type);
+    if (type === "text") {
+      push(events, "claude", index, `text-${blockIndex}`, {
+        kind: "assistant.message",
+        title: "Assistant message",
+        message: asString(record?.text),
+        sessionId,
+        messageId,
+        usage: asRecord(message?.usage)
+      });
+    } else if (type === "tool_use") {
+      const toolName = asString(record?.name);
+      push(events, "claude", index, asString(record?.id) ?? `tool-${blockIndex}`, {
+        kind: "tool.started",
+        title: toolName ? `${toolName} started` : "Tool started",
+        detail: truncate(JSON.stringify(record.input ?? {})),
+        sessionId,
+        messageId,
+        toolCallId: asString(record?.id),
+        parentToolCallId: asString(raw.parent_tool_use_id) ?? null,
+        toolName
+      });
+    }
+  });
+}
+
+function parseClaudeUserEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
+  const message = asRecord(raw.message);
+  const content = Array.isArray(message?.content) ? message.content : [];
+  content.forEach((block, blockIndex) => {
+    const record = asRecord(block);
+    if (!record) {
+      return;
+    }
+    if (asString(record?.type) !== "tool_result") {
+      return;
+    }
+    const result = raw.tool_use_result;
+    const isFailed =
+      typeof result === "string"
+        ? result.toLowerCase().startsWith("error:")
+        : isRecord(result) && result.interrupted === true;
+    push(events, "claude", index, asString(record?.tool_use_id) ?? `tool-result-${blockIndex}`, {
+      kind: isFailed ? "tool.failed" : "tool.completed",
+      title: isFailed ? "Tool failed" : "Tool completed",
+      message: truncate(typeof record.content === "string" ? record.content : JSON.stringify(record.content ?? "")),
+      sessionId,
+      toolCallId: asString(record?.tool_use_id),
+      parentToolCallId: asString(raw.parent_tool_use_id) ?? null,
+      status: isFailed ? "failed" : "completed"
+    });
+  });
+}
+
+function parseClaudeResultEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
+  const isError = raw.is_error === true || asString(raw.subtype) !== "success";
+  const usage = asRecord(raw.usage);
+  const metrics: Record<string, unknown> = {};
+  for (const key of ["duration_ms", "duration_api_ms", "ttft_ms", "num_turns", "total_cost_usd", "terminal_reason", "stop_reason"]) {
+    if (raw[key] !== undefined) {
+      metrics[key] = raw[key];
+    }
+  }
+
+  push(events, "claude", index, "result", {
+    kind: isError ? "run.failed" : "run.completed",
+    title: isError ? "Claude run failed" : "Claude run completed",
+    message: asString(raw.result),
+    status: asString(raw.subtype),
+    sessionId,
+    usage,
+    metrics
+  });
+  if (usage) {
+    push(events, "claude", index, "result-usage", {
+      kind: "usage.reported",
+      title: "Final usage reported",
+      status: asString(raw.subtype),
+      sessionId,
+      usage,
+      metrics
+    });
+  }
+}
 ````
 
 ## File: apps/server/src/lib/branch.ts
@@ -9739,6 +10207,876 @@ export function UsersPage() {
 }
 ````
 
+## File: apps/web/components/workspace-file-preview-modal.tsx
+````typescript
+"use client";
+
+import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
+import { Alert, Modal, Space, Spin, Tag, Typography, theme as antTheme } from "antd";
+import { isDarkAppTheme } from "../src/theme/antd-theme";
+import { getCodeTokenStyles } from "../src/theme/code-highlighting";
+import { useThemeMode } from "./theme-provider";
+export type { WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
+export { parseWorkspaceFileLink } from "../src/utils/workspace-file-links";
+
+export interface WorkspaceFilePreviewModalProps {
+  open: boolean;
+  loading: boolean;
+  filePath: string;
+  kind: "text" | "image" | "binary";
+  mimeType: string | null;
+  encoding: "utf8" | "base64";
+  content: string;
+  sizeBytes: number;
+  line: number | null;
+  error: string | null;
+  onCancel: () => void;
+}
+
+type HighlightTokenKind = "plain" | "comment" | "keyword" | "number" | "string";
+
+interface HighlightToken {
+  kind: HighlightTokenKind;
+  text: string;
+}
+
+interface LanguageConfig {
+  label: string;
+  lineCommentPrefixes: string[];
+  stringDelimiters: string[];
+  keywords: Set<string>;
+}
+
+const defaultLanguageConfig: LanguageConfig = {
+  label: "Text",
+  lineCommentPrefixes: [],
+  stringDelimiters: ['"', "'"],
+  keywords: new Set<string>()
+};
+
+const typeScriptKeywords = [
+  "as",
+  "async",
+  "await",
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "default",
+  "delete",
+  "else",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "function",
+  "if",
+  "import",
+  "in",
+  "instanceof",
+  "interface",
+  "let",
+  "new",
+  "null",
+  "return",
+  "switch",
+  "throw",
+  "true",
+  "try",
+  "type",
+  "typeof",
+  "undefined",
+  "var",
+  "while",
+  "yield"
+] as const;
+
+const javaScriptKeywords = [
+  "async",
+  "await",
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "default",
+  "delete",
+  "else",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "function",
+  "if",
+  "import",
+  "in",
+  "instanceof",
+  "let",
+  "new",
+  "null",
+  "return",
+  "switch",
+  "throw",
+  "true",
+  "try",
+  "typeof",
+  "undefined",
+  "var",
+  "while",
+  "yield"
+] as const;
+
+const languageConfigs: Record<string, LanguageConfig> = {
+  swift: {
+    label: "Swift",
+    lineCommentPrefixes: ["//"],
+    stringDelimiters: ['"', "'"],
+    keywords: new Set([
+      "actor",
+      "any",
+      "as",
+      "async",
+      "associatedtype",
+      "await",
+      "break",
+      "case",
+      "catch",
+      "class",
+      "continue",
+      "default",
+      "defer",
+      "deinit",
+      "do",
+      "else",
+      "enum",
+      "extension",
+      "false",
+      "fileprivate",
+      "for",
+      "func",
+      "guard",
+      "if",
+      "import",
+      "in",
+      "init",
+      "internal",
+      "is",
+      "let",
+      "nil",
+      "open",
+      "private",
+      "protocol",
+      "public",
+      "repeat",
+      "return",
+      "self",
+      "some",
+      "static",
+      "struct",
+      "subscript",
+      "super",
+      "switch",
+      "throw",
+      "throws",
+      "true",
+      "try",
+      "typealias",
+      "var",
+      "where",
+      "while"
+    ])
+  },
+  ts: {
+    label: "TypeScript",
+    lineCommentPrefixes: ["//"],
+    stringDelimiters: ['"', "'", "`"],
+    keywords: new Set(typeScriptKeywords)
+  },
+  tsx: {
+    label: "TSX",
+    lineCommentPrefixes: ["//"],
+    stringDelimiters: ['"', "'", "`"],
+    keywords: new Set(typeScriptKeywords)
+  },
+  js: {
+    label: "JavaScript",
+    lineCommentPrefixes: ["//"],
+    stringDelimiters: ['"', "'", "`"],
+    keywords: new Set(javaScriptKeywords)
+  },
+  jsx: {
+    label: "JSX",
+    lineCommentPrefixes: ["//"],
+    stringDelimiters: ['"', "'", "`"],
+    keywords: new Set(javaScriptKeywords)
+  },
+  json: {
+    label: "JSON",
+    lineCommentPrefixes: [],
+    stringDelimiters: ['"'],
+    keywords: new Set(["false", "null", "true"])
+  },
+  py: {
+    label: "Python",
+    lineCommentPrefixes: ["#"],
+    stringDelimiters: ['"', "'"],
+    keywords: new Set([
+      "and",
+      "as",
+      "async",
+      "await",
+      "break",
+      "class",
+      "continue",
+      "def",
+      "elif",
+      "else",
+      "False",
+      "finally",
+      "for",
+      "from",
+      "if",
+      "import",
+      "in",
+      "is",
+      "lambda",
+      "None",
+      "not",
+      "or",
+      "pass",
+      "raise",
+      "return",
+      "True",
+      "try",
+      "while",
+      "with",
+      "yield"
+    ])
+  },
+  rb: {
+    label: "Ruby",
+    lineCommentPrefixes: ["#"],
+    stringDelimiters: ['"', "'"],
+    keywords: new Set([
+      "begin",
+      "break",
+      "case",
+      "class",
+      "def",
+      "do",
+      "else",
+      "elsif",
+      "end",
+      "ensure",
+      "false",
+      "for",
+      "if",
+      "in",
+      "module",
+      "next",
+      "nil",
+      "redo",
+      "rescue",
+      "retry",
+      "return",
+      "self",
+      "super",
+      "then",
+      "true",
+      "unless",
+      "until",
+      "when",
+      "while",
+      "yield"
+    ])
+  },
+  java: {
+    label: "Java",
+    lineCommentPrefixes: ["//"],
+    stringDelimiters: ['"', "'"],
+    keywords: new Set([
+      "abstract",
+      "boolean",
+      "break",
+      "case",
+      "catch",
+      "class",
+      "continue",
+      "default",
+      "do",
+      "else",
+      "enum",
+      "extends",
+      "false",
+      "final",
+      "finally",
+      "for",
+      "if",
+      "implements",
+      "import",
+      "instanceof",
+      "interface",
+      "new",
+      "null",
+      "package",
+      "private",
+      "protected",
+      "public",
+      "return",
+      "static",
+      "super",
+      "switch",
+      "this",
+      "throw",
+      "throws",
+      "true",
+      "try",
+      "void",
+      "while"
+    ])
+  },
+  kt: {
+    label: "Kotlin",
+    lineCommentPrefixes: ["//"],
+    stringDelimiters: ['"', "'"],
+    keywords: new Set([
+      "as",
+      "break",
+      "class",
+      "companion",
+      "continue",
+      "data",
+      "do",
+      "else",
+      "false",
+      "for",
+      "fun",
+      "if",
+      "in",
+      "interface",
+      "is",
+      "null",
+      "object",
+      "override",
+      "package",
+      "private",
+      "protected",
+      "public",
+      "return",
+      "sealed",
+      "super",
+      "suspend",
+      "this",
+      "throw",
+      "true",
+      "try",
+      "typealias",
+      "val",
+      "var",
+      "when",
+      "while"
+    ])
+  },
+  go: {
+    label: "Go",
+    lineCommentPrefixes: ["//"],
+    stringDelimiters: ['"', "'", "`"],
+    keywords: new Set([
+      "break",
+      "case",
+      "chan",
+      "const",
+      "continue",
+      "default",
+      "defer",
+      "else",
+      "fallthrough",
+      "false",
+      "for",
+      "func",
+      "go",
+      "if",
+      "import",
+      "interface",
+      "map",
+      "package",
+      "range",
+      "return",
+      "select",
+      "struct",
+      "switch",
+      "true",
+      "type",
+      "var"
+    ])
+  },
+  rs: {
+    label: "Rust",
+    lineCommentPrefixes: ["//"],
+    stringDelimiters: ['"', "'"],
+    keywords: new Set([
+      "as",
+      "async",
+      "await",
+      "break",
+      "const",
+      "continue",
+      "crate",
+      "else",
+      "enum",
+      "extern",
+      "false",
+      "fn",
+      "for",
+      "if",
+      "impl",
+      "in",
+      "let",
+      "loop",
+      "match",
+      "mod",
+      "move",
+      "mut",
+      "pub",
+      "ref",
+      "return",
+      "self",
+      "static",
+      "struct",
+      "super",
+      "trait",
+      "true",
+      "type",
+      "unsafe",
+      "use",
+      "where",
+      "while"
+    ])
+  },
+  css: {
+    label: "CSS",
+    lineCommentPrefixes: [],
+    stringDelimiters: ['"', "'"],
+    keywords: new Set(["@import", "@media", "@supports", "important"])
+  },
+  scss: {
+    label: "SCSS",
+    lineCommentPrefixes: ["//"],
+    stringDelimiters: ['"', "'"],
+    keywords: new Set(["@if", "@else", "@each", "@for", "@include", "@mixin", "@use", "@forward"])
+  },
+  html: {
+    label: "HTML",
+    lineCommentPrefixes: ["<!--"],
+    stringDelimiters: ['"', "'"],
+    keywords: new Set(["doctype"])
+  },
+  xml: {
+    label: "XML",
+    lineCommentPrefixes: ["<!--"],
+    stringDelimiters: ['"', "'"],
+    keywords: new Set<string>()
+  },
+  yml: {
+    label: "YAML",
+    lineCommentPrefixes: ["#"],
+    stringDelimiters: ['"', "'"],
+    keywords: new Set(["false", "no", "null", "off", "on", "true", "yes"])
+  },
+  yaml: {
+    label: "YAML",
+    lineCommentPrefixes: ["#"],
+    stringDelimiters: ['"', "'"],
+    keywords: new Set(["false", "no", "null", "off", "on", "true", "yes"])
+  },
+  sh: {
+    label: "Shell",
+    lineCommentPrefixes: ["#"],
+    stringDelimiters: ['"', "'", "`"],
+    keywords: new Set([
+      "case",
+      "do",
+      "done",
+      "elif",
+      "else",
+      "esac",
+      "export",
+      "fi",
+      "for",
+      "function",
+      "if",
+      "in",
+      "local",
+      "readonly",
+      "return",
+      "then",
+      "until",
+      "while"
+    ])
+  },
+  bash: {
+    label: "Shell",
+    lineCommentPrefixes: ["#"],
+    stringDelimiters: ['"', "'", "`"],
+    keywords: new Set([
+      "case",
+      "do",
+      "done",
+      "elif",
+      "else",
+      "esac",
+      "export",
+      "fi",
+      "for",
+      "function",
+      "if",
+      "in",
+      "local",
+      "readonly",
+      "return",
+      "then",
+      "until",
+      "while"
+    ])
+  },
+  md: {
+    label: "Markdown",
+    lineCommentPrefixes: [],
+    stringDelimiters: ['"', "'"],
+    keywords: new Set<string>()
+  }
+};
+
+const languageByExtension: Array<[string, string]> = [
+  [".tsx", "tsx"],
+  [".ts", "ts"],
+  [".jsx", "jsx"],
+  [".js", "js"],
+  [".swift", "swift"],
+  [".json", "json"],
+  [".py", "py"],
+  [".rb", "rb"],
+  [".java", "java"],
+  [".kt", "kt"],
+  [".go", "go"],
+  [".rs", "rs"],
+  [".scss", "scss"],
+  [".css", "css"],
+  [".html", "html"],
+  [".xml", "xml"],
+  [".yaml", "yaml"],
+  [".yml", "yml"],
+  [".bash", "bash"],
+  [".sh", "sh"],
+  [".md", "md"]
+];
+
+export function detectCodeLanguage(filePath: string): string {
+  const normalized = filePath.trim().toLowerCase();
+  for (const [extension, language] of languageByExtension) {
+    if (normalized.endsWith(extension)) {
+      return language;
+    }
+  }
+  return "text";
+}
+
+export function getCodeLanguageLabel(language: string): string {
+  return (languageConfigs[language] ?? defaultLanguageConfig).label;
+}
+
+function isIdentifierStart(char: string): boolean {
+  return /[A-Za-z_$@]/.test(char);
+}
+
+function isIdentifierPart(char: string): boolean {
+  return /[A-Za-z0-9_$@]/.test(char);
+}
+
+function isNumberStart(line: string, index: number): boolean {
+  const char = line[index];
+  if (!char || !/[0-9]/.test(char)) {
+    return false;
+  }
+
+  const previous = index > 0 ? line[index - 1] : "";
+  return !previous || !/[A-Za-z0-9_]/.test(previous);
+}
+
+function parseStringToken(line: string, start: number, delimiter: string): { text: string; end: number } {
+  let end = start + 1;
+
+  while (end < line.length) {
+    const current = line[end];
+    if (current === "\\") {
+      end += 2;
+      continue;
+    }
+    if (current === delimiter) {
+      end += 1;
+      break;
+    }
+    end += 1;
+  }
+
+  return {
+    text: line.slice(start, Math.min(end, line.length)),
+    end: Math.min(end, line.length)
+  };
+}
+
+function compactHighlightTokens(tokens: HighlightToken[]): HighlightToken[] {
+  if (tokens.length === 0) {
+    return tokens;
+  }
+
+  const compacted: HighlightToken[] = [tokens[0]!];
+  for (let index = 1; index < tokens.length; index += 1) {
+    const previous = compacted[compacted.length - 1]!;
+    const current = tokens[index]!;
+    if (previous.kind === current.kind) {
+      previous.text += current.text;
+      continue;
+    }
+    compacted.push(current);
+  }
+  return compacted;
+}
+
+function tokenizeLine(line: string, language: string): HighlightToken[] {
+  const config = languageConfigs[language] ?? defaultLanguageConfig;
+  const tokens: HighlightToken[] = [];
+  let index = 0;
+
+  while (index < line.length) {
+    const commentPrefix = config.lineCommentPrefixes.find((prefix) => line.startsWith(prefix, index));
+    if (commentPrefix) {
+      tokens.push({ kind: "comment", text: line.slice(index) });
+      break;
+    }
+
+    const char = line[index]!;
+
+    if (config.stringDelimiters.includes(char)) {
+      const stringToken = parseStringToken(line, index, char);
+      tokens.push({ kind: "string", text: stringToken.text });
+      index = stringToken.end;
+      continue;
+    }
+
+    if (isNumberStart(line, index)) {
+      let end = index + 1;
+      while (end < line.length && /[0-9A-Fa-f_xob.]/.test(line[end]!)) {
+        end += 1;
+      }
+      tokens.push({ kind: "number", text: line.slice(index, end) });
+      index = end;
+      continue;
+    }
+
+    if (isIdentifierStart(char)) {
+      let end = index + 1;
+      while (end < line.length && isIdentifierPart(line[end]!)) {
+        end += 1;
+      }
+
+      const text = line.slice(index, end);
+      tokens.push({ kind: config.keywords.has(text) ? "keyword" : "plain", text });
+      index = end;
+      continue;
+    }
+
+    tokens.push({ kind: "plain", text: char });
+    index += 1;
+  }
+
+  return compactHighlightTokens(tokens);
+}
+
+export function renderHighlightedLine(
+  line: string,
+  language: string,
+  tokenStyles: Record<HighlightTokenKind, CSSProperties>
+): ReactNode {
+  const tokens = tokenizeLine(line, language);
+  if (tokens.length === 0) {
+    return " ";
+  }
+
+  return tokens.map((token, index) => (
+    <span key={`${token.kind}-${index}`} style={tokenStyles[token.kind]}>
+      {token.text}
+    </span>
+  ));
+}
+
+export function WorkspaceFilePreviewModal({
+  open,
+  loading,
+  filePath,
+  kind,
+  mimeType,
+  encoding,
+  content,
+  sizeBytes,
+  line,
+  error,
+  onCancel
+}: WorkspaceFilePreviewModalProps) {
+  const { token } = antTheme.useToken();
+  const { mode } = useThemeMode();
+  const darkTheme = isDarkAppTheme(mode);
+  const tokenStyles = useMemo(() => getCodeTokenStyles(token), [token]);
+  const language = useMemo(() => detectCodeLanguage(filePath), [filePath]);
+  const languageLabel = getCodeLanguageLabel(language);
+  const lines = useMemo(() => (kind === "text" && content.length > 0 ? content.split(/\r?\n/) : [""]), [content, kind]);
+  const imageSrc = useMemo(() => {
+    if (kind !== "image" || encoding !== "base64" || !mimeType || !content) {
+      return null;
+    }
+    return `data:${mimeType};base64,${content}`;
+  }, [content, encoding, kind, mimeType]);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open || kind !== "text" || !line || !contentRef.current) {
+      return;
+    }
+
+    const target = contentRef.current.querySelector<HTMLElement>(`[data-line="${line}"]`);
+    target?.scrollIntoView({ block: "center" });
+  }, [content, kind, line, open]);
+
+  const gutterWidth = Math.max(56, String(lines.length || 1).length * 10 + 24);
+  const surfaceBorder = darkTheme ? "rgba(255, 255, 255, 0.08)" : "#d9e2db";
+  const surfaceBackground = darkTheme ? "rgba(255, 255, 255, 0.03)" : "#f6f8f6";
+  const gutterBorder = darkTheme ? "rgba(255, 255, 255, 0.08)" : "#e5ebe7";
+  const gutterBackground = darkTheme ? "rgba(255, 255, 255, 0.04)" : "rgba(0, 0, 0, 0.02)";
+  const alternateRowBackground = darkTheme ? "rgba(255, 255, 255, 0.02)" : "rgba(0, 0, 0, 0.015)";
+
+  return (
+    <Modal
+      open={open}
+      title={
+        <Space wrap size={8}>
+          <Typography.Text code>{filePath || "Workspace file"}</Typography.Text>
+          <Tag>{kind === "text" ? languageLabel : kind === "image" ? mimeType ?? "Image" : "Binary"}</Tag>
+          {kind === "text" && line ? <Tag color="blue">Line {line}</Tag> : null}
+        </Space>
+      }
+      width={1100}
+      footer={null}
+      destroyOnClose
+      onCancel={onCancel}
+      styles={{ body: { paddingTop: 12 } }}
+    >
+      {loading ? (
+        <div style={{ paddingBlock: 40, textAlign: "center" }}>
+          <Spin size="large" />
+        </div>
+      ) : error ? (
+        <Alert type="error" showIcon message="Could not open workspace file" description={error} />
+      ) : kind === "image" ? (
+        <div
+          style={{
+            maxHeight: "70vh",
+            overflow: "auto",
+            border: `1px solid ${surfaceBorder}`,
+            borderRadius: 10,
+            background: surfaceBackground,
+            padding: 16,
+            textAlign: "center"
+          }}
+        >
+          {imageSrc ? (
+            <img
+              alt={filePath || "Workspace image"}
+              src={imageSrc}
+              style={{ maxWidth: "100%", maxHeight: "65vh", objectFit: "contain", borderRadius: 8 }}
+            />
+          ) : (
+            <Alert type="warning" showIcon message="Image preview unavailable" />
+          )}
+        </div>
+      ) : kind === "binary" ? (
+        <Alert
+          type="info"
+          showIcon
+          message="Binary file preview is not available"
+          description={sizeBytes > 0 ? `${filePath || "File"} is ${sizeBytes.toLocaleString()} bytes.` : undefined}
+        />
+      ) : (
+        <div
+          ref={contentRef}
+          style={{
+            maxHeight: "70vh",
+            overflow: "auto",
+            border: `1px solid ${surfaceBorder}`,
+            borderRadius: 10,
+            background: surfaceBackground
+          }}
+        >
+          <div
+            style={{
+              minWidth: "100%",
+              fontFamily: "SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace",
+              fontSize: 13,
+              lineHeight: 1.65
+            }}
+          >
+            {lines.map((lineText, index) => {
+              const lineNumber = index + 1;
+              const selected = lineNumber === line;
+              return (
+                <div
+                  key={`${lineNumber}-${lineText.length}`}
+                  data-line={lineNumber}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: `${gutterWidth}px minmax(0, 1fr)`,
+                    alignItems: "stretch",
+                    background: selected ? "rgba(22, 119, 255, 0.08)" : lineNumber % 2 === 0 ? alternateRowBackground : "transparent",
+                    borderInlineStart: selected ? "3px solid #1677ff" : "3px solid transparent"
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: "0 12px 0 8px",
+                      textAlign: "right",
+                      userSelect: "none",
+                      color: selected ? "#1677ff" : "#8c8c8c",
+                      borderRight: `1px solid ${gutterBorder}`,
+                      background: selected ? "rgba(22, 119, 255, 0.06)" : gutterBackground
+                    }}
+                  >
+                    {lineNumber}
+                  </div>
+                  <pre
+                    style={{
+                      margin: 0,
+                      padding: "0 16px",
+                      whiteSpace: "pre",
+                      overflow: "visible"
+                    }}
+                  >
+                    {renderHighlightedLine(lineText, language, tokenStyles)}
+                  </pre>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+````
+
 ## File: apps/web/public/logo.svg
 ````xml
 <svg width="404" height="577" viewBox="0 0 404 577" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -15865,293 +17203,6 @@ describe("SchedulerService.triggerAction", () => {
 });
 ````
 
-## File: apps/server/src/services/scheduler.ts
-````typescript
-import { type Task, type TaskAction, type TaskExecutionInput } from "@agentswarm/shared-types";
-import type { TaskStore } from "./task-store.js";
-import type { QueueEntry, TaskQueueStore } from "./task-queue-store.js";
-import type { SettingsStore } from "./settings-store.js";
-import { CancelledTaskError, SpawnerService } from "./spawner.js";
-
-const normalizeExecutionInput = (input?: TaskExecutionInput | string): TaskExecutionInput | undefined =>
-  typeof input === "string"
-    ? {
-        content: input
-      }
-    : input;
-
-const isExecutionQueued = (task: Pick<Task, "executionStatus">): boolean => task.executionStatus === "queued";
-const isExecutionActive = (task: Pick<Task, "executionStatus">): boolean =>
-  task.executionStatus === "preparing" || task.executionStatus === "running";
-const isExecutionBusy = (task: Pick<Task, "executionStatus">): boolean => isExecutionQueued(task) || isExecutionActive(task);
-
-export class SchedulerService {
-  private activeExecutionCount = 0;
-  private interval: NodeJS.Timeout | null = null;
-  private draining = false;
-
-  constructor(
-    private readonly taskStore: TaskStore,
-    private readonly taskQueueStore: TaskQueueStore,
-    private readonly settingsStore: SettingsStore,
-    private readonly spawner: SpawnerService
-  ) {}
-
-  async bootstrap(): Promise<void> {
-    await this.recoverInterruptedExecutions();
-    this.interval = setInterval(() => {
-      void this.drainQueue();
-    }, 1000);
-    await this.drainQueue();
-  }
-
-  stop(): void {
-    if (this.interval) {
-      clearInterval(this.interval);
-      this.interval = null;
-    }
-  }
-
-  async onTaskCreated(taskId: string): Promise<void> {
-    // Queue mode has been removed; new tasks are enqueued explicitly via triggerAction.
-    await this.drainQueue();
-  }
-
-  async onSettingsChanged(): Promise<void> {
-    await this.drainQueue();
-  }
-
-  async hasExecutionCapacity(): Promise<boolean> {
-    const settings = await this.settingsStore.getSettings();
-    return this.activeExecutionCount < settings.maxAgents;
-  }
-
-  async triggerAction(taskId: string, action: TaskAction, input?: TaskExecutionInput | string): Promise<boolean> {
-    const task = await this.taskStore.getTask(taskId);
-    if (!task) {
-      return false;
-    }
-
-    const allowParallelAsk = action === "ask" && task.executionStatus === "running" && (task.executionAction === "build" || task.executionAction === "ask");
-    if ((!allowParallelAsk && isExecutionBusy(task)) || task.status === "archived" || task.status === "draft") {
-      return false;
-    }
-
-    if (await this.taskStore.hasPendingChangeProposal(taskId)) {
-      return false;
-    }
-
-    if (await this.taskStore.getActiveInteractiveSession(taskId)) {
-      return false;
-    }
-
-    if (allowParallelAsk) {
-      const settings = await this.settingsStore.getSettings();
-      if (this.activeExecutionCount >= settings.maxAgents) {
-        return false;
-      }
-
-      this.activeExecutionCount += 1;
-      void this.executeTask({ taskId, reason: "manual", action, input: normalizeExecutionInput(input) }, false);
-      return true;
-    }
-
-    await this.taskStore.markQueuedForAction(taskId, action);
-    await this.taskQueueStore.replaceTask({
-      taskId,
-      reason: "manual",
-      action,
-      input: normalizeExecutionInput(input)
-    });
-    await this.taskStore.patchTask(taskId, {
-      enqueued: true
-    });
-    await this.drainQueue();
-
-    return true;
-  }
-
-  async triggerPostflight(taskId: string): Promise<boolean> {
-    const task = await this.taskStore.getTask(taskId);
-    if (!task || task.taskType !== "build") {
-      return false;
-    }
-
-    if (isExecutionBusy(task) || task.status === "archived" || task.status === "draft") {
-      return false;
-    }
-
-    if (await this.taskStore.hasPendingChangeProposal(taskId)) {
-      return false;
-    }
-
-    if (await this.taskStore.getActiveInteractiveSession(taskId)) {
-      return false;
-    }
-
-    const settings = await this.settingsStore.getSettings();
-    if (this.activeExecutionCount >= settings.maxAgents) {
-      return false;
-    }
-
-    this.activeExecutionCount += 1;
-    void this.executePostflight(taskId);
-    return true;
-  }
-
-  async cancelTask(taskId: string): Promise<boolean> {
-    const task = await this.taskStore.getTask(taskId);
-    if (!task) {
-      return false;
-    }
-
-    if (!isExecutionBusy(task)) {
-      return false;
-    }
-
-    const finishedAt = new Date().toISOString();
-
-    await this.taskStore.setExecutionState(taskId, "cancelled", {
-      finishedAt,
-      enqueued: false,
-      errorMessage: "Cancelled by user"
-    });
-    await this.taskQueueStore.removeTask(taskId);
-
-    if (isExecutionQueued(task)) {
-      await this.taskStore.appendLog(taskId, "Scheduler: queued task cancelled by user.");
-      await this.drainQueue();
-      return true;
-    }
-
-    await this.taskStore.appendLog(taskId, "Scheduler: cancellation requested by user.");
-    await this.spawner.cancelTask(taskId);
-    return true;
-  }
-
-  private async recoverInterruptedExecutions(): Promise<void> {
-    const tasks = await this.taskStore.listTasks({ ownerUserId: null, view: "all" });
-    const finishedAt = new Date().toISOString();
-    const recoveryMessage = "Server restarted before the previous run completed.";
-
-    for (const task of tasks) {
-      const runs = await this.taskStore.listRuns(task.id);
-      const staleRuns = runs.filter((run) => run.status === "running");
-      const shouldRecoverTask = staleRuns.length > 0 || isExecutionActive(task);
-
-      if (!shouldRecoverTask) {
-        continue;
-      }
-
-      for (const run of staleRuns) {
-        await this.taskStore.updateRun(run.id, {
-          status: "failed",
-          finishedAt,
-          errorMessage: recoveryMessage,
-          summary: null
-        });
-      }
-
-      await this.taskStore.setExecutionState(task.id, "failed", {
-        finishedAt,
-        enqueued: false,
-        errorMessage: recoveryMessage,
-        lastAction: staleRuns.at(-1)?.action ?? task.lastAction
-      });
-      await this.taskStore.appendLog(task.id, `Scheduler: recovered interrupted task after restart. ${recoveryMessage}`);
-    }
-  }
-
-  private async drainQueue(): Promise<void> {
-    if (this.draining) {
-      return;
-    }
-    this.draining = true;
-
-    try {
-      const settings = await this.settingsStore.getSettings();
-      while (this.activeExecutionCount < settings.maxAgents) {
-        const queueEntry = await this.taskQueueStore.dequeueTask();
-        if (!queueEntry) {
-          break;
-        }
-
-        const task = await this.taskStore.getTask(queueEntry.taskId);
-        if (!task) {
-          continue;
-        }
-
-        if (!isExecutionQueued(task)) {
-          continue;
-        }
-
-        await this.taskStore.patchTask(task.id, {
-          enqueued: false,
-          lastAction: queueEntry.action
-        });
-        this.activeExecutionCount += 1;
-
-        void this.executeTask(queueEntry, true);
-      }
-    } finally {
-      this.draining = false;
-    }
-  }
-
-  private async executeTask(queueEntry: QueueEntry, requireQueuedStatus: boolean): Promise<void> {
-    const taskId = queueEntry.taskId;
-    try {
-      const task = await this.taskStore.getTask(taskId);
-      if (!task) {
-        return;
-      }
-
-      if (requireQueuedStatus && !isExecutionQueued(task)) {
-        if (task.status === "archived") {
-          await this.taskStore.appendLog(taskId, "Scheduler: archived task skipped before execution.");
-        }
-        return;
-      }
-
-      await this.spawner.runTask(task, queueEntry.action, queueEntry.input);
-    } catch (error) {
-      const task = await this.taskStore.getTask(taskId);
-      if (error instanceof CancelledTaskError || task?.executionStatus === "cancelled") {
-        await this.taskStore.appendLog(taskId, "Spawner: task cancelled by user.");
-      } else {
-        const message = error instanceof Error ? error.message : "Unknown runtime error";
-        await this.taskStore.appendLog(taskId, `Spawner: task failed - ${message}`);
-      }
-    } finally {
-      this.activeExecutionCount = Math.max(0, this.activeExecutionCount - 1);
-      await this.drainQueue();
-    }
-  }
-
-  private async executePostflight(taskId: string): Promise<void> {
-    try {
-      const task = await this.taskStore.getTask(taskId);
-      if (!task || task.status === "archived") {
-        return;
-      }
-
-      await this.spawner.runTaskPostflight(task);
-    } catch (error) {
-      const task = await this.taskStore.getTask(taskId);
-      if (error instanceof CancelledTaskError || task?.executionStatus === "cancelled") {
-        await this.taskStore.appendLog(taskId, "Spawner: task cancelled by user.");
-      } else {
-        const message = error instanceof Error ? error.message : "Unknown runtime error";
-        await this.taskStore.appendLog(taskId, `Spawner: task failed - ${message}`);
-      }
-    } finally {
-      this.activeExecutionCount = Math.max(0, this.activeExecutionCount - 1);
-      await this.drainQueue();
-    }
-  }
-}
-````
-
 ## File: apps/server/src/services/sequence-resolution.ts
 ````typescript
 import type { Sequence, SnippetVariable } from "@agentswarm/shared-types";
@@ -17675,876 +18726,6 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
 }
 ````
 
-## File: apps/web/components/workspace-file-preview-modal.tsx
-````typescript
-"use client";
-
-import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
-import { Alert, Modal, Space, Spin, Tag, Typography, theme as antTheme } from "antd";
-import { isDarkAppTheme } from "../src/theme/antd-theme";
-import { getCodeTokenStyles } from "../src/theme/code-highlighting";
-import { useThemeMode } from "./theme-provider";
-export type { WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
-export { parseWorkspaceFileLink } from "../src/utils/workspace-file-links";
-
-export interface WorkspaceFilePreviewModalProps {
-  open: boolean;
-  loading: boolean;
-  filePath: string;
-  kind: "text" | "image" | "binary";
-  mimeType: string | null;
-  encoding: "utf8" | "base64";
-  content: string;
-  sizeBytes: number;
-  line: number | null;
-  error: string | null;
-  onCancel: () => void;
-}
-
-type HighlightTokenKind = "plain" | "comment" | "keyword" | "number" | "string";
-
-interface HighlightToken {
-  kind: HighlightTokenKind;
-  text: string;
-}
-
-interface LanguageConfig {
-  label: string;
-  lineCommentPrefixes: string[];
-  stringDelimiters: string[];
-  keywords: Set<string>;
-}
-
-const defaultLanguageConfig: LanguageConfig = {
-  label: "Text",
-  lineCommentPrefixes: [],
-  stringDelimiters: ['"', "'"],
-  keywords: new Set<string>()
-};
-
-const typeScriptKeywords = [
-  "as",
-  "async",
-  "await",
-  "break",
-  "case",
-  "catch",
-  "class",
-  "const",
-  "continue",
-  "default",
-  "delete",
-  "else",
-  "export",
-  "extends",
-  "false",
-  "finally",
-  "for",
-  "function",
-  "if",
-  "import",
-  "in",
-  "instanceof",
-  "interface",
-  "let",
-  "new",
-  "null",
-  "return",
-  "switch",
-  "throw",
-  "true",
-  "try",
-  "type",
-  "typeof",
-  "undefined",
-  "var",
-  "while",
-  "yield"
-] as const;
-
-const javaScriptKeywords = [
-  "async",
-  "await",
-  "break",
-  "case",
-  "catch",
-  "class",
-  "const",
-  "continue",
-  "default",
-  "delete",
-  "else",
-  "export",
-  "extends",
-  "false",
-  "finally",
-  "for",
-  "function",
-  "if",
-  "import",
-  "in",
-  "instanceof",
-  "let",
-  "new",
-  "null",
-  "return",
-  "switch",
-  "throw",
-  "true",
-  "try",
-  "typeof",
-  "undefined",
-  "var",
-  "while",
-  "yield"
-] as const;
-
-const languageConfigs: Record<string, LanguageConfig> = {
-  swift: {
-    label: "Swift",
-    lineCommentPrefixes: ["//"],
-    stringDelimiters: ['"', "'"],
-    keywords: new Set([
-      "actor",
-      "any",
-      "as",
-      "async",
-      "associatedtype",
-      "await",
-      "break",
-      "case",
-      "catch",
-      "class",
-      "continue",
-      "default",
-      "defer",
-      "deinit",
-      "do",
-      "else",
-      "enum",
-      "extension",
-      "false",
-      "fileprivate",
-      "for",
-      "func",
-      "guard",
-      "if",
-      "import",
-      "in",
-      "init",
-      "internal",
-      "is",
-      "let",
-      "nil",
-      "open",
-      "private",
-      "protocol",
-      "public",
-      "repeat",
-      "return",
-      "self",
-      "some",
-      "static",
-      "struct",
-      "subscript",
-      "super",
-      "switch",
-      "throw",
-      "throws",
-      "true",
-      "try",
-      "typealias",
-      "var",
-      "where",
-      "while"
-    ])
-  },
-  ts: {
-    label: "TypeScript",
-    lineCommentPrefixes: ["//"],
-    stringDelimiters: ['"', "'", "`"],
-    keywords: new Set(typeScriptKeywords)
-  },
-  tsx: {
-    label: "TSX",
-    lineCommentPrefixes: ["//"],
-    stringDelimiters: ['"', "'", "`"],
-    keywords: new Set(typeScriptKeywords)
-  },
-  js: {
-    label: "JavaScript",
-    lineCommentPrefixes: ["//"],
-    stringDelimiters: ['"', "'", "`"],
-    keywords: new Set(javaScriptKeywords)
-  },
-  jsx: {
-    label: "JSX",
-    lineCommentPrefixes: ["//"],
-    stringDelimiters: ['"', "'", "`"],
-    keywords: new Set(javaScriptKeywords)
-  },
-  json: {
-    label: "JSON",
-    lineCommentPrefixes: [],
-    stringDelimiters: ['"'],
-    keywords: new Set(["false", "null", "true"])
-  },
-  py: {
-    label: "Python",
-    lineCommentPrefixes: ["#"],
-    stringDelimiters: ['"', "'"],
-    keywords: new Set([
-      "and",
-      "as",
-      "async",
-      "await",
-      "break",
-      "class",
-      "continue",
-      "def",
-      "elif",
-      "else",
-      "False",
-      "finally",
-      "for",
-      "from",
-      "if",
-      "import",
-      "in",
-      "is",
-      "lambda",
-      "None",
-      "not",
-      "or",
-      "pass",
-      "raise",
-      "return",
-      "True",
-      "try",
-      "while",
-      "with",
-      "yield"
-    ])
-  },
-  rb: {
-    label: "Ruby",
-    lineCommentPrefixes: ["#"],
-    stringDelimiters: ['"', "'"],
-    keywords: new Set([
-      "begin",
-      "break",
-      "case",
-      "class",
-      "def",
-      "do",
-      "else",
-      "elsif",
-      "end",
-      "ensure",
-      "false",
-      "for",
-      "if",
-      "in",
-      "module",
-      "next",
-      "nil",
-      "redo",
-      "rescue",
-      "retry",
-      "return",
-      "self",
-      "super",
-      "then",
-      "true",
-      "unless",
-      "until",
-      "when",
-      "while",
-      "yield"
-    ])
-  },
-  java: {
-    label: "Java",
-    lineCommentPrefixes: ["//"],
-    stringDelimiters: ['"', "'"],
-    keywords: new Set([
-      "abstract",
-      "boolean",
-      "break",
-      "case",
-      "catch",
-      "class",
-      "continue",
-      "default",
-      "do",
-      "else",
-      "enum",
-      "extends",
-      "false",
-      "final",
-      "finally",
-      "for",
-      "if",
-      "implements",
-      "import",
-      "instanceof",
-      "interface",
-      "new",
-      "null",
-      "package",
-      "private",
-      "protected",
-      "public",
-      "return",
-      "static",
-      "super",
-      "switch",
-      "this",
-      "throw",
-      "throws",
-      "true",
-      "try",
-      "void",
-      "while"
-    ])
-  },
-  kt: {
-    label: "Kotlin",
-    lineCommentPrefixes: ["//"],
-    stringDelimiters: ['"', "'"],
-    keywords: new Set([
-      "as",
-      "break",
-      "class",
-      "companion",
-      "continue",
-      "data",
-      "do",
-      "else",
-      "false",
-      "for",
-      "fun",
-      "if",
-      "in",
-      "interface",
-      "is",
-      "null",
-      "object",
-      "override",
-      "package",
-      "private",
-      "protected",
-      "public",
-      "return",
-      "sealed",
-      "super",
-      "suspend",
-      "this",
-      "throw",
-      "true",
-      "try",
-      "typealias",
-      "val",
-      "var",
-      "when",
-      "while"
-    ])
-  },
-  go: {
-    label: "Go",
-    lineCommentPrefixes: ["//"],
-    stringDelimiters: ['"', "'", "`"],
-    keywords: new Set([
-      "break",
-      "case",
-      "chan",
-      "const",
-      "continue",
-      "default",
-      "defer",
-      "else",
-      "fallthrough",
-      "false",
-      "for",
-      "func",
-      "go",
-      "if",
-      "import",
-      "interface",
-      "map",
-      "package",
-      "range",
-      "return",
-      "select",
-      "struct",
-      "switch",
-      "true",
-      "type",
-      "var"
-    ])
-  },
-  rs: {
-    label: "Rust",
-    lineCommentPrefixes: ["//"],
-    stringDelimiters: ['"', "'"],
-    keywords: new Set([
-      "as",
-      "async",
-      "await",
-      "break",
-      "const",
-      "continue",
-      "crate",
-      "else",
-      "enum",
-      "extern",
-      "false",
-      "fn",
-      "for",
-      "if",
-      "impl",
-      "in",
-      "let",
-      "loop",
-      "match",
-      "mod",
-      "move",
-      "mut",
-      "pub",
-      "ref",
-      "return",
-      "self",
-      "static",
-      "struct",
-      "super",
-      "trait",
-      "true",
-      "type",
-      "unsafe",
-      "use",
-      "where",
-      "while"
-    ])
-  },
-  css: {
-    label: "CSS",
-    lineCommentPrefixes: [],
-    stringDelimiters: ['"', "'"],
-    keywords: new Set(["@import", "@media", "@supports", "important"])
-  },
-  scss: {
-    label: "SCSS",
-    lineCommentPrefixes: ["//"],
-    stringDelimiters: ['"', "'"],
-    keywords: new Set(["@if", "@else", "@each", "@for", "@include", "@mixin", "@use", "@forward"])
-  },
-  html: {
-    label: "HTML",
-    lineCommentPrefixes: ["<!--"],
-    stringDelimiters: ['"', "'"],
-    keywords: new Set(["doctype"])
-  },
-  xml: {
-    label: "XML",
-    lineCommentPrefixes: ["<!--"],
-    stringDelimiters: ['"', "'"],
-    keywords: new Set<string>()
-  },
-  yml: {
-    label: "YAML",
-    lineCommentPrefixes: ["#"],
-    stringDelimiters: ['"', "'"],
-    keywords: new Set(["false", "no", "null", "off", "on", "true", "yes"])
-  },
-  yaml: {
-    label: "YAML",
-    lineCommentPrefixes: ["#"],
-    stringDelimiters: ['"', "'"],
-    keywords: new Set(["false", "no", "null", "off", "on", "true", "yes"])
-  },
-  sh: {
-    label: "Shell",
-    lineCommentPrefixes: ["#"],
-    stringDelimiters: ['"', "'", "`"],
-    keywords: new Set([
-      "case",
-      "do",
-      "done",
-      "elif",
-      "else",
-      "esac",
-      "export",
-      "fi",
-      "for",
-      "function",
-      "if",
-      "in",
-      "local",
-      "readonly",
-      "return",
-      "then",
-      "until",
-      "while"
-    ])
-  },
-  bash: {
-    label: "Shell",
-    lineCommentPrefixes: ["#"],
-    stringDelimiters: ['"', "'", "`"],
-    keywords: new Set([
-      "case",
-      "do",
-      "done",
-      "elif",
-      "else",
-      "esac",
-      "export",
-      "fi",
-      "for",
-      "function",
-      "if",
-      "in",
-      "local",
-      "readonly",
-      "return",
-      "then",
-      "until",
-      "while"
-    ])
-  },
-  md: {
-    label: "Markdown",
-    lineCommentPrefixes: [],
-    stringDelimiters: ['"', "'"],
-    keywords: new Set<string>()
-  }
-};
-
-const languageByExtension: Array<[string, string]> = [
-  [".tsx", "tsx"],
-  [".ts", "ts"],
-  [".jsx", "jsx"],
-  [".js", "js"],
-  [".swift", "swift"],
-  [".json", "json"],
-  [".py", "py"],
-  [".rb", "rb"],
-  [".java", "java"],
-  [".kt", "kt"],
-  [".go", "go"],
-  [".rs", "rs"],
-  [".scss", "scss"],
-  [".css", "css"],
-  [".html", "html"],
-  [".xml", "xml"],
-  [".yaml", "yaml"],
-  [".yml", "yml"],
-  [".bash", "bash"],
-  [".sh", "sh"],
-  [".md", "md"]
-];
-
-export function detectCodeLanguage(filePath: string): string {
-  const normalized = filePath.trim().toLowerCase();
-  for (const [extension, language] of languageByExtension) {
-    if (normalized.endsWith(extension)) {
-      return language;
-    }
-  }
-  return "text";
-}
-
-export function getCodeLanguageLabel(language: string): string {
-  return (languageConfigs[language] ?? defaultLanguageConfig).label;
-}
-
-function isIdentifierStart(char: string): boolean {
-  return /[A-Za-z_$@]/.test(char);
-}
-
-function isIdentifierPart(char: string): boolean {
-  return /[A-Za-z0-9_$@]/.test(char);
-}
-
-function isNumberStart(line: string, index: number): boolean {
-  const char = line[index];
-  if (!char || !/[0-9]/.test(char)) {
-    return false;
-  }
-
-  const previous = index > 0 ? line[index - 1] : "";
-  return !previous || !/[A-Za-z0-9_]/.test(previous);
-}
-
-function parseStringToken(line: string, start: number, delimiter: string): { text: string; end: number } {
-  let end = start + 1;
-
-  while (end < line.length) {
-    const current = line[end];
-    if (current === "\\") {
-      end += 2;
-      continue;
-    }
-    if (current === delimiter) {
-      end += 1;
-      break;
-    }
-    end += 1;
-  }
-
-  return {
-    text: line.slice(start, Math.min(end, line.length)),
-    end: Math.min(end, line.length)
-  };
-}
-
-function compactHighlightTokens(tokens: HighlightToken[]): HighlightToken[] {
-  if (tokens.length === 0) {
-    return tokens;
-  }
-
-  const compacted: HighlightToken[] = [tokens[0]!];
-  for (let index = 1; index < tokens.length; index += 1) {
-    const previous = compacted[compacted.length - 1]!;
-    const current = tokens[index]!;
-    if (previous.kind === current.kind) {
-      previous.text += current.text;
-      continue;
-    }
-    compacted.push(current);
-  }
-  return compacted;
-}
-
-function tokenizeLine(line: string, language: string): HighlightToken[] {
-  const config = languageConfigs[language] ?? defaultLanguageConfig;
-  const tokens: HighlightToken[] = [];
-  let index = 0;
-
-  while (index < line.length) {
-    const commentPrefix = config.lineCommentPrefixes.find((prefix) => line.startsWith(prefix, index));
-    if (commentPrefix) {
-      tokens.push({ kind: "comment", text: line.slice(index) });
-      break;
-    }
-
-    const char = line[index]!;
-
-    if (config.stringDelimiters.includes(char)) {
-      const stringToken = parseStringToken(line, index, char);
-      tokens.push({ kind: "string", text: stringToken.text });
-      index = stringToken.end;
-      continue;
-    }
-
-    if (isNumberStart(line, index)) {
-      let end = index + 1;
-      while (end < line.length && /[0-9A-Fa-f_xob.]/.test(line[end]!)) {
-        end += 1;
-      }
-      tokens.push({ kind: "number", text: line.slice(index, end) });
-      index = end;
-      continue;
-    }
-
-    if (isIdentifierStart(char)) {
-      let end = index + 1;
-      while (end < line.length && isIdentifierPart(line[end]!)) {
-        end += 1;
-      }
-
-      const text = line.slice(index, end);
-      tokens.push({ kind: config.keywords.has(text) ? "keyword" : "plain", text });
-      index = end;
-      continue;
-    }
-
-    tokens.push({ kind: "plain", text: char });
-    index += 1;
-  }
-
-  return compactHighlightTokens(tokens);
-}
-
-export function renderHighlightedLine(
-  line: string,
-  language: string,
-  tokenStyles: Record<HighlightTokenKind, CSSProperties>
-): ReactNode {
-  const tokens = tokenizeLine(line, language);
-  if (tokens.length === 0) {
-    return " ";
-  }
-
-  return tokens.map((token, index) => (
-    <span key={`${token.kind}-${index}`} style={tokenStyles[token.kind]}>
-      {token.text}
-    </span>
-  ));
-}
-
-export function WorkspaceFilePreviewModal({
-  open,
-  loading,
-  filePath,
-  kind,
-  mimeType,
-  encoding,
-  content,
-  sizeBytes,
-  line,
-  error,
-  onCancel
-}: WorkspaceFilePreviewModalProps) {
-  const { token } = antTheme.useToken();
-  const { mode } = useThemeMode();
-  const darkTheme = isDarkAppTheme(mode);
-  const tokenStyles = useMemo(() => getCodeTokenStyles(token), [token]);
-  const language = useMemo(() => detectCodeLanguage(filePath), [filePath]);
-  const languageLabel = getCodeLanguageLabel(language);
-  const lines = useMemo(() => (kind === "text" && content.length > 0 ? content.split(/\r?\n/) : [""]), [content, kind]);
-  const imageSrc = useMemo(() => {
-    if (kind !== "image" || encoding !== "base64" || !mimeType || !content) {
-      return null;
-    }
-    return `data:${mimeType};base64,${content}`;
-  }, [content, encoding, kind, mimeType]);
-  const contentRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open || kind !== "text" || !line || !contentRef.current) {
-      return;
-    }
-
-    const target = contentRef.current.querySelector<HTMLElement>(`[data-line="${line}"]`);
-    target?.scrollIntoView({ block: "center" });
-  }, [content, kind, line, open]);
-
-  const gutterWidth = Math.max(56, String(lines.length || 1).length * 10 + 24);
-  const surfaceBorder = darkTheme ? "rgba(255, 255, 255, 0.08)" : "#d9e2db";
-  const surfaceBackground = darkTheme ? "rgba(255, 255, 255, 0.03)" : "#f6f8f6";
-  const gutterBorder = darkTheme ? "rgba(255, 255, 255, 0.08)" : "#e5ebe7";
-  const gutterBackground = darkTheme ? "rgba(255, 255, 255, 0.04)" : "rgba(0, 0, 0, 0.02)";
-  const alternateRowBackground = darkTheme ? "rgba(255, 255, 255, 0.02)" : "rgba(0, 0, 0, 0.015)";
-
-  return (
-    <Modal
-      open={open}
-      title={
-        <Space wrap size={8}>
-          <Typography.Text code>{filePath || "Workspace file"}</Typography.Text>
-          <Tag>{kind === "text" ? languageLabel : kind === "image" ? mimeType ?? "Image" : "Binary"}</Tag>
-          {kind === "text" && line ? <Tag color="blue">Line {line}</Tag> : null}
-        </Space>
-      }
-      width={1100}
-      footer={null}
-      destroyOnClose
-      onCancel={onCancel}
-      styles={{ body: { paddingTop: 12 } }}
-    >
-      {loading ? (
-        <div style={{ paddingBlock: 40, textAlign: "center" }}>
-          <Spin size="large" />
-        </div>
-      ) : error ? (
-        <Alert type="error" showIcon message="Could not open workspace file" description={error} />
-      ) : kind === "image" ? (
-        <div
-          style={{
-            maxHeight: "70vh",
-            overflow: "auto",
-            border: `1px solid ${surfaceBorder}`,
-            borderRadius: 10,
-            background: surfaceBackground,
-            padding: 16,
-            textAlign: "center"
-          }}
-        >
-          {imageSrc ? (
-            <img
-              alt={filePath || "Workspace image"}
-              src={imageSrc}
-              style={{ maxWidth: "100%", maxHeight: "65vh", objectFit: "contain", borderRadius: 8 }}
-            />
-          ) : (
-            <Alert type="warning" showIcon message="Image preview unavailable" />
-          )}
-        </div>
-      ) : kind === "binary" ? (
-        <Alert
-          type="info"
-          showIcon
-          message="Binary file preview is not available"
-          description={sizeBytes > 0 ? `${filePath || "File"} is ${sizeBytes.toLocaleString()} bytes.` : undefined}
-        />
-      ) : (
-        <div
-          ref={contentRef}
-          style={{
-            maxHeight: "70vh",
-            overflow: "auto",
-            border: `1px solid ${surfaceBorder}`,
-            borderRadius: 10,
-            background: surfaceBackground
-          }}
-        >
-          <div
-            style={{
-              minWidth: "100%",
-              fontFamily: "SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace",
-              fontSize: 13,
-              lineHeight: 1.65
-            }}
-          >
-            {lines.map((lineText, index) => {
-              const lineNumber = index + 1;
-              const selected = lineNumber === line;
-              return (
-                <div
-                  key={`${lineNumber}-${lineText.length}`}
-                  data-line={lineNumber}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: `${gutterWidth}px minmax(0, 1fr)`,
-                    alignItems: "stretch",
-                    background: selected ? "rgba(22, 119, 255, 0.08)" : lineNumber % 2 === 0 ? alternateRowBackground : "transparent",
-                    borderInlineStart: selected ? "3px solid #1677ff" : "3px solid transparent"
-                  }}
-                >
-                  <div
-                    style={{
-                      padding: "0 12px 0 8px",
-                      textAlign: "right",
-                      userSelect: "none",
-                      color: selected ? "#1677ff" : "#8c8c8c",
-                      borderRight: `1px solid ${gutterBorder}`,
-                      background: selected ? "rgba(22, 119, 255, 0.06)" : gutterBackground
-                    }}
-                  >
-                    {lineNumber}
-                  </div>
-                  <pre
-                    style={{
-                      margin: 0,
-                      padding: "0 16px",
-                      whiteSpace: "pre",
-                      overflow: "visible"
-                    }}
-                  >
-                    {renderHighlightedLine(lineText, language, tokenStyles)}
-                  </pre>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </Modal>
-  );
-}
-````
-
 ## File: apps/web/src/hooks/useSequences.ts
 ````typescript
 "use client";
@@ -18709,6 +18890,58 @@ export const useTaskSequenceRun = (taskId: string, enabled = true) => {
 
   return { sequenceRun, loading, refetch };
 };
+````
+
+## File: apps/web/src/theme/code-highlighting.ts
+````typescript
+import type { CSSProperties } from "react";
+import type { PrismTheme } from "prism-react-renderer";
+import { themes } from "prism-react-renderer";
+import type { GlobalToken } from "antd/es/theme/interface";
+import { isDarkAppTheme, type AppThemeMode } from "./antd-theme";
+
+type HighlightTokenKind = "plain" | "comment" | "keyword" | "number" | "string";
+
+type TokenStyleMap = Record<HighlightTokenKind, CSSProperties>;
+
+function createPrismThemeFromToken(baseTheme: PrismTheme, token: GlobalToken, darkMode: boolean): PrismTheme {
+  const keywordColor = darkMode ? token.colorPrimaryText : token.colorPrimary;
+  const stringColor = darkMode ? token.colorSuccessText : token.colorSuccess;
+  const commentColor = token.colorTextTertiary;
+  const numberColor = darkMode ? token.colorWarningText : token.colorWarning;
+
+  return {
+    ...baseTheme,
+    plain: {
+      ...(baseTheme.plain ?? {}),
+      color: token.colorText,
+      backgroundColor: token.colorBgContainer
+    },
+    styles: [
+      ...(baseTheme.styles ?? []),
+      { types: ["comment", "prolog", "doctype", "cdata"], style: { color: commentColor, fontStyle: "italic" } },
+      { types: ["keyword", "selector", "inserted"], style: { color: keywordColor, fontWeight: "600" } },
+      { types: ["string", "char", "attr-value"], style: { color: stringColor } },
+      { types: ["number", "boolean", "constant"], style: { color: numberColor } }
+    ]
+  };
+}
+
+export function getPrismTheme(mode: AppThemeMode, token: GlobalToken): PrismTheme {
+  const darkMode = isDarkAppTheme(mode);
+  const baseTheme = darkMode ? themes.vsDark : themes.github;
+  return createPrismThemeFromToken(baseTheme, token, darkMode);
+}
+
+export function getCodeTokenStyles(token: GlobalToken): TokenStyleMap {
+  return {
+    plain: { color: token.colorText },
+    comment: { color: token.colorTextTertiary, fontStyle: "italic" },
+    keyword: { color: token.colorPrimaryText, fontWeight: 600 },
+    number: { color: token.colorWarningText },
+    string: { color: token.colorSuccessText }
+  };
+}
 ````
 
 ## File: apps/web/src/utils/analytics.ts
@@ -22607,88 +22840,6 @@ export function buildGitTerminalDockerEnvEntries(options: {
 }
 ````
 
-## File: apps/server/src/lib/task-status.ts
-````typescript
-import { type TaskAction, type TaskStatus } from "@agentswarm/shared-types";
-
-export const resolveTaskReadyStatus = (hasPendingCheckpoint: boolean): TaskStatus =>
-  hasPendingCheckpoint ? "awaiting_review" : "open";
-
-export const reconcileTaskStatusWithPendingCheckpoint = (
-  status: TaskStatus,
-  hasPendingCheckpoint: boolean
-): TaskStatus => {
-  if (status === "draft" || status === "scheduled" || status === "archived") {
-    return status;
-  }
-
-  if (
-    status === "build_queued" ||
-    status === "preparing_workspace" ||
-    status === "building" ||
-    status === "ask_queued" ||
-    status === "asking" ||
-    status === "completed" ||
-    status === "answered" ||
-    status === "accepted" ||
-    status === "cancelled" ||
-    status === "failed" ||
-    (!hasPendingCheckpoint && status === "awaiting_review")
-  ) {
-    return "open";
-  }
-
-  return status;
-};
-
-export const normalizeTaskLifecycleStatus = (
-  status: string,
-  _fallbackAction: TaskAction,
-  hasPendingCheckpoint: boolean
-): TaskStatus => {
-  if (
-    status === "scheduled" ||
-    status === "draft" ||
-    status === "build_queued" ||
-    status === "preparing_workspace" ||
-    status === "building" ||
-    status === "ask_queued" ||
-    status === "asking" ||
-    status === "open" ||
-    status === "in_progress" ||
-    status === "in_review" ||
-    status === "awaiting_review" ||
-    status === "done" ||
-    status === "completed" ||
-    status === "answered" ||
-    status === "accepted" ||
-    status === "archived" ||
-    status === "cancelled" ||
-    status === "failed"
-  ) {
-    return reconcileTaskStatusWithPendingCheckpoint(status as TaskStatus, hasPendingCheckpoint);
-  }
-
-  if (status === "queued" || status.endsWith("_queued")) {
-    return resolveTaskReadyStatus(hasPendingCheckpoint);
-  }
-
-  if (status === "spawning" || status === "running" || status.endsWith("ing")) {
-    return resolveTaskReadyStatus(hasPendingCheckpoint);
-  }
-
-  if (status === "succeeded" || status.endsWith("ed")) {
-    return resolveTaskReadyStatus(hasPendingCheckpoint);
-  }
-
-  if (!status.includes("_")) {
-    return resolveTaskReadyStatus(hasPendingCheckpoint);
-  }
-
-  return resolveTaskReadyStatus(hasPendingCheckpoint);
-};
-````
-
 ## File: apps/server/src/services/github-import-service.ts
 ````typescript
 import type {
@@ -23302,6 +23453,293 @@ export async function executeTaskPromptMagic(input: {
   }
 
   return { prompt: generatedPrompt };
+}
+````
+
+## File: apps/server/src/services/scheduler.ts
+````typescript
+import { type Task, type TaskAction, type TaskExecutionInput } from "@agentswarm/shared-types";
+import type { TaskStore } from "./task-store.js";
+import type { QueueEntry, TaskQueueStore } from "./task-queue-store.js";
+import type { SettingsStore } from "./settings-store.js";
+import { CancelledTaskError, SpawnerService } from "./spawner.js";
+
+const normalizeExecutionInput = (input?: TaskExecutionInput | string): TaskExecutionInput | undefined =>
+  typeof input === "string"
+    ? {
+        content: input
+      }
+    : input;
+
+const isExecutionQueued = (task: Pick<Task, "executionStatus">): boolean => task.executionStatus === "queued";
+const isExecutionActive = (task: Pick<Task, "executionStatus">): boolean =>
+  task.executionStatus === "preparing" || task.executionStatus === "running";
+const isExecutionBusy = (task: Pick<Task, "executionStatus">): boolean => isExecutionQueued(task) || isExecutionActive(task);
+
+export class SchedulerService {
+  private activeExecutionCount = 0;
+  private interval: NodeJS.Timeout | null = null;
+  private draining = false;
+
+  constructor(
+    private readonly taskStore: TaskStore,
+    private readonly taskQueueStore: TaskQueueStore,
+    private readonly settingsStore: SettingsStore,
+    private readonly spawner: SpawnerService
+  ) {}
+
+  async bootstrap(): Promise<void> {
+    await this.recoverInterruptedExecutions();
+    this.interval = setInterval(() => {
+      void this.drainQueue();
+    }, 1000);
+    await this.drainQueue();
+  }
+
+  stop(): void {
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = null;
+    }
+  }
+
+  async onTaskCreated(taskId: string): Promise<void> {
+    // Queue mode has been removed; new tasks are enqueued explicitly via triggerAction.
+    await this.drainQueue();
+  }
+
+  async onSettingsChanged(): Promise<void> {
+    await this.drainQueue();
+  }
+
+  async hasExecutionCapacity(): Promise<boolean> {
+    const settings = await this.settingsStore.getSettings();
+    return this.activeExecutionCount < settings.maxAgents;
+  }
+
+  async triggerAction(taskId: string, action: TaskAction, input?: TaskExecutionInput | string): Promise<boolean> {
+    const task = await this.taskStore.getTask(taskId);
+    if (!task) {
+      return false;
+    }
+
+    const allowParallelAsk = action === "ask" && task.executionStatus === "running" && (task.executionAction === "build" || task.executionAction === "ask");
+    if ((!allowParallelAsk && isExecutionBusy(task)) || task.status === "archived" || task.status === "draft") {
+      return false;
+    }
+
+    if (await this.taskStore.hasPendingChangeProposal(taskId)) {
+      return false;
+    }
+
+    if (await this.taskStore.getActiveInteractiveSession(taskId)) {
+      return false;
+    }
+
+    if (allowParallelAsk) {
+      const settings = await this.settingsStore.getSettings();
+      if (this.activeExecutionCount >= settings.maxAgents) {
+        return false;
+      }
+
+      this.activeExecutionCount += 1;
+      void this.executeTask({ taskId, reason: "manual", action, input: normalizeExecutionInput(input) }, false);
+      return true;
+    }
+
+    await this.taskStore.markQueuedForAction(taskId, action);
+    await this.taskQueueStore.replaceTask({
+      taskId,
+      reason: "manual",
+      action,
+      input: normalizeExecutionInput(input)
+    });
+    await this.taskStore.patchTask(taskId, {
+      enqueued: true
+    });
+    await this.drainQueue();
+
+    return true;
+  }
+
+  async triggerPostflight(taskId: string): Promise<boolean> {
+    const task = await this.taskStore.getTask(taskId);
+    if (!task || task.taskType !== "build") {
+      return false;
+    }
+
+    if (isExecutionBusy(task) || task.status === "archived" || task.status === "draft") {
+      return false;
+    }
+
+    if (await this.taskStore.hasPendingChangeProposal(taskId)) {
+      return false;
+    }
+
+    if (await this.taskStore.getActiveInteractiveSession(taskId)) {
+      return false;
+    }
+
+    const settings = await this.settingsStore.getSettings();
+    if (this.activeExecutionCount >= settings.maxAgents) {
+      return false;
+    }
+
+    this.activeExecutionCount += 1;
+    void this.executePostflight(taskId);
+    return true;
+  }
+
+  async cancelTask(taskId: string): Promise<boolean> {
+    const task = await this.taskStore.getTask(taskId);
+    if (!task) {
+      return false;
+    }
+
+    if (!isExecutionBusy(task)) {
+      return false;
+    }
+
+    const finishedAt = new Date().toISOString();
+
+    await this.taskStore.setExecutionState(taskId, "cancelled", {
+      finishedAt,
+      enqueued: false,
+      errorMessage: "Cancelled by user"
+    });
+    await this.taskQueueStore.removeTask(taskId);
+
+    if (isExecutionQueued(task)) {
+      await this.taskStore.appendLog(taskId, "Scheduler: queued task cancelled by user.");
+      await this.drainQueue();
+      return true;
+    }
+
+    await this.taskStore.appendLog(taskId, "Scheduler: cancellation requested by user.");
+    await this.spawner.cancelTask(taskId);
+    return true;
+  }
+
+  private async recoverInterruptedExecutions(): Promise<void> {
+    const tasks = await this.taskStore.listTasks({ ownerUserId: null, view: "all" });
+    const finishedAt = new Date().toISOString();
+    const recoveryMessage = "Server restarted before the previous run completed.";
+
+    for (const task of tasks) {
+      const runs = await this.taskStore.listRuns(task.id);
+      const staleRuns = runs.filter((run) => run.status === "running");
+      const shouldRecoverTask = staleRuns.length > 0 || isExecutionActive(task);
+
+      if (!shouldRecoverTask) {
+        continue;
+      }
+
+      for (const run of staleRuns) {
+        await this.taskStore.updateRun(run.id, {
+          status: "failed",
+          finishedAt,
+          errorMessage: recoveryMessage,
+          summary: null
+        });
+      }
+
+      await this.taskStore.setExecutionState(task.id, "failed", {
+        finishedAt,
+        enqueued: false,
+        errorMessage: recoveryMessage,
+        lastAction: staleRuns.at(-1)?.action ?? task.lastAction
+      });
+      await this.taskStore.appendLog(task.id, `Scheduler: recovered interrupted task after restart. ${recoveryMessage}`);
+    }
+  }
+
+  private async drainQueue(): Promise<void> {
+    if (this.draining) {
+      return;
+    }
+    this.draining = true;
+
+    try {
+      const settings = await this.settingsStore.getSettings();
+      while (this.activeExecutionCount < settings.maxAgents) {
+        const queueEntry = await this.taskQueueStore.dequeueTask();
+        if (!queueEntry) {
+          break;
+        }
+
+        const task = await this.taskStore.getTask(queueEntry.taskId);
+        if (!task) {
+          continue;
+        }
+
+        if (!isExecutionQueued(task)) {
+          continue;
+        }
+
+        await this.taskStore.patchTask(task.id, {
+          enqueued: false,
+          lastAction: queueEntry.action
+        });
+        this.activeExecutionCount += 1;
+
+        void this.executeTask(queueEntry, true);
+      }
+    } finally {
+      this.draining = false;
+    }
+  }
+
+  private async executeTask(queueEntry: QueueEntry, requireQueuedStatus: boolean): Promise<void> {
+    const taskId = queueEntry.taskId;
+    try {
+      const task = await this.taskStore.getTask(taskId);
+      if (!task) {
+        return;
+      }
+
+      if (requireQueuedStatus && !isExecutionQueued(task)) {
+        if (task.status === "archived") {
+          await this.taskStore.appendLog(taskId, "Scheduler: archived task skipped before execution.");
+        }
+        return;
+      }
+
+      await this.spawner.runTask(task, queueEntry.action, queueEntry.input);
+    } catch (error) {
+      const task = await this.taskStore.getTask(taskId);
+      if (error instanceof CancelledTaskError || task?.executionStatus === "cancelled") {
+        await this.taskStore.appendLog(taskId, "Spawner: task cancelled by user.");
+      } else {
+        const message = error instanceof Error ? error.message : "Unknown runtime error";
+        await this.taskStore.appendLog(taskId, `Spawner: task failed - ${message}`);
+      }
+    } finally {
+      this.activeExecutionCount = Math.max(0, this.activeExecutionCount - 1);
+      await this.drainQueue();
+    }
+  }
+
+  private async executePostflight(taskId: string): Promise<void> {
+    try {
+      const task = await this.taskStore.getTask(taskId);
+      if (!task || task.status === "archived") {
+        return;
+      }
+
+      await this.spawner.runTaskPostflight(task);
+    } catch (error) {
+      const task = await this.taskStore.getTask(taskId);
+      if (error instanceof CancelledTaskError || task?.executionStatus === "cancelled") {
+        await this.taskStore.appendLog(taskId, "Spawner: task cancelled by user.");
+      } else {
+        const message = error instanceof Error ? error.message : "Unknown runtime error";
+        await this.taskStore.appendLog(taskId, `Spawner: task failed - ${message}`);
+      }
+    } finally {
+      this.activeExecutionCount = Math.max(0, this.activeExecutionCount - 1);
+      await this.drainQueue();
+    }
+  }
 }
 ````
 
@@ -24110,58 +24548,6 @@ export const useTasks = ({
 
   return { tasks, setTasks, loading };
 };
-````
-
-## File: apps/web/src/theme/code-highlighting.ts
-````typescript
-import type { CSSProperties } from "react";
-import type { PrismTheme } from "prism-react-renderer";
-import { themes } from "prism-react-renderer";
-import type { GlobalToken } from "antd/es/theme/interface";
-import { isDarkAppTheme, type AppThemeMode } from "./antd-theme";
-
-type HighlightTokenKind = "plain" | "comment" | "keyword" | "number" | "string";
-
-type TokenStyleMap = Record<HighlightTokenKind, CSSProperties>;
-
-function createPrismThemeFromToken(baseTheme: PrismTheme, token: GlobalToken, darkMode: boolean): PrismTheme {
-  const keywordColor = darkMode ? token.colorPrimaryText : token.colorPrimary;
-  const stringColor = darkMode ? token.colorSuccessText : token.colorSuccess;
-  const commentColor = token.colorTextTertiary;
-  const numberColor = darkMode ? token.colorWarningText : token.colorWarning;
-
-  return {
-    ...baseTheme,
-    plain: {
-      ...(baseTheme.plain ?? {}),
-      color: token.colorText,
-      backgroundColor: token.colorBgContainer
-    },
-    styles: [
-      ...(baseTheme.styles ?? []),
-      { types: ["comment", "prolog", "doctype", "cdata"], style: { color: commentColor, fontStyle: "italic" } },
-      { types: ["keyword", "selector", "inserted"], style: { color: keywordColor, fontWeight: "600" } },
-      { types: ["string", "char", "attr-value"], style: { color: stringColor } },
-      { types: ["number", "boolean", "constant"], style: { color: numberColor } }
-    ]
-  };
-}
-
-export function getPrismTheme(mode: AppThemeMode, token: GlobalToken): PrismTheme {
-  const darkMode = isDarkAppTheme(mode);
-  const baseTheme = darkMode ? themes.vsDark : themes.github;
-  return createPrismThemeFromToken(baseTheme, token, darkMode);
-}
-
-export function getCodeTokenStyles(token: GlobalToken): TokenStyleMap {
-  return {
-    plain: { color: token.colorText },
-    comment: { color: token.colorTextTertiary, fontStyle: "italic" },
-    keyword: { color: token.colorPrimaryText, fontWeight: 600 },
-    number: { color: token.colorWarningText },
-    string: { color: token.colorSuccessText }
-  };
-}
 ````
 
 ## File: docs/development/commands.md
@@ -25482,84 +25868,86 @@ describe("buildGitTerminalDockerEnvEntries", () => {
 });
 ````
 
-## File: apps/server/src/lib/task-status.test.ts
+## File: apps/server/src/lib/task-status.ts
 ````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import {
-  normalizeTaskLifecycleStatus,
-  reconcileTaskStatusWithPendingCheckpoint,
-  resolveTaskReadyStatus
-} from "./task-status.js";
+import { type TaskAction, type TaskStatus } from "@agentswarm/shared-types";
 
-describe("resolveTaskReadyStatus", () => {
-  it("returns open when no checkpoint is pending", () => {
-    assert.equal(resolveTaskReadyStatus(false), "open");
-  });
+export const resolveTaskReadyStatus = (hasPendingCheckpoint: boolean): TaskStatus =>
+  hasPendingCheckpoint ? "awaiting_review" : "open";
 
-  it("returns awaiting_review when a checkpoint is pending", () => {
-    assert.equal(resolveTaskReadyStatus(true), "awaiting_review");
-  });
-});
+export const reconcileTaskStatusWithPendingCheckpoint = (
+  status: TaskStatus,
+  hasPendingCheckpoint: boolean
+): TaskStatus => {
+  if (status === "draft" || status === "scheduled" || status === "archived") {
+    return status;
+  }
 
-describe("normalizeTaskLifecycleStatus", () => {
-  it("maps legacy successful statuses into the new ready states", () => {
-    assert.equal(normalizeTaskLifecycleStatus("completed", "build", true), "open");
-    assert.equal(normalizeTaskLifecycleStatus("answered", "ask", false), "open");
-    assert.equal(normalizeTaskLifecycleStatus("accepted", "build", false), "open");
-  });
+  if (
+    status === "build_queued" ||
+    status === "preparing_workspace" ||
+    status === "building" ||
+    status === "ask_queued" ||
+    status === "asking" ||
+    status === "completed" ||
+    status === "answered" ||
+    status === "accepted" ||
+    status === "cancelled" ||
+    status === "failed" ||
+    (!hasPendingCheckpoint && status === "awaiting_review")
+  ) {
+    return "open";
+  }
 
-  it("preserves explicit done state", () => {
-    assert.equal(normalizeTaskLifecycleStatus("done", "build", false), "done");
-  });
+  return status;
+};
 
-  it("preserves explicit in_review state", () => {
-    assert.equal(normalizeTaskLifecycleStatus("in_review", "build", false), "in_review");
-  });
+export const normalizeTaskLifecycleStatus = (
+  status: string,
+  _fallbackAction: TaskAction,
+  hasPendingCheckpoint: boolean
+): TaskStatus => {
+  if (
+    status === "scheduled" ||
+    status === "draft" ||
+    status === "build_queued" ||
+    status === "preparing_workspace" ||
+    status === "building" ||
+    status === "ask_queued" ||
+    status === "asking" ||
+    status === "open" ||
+    status === "in_progress" ||
+    status === "in_review" ||
+    status === "awaiting_review" ||
+    status === "done" ||
+    status === "completed" ||
+    status === "answered" ||
+    status === "accepted" ||
+    status === "archived" ||
+    status === "cancelled" ||
+    status === "failed"
+  ) {
+    return reconcileTaskStatusWithPendingCheckpoint(status as TaskStatus, hasPendingCheckpoint);
+  }
 
-  it("maps queued and active execution statuses back to open Kanban state", () => {
-    assert.equal(normalizeTaskLifecycleStatus("scheduled", "build", false), "scheduled");
-    assert.equal(normalizeTaskLifecycleStatus("build_queued", "build", false), "open");
-    assert.equal(normalizeTaskLifecycleStatus("asking", "ask", false), "open");
-  });
+  if (status === "queued" || status.endsWith("_queued")) {
+    return resolveTaskReadyStatus(hasPendingCheckpoint);
+  }
 
-  it("preserves draft state", () => {
-    assert.equal(normalizeTaskLifecycleStatus("draft", "build", false), "draft");
-  });
-});
+  if (status === "spawning" || status === "running" || status.endsWith("ing")) {
+    return resolveTaskReadyStatus(hasPendingCheckpoint);
+  }
 
-describe("reconcileTaskStatusWithPendingCheckpoint", () => {
-  it("does not move Kanban state when a checkpoint is pending", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("failed", true), "open");
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("open", true), "open");
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", true), "in_review");
-  });
+  if (status === "succeeded" || status.endsWith("ed")) {
+    return resolveTaskReadyStatus(hasPendingCheckpoint);
+  }
 
-  it("returns legacy-ready states to open when no checkpoint is pending", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("accepted", false), "open");
-  });
+  if (!status.includes("_")) {
+    return resolveTaskReadyStatus(hasPendingCheckpoint);
+  }
 
-  it("preserves explicit in_review and done states when no checkpoint is pending", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", false), "in_review");
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("done", false), "done");
-  });
-
-  it("returns awaiting_review to open when no checkpoint is pending", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("awaiting_review", false), "open");
-  });
-
-  it("keeps archived tasks unchanged", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("archived", true), "archived");
-  });
-
-  it("keeps scheduled tasks unchanged", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("scheduled", true), "scheduled");
-  });
-
-  it("keeps draft tasks unchanged", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("draft", true), "draft");
-  });
-});
+  return resolveTaskReadyStatus(hasPendingCheckpoint);
+};
 ````
 
 ## File: apps/server/src/routes/sequences.ts
@@ -25915,61 +26303,6 @@ export const registerSettingsRoutes = (
     const next = await deps.settingsStore.updateUserNotes(request.auth!.user.id, parsed.data.notes);
     return reply.send(next);
   });
-};
-````
-
-## File: apps/server/src/services/create-postgres-stores.ts
-````typescript
-import type { Pool } from "pg";
-import type { EventBus } from "../lib/events.js";
-import type { RedisClients } from "../lib/redis.js";
-import type { AppStores } from "./app-stores.js";
-import { PostgresCredentialStore } from "./credential-store.js";
-import { PostgresRepositoryStore } from "./repository-store.js";
-import { PostgresRoleStore } from "./role-store.js";
-import { RedisSessionStore } from "./session-store.js";
-import { PostgresSettingsStore } from "./settings-store.js";
-import { PostgresSnippetStore } from "./snippet-store.js";
-import { PostgresSequenceStore } from "./sequence-store.js";
-import { RedisTaskQueueStore } from "./task-queue-store.js";
-import { PostgresTaskStore } from "./task-store.js";
-import { PostgresUserStore } from "./user-store.js";
-import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
-import { RedisGitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
-
-export const createPostgresStores = (
-  pool: Pool,
-  redisClients: RedisClients,
-  eventBus: EventBus,
-  sessionTtlDays: number
-): AppStores => {
-  const taskStore = new PostgresTaskStore(pool, eventBus);
-  const taskQueueStore = new RedisTaskQueueStore(redisClients.command);
-  const githubOutboundQueueStore = new RedisGitHubOutboundQueueStore(redisClients.command);
-  const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
-  const snippetStore = new PostgresSnippetStore(pool, eventBus);
-  const sequenceStore = new PostgresSequenceStore(pool, eventBus);
-  const repositoryStore = new PostgresRepositoryStore(pool, eventBus);
-  const credentialStore = new PostgresCredentialStore(pool);
-  const roleStore = new PostgresRoleStore(pool);
-  const userStore = new PostgresUserStore(pool, roleStore, repositoryStore);
-  const sessionStore = new RedisSessionStore(redisClients.command, sessionTtlDays);
-  const settingsStore = new PostgresSettingsStore(pool, eventBus, credentialStore);
-
-  return {
-    taskStore,
-    taskQueueStore,
-    githubOutboundQueueStore,
-    webhookDeliveryStore,
-    snippetStore,
-    sequenceStore,
-    repositoryStore,
-    credentialStore,
-    roleStore,
-    userStore,
-    sessionStore,
-    settingsStore
-  };
 };
 ````
 
@@ -28114,35 +28447,139 @@ export async function orchestrateTaskActionStart(
 }
 ````
 
-## File: apps/server/src/services/app-stores.ts
+## File: apps/server/src/lib/task-status.test.ts
 ````typescript
-import type { CredentialStore } from "./credential-store.js";
-import type { RepositoryStore } from "./repository-store.js";
-import type { RoleStore } from "./role-store.js";
-import type { SessionStore } from "./session-store.js";
-import type { SettingsStore } from "./settings-store.js";
-import type { SnippetStore } from "./snippet-store.js";
-import type { SequenceStore } from "./sequence-store.js";
-import type { TaskQueueStore } from "./task-queue-store.js";
-import type { TaskStore } from "./task-store.js";
-import type { UserStore } from "./user-store.js";
-import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
-import type { GitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import {
+  normalizeTaskLifecycleStatus,
+  reconcileTaskStatusWithPendingCheckpoint,
+  resolveTaskReadyStatus
+} from "./task-status.js";
 
-export interface AppStores {
-  taskStore: TaskStore;
-  taskQueueStore: TaskQueueStore;
-  githubOutboundQueueStore: GitHubOutboundQueueStore;
-  webhookDeliveryStore: WebhookDeliveryStore;
-  snippetStore: SnippetStore;
-  sequenceStore: SequenceStore;
-  repositoryStore: RepositoryStore;
-  credentialStore: CredentialStore;
-  roleStore: RoleStore;
-  userStore: UserStore;
-  sessionStore: SessionStore;
-  settingsStore: SettingsStore;
-}
+describe("resolveTaskReadyStatus", () => {
+  it("returns open when no checkpoint is pending", () => {
+    assert.equal(resolveTaskReadyStatus(false), "open");
+  });
+
+  it("returns awaiting_review when a checkpoint is pending", () => {
+    assert.equal(resolveTaskReadyStatus(true), "awaiting_review");
+  });
+});
+
+describe("normalizeTaskLifecycleStatus", () => {
+  it("maps legacy successful statuses into the new ready states", () => {
+    assert.equal(normalizeTaskLifecycleStatus("completed", "build", true), "open");
+    assert.equal(normalizeTaskLifecycleStatus("answered", "ask", false), "open");
+    assert.equal(normalizeTaskLifecycleStatus("accepted", "build", false), "open");
+  });
+
+  it("preserves explicit done state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("done", "build", false), "done");
+  });
+
+  it("preserves explicit in_review state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("in_review", "build", false), "in_review");
+  });
+
+  it("maps queued and active execution statuses back to open Kanban state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("scheduled", "build", false), "scheduled");
+    assert.equal(normalizeTaskLifecycleStatus("build_queued", "build", false), "open");
+    assert.equal(normalizeTaskLifecycleStatus("asking", "ask", false), "open");
+  });
+
+  it("preserves draft state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("draft", "build", false), "draft");
+  });
+});
+
+describe("reconcileTaskStatusWithPendingCheckpoint", () => {
+  it("does not move Kanban state when a checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("failed", true), "open");
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("open", true), "open");
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", true), "in_review");
+  });
+
+  it("returns legacy-ready states to open when no checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("accepted", false), "open");
+  });
+
+  it("preserves explicit in_review and done states when no checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", false), "in_review");
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("done", false), "done");
+  });
+
+  it("returns awaiting_review to open when no checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("awaiting_review", false), "open");
+  });
+
+  it("keeps archived tasks unchanged", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("archived", true), "archived");
+  });
+
+  it("keeps scheduled tasks unchanged", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("scheduled", true), "scheduled");
+  });
+
+  it("keeps draft tasks unchanged", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("draft", true), "draft");
+  });
+});
+````
+
+## File: apps/server/src/services/create-postgres-stores.ts
+````typescript
+import type { Pool } from "pg";
+import type { EventBus } from "../lib/events.js";
+import type { RedisClients } from "../lib/redis.js";
+import type { AppStores } from "./app-stores.js";
+import { PostgresCredentialStore } from "./credential-store.js";
+import { PostgresRepositoryStore } from "./repository-store.js";
+import { PostgresRoleStore } from "./role-store.js";
+import { RedisSessionStore } from "./session-store.js";
+import { PostgresSettingsStore } from "./settings-store.js";
+import { PostgresSnippetStore } from "./snippet-store.js";
+import { PostgresSequenceStore } from "./sequence-store.js";
+import { RedisTaskQueueStore } from "./task-queue-store.js";
+import { PostgresTaskStore } from "./task-store.js";
+import { PostgresUserStore } from "./user-store.js";
+import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
+import { RedisGitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
+
+export const createPostgresStores = (
+  pool: Pool,
+  redisClients: RedisClients,
+  eventBus: EventBus,
+  sessionTtlDays: number
+): AppStores => {
+  const taskStore = new PostgresTaskStore(pool, eventBus);
+  const taskQueueStore = new RedisTaskQueueStore(redisClients.command);
+  const githubOutboundQueueStore = new RedisGitHubOutboundQueueStore(redisClients.command);
+  const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
+  const snippetStore = new PostgresSnippetStore(pool, eventBus);
+  const sequenceStore = new PostgresSequenceStore(pool, eventBus);
+  const repositoryStore = new PostgresRepositoryStore(pool, eventBus);
+  const credentialStore = new PostgresCredentialStore(pool);
+  const roleStore = new PostgresRoleStore(pool);
+  const userStore = new PostgresUserStore(pool, roleStore, repositoryStore);
+  const sessionStore = new RedisSessionStore(redisClients.command, sessionTtlDays);
+  const settingsStore = new PostgresSettingsStore(pool, eventBus, credentialStore);
+
+  return {
+    taskStore,
+    taskQueueStore,
+    githubOutboundQueueStore,
+    webhookDeliveryStore,
+    snippetStore,
+    sequenceStore,
+    repositoryStore,
+    credentialStore,
+    roleStore,
+    userStore,
+    sessionStore,
+    settingsStore
+  };
+};
 ````
 
 ## File: apps/server/src/services/sequence-store.ts
@@ -28796,262 +29233,6 @@ export class PostgresSequenceStore implements SequenceStore {
     return next;
   }
 }
-````
-
-## File: apps/server/src/services/task-store.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import type { CreateTaskInput, Repository } from "@agentswarm/shared-types";
-import { RedisTaskStore } from "./task-store.js";
-
-class FakeRedis {
-  private readonly kv = new Map<string, string>();
-  private readonly lists = new Map<string, string[]>();
-  private readonly sets = new Map<string, Set<string>>();
-
-  private getList(key: string): string[] {
-    let current = this.lists.get(key);
-    if (!current) {
-      current = [];
-      this.lists.set(key, current);
-    }
-    return current;
-  }
-
-  private getSet(key: string): Set<string> {
-    let current = this.sets.get(key);
-    if (!current) {
-      current = new Set<string>();
-      this.sets.set(key, current);
-    }
-    return current;
-  }
-
-  private normalizeIndex(length: number, index: number): number {
-    return index < 0 ? Math.max(length + index, 0) : Math.min(index, length);
-  }
-
-  async set(key: string, value: string): Promise<"OK"> {
-    this.kv.set(key, value);
-    return "OK";
-  }
-
-  async get(key: string): Promise<string | null> {
-    return this.kv.get(key) ?? null;
-  }
-
-  async lrange(key: string, start: number, stop: number): Promise<string[]> {
-    const list = this.getList(key);
-    const normalizedStart = this.normalizeIndex(list.length, start);
-    const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
-    if (normalizedStop < normalizedStart) {
-      return [];
-    }
-    return list.slice(normalizedStart, normalizedStop + 1);
-  }
-
-  async rpush(key: string, ...values: string[]): Promise<number> {
-    const list = this.getList(key);
-    list.push(...values);
-    return list.length;
-  }
-
-  async ltrim(key: string, start: number, stop: number): Promise<"OK"> {
-    const list = this.getList(key);
-    const normalizedStart = this.normalizeIndex(list.length, start);
-    const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
-    const next = normalizedStop < normalizedStart ? [] : list.slice(normalizedStart, normalizedStop + 1);
-    this.lists.set(key, next);
-    return "OK";
-  }
-
-  async sadd(key: string, ...members: string[]): Promise<number> {
-    const set = this.getSet(key);
-    let added = 0;
-    for (const member of members) {
-      if (!set.has(member)) {
-        set.add(member);
-        added += 1;
-      }
-    }
-    return added;
-  }
-
-  async smembers(key: string): Promise<string[]> {
-    return [...this.getSet(key)];
-  }
-
-  async del(...keys: string[]): Promise<number> {
-    let deleted = 0;
-    for (const key of keys) {
-      deleted += Number(this.kv.delete(key));
-      deleted += Number(this.lists.delete(key));
-      deleted += Number(this.sets.delete(key));
-    }
-    return deleted;
-  }
-
-  multi(): {
-    set: (key: string, value: string) => unknown;
-    rpush: (key: string, ...values: string[]) => unknown;
-    ltrim: (key: string, start: number, stop: number) => unknown;
-    sadd: (key: string, ...members: string[]) => unknown;
-    del: (...keys: string[]) => unknown;
-    exec: () => Promise<unknown[]>;
-  } {
-    const operations: Array<() => void> = [];
-    const chain = {
-      set: (key: string, value: string) => {
-        operations.push(() => {
-          this.kv.set(key, value);
-        });
-        return chain;
-      },
-      rpush: (key: string, ...values: string[]) => {
-        operations.push(() => {
-          this.getList(key).push(...values);
-        });
-        return chain;
-      },
-      ltrim: (key: string, start: number, stop: number) => {
-        operations.push(() => {
-          const list = this.getList(key);
-          const normalizedStart = this.normalizeIndex(list.length, start);
-          const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
-          this.lists.set(key, normalizedStop < normalizedStart ? [] : list.slice(normalizedStart, normalizedStop + 1));
-        });
-        return chain;
-      },
-      sadd: (key: string, ...members: string[]) => {
-        operations.push(() => {
-          const set = this.getSet(key);
-          for (const member of members) {
-            set.add(member);
-          }
-        });
-        return chain;
-      },
-      del: (...keys: string[]) => {
-        operations.push(() => {
-          for (const key of keys) {
-            this.kv.delete(key);
-            this.lists.delete(key);
-            this.sets.delete(key);
-          }
-        });
-        return chain;
-      },
-      exec: async () => {
-        for (const operation of operations) {
-          operation();
-        }
-        return [] as unknown[];
-      }
-    };
-    return chain;
-  }
-
-  pipeline() {
-    return this.multi();
-  }
-}
-
-const repository: Repository = {
-  id: "repo-1",
-  name: "Repo",
-  url: "https://github.com/example/repo.git",
-  defaultBranch: "main",
-  envVars: [],
-  webhookUrl: null,
-  webhookEnabled: false,
-  webhookSecretConfigured: false,
-  webhookLastAttemptAt: null,
-  webhookLastStatus: null,
-  webhookLastError: null,
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:00.000Z"
-};
-
-const createTaskInput: CreateTaskInput = {
-  title: "Persist context",
-  repoId: repository.id,
-  prompt: "Initial prompt",
-  taskType: "build"
-};
-
-describe("TaskStore.appendMessage", () => {
-  it("persists user messages", async () => {
-    const redis = new FakeRedis();
-    const publishedEvents: unknown[] = [];
-    const taskStore = new RedisTaskStore(redis as never, {
-      publish: async (event: unknown) => {
-        publishedEvents.push(event);
-      }
-    } as never);
-    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
-    await taskStore.appendMessage(task.id, {
-      role: "user",
-      action: "ask",
-      content: "What changed?"
-    });
-
-    const messages = await taskStore.listMessages(task.id);
-    assert.equal(messages.length, 2);
-    assert.equal(messages[1]?.content, "What changed?");
-    assert.equal(messages[1]?.action, "ask");
-    assert.equal(publishedEvents.length, 3);
-  });
-});
-
-describe("TaskStore.createTask", () => {
-  it("creates new build tasks in the build queue", async () => {
-    const redis = new FakeRedis();
-    const taskStore = new RedisTaskStore(redis as never, {
-      publish: async () => {}
-    } as never);
-    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
-
-    assert.equal(task.status, "open");
-    assert.equal(task.executionStatus, "queued");
-    assert.equal(task.executionAction, "build");
-    assert.equal(task.startedAt, null);
-    assert.equal(task.deadline, null);
-  });
-
-  it("creates draft tasks without queueing execution", async () => {
-    const redis = new FakeRedis();
-    const taskStore = new RedisTaskStore(redis as never, {
-      publish: async () => {}
-    } as never);
-    const task = await taskStore.createTask({ ...createTaskInput, draft: true }, repository, "user-1");
-
-    assert.equal(task.status, "draft");
-    assert.equal(task.workflowStatus, "backlog");
-    assert.equal(task.executionStatus, "idle");
-    assert.equal(task.executionAction, null);
-    assert.equal(task.startedAt, null);
-    assert.equal(task.finishedAt, null);
-    assert.deepEqual(await taskStore.listMessages(task.id), []);
-  });
-
-  it("normalizes task deadlines", async () => {
-    const redis = new FakeRedis();
-    const taskStore = new RedisTaskStore(redis as never, {
-      publish: async () => {}
-    } as never);
-    const task = await taskStore.createTask(
-      {
-        ...createTaskInput,
-        deadline: "2026-06-15T10:30:00+02:00"
-      },
-      repository,
-      "user-1"
-    );
-
-    assert.equal(task.deadline, "2026-06-15T08:30:00.000Z");
-  });
-});
 ````
 
 ## File: apps/server/src/services/webhook-delivery-service.test.ts
@@ -31031,120 +31212,6 @@ export function SnippetsPage() {
 }
 ````
 
-## File: apps/web/components/task-create-page.tsx
-````typescript
-"use client";
-
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import type { TaskSourceType, TaskType } from "@agentswarm/shared-types";
-import { Button, Flex, Form, Space, Typography, message } from "antd";
-import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
-import { trackEvent } from "../src/utils/analytics";
-import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
-import { useAuth } from "./auth-provider";
-import {
-  TaskDefinitionFields,
-  type TaskDefinitionFormValues,
-  buildTaskDefinitionInput,
-  getTaskDefinitionInitialValues
-} from "./task-definition-fields";
-
-export function TaskCreatePage() {
-  const router = useRouter();
-  const { can } = useAuth();
-  const [form] = Form.useForm<TaskDefinitionFormValues>();
-  const [submitting, setSubmitting] = useState(false);
-  const [savingDraft, setSavingDraft] = useState(false);
-  const [messageApi, contextHolder] = message.useMessage();
-  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
-  const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
-  const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
-  const isIssueSource = selectedSourceType === "issue";
-  const isPullRequestSource = selectedSourceType === "pull_request";
-  const canCreateAnyTaskMode = can("task:build") || can("task:ask");
-
-  const pageTitle =
-    selectedSourceType === "issue"
-      ? "New Task From Issue"
-      : selectedSourceType === "pull_request"
-        ? "New Task From Pull Request"
-        : selectedTaskType === "ask"
-            ? "New Ask Task"
-            : "New Build Task";
-
-  const handleSubmit = async (values: TaskDefinitionFormValues) => {
-    setSubmitting(true);
-    try {
-      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
-      const definition = buildTaskDefinitionInput(values, encodedAttachments);
-      trackEvent("task_create_submitted", { source: definition.sourceType });
-      const task = await createTaskFromDefinition(definition);
-
-      messageApi.success(startMessageForDefinition(definition));
-      setPromptImageFiles([]);
-      router.push(`/tasks/${task.id}`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to create task");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleSaveDraft = async () => {
-    const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
-    setSavingDraft(true);
-    try {
-      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
-      const definition = buildTaskDefinitionInput(values, encodedAttachments);
-      const draft = await createTaskFromDefinition(definition, { draft: true });
-      messageApi.success("Draft saved");
-      router.push(`/tasks/${draft.id}`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to save draft");
-    } finally {
-      setSavingDraft(false);
-    }
-  };
-
-  return (
-    <>
-      {contextHolder}
-      <Form
-        form={form}
-        layout="vertical"
-        initialValues={getTaskDefinitionInitialValues()}
-        onFinish={handleSubmit}
-      >
-        <Flex vertical gap={16}>
-          <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-            <Flex vertical gap={0}>
-              <Typography.Title level={2} style={{ margin: 0 }}>
-                {pageTitle}
-              </Typography.Title>
-              <Typography.Text type="secondary">
-                Configure the task on the left and write the prompt on the right.
-              </Typography.Text>
-            </Flex>
-            <Space>
-              <Button onClick={() => router.push("/tasks")}>Cancel</Button>
-              <Button loading={savingDraft} onClick={() => void handleSaveDraft()}>
-                Save Draft
-              </Button>
-              <Button type="primary" htmlType="submit" loading={submitting} disabled={!canCreateAnyTaskMode}>
-                {isIssueSource ? "Create Task From Issue" : isPullRequestSource ? "Create Task From Pull Request" : "Create Task"}
-              </Button>
-            </Space>
-          </Flex>
-
-          <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
-        </Flex>
-      </Form>
-    </>
-  );
-}
-````
-
 ## File: apps/web/src/utils/task-history.ts
 ````typescript
 import {
@@ -32672,6 +32739,37 @@ export const registerGitHubWebhookRoutes = (
 };
 ````
 
+## File: apps/server/src/services/app-stores.ts
+````typescript
+import type { CredentialStore } from "./credential-store.js";
+import type { RepositoryStore } from "./repository-store.js";
+import type { RoleStore } from "./role-store.js";
+import type { SessionStore } from "./session-store.js";
+import type { SettingsStore } from "./settings-store.js";
+import type { SnippetStore } from "./snippet-store.js";
+import type { SequenceStore } from "./sequence-store.js";
+import type { TaskQueueStore } from "./task-queue-store.js";
+import type { TaskStore } from "./task-store.js";
+import type { UserStore } from "./user-store.js";
+import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
+import type { GitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
+
+export interface AppStores {
+  taskStore: TaskStore;
+  taskQueueStore: TaskQueueStore;
+  githubOutboundQueueStore: GitHubOutboundQueueStore;
+  webhookDeliveryStore: WebhookDeliveryStore;
+  snippetStore: SnippetStore;
+  sequenceStore: SequenceStore;
+  repositoryStore: RepositoryStore;
+  credentialStore: CredentialStore;
+  roleStore: RoleStore;
+  userStore: UserStore;
+  sessionStore: SessionStore;
+  settingsStore: SettingsStore;
+}
+````
+
 ## File: apps/server/src/services/sequence-execution-service.test.ts
 ````typescript
 import assert from "node:assert/strict";
@@ -33131,6 +33229,262 @@ describe("SequenceExecutionService", () => {
     assert.equal(applyCount, 1);
     assert.equal(triggerActionCount, 1);
     assert.ok(logs.some((line) => line.includes("auto-applied checkpoint before step 2/2")));
+  });
+});
+````
+
+## File: apps/server/src/services/task-store.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import type { CreateTaskInput, Repository } from "@agentswarm/shared-types";
+import { RedisTaskStore } from "./task-store.js";
+
+class FakeRedis {
+  private readonly kv = new Map<string, string>();
+  private readonly lists = new Map<string, string[]>();
+  private readonly sets = new Map<string, Set<string>>();
+
+  private getList(key: string): string[] {
+    let current = this.lists.get(key);
+    if (!current) {
+      current = [];
+      this.lists.set(key, current);
+    }
+    return current;
+  }
+
+  private getSet(key: string): Set<string> {
+    let current = this.sets.get(key);
+    if (!current) {
+      current = new Set<string>();
+      this.sets.set(key, current);
+    }
+    return current;
+  }
+
+  private normalizeIndex(length: number, index: number): number {
+    return index < 0 ? Math.max(length + index, 0) : Math.min(index, length);
+  }
+
+  async set(key: string, value: string): Promise<"OK"> {
+    this.kv.set(key, value);
+    return "OK";
+  }
+
+  async get(key: string): Promise<string | null> {
+    return this.kv.get(key) ?? null;
+  }
+
+  async lrange(key: string, start: number, stop: number): Promise<string[]> {
+    const list = this.getList(key);
+    const normalizedStart = this.normalizeIndex(list.length, start);
+    const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
+    if (normalizedStop < normalizedStart) {
+      return [];
+    }
+    return list.slice(normalizedStart, normalizedStop + 1);
+  }
+
+  async rpush(key: string, ...values: string[]): Promise<number> {
+    const list = this.getList(key);
+    list.push(...values);
+    return list.length;
+  }
+
+  async ltrim(key: string, start: number, stop: number): Promise<"OK"> {
+    const list = this.getList(key);
+    const normalizedStart = this.normalizeIndex(list.length, start);
+    const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
+    const next = normalizedStop < normalizedStart ? [] : list.slice(normalizedStart, normalizedStop + 1);
+    this.lists.set(key, next);
+    return "OK";
+  }
+
+  async sadd(key: string, ...members: string[]): Promise<number> {
+    const set = this.getSet(key);
+    let added = 0;
+    for (const member of members) {
+      if (!set.has(member)) {
+        set.add(member);
+        added += 1;
+      }
+    }
+    return added;
+  }
+
+  async smembers(key: string): Promise<string[]> {
+    return [...this.getSet(key)];
+  }
+
+  async del(...keys: string[]): Promise<number> {
+    let deleted = 0;
+    for (const key of keys) {
+      deleted += Number(this.kv.delete(key));
+      deleted += Number(this.lists.delete(key));
+      deleted += Number(this.sets.delete(key));
+    }
+    return deleted;
+  }
+
+  multi(): {
+    set: (key: string, value: string) => unknown;
+    rpush: (key: string, ...values: string[]) => unknown;
+    ltrim: (key: string, start: number, stop: number) => unknown;
+    sadd: (key: string, ...members: string[]) => unknown;
+    del: (...keys: string[]) => unknown;
+    exec: () => Promise<unknown[]>;
+  } {
+    const operations: Array<() => void> = [];
+    const chain = {
+      set: (key: string, value: string) => {
+        operations.push(() => {
+          this.kv.set(key, value);
+        });
+        return chain;
+      },
+      rpush: (key: string, ...values: string[]) => {
+        operations.push(() => {
+          this.getList(key).push(...values);
+        });
+        return chain;
+      },
+      ltrim: (key: string, start: number, stop: number) => {
+        operations.push(() => {
+          const list = this.getList(key);
+          const normalizedStart = this.normalizeIndex(list.length, start);
+          const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
+          this.lists.set(key, normalizedStop < normalizedStart ? [] : list.slice(normalizedStart, normalizedStop + 1));
+        });
+        return chain;
+      },
+      sadd: (key: string, ...members: string[]) => {
+        operations.push(() => {
+          const set = this.getSet(key);
+          for (const member of members) {
+            set.add(member);
+          }
+        });
+        return chain;
+      },
+      del: (...keys: string[]) => {
+        operations.push(() => {
+          for (const key of keys) {
+            this.kv.delete(key);
+            this.lists.delete(key);
+            this.sets.delete(key);
+          }
+        });
+        return chain;
+      },
+      exec: async () => {
+        for (const operation of operations) {
+          operation();
+        }
+        return [] as unknown[];
+      }
+    };
+    return chain;
+  }
+
+  pipeline() {
+    return this.multi();
+  }
+}
+
+const repository: Repository = {
+  id: "repo-1",
+  name: "Repo",
+  url: "https://github.com/example/repo.git",
+  defaultBranch: "main",
+  envVars: [],
+  webhookUrl: null,
+  webhookEnabled: false,
+  webhookSecretConfigured: false,
+  webhookLastAttemptAt: null,
+  webhookLastStatus: null,
+  webhookLastError: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z"
+};
+
+const createTaskInput: CreateTaskInput = {
+  title: "Persist context",
+  repoId: repository.id,
+  prompt: "Initial prompt",
+  taskType: "build"
+};
+
+describe("TaskStore.appendMessage", () => {
+  it("persists user messages", async () => {
+    const redis = new FakeRedis();
+    const publishedEvents: unknown[] = [];
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async (event: unknown) => {
+        publishedEvents.push(event);
+      }
+    } as never);
+    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
+    await taskStore.appendMessage(task.id, {
+      role: "user",
+      action: "ask",
+      content: "What changed?"
+    });
+
+    const messages = await taskStore.listMessages(task.id);
+    assert.equal(messages.length, 2);
+    assert.equal(messages[1]?.content, "What changed?");
+    assert.equal(messages[1]?.action, "ask");
+    assert.equal(publishedEvents.length, 3);
+  });
+});
+
+describe("TaskStore.createTask", () => {
+  it("creates new build tasks in the build queue", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
+
+    assert.equal(task.status, "open");
+    assert.equal(task.executionStatus, "queued");
+    assert.equal(task.executionAction, "build");
+    assert.equal(task.startedAt, null);
+    assert.equal(task.deadline, null);
+  });
+
+  it("creates draft tasks without queueing execution", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask({ ...createTaskInput, draft: true }, repository, "user-1");
+
+    assert.equal(task.status, "draft");
+    assert.equal(task.workflowStatus, "backlog");
+    assert.equal(task.executionStatus, "idle");
+    assert.equal(task.executionAction, null);
+    assert.equal(task.startedAt, null);
+    assert.equal(task.finishedAt, null);
+    assert.deepEqual(await taskStore.listMessages(task.id), []);
+  });
+
+  it("normalizes task deadlines", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(
+      {
+        ...createTaskInput,
+        deadline: "2026-06-15T10:30:00+02:00"
+      },
+      repository,
+      "user-1"
+    );
+
+    assert.equal(task.deadline, "2026-06-15T08:30:00.000Z");
   });
 });
 ````
@@ -34114,6 +34468,120 @@ export function SequencesPage() {
 }
 ````
 
+## File: apps/web/components/task-create-page.tsx
+````typescript
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import type { TaskSourceType, TaskType } from "@agentswarm/shared-types";
+import { Button, Flex, Form, Space, Typography, message } from "antd";
+import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
+import { trackEvent } from "../src/utils/analytics";
+import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
+import { useAuth } from "./auth-provider";
+import {
+  TaskDefinitionFields,
+  type TaskDefinitionFormValues,
+  buildTaskDefinitionInput,
+  getTaskDefinitionInitialValues
+} from "./task-definition-fields";
+
+export function TaskCreatePage() {
+  const router = useRouter();
+  const { can } = useAuth();
+  const [form] = Form.useForm<TaskDefinitionFormValues>();
+  const [submitting, setSubmitting] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [messageApi, contextHolder] = message.useMessage();
+  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
+  const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
+  const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
+  const isIssueSource = selectedSourceType === "issue";
+  const isPullRequestSource = selectedSourceType === "pull_request";
+  const canCreateAnyTaskMode = can("task:build") || can("task:ask");
+
+  const pageTitle =
+    selectedSourceType === "issue"
+      ? "New Task From Issue"
+      : selectedSourceType === "pull_request"
+        ? "New Task From Pull Request"
+        : selectedTaskType === "ask"
+            ? "New Ask Task"
+            : "New Build Task";
+
+  const handleSubmit = async (values: TaskDefinitionFormValues) => {
+    setSubmitting(true);
+    try {
+      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
+      const definition = buildTaskDefinitionInput(values, encodedAttachments);
+      trackEvent("task_create_submitted", { source: definition.sourceType });
+      const task = await createTaskFromDefinition(definition);
+
+      messageApi.success(startMessageForDefinition(definition));
+      setPromptImageFiles([]);
+      router.push(`/tasks/${task.id}`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to create task");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSaveDraft = async () => {
+    const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
+    setSavingDraft(true);
+    try {
+      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
+      const definition = buildTaskDefinitionInput(values, encodedAttachments);
+      const draft = await createTaskFromDefinition(definition, { draft: true });
+      messageApi.success("Draft saved");
+      router.push(`/tasks/${draft.id}`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to save draft");
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
+  return (
+    <>
+      {contextHolder}
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={getTaskDefinitionInitialValues()}
+        onFinish={handleSubmit}
+      >
+        <Flex vertical gap={16}>
+          <Flex align="center" justify="space-between" gap={16} wrap="wrap">
+            <Flex vertical gap={0}>
+              <Typography.Title level={2} style={{ margin: 0 }}>
+                {pageTitle}
+              </Typography.Title>
+              <Typography.Text type="secondary">
+                Configure the task on the left and write the prompt on the right.
+              </Typography.Text>
+            </Flex>
+            <Space>
+              <Button onClick={() => router.push("/tasks")}>Cancel</Button>
+              <Button loading={savingDraft} onClick={() => void handleSaveDraft()}>
+                Save Draft
+              </Button>
+              <Button type="primary" htmlType="submit" loading={submitting} disabled={!canCreateAnyTaskMode}>
+                {isIssueSource ? "Create Task From Issue" : isPullRequestSource ? "Create Task From Pull Request" : "Create Task"}
+              </Button>
+            </Space>
+          </Flex>
+
+          <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
+        </Flex>
+      </Form>
+    </>
+  );
+}
+````
+
 ## File: apps/web/components/tasks-page.tsx
 ````typescript
 "use client";
@@ -34448,130 +34916,6 @@ export function TasksPage() {
     </>
   );
 }
-````
-
-## File: apps/web/src/auth/access.ts
-````typescript
-import type { PermissionScope } from "@agentswarm/shared-types";
-
-export interface NavigationRoute {
-  key: string;
-  label: string;
-  requiredScopes: PermissionScope[];
-}
-
-export const navigationRoutes: NavigationRoute[] = [
-  { key: "/tasks", label: "Tasks", requiredScopes: ["task:list"] },
-  { key: "/tasks/board", label: "Board", requiredScopes: ["task:list"] },
-  { key: "/snippets", label: "Snippets", requiredScopes: ["snippet:list"] },
-  { key: "/sequences", label: "Sequences", requiredScopes: ["sequence:list"] },
-  { key: "/repositories", label: "Repositories", requiredScopes: ["repo:list"] },
-  { key: "/settings", label: "Settings", requiredScopes: ["settings:read"] },
-  { key: "/users", label: "Users", requiredScopes: ["user:list"] }
-];
-
-export const isPublicPathname = (pathname: string): boolean => pathname === "/login";
-
-export const isTaskInteractiveFullscreenPath = (pathname: string): boolean =>
-  /^\/tasks\/[^/]+\/interactive$/.test(pathname);
-
-export const getRequiredScopesForPathname = (pathname: string): PermissionScope[] => {
-  if (pathname === "/tasks" || pathname === "/tasks/board") {
-    return ["task:list"];
-  }
-
-  if (pathname === "/tasks/new") {
-    return ["task:create", "repo:list"];
-  }
-
-  if (/^\/tasks\/[^/]+\/interactive$/.test(pathname)) {
-    return ["task:edit", "task:interactive"];
-  }
-
-  if (pathname.startsWith("/tasks/")) {
-    return ["task:read"];
-  }
-
-  if (pathname === "/snippets" || pathname === "/presets") {
-    return ["snippet:list"];
-  }
-
-  if (pathname === "/sequences") {
-    return ["sequence:list"];
-  }
-
-  if (pathname === "/sequences/new") {
-    return ["sequence:create"];
-  }
-
-  if (/^\/sequences\/[^/]+\/edit$/.test(pathname)) {
-    return ["sequence:list", "sequence:edit"];
-  }
-
-  if (pathname === "/repositories") {
-    return ["repo:list"];
-  }
-
-  if (pathname === "/settings") {
-    return ["settings:read"];
-  }
-
-  if (pathname === "/users") {
-    return ["user:list"];
-  }
-
-  return [];
-};
-
-export const canAccessScopes = (
-  grantedScopes: Iterable<PermissionScope>,
-  requiredScopes: PermissionScope[]
-): boolean => {
-  const granted = new Set(grantedScopes);
-  return requiredScopes.every((scope) => granted.has(scope));
-};
-
-export const resolveDefaultPath = (grantedScopes: Iterable<PermissionScope>): string | null => {
-  for (const route of navigationRoutes) {
-    if (canAccessScopes(grantedScopes, route.requiredScopes)) {
-      return route.key;
-    }
-  }
-
-  return null;
-};
-
-export const getSelectedNavigationKey = (pathname: string): string => {
-  if (pathname === "/tasks/board") {
-    return "/tasks/board";
-  }
-
-  if (pathname.startsWith("/tasks")) {
-    return "/tasks";
-  }
-
-  if (pathname.startsWith("/snippets") || pathname.startsWith("/presets")) {
-    return "/snippets";
-  }
-
-  if (pathname.startsWith("/sequences")) {
-    return "/sequences";
-  }
-
-  if (pathname.startsWith("/repositories")) {
-    return "/repositories";
-  }
-
-  if (pathname.startsWith("/settings")) {
-    return "/settings";
-  }
-
-  if (pathname.startsWith("/users")) {
-    return "/users";
-  }
-
-  return pathname;
-};
 ````
 
 ## File: apps/web/src/utils/task-history.test.ts
@@ -35483,315 +35827,6 @@ describe("orchestrateTaskActionStart", () => {
     assert.deepEqual(result, { ok: true });
   });
 });
-````
-
-## File: apps/server/src/routes/imports.ts
-````typescript
-import { z } from "zod";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { AuthService } from "../lib/auth.js";
-import type { SchedulerService } from "../services/scheduler.js";
-import type { RepositoryStore } from "../services/repository-store.js";
-import type { SettingsStore } from "../services/settings-store.js";
-import type { SpawnerService } from "../services/spawner.js";
-import type { TaskStore } from "../services/task-store.js";
-import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
-import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
-import { requireTaskCapabilityAccess, requireTaskExecutionConfigAccess } from "../lib/task-capability-access.js";
-import { canUserAccessRepository } from "../lib/task-ownership.js";
-import { withBranchSyncCounts, withTaskCreatorName } from "./tasks.js";
-import { normalizeProvider } from "../lib/provider-config.js";
-import type { UserStore } from "../services/user-store.js";
-
-const deadlineSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
-  .nullable();
-
-const issueImportSchema = z.object({
-  repoId: z.string().min(1),
-  draft: z.boolean().optional(),
-  issueNumber: z.coerce.number().int().positive(),
-  includeComments: z.boolean().optional(),
-  notes: z.string().max(40_000).optional(),
-  deadline: deadlineSchema.optional(),
-  taskType: z.enum(["build", "ask"]).optional(),
-  title: z.string().trim().optional(),
-  provider: z.enum(["codex", "claude"]).optional(),
-  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-  modelOverride: z.string().trim().min(1).optional(),
-  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-  baseBranch: z.string().trim().min(1).optional(),
-  branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-  model: z.string().trim().min(1).optional(),
-  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
-}).strict();
-
-const pullRequestImportSchema = z.object({
-  repoId: z.string().min(1),
-  draft: z.boolean().optional(),
-  pullRequestNumber: z.coerce.number().int().positive(),
-  notes: z.string().max(40_000).optional(),
-  deadline: deadlineSchema.optional(),
-  title: z.string().trim().optional(),
-  provider: z.enum(["codex", "claude"]).optional(),
-  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-  modelOverride: z.string().trim().min(1).optional(),
-  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-  model: z.string().trim().min(1).optional(),
-  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
-});
-
-const applyCreateDefaultsFromSettings = <
-  T extends {
-    provider?: "codex" | "claude";
-    providerProfile?: "low" | "medium" | "high" | "max";
-    modelOverride?: string;
-    model?: string;
-  }
->(
-  payload: T,
-  settings: Awaited<ReturnType<SettingsStore["getSettings"]>>
-): T => {
-  const provider = normalizeProvider(payload.provider ?? settings.defaultProvider);
-  const providerProfile =
-    payload.providerProfile ??
-    (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort);
-  const hasLegacyModel = Boolean(payload.model?.trim());
-  const modelOverride =
-    payload.modelOverride ??
-    (hasLegacyModel ? undefined : provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel);
-
-  return {
-    ...payload,
-    provider,
-    providerProfile,
-    modelOverride
-  };
-};
-
-export const registerImportRoutes = (
-  app: FastifyInstance,
-  deps: {
-    githubImportService: GitHubImportService;
-    repositoryStore: RepositoryStore;
-    settingsStore: SettingsStore;
-    taskStore: TaskStore;
-    userStore: UserStore;
-    scheduler: SchedulerService;
-    spawner: SpawnerService;
-    auth: AuthService;
-  }
-): void => {
-  const getAccessibleRepository = async (
-    repoId: string,
-    request: FastifyRequest,
-    reply: FastifyReply
-  ) => {
-    const repository = await deps.repositoryStore.getRepository(repoId);
-    if (!repository || !canUserAccessRepository(request.auth?.user, repoId)) {
-      await reply.status(404).send({ message: "Repository not found" });
-      return null;
-    }
-
-    return repository;
-  };
-
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/issues", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repoId = String(request.query.repoId ?? "").trim();
-    if (!repoId) {
-      return reply.status(400).send({ message: "repoId is required" });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const issues = await deps.githubImportService.listOpenIssues(repository);
-      return reply.send(issues);
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/pull-requests", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repoId = String(request.query.repoId ?? "").trim();
-    if (!repoId) {
-      return reply.status(400).send({ message: "repoId is required" });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const pullRequests = await deps.githubImportService.listOpenPullRequests(repository);
-      return reply.send(pullRequests);
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/branches", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repoId = String(request.query.repoId ?? "").trim();
-    if (!repoId) {
-      return reply.status(400).send({ message: "repoId is required" });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const branches = await deps.githubImportService.listBranches(repository);
-      return reply.send(branches);
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.post("/imports/issue", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
-    const parsed = issueImportSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const settings = await deps.settingsStore.getSettings();
-      const issueRest = applyCreateDefaultsFromSettings(parsed.data, settings);
-      if (
-        !requireTaskCapabilityAccess(request, reply, {
-          taskType: issueRest.taskType ?? "build"
-        })
-      ) {
-        return;
-      }
-      if (!requireTaskExecutionConfigAccess(request, reply, issueRest)) {
-        return;
-      }
-
-      const taskInput = {
-        ...(await deps.githubImportService.buildTaskInputFromIssue(repository, issueRest)),
-        ...(issueRest.draft === true ? { draft: true } : {})
-      };
-      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
-      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
-        creatorName: request.auth!.user.name
-      });
-      const createdTask = taskWithCreator ?? {
-        ...task,
-        creatorName: request.auth!.user.name
-      };
-      if (issueRest.draft === true) {
-        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
-      }
-      const startResult = await orchestrateTaskStart(
-        {
-          taskStore: deps.taskStore,
-          scheduler: deps.scheduler,
-          spawner: deps.spawner
-        },
-        {
-          task: createdTask,
-          fallbackMessage: "Imported task execution could not be started"
-        }
-      );
-      if (!startResult.ok) {
-        return reply.status(startResult.statusCode).send({ message: startResult.message });
-      }
-      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.post("/imports/pull-request", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
-    const parsed = pullRequestImportSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      if (!requireTaskCapabilityAccess(request, reply, { taskType: "build" })) {
-        return;
-      }
-      const settings = await deps.settingsStore.getSettings();
-      const createPayload = applyCreateDefaultsFromSettings(parsed.data, settings);
-      if (!requireTaskExecutionConfigAccess(request, reply, createPayload)) {
-        return;
-      }
-
-      const taskInput = {
-        ...(await deps.githubImportService.buildTaskInputFromPullRequest(repository, createPayload)),
-        ...(createPayload.draft === true ? { draft: true } : {})
-      };
-      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
-      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
-        creatorName: request.auth!.user.name
-      });
-      const createdTask = taskWithCreator ?? {
-        ...task,
-        creatorName: request.auth!.user.name
-      };
-      if (createPayload.draft === true) {
-        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
-      }
-      const startResult = await orchestrateTaskStart(
-        {
-          taskStore: deps.taskStore,
-          scheduler: deps.scheduler,
-          spawner: deps.spawner
-        },
-        {
-          task: createdTask,
-          fallbackMessage: "Imported task execution could not be started"
-        }
-      );
-      if (!startResult.ok) {
-        return reply.status(startResult.statusCode).send({ message: startResult.message });
-      }
-      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-};
 ````
 
 ## File: apps/server/src/services/github-status-sync-service.test.ts
@@ -38883,392 +38918,435 @@ html[data-theme="forge-light"] .diff-widget-content {
 }
 ````
 
-## File: apps/web/components/tasks-kanban-board-page.tsx
+## File: apps/web/src/auth/access.ts
 ````typescript
-"use client";
+import type { PermissionScope } from "@agentswarm/shared-types";
 
-import { useMemo, useState, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
-import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
-import { CSS } from "@dnd-kit/utilities";
-import { PlusOutlined } from "@ant-design/icons";
-import {
-  getTaskExecutionStatusLabel,
-  getTaskTypeLabel,
-  getTaskWorkflowStatusLabel,
-  type Task,
-  type UpdateTaskStateInput
-} from "@agentswarm/shared-types";
-import { Button, Card, Empty, Flex, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
-import dayjs from "dayjs";
-import { api } from "../src/api/client";
-import { useTasks } from "../src/hooks/useTasks";
-import { useAuth } from "./auth-provider";
-import { TaskCreateModal } from "./task-create-modal";
+export interface NavigationRoute {
+  key: string;
+  label: string;
+  requiredScopes: PermissionScope[];
+}
 
-type BoardColumnId = "backlog" | "ready" | "in_progress" | "review" | "done";
-type BoardTaskStatus = UpdateTaskStateInput["status"];
-type BoardItem = { id: string; task: Task; column: BoardColumnId };
-
-const columns: Array<{ id: BoardColumnId; title: string; taskStatus?: BoardTaskStatus; acceptsTasks: boolean }> = [
-  { id: "backlog", title: "Backlog", acceptsTasks: false },
-  { id: "ready", title: getTaskWorkflowStatusLabel("ready"), taskStatus: "open", acceptsTasks: true },
-  { id: "in_progress", title: getTaskWorkflowStatusLabel("in_progress"), taskStatus: "in_progress", acceptsTasks: true },
-  { id: "review", title: getTaskWorkflowStatusLabel("review"), taskStatus: "in_review", acceptsTasks: true },
-  { id: "done", title: getTaskWorkflowStatusLabel("done"), taskStatus: "done", acceptsTasks: true }
+export const navigationRoutes: NavigationRoute[] = [
+  { key: "/tasks", label: "Tasks", requiredScopes: ["task:list"] },
+  { key: "/tasks/board", label: "Board", requiredScopes: ["task:list"] },
+  { key: "/snippets", label: "Snippets", requiredScopes: ["snippet:list"] },
+  { key: "/sequences", label: "Sequences", requiredScopes: ["sequence:list"] },
+  { key: "/repositories", label: "Repositories", requiredScopes: ["repo:list"] },
+  { key: "/settings", label: "Settings", requiredScopes: ["settings:read"] },
+  { key: "/users", label: "Users", requiredScopes: ["user:list"] }
 ];
 
-const taskColumn = (task: Task): BoardColumnId => {
-  if (task.status === "draft") {
-    return "backlog";
+export const isPublicPathname = (pathname: string): boolean => pathname === "/login";
+
+export const isTaskInteractiveFullscreenPath = (pathname: string): boolean =>
+  /^\/tasks\/[^/]+\/interactive$/.test(pathname);
+
+export const getRequiredScopesForPathname = (pathname: string): PermissionScope[] => {
+  if (pathname === "/tasks" || pathname === "/tasks/board") {
+    return ["task:list"];
   }
-  if (task.workflowStatus === "done") {
-    return "done";
+
+  if (pathname === "/tasks/new") {
+    return ["task:create", "repo:list"];
   }
-  if (task.workflowStatus === "review") {
-    return "review";
+
+  if (/^\/tasks\/[^/]+\/interactive$/.test(pathname)) {
+    return ["task:edit", "task:interactive"];
   }
-  if (task.workflowStatus === "in_progress") {
-    return "in_progress";
+
+  if (pathname.startsWith("/tasks/")) {
+    return ["task:read"];
   }
-  return "ready";
+
+  if (pathname === "/snippets" || pathname === "/presets") {
+    return ["snippet:list"];
+  }
+
+  if (pathname === "/sequences") {
+    return ["sequence:list"];
+  }
+
+  if (pathname === "/sequences/new") {
+    return ["sequence:create"];
+  }
+
+  if (/^\/sequences\/[^/]+\/edit$/.test(pathname)) {
+    return ["sequence:list", "sequence:edit"];
+  }
+
+  if (pathname === "/repositories") {
+    return ["repo:list"];
+  }
+
+  if (pathname === "/settings") {
+    return ["settings:read"];
+  }
+
+  if (pathname === "/users") {
+    return ["user:list"];
+  }
+
+  return [];
 };
 
-const getItemDeadline = (item: BoardItem): string | null => item.task.deadline;
-
-const getItemTitle = (item: BoardItem): string => item.task.title;
-
-const compareItemsByDeadline = (left: BoardItem, right: BoardItem): number => {
-  const leftDeadline = getItemDeadline(left);
-  const rightDeadline = getItemDeadline(right);
-  if (leftDeadline && rightDeadline) {
-    const deadlineComparison = leftDeadline.localeCompare(rightDeadline);
-    if (deadlineComparison !== 0) {
-      return deadlineComparison;
-    }
-  } else if (leftDeadline) {
-    return -1;
-  } else if (rightDeadline) {
-    return 1;
-  }
-
-  return getItemTitle(left).localeCompare(getItemTitle(right));
+export const canAccessScopes = (
+  grantedScopes: Iterable<PermissionScope>,
+  requiredScopes: PermissionScope[]
+): boolean => {
+  const granted = new Set(grantedScopes);
+  return requiredScopes.every((scope) => granted.has(scope));
 };
 
-function KanbanColumn({
-  column,
-  canCreate,
-  onAdd,
-  children
-}: {
-  column: (typeof columns)[number];
-  canCreate: boolean;
-  onAdd: (column: (typeof columns)[number]) => void;
-  children: ReactNode;
-}) {
-  const { token } = antTheme.useToken();
-  const { setNodeRef, isOver } = useDroppable({
-    id: column.id,
-    disabled: !column.acceptsTasks
-  });
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={{
-        minWidth: 290,
-        width: 320,
-        flex: "0 0 320px",
-        background: isOver ? token.colorPrimaryBg : token.colorFillQuaternary,
-        border: `1px solid ${isOver ? token.colorPrimaryBorder : token.colorBorderSecondary}`,
-        borderRadius: 8,
-        padding: 12,
-        minHeight: "calc(100vh - 220px)"
-      }}
-    >
-      <Flex vertical gap={12}>
-        <Flex justify="space-between" align="center">
-          <Typography.Text strong>{column.title}</Typography.Text>
-          {canCreate ? (
-            <Button
-              type="text"
-              size="small"
-              icon={<PlusOutlined />}
-              aria-label={`Create in ${column.title}`}
-              title={`Create in ${column.title}`}
-              onClick={() => onAdd(column)}
-            />
-          ) : null}
-        </Flex>
-        {children}
-      </Flex>
-    </div>
-  );
-}
-
-function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardItem) => void }) {
-  const draggable = useDraggable({
-    id: item.id,
-    disabled: item.task.status === "draft",
-    data: item
-  });
-  const style = {
-    transform: CSS.Translate.toString(draggable.transform),
-    opacity: draggable.isDragging ? 0.65 : 1,
-    cursor: item.task.status === "draft" ? "pointer" : "grab"
-  };
-  const task = item.task;
-  const isDraft = task.status === "draft";
-  const deadline = getItemDeadline(item);
-
-  return (
-    <Card
-      ref={draggable.setNodeRef}
-      {...draggable.listeners}
-      {...draggable.attributes}
-      size="small"
-      hoverable
-      onClick={() => onOpen(item)}
-      style={{ ...style, borderRadius: 8 }}
-      bodyStyle={{ padding: 12 }}
-    >
-      <Flex vertical gap={8}>
-        <Typography.Text strong ellipsis={{ tooltip: task.title }}>
-          {task.title}
-        </Typography.Text>
-        <Space size={[6, 6]} wrap>
-          {isDraft ? <Tag color="default">Draft</Tag> : null}
-          <Tag>{getTaskTypeLabel(task.taskType)}</Tag>
-          {task.executionStatus !== "idle" ? <Tag color={task.executionStatus === "failed" ? "red" : "blue"}>{getTaskExecutionStatusLabel(task.executionStatus)}</Tag> : null}
-          {task.reviewReason ? <Tag color="gold">{task.reviewReason}</Tag> : null}
-        </Space>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {task.repoName}
-        </Typography.Text>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
-        </Typography.Text>
-      </Flex>
-    </Card>
-  );
-}
-
-export function TasksKanbanBoardPage() {
-  const router = useRouter();
-  const { can } = useAuth();
-  const [messageApi, contextHolder] = message.useMessage();
-  const { tasks, setTasks, loading: tasksLoading } = useTasks({ view: "active" });
-  const [movingTaskId, setMovingTaskId] = useState<string | null>(null);
-  const [taskCreateModalOpen, setTaskCreateModalOpen] = useState(false);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-  const loading = tasksLoading;
-  const canCreateTask = can("task:create");
-
-  const items = useMemo<BoardItem[]>(() => {
-    return tasks
-      .filter((task) => task.status !== "archived")
-      .map((task) => ({ id: `task:${task.id}`, task, column: taskColumn(task) }));
-  }, [tasks]);
-
-  const itemsByColumn = useMemo(
-    () =>
-      Object.fromEntries(
-        columns.map((column) => [
-          column.id,
-          items.filter((item) => item.column === column.id).sort(compareItemsByDeadline)
-        ])
-      ) as Record<BoardColumnId, BoardItem[]>,
-    [items]
-  );
-
-  const openItem = (item: BoardItem) => {
-    router.push(`/tasks/${item.task.id}`);
-  };
-
-  const openCreateModal = () => {
-    setTaskCreateModalOpen(true);
-  };
-
-  const closeCreateModal = () => {
-    setTaskCreateModalOpen(false);
-  };
-
-  const handleDragEnd = async (event: DragEndEvent) => {
-    const item = event.active.data.current as BoardItem | undefined;
-    const column = columns.find((entry) => entry.id === event.over?.id);
-    if (!item || item.task.status === "draft" || !column?.taskStatus || item.column === column.id) {
-      return;
+export const resolveDefaultPath = (grantedScopes: Iterable<PermissionScope>): string | null => {
+  for (const route of navigationRoutes) {
+    if (canAccessScopes(grantedScopes, route.requiredScopes)) {
+      return route.key;
     }
+  }
 
-    setMovingTaskId(item.task.id);
-    try {
-      const updated = await api.updateTaskState(item.task.id, { status: column.taskStatus });
-      setTasks((current) => current.map((task) => (task.id === updated.id ? { ...task, ...updated, logs: task.logs } : task)));
-      messageApi.success(`Moved to ${column.title}`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Could not move task");
-    } finally {
-      setMovingTaskId(null);
-    }
-  };
+  return null;
+};
 
-  return (
-    <>
-      {contextHolder}
-      <Flex vertical gap={16}>
-        <Flex justify="space-between" align="center" gap={16} wrap="wrap">
-          <Flex vertical gap={0}>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              Task Board
-            </Typography.Title>
-            <Typography.Text type="secondary">Plan drafts and move active tasks through the workflow.</Typography.Text>
-          </Flex>
-          <Space>
-            <Button onClick={() => router.push("/tasks")}>Table</Button>
-            {canCreateTask ? <Button type="primary" onClick={openCreateModal}>New Task</Button> : null}
-          </Space>
-        </Flex>
-        {loading ? (
-          <Flex justify="center" style={{ padding: 80 }}>
-            <Spin />
-          </Flex>
-        ) : (
-          <DndContext sensors={sensors} onDragEnd={(event) => void handleDragEnd(event)}>
-            <Flex gap={16} align="stretch" style={{ overflowX: "auto", paddingBottom: 12 }}>
-              {columns.map((column) => (
-                <KanbanColumn key={column.id} column={column} canCreate={canCreateTask} onAdd={openCreateModal}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {itemsByColumn[column.id].length} item{itemsByColumn[column.id].length === 1 ? "" : "s"}
-                  </Typography.Text>
-                  {itemsByColumn[column.id].length === 0 ? (
-                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No cards" />
-                  ) : (
-                    <Flex vertical gap={10}>
-                      {itemsByColumn[column.id].map((item) => (
-                        <KanbanCard key={item.id} item={item} onOpen={openItem} />
-                      ))}
-                    </Flex>
-                  )}
-                </KanbanColumn>
-              ))}
-            </Flex>
-          </DndContext>
-        )}
-        {movingTaskId ? <Typography.Text type="secondary">Moving task...</Typography.Text> : null}
-      </Flex>
-      <TaskCreateModal
-        open={taskCreateModalOpen}
-        onClose={closeCreateModal}
-        onCreated={(task) => {
-          setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
-        }}
-      />
-    </>
-  );
-}
+export const getSelectedNavigationKey = (pathname: string): string => {
+  if (pathname === "/tasks/board") {
+    return "/tasks/board";
+  }
+
+  if (pathname.startsWith("/tasks")) {
+    return "/tasks";
+  }
+
+  if (pathname.startsWith("/snippets") || pathname.startsWith("/presets")) {
+    return "/snippets";
+  }
+
+  if (pathname.startsWith("/sequences")) {
+    return "/sequences";
+  }
+
+  if (pathname.startsWith("/repositories")) {
+    return "/repositories";
+  }
+
+  if (pathname.startsWith("/settings")) {
+    return "/settings";
+  }
+
+  if (pathname.startsWith("/users")) {
+    return "/users";
+  }
+
+  return pathname;
+};
 ````
 
-## File: apps/web/src/utils/task-definition-submit.ts
+## File: apps/server/src/routes/imports.ts
 ````typescript
-"use client";
+import { z } from "zod";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { AuthService } from "../lib/auth.js";
+import type { SchedulerService } from "../services/scheduler.js";
+import type { RepositoryStore } from "../services/repository-store.js";
+import type { SettingsStore } from "../services/settings-store.js";
+import type { SpawnerService } from "../services/spawner.js";
+import type { TaskStore } from "../services/task-store.js";
+import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
+import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
+import { requireTaskCapabilityAccess, requireTaskExecutionConfigAccess } from "../lib/task-capability-access.js";
+import { canUserAccessRepository } from "../lib/task-ownership.js";
+import { withBranchSyncCounts, withTaskCreatorName } from "./tasks.js";
+import { normalizeProvider } from "../lib/provider-config.js";
+import type { UserStore } from "../services/user-store.js";
 
-import type { Task, TaskDefinitionInput } from "@agentswarm/shared-types";
-import { api } from "../api/client";
+const deadlineSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
+  .nullable();
 
-export const startMessageForDefinition = (definition: TaskDefinitionInput): string => {
-  if (definition.sourceType === "pull_request") {
-    return "Pull request task created and started";
+const issueImportSchema = z.object({
+  repoId: z.string().min(1),
+  draft: z.boolean().optional(),
+  issueNumber: z.coerce.number().int().positive(),
+  includeComments: z.boolean().optional(),
+  notes: z.string().max(40_000).optional(),
+  deadline: deadlineSchema.optional(),
+  taskType: z.enum(["build", "ask"]).optional(),
+  title: z.string().trim().optional(),
+  provider: z.enum(["codex", "claude"]).optional(),
+  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+  modelOverride: z.string().trim().min(1).optional(),
+  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+  baseBranch: z.string().trim().min(1).optional(),
+  branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+  model: z.string().trim().min(1).optional(),
+  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
+}).strict();
+
+const pullRequestImportSchema = z.object({
+  repoId: z.string().min(1),
+  draft: z.boolean().optional(),
+  pullRequestNumber: z.coerce.number().int().positive(),
+  notes: z.string().max(40_000).optional(),
+  deadline: deadlineSchema.optional(),
+  title: z.string().trim().optional(),
+  provider: z.enum(["codex", "claude"]).optional(),
+  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+  modelOverride: z.string().trim().min(1).optional(),
+  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+  model: z.string().trim().min(1).optional(),
+  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
+});
+
+const applyCreateDefaultsFromSettings = <
+  T extends {
+    provider?: "codex" | "claude";
+    providerProfile?: "low" | "medium" | "high" | "max";
+    modelOverride?: string;
+    model?: string;
   }
+>(
+  payload: T,
+  settings: Awaited<ReturnType<SettingsStore["getSettings"]>>
+): T => {
+  const provider = normalizeProvider(payload.provider ?? settings.defaultProvider);
+  const providerProfile =
+    payload.providerProfile ??
+    (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort);
+  const hasLegacyModel = Boolean(payload.model?.trim());
+  const modelOverride =
+    payload.modelOverride ??
+    (hasLegacyModel ? undefined : provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel);
 
-  if (definition.sourceType === "issue") {
-    return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
-  }
-
-  if (definition.sourceType === "sequence") {
-    return "Sequence task created and started";
-  }
-
-  return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
+  return {
+    ...payload,
+    provider,
+    providerProfile,
+    modelOverride
+  };
 };
 
-export const createTaskFromDefinition = (definition: TaskDefinitionInput, options: { draft?: boolean } = {}): Promise<Task> => {
-  if (definition.sourceType === "issue") {
-    return api.createTaskFromIssue({
-      repoId: definition.repoId,
-      draft: options.draft,
-      issueNumber: definition.issueNumber,
-      includeComments: definition.includeComments,
-      notes: definition.notes,
-      deadline: definition.deadline,
-      taskType: definition.taskType,
-      title: definition.title,
-      provider: definition.provider,
-      providerProfile: definition.providerProfile,
-      modelOverride: definition.model || undefined,
-      codexCredentialSource: definition.codexCredentialSource,
-      baseBranch: definition.baseBranch,
-      branchStrategy: definition.branchStrategy
-    });
+export const registerImportRoutes = (
+  app: FastifyInstance,
+  deps: {
+    githubImportService: GitHubImportService;
+    repositoryStore: RepositoryStore;
+    settingsStore: SettingsStore;
+    taskStore: TaskStore;
+    userStore: UserStore;
+    scheduler: SchedulerService;
+    spawner: SpawnerService;
+    auth: AuthService;
   }
+): void => {
+  const getAccessibleRepository = async (
+    repoId: string,
+    request: FastifyRequest,
+    reply: FastifyReply
+  ) => {
+    const repository = await deps.repositoryStore.getRepository(repoId);
+    if (!repository || !canUserAccessRepository(request.auth?.user, repoId)) {
+      await reply.status(404).send({ message: "Repository not found" });
+      return null;
+    }
 
-  if (definition.sourceType === "pull_request") {
-    return api.createTaskFromPullRequest({
-      repoId: definition.repoId,
-      draft: options.draft,
-      pullRequestNumber: definition.pullRequestNumber,
-      notes: definition.notes,
-      deadline: definition.deadline,
-      title: definition.title,
-      provider: definition.provider,
-      providerProfile: definition.providerProfile,
-      modelOverride: definition.model || undefined,
-      codexCredentialSource: definition.codexCredentialSource
-    });
-  }
+    return repository;
+  };
 
-  if (definition.sourceType === "sequence") {
-    return api.createTask({
-      title: definition.title,
-      draft: options.draft,
-      repoId: definition.repoId,
-      prompt: "",
-      notes: definition.notes,
-      deadline: definition.deadline,
-      attachments: definition.attachments,
-      taskType: definition.taskType,
-      provider: definition.provider,
-      providerProfile: definition.providerProfile,
-      modelOverride: definition.model || undefined,
-      codexCredentialSource: definition.codexCredentialSource,
-      baseBranch: definition.baseBranch,
-      branchStrategy: definition.branchStrategy,
-      task_source: "sequence",
-      sequence_id: definition.sequenceId,
-      sequence_variables: definition.sequenceVariables
-    });
-  }
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/issues", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repoId = String(request.query.repoId ?? "").trim();
+    if (!repoId) {
+      return reply.status(400).send({ message: "repoId is required" });
+    }
 
-  return api.createTask({
-    title: definition.title,
-    draft: options.draft,
-    repoId: definition.repoId,
-    prompt: definition.prompt,
-    notes: definition.notes,
-    deadline: definition.deadline,
-    attachments: definition.sourceType === "blank" || definition.sourceType === "snippet" ? definition.attachments : undefined,
-    taskType: definition.taskType,
-    provider: definition.provider,
-    providerProfile: definition.providerProfile,
-    modelOverride: definition.model || undefined,
-    codexCredentialSource: definition.codexCredentialSource,
-    baseBranch: definition.baseBranch,
-    branchStrategy: definition.branchStrategy,
-    ...(definition.sourceType === "snippet"
-        ? {
-            task_source: "snippet" as const,
-            snippet_id: definition.snippetId
-          }
-        : { task_source: "blank" as const })
+    try {
+      const repository = await getAccessibleRepository(repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      const issues = await deps.githubImportService.listOpenIssues(repository);
+      return reply.send(issues);
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/pull-requests", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repoId = String(request.query.repoId ?? "").trim();
+    if (!repoId) {
+      return reply.status(400).send({ message: "repoId is required" });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      const pullRequests = await deps.githubImportService.listOpenPullRequests(repository);
+      return reply.send(pullRequests);
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/branches", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repoId = String(request.query.repoId ?? "").trim();
+    if (!repoId) {
+      return reply.status(400).send({ message: "repoId is required" });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      const branches = await deps.githubImportService.listBranches(repository);
+      return reply.send(branches);
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.post("/imports/issue", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
+    const parsed = issueImportSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      const settings = await deps.settingsStore.getSettings();
+      const issueRest = applyCreateDefaultsFromSettings(parsed.data, settings);
+      if (
+        !requireTaskCapabilityAccess(request, reply, {
+          taskType: issueRest.taskType ?? "build"
+        })
+      ) {
+        return;
+      }
+      if (!requireTaskExecutionConfigAccess(request, reply, issueRest)) {
+        return;
+      }
+
+      const taskInput = {
+        ...(await deps.githubImportService.buildTaskInputFromIssue(repository, issueRest)),
+        ...(issueRest.draft === true ? { draft: true } : {})
+      };
+      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
+      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
+        creatorName: request.auth!.user.name
+      });
+      const createdTask = taskWithCreator ?? {
+        ...task,
+        creatorName: request.auth!.user.name
+      };
+      if (issueRest.draft === true) {
+        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
+      }
+      const startResult = await orchestrateTaskStart(
+        {
+          taskStore: deps.taskStore,
+          scheduler: deps.scheduler,
+          spawner: deps.spawner
+        },
+        {
+          task: createdTask,
+          fallbackMessage: "Imported task execution could not be started"
+        }
+      );
+      if (!startResult.ok) {
+        return reply.status(startResult.statusCode).send({ message: startResult.message });
+      }
+      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.post("/imports/pull-request", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
+    const parsed = pullRequestImportSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      if (!requireTaskCapabilityAccess(request, reply, { taskType: "build" })) {
+        return;
+      }
+      const settings = await deps.settingsStore.getSettings();
+      const createPayload = applyCreateDefaultsFromSettings(parsed.data, settings);
+      if (!requireTaskExecutionConfigAccess(request, reply, createPayload)) {
+        return;
+      }
+
+      const taskInput = {
+        ...(await deps.githubImportService.buildTaskInputFromPullRequest(repository, createPayload)),
+        ...(createPayload.draft === true ? { draft: true } : {})
+      };
+      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
+      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
+        creatorName: request.auth!.user.name
+      });
+      const createdTask = taskWithCreator ?? {
+        ...task,
+        creatorName: request.auth!.user.name
+      };
+      if (createPayload.draft === true) {
+        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
+      }
+      const startResult = await orchestrateTaskStart(
+        {
+          taskStore: deps.taskStore,
+          scheduler: deps.scheduler,
+          spawner: deps.spawner
+        },
+        {
+          task: createdTask,
+          fallbackMessage: "Imported task execution could not be started"
+        }
+      );
+      if (!startResult.ok) {
+        return reply.status(startResult.statusCode).send({ message: startResult.message });
+      }
+      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
   });
 };
 ````
@@ -39654,349 +39732,6 @@ export class SequenceExecutionService {
     return "Step could not be started. The task is currently unavailable for execution.";
   }
 }
-````
-
-## File: apps/server/src/index.ts
-````typescript
-import Fastify from "fastify";
-import { randomUUID } from "node:crypto";
-import cookie from "@fastify/cookie";
-import cors from "@fastify/cors";
-import * as Sentry from "@sentry/node";
-import { Server as SocketIOServer } from "socket.io";
-import type { RealtimeEvent } from "@agentswarm/shared-types";
-import { env } from "./config/env.js";
-import { createAuthService } from "./lib/auth.js";
-import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
-import { createRedisClients } from "./lib/redis.js";
-import { EventBus } from "./lib/events.js";
-import { createPostgresStores } from "./services/create-postgres-stores.js";
-import { registerAuthRoutes } from "./routes/auth.js";
-import { SpawnerService } from "./services/spawner.js";
-import { SchedulerService } from "./services/scheduler.js";
-import { GitHubImportService } from "./services/github-import-service.js";
-import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
-import { GitHubOutboundService } from "./services/github-outbound-service.js";
-import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
-import { registerRoleRoutes } from "./routes/roles.js";
-import { registerTaskRoutes } from "./routes/tasks.js";
-import { registerUserRoutes } from "./routes/users.js";
-import { registerSettingsRoutes } from "./routes/settings.js";
-import { registerRepositoryRoutes } from "./routes/repositories.js";
-import { registerImportRoutes } from "./routes/imports.js";
-import { registerSnippetRoutes } from "./routes/snippets.js";
-import { registerSequenceRoutes } from "./routes/sequences.js";
-import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
-import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
-
-const readHeaderValue = (value: string | string[] | undefined): string | null => {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  if (Array.isArray(value) && value.length > 0) {
-    const first = value[0]?.trim();
-    return first && first.length > 0 ? first : null;
-  }
-  return null;
-};
-
-const getOperationIdFromHeaders = (headers: Record<string, string | string[] | undefined>): string | null =>
-  readHeaderValue(headers["x-operation-id"]) ?? readHeaderValue(headers["x-agent-operation-id"]);
-
-const bootstrap = async (): Promise<void> => {
-  const sentryEnabled = env.SENTRY_ENABLED && env.SENTRY_DSN.trim().length > 0;
-  if (sentryEnabled) {
-    Sentry.init({
-      dsn: env.SENTRY_DSN,
-      tracesSampleRate: 1
-    });
-  }
-
-  const app = Fastify({
-    logger: {
-      level: process.env.LOG_LEVEL ?? "info",
-      base: { service: "agentswarm-server" }
-    },
-    disableRequestLogging: true,
-    requestIdHeader: "x-request-id",
-    genReqId: (rawRequest) => readHeaderValue(rawRequest.headers["x-request-id"]) ?? randomUUID(),
-    bodyLimit: 35 * 1024 * 1024
-  });
-  await app.register(cookie);
-  app.decorateRequest("auth", null);
-  await app.register(cors, {
-    origin: env.CORS_ORIGIN,
-    credentials: true
-  });
-  app.addHook("onRequest", async (request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    reply.header("x-request-id", request.id);
-    if (operationId) {
-      reply.header("x-operation-id", operationId);
-    }
-    request.log.info(
-      {
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url
-      },
-      "request.started"
-    );
-  });
-  app.addHook("onResponse", async (request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    request.log.info(
-      {
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url,
-        statusCode: reply.statusCode,
-        durationMs: reply.elapsedTime
-      },
-      "request.completed"
-    );
-  });
-  app.log.info(
-    {
-      event: "startup.config",
-      port: env.PORT,
-      corsOrigin: env.CORS_ORIGIN,
-      durableStores: "postgres",
-      runtimeServices: "redis",
-      postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
-      sentryEnabled,
-      taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
-      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
-    },
-    "Server configuration loaded"
-  );
-
-  const redisClients = createRedisClients(env.REDIS_URL);
-  const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
-  const postgresPool = createPostgresPool(env.DATABASE_URL);
-  if (env.POSTGRES_AUTO_MIGRATE) {
-    app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
-    await runPostgresMigrations(postgresPool);
-    app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
-  } else {
-    app.log.info({ event: "startup.migrations", mode: "manual" }, "Skipping auto-migrations");
-  }
-
-  const {
-    taskStore,
-    taskQueueStore,
-    githubOutboundQueueStore,
-    webhookDeliveryStore,
-    snippetStore,
-    sequenceStore,
-    repositoryStore,
-    credentialStore,
-    roleStore,
-    userStore,
-    sessionStore,
-    settingsStore
-  } = createPostgresStores(
-    postgresPool,
-    redisClients,
-    eventBus,
-    env.AUTH_SESSION_TTL_DAYS
-  );
-  const auth = createAuthService({
-    userStore,
-    sessionStore,
-    cookieName: env.AUTH_COOKIE_NAME,
-    taskStore,
-    credentialStore
-  });
-  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
-  const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
-  const githubImportService = new GitHubImportService(settingsStore);
-  const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
-  const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
-  const githubStatusSyncService = new GitHubStatusSyncService(repositoryStore, githubOutboundService);
-
-  await roleStore.ensureDefaultAdminRole();
-  await userStore.ensureDefaultAdminUser({
-    name: env.DEFAULT_ADMIN_NAME,
-    email: env.DEFAULT_ADMIN_EMAIL,
-    password: env.DEFAULT_ADMIN_PASSWORD
-  });
-
-  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore });
-  registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
-  registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
-  registerTaskRoutes(app, {
-    taskStore,
-    taskQueueStore,
-    repositoryStore,
-    userStore,
-    scheduler,
-    spawner,
-    settingsStore,
-    sequenceStore,
-    snippetStore,
-    auth
-  });
-  registerSnippetRoutes(app, { snippetStore, auth });
-  registerSequenceRoutes(app, { sequenceStore, auth });
-  registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
-  registerSettingsRoutes(app, { settingsStore, scheduler, auth });
-  registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, userStore, scheduler, spawner, auth });
-  registerGitHubWebhookRoutes(app, {
-    repositoryStore,
-    githubImportService,
-    taskStore,
-    userStore,
-    scheduler,
-    spawner,
-    snippetStore
-  });
-
-  app.get("/health", async () => ({ ok: true }));
-
-  app.setErrorHandler((error, request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    request.log.error(
-      {
-        err: error,
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url
-      },
-      "request.failed"
-    );
-    if (sentryEnabled) {
-      Sentry.captureException(error, {
-        tags: {
-          route: request.routeOptions.url
-        },
-        extra: {
-          requestId: request.id,
-          operationId,
-          method: request.method,
-          url: request.url
-        }
-      });
-    }
-    void reply.send(error);
-  });
-
-  await app.ready();
-  attachTaskInteractiveTerminalUpgrade(app.server, {
-    auth,
-    taskStore,
-    settingsStore,
-    spawner,
-    userStore,
-    repositoryStore
-  });
-
-  const io = new SocketIOServer(app.server, {
-    cors: {
-      origin: env.CORS_ORIGIN,
-      credentials: true
-    }
-  });
-  io.use(auth.authorizeSocket());
-
-  io.on("connection", (socket) => {
-    auth.onSocketConnection(socket);
-    app.log.info({ socketId: socket.id }, "Socket client connected");
-  });
-
-  await redisClients.sub.subscribe(env.EVENT_CHANNEL);
-  redisClients.sub.on("message", (_channel, message) => {
-    try {
-      const event = JSON.parse(message) as RealtimeEvent;
-      void webhookDeliveryService.handleRealtimeEvent(event);
-      void githubStatusSyncService.handleRealtimeEvent(event);
-      void auth.emitScopedRealtimeEvent(io, event);
-    } catch (error) {
-      app.log.error({ error }, "Failed to parse event message");
-    }
-  });
-
-  webhookDeliveryService.start();
-  githubOutboundService.start();
-  await scheduler.bootstrap();
-
-  let closeStarted = false;
-  const close = async (): Promise<void> => {
-    if (closeStarted) {
-      return;
-    }
-    closeStarted = true;
-    scheduler.stop();
-    webhookDeliveryService.stop();
-    githubOutboundService.stop();
-    io.close();
-    await Promise.all([
-      ...(postgresPool ? [postgresPool.end()] : []),
-      redisClients.command.quit(),
-      redisClients.pub.quit(),
-      redisClients.sub.quit()
-    ]);
-    await app.close();
-    if (sentryEnabled) {
-      await Sentry.close(2_000);
-    }
-  };
-
-  process.on("SIGINT", () => {
-    app.log.warn({ signal: "SIGINT" }, "Shutdown signal received");
-    void close();
-  });
-  process.on("SIGTERM", () => {
-    app.log.warn({ signal: "SIGTERM" }, "Shutdown signal received");
-    void close();
-  });
-
-  process.on("uncaughtException", (error) => {
-    app.log.fatal({ err: error }, "Unhandled exception");
-    if (sentryEnabled) {
-      Sentry.captureException(error);
-    }
-    void close().finally(() => process.exit(1));
-  });
-  process.on("unhandledRejection", (reason) => {
-    app.log.fatal({ reason }, "Unhandled promise rejection");
-    if (sentryEnabled) {
-      Sentry.captureException(reason);
-    }
-    void close().finally(() => process.exit(1));
-  });
-
-  const listenAddress = await app.listen({ port: env.PORT, host: "0.0.0.0" });
-  app.log.info(
-    {
-      event: "startup.ready",
-      listenAddress,
-      healthPath: "/health",
-      proxyHealthPath: "/api/health"
-    },
-    "Server started"
-  );
-};
-
-void bootstrap().catch((error) => {
-  // Startup errors should stop the process so Docker restart policies can react.
-  const errorForLog =
-    error instanceof Error
-      ? { name: error.name, message: error.message, stack: error.stack }
-      : { message: String(error) };
-  console.error(
-    JSON.stringify({
-      level: "fatal",
-      event: "startup.bootstrap_failed",
-      error: errorForLog
-    })
-  );
-  process.exit(1);
-});
 ````
 
 ## File: apps/web/components/app-shell.tsx
@@ -40708,6 +40443,396 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return <App>{shellContent}</App>;
 }
+````
+
+## File: apps/web/components/tasks-kanban-board-page.tsx
+````typescript
+"use client";
+
+import { useMemo, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
+import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
+import { PlusOutlined } from "@ant-design/icons";
+import {
+  getTaskExecutionStatusLabel,
+  getTaskTypeLabel,
+  getTaskWorkflowStatusLabel,
+  type Task,
+  type UpdateTaskStateInput
+} from "@agentswarm/shared-types";
+import { Button, Card, Empty, Flex, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
+import dayjs from "dayjs";
+import { api } from "../src/api/client";
+import { useTasks } from "../src/hooks/useTasks";
+import { useAuth } from "./auth-provider";
+import { TaskCreateModal } from "./task-create-modal";
+
+type BoardColumnId = "backlog" | "ready" | "in_progress" | "review" | "done";
+type BoardTaskStatus = UpdateTaskStateInput["status"];
+type BoardItem = { id: string; task: Task; column: BoardColumnId };
+
+const columns: Array<{ id: BoardColumnId; title: string; taskStatus?: BoardTaskStatus; acceptsTasks: boolean }> = [
+  { id: "backlog", title: "Backlog", acceptsTasks: false },
+  { id: "ready", title: getTaskWorkflowStatusLabel("ready"), taskStatus: "open", acceptsTasks: true },
+  { id: "in_progress", title: getTaskWorkflowStatusLabel("in_progress"), taskStatus: "in_progress", acceptsTasks: true },
+  { id: "review", title: getTaskWorkflowStatusLabel("review"), taskStatus: "in_review", acceptsTasks: true },
+  { id: "done", title: getTaskWorkflowStatusLabel("done"), taskStatus: "done", acceptsTasks: true }
+];
+
+const taskColumn = (task: Task): BoardColumnId => {
+  if (task.status === "draft") {
+    return "backlog";
+  }
+  if (task.workflowStatus === "done") {
+    return "done";
+  }
+  if (task.workflowStatus === "review") {
+    return "review";
+  }
+  if (task.workflowStatus === "in_progress") {
+    return "in_progress";
+  }
+  return "ready";
+};
+
+const getItemDeadline = (item: BoardItem): string | null => item.task.deadline;
+
+const getItemTitle = (item: BoardItem): string => item.task.title;
+
+const compareItemsByDeadline = (left: BoardItem, right: BoardItem): number => {
+  const leftDeadline = getItemDeadline(left);
+  const rightDeadline = getItemDeadline(right);
+  if (leftDeadline && rightDeadline) {
+    const deadlineComparison = leftDeadline.localeCompare(rightDeadline);
+    if (deadlineComparison !== 0) {
+      return deadlineComparison;
+    }
+  } else if (leftDeadline) {
+    return -1;
+  } else if (rightDeadline) {
+    return 1;
+  }
+
+  return getItemTitle(left).localeCompare(getItemTitle(right));
+};
+
+function KanbanColumn({
+  column,
+  canCreate,
+  onAdd,
+  children
+}: {
+  column: (typeof columns)[number];
+  canCreate: boolean;
+  onAdd: (column: (typeof columns)[number]) => void;
+  children: ReactNode;
+}) {
+  const { token } = antTheme.useToken();
+  const { setNodeRef, isOver } = useDroppable({
+    id: column.id,
+    disabled: !column.acceptsTasks
+  });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        minWidth: 290,
+        width: 320,
+        flex: "0 0 320px",
+        background: isOver ? token.colorPrimaryBg : token.colorFillQuaternary,
+        border: `1px solid ${isOver ? token.colorPrimaryBorder : token.colorBorderSecondary}`,
+        borderRadius: 8,
+        padding: 12,
+        minHeight: "calc(100vh - 220px)"
+      }}
+    >
+      <Flex vertical gap={12}>
+        <Flex justify="space-between" align="center">
+          <Typography.Text strong>{column.title}</Typography.Text>
+          {canCreate ? (
+            <Button
+              type="text"
+              size="small"
+              icon={<PlusOutlined />}
+              aria-label={`Create in ${column.title}`}
+              title={`Create in ${column.title}`}
+              onClick={() => onAdd(column)}
+            />
+          ) : null}
+        </Flex>
+        {children}
+      </Flex>
+    </div>
+  );
+}
+
+function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardItem) => void }) {
+  const draggable = useDraggable({
+    id: item.id,
+    disabled: item.task.status === "draft",
+    data: item
+  });
+  const style = {
+    transform: CSS.Translate.toString(draggable.transform),
+    opacity: draggable.isDragging ? 0.65 : 1,
+    cursor: item.task.status === "draft" ? "pointer" : "grab"
+  };
+  const task = item.task;
+  const isDraft = task.status === "draft";
+  const deadline = getItemDeadline(item);
+
+  return (
+    <Card
+      ref={draggable.setNodeRef}
+      {...draggable.listeners}
+      {...draggable.attributes}
+      size="small"
+      hoverable
+      onClick={() => onOpen(item)}
+      style={{ ...style, borderRadius: 8 }}
+      bodyStyle={{ padding: 12 }}
+    >
+      <Flex vertical gap={8}>
+        <Typography.Text strong ellipsis={{ tooltip: task.title }}>
+          {task.title}
+        </Typography.Text>
+        <Space size={[6, 6]} wrap>
+          {isDraft ? <Tag color="default">Draft</Tag> : null}
+          <Tag>{getTaskTypeLabel(task.taskType)}</Tag>
+          {task.executionStatus !== "idle" ? <Tag color={task.executionStatus === "failed" ? "red" : "blue"}>{getTaskExecutionStatusLabel(task.executionStatus)}</Tag> : null}
+          {task.reviewReason ? <Tag color="gold">{task.reviewReason}</Tag> : null}
+        </Space>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {task.repoName}
+        </Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
+        </Typography.Text>
+      </Flex>
+    </Card>
+  );
+}
+
+export function TasksKanbanBoardPage() {
+  const router = useRouter();
+  const { can } = useAuth();
+  const [messageApi, contextHolder] = message.useMessage();
+  const { tasks, setTasks, loading: tasksLoading } = useTasks({ view: "active" });
+  const [movingTaskId, setMovingTaskId] = useState<string | null>(null);
+  const [taskCreateModalOpen, setTaskCreateModalOpen] = useState(false);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const loading = tasksLoading;
+  const canCreateTask = can("task:create");
+
+  const items = useMemo<BoardItem[]>(() => {
+    return tasks
+      .filter((task) => task.status !== "archived")
+      .map((task) => ({ id: `task:${task.id}`, task, column: taskColumn(task) }));
+  }, [tasks]);
+
+  const itemsByColumn = useMemo(
+    () =>
+      Object.fromEntries(
+        columns.map((column) => [
+          column.id,
+          items.filter((item) => item.column === column.id).sort(compareItemsByDeadline)
+        ])
+      ) as Record<BoardColumnId, BoardItem[]>,
+    [items]
+  );
+
+  const openItem = (item: BoardItem) => {
+    router.push(`/tasks/${item.task.id}`);
+  };
+
+  const openCreateModal = () => {
+    setTaskCreateModalOpen(true);
+  };
+
+  const closeCreateModal = () => {
+    setTaskCreateModalOpen(false);
+  };
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const item = event.active.data.current as BoardItem | undefined;
+    const column = columns.find((entry) => entry.id === event.over?.id);
+    if (!item || item.task.status === "draft" || !column?.taskStatus || item.column === column.id) {
+      return;
+    }
+
+    setMovingTaskId(item.task.id);
+    try {
+      const updated = await api.updateTaskState(item.task.id, { status: column.taskStatus });
+      setTasks((current) => current.map((task) => (task.id === updated.id ? { ...task, ...updated, logs: task.logs } : task)));
+      messageApi.success(`Moved to ${column.title}`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Could not move task");
+    } finally {
+      setMovingTaskId(null);
+    }
+  };
+
+  return (
+    <>
+      {contextHolder}
+      <Flex vertical gap={16}>
+        <Flex justify="space-between" align="center" gap={16} wrap="wrap">
+          <Flex vertical gap={0}>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              Task Board
+            </Typography.Title>
+            <Typography.Text type="secondary">Plan drafts and move active tasks through the workflow.</Typography.Text>
+          </Flex>
+          <Space>
+            <Button onClick={() => router.push("/tasks")}>Table</Button>
+            {canCreateTask ? <Button type="primary" onClick={openCreateModal}>New Task</Button> : null}
+          </Space>
+        </Flex>
+        {loading ? (
+          <Flex justify="center" style={{ padding: 80 }}>
+            <Spin />
+          </Flex>
+        ) : (
+          <DndContext sensors={sensors} onDragEnd={(event) => void handleDragEnd(event)}>
+            <Flex gap={16} align="stretch" style={{ overflowX: "auto", paddingBottom: 12 }}>
+              {columns.map((column) => (
+                <KanbanColumn key={column.id} column={column} canCreate={canCreateTask} onAdd={openCreateModal}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {itemsByColumn[column.id].length} item{itemsByColumn[column.id].length === 1 ? "" : "s"}
+                  </Typography.Text>
+                  {itemsByColumn[column.id].length === 0 ? (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No cards" />
+                  ) : (
+                    <Flex vertical gap={10}>
+                      {itemsByColumn[column.id].map((item) => (
+                        <KanbanCard key={item.id} item={item} onOpen={openItem} />
+                      ))}
+                    </Flex>
+                  )}
+                </KanbanColumn>
+              ))}
+            </Flex>
+          </DndContext>
+        )}
+        {movingTaskId ? <Typography.Text type="secondary">Moving task...</Typography.Text> : null}
+      </Flex>
+      <TaskCreateModal
+        open={taskCreateModalOpen}
+        onClose={closeCreateModal}
+        onCreated={(task) => {
+          setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+        }}
+      />
+    </>
+  );
+}
+````
+
+## File: apps/web/src/utils/task-definition-submit.ts
+````typescript
+"use client";
+
+import type { Task, TaskDefinitionInput } from "@agentswarm/shared-types";
+import { api } from "../api/client";
+
+export const startMessageForDefinition = (definition: TaskDefinitionInput): string => {
+  if (definition.sourceType === "pull_request") {
+    return "Pull request task created and started";
+  }
+
+  if (definition.sourceType === "issue") {
+    return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
+  }
+
+  if (definition.sourceType === "sequence") {
+    return "Sequence task created and started";
+  }
+
+  return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
+};
+
+export const createTaskFromDefinition = (definition: TaskDefinitionInput, options: { draft?: boolean } = {}): Promise<Task> => {
+  if (definition.sourceType === "issue") {
+    return api.createTaskFromIssue({
+      repoId: definition.repoId,
+      draft: options.draft,
+      issueNumber: definition.issueNumber,
+      includeComments: definition.includeComments,
+      notes: definition.notes,
+      deadline: definition.deadline,
+      taskType: definition.taskType,
+      title: definition.title,
+      provider: definition.provider,
+      providerProfile: definition.providerProfile,
+      modelOverride: definition.model || undefined,
+      codexCredentialSource: definition.codexCredentialSource,
+      baseBranch: definition.baseBranch,
+      branchStrategy: definition.branchStrategy
+    });
+  }
+
+  if (definition.sourceType === "pull_request") {
+    return api.createTaskFromPullRequest({
+      repoId: definition.repoId,
+      draft: options.draft,
+      pullRequestNumber: definition.pullRequestNumber,
+      notes: definition.notes,
+      deadline: definition.deadline,
+      title: definition.title,
+      provider: definition.provider,
+      providerProfile: definition.providerProfile,
+      modelOverride: definition.model || undefined,
+      codexCredentialSource: definition.codexCredentialSource
+    });
+  }
+
+  if (definition.sourceType === "sequence") {
+    return api.createTask({
+      title: definition.title,
+      draft: options.draft,
+      repoId: definition.repoId,
+      prompt: "",
+      notes: definition.notes,
+      deadline: definition.deadline,
+      attachments: definition.attachments,
+      taskType: definition.taskType,
+      provider: definition.provider,
+      providerProfile: definition.providerProfile,
+      modelOverride: definition.model || undefined,
+      codexCredentialSource: definition.codexCredentialSource,
+      baseBranch: definition.baseBranch,
+      branchStrategy: definition.branchStrategy,
+      task_source: "sequence",
+      sequence_id: definition.sequenceId,
+      sequence_variables: definition.sequenceVariables
+    });
+  }
+
+  return api.createTask({
+    title: definition.title,
+    draft: options.draft,
+    repoId: definition.repoId,
+    prompt: definition.prompt,
+    notes: definition.notes,
+    deadline: definition.deadline,
+    attachments: definition.sourceType === "blank" || definition.sourceType === "snippet" ? definition.attachments : undefined,
+    taskType: definition.taskType,
+    provider: definition.provider,
+    providerProfile: definition.providerProfile,
+    modelOverride: definition.model || undefined,
+    codexCredentialSource: definition.codexCredentialSource,
+    baseBranch: definition.baseBranch,
+    branchStrategy: definition.branchStrategy,
+    ...(definition.sourceType === "snippet"
+        ? {
+            task_source: "snippet" as const,
+            snippet_id: definition.snippetId
+          }
+        : { task_source: "blank" as const })
+  });
+};
 ````
 
 ## File: apps/web/src/utils/task-lifecycle-view-model.test.ts
@@ -41467,6 +41592,349 @@ export const registerRepositoryRoutes = (
     return reply.status(204).send();
   });
 };
+````
+
+## File: apps/server/src/index.ts
+````typescript
+import Fastify from "fastify";
+import { randomUUID } from "node:crypto";
+import cookie from "@fastify/cookie";
+import cors from "@fastify/cors";
+import * as Sentry from "@sentry/node";
+import { Server as SocketIOServer } from "socket.io";
+import type { RealtimeEvent } from "@agentswarm/shared-types";
+import { env } from "./config/env.js";
+import { createAuthService } from "./lib/auth.js";
+import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
+import { createRedisClients } from "./lib/redis.js";
+import { EventBus } from "./lib/events.js";
+import { createPostgresStores } from "./services/create-postgres-stores.js";
+import { registerAuthRoutes } from "./routes/auth.js";
+import { SpawnerService } from "./services/spawner.js";
+import { SchedulerService } from "./services/scheduler.js";
+import { GitHubImportService } from "./services/github-import-service.js";
+import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
+import { GitHubOutboundService } from "./services/github-outbound-service.js";
+import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
+import { registerRoleRoutes } from "./routes/roles.js";
+import { registerTaskRoutes } from "./routes/tasks.js";
+import { registerUserRoutes } from "./routes/users.js";
+import { registerSettingsRoutes } from "./routes/settings.js";
+import { registerRepositoryRoutes } from "./routes/repositories.js";
+import { registerImportRoutes } from "./routes/imports.js";
+import { registerSnippetRoutes } from "./routes/snippets.js";
+import { registerSequenceRoutes } from "./routes/sequences.js";
+import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
+import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
+
+const readHeaderValue = (value: string | string[] | undefined): string | null => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (Array.isArray(value) && value.length > 0) {
+    const first = value[0]?.trim();
+    return first && first.length > 0 ? first : null;
+  }
+  return null;
+};
+
+const getOperationIdFromHeaders = (headers: Record<string, string | string[] | undefined>): string | null =>
+  readHeaderValue(headers["x-operation-id"]) ?? readHeaderValue(headers["x-agent-operation-id"]);
+
+const bootstrap = async (): Promise<void> => {
+  const sentryEnabled = env.SENTRY_ENABLED && env.SENTRY_DSN.trim().length > 0;
+  if (sentryEnabled) {
+    Sentry.init({
+      dsn: env.SENTRY_DSN,
+      tracesSampleRate: 1
+    });
+  }
+
+  const app = Fastify({
+    logger: {
+      level: process.env.LOG_LEVEL ?? "info",
+      base: { service: "agentswarm-server" }
+    },
+    disableRequestLogging: true,
+    requestIdHeader: "x-request-id",
+    genReqId: (rawRequest) => readHeaderValue(rawRequest.headers["x-request-id"]) ?? randomUUID(),
+    bodyLimit: 35 * 1024 * 1024
+  });
+  await app.register(cookie);
+  app.decorateRequest("auth", null);
+  await app.register(cors, {
+    origin: env.CORS_ORIGIN,
+    credentials: true
+  });
+  app.addHook("onRequest", async (request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    reply.header("x-request-id", request.id);
+    if (operationId) {
+      reply.header("x-operation-id", operationId);
+    }
+    request.log.info(
+      {
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url
+      },
+      "request.started"
+    );
+  });
+  app.addHook("onResponse", async (request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    request.log.info(
+      {
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url,
+        statusCode: reply.statusCode,
+        durationMs: reply.elapsedTime
+      },
+      "request.completed"
+    );
+  });
+  app.log.info(
+    {
+      event: "startup.config",
+      port: env.PORT,
+      corsOrigin: env.CORS_ORIGIN,
+      durableStores: "postgres",
+      runtimeServices: "redis",
+      postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
+      sentryEnabled,
+      taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
+      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
+    },
+    "Server configuration loaded"
+  );
+
+  const redisClients = createRedisClients(env.REDIS_URL);
+  const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
+  const postgresPool = createPostgresPool(env.DATABASE_URL);
+  if (env.POSTGRES_AUTO_MIGRATE) {
+    app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
+    await runPostgresMigrations(postgresPool);
+    app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
+  } else {
+    app.log.info({ event: "startup.migrations", mode: "manual" }, "Skipping auto-migrations");
+  }
+
+  const {
+    taskStore,
+    taskQueueStore,
+    githubOutboundQueueStore,
+    webhookDeliveryStore,
+    snippetStore,
+    sequenceStore,
+    repositoryStore,
+    credentialStore,
+    roleStore,
+    userStore,
+    sessionStore,
+    settingsStore
+  } = createPostgresStores(
+    postgresPool,
+    redisClients,
+    eventBus,
+    env.AUTH_SESSION_TTL_DAYS
+  );
+  const auth = createAuthService({
+    userStore,
+    sessionStore,
+    cookieName: env.AUTH_COOKIE_NAME,
+    taskStore,
+    credentialStore
+  });
+  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
+  const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
+  const githubImportService = new GitHubImportService(settingsStore);
+  const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
+  const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
+  const githubStatusSyncService = new GitHubStatusSyncService(repositoryStore, githubOutboundService);
+
+  await roleStore.ensureDefaultAdminRole();
+  await userStore.ensureDefaultAdminUser({
+    name: env.DEFAULT_ADMIN_NAME,
+    email: env.DEFAULT_ADMIN_EMAIL,
+    password: env.DEFAULT_ADMIN_PASSWORD
+  });
+
+  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore });
+  registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
+  registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
+  registerTaskRoutes(app, {
+    taskStore,
+    taskQueueStore,
+    repositoryStore,
+    userStore,
+    scheduler,
+    spawner,
+    settingsStore,
+    sequenceStore,
+    snippetStore,
+    auth
+  });
+  registerSnippetRoutes(app, { snippetStore, auth });
+  registerSequenceRoutes(app, { sequenceStore, auth });
+  registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
+  registerSettingsRoutes(app, { settingsStore, scheduler, auth });
+  registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, userStore, scheduler, spawner, auth });
+  registerGitHubWebhookRoutes(app, {
+    repositoryStore,
+    githubImportService,
+    taskStore,
+    userStore,
+    scheduler,
+    spawner,
+    snippetStore
+  });
+
+  app.get("/health", async () => ({ ok: true }));
+
+  app.setErrorHandler((error, request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    request.log.error(
+      {
+        err: error,
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url
+      },
+      "request.failed"
+    );
+    if (sentryEnabled) {
+      Sentry.captureException(error, {
+        tags: {
+          route: request.routeOptions.url
+        },
+        extra: {
+          requestId: request.id,
+          operationId,
+          method: request.method,
+          url: request.url
+        }
+      });
+    }
+    void reply.send(error);
+  });
+
+  await app.ready();
+  attachTaskInteractiveTerminalUpgrade(app.server, {
+    auth,
+    taskStore,
+    settingsStore,
+    spawner,
+    userStore,
+    repositoryStore
+  });
+
+  const io = new SocketIOServer(app.server, {
+    cors: {
+      origin: env.CORS_ORIGIN,
+      credentials: true
+    }
+  });
+  io.use(auth.authorizeSocket());
+
+  io.on("connection", (socket) => {
+    auth.onSocketConnection(socket);
+    app.log.info({ socketId: socket.id }, "Socket client connected");
+  });
+
+  await redisClients.sub.subscribe(env.EVENT_CHANNEL);
+  redisClients.sub.on("message", (_channel, message) => {
+    try {
+      const event = JSON.parse(message) as RealtimeEvent;
+      void webhookDeliveryService.handleRealtimeEvent(event);
+      void githubStatusSyncService.handleRealtimeEvent(event);
+      void auth.emitScopedRealtimeEvent(io, event);
+    } catch (error) {
+      app.log.error({ error }, "Failed to parse event message");
+    }
+  });
+
+  webhookDeliveryService.start();
+  githubOutboundService.start();
+  await scheduler.bootstrap();
+
+  let closeStarted = false;
+  const close = async (): Promise<void> => {
+    if (closeStarted) {
+      return;
+    }
+    closeStarted = true;
+    scheduler.stop();
+    webhookDeliveryService.stop();
+    githubOutboundService.stop();
+    io.close();
+    await Promise.all([
+      ...(postgresPool ? [postgresPool.end()] : []),
+      redisClients.command.quit(),
+      redisClients.pub.quit(),
+      redisClients.sub.quit()
+    ]);
+    await app.close();
+    if (sentryEnabled) {
+      await Sentry.close(2_000);
+    }
+  };
+
+  process.on("SIGINT", () => {
+    app.log.warn({ signal: "SIGINT" }, "Shutdown signal received");
+    void close();
+  });
+  process.on("SIGTERM", () => {
+    app.log.warn({ signal: "SIGTERM" }, "Shutdown signal received");
+    void close();
+  });
+
+  process.on("uncaughtException", (error) => {
+    app.log.fatal({ err: error }, "Unhandled exception");
+    if (sentryEnabled) {
+      Sentry.captureException(error);
+    }
+    void close().finally(() => process.exit(1));
+  });
+  process.on("unhandledRejection", (reason) => {
+    app.log.fatal({ reason }, "Unhandled promise rejection");
+    if (sentryEnabled) {
+      Sentry.captureException(reason);
+    }
+    void close().finally(() => process.exit(1));
+  });
+
+  const listenAddress = await app.listen({ port: env.PORT, host: "0.0.0.0" });
+  app.log.info(
+    {
+      event: "startup.ready",
+      listenAddress,
+      healthPath: "/health",
+      proxyHealthPath: "/api/health"
+    },
+    "Server started"
+  );
+};
+
+void bootstrap().catch((error) => {
+  // Startup errors should stop the process so Docker restart policies can react.
+  const errorForLog =
+    error instanceof Error
+      ? { name: error.name, message: error.message, stack: error.stack }
+      : { message: String(error) };
+  console.error(
+    JSON.stringify({
+      level: "fatal",
+      event: "startup.bootstrap_failed",
+      error: errorForLog
+    })
+  );
+  process.exit(1);
+});
 ````
 
 ## File: docs/product/user-flows.md
@@ -42428,7 +42896,7 @@ describe("SpawnerService workspace provisioning", () => {
     "db:backfill:redis-to-postgres": "tsx src/db/backfill-redis-to-postgres.ts",
     "build": "tsc -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/sequence-resolution.test.ts src/services/sequence-execution-service.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
+    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/lib/agent-event-parser.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/sequence-resolution.test.ts src/services/sequence-execution-service.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
   },
   "dependencies": {
     "@agentswarm/shared-types": "*",
@@ -42874,6 +43342,7 @@ export type UpdateTaskRunPatch = Partial<
     | "changeProposalCheckpointRef"
     | "changeProposalUntrackedPaths"
     | "hasRawJson"
+    | "timelineEvents"
   >
 >;
 
@@ -43209,7 +43678,8 @@ export class RedisTaskStore implements TaskStore {
       changeOutcome: run.changeOutcome === "changed" || run.changeOutcome === "no_change" ? run.changeOutcome : null,
       changeProposalCheckpointRef: run.changeProposalCheckpointRef ?? null,
       changeProposalUntrackedPaths: Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : null,
-      hasRawJson: run.hasRawJson === true
+      hasRawJson: run.hasRawJson === true,
+      timelineEvents: Array.isArray(run.timelineEvents) ? run.timelineEvents : []
     };
   }
 
@@ -43571,6 +44041,7 @@ export class RedisTaskStore implements TaskStore {
       changeProposalCheckpointRef: null,
       changeProposalUntrackedPaths: null,
       hasRawJson: false,
+      timelineEvents: [],
       logs: []
     };
 
@@ -43597,6 +44068,7 @@ export class RedisTaskStore implements TaskStore {
         | "changeProposalCheckpointRef"
         | "changeProposalUntrackedPaths"
         | "hasRawJson"
+        | "timelineEvents"
       >
     >
   ): Promise<TaskRun | null> {
@@ -44929,6 +45401,7 @@ export class PostgresTaskStore implements TaskStore {
       changeProposalCheckpointRef: null,
       changeProposalUntrackedPaths: null,
       hasRawJson: false,
+      timelineEvents: [],
       logs: []
     };
 
@@ -46193,6 +46666,7 @@ import {
   resolveSafeWorkspaceFilePath
 } from "../lib/safe-workspace-file.js";
 import { materializeRepositoryRuntimeEnvEntries } from "../lib/repository-runtime-env.js";
+import { parseAgentJsonlEvents } from "../lib/agent-event-parser.js";
 import {
   emitDockerSocketEnabledEventOnce,
   emitNestedContainerSpawnedEvent,
@@ -47617,6 +48091,27 @@ export class SpawnerService {
     await chmod(path.dirname(rawEventsJsonlPath), 0o777).catch(() => undefined);
     await chmod(rawEventsJsonlPath, 0o666).catch(() => undefined);
     return rawEventsJsonlPath;
+  }
+
+  private async parseAndStoreRunTimeline(task: Task, runId: string | null, rawEventsJsonlPath: string | null): Promise<void> {
+    if (!runId || !rawEventsJsonlPath) {
+      return;
+    }
+
+    try {
+      const rawJsonl = await readFile(rawEventsJsonlPath, "utf8");
+      if (!rawJsonl.trim()) {
+        return;
+      }
+      const timelineEvents = parseAgentJsonlEvents(task.provider, rawJsonl);
+      await this.taskStore.updateRun(runId, { timelineEvents });
+    } catch (error) {
+      await this.taskStore.appendLogForRun(
+        task.id,
+        `Spawner: warning - could not parse raw ${task.provider} JSON timeline (${error instanceof Error ? error.message : String(error)}).`,
+        runId
+      );
+    }
   }
 
   private registerActiveExecution(
@@ -50709,6 +51204,7 @@ export class SpawnerService {
     let runId: string | null = null;
     let executionId = nanoid();
     let workspace: WorkspacePreparation | null = null;
+    let rawEventsJsonlPath: string | null = null;
 
     try {
       const run = await this.taskStore.createRun(task.id, {
@@ -50723,7 +51219,7 @@ export class SpawnerService {
       this.executionContextStorage.enterWith({ taskId: task.id, executionId });
       const payloadDir = this.resolveRuntimePayloadDir(task.id, executionId);
       const appendRunLog = (line: string) => this.taskStore.appendLogForRun(task.id, line, runId);
-      const rawEventsJsonlPath = runId
+      rawEventsJsonlPath = runId
         ? await this.prepareTaskRunRawEventsJsonl(task.id, runId)
         : path.join(payloadDir, "raw-events.jsonl");
       if (runId) {
@@ -50990,6 +51486,7 @@ export class SpawnerService {
       });
 
       this.ensureTaskNotCancelled(task.id);
+      await this.parseAndStoreRunTimeline(task, runId, rawEventsJsonlPath);
 
       const runtimeResult = await this.readRuntimeResult(payloadPaths.resultMarkdownPath, payloadPaths.resultJsonPath);
       if (action === "build") {
@@ -51098,6 +51595,7 @@ export class SpawnerService {
       const finishedAt = new Date().toISOString();
       const message = error instanceof Error ? error.message : "Unknown runtime error";
       const isCancelled = error instanceof CancelledTaskError || this.isCancellationRequested(task.id);
+      await this.parseAndStoreRunTimeline(task, runId, rawEventsJsonlPath);
       if (runId) {
         await this.taskStore.updateRun(runId, {
           status: isCancelled ? "cancelled" : "failed",
@@ -54529,1543 +55027,6 @@ export const registerTaskRoutes = (
 };
 ````
 
-## File: packages/shared-types/src/index.ts
-````typescript
-export type TaskType = "build" | "ask";
-export type AgentProvider = "codex" | "claude";
-
-/** Native effort values from providers. "max" is Claude-only. */
-export type ProviderProfile = "low" | "medium" | "high" | "max";
-
-export interface ProviderModelOption {
-  label: string;
-  value: string;
-}
-
-export interface ProviderEffortOption {
-  label: string;
-  value: ProviderProfile;
-}
-
-export const CODEX_MODELS: ProviderModelOption[] = [
-  { label: "GPT-5.4", value: "gpt-5.4" },
-  { label: "o3", value: "o3" },
-  { label: "o4-mini", value: "o4-mini" },
-  { label: "o3-mini", value: "o3-mini" },
-  { label: "GPT-4.1", value: "gpt-4.1" },
-  { label: "GPT-4o", value: "gpt-4o" }
-];
-
-export const CLAUDE_MODELS: ProviderModelOption[] = [
-  { label: "Claude Opus 4", value: "claude-opus-4-5" },
-  { label: "Claude Sonnet 4.5", value: "claude-sonnet-4-5" },
-  { label: "Claude Sonnet 4", value: "claude-sonnet-4" },
-  { label: "Claude Haiku 3.5", value: "claude-haiku-3-5" }
-];
-
-/** Codex natively supports low / medium / high reasoning effort. */
-export const CODEX_EFFORT_OPTIONS: ProviderEffortOption[] = [
-  { label: "Low", value: "low" },
-  { label: "Medium", value: "medium" },
-  { label: "High", value: "high" }
-];
-
-/** Claude profiles map to thinking budgets when the resolved model supports it; "max" leaves the budget unset. */
-export const CLAUDE_EFFORT_OPTIONS: ProviderEffortOption[] = [
-  { label: "Low", value: "low" },
-  { label: "Medium", value: "medium" },
-  { label: "High", value: "high" },
-  { label: "Max", value: "max" }
-];
-
-export const getModelsForProvider = (provider: AgentProvider): ProviderModelOption[] =>
-  provider === "claude" ? CLAUDE_MODELS : CODEX_MODELS;
-
-export const getEffortOptionsForProvider = (provider: AgentProvider): ProviderEffortOption[] =>
-  provider === "claude" ? CLAUDE_EFFORT_OPTIONS : CODEX_EFFORT_OPTIONS;
-
-export const getDefaultModelForProvider = (provider: AgentProvider): string =>
-  provider === "claude" ? "claude-sonnet-4-5" : "gpt-5.4";
-export type TaskMessageRole = "user" | "assistant" | "system";
-export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
-
-export type TaskStatus =
-  | "draft"
-  | "scheduled"
-  | "build_queued"
-  | "preparing_workspace"
-  | "building"
-  | "ask_queued"
-  | "asking"
-  | "open"
-  | "in_progress"
-  | "in_review"
-  | "awaiting_review"
-  | "done"
-  | "completed"
-  | "answered"
-  | "accepted"
-  | "archived"
-  | "cancelled"
-  | "failed";
-
-export type TaskWorkflowStatus = "backlog" | "ready" | "in_progress" | "review" | "done" | "archived";
-export type TaskExecutionStatus = "idle" | "scheduled" | "queued" | "preparing" | "running" | "failed" | "cancelled";
-export type TaskReviewReason = "checkpoint" | "answer" | "manual" | "merge" | null;
-export type TaskAction = "build" | "ask";
-export type TaskExecutionAction = TaskAction | "interactive" | "terminal" | null;
-export type TaskMessageAction = TaskAction | "comment";
-export const TASK_PROMPT_ATTACHMENT_MAX_COUNT = 6;
-export const TASK_PROMPT_ATTACHMENT_MAX_SIZE_BYTES = 6 * 1024 * 1024;
-export const TASK_PROMPT_ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
-/** @deprecated Use ProviderProfile instead. Kept for Redis migration in task-store. */
-export type TaskReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
-export type TaskComplexity = "trivial" | "normal" | "complex";
-export type TaskBranchStrategy = "feature_branch" | "work_on_branch";
-export type AudienceType = "technical" | "non_technical" | "mixed";
-export type AgentResponseStyle = Extract<AudienceType, "technical" | "non_technical">;
-export type AgentExplanationDepth = "one_line" | "brief" | "standard" | "detailed" | "deep_dive";
-export type AgentJargonLevel = "avoid" | "balanced" | "expert";
-export type AgentCodePreference = "only_when_needed" | "prefer_examples" | "avoid_code";
-export type AgentClarifyBehavior = "ask_when_ambiguous" | "make_reasonable_assumptions";
-export type AgentFormattingStyle = "direct" | "teaching" | "executive" | "step_by_step" | "checklist" | "qa" | "problem_solution";
-
-export interface AgentResponsePolicy {
-  audience?: AudienceType;
-  explanationDepth?: AgentExplanationDepth;
-  jargonLevel?: AgentJargonLevel;
-  codePreference?: AgentCodePreference;
-  clarifyBehavior?: AgentClarifyBehavior;
-  formattingStyle?: AgentFormattingStyle;
-  extraInstructions?: string;
-}
-
-export type AgentResponsePreference = AgentResponsePolicy;
-
-export interface ResponsePreferencePreset {
-  id: string;
-  name: string;
-  description: string;
-  preference: AgentResponsePreference;
-  isSystem: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ResponsePreferencePresetInput {
-  id?: string;
-  name: string;
-  description?: string;
-  preference: AgentResponsePolicy;
-}
-
-export type McpServerTransport = "stdio" | "http";
-export type PermissionScope =
-  | "task:list"
-  | "task:create"
-  | "task:read"
-  | "task:edit"
-  | "task:build"
-  | "task:ask"
-  | "task:interactive"
-  | "task:delete"
-  | "snippet:list"
-  | "snippet:create"
-  | "snippet:read"
-  | "snippet:edit"
-  | "snippet:delete"
-  | "sequence:list"
-  | "sequence:create"
-  | "sequence:read"
-  | "sequence:edit"
-  | "sequence:delete"
-  | "repo:list"
-  | "repo:read"
-  | "repo:create"
-  | "repo:edit"
-  | "repo:delete"
-  | "settings:read"
-  | "settings:edit"
-  | "user:list"
-  | "user:create"
-  | "user:read"
-  | "user:edit"
-  | "user:delete";
-
-export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
-  "task:list",
-  "task:create",
-  "task:read",
-  "task:edit",
-  "task:build",
-  "task:ask",
-  "task:interactive",
-  "task:delete",
-  "snippet:list",
-  "snippet:create",
-  "snippet:read",
-  "snippet:edit",
-  "snippet:delete",
-  "sequence:list",
-  "sequence:create",
-  "sequence:read",
-  "sequence:edit",
-  "sequence:delete",
-  "repo:list",
-  "repo:read",
-  "repo:create",
-  "repo:edit",
-  "repo:delete",
-  "settings:read",
-  "settings:edit",
-  "user:list",
-  "user:create",
-  "user:read",
-  "user:edit",
-  "user:delete"
-];
-
-export interface PermissionScopeGroup {
-  label: string;
-  scopes: PermissionScope[];
-}
-
-export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
-  { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:interactive", "task:delete"] },
-  { label: "Snippets", scopes: ["snippet:list", "snippet:create", "snippet:read", "snippet:edit", "snippet:delete"] },
-  { label: "Sequences", scopes: ["sequence:list", "sequence:create", "sequence:read", "sequence:edit", "sequence:delete"] },
-  { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
-  { label: "Settings", scopes: ["settings:read", "settings:edit"] },
-  { label: "Users", scopes: ["user:list", "user:create", "user:read", "user:edit", "user:delete"] }
-];
-
-export type TaskCapabilityScope = Extract<PermissionScope, "task:build" | "task:ask">;
-
-export const getTaskCapabilityScopeForTaskType = (taskType: TaskType): TaskCapabilityScope =>
-  taskType === "ask" ? "task:ask" : "task:build";
-
-export const getTaskCapabilityScopeForTaskAction = (action: TaskAction): TaskCapabilityScope =>
-  action === "ask" ? "task:ask" : "task:build";
-
-export const getRequiredTaskCapabilityScopes = (input: { taskType?: TaskType }): TaskCapabilityScope[] => [
-  getTaskCapabilityScopeForTaskType(input.taskType ?? "build")
-];
-
-export const hasRequiredTaskCapabilities = (
-  grantedScopes: Iterable<PermissionScope>,
-  input: { taskType?: TaskType }
-): boolean => {
-  const granted = new Set(grantedScopes);
-  return getRequiredTaskCapabilityScopes(input).every((scope) => granted.has(scope));
-};
-
-export const getRequiredTaskCapabilityScopesForDefinition = (definition: TaskDefinitionInput): TaskCapabilityScope[] =>
-  definition.sourceType === "pull_request"
-    ? getRequiredTaskCapabilityScopes({ taskType: "build" })
-    : getRequiredTaskCapabilityScopes({
-        taskType: definition.taskType
-      });
-
-export const hasRequiredTaskCapabilitiesForDefinition = (
-  grantedScopes: Iterable<PermissionScope>,
-  definition: TaskDefinitionInput
-): boolean => {
-  const granted = new Set(grantedScopes);
-  return getRequiredTaskCapabilityScopesForDefinition(definition).every((scope) => granted.has(scope));
-};
-
-export interface Role {
-  id: string;
-  name: string;
-  description: string;
-  scopes: PermissionScope[];
-  allowedProviders: AgentProvider[];
-  allowedModels: string[];
-  allowedEfforts: ProviderProfile[];
-  scopeVersion?: number;
-  isSystem: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface UserRoleRef {
-  id: string;
-  name: string;
-  isSystem: boolean;
-}
-
-export interface User {
-  id: string;
-  name: string;
-  email: string;
-  active: boolean;
-  agentResponsePreference: AgentResponsePreference;
-  roles: UserRoleRef[];
-  repositoryIds: string[];
-  lastLoginAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface AuthSessionUser extends User {
-  scopes: PermissionScope[];
-  allowedProviders: AgentProvider[];
-  allowedModels: string[];
-  allowedEfforts: ProviderProfile[];
-  codexAuthJsonConfigured?: boolean;
-}
-
-export interface AuthSession {
-  user: AuthSessionUser;
-  expiresAt: string;
-}
-
-export interface AuthProfile {
-  name: string;
-  email: string;
-  agentResponsePreference: AgentResponsePreference;
-  codexAuthJsonConfigured: boolean;
-}
-
-export interface LoginInput {
-  email: string;
-  password: string;
-}
-
-export interface CreateRoleInput {
-  name: string;
-  description?: string;
-  scopes: PermissionScope[];
-  allowedProviders?: AgentProvider[];
-  allowedModels?: string[];
-  allowedEfforts?: ProviderProfile[];
-}
-
-export interface UpdateRoleInput {
-  name?: string;
-  description?: string;
-  scopes?: PermissionScope[];
-  allowedProviders?: AgentProvider[];
-  allowedModels?: string[];
-  allowedEfforts?: ProviderProfile[];
-}
-
-export interface CreateUserInput {
-  name: string;
-  email: string;
-  password: string;
-  active?: boolean;
-  roleIds?: string[];
-  repositoryIds?: string[];
-  agentResponsePreference?: Partial<AgentResponsePreference>;
-}
-
-export interface UpdateUserInput {
-  name?: string;
-  email?: string;
-  password?: string;
-  active?: boolean;
-  roleIds?: string[];
-  repositoryIds?: string[];
-  agentResponsePreference?: Partial<AgentResponsePreference>;
-}
-
-export interface RepositoryEnvVar {
-  key: string;
-  type?: "text";
-  value: string;
-}
-
-export interface RepositoryEnvFile {
-  key: string;
-  type: "file";
-  configured: boolean;
-  fileName?: string;
-}
-
-export type RepositoryEnvVarValue = RepositoryEnvVar | RepositoryEnvFile;
-
-export interface RepositoryEnvVarInputText {
-  key: string;
-  type?: "text";
-  value: string;
-}
-
-export interface RepositoryEnvVarInputFile {
-  key: string;
-  type: "file";
-  fileName?: string;
-  fileContentBase64?: string;
-}
-
-export type RepositoryEnvVarInput = RepositoryEnvVarInputText | RepositoryEnvVarInputFile;
-
-export interface RepositoryEnvSecret {
-  key: string;
-  configured: boolean;
-  type?: "text" | "file";
-  fileName?: string;
-}
-
-export interface RepositoryEnvSecretInputText {
-  key: string;
-  type?: "text";
-  value?: string;
-}
-
-export interface RepositoryEnvSecretInputFile {
-  key: string;
-  type: "file";
-  fileName?: string;
-  fileContentBase64?: string;
-}
-
-export type RepositoryEnvSecretInput = RepositoryEnvSecretInputText | RepositoryEnvSecretInputFile;
-
-export type GitHubAutomationTrigger = "issue_opened" | "pull_request_opened";
-export type GitHubCommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
-
-export interface GitHubAutomationLabelFilter {
-  labelsAny?: string[];
-  labelsAll?: string[];
-  labelsNone?: string[];
-}
-
-export interface GitHubAutomationTaskConfig {
-  assigneeEmail?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  taskType?: Extract<TaskType, "build" | "ask">;
-  includeComments?: boolean;
-  titleTemplate?: string;
-  notes?: string;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string | null;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  snippetId?: string;
-}
-
-export interface GitHubAutomationRule {
-  id: string;
-  name: string;
-  enabled: boolean;
-  trigger: GitHubAutomationTrigger;
-  syncStatusEnabled?: boolean;
-  automationEnabled?: boolean;
-  allowedTriggers?: GitHubCommentTriggerType[];
-  allowedReactions?: string[];
-  allowedCommands?: string[];
-  allowedActorLogins?: string[];
-  labelFilter?: GitHubAutomationLabelFilter;
-  task: GitHubAutomationTaskConfig;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface Repository {
-  id: string;
-  name: string;
-  url: string;
-  defaultBranch: string;
-  syncStatusEnabled?: boolean;
-  envVars: RepositoryEnvVarValue[];
-  envSecrets?: RepositoryEnvSecret[];
-  webhookUrl: string | null;
-  webhookEnabled: boolean;
-  webhookSecretConfigured: boolean;
-  webhookLastAttemptAt: string | null;
-  webhookLastStatus: "success" | "failed" | null;
-  webhookLastError: string | null;
-  githubWebhookSecretConfigured?: boolean;
-  githubAutomations?: GitHubAutomationRule[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export type TaskTerminalSessionMode = "interactive" | "git";
-export type CodexCredentialSource = "auto" | "profile" | "global";
-
-export interface Task {
-  id: string;
-  title: string;
-  deadline: string | null;
-  pinned: boolean;
-  hasPendingCheckpoint: boolean;
-  activeInteractiveSession?: boolean;
-  activeTerminalSessionMode?: TaskTerminalSessionMode | null;
-  ownerUserId: string | null;
-  creatorName?: string | null;
-  repoId: string;
-  repoName: string;
-  repoUrl: string;
-  repoDefaultBranch: string;
-  taskType: TaskType;
-  provider: AgentProvider;
-  providerProfile: ProviderProfile;
-  modelOverride: string | null;
-  codexCredentialSource?: CodexCredentialSource;
-  taskSource?: Extract<TaskSourceType, "blank" | "snippet" | "sequence">;
-  snippetId?: string;
-  sequenceId?: string;
-  sequenceRunId?: string | null;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-  complexity: TaskComplexity;
-  branchName: string | null;
-  workspaceBaseRef: string | null;
-  prompt: string;
-  notes?: string;
-  resultMarkdown: string | null;
-  executionSummary: string;
-  branchDiff: string | null;
-  pullCount?: number;
-  pushCount?: number;
-  lastAction: TaskAction | null;
-  status: TaskStatus;
-  workflowStatus: TaskWorkflowStatus;
-  executionStatus: TaskExecutionStatus;
-  executionAction: TaskExecutionAction;
-  reviewReason: TaskReviewReason;
-  logs: string[];
-  enqueued: boolean;
-  scheduledStartAt?: string | null;
-  scheduledEndAt?: string | null;
-  createdAt: string;
-  updatedAt: string;
-  startedAt: string | null;
-  finishedAt: string | null;
-  errorMessage: string | null;
-}
-
-export interface OpenAiDiffAssistInput {
-  model: string;
-  providerProfile: ProviderProfile;
-  userPrompt: string;
-  /** Repository-relative path (optional `a/` or `b/` prefixes are stripped server-side). */
-  filePath: string;
-  selectedSnippet: string;
-}
-
-export interface OpenAiDiffAssistResult {
-  text: string;
-}
-
-export interface TaskPromptMagicInput {
-  prompt: string;
-}
-
-export interface TaskPromptMagicResult {
-  prompt: string;
-}
-
-export interface TaskLiveDiff {
-  diff: string | null;
-  live: boolean;
-  fetchedAt: string;
-  message: string | null;
-  /** Current workspace HEAD branch (or "HEAD" when detached). */
-  headBranch: string | null;
-  /** Short SHA for HEAD. */
-  headShaShort: string | null;
-  /** Ref used as the compare base for this diff (e.g. origin/main). */
-  baseRef: string | null;
-  /** Auto-resolved base when no override was requested; mirrors baseRef when using default. */
-  defaultBaseRef: string | null;
-}
-
-/** One commit on the task workspace’s current branch (from `git log`). */
-export interface TaskWorkspaceCommit {
-  sha: string;
-  shortSha: string;
-  subject: string;
-  /** ISO 8601 timestamp from `git log` (%cI). */
-  committedAt: string;
-  authorName: string;
-}
-
-export interface TaskWorkspaceCommitLog {
-  commits: TaskWorkspaceCommit[];
-  fetchedAt: string;
-  message: string | null;
-}
-
-export type TaskWorkspaceFileTreeEntryKind = "file" | "directory";
-
-export interface TaskWorkspaceFileTreeEntry {
-  path: string;
-  name: string;
-  kind: TaskWorkspaceFileTreeEntryKind;
-}
-
-export interface TaskWorkspaceFileTree {
-  /** Directory prefix that was listed; null means workspace root. */
-  prefix: string | null;
-  entries: TaskWorkspaceFileTreeEntry[];
-  fetchedAt: string;
-  truncated: boolean;
-  totalCount: number;
-}
-
-export interface TaskWorkspaceFileSearchResult {
-  query: string;
-  results: string[];
-  fetchedAt: string;
-  truncated: boolean;
-  totalCount: number;
-}
-
-export type TaskWorkspaceFilePreviewKind = "text" | "image" | "binary";
-
-export interface TaskWorkspaceFilePreview {
-  path: string;
-  /** Git ref used for the preview, or null when reading the live workspace file. */
-  ref: string | null;
-  kind: TaskWorkspaceFilePreviewKind;
-  mimeType: string | null;
-  encoding: "utf8" | "base64";
-  content: string;
-  sizeBytes: number;
-}
-
-/** Snapshot for the Push UI before staging/commit (working tree + index vs HEAD). */
-export interface TaskPushPreview {
-  branchName: string;
-  changedFiles: string[];
-  /** Unified diff vs HEAD; may be truncated for large workspaces. */
-  diff: string;
-  diffTruncated: boolean;
-  /** `git diff HEAD --stat` output (may be truncated). */
-  diffStat: string;
-  hasUncommittedChanges: boolean;
-  unpushedCommitSubjects: string[];
-  /** Suggested first line if a new commit is created from current changes. */
-  suggestedCommitMessage: string;
-}
-
-export interface TaskMergePreview {
-  sourceBranch: string;
-  targetBranch: string;
-  mergeable: boolean;
-  message: string;
-  suggestedCommitMessage: string;
-}
-
-export interface TaskPromptAttachment {
-  id: string;
-  name: string;
-  mimeType: string;
-  sizeBytes: number;
-  relativePath: string;
-}
-
-export interface CreateTaskPromptAttachmentInput {
-  name: string;
-  mimeType: string;
-  dataBase64: string;
-}
-
-export interface TaskMessage {
-  id: string;
-  taskId: string;
-  role: TaskMessageRole;
-  content: string;
-  action: TaskMessageAction | null;
-  /** Optional saved image attachments that were attached when the user submitted this message. */
-  attachments?: TaskPromptAttachment[];
-  /** Present for interactive terminal lifecycle messages so history can address the terminal session. */
-  sessionId?: string | null;
-  createdAt: string;
-}
-
-export interface TaskExecutionInput {
-  content: string;
-  attachments?: TaskPromptAttachment[];
-}
-
-export interface TaskRun {
-  id: string;
-  taskId: string;
-  action: TaskAction;
-  provider: AgentProvider;
-  providerProfile: ProviderProfile;
-  modelOverride: string | null;
-  branchName: string | null;
-  status: TaskRunStatus;
-  startedAt: string;
-  finishedAt: string | null;
-  summary: string | null;
-  /** Build-only outcome. Null for ask runs and legacy runs. */
-  changeOutcome?: "changed" | "no_change" | null;
-  errorMessage: string | null;
-  /** Git HEAD ref captured before the agent container runs; used for change proposals. */
-  changeProposalCheckpointRef?: string | null;
-  /** Untracked paths (repo-relative) at checkpoint; used so reject does not wipe pre-existing untracked files. */
-  changeProposalUntrackedPaths?: string[] | null;
-  /** True when the provider's native JSONL stream has been captured for this run. */
-  hasRawJson?: boolean;
-  logs: string[];
-}
-
-export type TaskGitOperationType = "clone_for_task" | "pull_task_branch" | "push_task_branch";
-export type TaskGitOperationStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
-export type TaskGitOperationFailureCode =
-  | "auth_failed"
-  | "network_error"
-  | "branch_missing"
-  | "conflict"
-  | "nothing_to_push"
-  | "workspace_missing"
-  | "unknown";
-
-export interface TaskGitOperation {
-  operationId: string;
-  taskId: string;
-  operationType: TaskGitOperationType;
-  status: TaskGitOperationStatus;
-  startedAt: string;
-  finishedAt: string | null;
-  errorCode: TaskGitOperationFailureCode | null;
-  errorMessage: string | null;
-  attemptCount: number;
-}
-
-export type TaskChangeProposalSourceType = "build_run" | "interactive_session";
-
-export type TaskChangeProposalStatus = "pending" | "applied" | "rejected" | "reverted";
-
-export interface TaskChangeProposal {
-  id: string;
-  taskId: string;
-  sourceType: TaskChangeProposalSourceType;
-  /** `TaskRun.id` for build_run; session id for interactive_session */
-  sourceId: string;
-  status: TaskChangeProposalStatus;
-  fromRef: string;
-  toRef: string;
-  /** Persisted unified diff for preview and revert (when not truncated). */
-  diff: string;
-  diffStat: string;
-  changedFiles: string[];
-  diffTruncated: boolean;
-  /** Untracked paths at proposal start; on reject only *new* untracked files (not in this list) are removed. */
-  untrackedPathsAtCheckpoint: string[];
-  createdAt: string;
-  /** Set when leaving pending (apply or reject). */
-  resolvedAt: string | null;
-  /** Set when an applied checkpoint is reverted via stored diff. */
-  revertedAt: string | null;
-}
-
-export interface ApplyTaskChangeProposalInput {
-  commitMessage?: string;
-}
-
-export interface RevertTaskChangeProposalFileInput {
-  path: string;
-}
-
-export interface TaskInteractiveTerminalTranscript {
-  taskId: string;
-  sessionId: string;
-  content: string;
-  truncated: boolean;
-}
-
-export interface McpServerConfig {
-  name: string;
-  enabled: boolean;
-  transport: McpServerTransport;
-  command?: string | null;
-  args?: string[];
-  url?: string | null;
-  bearerTokenEnvVar?: string | null;
-}
-
-export interface GitHubIssueReference {
-  number: number;
-  title: string;
-  url: string;
-}
-
-export interface GitHubPullRequestReference {
-  number: number;
-  title: string;
-  url: string;
-  headBranch: string;
-  baseBranch: string;
-}
-
-export interface GitHubBranchReference {
-  name: string;
-  isDefault: boolean;
-}
-
-export type DataStoreBackend = "redis" | "postgres";
-export type WorkspaceProvisioningMode = "clone_only" | "hybrid";
-
-export interface SystemDataStores {
-  taskStore: "postgres";
-  snippetStore: "postgres";
-  sequenceStore: "postgres";
-  repositoryStore: "postgres";
-  credentialStore: "postgres";
-  roleStore: "postgres";
-  userStore: "postgres";
-  settingsStore: "postgres";
-  taskQueueStore: "redis";
-  webhookDeliveryStore: "redis";
-  sessionStore: "redis";
-  eventBus: "redis";
-}
-
-export interface SystemSettings {
-  defaultProvider: AgentProvider;
-  maxAgents: number;
-  branchPrefix: string;
-  workspaceProvisioningMode: WorkspaceProvisioningMode;
-  gitUsername: string;
-  mcpServers: McpServerConfig[];
-  openaiBaseUrl: string | null;
-  taskPromptMagicModel: string;
-  taskPromptMagicTemplate: string;
-  githubTokenConfigured: boolean;
-  openaiApiKeyConfigured: boolean;
-  anthropicApiKeyConfigured: boolean;
-  codexDefaultModel: string;
-  codexDefaultEffort: ProviderProfile;
-  claudeDefaultModel: string;
-  claudeDefaultEffort: ProviderProfile;
-  responsePreferencePresets: ResponsePreferencePreset[];
-  dataStores?: SystemDataStores;
-}
-
-export interface UserNotes {
-  notes: string;
-  updatedAt: string;
-}
-
-export interface CreateRepositoryInput {
-  name: string;
-  url: string;
-  defaultBranch?: string;
-  syncStatusEnabled?: boolean;
-  envVars?: RepositoryEnvVarInput[];
-  envSecrets?: RepositoryEnvSecretInput[];
-  webhookUrl?: string | null;
-  webhookEnabled?: boolean;
-  webhookSecret?: string;
-  githubWebhookSecret?: string;
-  githubAutomations?: GitHubAutomationRule[];
-}
-
-export interface UpdateRepositoryInput {
-  name?: string;
-  url?: string;
-  defaultBranch?: string;
-  syncStatusEnabled?: boolean;
-  envVars?: RepositoryEnvVarInput[];
-  envSecrets?: RepositoryEnvSecretInput[];
-  webhookUrl?: string | null;
-  webhookEnabled?: boolean;
-  webhookSecret?: string;
-  clearWebhookSecret?: boolean;
-  githubWebhookSecret?: string;
-  clearGithubWebhookSecret?: boolean;
-  githubAutomations?: GitHubAutomationRule[];
-}
-
-export interface CreateTaskInput {
-  title: string;
-  draft?: boolean;
-  deadline?: string | null;
-  repoId: string;
-  prompt: string;
-  notes?: string;
-  attachments?: CreateTaskPromptAttachmentInput[];
-  taskType?: TaskType;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  model?: string;
-  reasoningEffort?: TaskReasoningEffort;
-  task_source?: "blank" | "snippet" | "sequence";
-  snippet_id?: string;
-  sequence_id?: string;
-  sequence_variables?: Record<string, string>;
-}
-
-export type TaskSourceType = "blank" | "snippet" | "sequence" | "issue" | "pull_request";
-
-export interface BlankTaskDefinitionInput {
-  sourceType: "blank";
-  title: string;
-  deadline?: string | null;
-  repoId: string;
-  prompt: string;
-  notes?: string;
-  attachments?: CreateTaskPromptAttachmentInput[];
-  taskType: TaskType;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
-export interface IssueTaskDefinitionInput {
-  sourceType: "issue";
-  title?: string;
-  deadline?: string | null;
-  notes?: string;
-  repoId: string;
-  issueNumber: number;
-  includeComments: boolean;
-  taskType: Extract<TaskType, "build" | "ask">;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
-export interface PullRequestTaskDefinitionInput {
-  sourceType: "pull_request";
-  title?: string;
-  deadline?: string | null;
-  notes?: string;
-  repoId: string;
-  pullRequestNumber: number;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-}
-
-export interface SnippetTaskDefinitionInput {
-  sourceType: "snippet";
-  title: string;
-  deadline?: string | null;
-  repoId: string;
-  snippetId: string;
-  prompt: string;
-  notes?: string;
-  attachments?: CreateTaskPromptAttachmentInput[];
-  taskType: TaskType;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
-export interface SequenceTaskDefinitionInput {
-  sourceType: "sequence";
-  title: string;
-  deadline?: string | null;
-  repoId: string;
-  sequenceId: string;
-  sequenceVariables?: Record<string, string>;
-  notes?: string;
-  attachments?: CreateTaskPromptAttachmentInput[];
-  taskType: TaskType;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
-export type TaskDefinitionInput =
-  | BlankTaskDefinitionInput
-  | SnippetTaskDefinitionInput
-  | SequenceTaskDefinitionInput
-  | IssueTaskDefinitionInput
-  | PullRequestTaskDefinitionInput;
-
-export interface Snippet {
-  id: string;
-  name: string;
-  content: string;
-  variables: SnippetVariable[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export type SnippetVariableType = "text" | "multiline";
-
-export interface SnippetVariable {
-  name: string;
-  type: SnippetVariableType;
-  title: string;
-  description: string;
-  defaultValue: string;
-}
-
-export interface CreateSnippetInput {
-  name: string;
-  content: string;
-  variables?: SnippetVariable[];
-}
-
-export interface UpdateSnippetInput {
-  name: string;
-  content: string;
-  variables?: SnippetVariable[];
-}
-
-export type SequenceStepType = "inline" | "snippet";
-export type SequenceStepState = "pending" | "running" | "succeeded" | "failed" | "skipped";
-export type SequenceExecutionMode = "auto_apply_changes" | "approve_before_continuing";
-export type SequenceRunStatus = "running" | "waiting_for_approval" | "waiting_for_checkpoint_resolution" | "succeeded" | "failed";
-
-export interface SequenceStep {
-  id: string;
-  type: SequenceStepType;
-  prompt: string;
-  snippetId?: string;
-}
-
-export interface Sequence {
-  id: string;
-  name: string;
-  executionMode: SequenceExecutionMode;
-  steps: SequenceStep[];
-  variables: SnippetVariable[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface CreateSequenceInput {
-  name: string;
-  executionMode?: SequenceExecutionMode;
-  steps: SequenceStep[];
-  variables?: SnippetVariable[];
-}
-
-export interface UpdateSequenceInput {
-  name: string;
-  executionMode?: SequenceExecutionMode;
-  steps: SequenceStep[];
-  variables?: SnippetVariable[];
-}
-
-export interface SequenceRunStep {
-  index: number;
-  prompt: string;
-  state: SequenceStepState;
-  taskRunId: string | null;
-  errorMessage: string | null;
-  startedAt: string | null;
-  finishedAt: string | null;
-}
-
-export interface SequenceRun {
-  id: string;
-  sequenceId: string;
-  taskId: string;
-  status: SequenceRunStatus;
-  executionMode: SequenceExecutionMode;
-  failPolicy: "fail_fast";
-  stepCount: number;
-  waitingForApprovalAfterStepIndex: number | null;
-  failedStepIndex: number | null;
-  startedAt: string;
-  finishedAt: string | null;
-  steps: SequenceRunStep[];
-}
-
-export interface CreateTaskFromIssueInput {
-  repoId: string;
-  draft?: boolean;
-  issueNumber: number;
-  includeComments?: boolean;
-  notes?: string;
-  deadline?: string | null;
-  taskType?: Extract<TaskType, "build" | "ask">;
-  title?: string;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  model?: string;
-  reasoningEffort?: TaskReasoningEffort;
-}
-
-export interface CreateTaskFromPullRequestInput {
-  repoId: string;
-  draft?: boolean;
-  pullRequestNumber: number;
-  title?: string;
-  notes?: string;
-  deadline?: string | null;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  model?: string;
-  reasoningEffort?: TaskReasoningEffort;
-}
-
-export interface TriggerTaskActionInput {
-  action: TaskAction;
-}
-
-export interface UpdateTaskConfigInput {
-  provider: AgentProvider;
-  providerProfile: ProviderProfile;
-  modelOverride?: string | null;
-  codexCredentialSource?: CodexCredentialSource;
-  branchStrategy?: TaskBranchStrategy;
-}
-
-export interface UpdateTaskPinInput {
-  pinned: boolean;
-}
-
-export interface UpdateTaskTitleInput {
-  title: string;
-}
-
-export interface UpdateTaskNotesInput {
-  notes: string;
-}
-
-export interface UpdateTaskDeadlineInput {
-  deadline: string | null;
-}
-
-export interface UpdateUserNotesInput {
-  notes: string;
-}
-
-export interface UpdateTaskStateInput {
-  status: Extract<TaskStatus, "open" | "in_progress" | "in_review" | "awaiting_review" | "done">;
-}
-
-export interface UpdateTaskAssigneeInput {
-  ownerUserId: string;
-}
-
-export interface CreateTaskMessageInput {
-  content: string;
-  attachments?: CreateTaskPromptAttachmentInput[];
-  action?: TaskMessageAction;
-}
-
-export interface UpdateTaskMessageInput {
-  content: string;
-}
-
-export interface UpdateTaskWorkspaceFileInput {
-  path: string;
-  content: string;
-}
-
-export interface MergeTaskInput {
-  targetBranch: string;
-  commitMessage?: string;
-  deleteRemoteBranch?: boolean;
-}
-
-export const getTaskBranchStrategyLabel = (strategy: TaskBranchStrategy): string =>
-  ({
-    feature_branch: "Create Feature Branch",
-    work_on_branch: "Work On Existing Branch"
-  })[strategy];
-
-export const getAgentProviderLabel = (provider: AgentProvider): string =>
-  ({
-    codex: "Codex",
-    claude: "Claude Code (experimental)"
-  })[provider];
-
-export const getProviderProfileLabel = (profile: ProviderProfile): string =>
-  ({
-    low: "Low",
-    medium: "Medium",
-    high: "High",
-    max: "Max"
-  })[profile];
-
-export const getTaskTypeLabel = (taskType: TaskType): string =>
-  ({
-    build: "Build",
-    ask: "Ask"
-  })[taskType];
-
-const queuedStatusByAction: Record<TaskAction, TaskStatus> = {
-  build: "build_queued",
-  ask: "ask_queued"
-};
-
-const activeStatusByAction: Record<TaskAction, TaskStatus> = {
-  build: "building",
-  ask: "asking"
-};
-
-const successfulStatusByAction: Record<TaskAction, TaskStatus> = {
-  build: "completed",
-  ask: "answered"
-};
-
-export const getQueuedStatusForAction = (action: TaskAction): TaskStatus => queuedStatusByAction[action];
-export const getActiveStatusForAction = (action: TaskAction): TaskStatus => activeStatusByAction[action];
-export const getSuccessfulStatusForAction = (action: TaskAction): TaskStatus => successfulStatusByAction[action];
-
-export const isQueuedTaskStatus = (status: TaskStatus): boolean =>
-  status === "build_queued" ||
-  status === "ask_queued";
-
-export const isActiveTaskStatus = (status: TaskStatus): boolean =>
-  status === "preparing_workspace" ||
-  status === "building" ||
-  status === "asking";
-
-export const isTaskWorking = (task: Pick<Task, "status" | "activeInteractiveSession"> & { executionStatus?: TaskExecutionStatus }): boolean =>
-  task.executionStatus === "queued" ||
-  task.executionStatus === "preparing" ||
-  task.executionStatus === "running" ||
-  isActiveTaskStatus(task.status) ||
-  task.activeInteractiveSession === true;
-
-export const getTaskExecutionStatus = (
-  task: Pick<Task, "status" | "activeInteractiveSession"> & { executionStatus?: TaskExecutionStatus }
-): TaskExecutionStatus => {
-  if (task.activeInteractiveSession === true) {
-    return "running";
-  }
-
-  if (
-    task.executionStatus === "idle" ||
-    task.executionStatus === "scheduled" ||
-    task.executionStatus === "queued" ||
-    task.executionStatus === "preparing" ||
-    task.executionStatus === "running" ||
-    task.executionStatus === "failed" ||
-    task.executionStatus === "cancelled"
-  ) {
-    return task.executionStatus;
-  }
-
-  if (task.status === "scheduled") {
-    return "scheduled";
-  }
-
-  if (isQueuedTaskStatus(task.status)) {
-    return "queued";
-  }
-
-  if (task.status === "preparing_workspace") {
-    return "preparing";
-  }
-
-  if (isActiveTaskStatus(task.status)) {
-    return "running";
-  }
-
-  if (task.status === "failed") {
-    return "failed";
-  }
-
-  if (task.status === "cancelled") {
-    return "cancelled";
-  }
-
-  return "idle";
-};
-
-export const getTaskExecutionAction = (
-  task: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode"> & { executionAction?: TaskExecutionAction }
-): TaskExecutionAction => {
-  if (task.activeInteractiveSession === true) {
-    return task.activeTerminalSessionMode === "git" ? "terminal" : "interactive";
-  }
-
-  if (task.status === "draft") {
-    return null;
-  }
-
-  if (task.executionAction === "build" || task.executionAction === "ask" || task.executionAction === "interactive" || task.executionAction === "terminal") {
-    return task.executionAction;
-  }
-
-  if (task.status === "build_queued" || task.status === "preparing_workspace" || task.status === "building") {
-    return "build";
-  }
-
-  if (task.status === "ask_queued" || task.status === "asking") {
-    return "ask";
-  }
-
-  return task.lastAction ?? null;
-};
-
-export const getTaskReviewReason = (task: Pick<Task, "status" | "hasPendingCheckpoint" | "taskType">): TaskReviewReason => {
-  if (task.hasPendingCheckpoint || task.status === "awaiting_review") {
-    return "checkpoint";
-  }
-
-  if (task.status === "in_review") {
-    return task.taskType === "ask" ? "answer" : "manual";
-  }
-
-  return null;
-};
-
-export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingCheckpoint" | "taskType">): TaskWorkflowStatus => {
-  if (task.status === "archived") {
-    return "archived";
-  }
-
-  if (task.status === "done" || task.status === "accepted") {
-    return "done";
-  }
-
-  if (task.status === "in_progress") {
-    return "in_progress";
-  }
-
-  if (task.status === "awaiting_review" || task.status === "in_review") {
-    return "review";
-  }
-
-  if (task.status === "draft" || task.status === "scheduled") {
-    return "backlog";
-  }
-
-  return "ready";
-};
-
-export const getTaskTerminalSessionLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Git Terminal" : "Interactive Terminal";
-
-export const getTaskTerminalSessionSentenceLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Git terminal" : "Interactive terminal";
-
-export const getTaskTerminalSessionStartMessage = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Terminal session started." : `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
-
-export const getTaskTerminalSessionEndMessage = (mode: TaskTerminalSessionMode): string =>
-  `${getTaskTerminalSessionSentenceLabel(mode)} session ended.`;
-
-export const getTaskTerminalSessionNoChangesMessage = (mode: TaskTerminalSessionMode): string =>
-  `${getTaskTerminalSessionSentenceLabel(mode)} session ended. No workspace changes were detected.`;
-
-export const getTaskTerminalSessionReviewMessage = (mode: TaskTerminalSessionMode): string =>
-  `${getTaskTerminalSessionSentenceLabel(mode)} session ended. Review proposed changes below.`;
-
-/** When set, checkpoint apply / reject / revert must be refused (agent run queued or in progress). */
-export function getCheckpointMutationBlockedReason(status: TaskStatus): string | null {
-  if (isQueuedTaskStatus(status) || isActiveTaskStatus(status)) {
-    return `Checkpoint actions are unavailable while the task is “${getTaskStatusLabel(status)}”.`;
-  }
-  return null;
-}
-
-export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
-  status === "archived";
-
-export const getTaskStatusLabel = (status: TaskStatus): string =>
-  ({
-    draft: "Draft",
-    scheduled: "Scheduled",
-    build_queued: "Build Queued",
-    preparing_workspace: "Preparing Workspace",
-    building: "Building",
-    ask_queued: "Ask Queued",
-    asking: "Answering",
-    open: "Open",
-    in_progress: "In Progress",
-    in_review: "In Review",
-    awaiting_review: "Awaiting Review",
-    done: "Done",
-    completed: "Completed",
-    answered: "Answered",
-    accepted: "Accepted",
-    archived: "Archived",
-    cancelled: "Cancelled",
-    failed: "Failed"
-  })[status];
-
-export const getTaskWorkflowStatusLabel = (status: TaskWorkflowStatus): string =>
-  ({
-    backlog: "Backlog",
-    ready: "Ready",
-    in_progress: "In Progress",
-    review: "Review",
-    done: "Done",
-    archived: "Archived"
-  })[status];
-
-export const getTaskExecutionStatusLabel = (status: TaskExecutionStatus): string =>
-  ({
-    idle: "Idle",
-    scheduled: "Scheduled",
-    queued: "Queued",
-    preparing: "Preparing",
-    running: "Running",
-    failed: "Failed",
-    cancelled: "Cancelled"
-  })[status];
-
-export interface UpdateSettingsInput {
-  defaultProvider?: AgentProvider;
-  maxAgents?: number;
-  branchPrefix?: string;
-  workspaceProvisioningMode?: WorkspaceProvisioningMode;
-  gitUsername?: string;
-  mcpServers?: McpServerConfig[];
-  openaiBaseUrl?: string | null;
-  taskPromptMagicModel?: string;
-  taskPromptMagicTemplate?: string;
-  codexDefaultModel?: string;
-  codexDefaultEffort?: ProviderProfile;
-  claudeDefaultModel?: string;
-  claudeDefaultEffort?: ProviderProfile;
-  responsePreferencePresets?: ResponsePreferencePresetInput[];
-}
-
-export interface UpdateCredentialSettingsInput {
-  githubToken?: string;
-  openaiApiKey?: string;
-  anthropicApiKey?: string;
-  clearGithubToken?: boolean;
-  clearOpenAiApiKey?: boolean;
-  clearAnthropicApiKey?: boolean;
-}
-
-export interface UpdateAuthProfileInput {
-  name?: string;
-  codexAuthJson?: string;
-  clearCodexAuthJson?: boolean;
-  agentResponsePreference?: Partial<AgentResponsePreference>;
-}
-
-export interface TaskEvent {
-  type: "task:created" | "task:updated";
-  payload: Task;
-}
-
-export interface TaskDeletedEvent {
-  type: "task:deleted";
-  payload: {
-    id: string;
-    repoId: string;
-    ownerUserId: string | null;
-  };
-}
-
-export interface TaskLogEvent {
-  type: "task:log";
-  payload: {
-    taskId: string;
-    runId?: string | null;
-    line: string;
-    timestamp: string;
-  };
-}
-
-export interface TaskMessageEvent {
-  type: "task:message";
-  payload: TaskMessage;
-}
-
-export interface TaskMessageUpdatedEvent {
-  type: "task:message_updated";
-  payload: TaskMessage;
-}
-
-export interface TaskRunEvent {
-  type: "task:run_updated";
-  payload: TaskRun;
-}
-
-export interface TaskGitOperationEvent {
-  type: "task:git_operation";
-  payload: TaskGitOperation;
-}
-
-export interface TaskChangeProposalEvent {
-  type: "task:change_proposal";
-  payload: TaskChangeProposal;
-}
-
-export interface TaskPushedEvent {
-  type: "task:pushed";
-  payload: {
-    taskId: string;
-    repoId: string;
-    branchName: string;
-    commitMessage: string | null;
-    triggeredAt: string;
-  };
-}
-
-export interface TaskMergedEvent {
-  type: "task:merged";
-  payload: {
-    taskId: string;
-    repoId: string;
-    sourceBranch: string;
-    targetBranch: string;
-    commitMessage: string | null;
-    triggeredAt: string;
-  };
-}
-
-export interface SettingsEvent {
-  type: "settings:updated";
-  payload: SystemSettings;
-}
-
-export interface RepositoryEvent {
-  type: "repository:created" | "repository:updated" | "repository:deleted";
-  payload: Repository | { id: string };
-}
-
-export interface SnippetEvent {
-  type: "snippet:created" | "snippet:updated" | "snippet:deleted";
-  payload: Snippet | { id: string };
-}
-
-export interface SequenceEvent {
-  type: "sequence:created" | "sequence:updated" | "sequence:deleted";
-  payload: Sequence | { id: string };
-}
-
-export interface SequenceRunEvent {
-  type: "sequence:run_updated";
-  payload: SequenceRun;
-}
-
-export type RealtimeEvent =
-  | TaskEvent
-  | TaskDeletedEvent
-  | TaskLogEvent
-  | TaskMessageEvent
-  | TaskMessageUpdatedEvent
-  | TaskRunEvent
-  | TaskGitOperationEvent
-  | TaskChangeProposalEvent
-  | TaskPushedEvent
-  | TaskMergedEvent
-  | SettingsEvent
-  | RepositoryEvent
-  | SnippetEvent
-  | SequenceEvent
-  | SequenceRunEvent;
-````
-
 ## File: apps/web/components/task-detail-page.tsx
 ````typescript
 "use client";
@@ -56822,6 +55783,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>(null);
   const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "diff" | "files">("chat");
   const [expandedRunKeys, setExpandedRunKeys] = useState<string[]>([]);
+  const [expandedRunTimelineKeys, setExpandedRunTimelineKeys] = useState<string[]>([]);
   const [selectedChatAction, setSelectedChatAction] = useState<ComposerAction>("build");
   const [submitting, setSubmitting] = useState<
     | null
@@ -60339,6 +59301,73 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     </div>
   );
 
+  const formatTimelineEventKind = (kind: string): string =>
+    kind
+      .split(".")
+      .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+      .join(" ");
+
+  const renderRunTimelinePanel = (run: TaskRun) => {
+    const events = run.timelineEvents ?? [];
+    if (events.length === 0) {
+      return <Typography.Text type="secondary">No parsed timeline events captured for this run.</Typography.Text>;
+    }
+
+    return (
+      <List
+        size="small"
+        dataSource={events}
+        renderItem={(event) => (
+          <List.Item style={{ alignItems: "flex-start", paddingLeft: 0, paddingRight: 0 }}>
+            <Space direction="vertical" size={2} style={{ width: "100%" }}>
+              <Space size={8} wrap>
+                <Tag>{formatTimelineEventKind(event.kind)}</Tag>
+                {event.status ? <Tag color={event.kind.includes("failed") ? "red" : undefined}>{event.status}</Tag> : null}
+                {event.toolName ? <Tag color="blue">{event.toolName}</Tag> : null}
+                {event.exitCode != null ? <Tag color={event.exitCode === 0 ? "green" : "red"}>exit {event.exitCode}</Tag> : null}
+              </Space>
+              <Typography.Text strong>{event.title}</Typography.Text>
+              {event.detail ? (
+                <Typography.Text code style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                  {event.detail}
+                </Typography.Text>
+              ) : null}
+              {event.message ? (
+                <Typography.Paragraph style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                  {event.message}
+                </Typography.Paragraph>
+              ) : null}
+              {event.filePath ? <Typography.Text type="secondary">{event.filePath}</Typography.Text> : null}
+            </Space>
+          </List.Item>
+        )}
+      />
+    );
+  };
+
+  const renderRunTimelineCollapse = (run: TaskRun) => {
+    const count = run.timelineEvents?.length ?? 0;
+    return (
+      <Collapse
+        size="small"
+        activeKey={expandedRunTimelineKeys.includes(run.id) ? [run.id] : []}
+        onChange={(keys) =>
+          setExpandedRunTimelineKeys((current) => {
+            const isOpen = Array.isArray(keys) ? keys.length > 0 : Boolean(keys);
+            return isOpen ? (current.includes(run.id) ? current : [...current, run.id]) : current.filter((key) => key !== run.id);
+          })
+        }
+        items={[
+          {
+            key: run.id,
+            label: `Timeline${count > 0 ? ` (${count})` : ""}`,
+            children: renderRunTimelinePanel(run)
+          }
+        ]}
+      />
+    );
+  };
+
   const renderRunLogsCollapse = (run: TaskRun) => (
     <Collapse
       size="small"
@@ -60796,6 +59825,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             Branch: <Typography.Text code>{run.branchName ?? "(pending)"}</Typography.Text>
           </Typography.Paragraph>
           {renderRunErrorNotice(run)}
+          {renderRunTimelineCollapse(run)}
           {renderRunLogsCollapse(run)}
           {renderRunNoChangeNotice(run)}
           {normalizedRunSummary ? (
@@ -60858,6 +59888,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             </ReactMarkdown>
           </div>
           {renderRunErrorNotice(entry.run)}
+          {renderRunTimelineCollapse(entry.run)}
           {renderRunLogsCollapse(entry.run)}
           <Collapse
             size="small"
@@ -61751,4 +60782,1582 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     </>
   );
 }
+````
+
+## File: packages/shared-types/src/index.ts
+````typescript
+export type TaskType = "build" | "ask";
+export type AgentProvider = "codex" | "claude";
+
+/** Native effort values from providers. "max" is Claude-only. */
+export type ProviderProfile = "low" | "medium" | "high" | "max";
+
+export interface ProviderModelOption {
+  label: string;
+  value: string;
+}
+
+export interface ProviderEffortOption {
+  label: string;
+  value: ProviderProfile;
+}
+
+export const CODEX_MODELS: ProviderModelOption[] = [
+  { label: "GPT-5.4", value: "gpt-5.4" },
+  { label: "o3", value: "o3" },
+  { label: "o4-mini", value: "o4-mini" },
+  { label: "o3-mini", value: "o3-mini" },
+  { label: "GPT-4.1", value: "gpt-4.1" },
+  { label: "GPT-4o", value: "gpt-4o" }
+];
+
+export const CLAUDE_MODELS: ProviderModelOption[] = [
+  { label: "Claude Opus 4", value: "claude-opus-4-5" },
+  { label: "Claude Sonnet 4.5", value: "claude-sonnet-4-5" },
+  { label: "Claude Sonnet 4", value: "claude-sonnet-4" },
+  { label: "Claude Haiku 3.5", value: "claude-haiku-3-5" }
+];
+
+/** Codex natively supports low / medium / high reasoning effort. */
+export const CODEX_EFFORT_OPTIONS: ProviderEffortOption[] = [
+  { label: "Low", value: "low" },
+  { label: "Medium", value: "medium" },
+  { label: "High", value: "high" }
+];
+
+/** Claude profiles map to thinking budgets when the resolved model supports it; "max" leaves the budget unset. */
+export const CLAUDE_EFFORT_OPTIONS: ProviderEffortOption[] = [
+  { label: "Low", value: "low" },
+  { label: "Medium", value: "medium" },
+  { label: "High", value: "high" },
+  { label: "Max", value: "max" }
+];
+
+export const getModelsForProvider = (provider: AgentProvider): ProviderModelOption[] =>
+  provider === "claude" ? CLAUDE_MODELS : CODEX_MODELS;
+
+export const getEffortOptionsForProvider = (provider: AgentProvider): ProviderEffortOption[] =>
+  provider === "claude" ? CLAUDE_EFFORT_OPTIONS : CODEX_EFFORT_OPTIONS;
+
+export const getDefaultModelForProvider = (provider: AgentProvider): string =>
+  provider === "claude" ? "claude-sonnet-4-5" : "gpt-5.4";
+export type TaskMessageRole = "user" | "assistant" | "system";
+export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
+
+export type TaskStatus =
+  | "draft"
+  | "scheduled"
+  | "build_queued"
+  | "preparing_workspace"
+  | "building"
+  | "ask_queued"
+  | "asking"
+  | "open"
+  | "in_progress"
+  | "in_review"
+  | "awaiting_review"
+  | "done"
+  | "completed"
+  | "answered"
+  | "accepted"
+  | "archived"
+  | "cancelled"
+  | "failed";
+
+export type TaskWorkflowStatus = "backlog" | "ready" | "in_progress" | "review" | "done" | "archived";
+export type TaskExecutionStatus = "idle" | "scheduled" | "queued" | "preparing" | "running" | "failed" | "cancelled";
+export type TaskReviewReason = "checkpoint" | "answer" | "manual" | "merge" | null;
+export type TaskAction = "build" | "ask";
+export type TaskExecutionAction = TaskAction | "interactive" | "terminal" | null;
+export type TaskMessageAction = TaskAction | "comment";
+export const TASK_PROMPT_ATTACHMENT_MAX_COUNT = 6;
+export const TASK_PROMPT_ATTACHMENT_MAX_SIZE_BYTES = 6 * 1024 * 1024;
+export const TASK_PROMPT_ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
+/** @deprecated Use ProviderProfile instead. Kept for Redis migration in task-store. */
+export type TaskReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+export type TaskComplexity = "trivial" | "normal" | "complex";
+export type TaskBranchStrategy = "feature_branch" | "work_on_branch";
+export type AudienceType = "technical" | "non_technical" | "mixed";
+export type AgentResponseStyle = Extract<AudienceType, "technical" | "non_technical">;
+export type AgentExplanationDepth = "one_line" | "brief" | "standard" | "detailed" | "deep_dive";
+export type AgentJargonLevel = "avoid" | "balanced" | "expert";
+export type AgentCodePreference = "only_when_needed" | "prefer_examples" | "avoid_code";
+export type AgentClarifyBehavior = "ask_when_ambiguous" | "make_reasonable_assumptions";
+export type AgentFormattingStyle = "direct" | "teaching" | "executive" | "step_by_step" | "checklist" | "qa" | "problem_solution";
+
+export interface AgentResponsePolicy {
+  audience?: AudienceType;
+  explanationDepth?: AgentExplanationDepth;
+  jargonLevel?: AgentJargonLevel;
+  codePreference?: AgentCodePreference;
+  clarifyBehavior?: AgentClarifyBehavior;
+  formattingStyle?: AgentFormattingStyle;
+  extraInstructions?: string;
+}
+
+export type AgentResponsePreference = AgentResponsePolicy;
+
+export interface ResponsePreferencePreset {
+  id: string;
+  name: string;
+  description: string;
+  preference: AgentResponsePreference;
+  isSystem: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResponsePreferencePresetInput {
+  id?: string;
+  name: string;
+  description?: string;
+  preference: AgentResponsePolicy;
+}
+
+export type McpServerTransport = "stdio" | "http";
+export type PermissionScope =
+  | "task:list"
+  | "task:create"
+  | "task:read"
+  | "task:edit"
+  | "task:build"
+  | "task:ask"
+  | "task:interactive"
+  | "task:delete"
+  | "snippet:list"
+  | "snippet:create"
+  | "snippet:read"
+  | "snippet:edit"
+  | "snippet:delete"
+  | "sequence:list"
+  | "sequence:create"
+  | "sequence:read"
+  | "sequence:edit"
+  | "sequence:delete"
+  | "repo:list"
+  | "repo:read"
+  | "repo:create"
+  | "repo:edit"
+  | "repo:delete"
+  | "settings:read"
+  | "settings:edit"
+  | "user:list"
+  | "user:create"
+  | "user:read"
+  | "user:edit"
+  | "user:delete";
+
+export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
+  "task:list",
+  "task:create",
+  "task:read",
+  "task:edit",
+  "task:build",
+  "task:ask",
+  "task:interactive",
+  "task:delete",
+  "snippet:list",
+  "snippet:create",
+  "snippet:read",
+  "snippet:edit",
+  "snippet:delete",
+  "sequence:list",
+  "sequence:create",
+  "sequence:read",
+  "sequence:edit",
+  "sequence:delete",
+  "repo:list",
+  "repo:read",
+  "repo:create",
+  "repo:edit",
+  "repo:delete",
+  "settings:read",
+  "settings:edit",
+  "user:list",
+  "user:create",
+  "user:read",
+  "user:edit",
+  "user:delete"
+];
+
+export interface PermissionScopeGroup {
+  label: string;
+  scopes: PermissionScope[];
+}
+
+export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
+  { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:interactive", "task:delete"] },
+  { label: "Snippets", scopes: ["snippet:list", "snippet:create", "snippet:read", "snippet:edit", "snippet:delete"] },
+  { label: "Sequences", scopes: ["sequence:list", "sequence:create", "sequence:read", "sequence:edit", "sequence:delete"] },
+  { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
+  { label: "Settings", scopes: ["settings:read", "settings:edit"] },
+  { label: "Users", scopes: ["user:list", "user:create", "user:read", "user:edit", "user:delete"] }
+];
+
+export type TaskCapabilityScope = Extract<PermissionScope, "task:build" | "task:ask">;
+
+export const getTaskCapabilityScopeForTaskType = (taskType: TaskType): TaskCapabilityScope =>
+  taskType === "ask" ? "task:ask" : "task:build";
+
+export const getTaskCapabilityScopeForTaskAction = (action: TaskAction): TaskCapabilityScope =>
+  action === "ask" ? "task:ask" : "task:build";
+
+export const getRequiredTaskCapabilityScopes = (input: { taskType?: TaskType }): TaskCapabilityScope[] => [
+  getTaskCapabilityScopeForTaskType(input.taskType ?? "build")
+];
+
+export const hasRequiredTaskCapabilities = (
+  grantedScopes: Iterable<PermissionScope>,
+  input: { taskType?: TaskType }
+): boolean => {
+  const granted = new Set(grantedScopes);
+  return getRequiredTaskCapabilityScopes(input).every((scope) => granted.has(scope));
+};
+
+export const getRequiredTaskCapabilityScopesForDefinition = (definition: TaskDefinitionInput): TaskCapabilityScope[] =>
+  definition.sourceType === "pull_request"
+    ? getRequiredTaskCapabilityScopes({ taskType: "build" })
+    : getRequiredTaskCapabilityScopes({
+        taskType: definition.taskType
+      });
+
+export const hasRequiredTaskCapabilitiesForDefinition = (
+  grantedScopes: Iterable<PermissionScope>,
+  definition: TaskDefinitionInput
+): boolean => {
+  const granted = new Set(grantedScopes);
+  return getRequiredTaskCapabilityScopesForDefinition(definition).every((scope) => granted.has(scope));
+};
+
+export interface Role {
+  id: string;
+  name: string;
+  description: string;
+  scopes: PermissionScope[];
+  allowedProviders: AgentProvider[];
+  allowedModels: string[];
+  allowedEfforts: ProviderProfile[];
+  scopeVersion?: number;
+  isSystem: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UserRoleRef {
+  id: string;
+  name: string;
+  isSystem: boolean;
+}
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  active: boolean;
+  agentResponsePreference: AgentResponsePreference;
+  roles: UserRoleRef[];
+  repositoryIds: string[];
+  lastLoginAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuthSessionUser extends User {
+  scopes: PermissionScope[];
+  allowedProviders: AgentProvider[];
+  allowedModels: string[];
+  allowedEfforts: ProviderProfile[];
+  codexAuthJsonConfigured?: boolean;
+}
+
+export interface AuthSession {
+  user: AuthSessionUser;
+  expiresAt: string;
+}
+
+export interface AuthProfile {
+  name: string;
+  email: string;
+  agentResponsePreference: AgentResponsePreference;
+  codexAuthJsonConfigured: boolean;
+}
+
+export interface LoginInput {
+  email: string;
+  password: string;
+}
+
+export interface CreateRoleInput {
+  name: string;
+  description?: string;
+  scopes: PermissionScope[];
+  allowedProviders?: AgentProvider[];
+  allowedModels?: string[];
+  allowedEfforts?: ProviderProfile[];
+}
+
+export interface UpdateRoleInput {
+  name?: string;
+  description?: string;
+  scopes?: PermissionScope[];
+  allowedProviders?: AgentProvider[];
+  allowedModels?: string[];
+  allowedEfforts?: ProviderProfile[];
+}
+
+export interface CreateUserInput {
+  name: string;
+  email: string;
+  password: string;
+  active?: boolean;
+  roleIds?: string[];
+  repositoryIds?: string[];
+  agentResponsePreference?: Partial<AgentResponsePreference>;
+}
+
+export interface UpdateUserInput {
+  name?: string;
+  email?: string;
+  password?: string;
+  active?: boolean;
+  roleIds?: string[];
+  repositoryIds?: string[];
+  agentResponsePreference?: Partial<AgentResponsePreference>;
+}
+
+export interface RepositoryEnvVar {
+  key: string;
+  type?: "text";
+  value: string;
+}
+
+export interface RepositoryEnvFile {
+  key: string;
+  type: "file";
+  configured: boolean;
+  fileName?: string;
+}
+
+export type RepositoryEnvVarValue = RepositoryEnvVar | RepositoryEnvFile;
+
+export interface RepositoryEnvVarInputText {
+  key: string;
+  type?: "text";
+  value: string;
+}
+
+export interface RepositoryEnvVarInputFile {
+  key: string;
+  type: "file";
+  fileName?: string;
+  fileContentBase64?: string;
+}
+
+export type RepositoryEnvVarInput = RepositoryEnvVarInputText | RepositoryEnvVarInputFile;
+
+export interface RepositoryEnvSecret {
+  key: string;
+  configured: boolean;
+  type?: "text" | "file";
+  fileName?: string;
+}
+
+export interface RepositoryEnvSecretInputText {
+  key: string;
+  type?: "text";
+  value?: string;
+}
+
+export interface RepositoryEnvSecretInputFile {
+  key: string;
+  type: "file";
+  fileName?: string;
+  fileContentBase64?: string;
+}
+
+export type RepositoryEnvSecretInput = RepositoryEnvSecretInputText | RepositoryEnvSecretInputFile;
+
+export type GitHubAutomationTrigger = "issue_opened" | "pull_request_opened";
+export type GitHubCommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
+
+export interface GitHubAutomationLabelFilter {
+  labelsAny?: string[];
+  labelsAll?: string[];
+  labelsNone?: string[];
+}
+
+export interface GitHubAutomationTaskConfig {
+  assigneeEmail?: string;
+  codexCredentialSource?: CodexCredentialSource;
+  taskType?: Extract<TaskType, "build" | "ask">;
+  includeComments?: boolean;
+  titleTemplate?: string;
+  notes?: string;
+  provider?: AgentProvider;
+  providerProfile?: ProviderProfile;
+  modelOverride?: string | null;
+  baseBranch?: string;
+  branchStrategy?: TaskBranchStrategy;
+  snippetId?: string;
+}
+
+export interface GitHubAutomationRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  trigger: GitHubAutomationTrigger;
+  syncStatusEnabled?: boolean;
+  automationEnabled?: boolean;
+  allowedTriggers?: GitHubCommentTriggerType[];
+  allowedReactions?: string[];
+  allowedCommands?: string[];
+  allowedActorLogins?: string[];
+  labelFilter?: GitHubAutomationLabelFilter;
+  task: GitHubAutomationTaskConfig;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Repository {
+  id: string;
+  name: string;
+  url: string;
+  defaultBranch: string;
+  syncStatusEnabled?: boolean;
+  envVars: RepositoryEnvVarValue[];
+  envSecrets?: RepositoryEnvSecret[];
+  webhookUrl: string | null;
+  webhookEnabled: boolean;
+  webhookSecretConfigured: boolean;
+  webhookLastAttemptAt: string | null;
+  webhookLastStatus: "success" | "failed" | null;
+  webhookLastError: string | null;
+  githubWebhookSecretConfigured?: boolean;
+  githubAutomations?: GitHubAutomationRule[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type TaskTerminalSessionMode = "interactive" | "git";
+export type CodexCredentialSource = "auto" | "profile" | "global";
+
+export interface Task {
+  id: string;
+  title: string;
+  deadline: string | null;
+  pinned: boolean;
+  hasPendingCheckpoint: boolean;
+  activeInteractiveSession?: boolean;
+  activeTerminalSessionMode?: TaskTerminalSessionMode | null;
+  ownerUserId: string | null;
+  creatorName?: string | null;
+  repoId: string;
+  repoName: string;
+  repoUrl: string;
+  repoDefaultBranch: string;
+  taskType: TaskType;
+  provider: AgentProvider;
+  providerProfile: ProviderProfile;
+  modelOverride: string | null;
+  codexCredentialSource?: CodexCredentialSource;
+  taskSource?: Extract<TaskSourceType, "blank" | "snippet" | "sequence">;
+  snippetId?: string;
+  sequenceId?: string;
+  sequenceRunId?: string | null;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+  complexity: TaskComplexity;
+  branchName: string | null;
+  workspaceBaseRef: string | null;
+  prompt: string;
+  notes?: string;
+  resultMarkdown: string | null;
+  executionSummary: string;
+  branchDiff: string | null;
+  pullCount?: number;
+  pushCount?: number;
+  lastAction: TaskAction | null;
+  status: TaskStatus;
+  workflowStatus: TaskWorkflowStatus;
+  executionStatus: TaskExecutionStatus;
+  executionAction: TaskExecutionAction;
+  reviewReason: TaskReviewReason;
+  logs: string[];
+  enqueued: boolean;
+  scheduledStartAt?: string | null;
+  scheduledEndAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  errorMessage: string | null;
+}
+
+export interface OpenAiDiffAssistInput {
+  model: string;
+  providerProfile: ProviderProfile;
+  userPrompt: string;
+  /** Repository-relative path (optional `a/` or `b/` prefixes are stripped server-side). */
+  filePath: string;
+  selectedSnippet: string;
+}
+
+export interface OpenAiDiffAssistResult {
+  text: string;
+}
+
+export interface TaskPromptMagicInput {
+  prompt: string;
+}
+
+export interface TaskPromptMagicResult {
+  prompt: string;
+}
+
+export interface TaskLiveDiff {
+  diff: string | null;
+  live: boolean;
+  fetchedAt: string;
+  message: string | null;
+  /** Current workspace HEAD branch (or "HEAD" when detached). */
+  headBranch: string | null;
+  /** Short SHA for HEAD. */
+  headShaShort: string | null;
+  /** Ref used as the compare base for this diff (e.g. origin/main). */
+  baseRef: string | null;
+  /** Auto-resolved base when no override was requested; mirrors baseRef when using default. */
+  defaultBaseRef: string | null;
+}
+
+/** One commit on the task workspace’s current branch (from `git log`). */
+export interface TaskWorkspaceCommit {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  /** ISO 8601 timestamp from `git log` (%cI). */
+  committedAt: string;
+  authorName: string;
+}
+
+export interface TaskWorkspaceCommitLog {
+  commits: TaskWorkspaceCommit[];
+  fetchedAt: string;
+  message: string | null;
+}
+
+export type TaskWorkspaceFileTreeEntryKind = "file" | "directory";
+
+export interface TaskWorkspaceFileTreeEntry {
+  path: string;
+  name: string;
+  kind: TaskWorkspaceFileTreeEntryKind;
+}
+
+export interface TaskWorkspaceFileTree {
+  /** Directory prefix that was listed; null means workspace root. */
+  prefix: string | null;
+  entries: TaskWorkspaceFileTreeEntry[];
+  fetchedAt: string;
+  truncated: boolean;
+  totalCount: number;
+}
+
+export interface TaskWorkspaceFileSearchResult {
+  query: string;
+  results: string[];
+  fetchedAt: string;
+  truncated: boolean;
+  totalCount: number;
+}
+
+export type TaskWorkspaceFilePreviewKind = "text" | "image" | "binary";
+
+export interface TaskWorkspaceFilePreview {
+  path: string;
+  /** Git ref used for the preview, or null when reading the live workspace file. */
+  ref: string | null;
+  kind: TaskWorkspaceFilePreviewKind;
+  mimeType: string | null;
+  encoding: "utf8" | "base64";
+  content: string;
+  sizeBytes: number;
+}
+
+/** Snapshot for the Push UI before staging/commit (working tree + index vs HEAD). */
+export interface TaskPushPreview {
+  branchName: string;
+  changedFiles: string[];
+  /** Unified diff vs HEAD; may be truncated for large workspaces. */
+  diff: string;
+  diffTruncated: boolean;
+  /** `git diff HEAD --stat` output (may be truncated). */
+  diffStat: string;
+  hasUncommittedChanges: boolean;
+  unpushedCommitSubjects: string[];
+  /** Suggested first line if a new commit is created from current changes. */
+  suggestedCommitMessage: string;
+}
+
+export interface TaskMergePreview {
+  sourceBranch: string;
+  targetBranch: string;
+  mergeable: boolean;
+  message: string;
+  suggestedCommitMessage: string;
+}
+
+export interface TaskPromptAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  relativePath: string;
+}
+
+export interface CreateTaskPromptAttachmentInput {
+  name: string;
+  mimeType: string;
+  dataBase64: string;
+}
+
+export interface TaskMessage {
+  id: string;
+  taskId: string;
+  role: TaskMessageRole;
+  content: string;
+  action: TaskMessageAction | null;
+  /** Optional saved image attachments that were attached when the user submitted this message. */
+  attachments?: TaskPromptAttachment[];
+  /** Present for interactive terminal lifecycle messages so history can address the terminal session. */
+  sessionId?: string | null;
+  createdAt: string;
+}
+
+export interface TaskExecutionInput {
+  content: string;
+  attachments?: TaskPromptAttachment[];
+}
+
+export type NormalizedAgentEventKind =
+  | "run.started"
+  | "run.status"
+  | "run.completed"
+  | "run.failed"
+  | "turn.started"
+  | "turn.completed"
+  | "assistant.message"
+  | "assistant.message.delta"
+  | "tool.started"
+  | "tool.completed"
+  | "tool.failed"
+  | "file.changed"
+  | "subtask.started"
+  | "subtask.progress"
+  | "subtask.completed"
+  | "usage.reported"
+  | "unknown";
+
+export interface NormalizedAgentEvent {
+  id: string;
+  provider: AgentProvider;
+  kind: NormalizedAgentEventKind;
+  rawEventIndex: number;
+  title: string;
+  detail?: string;
+  message?: string;
+  status?: string;
+  sessionId?: string;
+  messageId?: string;
+  toolCallId?: string;
+  parentToolCallId?: string | null;
+  toolName?: string;
+  filePath?: string;
+  fileChangeKind?: string;
+  exitCode?: number | null;
+  usage?: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+}
+
+export interface TaskRun {
+  id: string;
+  taskId: string;
+  action: TaskAction;
+  provider: AgentProvider;
+  providerProfile: ProviderProfile;
+  modelOverride: string | null;
+  branchName: string | null;
+  status: TaskRunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  summary: string | null;
+  /** Build-only outcome. Null for ask runs and legacy runs. */
+  changeOutcome?: "changed" | "no_change" | null;
+  errorMessage: string | null;
+  /** Git HEAD ref captured before the agent container runs; used for change proposals. */
+  changeProposalCheckpointRef?: string | null;
+  /** Untracked paths (repo-relative) at checkpoint; used so reject does not wipe pre-existing untracked files. */
+  changeProposalUntrackedPaths?: string[] | null;
+  /** True when the provider's native JSONL stream has been captured for this run. */
+  hasRawJson?: boolean;
+  timelineEvents?: NormalizedAgentEvent[];
+  logs: string[];
+}
+
+export type TaskGitOperationType = "clone_for_task" | "pull_task_branch" | "push_task_branch";
+export type TaskGitOperationStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type TaskGitOperationFailureCode =
+  | "auth_failed"
+  | "network_error"
+  | "branch_missing"
+  | "conflict"
+  | "nothing_to_push"
+  | "workspace_missing"
+  | "unknown";
+
+export interface TaskGitOperation {
+  operationId: string;
+  taskId: string;
+  operationType: TaskGitOperationType;
+  status: TaskGitOperationStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  errorCode: TaskGitOperationFailureCode | null;
+  errorMessage: string | null;
+  attemptCount: number;
+}
+
+export type TaskChangeProposalSourceType = "build_run" | "interactive_session";
+
+export type TaskChangeProposalStatus = "pending" | "applied" | "rejected" | "reverted";
+
+export interface TaskChangeProposal {
+  id: string;
+  taskId: string;
+  sourceType: TaskChangeProposalSourceType;
+  /** `TaskRun.id` for build_run; session id for interactive_session */
+  sourceId: string;
+  status: TaskChangeProposalStatus;
+  fromRef: string;
+  toRef: string;
+  /** Persisted unified diff for preview and revert (when not truncated). */
+  diff: string;
+  diffStat: string;
+  changedFiles: string[];
+  diffTruncated: boolean;
+  /** Untracked paths at proposal start; on reject only *new* untracked files (not in this list) are removed. */
+  untrackedPathsAtCheckpoint: string[];
+  createdAt: string;
+  /** Set when leaving pending (apply or reject). */
+  resolvedAt: string | null;
+  /** Set when an applied checkpoint is reverted via stored diff. */
+  revertedAt: string | null;
+}
+
+export interface ApplyTaskChangeProposalInput {
+  commitMessage?: string;
+}
+
+export interface RevertTaskChangeProposalFileInput {
+  path: string;
+}
+
+export interface TaskInteractiveTerminalTranscript {
+  taskId: string;
+  sessionId: string;
+  content: string;
+  truncated: boolean;
+}
+
+export interface McpServerConfig {
+  name: string;
+  enabled: boolean;
+  transport: McpServerTransport;
+  command?: string | null;
+  args?: string[];
+  url?: string | null;
+  bearerTokenEnvVar?: string | null;
+}
+
+export interface GitHubIssueReference {
+  number: number;
+  title: string;
+  url: string;
+}
+
+export interface GitHubPullRequestReference {
+  number: number;
+  title: string;
+  url: string;
+  headBranch: string;
+  baseBranch: string;
+}
+
+export interface GitHubBranchReference {
+  name: string;
+  isDefault: boolean;
+}
+
+export type DataStoreBackend = "redis" | "postgres";
+export type WorkspaceProvisioningMode = "clone_only" | "hybrid";
+
+export interface SystemDataStores {
+  taskStore: "postgres";
+  snippetStore: "postgres";
+  sequenceStore: "postgres";
+  repositoryStore: "postgres";
+  credentialStore: "postgres";
+  roleStore: "postgres";
+  userStore: "postgres";
+  settingsStore: "postgres";
+  taskQueueStore: "redis";
+  webhookDeliveryStore: "redis";
+  sessionStore: "redis";
+  eventBus: "redis";
+}
+
+export interface SystemSettings {
+  defaultProvider: AgentProvider;
+  maxAgents: number;
+  branchPrefix: string;
+  workspaceProvisioningMode: WorkspaceProvisioningMode;
+  gitUsername: string;
+  mcpServers: McpServerConfig[];
+  openaiBaseUrl: string | null;
+  taskPromptMagicModel: string;
+  taskPromptMagicTemplate: string;
+  githubTokenConfigured: boolean;
+  openaiApiKeyConfigured: boolean;
+  anthropicApiKeyConfigured: boolean;
+  codexDefaultModel: string;
+  codexDefaultEffort: ProviderProfile;
+  claudeDefaultModel: string;
+  claudeDefaultEffort: ProviderProfile;
+  responsePreferencePresets: ResponsePreferencePreset[];
+  dataStores?: SystemDataStores;
+}
+
+export interface UserNotes {
+  notes: string;
+  updatedAt: string;
+}
+
+export interface CreateRepositoryInput {
+  name: string;
+  url: string;
+  defaultBranch?: string;
+  syncStatusEnabled?: boolean;
+  envVars?: RepositoryEnvVarInput[];
+  envSecrets?: RepositoryEnvSecretInput[];
+  webhookUrl?: string | null;
+  webhookEnabled?: boolean;
+  webhookSecret?: string;
+  githubWebhookSecret?: string;
+  githubAutomations?: GitHubAutomationRule[];
+}
+
+export interface UpdateRepositoryInput {
+  name?: string;
+  url?: string;
+  defaultBranch?: string;
+  syncStatusEnabled?: boolean;
+  envVars?: RepositoryEnvVarInput[];
+  envSecrets?: RepositoryEnvSecretInput[];
+  webhookUrl?: string | null;
+  webhookEnabled?: boolean;
+  webhookSecret?: string;
+  clearWebhookSecret?: boolean;
+  githubWebhookSecret?: string;
+  clearGithubWebhookSecret?: boolean;
+  githubAutomations?: GitHubAutomationRule[];
+}
+
+export interface CreateTaskInput {
+  title: string;
+  draft?: boolean;
+  deadline?: string | null;
+  repoId: string;
+  prompt: string;
+  notes?: string;
+  attachments?: CreateTaskPromptAttachmentInput[];
+  taskType?: TaskType;
+  provider?: AgentProvider;
+  providerProfile?: ProviderProfile;
+  modelOverride?: string;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch?: string;
+  branchStrategy?: TaskBranchStrategy;
+  model?: string;
+  reasoningEffort?: TaskReasoningEffort;
+  task_source?: "blank" | "snippet" | "sequence";
+  snippet_id?: string;
+  sequence_id?: string;
+  sequence_variables?: Record<string, string>;
+}
+
+export type TaskSourceType = "blank" | "snippet" | "sequence" | "issue" | "pull_request";
+
+export interface BlankTaskDefinitionInput {
+  sourceType: "blank";
+  title: string;
+  deadline?: string | null;
+  repoId: string;
+  prompt: string;
+  notes?: string;
+  attachments?: CreateTaskPromptAttachmentInput[];
+  taskType: TaskType;
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+}
+
+export interface IssueTaskDefinitionInput {
+  sourceType: "issue";
+  title?: string;
+  deadline?: string | null;
+  notes?: string;
+  repoId: string;
+  issueNumber: number;
+  includeComments: boolean;
+  taskType: Extract<TaskType, "build" | "ask">;
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+}
+
+export interface PullRequestTaskDefinitionInput {
+  sourceType: "pull_request";
+  title?: string;
+  deadline?: string | null;
+  notes?: string;
+  repoId: string;
+  pullRequestNumber: number;
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
+}
+
+export interface SnippetTaskDefinitionInput {
+  sourceType: "snippet";
+  title: string;
+  deadline?: string | null;
+  repoId: string;
+  snippetId: string;
+  prompt: string;
+  notes?: string;
+  attachments?: CreateTaskPromptAttachmentInput[];
+  taskType: TaskType;
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+}
+
+export interface SequenceTaskDefinitionInput {
+  sourceType: "sequence";
+  title: string;
+  deadline?: string | null;
+  repoId: string;
+  sequenceId: string;
+  sequenceVariables?: Record<string, string>;
+  notes?: string;
+  attachments?: CreateTaskPromptAttachmentInput[];
+  taskType: TaskType;
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+}
+
+export type TaskDefinitionInput =
+  | BlankTaskDefinitionInput
+  | SnippetTaskDefinitionInput
+  | SequenceTaskDefinitionInput
+  | IssueTaskDefinitionInput
+  | PullRequestTaskDefinitionInput;
+
+export interface Snippet {
+  id: string;
+  name: string;
+  content: string;
+  variables: SnippetVariable[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type SnippetVariableType = "text" | "multiline";
+
+export interface SnippetVariable {
+  name: string;
+  type: SnippetVariableType;
+  title: string;
+  description: string;
+  defaultValue: string;
+}
+
+export interface CreateSnippetInput {
+  name: string;
+  content: string;
+  variables?: SnippetVariable[];
+}
+
+export interface UpdateSnippetInput {
+  name: string;
+  content: string;
+  variables?: SnippetVariable[];
+}
+
+export type SequenceStepType = "inline" | "snippet";
+export type SequenceStepState = "pending" | "running" | "succeeded" | "failed" | "skipped";
+export type SequenceExecutionMode = "auto_apply_changes" | "approve_before_continuing";
+export type SequenceRunStatus = "running" | "waiting_for_approval" | "waiting_for_checkpoint_resolution" | "succeeded" | "failed";
+
+export interface SequenceStep {
+  id: string;
+  type: SequenceStepType;
+  prompt: string;
+  snippetId?: string;
+}
+
+export interface Sequence {
+  id: string;
+  name: string;
+  executionMode: SequenceExecutionMode;
+  steps: SequenceStep[];
+  variables: SnippetVariable[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateSequenceInput {
+  name: string;
+  executionMode?: SequenceExecutionMode;
+  steps: SequenceStep[];
+  variables?: SnippetVariable[];
+}
+
+export interface UpdateSequenceInput {
+  name: string;
+  executionMode?: SequenceExecutionMode;
+  steps: SequenceStep[];
+  variables?: SnippetVariable[];
+}
+
+export interface SequenceRunStep {
+  index: number;
+  prompt: string;
+  state: SequenceStepState;
+  taskRunId: string | null;
+  errorMessage: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface SequenceRun {
+  id: string;
+  sequenceId: string;
+  taskId: string;
+  status: SequenceRunStatus;
+  executionMode: SequenceExecutionMode;
+  failPolicy: "fail_fast";
+  stepCount: number;
+  waitingForApprovalAfterStepIndex: number | null;
+  failedStepIndex: number | null;
+  startedAt: string;
+  finishedAt: string | null;
+  steps: SequenceRunStep[];
+}
+
+export interface CreateTaskFromIssueInput {
+  repoId: string;
+  draft?: boolean;
+  issueNumber: number;
+  includeComments?: boolean;
+  notes?: string;
+  deadline?: string | null;
+  taskType?: Extract<TaskType, "build" | "ask">;
+  title?: string;
+  provider?: AgentProvider;
+  providerProfile?: ProviderProfile;
+  modelOverride?: string;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch?: string;
+  branchStrategy?: TaskBranchStrategy;
+  model?: string;
+  reasoningEffort?: TaskReasoningEffort;
+}
+
+export interface CreateTaskFromPullRequestInput {
+  repoId: string;
+  draft?: boolean;
+  pullRequestNumber: number;
+  title?: string;
+  notes?: string;
+  deadline?: string | null;
+  provider?: AgentProvider;
+  providerProfile?: ProviderProfile;
+  modelOverride?: string;
+  codexCredentialSource?: CodexCredentialSource;
+  model?: string;
+  reasoningEffort?: TaskReasoningEffort;
+}
+
+export interface TriggerTaskActionInput {
+  action: TaskAction;
+}
+
+export interface UpdateTaskConfigInput {
+  provider: AgentProvider;
+  providerProfile: ProviderProfile;
+  modelOverride?: string | null;
+  codexCredentialSource?: CodexCredentialSource;
+  branchStrategy?: TaskBranchStrategy;
+}
+
+export interface UpdateTaskPinInput {
+  pinned: boolean;
+}
+
+export interface UpdateTaskTitleInput {
+  title: string;
+}
+
+export interface UpdateTaskNotesInput {
+  notes: string;
+}
+
+export interface UpdateTaskDeadlineInput {
+  deadline: string | null;
+}
+
+export interface UpdateUserNotesInput {
+  notes: string;
+}
+
+export interface UpdateTaskStateInput {
+  status: Extract<TaskStatus, "open" | "in_progress" | "in_review" | "awaiting_review" | "done">;
+}
+
+export interface UpdateTaskAssigneeInput {
+  ownerUserId: string;
+}
+
+export interface CreateTaskMessageInput {
+  content: string;
+  attachments?: CreateTaskPromptAttachmentInput[];
+  action?: TaskMessageAction;
+}
+
+export interface UpdateTaskMessageInput {
+  content: string;
+}
+
+export interface UpdateTaskWorkspaceFileInput {
+  path: string;
+  content: string;
+}
+
+export interface MergeTaskInput {
+  targetBranch: string;
+  commitMessage?: string;
+  deleteRemoteBranch?: boolean;
+}
+
+export const getTaskBranchStrategyLabel = (strategy: TaskBranchStrategy): string =>
+  ({
+    feature_branch: "Create Feature Branch",
+    work_on_branch: "Work On Existing Branch"
+  })[strategy];
+
+export const getAgentProviderLabel = (provider: AgentProvider): string =>
+  ({
+    codex: "Codex",
+    claude: "Claude Code (experimental)"
+  })[provider];
+
+export const getProviderProfileLabel = (profile: ProviderProfile): string =>
+  ({
+    low: "Low",
+    medium: "Medium",
+    high: "High",
+    max: "Max"
+  })[profile];
+
+export const getTaskTypeLabel = (taskType: TaskType): string =>
+  ({
+    build: "Build",
+    ask: "Ask"
+  })[taskType];
+
+const queuedStatusByAction: Record<TaskAction, TaskStatus> = {
+  build: "build_queued",
+  ask: "ask_queued"
+};
+
+const activeStatusByAction: Record<TaskAction, TaskStatus> = {
+  build: "building",
+  ask: "asking"
+};
+
+const successfulStatusByAction: Record<TaskAction, TaskStatus> = {
+  build: "completed",
+  ask: "answered"
+};
+
+export const getQueuedStatusForAction = (action: TaskAction): TaskStatus => queuedStatusByAction[action];
+export const getActiveStatusForAction = (action: TaskAction): TaskStatus => activeStatusByAction[action];
+export const getSuccessfulStatusForAction = (action: TaskAction): TaskStatus => successfulStatusByAction[action];
+
+export const isQueuedTaskStatus = (status: TaskStatus): boolean =>
+  status === "build_queued" ||
+  status === "ask_queued";
+
+export const isActiveTaskStatus = (status: TaskStatus): boolean =>
+  status === "preparing_workspace" ||
+  status === "building" ||
+  status === "asking";
+
+export const isTaskWorking = (task: Pick<Task, "status" | "activeInteractiveSession"> & { executionStatus?: TaskExecutionStatus }): boolean =>
+  task.executionStatus === "queued" ||
+  task.executionStatus === "preparing" ||
+  task.executionStatus === "running" ||
+  isActiveTaskStatus(task.status) ||
+  task.activeInteractiveSession === true;
+
+export const getTaskExecutionStatus = (
+  task: Pick<Task, "status" | "activeInteractiveSession"> & { executionStatus?: TaskExecutionStatus }
+): TaskExecutionStatus => {
+  if (task.activeInteractiveSession === true) {
+    return "running";
+  }
+
+  if (
+    task.executionStatus === "idle" ||
+    task.executionStatus === "scheduled" ||
+    task.executionStatus === "queued" ||
+    task.executionStatus === "preparing" ||
+    task.executionStatus === "running" ||
+    task.executionStatus === "failed" ||
+    task.executionStatus === "cancelled"
+  ) {
+    return task.executionStatus;
+  }
+
+  if (task.status === "scheduled") {
+    return "scheduled";
+  }
+
+  if (isQueuedTaskStatus(task.status)) {
+    return "queued";
+  }
+
+  if (task.status === "preparing_workspace") {
+    return "preparing";
+  }
+
+  if (isActiveTaskStatus(task.status)) {
+    return "running";
+  }
+
+  if (task.status === "failed") {
+    return "failed";
+  }
+
+  if (task.status === "cancelled") {
+    return "cancelled";
+  }
+
+  return "idle";
+};
+
+export const getTaskExecutionAction = (
+  task: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode"> & { executionAction?: TaskExecutionAction }
+): TaskExecutionAction => {
+  if (task.activeInteractiveSession === true) {
+    return task.activeTerminalSessionMode === "git" ? "terminal" : "interactive";
+  }
+
+  if (task.status === "draft") {
+    return null;
+  }
+
+  if (task.executionAction === "build" || task.executionAction === "ask" || task.executionAction === "interactive" || task.executionAction === "terminal") {
+    return task.executionAction;
+  }
+
+  if (task.status === "build_queued" || task.status === "preparing_workspace" || task.status === "building") {
+    return "build";
+  }
+
+  if (task.status === "ask_queued" || task.status === "asking") {
+    return "ask";
+  }
+
+  return task.lastAction ?? null;
+};
+
+export const getTaskReviewReason = (task: Pick<Task, "status" | "hasPendingCheckpoint" | "taskType">): TaskReviewReason => {
+  if (task.hasPendingCheckpoint || task.status === "awaiting_review") {
+    return "checkpoint";
+  }
+
+  if (task.status === "in_review") {
+    return task.taskType === "ask" ? "answer" : "manual";
+  }
+
+  return null;
+};
+
+export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingCheckpoint" | "taskType">): TaskWorkflowStatus => {
+  if (task.status === "archived") {
+    return "archived";
+  }
+
+  if (task.status === "done" || task.status === "accepted") {
+    return "done";
+  }
+
+  if (task.status === "in_progress") {
+    return "in_progress";
+  }
+
+  if (task.status === "awaiting_review" || task.status === "in_review") {
+    return "review";
+  }
+
+  if (task.status === "draft" || task.status === "scheduled") {
+    return "backlog";
+  }
+
+  return "ready";
+};
+
+export const getTaskTerminalSessionLabel = (mode: TaskTerminalSessionMode): string =>
+  mode === "git" ? "Git Terminal" : "Interactive Terminal";
+
+export const getTaskTerminalSessionSentenceLabel = (mode: TaskTerminalSessionMode): string =>
+  mode === "git" ? "Git terminal" : "Interactive terminal";
+
+export const getTaskTerminalSessionStartMessage = (mode: TaskTerminalSessionMode): string =>
+  mode === "git" ? "Terminal session started." : `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
+
+export const getTaskTerminalSessionEndMessage = (mode: TaskTerminalSessionMode): string =>
+  `${getTaskTerminalSessionSentenceLabel(mode)} session ended.`;
+
+export const getTaskTerminalSessionNoChangesMessage = (mode: TaskTerminalSessionMode): string =>
+  `${getTaskTerminalSessionSentenceLabel(mode)} session ended. No workspace changes were detected.`;
+
+export const getTaskTerminalSessionReviewMessage = (mode: TaskTerminalSessionMode): string =>
+  `${getTaskTerminalSessionSentenceLabel(mode)} session ended. Review proposed changes below.`;
+
+/** When set, checkpoint apply / reject / revert must be refused (agent run queued or in progress). */
+export function getCheckpointMutationBlockedReason(status: TaskStatus): string | null {
+  if (isQueuedTaskStatus(status) || isActiveTaskStatus(status)) {
+    return `Checkpoint actions are unavailable while the task is “${getTaskStatusLabel(status)}”.`;
+  }
+  return null;
+}
+
+export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
+  status === "archived";
+
+export const getTaskStatusLabel = (status: TaskStatus): string =>
+  ({
+    draft: "Draft",
+    scheduled: "Scheduled",
+    build_queued: "Build Queued",
+    preparing_workspace: "Preparing Workspace",
+    building: "Building",
+    ask_queued: "Ask Queued",
+    asking: "Answering",
+    open: "Open",
+    in_progress: "In Progress",
+    in_review: "In Review",
+    awaiting_review: "Awaiting Review",
+    done: "Done",
+    completed: "Completed",
+    answered: "Answered",
+    accepted: "Accepted",
+    archived: "Archived",
+    cancelled: "Cancelled",
+    failed: "Failed"
+  })[status];
+
+export const getTaskWorkflowStatusLabel = (status: TaskWorkflowStatus): string =>
+  ({
+    backlog: "Backlog",
+    ready: "Ready",
+    in_progress: "In Progress",
+    review: "Review",
+    done: "Done",
+    archived: "Archived"
+  })[status];
+
+export const getTaskExecutionStatusLabel = (status: TaskExecutionStatus): string =>
+  ({
+    idle: "Idle",
+    scheduled: "Scheduled",
+    queued: "Queued",
+    preparing: "Preparing",
+    running: "Running",
+    failed: "Failed",
+    cancelled: "Cancelled"
+  })[status];
+
+export interface UpdateSettingsInput {
+  defaultProvider?: AgentProvider;
+  maxAgents?: number;
+  branchPrefix?: string;
+  workspaceProvisioningMode?: WorkspaceProvisioningMode;
+  gitUsername?: string;
+  mcpServers?: McpServerConfig[];
+  openaiBaseUrl?: string | null;
+  taskPromptMagicModel?: string;
+  taskPromptMagicTemplate?: string;
+  codexDefaultModel?: string;
+  codexDefaultEffort?: ProviderProfile;
+  claudeDefaultModel?: string;
+  claudeDefaultEffort?: ProviderProfile;
+  responsePreferencePresets?: ResponsePreferencePresetInput[];
+}
+
+export interface UpdateCredentialSettingsInput {
+  githubToken?: string;
+  openaiApiKey?: string;
+  anthropicApiKey?: string;
+  clearGithubToken?: boolean;
+  clearOpenAiApiKey?: boolean;
+  clearAnthropicApiKey?: boolean;
+}
+
+export interface UpdateAuthProfileInput {
+  name?: string;
+  codexAuthJson?: string;
+  clearCodexAuthJson?: boolean;
+  agentResponsePreference?: Partial<AgentResponsePreference>;
+}
+
+export interface TaskEvent {
+  type: "task:created" | "task:updated";
+  payload: Task;
+}
+
+export interface TaskDeletedEvent {
+  type: "task:deleted";
+  payload: {
+    id: string;
+    repoId: string;
+    ownerUserId: string | null;
+  };
+}
+
+export interface TaskLogEvent {
+  type: "task:log";
+  payload: {
+    taskId: string;
+    runId?: string | null;
+    line: string;
+    timestamp: string;
+  };
+}
+
+export interface TaskMessageEvent {
+  type: "task:message";
+  payload: TaskMessage;
+}
+
+export interface TaskMessageUpdatedEvent {
+  type: "task:message_updated";
+  payload: TaskMessage;
+}
+
+export interface TaskRunEvent {
+  type: "task:run_updated";
+  payload: TaskRun;
+}
+
+export interface TaskGitOperationEvent {
+  type: "task:git_operation";
+  payload: TaskGitOperation;
+}
+
+export interface TaskChangeProposalEvent {
+  type: "task:change_proposal";
+  payload: TaskChangeProposal;
+}
+
+export interface TaskPushedEvent {
+  type: "task:pushed";
+  payload: {
+    taskId: string;
+    repoId: string;
+    branchName: string;
+    commitMessage: string | null;
+    triggeredAt: string;
+  };
+}
+
+export interface TaskMergedEvent {
+  type: "task:merged";
+  payload: {
+    taskId: string;
+    repoId: string;
+    sourceBranch: string;
+    targetBranch: string;
+    commitMessage: string | null;
+    triggeredAt: string;
+  };
+}
+
+export interface SettingsEvent {
+  type: "settings:updated";
+  payload: SystemSettings;
+}
+
+export interface RepositoryEvent {
+  type: "repository:created" | "repository:updated" | "repository:deleted";
+  payload: Repository | { id: string };
+}
+
+export interface SnippetEvent {
+  type: "snippet:created" | "snippet:updated" | "snippet:deleted";
+  payload: Snippet | { id: string };
+}
+
+export interface SequenceEvent {
+  type: "sequence:created" | "sequence:updated" | "sequence:deleted";
+  payload: Sequence | { id: string };
+}
+
+export interface SequenceRunEvent {
+  type: "sequence:run_updated";
+  payload: SequenceRun;
+}
+
+export type RealtimeEvent =
+  | TaskEvent
+  | TaskDeletedEvent
+  | TaskLogEvent
+  | TaskMessageEvent
+  | TaskMessageUpdatedEvent
+  | TaskRunEvent
+  | TaskGitOperationEvent
+  | TaskChangeProposalEvent
+  | TaskPushedEvent
+  | TaskMergedEvent
+  | SettingsEvent
+  | RepositoryEvent
+  | SnippetEvent
+  | SequenceEvent
+  | SequenceRunEvent;
 ````

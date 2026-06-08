@@ -56,6 +56,7 @@ import {
   resolveSafeWorkspaceFilePath
 } from "../lib/safe-workspace-file.js";
 import { materializeRepositoryRuntimeEnvEntries } from "../lib/repository-runtime-env.js";
+import { parseAgentJsonlEvents } from "../lib/agent-event-parser.js";
 import {
   emitDockerSocketEnabledEventOnce,
   emitNestedContainerSpawnedEvent,
@@ -1480,6 +1481,27 @@ export class SpawnerService {
     await chmod(path.dirname(rawEventsJsonlPath), 0o777).catch(() => undefined);
     await chmod(rawEventsJsonlPath, 0o666).catch(() => undefined);
     return rawEventsJsonlPath;
+  }
+
+  private async parseAndStoreRunTimeline(task: Task, runId: string | null, rawEventsJsonlPath: string | null): Promise<void> {
+    if (!runId || !rawEventsJsonlPath) {
+      return;
+    }
+
+    try {
+      const rawJsonl = await readFile(rawEventsJsonlPath, "utf8");
+      if (!rawJsonl.trim()) {
+        return;
+      }
+      const timelineEvents = parseAgentJsonlEvents(task.provider, rawJsonl);
+      await this.taskStore.updateRun(runId, { timelineEvents });
+    } catch (error) {
+      await this.taskStore.appendLogForRun(
+        task.id,
+        `Spawner: warning - could not parse raw ${task.provider} JSON timeline (${error instanceof Error ? error.message : String(error)}).`,
+        runId
+      );
+    }
   }
 
   private registerActiveExecution(
@@ -4572,6 +4594,7 @@ export class SpawnerService {
     let runId: string | null = null;
     let executionId = nanoid();
     let workspace: WorkspacePreparation | null = null;
+    let rawEventsJsonlPath: string | null = null;
 
     try {
       const run = await this.taskStore.createRun(task.id, {
@@ -4586,7 +4609,7 @@ export class SpawnerService {
       this.executionContextStorage.enterWith({ taskId: task.id, executionId });
       const payloadDir = this.resolveRuntimePayloadDir(task.id, executionId);
       const appendRunLog = (line: string) => this.taskStore.appendLogForRun(task.id, line, runId);
-      const rawEventsJsonlPath = runId
+      rawEventsJsonlPath = runId
         ? await this.prepareTaskRunRawEventsJsonl(task.id, runId)
         : path.join(payloadDir, "raw-events.jsonl");
       if (runId) {
@@ -4853,6 +4876,7 @@ export class SpawnerService {
       });
 
       this.ensureTaskNotCancelled(task.id);
+      await this.parseAndStoreRunTimeline(task, runId, rawEventsJsonlPath);
 
       const runtimeResult = await this.readRuntimeResult(payloadPaths.resultMarkdownPath, payloadPaths.resultJsonPath);
       if (action === "build") {
@@ -4961,6 +4985,7 @@ export class SpawnerService {
       const finishedAt = new Date().toISOString();
       const message = error instanceof Error ? error.message : "Unknown runtime error";
       const isCancelled = error instanceof CancelledTaskError || this.isCancellationRequested(task.id);
+      await this.parseAndStoreRunTimeline(task, runId, rawEventsJsonlPath);
       if (runId) {
         await this.taskStore.updateRun(runId, {
           status: isCancelled ? "cancelled" : "failed",
