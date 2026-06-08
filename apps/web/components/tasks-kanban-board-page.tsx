@@ -48,6 +48,28 @@ const taskColumn = (task: Task): BoardColumnId => {
   return "ready";
 };
 
+const getItemDeadline = (item: BoardItem): string | null =>
+  item.type === "task" ? item.task.deadline : item.draft.definition.deadline ?? null;
+
+const getItemTitle = (item: BoardItem): string => (item.type === "task" ? item.task.title : item.draft.title);
+
+const compareItemsByDeadline = (left: BoardItem, right: BoardItem): number => {
+  const leftDeadline = getItemDeadline(left);
+  const rightDeadline = getItemDeadline(right);
+  if (leftDeadline && rightDeadline) {
+    const deadlineComparison = leftDeadline.localeCompare(rightDeadline);
+    if (deadlineComparison !== 0) {
+      return deadlineComparison;
+    }
+  } else if (leftDeadline) {
+    return -1;
+  } else if (rightDeadline) {
+    return 1;
+  }
+
+  return getItemTitle(left).localeCompare(getItemTitle(right));
+};
+
 function KanbanColumn({
   column,
   canCreate,
@@ -112,6 +134,7 @@ function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardIte
   };
   const task = item.type === "task" ? item.task : null;
   const draft = item.type === "draft" ? item.draft : null;
+  const deadline = getItemDeadline(item);
 
   return (
     <Card
@@ -137,25 +160,16 @@ function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardIte
         {task ? (
           <>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {task.repoName} · {dayjs(task.updatedAt).format("YYYY-MM-DD HH:mm")}
+              {task.repoName}
             </Typography.Text>
-            {task.deadline ? (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Deadline {dayjs(task.deadline).format("YYYY-MM-DD HH:mm")}
-              </Typography.Text>
-            ) : null}
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
+            </Typography.Text>
           </>
         ) : (
-          <>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Updated {dayjs(draft!.updatedAt).format("YYYY-MM-DD HH:mm")}
-            </Typography.Text>
-            {draft?.definition.deadline ? (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Deadline {dayjs(draft.definition.deadline).format("YYYY-MM-DD HH:mm")}
-              </Typography.Text>
-            ) : null}
-          </>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
+          </Typography.Text>
         )}
       </Flex>
     </Card>
@@ -188,7 +202,7 @@ export function TasksKanbanBoardPage() {
       Object.fromEntries(
         columns.map((column) => [
           column.id,
-          items.filter((item) => item.column === column.id)
+          items.filter((item) => item.column === column.id).sort(compareItemsByDeadline)
         ])
       ) as Record<BoardColumnId, BoardItem[]>,
     [items]

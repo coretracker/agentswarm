@@ -15002,376 +15002,6 @@ export const registerTaskDraftRoutes = (
 };
 ````
 
-## File: apps/server/src/services/github-import-service.ts
-````typescript
-import type {
-  CreateTaskFromIssueInput,
-  CreateTaskFromPullRequestInput,
-  CreateTaskInput,
-  GitHubBranchReference,
-  GitHubIssueReference,
-  GitHubPullRequestReference,
-  Repository
-} from "@agentswarm/shared-types";
-import type { SettingsStore } from "./settings-store.js";
-
-const GITHUB_API_URL = "https://api.github.com";
-const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
-
-interface GitHubUser {
-  login: string;
-}
-
-interface GitHubIssue {
-  number: number;
-  title: string;
-  body: string | null;
-  html_url: string;
-  labels?: Array<{ name: string }>;
-  pull_request?: Record<string, unknown>;
-}
-
-interface GitHubIssueComment {
-  body: string;
-  html_url: string;
-  user: GitHubUser | null;
-  created_at: string;
-}
-
-interface GitHubPullRequest {
-  number: number;
-  title: string;
-  body: string | null;
-  html_url: string;
-  head: { ref: string };
-  base: { ref: string };
-}
-
-interface GitHubBranch {
-  name: string;
-}
-
-interface ReviewThreadCommentNode {
-  body: string;
-  url: string;
-  createdAt: string;
-  diffHunk: string | null;
-  author: GitHubUser | null;
-}
-
-interface ReviewThreadNode {
-  isResolved: boolean;
-  isOutdated: boolean;
-  path: string | null;
-  line: number | null;
-  originalLine: number | null;
-  comments: {
-    nodes: ReviewThreadCommentNode[];
-  };
-}
-
-interface PullRequestReviewThreadsResponse {
-  data?: {
-    repository?: {
-      pullRequest?: {
-        reviewThreads?: {
-          nodes: ReviewThreadNode[];
-        };
-      };
-    };
-  };
-  errors?: Array<{ message: string }>;
-}
-
-export class GitHubImportError extends Error {
-  constructor(
-    message: string,
-    readonly statusCode = 400
-  ) {
-    super(message);
-    this.name = "GitHubImportError";
-  }
-}
-
-const truncate = (value: string, maxLength: number): string =>
-  value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 3))}...` : value;
-
-const cleanMarkdownBlock = (value: string | null | undefined, maxLength = 3000): string | null => {
-  const normalized = (value ?? "").trim();
-  if (!normalized) {
-    return null;
-  }
-
-  return truncate(normalized, maxLength);
-};
-
-const parseGitHubRepository = (repoUrl: string): { owner: string; repo: string } => {
-  const httpsMatch = repoUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
-  if (httpsMatch) {
-    return { owner: httpsMatch[1], repo: httpsMatch[2] };
-  }
-
-  const sshMatch = repoUrl.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (sshMatch) {
-    return { owner: sshMatch[1], repo: sshMatch[2] };
-  }
-
-  throw new GitHubImportError("Repository import currently supports github.com repositories only.");
-};
-
-export class GitHubImportService {
-  constructor(private readonly settingsStore: SettingsStore) {}
-
-  private async getGitHubToken(): Promise<string> {
-    const credentials = await this.settingsStore.getRuntimeCredentials();
-    if (!credentials.githubToken) {
-      throw new GitHubImportError("GitHub token is not configured in Settings.", 409);
-    }
-
-    return credentials.githubToken;
-  }
-
-  private async fetchGitHubJson<T>(path: string): Promise<T> {
-    const token = await this.getGitHubToken();
-    const response = await fetch(`${GITHUB_API_URL}${path}`, {
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${token}`,
-        "User-Agent": "AgentSwarm",
-        "X-GitHub-Api-Version": "2022-11-28"
-      }
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new GitHubImportError(`GitHub API request failed (${response.status}): ${text || response.statusText}`, response.status);
-    }
-
-    return response.json() as Promise<T>;
-  }
-
-  private async fetchGitHubGraphQL<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-    const token = await this.getGitHubToken();
-    const response = await fetch(GITHUB_GRAPHQL_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-        "User-Agent": "AgentSwarm"
-      },
-      body: JSON.stringify({ query, variables })
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new GitHubImportError(`GitHub GraphQL request failed (${response.status}): ${text || response.statusText}`, response.status);
-    }
-
-    return response.json() as Promise<T>;
-  }
-
-  async listOpenIssues(repository: Repository): Promise<GitHubIssueReference[]> {
-    const { owner, repo } = parseGitHubRepository(repository.url);
-    const issues = await this.fetchGitHubJson<GitHubIssue[]>(`/repos/${owner}/${repo}/issues?state=open&sort=updated&direction=desc&per_page=50`);
-
-    return issues
-      .filter((issue) => !issue.pull_request)
-      .map((issue) => ({
-        number: issue.number,
-        title: issue.title,
-        url: issue.html_url
-      }));
-  }
-
-  async listOpenPullRequests(repository: Repository): Promise<GitHubPullRequestReference[]> {
-    const { owner, repo } = parseGitHubRepository(repository.url);
-    const pullRequests = await this.fetchGitHubJson<GitHubPullRequest[]>(`/repos/${owner}/${repo}/pulls?state=open&sort=updated&direction=desc&per_page=50`);
-
-    return pullRequests.map((pullRequest) => ({
-      number: pullRequest.number,
-      title: pullRequest.title,
-      url: pullRequest.html_url,
-      headBranch: pullRequest.head.ref,
-      baseBranch: pullRequest.base.ref
-    }));
-  }
-
-  async listBranches(repository: Repository): Promise<GitHubBranchReference[]> {
-    const { owner, repo } = parseGitHubRepository(repository.url);
-    const branches = await this.fetchGitHubJson<GitHubBranch[]>(`/repos/${owner}/${repo}/branches?per_page=100`);
-
-    return branches.map((branch) => ({
-      name: branch.name,
-      isDefault: branch.name === repository.defaultBranch
-    }));
-  }
-
-  async buildTaskInputFromIssue(repository: Repository, input: CreateTaskFromIssueInput): Promise<CreateTaskInput> {
-    const { owner, repo } = parseGitHubRepository(repository.url);
-    const issue = await this.fetchGitHubJson<GitHubIssue>(`/repos/${owner}/${repo}/issues/${input.issueNumber}`);
-
-    if (issue.pull_request) {
-      throw new GitHubImportError("That number belongs to a pull request. Use the PR import path instead.");
-    }
-
-    const comments = input.includeComments
-      ? await this.fetchGitHubJson<GitHubIssueComment[]>(`/repos/${owner}/${repo}/issues/${input.issueNumber}/comments?per_page=50`)
-      : [];
-
-    const commentBlocks = comments
-      .map((comment) => {
-        const body = cleanMarkdownBlock(comment.body, 1800);
-        if (!body) {
-          return null;
-        }
-
-        return [
-          `### @${comment.user?.login ?? "unknown"} (${comment.created_at})`,
-          body,
-          `Source: ${comment.html_url}`
-        ].join("\n");
-      })
-      .filter((value): value is string => Boolean(value));
-
-    const issueBody = cleanMarkdownBlock(issue.body, 6000);
-    const labels = (issue.labels ?? []).map((label) => label.name).filter(Boolean);
-    const taskType = input.taskType ?? "build";
-    const title = input.title?.trim() || `Issue #${issue.number}: ${issue.title}`;
-    const prompt = [
-      `Imported from GitHub issue #${issue.number}: ${issue.title}`,
-      `Issue URL: ${issue.html_url}`,
-      labels.length > 0 ? `Labels: ${labels.join(", ")}` : null,
-      issueBody ? `## Issue Body\n${issueBody}` : null,
-      commentBlocks.length > 0 ? `## Issue Comments\n\n${commentBlocks.join("\n\n")}` : null
-    ]
-      .filter((value): value is string => Boolean(value))
-      .join("\n\n");
-
-    return {
-      title,
-      repoId: repository.id,
-      prompt,
-      notes: input.notes?.trim() ?? "",
-      deadline: input.deadline ?? null,
-      taskType,
-      provider: input.provider,
-      providerProfile: input.providerProfile,
-      modelOverride: input.modelOverride,
-      baseBranch: input.baseBranch?.trim() || repository.defaultBranch,
-      branchStrategy: taskType === "build" ? input.branchStrategy ?? "feature_branch" : "feature_branch",
-      model: input.model,
-      reasoningEffort: input.reasoningEffort
-    };
-  }
-
-  async buildTaskInputFromPullRequest(repository: Repository, input: CreateTaskFromPullRequestInput): Promise<CreateTaskInput> {
-    const { owner, repo } = parseGitHubRepository(repository.url);
-    const pullRequest = await this.fetchGitHubJson<GitHubPullRequest>(`/repos/${owner}/${repo}/pulls/${input.pullRequestNumber}`);
-
-    const response = await this.fetchGitHubGraphQL<PullRequestReviewThreadsResponse>(
-      `
-        query PullRequestReviewThreads($owner: String!, $repo: String!, $number: Int!) {
-          repository(owner: $owner, name: $repo) {
-            pullRequest(number: $number) {
-              reviewThreads(first: 100) {
-                nodes {
-                  isResolved
-                  isOutdated
-                  path
-                  line
-                  originalLine
-                  comments(first: 20) {
-                    nodes {
-                      body
-                      url
-                      createdAt
-                      diffHunk
-                      author {
-                        login
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      `,
-      { owner, repo, number: input.pullRequestNumber }
-    );
-
-    if (response.errors?.length) {
-      throw new GitHubImportError(response.errors.map((error) => error.message).join("; "));
-    }
-
-    const threads = response.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
-    const unresolvedThreads = threads.filter((thread) => !thread.isResolved && !thread.isOutdated);
-
-    if (unresolvedThreads.length === 0) {
-      throw new GitHubImportError("No unresolved pull request review threads found.", 409);
-    }
-
-    const threadBlocks = unresolvedThreads
-      .map((thread, index) => {
-        const location = [thread.path ?? "(unknown path)", thread.line ?? thread.originalLine ?? "unknown line"].join(":");
-        const commentBlocks = thread.comments.nodes
-          .map((comment) => {
-            const body = cleanMarkdownBlock(comment.body, 1800);
-            if (!body) {
-              return null;
-            }
-
-            const parts = [
-              `- @${comment.author?.login ?? "unknown"} (${comment.createdAt})`,
-              `  ${body.replace(/\n/g, "\n  ")}`,
-              `  Source: ${comment.url}`
-            ];
-
-            const diffHunk = cleanMarkdownBlock(comment.diffHunk, 1200);
-            if (diffHunk) {
-              parts.push("", "  ```diff", `  ${diffHunk.replace(/\n/g, "\n  ")}`, "  ```");
-            }
-
-            return parts.join("\n");
-          })
-          .filter((value): value is string => Boolean(value));
-
-        return [`### Thread ${index + 1} (${location})`, ...commentBlocks].join("\n");
-      })
-      .join("\n\n");
-
-    const pullRequestBody = cleanMarkdownBlock(pullRequest.body, 4000);
-    const title = input.title?.trim() || `PR #${pullRequest.number}: ${pullRequest.title}`;
-    const prompt = [
-      `Implement the unresolved review feedback from GitHub pull request #${pullRequest.number}: ${pullRequest.title}.`,
-      `PR URL: ${pullRequest.html_url}`,
-      `Default branch: ${pullRequest.base.ref}`,
-      `PR branch: ${pullRequest.head.ref}`,
-      pullRequestBody ? `## Pull Request Description\n${pullRequestBody}` : null,
-      `## Unresolved Review Threads\n\n${threadBlocks}`
-    ]
-      .filter((value): value is string => Boolean(value))
-      .join("\n\n");
-
-    return {
-      title,
-      repoId: repository.id,
-      prompt,
-      notes: input.notes?.trim() ?? "",
-      deadline: input.deadline ?? null,
-      taskType: "build",
-      provider: input.provider,
-      providerProfile: input.providerProfile,
-      modelOverride: input.modelOverride,
-      baseBranch: pullRequest.head.ref,
-      branchStrategy: "work_on_branch",
-      model: input.model,
-      reasoningEffort: input.reasoningEffort
-    };
-  }
-}
-````
-
 ## File: apps/server/src/services/github-outbound-queue-store.ts
 ````typescript
 import { randomUUID } from "node:crypto";
@@ -20353,56 +19983,6 @@ export const applySnippetVariables = (
 };
 ````
 
-## File: apps/web/src/utils/task-drafts.ts
-````typescript
-"use client";
-
-import dayjs from "dayjs";
-import type { TaskDraft, TaskDraftDefinition } from "@agentswarm/shared-types";
-import { getTaskDefinitionDeadlineIso, type TaskDefinitionFormValues } from "../../components/task-definition-fields";
-import {
-  encodeTaskPromptImageFiles,
-  taskPromptAttachmentInputsToSelectedFiles,
-  type SelectedTaskPromptImageFile
-} from "./task-prompt-attachments";
-
-export const buildTaskDraftDefinition = async (
-  values: TaskDefinitionFormValues,
-  promptImageFiles: SelectedTaskPromptImageFile[]
-): Promise<TaskDraftDefinition> => ({
-  sourceType: values.sourceType ?? "blank",
-  title: values.title,
-  deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
-  repoId: values.repoId,
-  prompt: values.prompt,
-  notes: values.notes,
-  taskType: values.taskType,
-  provider: values.provider,
-  model: values.model,
-  providerProfile: values.providerProfile,
-  codexCredentialSource: values.codexCredentialSource,
-  baseBranch: values.baseBranch,
-  branchStrategy: values.branchStrategy,
-  issueNumber: values.issueNumber,
-  includeComments: values.includeComments,
-  pullRequestNumber: values.pullRequestNumber,
-  snippetId: values.snippetId,
-  snippetVariables: values.snippetVariables,
-  sequenceId: values.sequenceId,
-  sequenceVariables: values.sequenceVariables,
-  attachments: await encodeTaskPromptImageFiles(promptImageFiles)
-});
-
-export const formValuesFromTaskDraft = (draft: TaskDraft): TaskDefinitionFormValues => ({
-  ...draft.definition,
-  sourceType: draft.definition.sourceType ?? "blank",
-  deadline: draft.definition.deadline ? dayjs(draft.definition.deadline) : null
-});
-
-export const promptImageFilesFromTaskDraft = (draft: TaskDraft): SelectedTaskPromptImageFile[] =>
-  taskPromptAttachmentInputsToSelectedFiles(draft.definition.attachments);
-````
-
 ## File: apps/web/src/utils/task-prompt-attachments.ts
 ````typescript
 import type { CreateTaskPromptAttachmentInput } from "@agentswarm/shared-types";
@@ -23490,6 +23070,376 @@ export const registerSnippetRoutes = (
 };
 ````
 
+## File: apps/server/src/services/github-import-service.ts
+````typescript
+import type {
+  CreateTaskFromIssueInput,
+  CreateTaskFromPullRequestInput,
+  CreateTaskInput,
+  GitHubBranchReference,
+  GitHubIssueReference,
+  GitHubPullRequestReference,
+  Repository
+} from "@agentswarm/shared-types";
+import type { SettingsStore } from "./settings-store.js";
+
+const GITHUB_API_URL = "https://api.github.com";
+const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
+
+interface GitHubUser {
+  login: string;
+}
+
+interface GitHubIssue {
+  number: number;
+  title: string;
+  body: string | null;
+  html_url: string;
+  labels?: Array<{ name: string }>;
+  pull_request?: Record<string, unknown>;
+}
+
+interface GitHubIssueComment {
+  body: string;
+  html_url: string;
+  user: GitHubUser | null;
+  created_at: string;
+}
+
+interface GitHubPullRequest {
+  number: number;
+  title: string;
+  body: string | null;
+  html_url: string;
+  head: { ref: string };
+  base: { ref: string };
+}
+
+interface GitHubBranch {
+  name: string;
+}
+
+interface ReviewThreadCommentNode {
+  body: string;
+  url: string;
+  createdAt: string;
+  diffHunk: string | null;
+  author: GitHubUser | null;
+}
+
+interface ReviewThreadNode {
+  isResolved: boolean;
+  isOutdated: boolean;
+  path: string | null;
+  line: number | null;
+  originalLine: number | null;
+  comments: {
+    nodes: ReviewThreadCommentNode[];
+  };
+}
+
+interface PullRequestReviewThreadsResponse {
+  data?: {
+    repository?: {
+      pullRequest?: {
+        reviewThreads?: {
+          nodes: ReviewThreadNode[];
+        };
+      };
+    };
+  };
+  errors?: Array<{ message: string }>;
+}
+
+export class GitHubImportError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode = 400
+  ) {
+    super(message);
+    this.name = "GitHubImportError";
+  }
+}
+
+const truncate = (value: string, maxLength: number): string =>
+  value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 3))}...` : value;
+
+const cleanMarkdownBlock = (value: string | null | undefined, maxLength = 3000): string | null => {
+  const normalized = (value ?? "").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  return truncate(normalized, maxLength);
+};
+
+const parseGitHubRepository = (repoUrl: string): { owner: string; repo: string } => {
+  const httpsMatch = repoUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  if (httpsMatch) {
+    return { owner: httpsMatch[1], repo: httpsMatch[2] };
+  }
+
+  const sshMatch = repoUrl.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
+  if (sshMatch) {
+    return { owner: sshMatch[1], repo: sshMatch[2] };
+  }
+
+  throw new GitHubImportError("Repository import currently supports github.com repositories only.");
+};
+
+export class GitHubImportService {
+  constructor(private readonly settingsStore: SettingsStore) {}
+
+  private async getGitHubToken(): Promise<string> {
+    const credentials = await this.settingsStore.getRuntimeCredentials();
+    if (!credentials.githubToken) {
+      throw new GitHubImportError("GitHub token is not configured in Settings.", 409);
+    }
+
+    return credentials.githubToken;
+  }
+
+  private async fetchGitHubJson<T>(path: string): Promise<T> {
+    const token = await this.getGitHubToken();
+    const response = await fetch(`${GITHUB_API_URL}${path}`, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": "AgentSwarm",
+        "X-GitHub-Api-Version": "2022-11-28"
+      }
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new GitHubImportError(`GitHub API request failed (${response.status}): ${text || response.statusText}`, response.status);
+    }
+
+    return response.json() as Promise<T>;
+  }
+
+  private async fetchGitHubGraphQL<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const token = await this.getGitHubToken();
+    const response = await fetch(GITHUB_GRAPHQL_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": "AgentSwarm"
+      },
+      body: JSON.stringify({ query, variables })
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new GitHubImportError(`GitHub GraphQL request failed (${response.status}): ${text || response.statusText}`, response.status);
+    }
+
+    return response.json() as Promise<T>;
+  }
+
+  async listOpenIssues(repository: Repository): Promise<GitHubIssueReference[]> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const issues = await this.fetchGitHubJson<GitHubIssue[]>(`/repos/${owner}/${repo}/issues?state=open&sort=updated&direction=desc&per_page=50`);
+
+    return issues
+      .filter((issue) => !issue.pull_request)
+      .map((issue) => ({
+        number: issue.number,
+        title: issue.title,
+        url: issue.html_url
+      }));
+  }
+
+  async listOpenPullRequests(repository: Repository): Promise<GitHubPullRequestReference[]> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const pullRequests = await this.fetchGitHubJson<GitHubPullRequest[]>(`/repos/${owner}/${repo}/pulls?state=open&sort=updated&direction=desc&per_page=50`);
+
+    return pullRequests.map((pullRequest) => ({
+      number: pullRequest.number,
+      title: pullRequest.title,
+      url: pullRequest.html_url,
+      headBranch: pullRequest.head.ref,
+      baseBranch: pullRequest.base.ref
+    }));
+  }
+
+  async listBranches(repository: Repository): Promise<GitHubBranchReference[]> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const branches = await this.fetchGitHubJson<GitHubBranch[]>(`/repos/${owner}/${repo}/branches?per_page=100`);
+
+    return branches.map((branch) => ({
+      name: branch.name,
+      isDefault: branch.name === repository.defaultBranch
+    }));
+  }
+
+  async buildTaskInputFromIssue(repository: Repository, input: CreateTaskFromIssueInput): Promise<CreateTaskInput> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const issue = await this.fetchGitHubJson<GitHubIssue>(`/repos/${owner}/${repo}/issues/${input.issueNumber}`);
+
+    if (issue.pull_request) {
+      throw new GitHubImportError("That number belongs to a pull request. Use the PR import path instead.");
+    }
+
+    const comments = input.includeComments
+      ? await this.fetchGitHubJson<GitHubIssueComment[]>(`/repos/${owner}/${repo}/issues/${input.issueNumber}/comments?per_page=50`)
+      : [];
+
+    const commentBlocks = comments
+      .map((comment) => {
+        const body = cleanMarkdownBlock(comment.body, 1800);
+        if (!body) {
+          return null;
+        }
+
+        return [
+          `### @${comment.user?.login ?? "unknown"} (${comment.created_at})`,
+          body,
+          `Source: ${comment.html_url}`
+        ].join("\n");
+      })
+      .filter((value): value is string => Boolean(value));
+
+    const issueBody = cleanMarkdownBlock(issue.body, 6000);
+    const labels = (issue.labels ?? []).map((label) => label.name).filter(Boolean);
+    const taskType = input.taskType ?? "build";
+    const title = input.title?.trim() || `Issue #${issue.number}: ${issue.title}`;
+    const prompt = [
+      `Imported from GitHub issue #${issue.number}: ${issue.title}`,
+      `Issue URL: ${issue.html_url}`,
+      labels.length > 0 ? `Labels: ${labels.join(", ")}` : null,
+      issueBody ? `## Issue Body\n${issueBody}` : null,
+      commentBlocks.length > 0 ? `## Issue Comments\n\n${commentBlocks.join("\n\n")}` : null
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join("\n\n");
+
+    return {
+      title,
+      repoId: repository.id,
+      prompt,
+      notes: input.notes?.trim() ?? "",
+      deadline: input.deadline ?? null,
+      taskType,
+      provider: input.provider,
+      providerProfile: input.providerProfile,
+      modelOverride: input.modelOverride,
+      baseBranch: input.baseBranch?.trim() || repository.defaultBranch,
+      branchStrategy: taskType === "build" ? input.branchStrategy ?? "feature_branch" : "feature_branch",
+      model: input.model,
+      reasoningEffort: input.reasoningEffort
+    };
+  }
+
+  async buildTaskInputFromPullRequest(repository: Repository, input: CreateTaskFromPullRequestInput): Promise<CreateTaskInput> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const pullRequest = await this.fetchGitHubJson<GitHubPullRequest>(`/repos/${owner}/${repo}/pulls/${input.pullRequestNumber}`);
+
+    const response = await this.fetchGitHubGraphQL<PullRequestReviewThreadsResponse>(
+      `
+        query PullRequestReviewThreads($owner: String!, $repo: String!, $number: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $number) {
+              reviewThreads(first: 100) {
+                nodes {
+                  isResolved
+                  isOutdated
+                  path
+                  line
+                  originalLine
+                  comments(first: 20) {
+                    nodes {
+                      body
+                      url
+                      createdAt
+                      diffHunk
+                      author {
+                        login
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `,
+      { owner, repo, number: input.pullRequestNumber }
+    );
+
+    if (response.errors?.length) {
+      throw new GitHubImportError(response.errors.map((error) => error.message).join("; "));
+    }
+
+    const threads = response.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+    const unresolvedThreads = threads.filter((thread) => !thread.isResolved && !thread.isOutdated);
+
+    if (unresolvedThreads.length === 0) {
+      throw new GitHubImportError("No unresolved pull request review threads found.", 409);
+    }
+
+    const threadBlocks = unresolvedThreads
+      .map((thread, index) => {
+        const location = [thread.path ?? "(unknown path)", thread.line ?? thread.originalLine ?? "unknown line"].join(":");
+        const commentBlocks = thread.comments.nodes
+          .map((comment) => {
+            const body = cleanMarkdownBlock(comment.body, 1800);
+            if (!body) {
+              return null;
+            }
+
+            const parts = [
+              `- @${comment.author?.login ?? "unknown"} (${comment.createdAt})`,
+              `  ${body.replace(/\n/g, "\n  ")}`,
+              `  Source: ${comment.url}`
+            ];
+
+            const diffHunk = cleanMarkdownBlock(comment.diffHunk, 1200);
+            if (diffHunk) {
+              parts.push("", "  ```diff", `  ${diffHunk.replace(/\n/g, "\n  ")}`, "  ```");
+            }
+
+            return parts.join("\n");
+          })
+          .filter((value): value is string => Boolean(value));
+
+        return [`### Thread ${index + 1} (${location})`, ...commentBlocks].join("\n");
+      })
+      .join("\n\n");
+
+    const pullRequestBody = cleanMarkdownBlock(pullRequest.body, 4000);
+    const title = input.title?.trim() || `PR #${pullRequest.number}: ${pullRequest.title}`;
+    const prompt = [
+      `Implement the unresolved review feedback from GitHub pull request #${pullRequest.number}: ${pullRequest.title}.`,
+      `PR URL: ${pullRequest.html_url}`,
+      `Default branch: ${pullRequest.base.ref}`,
+      `PR branch: ${pullRequest.head.ref}`,
+      pullRequestBody ? `## Pull Request Description\n${pullRequestBody}` : null,
+      `## Unresolved Review Threads\n\n${threadBlocks}`
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join("\n\n");
+
+    return {
+      title,
+      repoId: repository.id,
+      prompt,
+      notes: input.notes?.trim() ?? "",
+      deadline: input.deadline ?? null,
+      taskType: "build",
+      provider: input.provider,
+      providerProfile: input.providerProfile,
+      modelOverride: input.modelOverride,
+      baseBranch: pullRequest.head.ref,
+      branchStrategy: "work_on_branch",
+      model: input.model,
+      reasoningEffort: input.reasoningEffort
+    };
+  }
+}
+````
+
 ## File: apps/server/src/services/github-status-sync-service.ts
 ````typescript
 import type { RealtimeEvent, Task, TaskStatus } from "@agentswarm/shared-types";
@@ -24593,6 +24543,56 @@ export function getCodeTokenStyles(token: GlobalToken): TokenStyleMap {
     string: { color: token.colorSuccessText }
   };
 }
+````
+
+## File: apps/web/src/utils/task-drafts.ts
+````typescript
+"use client";
+
+import dayjs from "dayjs";
+import type { TaskDraft, TaskDraftDefinition } from "@agentswarm/shared-types";
+import { getTaskDefinitionDeadlineIso, type TaskDefinitionFormValues } from "../../components/task-definition-fields";
+import {
+  encodeTaskPromptImageFiles,
+  taskPromptAttachmentInputsToSelectedFiles,
+  type SelectedTaskPromptImageFile
+} from "./task-prompt-attachments";
+
+export const buildTaskDraftDefinition = async (
+  values: TaskDefinitionFormValues,
+  promptImageFiles: SelectedTaskPromptImageFile[]
+): Promise<TaskDraftDefinition> => ({
+  sourceType: values.sourceType ?? "blank",
+  title: values.title,
+  deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
+  repoId: values.repoId,
+  prompt: values.prompt,
+  notes: values.notes,
+  taskType: values.taskType,
+  provider: values.provider,
+  model: values.model,
+  providerProfile: values.providerProfile,
+  codexCredentialSource: values.codexCredentialSource,
+  baseBranch: values.baseBranch,
+  branchStrategy: values.branchStrategy,
+  issueNumber: values.issueNumber,
+  includeComments: values.includeComments,
+  pullRequestNumber: values.pullRequestNumber,
+  snippetId: values.snippetId,
+  snippetVariables: values.snippetVariables,
+  sequenceId: values.sequenceId,
+  sequenceVariables: values.sequenceVariables,
+  attachments: await encodeTaskPromptImageFiles(promptImageFiles)
+});
+
+export const formValuesFromTaskDraft = (draft: TaskDraft): TaskDefinitionFormValues => ({
+  ...draft.definition,
+  sourceType: draft.definition.sourceType ?? "blank",
+  deadline: draft.definition.deadline ? dayjs(draft.definition.deadline) : null
+});
+
+export const promptImageFilesFromTaskDraft = (draft: TaskDraft): SelectedTaskPromptImageFile[] =>
+  taskPromptAttachmentInputsToSelectedFiles(draft.definition.attachments);
 ````
 
 ## File: docs/development/commands.md
@@ -26587,487 +26587,6 @@ export const createPostgresStores = (
     settingsStore
   };
 };
-````
-
-## File: apps/server/src/services/task-store.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import type { CreateTaskInput, Repository } from "@agentswarm/shared-types";
-import { RedisTaskStore } from "./task-store.js";
-
-class FakeRedis {
-  private readonly kv = new Map<string, string>();
-  private readonly lists = new Map<string, string[]>();
-  private readonly sets = new Map<string, Set<string>>();
-
-  private getList(key: string): string[] {
-    let current = this.lists.get(key);
-    if (!current) {
-      current = [];
-      this.lists.set(key, current);
-    }
-    return current;
-  }
-
-  private getSet(key: string): Set<string> {
-    let current = this.sets.get(key);
-    if (!current) {
-      current = new Set<string>();
-      this.sets.set(key, current);
-    }
-    return current;
-  }
-
-  private normalizeIndex(length: number, index: number): number {
-    return index < 0 ? Math.max(length + index, 0) : Math.min(index, length);
-  }
-
-  async set(key: string, value: string): Promise<"OK"> {
-    this.kv.set(key, value);
-    return "OK";
-  }
-
-  async get(key: string): Promise<string | null> {
-    return this.kv.get(key) ?? null;
-  }
-
-  async lrange(key: string, start: number, stop: number): Promise<string[]> {
-    const list = this.getList(key);
-    const normalizedStart = this.normalizeIndex(list.length, start);
-    const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
-    if (normalizedStop < normalizedStart) {
-      return [];
-    }
-    return list.slice(normalizedStart, normalizedStop + 1);
-  }
-
-  async rpush(key: string, ...values: string[]): Promise<number> {
-    const list = this.getList(key);
-    list.push(...values);
-    return list.length;
-  }
-
-  async ltrim(key: string, start: number, stop: number): Promise<"OK"> {
-    const list = this.getList(key);
-    const normalizedStart = this.normalizeIndex(list.length, start);
-    const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
-    const next = normalizedStop < normalizedStart ? [] : list.slice(normalizedStart, normalizedStop + 1);
-    this.lists.set(key, next);
-    return "OK";
-  }
-
-  async sadd(key: string, ...members: string[]): Promise<number> {
-    const set = this.getSet(key);
-    let added = 0;
-    for (const member of members) {
-      if (!set.has(member)) {
-        set.add(member);
-        added += 1;
-      }
-    }
-    return added;
-  }
-
-  async smembers(key: string): Promise<string[]> {
-    return [...this.getSet(key)];
-  }
-
-  async del(...keys: string[]): Promise<number> {
-    let deleted = 0;
-    for (const key of keys) {
-      deleted += Number(this.kv.delete(key));
-      deleted += Number(this.lists.delete(key));
-      deleted += Number(this.sets.delete(key));
-    }
-    return deleted;
-  }
-
-  multi(): {
-    set: (key: string, value: string) => unknown;
-    rpush: (key: string, ...values: string[]) => unknown;
-    ltrim: (key: string, start: number, stop: number) => unknown;
-    sadd: (key: string, ...members: string[]) => unknown;
-    del: (...keys: string[]) => unknown;
-    exec: () => Promise<unknown[]>;
-  } {
-    const operations: Array<() => void> = [];
-    const chain = {
-      set: (key: string, value: string) => {
-        operations.push(() => {
-          this.kv.set(key, value);
-        });
-        return chain;
-      },
-      rpush: (key: string, ...values: string[]) => {
-        operations.push(() => {
-          this.getList(key).push(...values);
-        });
-        return chain;
-      },
-      ltrim: (key: string, start: number, stop: number) => {
-        operations.push(() => {
-          const list = this.getList(key);
-          const normalizedStart = this.normalizeIndex(list.length, start);
-          const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
-          this.lists.set(key, normalizedStop < normalizedStart ? [] : list.slice(normalizedStart, normalizedStop + 1));
-        });
-        return chain;
-      },
-      sadd: (key: string, ...members: string[]) => {
-        operations.push(() => {
-          const set = this.getSet(key);
-          for (const member of members) {
-            set.add(member);
-          }
-        });
-        return chain;
-      },
-      del: (...keys: string[]) => {
-        operations.push(() => {
-          for (const key of keys) {
-            this.kv.delete(key);
-            this.lists.delete(key);
-            this.sets.delete(key);
-          }
-        });
-        return chain;
-      },
-      exec: async () => {
-        for (const operation of operations) {
-          operation();
-        }
-        return [] as unknown[];
-      }
-    };
-    return chain;
-  }
-
-  pipeline() {
-    return this.multi();
-  }
-}
-
-const repository: Repository = {
-  id: "repo-1",
-  name: "Repo",
-  url: "https://github.com/example/repo.git",
-  defaultBranch: "main",
-  envVars: [],
-  webhookUrl: null,
-  webhookEnabled: false,
-  webhookSecretConfigured: false,
-  webhookLastAttemptAt: null,
-  webhookLastStatus: null,
-  webhookLastError: null,
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:00.000Z"
-};
-
-const createTaskInput: CreateTaskInput = {
-  title: "Persist context",
-  repoId: repository.id,
-  prompt: "Initial prompt",
-  taskType: "build"
-};
-
-describe("TaskStore.appendMessage", () => {
-  it("persists user messages", async () => {
-    const redis = new FakeRedis();
-    const publishedEvents: unknown[] = [];
-    const taskStore = new RedisTaskStore(redis as never, {
-      publish: async (event: unknown) => {
-        publishedEvents.push(event);
-      }
-    } as never);
-    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
-    await taskStore.appendMessage(task.id, {
-      role: "user",
-      action: "ask",
-      content: "What changed?"
-    });
-
-    const messages = await taskStore.listMessages(task.id);
-    assert.equal(messages.length, 2);
-    assert.equal(messages[1]?.content, "What changed?");
-    assert.equal(messages[1]?.action, "ask");
-    assert.equal(publishedEvents.length, 3);
-  });
-});
-
-describe("TaskStore.createTask", () => {
-  it("creates new build tasks in the build queue", async () => {
-    const redis = new FakeRedis();
-    const taskStore = new RedisTaskStore(redis as never, {
-      publish: async () => {}
-    } as never);
-    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
-
-    assert.equal(task.status, "open");
-    assert.equal(task.executionStatus, "queued");
-    assert.equal(task.executionAction, "build");
-    assert.equal(task.startedAt, null);
-    assert.equal(task.deadline, null);
-  });
-
-  it("normalizes task deadlines", async () => {
-    const redis = new FakeRedis();
-    const taskStore = new RedisTaskStore(redis as never, {
-      publish: async () => {}
-    } as never);
-    const task = await taskStore.createTask(
-      {
-        ...createTaskInput,
-        deadline: "2026-06-15T10:30:00+02:00"
-      },
-      repository,
-      "user-1"
-    );
-
-    assert.equal(task.deadline, "2026-06-15T08:30:00.000Z");
-  });
-});
-````
-
-## File: apps/server/src/services/webhook-delivery-service.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
-import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
-import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
-import { WebhookDeliveryService } from "./webhook-delivery-service.js";
-
-class FakeRedis {
-  private readonly kv = new Map<string, string>();
-  private readonly zsets = new Map<string, Map<string, number>>();
-
-  private getZset(key: string): Map<string, number> {
-    let current = this.zsets.get(key);
-    if (!current) {
-      current = new Map<string, number>();
-      this.zsets.set(key, current);
-    }
-    return current;
-  }
-
-  async set(key: string, value: string): Promise<"OK"> {
-    this.kv.set(key, value);
-    return "OK";
-  }
-
-  async get(key: string): Promise<string | null> {
-    return this.kv.get(key) ?? null;
-  }
-
-  async del(...keys: string[]): Promise<number> {
-    let deleted = 0;
-    for (const key of keys) {
-      if (this.kv.delete(key)) {
-        deleted += 1;
-      }
-    }
-    return deleted;
-  }
-
-  async zadd(key: string, score: number, member: string): Promise<number> {
-    this.getZset(key).set(member, score);
-    return 1;
-  }
-
-  async zrem(key: string, member: string): Promise<number> {
-    const zset = this.getZset(key);
-    const existed = zset.delete(member);
-    return existed ? 1 : 0;
-  }
-
-  async zrangebyscore(
-    key: string,
-    min: number,
-    max: number,
-    _limitKeyword?: string,
-    offset?: number,
-    count?: number
-  ): Promise<string[]> {
-    const parsedOffset = Number.isFinite(offset) ? Number(offset) : 0;
-    const parsedCount = Number.isFinite(count) ? Number(count) : Number.MAX_SAFE_INTEGER;
-    return [...this.getZset(key).entries()]
-      .filter(([, score]) => score >= min && score <= max)
-      .sort((a, b) => a[1] - b[1])
-      .slice(parsedOffset, parsedOffset + parsedCount)
-      .map(([member]) => member);
-  }
-
-  multi(): {
-    set: (key: string, value: string) => unknown;
-    zadd: (key: string, score: number, member: string) => unknown;
-    zrem: (key: string, member: string) => unknown;
-    del: (...keys: string[]) => unknown;
-    exec: () => Promise<unknown[]>;
-  } {
-    const operations: Array<() => void> = [];
-    const chain = {
-      set: (key: string, value: string) => {
-        operations.push(() => {
-          this.kv.set(key, value);
-        });
-        return chain;
-      },
-      zadd: (key: string, score: number, member: string) => {
-        operations.push(() => {
-          this.getZset(key).set(member, score);
-        });
-        return chain;
-      },
-      zrem: (key: string, member: string) => {
-        operations.push(() => {
-          this.getZset(key).delete(member);
-        });
-        return chain;
-      },
-      del: (...keys: string[]) => {
-        operations.push(() => {
-          for (const key of keys) {
-            this.kv.delete(key);
-          }
-        });
-        return chain;
-      },
-      exec: async () => {
-        for (const operation of operations) {
-          operation();
-        }
-        return [] as unknown[];
-      }
-    };
-    return chain;
-  }
-}
-
-const baseTask = (): Task => ({
-  id: "task-1",
-  title: "Example task",
-  deadline: null,
-  pinned: false,
-  hasPendingCheckpoint: false,
-  ownerUserId: "user-1",
-  repoId: "repo-1",
-  repoName: "Repo",
-  repoUrl: "https://github.com/example/repo.git",
-  repoDefaultBranch: "main",
-  taskType: "build",
-  provider: "codex",
-  providerProfile: "medium",
-  modelOverride: null,
-  baseBranch: "main",
-  branchStrategy: "feature_branch",
-  complexity: "normal",
-  branchName: "agentswarm/task-1",
-  workspaceBaseRef: null,
-  prompt: "Do it",
-  resultMarkdown: null,
-  executionSummary: "Do it",
-  branchDiff: null,
-  lastAction: "build",
-  status: "build_queued",
-  workflowStatus: "ready",
-  executionStatus: "queued",
-  executionAction: "build",
-  reviewReason: null,
-  logs: [],
-  enqueued: false,
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:00.000Z",
-  startedAt: null,
-  finishedAt: null,
-  errorMessage: null
-});
-
-const baseRepository = (): Repository => ({
-  id: "repo-1",
-  name: "Repo",
-  url: "https://github.com/example/repo.git",
-  defaultBranch: "main",
-  envVars: [],
-  webhookUrl: "https://example.com/webhook",
-  webhookEnabled: true,
-  webhookSecretConfigured: true,
-  webhookLastAttemptAt: null,
-  webhookLastStatus: null,
-  webhookLastError: null,
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:00.000Z"
-});
-
-describe("WebhookDeliveryService", () => {
-  const originalFetch = globalThis.fetch;
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("delivers created events and records successful delivery", async () => {
-    const redis = new FakeRedis();
-    const deliveryResults: Array<{ status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }> = [];
-    const repositoryStore = {
-      getRepositoryWebhookTarget: async () => ({
-        repository: baseRepository(),
-        webhookUrl: "https://example.com/webhook",
-        webhookSecret: "super-secret"
-      }),
-      recordWebhookDeliveryResult: async (
-        _repoId: string,
-        input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
-      ) => {
-        deliveryResults.push(input);
-        return baseRepository();
-      }
-    };
-    const fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
-    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
-      fetchCalls.push({ url: String(url), init });
-      return new Response("ok", { status: 200 });
-    }) as typeof fetch;
-
-    const store = new RedisWebhookDeliveryStore(redis as never);
-    const event: RealtimeEvent = { type: "task:created", payload: baseTask() };
-    const service = new WebhookDeliveryService(store, repositoryStore as never);
-    await service.handleRealtimeEvent(event);
-    await (service as unknown as { processDueJobs: () => Promise<void> }).processDueJobs();
-
-    assert.equal(fetchCalls.length, 1);
-    assert.equal(fetchCalls[0]?.url, "https://example.com/webhook");
-    const headers = fetchCalls[0]?.init?.headers as Record<string, string>;
-    assert.equal(headers["x-agentswarm-event"], "created");
-    assert.equal(typeof headers["x-agentswarm-signature"], "string");
-    assert.equal(deliveryResults.length, 1);
-    assert.equal(deliveryResults[0]?.status, "success");
-  });
-
-  it("queues updated events only when status changes", async () => {
-    const redis = new FakeRedis();
-    const repositoryStore = {
-      getRepositoryWebhookTarget: async () => null,
-      recordWebhookDeliveryResult: async () => null
-    };
-    const store = new RedisWebhookDeliveryStore(redis as never);
-    const service = new WebhookDeliveryService(store, repositoryStore as never);
-    const task = baseTask();
-
-    await service.handleRealtimeEvent({ type: "task:created", payload: task });
-    await service.handleRealtimeEvent({ type: "task:updated", payload: { ...task, updatedAt: "2026-01-01T00:01:00.000Z" } });
-    await service.handleRealtimeEvent({
-      type: "task:updated",
-      payload: {
-        ...task,
-        status: "building",
-        updatedAt: "2026-01-01T00:02:00.000Z"
-      }
-    });
-
-    const queued = await redis.zrangebyscore("agentswarm:webhook_delivery_queue", 0, Number.MAX_SAFE_INTEGER);
-    assert.equal(queued.length, 2);
-  });
-});
 ````
 
 ## File: apps/web/components/sequence-analytics-tracker.tsx
@@ -30277,6 +29796,487 @@ export class PostgresSequenceStore implements SequenceStore {
 }
 ````
 
+## File: apps/server/src/services/task-store.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import type { CreateTaskInput, Repository } from "@agentswarm/shared-types";
+import { RedisTaskStore } from "./task-store.js";
+
+class FakeRedis {
+  private readonly kv = new Map<string, string>();
+  private readonly lists = new Map<string, string[]>();
+  private readonly sets = new Map<string, Set<string>>();
+
+  private getList(key: string): string[] {
+    let current = this.lists.get(key);
+    if (!current) {
+      current = [];
+      this.lists.set(key, current);
+    }
+    return current;
+  }
+
+  private getSet(key: string): Set<string> {
+    let current = this.sets.get(key);
+    if (!current) {
+      current = new Set<string>();
+      this.sets.set(key, current);
+    }
+    return current;
+  }
+
+  private normalizeIndex(length: number, index: number): number {
+    return index < 0 ? Math.max(length + index, 0) : Math.min(index, length);
+  }
+
+  async set(key: string, value: string): Promise<"OK"> {
+    this.kv.set(key, value);
+    return "OK";
+  }
+
+  async get(key: string): Promise<string | null> {
+    return this.kv.get(key) ?? null;
+  }
+
+  async lrange(key: string, start: number, stop: number): Promise<string[]> {
+    const list = this.getList(key);
+    const normalizedStart = this.normalizeIndex(list.length, start);
+    const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
+    if (normalizedStop < normalizedStart) {
+      return [];
+    }
+    return list.slice(normalizedStart, normalizedStop + 1);
+  }
+
+  async rpush(key: string, ...values: string[]): Promise<number> {
+    const list = this.getList(key);
+    list.push(...values);
+    return list.length;
+  }
+
+  async ltrim(key: string, start: number, stop: number): Promise<"OK"> {
+    const list = this.getList(key);
+    const normalizedStart = this.normalizeIndex(list.length, start);
+    const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
+    const next = normalizedStop < normalizedStart ? [] : list.slice(normalizedStart, normalizedStop + 1);
+    this.lists.set(key, next);
+    return "OK";
+  }
+
+  async sadd(key: string, ...members: string[]): Promise<number> {
+    const set = this.getSet(key);
+    let added = 0;
+    for (const member of members) {
+      if (!set.has(member)) {
+        set.add(member);
+        added += 1;
+      }
+    }
+    return added;
+  }
+
+  async smembers(key: string): Promise<string[]> {
+    return [...this.getSet(key)];
+  }
+
+  async del(...keys: string[]): Promise<number> {
+    let deleted = 0;
+    for (const key of keys) {
+      deleted += Number(this.kv.delete(key));
+      deleted += Number(this.lists.delete(key));
+      deleted += Number(this.sets.delete(key));
+    }
+    return deleted;
+  }
+
+  multi(): {
+    set: (key: string, value: string) => unknown;
+    rpush: (key: string, ...values: string[]) => unknown;
+    ltrim: (key: string, start: number, stop: number) => unknown;
+    sadd: (key: string, ...members: string[]) => unknown;
+    del: (...keys: string[]) => unknown;
+    exec: () => Promise<unknown[]>;
+  } {
+    const operations: Array<() => void> = [];
+    const chain = {
+      set: (key: string, value: string) => {
+        operations.push(() => {
+          this.kv.set(key, value);
+        });
+        return chain;
+      },
+      rpush: (key: string, ...values: string[]) => {
+        operations.push(() => {
+          this.getList(key).push(...values);
+        });
+        return chain;
+      },
+      ltrim: (key: string, start: number, stop: number) => {
+        operations.push(() => {
+          const list = this.getList(key);
+          const normalizedStart = this.normalizeIndex(list.length, start);
+          const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
+          this.lists.set(key, normalizedStop < normalizedStart ? [] : list.slice(normalizedStart, normalizedStop + 1));
+        });
+        return chain;
+      },
+      sadd: (key: string, ...members: string[]) => {
+        operations.push(() => {
+          const set = this.getSet(key);
+          for (const member of members) {
+            set.add(member);
+          }
+        });
+        return chain;
+      },
+      del: (...keys: string[]) => {
+        operations.push(() => {
+          for (const key of keys) {
+            this.kv.delete(key);
+            this.lists.delete(key);
+            this.sets.delete(key);
+          }
+        });
+        return chain;
+      },
+      exec: async () => {
+        for (const operation of operations) {
+          operation();
+        }
+        return [] as unknown[];
+      }
+    };
+    return chain;
+  }
+
+  pipeline() {
+    return this.multi();
+  }
+}
+
+const repository: Repository = {
+  id: "repo-1",
+  name: "Repo",
+  url: "https://github.com/example/repo.git",
+  defaultBranch: "main",
+  envVars: [],
+  webhookUrl: null,
+  webhookEnabled: false,
+  webhookSecretConfigured: false,
+  webhookLastAttemptAt: null,
+  webhookLastStatus: null,
+  webhookLastError: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z"
+};
+
+const createTaskInput: CreateTaskInput = {
+  title: "Persist context",
+  repoId: repository.id,
+  prompt: "Initial prompt",
+  taskType: "build"
+};
+
+describe("TaskStore.appendMessage", () => {
+  it("persists user messages", async () => {
+    const redis = new FakeRedis();
+    const publishedEvents: unknown[] = [];
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async (event: unknown) => {
+        publishedEvents.push(event);
+      }
+    } as never);
+    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
+    await taskStore.appendMessage(task.id, {
+      role: "user",
+      action: "ask",
+      content: "What changed?"
+    });
+
+    const messages = await taskStore.listMessages(task.id);
+    assert.equal(messages.length, 2);
+    assert.equal(messages[1]?.content, "What changed?");
+    assert.equal(messages[1]?.action, "ask");
+    assert.equal(publishedEvents.length, 3);
+  });
+});
+
+describe("TaskStore.createTask", () => {
+  it("creates new build tasks in the build queue", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
+
+    assert.equal(task.status, "open");
+    assert.equal(task.executionStatus, "queued");
+    assert.equal(task.executionAction, "build");
+    assert.equal(task.startedAt, null);
+    assert.equal(task.deadline, null);
+  });
+
+  it("normalizes task deadlines", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(
+      {
+        ...createTaskInput,
+        deadline: "2026-06-15T10:30:00+02:00"
+      },
+      repository,
+      "user-1"
+    );
+
+    assert.equal(task.deadline, "2026-06-15T08:30:00.000Z");
+  });
+});
+````
+
+## File: apps/server/src/services/webhook-delivery-service.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { afterEach, describe, it } from "node:test";
+import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
+import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
+import { WebhookDeliveryService } from "./webhook-delivery-service.js";
+
+class FakeRedis {
+  private readonly kv = new Map<string, string>();
+  private readonly zsets = new Map<string, Map<string, number>>();
+
+  private getZset(key: string): Map<string, number> {
+    let current = this.zsets.get(key);
+    if (!current) {
+      current = new Map<string, number>();
+      this.zsets.set(key, current);
+    }
+    return current;
+  }
+
+  async set(key: string, value: string): Promise<"OK"> {
+    this.kv.set(key, value);
+    return "OK";
+  }
+
+  async get(key: string): Promise<string | null> {
+    return this.kv.get(key) ?? null;
+  }
+
+  async del(...keys: string[]): Promise<number> {
+    let deleted = 0;
+    for (const key of keys) {
+      if (this.kv.delete(key)) {
+        deleted += 1;
+      }
+    }
+    return deleted;
+  }
+
+  async zadd(key: string, score: number, member: string): Promise<number> {
+    this.getZset(key).set(member, score);
+    return 1;
+  }
+
+  async zrem(key: string, member: string): Promise<number> {
+    const zset = this.getZset(key);
+    const existed = zset.delete(member);
+    return existed ? 1 : 0;
+  }
+
+  async zrangebyscore(
+    key: string,
+    min: number,
+    max: number,
+    _limitKeyword?: string,
+    offset?: number,
+    count?: number
+  ): Promise<string[]> {
+    const parsedOffset = Number.isFinite(offset) ? Number(offset) : 0;
+    const parsedCount = Number.isFinite(count) ? Number(count) : Number.MAX_SAFE_INTEGER;
+    return [...this.getZset(key).entries()]
+      .filter(([, score]) => score >= min && score <= max)
+      .sort((a, b) => a[1] - b[1])
+      .slice(parsedOffset, parsedOffset + parsedCount)
+      .map(([member]) => member);
+  }
+
+  multi(): {
+    set: (key: string, value: string) => unknown;
+    zadd: (key: string, score: number, member: string) => unknown;
+    zrem: (key: string, member: string) => unknown;
+    del: (...keys: string[]) => unknown;
+    exec: () => Promise<unknown[]>;
+  } {
+    const operations: Array<() => void> = [];
+    const chain = {
+      set: (key: string, value: string) => {
+        operations.push(() => {
+          this.kv.set(key, value);
+        });
+        return chain;
+      },
+      zadd: (key: string, score: number, member: string) => {
+        operations.push(() => {
+          this.getZset(key).set(member, score);
+        });
+        return chain;
+      },
+      zrem: (key: string, member: string) => {
+        operations.push(() => {
+          this.getZset(key).delete(member);
+        });
+        return chain;
+      },
+      del: (...keys: string[]) => {
+        operations.push(() => {
+          for (const key of keys) {
+            this.kv.delete(key);
+          }
+        });
+        return chain;
+      },
+      exec: async () => {
+        for (const operation of operations) {
+          operation();
+        }
+        return [] as unknown[];
+      }
+    };
+    return chain;
+  }
+}
+
+const baseTask = (): Task => ({
+  id: "task-1",
+  title: "Example task",
+  deadline: null,
+  pinned: false,
+  hasPendingCheckpoint: false,
+  ownerUserId: "user-1",
+  repoId: "repo-1",
+  repoName: "Repo",
+  repoUrl: "https://github.com/example/repo.git",
+  repoDefaultBranch: "main",
+  taskType: "build",
+  provider: "codex",
+  providerProfile: "medium",
+  modelOverride: null,
+  baseBranch: "main",
+  branchStrategy: "feature_branch",
+  complexity: "normal",
+  branchName: "agentswarm/task-1",
+  workspaceBaseRef: null,
+  prompt: "Do it",
+  resultMarkdown: null,
+  executionSummary: "Do it",
+  branchDiff: null,
+  lastAction: "build",
+  status: "build_queued",
+  workflowStatus: "ready",
+  executionStatus: "queued",
+  executionAction: "build",
+  reviewReason: null,
+  logs: [],
+  enqueued: false,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+  startedAt: null,
+  finishedAt: null,
+  errorMessage: null
+});
+
+const baseRepository = (): Repository => ({
+  id: "repo-1",
+  name: "Repo",
+  url: "https://github.com/example/repo.git",
+  defaultBranch: "main",
+  envVars: [],
+  webhookUrl: "https://example.com/webhook",
+  webhookEnabled: true,
+  webhookSecretConfigured: true,
+  webhookLastAttemptAt: null,
+  webhookLastStatus: null,
+  webhookLastError: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z"
+});
+
+describe("WebhookDeliveryService", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("delivers created events and records successful delivery", async () => {
+    const redis = new FakeRedis();
+    const deliveryResults: Array<{ status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }> = [];
+    const repositoryStore = {
+      getRepositoryWebhookTarget: async () => ({
+        repository: baseRepository(),
+        webhookUrl: "https://example.com/webhook",
+        webhookSecret: "super-secret"
+      }),
+      recordWebhookDeliveryResult: async (
+        _repoId: string,
+        input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
+      ) => {
+        deliveryResults.push(input);
+        return baseRepository();
+      }
+    };
+    const fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    const store = new RedisWebhookDeliveryStore(redis as never);
+    const event: RealtimeEvent = { type: "task:created", payload: baseTask() };
+    const service = new WebhookDeliveryService(store, repositoryStore as never);
+    await service.handleRealtimeEvent(event);
+    await (service as unknown as { processDueJobs: () => Promise<void> }).processDueJobs();
+
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fetchCalls[0]?.url, "https://example.com/webhook");
+    const headers = fetchCalls[0]?.init?.headers as Record<string, string>;
+    assert.equal(headers["x-agentswarm-event"], "created");
+    assert.equal(typeof headers["x-agentswarm-signature"], "string");
+    assert.equal(deliveryResults.length, 1);
+    assert.equal(deliveryResults[0]?.status, "success");
+  });
+
+  it("queues updated events only when status changes", async () => {
+    const redis = new FakeRedis();
+    const repositoryStore = {
+      getRepositoryWebhookTarget: async () => null,
+      recordWebhookDeliveryResult: async () => null
+    };
+    const store = new RedisWebhookDeliveryStore(redis as never);
+    const service = new WebhookDeliveryService(store, repositoryStore as never);
+    const task = baseTask();
+
+    await service.handleRealtimeEvent({ type: "task:created", payload: task });
+    await service.handleRealtimeEvent({ type: "task:updated", payload: { ...task, updatedAt: "2026-01-01T00:01:00.000Z" } });
+    await service.handleRealtimeEvent({
+      type: "task:updated",
+      payload: {
+        ...task,
+        status: "building",
+        updatedAt: "2026-01-01T00:02:00.000Z"
+      }
+    });
+
+    const queued = await redis.zrangebyscore("agentswarm:webhook_delivery_queue", 0, Number.MAX_SAFE_INTEGER);
+    assert.equal(queued.length, 2);
+  });
+});
+````
+
 ## File: apps/web/components/sequence-editor-page.tsx
 ````typescript
 "use client";
@@ -31955,645 +31955,6 @@ export function TaskCreatePage() {
 }
 ````
 
-## File: apps/web/components/tasks-kanban-board-page.tsx
-````typescript
-"use client";
-
-import { useMemo, useState, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
-import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
-import { CSS } from "@dnd-kit/utilities";
-import { PlusOutlined } from "@ant-design/icons";
-import {
-  getTaskExecutionStatusLabel,
-  getTaskTypeLabel,
-  getTaskWorkflowStatusLabel,
-  type Task,
-  type TaskDraft,
-  type UpdateTaskStateInput
-} from "@agentswarm/shared-types";
-import { Button, Card, Empty, Flex, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
-import dayjs from "dayjs";
-import { api } from "../src/api/client";
-import { useTaskDrafts } from "../src/hooks/useTaskDrafts";
-import { useTasks } from "../src/hooks/useTasks";
-import { useAuth } from "./auth-provider";
-import { TaskCreateModal } from "./task-create-modal";
-
-type BoardColumnId = "backlog" | "ready" | "in_progress" | "review" | "done";
-type BoardTaskStatus = UpdateTaskStateInput["status"];
-type BoardItem =
-  | { id: string; type: "draft"; draft: TaskDraft; column: BoardColumnId }
-  | { id: string; type: "task"; task: Task; column: BoardColumnId };
-
-const columns: Array<{ id: BoardColumnId; title: string; taskStatus?: BoardTaskStatus; acceptsTasks: boolean }> = [
-  { id: "backlog", title: "Backlog", acceptsTasks: false },
-  { id: "ready", title: getTaskWorkflowStatusLabel("ready"), taskStatus: "open", acceptsTasks: true },
-  { id: "in_progress", title: getTaskWorkflowStatusLabel("in_progress"), taskStatus: "in_progress", acceptsTasks: true },
-  { id: "review", title: getTaskWorkflowStatusLabel("review"), taskStatus: "in_review", acceptsTasks: true },
-  { id: "done", title: getTaskWorkflowStatusLabel("done"), taskStatus: "done", acceptsTasks: true }
-];
-
-const taskColumn = (task: Task): BoardColumnId => {
-  if (task.workflowStatus === "done") {
-    return "done";
-  }
-  if (task.workflowStatus === "review") {
-    return "review";
-  }
-  if (task.workflowStatus === "in_progress") {
-    return "in_progress";
-  }
-  return "ready";
-};
-
-function KanbanColumn({
-  column,
-  canCreate,
-  onAdd,
-  children
-}: {
-  column: (typeof columns)[number];
-  canCreate: boolean;
-  onAdd: (column: (typeof columns)[number]) => void;
-  children: ReactNode;
-}) {
-  const { token } = antTheme.useToken();
-  const { setNodeRef, isOver } = useDroppable({
-    id: column.id,
-    disabled: !column.acceptsTasks
-  });
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={{
-        minWidth: 290,
-        width: 320,
-        flex: "0 0 320px",
-        background: isOver ? token.colorPrimaryBg : token.colorFillQuaternary,
-        border: `1px solid ${isOver ? token.colorPrimaryBorder : token.colorBorderSecondary}`,
-        borderRadius: 8,
-        padding: 12,
-        minHeight: "calc(100vh - 220px)"
-      }}
-    >
-      <Flex vertical gap={12}>
-        <Flex justify="space-between" align="center">
-          <Typography.Text strong>{column.title}</Typography.Text>
-          {canCreate ? (
-            <Button
-              type="text"
-              size="small"
-              icon={<PlusOutlined />}
-              aria-label={`Create in ${column.title}`}
-              title={`Create in ${column.title}`}
-              onClick={() => onAdd(column)}
-            />
-          ) : null}
-        </Flex>
-        {children}
-      </Flex>
-    </div>
-  );
-}
-
-function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardItem) => void }) {
-  const draggable = useDraggable({
-    id: item.id,
-    disabled: item.type !== "task",
-    data: item
-  });
-  const style = {
-    transform: CSS.Translate.toString(draggable.transform),
-    opacity: draggable.isDragging ? 0.65 : 1,
-    cursor: item.type === "task" ? "grab" : "pointer"
-  };
-  const task = item.type === "task" ? item.task : null;
-  const draft = item.type === "draft" ? item.draft : null;
-
-  return (
-    <Card
-      ref={draggable.setNodeRef}
-      {...draggable.listeners}
-      {...draggable.attributes}
-      size="small"
-      hoverable
-      onClick={() => onOpen(item)}
-      style={{ ...style, borderRadius: 8 }}
-      bodyStyle={{ padding: 12 }}
-    >
-      <Flex vertical gap={8}>
-        <Typography.Text strong ellipsis={{ tooltip: task?.title ?? draft?.title }}>
-          {task?.title ?? draft?.title}
-        </Typography.Text>
-        <Space size={[6, 6]} wrap>
-          {draft ? <Tag color="default">Draft</Tag> : null}
-          {task ? <Tag>{getTaskTypeLabel(task.taskType)}</Tag> : null}
-          {task && task.executionStatus !== "idle" ? <Tag color={task.executionStatus === "failed" ? "red" : "blue"}>{getTaskExecutionStatusLabel(task.executionStatus)}</Tag> : null}
-          {task?.reviewReason ? <Tag color="gold">{task.reviewReason}</Tag> : null}
-        </Space>
-        {task ? (
-          <>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {task.repoName} · {dayjs(task.updatedAt).format("YYYY-MM-DD HH:mm")}
-            </Typography.Text>
-            {task.deadline ? (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Deadline {dayjs(task.deadline).format("YYYY-MM-DD HH:mm")}
-              </Typography.Text>
-            ) : null}
-          </>
-        ) : (
-          <>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Updated {dayjs(draft!.updatedAt).format("YYYY-MM-DD HH:mm")}
-            </Typography.Text>
-            {draft?.definition.deadline ? (
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Deadline {dayjs(draft.definition.deadline).format("YYYY-MM-DD HH:mm")}
-              </Typography.Text>
-            ) : null}
-          </>
-        )}
-      </Flex>
-    </Card>
-  );
-}
-
-export function TasksKanbanBoardPage() {
-  const router = useRouter();
-  const { can } = useAuth();
-  const [messageApi, contextHolder] = message.useMessage();
-  const { tasks, setTasks, loading: tasksLoading } = useTasks({ view: "active" });
-  const { drafts, setDrafts, loading: draftsLoading } = useTaskDrafts();
-  const [movingTaskId, setMovingTaskId] = useState<string | null>(null);
-  const [taskCreateModalOpen, setTaskCreateModalOpen] = useState(false);
-  const [selectedDraft, setSelectedDraft] = useState<TaskDraft | null>(null);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-  const loading = tasksLoading || draftsLoading;
-  const canCreateTask = can("task:create");
-
-  const items = useMemo<BoardItem[]>(() => {
-    const taskItems: BoardItem[] = tasks
-      .filter((task) => task.status !== "archived")
-      .map((task) => ({ id: `task:${task.id}`, type: "task", task, column: taskColumn(task) }));
-    const draftItems: BoardItem[] = drafts.map((draft) => ({ id: `draft:${draft.id}`, type: "draft", draft, column: "backlog" }));
-    return [...draftItems, ...taskItems];
-  }, [drafts, tasks]);
-
-  const itemsByColumn = useMemo(
-    () =>
-      Object.fromEntries(
-        columns.map((column) => [
-          column.id,
-          items.filter((item) => item.column === column.id)
-        ])
-      ) as Record<BoardColumnId, BoardItem[]>,
-    [items]
-  );
-
-  const openItem = (item: BoardItem) => {
-    if (item.type === "draft") {
-      setSelectedDraft(item.draft);
-      setTaskCreateModalOpen(true);
-      return;
-    }
-
-    router.push(`/tasks/${item.task.id}`);
-  };
-
-  const openCreateModal = () => {
-    setSelectedDraft(null);
-    setTaskCreateModalOpen(true);
-  };
-
-  const closeCreateModal = () => {
-    setTaskCreateModalOpen(false);
-    setSelectedDraft(null);
-  };
-
-  const handleDragEnd = async (event: DragEndEvent) => {
-    const item = event.active.data.current as BoardItem | undefined;
-    const column = columns.find((entry) => entry.id === event.over?.id);
-    if (!item || item.type !== "task" || !column?.taskStatus || item.column === column.id) {
-      return;
-    }
-
-    setMovingTaskId(item.task.id);
-    try {
-      const updated = await api.updateTaskState(item.task.id, { status: column.taskStatus });
-      setTasks((current) => current.map((task) => (task.id === updated.id ? { ...task, ...updated, logs: task.logs } : task)));
-      messageApi.success(`Moved to ${column.title}`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Could not move task");
-    } finally {
-      setMovingTaskId(null);
-    }
-  };
-
-  return (
-    <>
-      {contextHolder}
-      <Flex vertical gap={16}>
-        <Flex justify="space-between" align="center" gap={16} wrap="wrap">
-          <Flex vertical gap={0}>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              Task Board
-            </Typography.Title>
-            <Typography.Text type="secondary">Plan drafts and move active tasks through the workflow.</Typography.Text>
-          </Flex>
-          <Space>
-            <Button onClick={() => router.push("/tasks")}>Table</Button>
-            {canCreateTask ? <Button type="primary" onClick={openCreateModal}>New Task</Button> : null}
-          </Space>
-        </Flex>
-        {loading ? (
-          <Flex justify="center" style={{ padding: 80 }}>
-            <Spin />
-          </Flex>
-        ) : (
-          <DndContext sensors={sensors} onDragEnd={(event) => void handleDragEnd(event)}>
-            <Flex gap={16} align="stretch" style={{ overflowX: "auto", paddingBottom: 12 }}>
-              {columns.map((column) => (
-                <KanbanColumn key={column.id} column={column} canCreate={canCreateTask} onAdd={openCreateModal}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {itemsByColumn[column.id].length} item{itemsByColumn[column.id].length === 1 ? "" : "s"}
-                  </Typography.Text>
-                  {itemsByColumn[column.id].length === 0 ? (
-                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No cards" />
-                  ) : (
-                    <Flex vertical gap={10}>
-                      {itemsByColumn[column.id].map((item) => (
-                        <KanbanCard key={item.id} item={item} onOpen={openItem} />
-                      ))}
-                    </Flex>
-                  )}
-                </KanbanColumn>
-              ))}
-            </Flex>
-          </DndContext>
-        )}
-        {movingTaskId ? <Typography.Text type="secondary">Moving task...</Typography.Text> : null}
-      </Flex>
-      <TaskCreateModal
-        open={taskCreateModalOpen}
-        draft={selectedDraft}
-        onClose={closeCreateModal}
-        onCreated={(task) => {
-          setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
-        }}
-        onDraftCreated={(draft) => {
-          setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
-        }}
-        onDraftUpdated={(draft) => {
-          setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
-        }}
-        onDraftDeleted={(draftId) => {
-          setDrafts((current) => current.filter((item) => item.id !== draftId));
-        }}
-      />
-    </>
-  );
-}
-````
-
-## File: apps/web/components/tasks-page.tsx
-````typescript
-"use client";
-
-import { useEffect, useMemo, useState } from "react";
-import {
-  getAgentProviderLabel,
-  getTaskExecutionStatusLabel,
-  getTaskTerminalSessionLabel,
-  getTaskTypeLabel,
-  isTaskWorking,
-  type Task
-} from "@agentswarm/shared-types";
-import { Button, Card, Checkbox, DatePicker, Divider, Flex, Input, Modal, Select, Space, Spin, Table, Typography, message } from "antd";
-import { PushpinFilled } from "@ant-design/icons";
-import dayjs from "dayjs";
-import { useRouter, useSearchParams } from "next/navigation";
-import { api } from "../src/api/client";
-import { useRepositories } from "../src/hooks/useRepositories";
-import { useTasks } from "../src/hooks/useTasks";
-import { getSeenTaskVersions, isTaskSeen, markTaskSeen, migrateSeenTaskVersions, subscribeToSeenTasks, type SeenTaskVersions } from "../src/utils/seen-tasks";
-import { useAuth } from "./auth-provider";
-
-function getWorkingIndicatorLabel(task: Task): string {
-  if (task.activeInteractiveSession) {
-    return `${getTaskTerminalSessionLabel(task.activeTerminalSessionMode === "git" ? "git" : "interactive")} is running`;
-  }
-
-  return task.executionStatus !== "idle" ? getTaskExecutionStatusLabel(task.executionStatus) : `${getTaskTypeLabel(task.taskType)} task is working`;
-}
-
-function isTaskExecutionBusy(task: Task): boolean {
-  return task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running";
-}
-
-function canOfferRemoteBranchDeletion(task: Task): boolean {
-  const branchName = task.branchName?.trim();
-  return Boolean(
-    task.branchStrategy === "feature_branch" &&
-      branchName &&
-      branchName !== task.repoDefaultBranch &&
-      branchName !== task.baseBranch
-  );
-}
-
-export function TasksPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const { can } = useAuth();
-  const archivedView = searchParams.get("view") === "archived";
-  const { tasks, setTasks, loading } = useTasks({ view: archivedView ? "archived" : "active" });
-  const { repositories } = useRepositories();
-  const [seenTaskVersions, setSeenTaskVersions] = useState<SeenTaskVersions>({});
-  const [titleFilter, setTitleFilter] = useState("");
-  const [repoFilter, setRepoFilter] = useState<string | undefined>();
-  const [createdAtFilter, setCreatedAtFilter] = useState<string | null>(null);
-  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
-  const [messageApi, contextHolder] = message.useMessage();
-  const canCreateTask = can("task:create") && (can("task:build") || can("task:ask") || can("task:interactive"));
-  const canEditTask = can("task:edit");
-  const canDeleteTask = can("task:delete");
-  useEffect(() => {
-    const syncSeenTaskVersions = () => {
-      setSeenTaskVersions(getSeenTaskVersions());
-    };
-
-    syncSeenTaskVersions();
-    return subscribeToSeenTasks(syncSeenTaskVersions);
-  }, []);
-
-  useEffect(() => {
-    const migratedSeenTaskVersions = migrateSeenTaskVersions(seenTaskVersions, tasks);
-    if (migratedSeenTaskVersions) {
-      setSeenTaskVersions(migratedSeenTaskVersions);
-    }
-  }, [seenTaskVersions, tasks]);
-
-  const filteredTasks = useMemo(() => {
-    return tasks.filter((task) => {
-      if (titleFilter && !task.title.toLowerCase().includes(titleFilter.toLowerCase())) {
-        return false;
-      }
-      if (repoFilter && task.repoId !== repoFilter) {
-        return false;
-      }
-      if (createdAtFilter && !task.createdAt.startsWith(createdAtFilter)) {
-        return false;
-      }
-      return true;
-    });
-  }, [archivedView, createdAtFilter, repoFilter, tasks, titleFilter]);
-
-  const handleDeleteTask = async (task: Task, options?: { deleteRemoteBranch?: boolean }) => {
-    setDeletingTaskId(task.id);
-    try {
-      await api.deleteTask(task.id, options);
-      setTasks((current) => current.filter((item) => item.id !== task.id));
-      messageApi.success(`Deleted task "${task.title}"`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to delete task");
-    } finally {
-      setDeletingTaskId(null);
-    }
-  };
-
-  const [archivingTaskId, setArchivingTaskId] = useState<string | null>(null);
-
-  const handleArchiveTask = async (task: Task, options?: { deleteRemoteBranch?: boolean }) => {
-    setArchivingTaskId(task.id);
-    try {
-      const updatedTask = await api.archiveTask(task.id, options);
-      setTasks((current) =>
-        current.map((item) =>
-          item.id === task.id
-            ? { ...item, ...updatedTask, logs: updatedTask.logs.length > 0 ? updatedTask.logs : item.logs }
-            : item
-        )
-      );
-      messageApi.success(`Archived "${task.title}"`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to archive task");
-    } finally {
-      setArchivingTaskId(null);
-    }
-  };
-
-  const confirmArchiveTask = (task: Task) => {
-    let deleteRemoteBranch = false;
-    const showBranchCleanup = canOfferRemoteBranchDeletion(task);
-
-    Modal.confirm({
-      title: "Archive task",
-      content: (
-        <Space direction="vertical" size={12}>
-          <Typography.Text>{`Archive "${task.title}"?`}</Typography.Text>
-          {showBranchCleanup ? (
-            <Checkbox onChange={(event) => {
-              deleteRemoteBranch = event.target.checked;
-            }}>
-              Delete remote branch <Typography.Text code>{task.branchName}</Typography.Text>
-            </Checkbox>
-          ) : null}
-        </Space>
-      ),
-      okText: "Archive",
-      onOk: () => handleArchiveTask(task, { deleteRemoteBranch })
-    });
-  };
-
-  const confirmDeleteTask = (task: Task) => {
-    let deleteRemoteBranch = false;
-    const showBranchCleanup = canOfferRemoteBranchDeletion(task);
-
-    Modal.confirm({
-      title: "Delete task",
-      content: (
-        <Space direction="vertical" size={12}>
-          <Typography.Text>{`Delete "${task.title}"?`}</Typography.Text>
-          {showBranchCleanup ? (
-            <Checkbox onChange={(event) => {
-              deleteRemoteBranch = event.target.checked;
-            }}>
-              Delete remote branch <Typography.Text code>{task.branchName}</Typography.Text>
-            </Checkbox>
-          ) : null}
-        </Space>
-      ),
-      okText: "Delete",
-      okButtonProps: { danger: true },
-      onOk: () => handleDeleteTask(task, { deleteRemoteBranch })
-    });
-  };
-
-  return (
-    <>
-      {contextHolder}
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
-        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-          <Flex vertical gap={0}>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              {archivedView ? "Archived Tasks" : "Tasks"}
-            </Typography.Title>
-            <Space size={8} wrap>
-              <Typography.Text type="secondary">
-                {archivedView
-                  ? "Archived tasks are kept out of the active work queue. They stay read-only, but you can still delete them."
-                  : "Track build and ask tasks across their execution lifecycle."}
-              </Typography.Text>
-              <Typography.Link onClick={() => router.push(archivedView ? "/tasks" : "/tasks?view=archived")}>
-                {archivedView ? "Active Tasks" : "Archived"}
-              </Typography.Link>
-            </Space>
-          </Flex>
-          <Space>
-            {canCreateTask ? (
-              <Button type="primary" onClick={() => router.push("/tasks/new")}>
-                New Task
-              </Button>
-            ) : null}
-          </Space>
-        </Flex>
-
-        <Card bordered={false}>
-          <Space size={12} wrap>
-            <Input placeholder="Filter by title" value={titleFilter} onChange={(event) => setTitleFilter(event.target.value)} />
-            <Select
-              allowClear
-              placeholder="Filter by repository"
-              style={{ minWidth: 220 }}
-              value={repoFilter}
-              options={repositories.map((repository) => ({ label: repository.name, value: repository.id }))}
-              onChange={(value) => setRepoFilter(value)}
-            />
-            <DatePicker
-              style={{ minWidth: 220 }}
-              placeholder="Filter by created date"
-              onChange={(value) => setCreatedAtFilter(value ? value.format("YYYY-MM-DD") : null)}
-            />
-          </Space>
-          <Divider />
-          <Table<Task>
-            rowKey="id"
-            loading={loading}
-            dataSource={filteredTasks}
-            pagination={{ pageSize: 10 }}
-            style={{ cursor: "pointer" }}
-            onRow={(record) => ({
-              onClick: () => {
-                markTaskSeen(record);
-                setSeenTaskVersions((current) => {
-                  if (current[record.id] === record.updatedAt) {
-                    return current;
-                  }
-
-                  return {
-                    ...current,
-                    [record.id]: record.updatedAt
-                  };
-                });
-                router.push(`/tasks/${record.id}`);
-              }
-            })}
-            columns={[
-              {
-                title: "Title",
-                dataIndex: "title",
-                render: (value: string, task) => {
-                  const markerColor = task.hasPendingCheckpoint ? "#FA8C16" : !isTaskSeen(task, seenTaskVersions) ? "#1C8057" : null;
-                  const markerLabel = task.hasPendingCheckpoint ? "Pending checkpoint" : "Unseen task";
-                  const showWorkingIndicator = isTaskWorking(task);
-
-                  return (
-                    <Space size={8}>
-                      {task.pinned ? <PushpinFilled style={{ color: "#1C8057" }} /> : null}
-                      {showWorkingIndicator ? (
-                        <span aria-label={getWorkingIndicatorLabel(task)} title={getWorkingIndicatorLabel(task)} style={{ display: "inline-flex" }}>
-                          <Spin size="small" />
-                        </span>
-                      ) : null}
-                      {markerColor ? (
-                        <span
-                          aria-label={markerLabel}
-                          style={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: "50%",
-                            backgroundColor: markerColor,
-                            display: "inline-block",
-                            flex: "0 0 auto"
-                          }}
-                        />
-                      ) : null}
-                      <span>{value}</span>
-                    </Space>
-                  );
-                }
-              },
-              {
-                title: "Repository",
-                dataIndex: "repoName"
-              },
-              {
-                title: "Type",
-                dataIndex: "taskType",
-                render: (value: Task["taskType"]) => getTaskTypeLabel(value)
-              },
-              {
-                title: "Provider",
-                dataIndex: "provider",
-                render: (value: Task["provider"]) => getAgentProviderLabel(value)
-              },
-              {
-                title: "Action",
-                dataIndex: "lastAction",
-                render: (value: Task["lastAction"]) => value ?? "draft"
-              },
-              {
-                title: "Created At",
-                dataIndex: "createdAt",
-                sorter: (a, b) => a.createdAt.localeCompare(b.createdAt),
-                render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
-              },
-              {
-                title: "Deadline",
-                dataIndex: "deadline",
-                sorter: (a, b) => (a.deadline ?? "").localeCompare(b.deadline ?? ""),
-                render: (value: Task["deadline"]) => (value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "None")
-              },
-              {
-                title: "Actions",
-                key: "actions",
-                width: 170,
-                render: (_value, task) => (
-                  <Space onClick={(event) => event.stopPropagation()}>
-                    {canEditTask && !archivedView ? (
-                      <Button size="small" loading={archivingTaskId === task.id} disabled={isTaskExecutionBusy(task)} onClick={() => confirmArchiveTask(task)}>
-                        Archive
-                      </Button>
-                    ) : null}
-                    {canDeleteTask ? (
-                      <Button danger size="small" loading={deletingTaskId === task.id} disabled={isTaskExecutionBusy(task)} onClick={() => confirmDeleteTask(task)}>
-                        Delete
-                      </Button>
-                    ) : null}
-                  </Space>
-                )
-              }
-            ]}
-          />
-        </Card>
-      </Space>
-    </>
-  );
-}
-````
-
 ## File: apps/web/src/utils/task-history.ts
 ````typescript
 import {
@@ -33061,719 +32422,6 @@ export function buildTaskHistoryEntries(input: {
     return compareIso(left.timestamp, right.timestamp, left.key, right.key);
   });
 }
-````
-
-## File: apps/server/src/lib/task-start-orchestrator.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import type { Task } from "@agentswarm/shared-types";
-import { getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "./task-start-orchestrator.js";
-
-const createTask = (overrides: Partial<Task> = {}): Task =>
-  ({
-    id: "task-1",
-    title: "Test task",
-    deadline: null,
-    pinned: false,
-    hasPendingCheckpoint: false,
-    activeInteractiveSession: false,
-    activeTerminalSessionMode: null,
-    ownerUserId: null,
-    creatorName: null,
-    repoId: "repo-1",
-    repoName: "repo",
-    repoUrl: "https://github.com/example/repo.git",
-    repoDefaultBranch: "main",
-    taskType: "build",
-    provider: "codex",
-    providerProfile: "high",
-    modelOverride: null,
-    codexCredentialSource: "auto",
-    baseBranch: "main",
-    branchStrategy: "feature_branch",
-    complexity: "normal",
-    branchName: "feature/task-1",
-    workspaceBaseRef: null,
-    prompt: "Do the work",
-    notes: "",
-    executionSummary: "",
-    resultMarkdown: null,
-    branchDiff: null,
-    status: "open",
-    workflowStatus: "ready",
-    executionStatus: "idle",
-    executionAction: "build",
-    reviewReason: null,
-    logs: [],
-    createdAt: "2026-05-24T00:00:00.000Z",
-    updatedAt: "2026-05-24T00:00:00.000Z",
-    startedAt: null,
-    finishedAt: null,
-    errorMessage: null,
-    lastAction: "build",
-    enqueued: false,
-    ...overrides
-  }) satisfies Task as Task;
-
-describe("orchestrateTaskStart", () => {
-  it("prepares workspace and returns started task when start succeeds", async () => {
-    const task = createTask();
-    const prepared: string[] = [];
-    const triggered: Array<{ taskId: string; action: string }> = [];
-    const result = await orchestrateTaskStart(
-      {
-        taskStore: { getTask: async () => task } as never,
-        scheduler: {
-          triggerAction: async (taskId: string, action: string) => {
-            triggered.push({ taskId, action });
-            return true;
-          }
-        } as never,
-        spawner: {
-          prepareTaskWorkspaceOnly: async (input: Task) => {
-            prepared.push(input.id);
-            return task;
-          }
-        } as never
-      },
-      {
-        task,
-        fallbackMessage: "Task follow-up failed"
-      }
-    );
-
-    assert.equal(result.ok, true);
-    if (result.ok) {
-      assert.equal(result.task.id, task.id);
-    }
-    assert.deepEqual(prepared, [task.id]);
-    assert.deepEqual(triggered, [{ taskId: task.id, action: "build" }]);
-  });
-
-  it("returns 409 for start failures", async () => {
-    const task = createTask();
-    const result = await orchestrateTaskStart(
-      {
-        taskStore: { getTask: async () => task } as never,
-        scheduler: { triggerAction: async () => false } as never,
-        spawner: { prepareTaskWorkspaceOnly: async () => task } as never
-      },
-      {
-        task,
-        fallbackMessage: "Task follow-up failed"
-      }
-    );
-
-    assert.equal(result.ok, false);
-    if (!result.ok) {
-      assert.equal(result.statusCode, 409);
-      assert.match(result.message, /could not be started/i);
-    }
-  });
-
-  it("maps new task action from task type", () => {
-    assert.equal(getTriggerActionForNewTask(createTask({ taskType: "build" })), "build");
-    assert.equal(getTriggerActionForNewTask(createTask({ taskType: "ask" })), "ask");
-  });
-});
-
-describe("orchestrateTaskActionStart", () => {
-  it("returns reason code when a pending checkpoint blocks mutation", async () => {
-    const task = createTask();
-    const result = await orchestrateTaskActionStart(
-      {
-        taskStore: {
-          hasPendingChangeProposal: async () => true,
-          getActiveInteractiveSession: async () => null
-        } as never,
-        scheduler: {} as never
-      },
-      {
-        task,
-        action: "build"
-      }
-    );
-
-    assert.equal(result.ok, false);
-    if (!result.ok) {
-      assert.equal(result.statusCode, 409);
-      assert.equal(result.reasonCode, "pending_checkpoint");
-    }
-  });
-
-  it("returns busy message when task is already active", async () => {
-    const task = createTask({ status: "building" });
-    const result = await orchestrateTaskActionStart(
-      {
-        taskStore: {
-          hasPendingChangeProposal: async () => false,
-          getActiveInteractiveSession: async () => null
-        } as never,
-        scheduler: {} as never
-      },
-      {
-        task,
-        action: "build"
-      }
-    );
-
-    assert.equal(result.ok, false);
-    if (!result.ok) {
-      assert.equal(result.message, "Task is already running");
-    }
-  });
-
-  it("returns capacity message for parallel ask when no capacity is available", async () => {
-    const task = createTask({ status: "building", taskType: "ask" });
-    const result = await orchestrateTaskActionStart(
-      {
-        taskStore: {
-          hasPendingChangeProposal: async () => false,
-          getActiveInteractiveSession: async () => null
-        } as never,
-        scheduler: {
-          hasExecutionCapacity: async () => false
-        } as never
-      },
-      {
-        task,
-        action: "ask",
-        allowParallelAsk: true
-      }
-    );
-
-    assert.equal(result.ok, false);
-    if (!result.ok) {
-      assert.match(result.message, /capacity/i);
-    }
-  });
-
-  it("returns trigger-rejected message when scheduler refuses to start", async () => {
-    const task = createTask({ status: "open" });
-    const result = await orchestrateTaskActionStart(
-      {
-        taskStore: {
-          hasPendingChangeProposal: async () => false,
-          getActiveInteractiveSession: async () => null
-        } as never,
-        scheduler: {
-          triggerAction: async () => false
-        } as never
-      },
-      {
-        task,
-        action: "build",
-        triggerRejectedMessage: "Task execution could not be started"
-      }
-    );
-
-    assert.equal(result.ok, false);
-    if (!result.ok) {
-      assert.equal(result.message, "Task execution could not be started");
-    }
-  });
-
-  it("returns ok when scheduler accepts the action", async () => {
-    const task = createTask({ status: "open" });
-    const result = await orchestrateTaskActionStart(
-      {
-        taskStore: {
-          hasPendingChangeProposal: async () => false,
-          getActiveInteractiveSession: async () => null
-        } as never,
-        scheduler: {
-          triggerAction: async () => true
-        } as never
-      },
-      {
-        task,
-        action: "build"
-      }
-    );
-
-    assert.deepEqual(result, { ok: true });
-  });
-});
-````
-
-## File: apps/server/src/routes/imports.ts
-````typescript
-import { z } from "zod";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { AuthService } from "../lib/auth.js";
-import type { SchedulerService } from "../services/scheduler.js";
-import type { RepositoryStore } from "../services/repository-store.js";
-import type { SettingsStore } from "../services/settings-store.js";
-import type { SpawnerService } from "../services/spawner.js";
-import type { TaskStore } from "../services/task-store.js";
-import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
-import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
-import { requireTaskCapabilityAccess, requireTaskExecutionConfigAccess } from "../lib/task-capability-access.js";
-import { canUserAccessRepository } from "../lib/task-ownership.js";
-import { withBranchSyncCounts, withTaskCreatorName } from "./tasks.js";
-import { normalizeProvider } from "../lib/provider-config.js";
-import type { UserStore } from "../services/user-store.js";
-
-const deadlineSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
-  .nullable();
-
-const issueImportSchema = z.object({
-  repoId: z.string().min(1),
-  issueNumber: z.coerce.number().int().positive(),
-  includeComments: z.boolean().optional(),
-  notes: z.string().max(40_000).optional(),
-  deadline: deadlineSchema.optional(),
-  taskType: z.enum(["build", "ask"]).optional(),
-  title: z.string().trim().optional(),
-  provider: z.enum(["codex", "claude"]).optional(),
-  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-  modelOverride: z.string().trim().min(1).optional(),
-  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-  baseBranch: z.string().trim().min(1).optional(),
-  branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-  model: z.string().trim().min(1).optional(),
-  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
-}).strict();
-
-const pullRequestImportSchema = z.object({
-  repoId: z.string().min(1),
-  pullRequestNumber: z.coerce.number().int().positive(),
-  notes: z.string().max(40_000).optional(),
-  deadline: deadlineSchema.optional(),
-  title: z.string().trim().optional(),
-  provider: z.enum(["codex", "claude"]).optional(),
-  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-  modelOverride: z.string().trim().min(1).optional(),
-  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-  model: z.string().trim().min(1).optional(),
-  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
-});
-
-const applyCreateDefaultsFromSettings = <
-  T extends {
-    provider?: "codex" | "claude";
-    providerProfile?: "low" | "medium" | "high" | "max";
-    modelOverride?: string;
-    model?: string;
-  }
->(
-  payload: T,
-  settings: Awaited<ReturnType<SettingsStore["getSettings"]>>
-): T => {
-  const provider = normalizeProvider(payload.provider ?? settings.defaultProvider);
-  const providerProfile =
-    payload.providerProfile ??
-    (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort);
-  const hasLegacyModel = Boolean(payload.model?.trim());
-  const modelOverride =
-    payload.modelOverride ??
-    (hasLegacyModel ? undefined : provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel);
-
-  return {
-    ...payload,
-    provider,
-    providerProfile,
-    modelOverride
-  };
-};
-
-export const registerImportRoutes = (
-  app: FastifyInstance,
-  deps: {
-    githubImportService: GitHubImportService;
-    repositoryStore: RepositoryStore;
-    settingsStore: SettingsStore;
-    taskStore: TaskStore;
-    userStore: UserStore;
-    scheduler: SchedulerService;
-    spawner: SpawnerService;
-    auth: AuthService;
-  }
-): void => {
-  const getAccessibleRepository = async (
-    repoId: string,
-    request: FastifyRequest,
-    reply: FastifyReply
-  ) => {
-    const repository = await deps.repositoryStore.getRepository(repoId);
-    if (!repository || !canUserAccessRepository(request.auth?.user, repoId)) {
-      await reply.status(404).send({ message: "Repository not found" });
-      return null;
-    }
-
-    return repository;
-  };
-
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/issues", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repoId = String(request.query.repoId ?? "").trim();
-    if (!repoId) {
-      return reply.status(400).send({ message: "repoId is required" });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const issues = await deps.githubImportService.listOpenIssues(repository);
-      return reply.send(issues);
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/pull-requests", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repoId = String(request.query.repoId ?? "").trim();
-    if (!repoId) {
-      return reply.status(400).send({ message: "repoId is required" });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const pullRequests = await deps.githubImportService.listOpenPullRequests(repository);
-      return reply.send(pullRequests);
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/branches", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repoId = String(request.query.repoId ?? "").trim();
-    if (!repoId) {
-      return reply.status(400).send({ message: "repoId is required" });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const branches = await deps.githubImportService.listBranches(repository);
-      return reply.send(branches);
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.post("/imports/issue", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
-    const parsed = issueImportSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const settings = await deps.settingsStore.getSettings();
-      const issueRest = applyCreateDefaultsFromSettings(parsed.data, settings);
-      if (
-        !requireTaskCapabilityAccess(request, reply, {
-          taskType: issueRest.taskType ?? "build"
-        })
-      ) {
-        return;
-      }
-      if (!requireTaskExecutionConfigAccess(request, reply, issueRest)) {
-        return;
-      }
-
-      const taskInput = await deps.githubImportService.buildTaskInputFromIssue(repository, issueRest);
-      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
-      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
-        creatorName: request.auth!.user.name
-      });
-      const createdTask = taskWithCreator ?? {
-        ...task,
-        creatorName: request.auth!.user.name
-      };
-      const startResult = await orchestrateTaskStart(
-        {
-          taskStore: deps.taskStore,
-          scheduler: deps.scheduler,
-          spawner: deps.spawner
-        },
-        {
-          task: createdTask,
-          fallbackMessage: "Imported task execution could not be started"
-        }
-      );
-      if (!startResult.ok) {
-        return reply.status(startResult.statusCode).send({ message: startResult.message });
-      }
-      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.post("/imports/pull-request", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
-    const parsed = pullRequestImportSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      if (!requireTaskCapabilityAccess(request, reply, { taskType: "build" })) {
-        return;
-      }
-      const settings = await deps.settingsStore.getSettings();
-      const createPayload = applyCreateDefaultsFromSettings(parsed.data, settings);
-      if (!requireTaskExecutionConfigAccess(request, reply, createPayload)) {
-        return;
-      }
-
-      const taskInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, createPayload);
-      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
-      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
-        creatorName: request.auth!.user.name
-      });
-      const createdTask = taskWithCreator ?? {
-        ...task,
-        creatorName: request.auth!.user.name
-      };
-      const startResult = await orchestrateTaskStart(
-        {
-          taskStore: deps.taskStore,
-          scheduler: deps.scheduler,
-          spawner: deps.spawner
-        },
-        {
-          task: createdTask,
-          fallbackMessage: "Imported task execution could not be started"
-        }
-      );
-      if (!startResult.ok) {
-        return reply.status(startResult.statusCode).send({ message: startResult.message });
-      }
-      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-};
-````
-
-## File: apps/server/src/services/github-status-sync-service.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
-import type { RepositoryStore } from "./repository-store.js";
-import { GitHubStatusSyncService } from "./github-status-sync-service.js";
-
-class MockRepositoryStore implements Pick<RepositoryStore, "getRepository"> {
-  constructor(private readonly repository: Repository | null) {}
-  async getRepository(): Promise<Repository | null> {
-    return this.repository;
-  }
-}
-
-class MockGitHubOutboundService {
-  comments: Array<{ repositoryId: string; issueNumber: number; body: string; idempotencyKey: string }> = [];
-  labels: Array<{ repositoryId: string; issueNumber: number; add?: string[]; remove?: string[]; idempotencyKey: string }> = [];
-
-  async enqueueSummaryComment(input: { repositoryId: string; issueNumber: number; body: string; idempotencyKey: string }): Promise<boolean> {
-    this.comments.push(input);
-    return true;
-  }
-
-  async enqueueLabelUpdate(input: {
-    repositoryId: string;
-    issueNumber: number;
-    add?: string[];
-    remove?: string[];
-    idempotencyKey: string;
-  }): Promise<boolean> {
-    this.labels.push(input);
-    return true;
-  }
-}
-
-const buildTask = (status: Task["status"], overrides: Partial<Task> = {}): Task => ({
-  id: "task-1",
-  title: "Issue #22",
-  deadline: null,
-  pinned: false,
-  hasPendingCheckpoint: false,
-  activeInteractiveSession: false,
-  activeTerminalSessionMode: null,
-  ownerUserId: "user-1",
-  creatorName: "Dev",
-  repoId: "repo-1",
-  repoName: "Repo",
-  repoUrl: "https://github.com/acme/repo",
-  repoDefaultBranch: "main",
-  taskType: "build",
-  provider: "codex",
-  providerProfile: "medium",
-  modelOverride: null,
-  codexCredentialSource: "auto",
-  baseBranch: "main",
-  branchStrategy: "feature_branch",
-  complexity: "normal",
-  branchName: null,
-  workspaceBaseRef: null,
-  prompt: "Imported from GitHub issue #22: Test issue\n\nIssue URL: https://github.com/acme/repo/issues/22",
-  notes: "",
-  resultMarkdown: null,
-  executionSummary: "",
-  branchDiff: null,
-  pullCount: 0,
-  pushCount: 0,
-  lastAction: "build",
-  status,
-  workflowStatus: "ready",
-  executionStatus: "idle",
-  executionAction: "build",
-  reviewReason: null,
-  logs: [],
-  enqueued: false,
-  createdAt: "2026-05-22T00:00:00.000Z",
-  updatedAt: "2026-05-22T00:00:00.000Z",
-  startedAt: null,
-  finishedAt: null,
-  errorMessage: null,
-  ...overrides
-});
-
-describe("GitHubStatusSyncService", () => {
-  it("posts milestone updates when sync_status_enabled is true", async () => {
-    const repository: Repository = {
-      id: "repo-1",
-      name: "Repo",
-      url: "https://github.com/acme/repo",
-      defaultBranch: "main",
-      syncStatusEnabled: true,
-      envVars: [],
-      webhookUrl: null,
-      webhookEnabled: false,
-      webhookSecretConfigured: false,
-      webhookLastAttemptAt: null,
-      webhookLastStatus: null,
-      webhookLastError: null,
-      createdAt: "2026-05-22T00:00:00.000Z",
-      updatedAt: "2026-05-22T00:00:00.000Z"
-    };
-    const outbound = new MockGitHubOutboundService();
-    const service = new GitHubStatusSyncService(new MockRepositoryStore(repository) as unknown as RepositoryStore, outbound as never, () =>
-      "2026-05-22T12:00:00.000Z"
-    );
-
-    const createdEvent: RealtimeEvent = { type: "task:created", payload: buildTask("build_queued") };
-    const startedEvent: RealtimeEvent = { type: "task:updated", payload: buildTask("building") };
-    const doneEvent: RealtimeEvent = { type: "task:updated", payload: buildTask("done", { resultMarkdown: "## Final summary\nShipped." }) };
-
-    await service.handleRealtimeEvent(createdEvent);
-    await service.handleRealtimeEvent(startedEvent);
-    await service.handleRealtimeEvent(doneEvent);
-
-    assert.equal(outbound.labels.length, 2);
-    assert.equal(outbound.comments.length, 2);
-    assert.deepEqual(outbound.labels[0]?.add, ["as:in-progress"]);
-    assert.deepEqual(outbound.labels[1]?.add, ["as:done"]);
-    assert.equal(outbound.comments[0]?.body, "Work started.");
-    assert.equal(outbound.comments[1]?.body, "## Final summary\nShipped.");
-  });
-
-  it("does not post when sync_status_enabled is false", async () => {
-    const repository: Repository = {
-      id: "repo-1",
-      name: "Repo",
-      url: "https://github.com/acme/repo",
-      defaultBranch: "main",
-      syncStatusEnabled: false,
-      envVars: [],
-      webhookUrl: null,
-      webhookEnabled: false,
-      webhookSecretConfigured: false,
-      webhookLastAttemptAt: null,
-      webhookLastStatus: null,
-      webhookLastError: null,
-      createdAt: "2026-05-22T00:00:00.000Z",
-      updatedAt: "2026-05-22T00:00:00.000Z"
-    };
-    const outbound = new MockGitHubOutboundService();
-    const service = new GitHubStatusSyncService(new MockRepositoryStore(repository) as unknown as RepositoryStore, outbound as never);
-
-    await service.handleRealtimeEvent({ type: "task:created", payload: buildTask("build_queued") });
-    await service.handleRealtimeEvent({ type: "task:updated", payload: buildTask("building") });
-
-    assert.equal(outbound.labels.length, 0);
-    assert.equal(outbound.comments.length, 0);
-  });
-
-  it("does not post when task notes explicitly disable sync", async () => {
-    const repository: Repository = {
-      id: "repo-1",
-      name: "Repo",
-      url: "https://github.com/acme/repo",
-      defaultBranch: "main",
-      syncStatusEnabled: true,
-      envVars: [],
-      webhookUrl: null,
-      webhookEnabled: false,
-      webhookSecretConfigured: false,
-      webhookLastAttemptAt: null,
-      webhookLastStatus: null,
-      webhookLastError: null,
-      createdAt: "2026-05-22T00:00:00.000Z",
-      updatedAt: "2026-05-22T00:00:00.000Z"
-    };
-    const outbound = new MockGitHubOutboundService();
-    const service = new GitHubStatusSyncService(new MockRepositoryStore(repository) as unknown as RepositoryStore, outbound as never);
-
-    await service.handleRealtimeEvent({
-      type: "task:created",
-      payload: buildTask("build_queued", { notes: "<!-- agentswarm:github_sync_status_enabled=false -->" })
-    });
-    await service.handleRealtimeEvent({
-      type: "task:updated",
-      payload: buildTask("building", { notes: "<!-- agentswarm:github_sync_status_enabled=false -->" })
-    });
-
-    assert.equal(outbound.labels.length, 0);
-    assert.equal(outbound.comments.length, 0);
-  });
-});
 ````
 
 ## File: apps/server/src/services/sequence-execution-service.test.ts
@@ -35394,6 +34042,659 @@ export function SnippetsPage() {
 }
 ````
 
+## File: apps/web/components/tasks-kanban-board-page.tsx
+````typescript
+"use client";
+
+import { useMemo, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
+import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
+import { PlusOutlined } from "@ant-design/icons";
+import {
+  getTaskExecutionStatusLabel,
+  getTaskTypeLabel,
+  getTaskWorkflowStatusLabel,
+  type Task,
+  type TaskDraft,
+  type UpdateTaskStateInput
+} from "@agentswarm/shared-types";
+import { Button, Card, Empty, Flex, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
+import dayjs from "dayjs";
+import { api } from "../src/api/client";
+import { useTaskDrafts } from "../src/hooks/useTaskDrafts";
+import { useTasks } from "../src/hooks/useTasks";
+import { useAuth } from "./auth-provider";
+import { TaskCreateModal } from "./task-create-modal";
+
+type BoardColumnId = "backlog" | "ready" | "in_progress" | "review" | "done";
+type BoardTaskStatus = UpdateTaskStateInput["status"];
+type BoardItem =
+  | { id: string; type: "draft"; draft: TaskDraft; column: BoardColumnId }
+  | { id: string; type: "task"; task: Task; column: BoardColumnId };
+
+const columns: Array<{ id: BoardColumnId; title: string; taskStatus?: BoardTaskStatus; acceptsTasks: boolean }> = [
+  { id: "backlog", title: "Backlog", acceptsTasks: false },
+  { id: "ready", title: getTaskWorkflowStatusLabel("ready"), taskStatus: "open", acceptsTasks: true },
+  { id: "in_progress", title: getTaskWorkflowStatusLabel("in_progress"), taskStatus: "in_progress", acceptsTasks: true },
+  { id: "review", title: getTaskWorkflowStatusLabel("review"), taskStatus: "in_review", acceptsTasks: true },
+  { id: "done", title: getTaskWorkflowStatusLabel("done"), taskStatus: "done", acceptsTasks: true }
+];
+
+const taskColumn = (task: Task): BoardColumnId => {
+  if (task.workflowStatus === "done") {
+    return "done";
+  }
+  if (task.workflowStatus === "review") {
+    return "review";
+  }
+  if (task.workflowStatus === "in_progress") {
+    return "in_progress";
+  }
+  return "ready";
+};
+
+const getItemDeadline = (item: BoardItem): string | null =>
+  item.type === "task" ? item.task.deadline : item.draft.definition.deadline ?? null;
+
+const getItemTitle = (item: BoardItem): string => (item.type === "task" ? item.task.title : item.draft.title);
+
+const compareItemsByDeadline = (left: BoardItem, right: BoardItem): number => {
+  const leftDeadline = getItemDeadline(left);
+  const rightDeadline = getItemDeadline(right);
+  if (leftDeadline && rightDeadline) {
+    const deadlineComparison = leftDeadline.localeCompare(rightDeadline);
+    if (deadlineComparison !== 0) {
+      return deadlineComparison;
+    }
+  } else if (leftDeadline) {
+    return -1;
+  } else if (rightDeadline) {
+    return 1;
+  }
+
+  return getItemTitle(left).localeCompare(getItemTitle(right));
+};
+
+function KanbanColumn({
+  column,
+  canCreate,
+  onAdd,
+  children
+}: {
+  column: (typeof columns)[number];
+  canCreate: boolean;
+  onAdd: (column: (typeof columns)[number]) => void;
+  children: ReactNode;
+}) {
+  const { token } = antTheme.useToken();
+  const { setNodeRef, isOver } = useDroppable({
+    id: column.id,
+    disabled: !column.acceptsTasks
+  });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        minWidth: 290,
+        width: 320,
+        flex: "0 0 320px",
+        background: isOver ? token.colorPrimaryBg : token.colorFillQuaternary,
+        border: `1px solid ${isOver ? token.colorPrimaryBorder : token.colorBorderSecondary}`,
+        borderRadius: 8,
+        padding: 12,
+        minHeight: "calc(100vh - 220px)"
+      }}
+    >
+      <Flex vertical gap={12}>
+        <Flex justify="space-between" align="center">
+          <Typography.Text strong>{column.title}</Typography.Text>
+          {canCreate ? (
+            <Button
+              type="text"
+              size="small"
+              icon={<PlusOutlined />}
+              aria-label={`Create in ${column.title}`}
+              title={`Create in ${column.title}`}
+              onClick={() => onAdd(column)}
+            />
+          ) : null}
+        </Flex>
+        {children}
+      </Flex>
+    </div>
+  );
+}
+
+function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardItem) => void }) {
+  const draggable = useDraggable({
+    id: item.id,
+    disabled: item.type !== "task",
+    data: item
+  });
+  const style = {
+    transform: CSS.Translate.toString(draggable.transform),
+    opacity: draggable.isDragging ? 0.65 : 1,
+    cursor: item.type === "task" ? "grab" : "pointer"
+  };
+  const task = item.type === "task" ? item.task : null;
+  const draft = item.type === "draft" ? item.draft : null;
+  const deadline = getItemDeadline(item);
+
+  return (
+    <Card
+      ref={draggable.setNodeRef}
+      {...draggable.listeners}
+      {...draggable.attributes}
+      size="small"
+      hoverable
+      onClick={() => onOpen(item)}
+      style={{ ...style, borderRadius: 8 }}
+      bodyStyle={{ padding: 12 }}
+    >
+      <Flex vertical gap={8}>
+        <Typography.Text strong ellipsis={{ tooltip: task?.title ?? draft?.title }}>
+          {task?.title ?? draft?.title}
+        </Typography.Text>
+        <Space size={[6, 6]} wrap>
+          {draft ? <Tag color="default">Draft</Tag> : null}
+          {task ? <Tag>{getTaskTypeLabel(task.taskType)}</Tag> : null}
+          {task && task.executionStatus !== "idle" ? <Tag color={task.executionStatus === "failed" ? "red" : "blue"}>{getTaskExecutionStatusLabel(task.executionStatus)}</Tag> : null}
+          {task?.reviewReason ? <Tag color="gold">{task.reviewReason}</Tag> : null}
+        </Space>
+        {task ? (
+          <>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {task.repoName}
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
+            </Typography.Text>
+          </>
+        ) : (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
+          </Typography.Text>
+        )}
+      </Flex>
+    </Card>
+  );
+}
+
+export function TasksKanbanBoardPage() {
+  const router = useRouter();
+  const { can } = useAuth();
+  const [messageApi, contextHolder] = message.useMessage();
+  const { tasks, setTasks, loading: tasksLoading } = useTasks({ view: "active" });
+  const { drafts, setDrafts, loading: draftsLoading } = useTaskDrafts();
+  const [movingTaskId, setMovingTaskId] = useState<string | null>(null);
+  const [taskCreateModalOpen, setTaskCreateModalOpen] = useState(false);
+  const [selectedDraft, setSelectedDraft] = useState<TaskDraft | null>(null);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const loading = tasksLoading || draftsLoading;
+  const canCreateTask = can("task:create");
+
+  const items = useMemo<BoardItem[]>(() => {
+    const taskItems: BoardItem[] = tasks
+      .filter((task) => task.status !== "archived")
+      .map((task) => ({ id: `task:${task.id}`, type: "task", task, column: taskColumn(task) }));
+    const draftItems: BoardItem[] = drafts.map((draft) => ({ id: `draft:${draft.id}`, type: "draft", draft, column: "backlog" }));
+    return [...draftItems, ...taskItems];
+  }, [drafts, tasks]);
+
+  const itemsByColumn = useMemo(
+    () =>
+      Object.fromEntries(
+        columns.map((column) => [
+          column.id,
+          items.filter((item) => item.column === column.id).sort(compareItemsByDeadline)
+        ])
+      ) as Record<BoardColumnId, BoardItem[]>,
+    [items]
+  );
+
+  const openItem = (item: BoardItem) => {
+    if (item.type === "draft") {
+      setSelectedDraft(item.draft);
+      setTaskCreateModalOpen(true);
+      return;
+    }
+
+    router.push(`/tasks/${item.task.id}`);
+  };
+
+  const openCreateModal = () => {
+    setSelectedDraft(null);
+    setTaskCreateModalOpen(true);
+  };
+
+  const closeCreateModal = () => {
+    setTaskCreateModalOpen(false);
+    setSelectedDraft(null);
+  };
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const item = event.active.data.current as BoardItem | undefined;
+    const column = columns.find((entry) => entry.id === event.over?.id);
+    if (!item || item.type !== "task" || !column?.taskStatus || item.column === column.id) {
+      return;
+    }
+
+    setMovingTaskId(item.task.id);
+    try {
+      const updated = await api.updateTaskState(item.task.id, { status: column.taskStatus });
+      setTasks((current) => current.map((task) => (task.id === updated.id ? { ...task, ...updated, logs: task.logs } : task)));
+      messageApi.success(`Moved to ${column.title}`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Could not move task");
+    } finally {
+      setMovingTaskId(null);
+    }
+  };
+
+  return (
+    <>
+      {contextHolder}
+      <Flex vertical gap={16}>
+        <Flex justify="space-between" align="center" gap={16} wrap="wrap">
+          <Flex vertical gap={0}>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              Task Board
+            </Typography.Title>
+            <Typography.Text type="secondary">Plan drafts and move active tasks through the workflow.</Typography.Text>
+          </Flex>
+          <Space>
+            <Button onClick={() => router.push("/tasks")}>Table</Button>
+            {canCreateTask ? <Button type="primary" onClick={openCreateModal}>New Task</Button> : null}
+          </Space>
+        </Flex>
+        {loading ? (
+          <Flex justify="center" style={{ padding: 80 }}>
+            <Spin />
+          </Flex>
+        ) : (
+          <DndContext sensors={sensors} onDragEnd={(event) => void handleDragEnd(event)}>
+            <Flex gap={16} align="stretch" style={{ overflowX: "auto", paddingBottom: 12 }}>
+              {columns.map((column) => (
+                <KanbanColumn key={column.id} column={column} canCreate={canCreateTask} onAdd={openCreateModal}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {itemsByColumn[column.id].length} item{itemsByColumn[column.id].length === 1 ? "" : "s"}
+                  </Typography.Text>
+                  {itemsByColumn[column.id].length === 0 ? (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No cards" />
+                  ) : (
+                    <Flex vertical gap={10}>
+                      {itemsByColumn[column.id].map((item) => (
+                        <KanbanCard key={item.id} item={item} onOpen={openItem} />
+                      ))}
+                    </Flex>
+                  )}
+                </KanbanColumn>
+              ))}
+            </Flex>
+          </DndContext>
+        )}
+        {movingTaskId ? <Typography.Text type="secondary">Moving task...</Typography.Text> : null}
+      </Flex>
+      <TaskCreateModal
+        open={taskCreateModalOpen}
+        draft={selectedDraft}
+        onClose={closeCreateModal}
+        onCreated={(task) => {
+          setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+        }}
+        onDraftCreated={(draft) => {
+          setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
+        }}
+        onDraftUpdated={(draft) => {
+          setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
+        }}
+        onDraftDeleted={(draftId) => {
+          setDrafts((current) => current.filter((item) => item.id !== draftId));
+        }}
+      />
+    </>
+  );
+}
+````
+
+## File: apps/web/components/tasks-page.tsx
+````typescript
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import {
+  getAgentProviderLabel,
+  getTaskExecutionStatusLabel,
+  getTaskTerminalSessionLabel,
+  getTaskTypeLabel,
+  isTaskWorking,
+  type Task
+} from "@agentswarm/shared-types";
+import { Button, Card, Checkbox, DatePicker, Divider, Flex, Input, Modal, Select, Space, Spin, Table, Typography, message } from "antd";
+import { PushpinFilled } from "@ant-design/icons";
+import dayjs from "dayjs";
+import { useRouter, useSearchParams } from "next/navigation";
+import { api } from "../src/api/client";
+import { useRepositories } from "../src/hooks/useRepositories";
+import { useTasks } from "../src/hooks/useTasks";
+import { getSeenTaskVersions, isTaskSeen, markTaskSeen, migrateSeenTaskVersions, subscribeToSeenTasks, type SeenTaskVersions } from "../src/utils/seen-tasks";
+import { useAuth } from "./auth-provider";
+
+function getWorkingIndicatorLabel(task: Task): string {
+  if (task.activeInteractiveSession) {
+    return `${getTaskTerminalSessionLabel(task.activeTerminalSessionMode === "git" ? "git" : "interactive")} is running`;
+  }
+
+  return task.executionStatus !== "idle" ? getTaskExecutionStatusLabel(task.executionStatus) : `${getTaskTypeLabel(task.taskType)} task is working`;
+}
+
+function isTaskExecutionBusy(task: Task): boolean {
+  return task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running";
+}
+
+function canOfferRemoteBranchDeletion(task: Task): boolean {
+  const branchName = task.branchName?.trim();
+  return Boolean(
+    task.branchStrategy === "feature_branch" &&
+      branchName &&
+      branchName !== task.repoDefaultBranch &&
+      branchName !== task.baseBranch
+  );
+}
+
+export function TasksPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { can } = useAuth();
+  const archivedView = searchParams.get("view") === "archived";
+  const { tasks, setTasks, loading } = useTasks({ view: archivedView ? "archived" : "active" });
+  const { repositories } = useRepositories();
+  const [seenTaskVersions, setSeenTaskVersions] = useState<SeenTaskVersions>({});
+  const [titleFilter, setTitleFilter] = useState("");
+  const [repoFilter, setRepoFilter] = useState<string | undefined>();
+  const [createdAtFilter, setCreatedAtFilter] = useState<string | null>(null);
+  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
+  const [messageApi, contextHolder] = message.useMessage();
+  const canCreateTask = can("task:create") && (can("task:build") || can("task:ask") || can("task:interactive"));
+  const canEditTask = can("task:edit");
+  const canDeleteTask = can("task:delete");
+  useEffect(() => {
+    const syncSeenTaskVersions = () => {
+      setSeenTaskVersions(getSeenTaskVersions());
+    };
+
+    syncSeenTaskVersions();
+    return subscribeToSeenTasks(syncSeenTaskVersions);
+  }, []);
+
+  useEffect(() => {
+    const migratedSeenTaskVersions = migrateSeenTaskVersions(seenTaskVersions, tasks);
+    if (migratedSeenTaskVersions) {
+      setSeenTaskVersions(migratedSeenTaskVersions);
+    }
+  }, [seenTaskVersions, tasks]);
+
+  const filteredTasks = useMemo(() => {
+    return tasks.filter((task) => {
+      if (titleFilter && !task.title.toLowerCase().includes(titleFilter.toLowerCase())) {
+        return false;
+      }
+      if (repoFilter && task.repoId !== repoFilter) {
+        return false;
+      }
+      if (createdAtFilter && !task.createdAt.startsWith(createdAtFilter)) {
+        return false;
+      }
+      return true;
+    });
+  }, [archivedView, createdAtFilter, repoFilter, tasks, titleFilter]);
+
+  const handleDeleteTask = async (task: Task, options?: { deleteRemoteBranch?: boolean }) => {
+    setDeletingTaskId(task.id);
+    try {
+      await api.deleteTask(task.id, options);
+      setTasks((current) => current.filter((item) => item.id !== task.id));
+      messageApi.success(`Deleted task "${task.title}"`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to delete task");
+    } finally {
+      setDeletingTaskId(null);
+    }
+  };
+
+  const [archivingTaskId, setArchivingTaskId] = useState<string | null>(null);
+
+  const handleArchiveTask = async (task: Task, options?: { deleteRemoteBranch?: boolean }) => {
+    setArchivingTaskId(task.id);
+    try {
+      const updatedTask = await api.archiveTask(task.id, options);
+      setTasks((current) =>
+        current.map((item) =>
+          item.id === task.id
+            ? { ...item, ...updatedTask, logs: updatedTask.logs.length > 0 ? updatedTask.logs : item.logs }
+            : item
+        )
+      );
+      messageApi.success(`Archived "${task.title}"`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to archive task");
+    } finally {
+      setArchivingTaskId(null);
+    }
+  };
+
+  const confirmArchiveTask = (task: Task) => {
+    let deleteRemoteBranch = false;
+    const showBranchCleanup = canOfferRemoteBranchDeletion(task);
+
+    Modal.confirm({
+      title: "Archive task",
+      content: (
+        <Space direction="vertical" size={12}>
+          <Typography.Text>{`Archive "${task.title}"?`}</Typography.Text>
+          {showBranchCleanup ? (
+            <Checkbox onChange={(event) => {
+              deleteRemoteBranch = event.target.checked;
+            }}>
+              Delete remote branch <Typography.Text code>{task.branchName}</Typography.Text>
+            </Checkbox>
+          ) : null}
+        </Space>
+      ),
+      okText: "Archive",
+      onOk: () => handleArchiveTask(task, { deleteRemoteBranch })
+    });
+  };
+
+  const confirmDeleteTask = (task: Task) => {
+    let deleteRemoteBranch = false;
+    const showBranchCleanup = canOfferRemoteBranchDeletion(task);
+
+    Modal.confirm({
+      title: "Delete task",
+      content: (
+        <Space direction="vertical" size={12}>
+          <Typography.Text>{`Delete "${task.title}"?`}</Typography.Text>
+          {showBranchCleanup ? (
+            <Checkbox onChange={(event) => {
+              deleteRemoteBranch = event.target.checked;
+            }}>
+              Delete remote branch <Typography.Text code>{task.branchName}</Typography.Text>
+            </Checkbox>
+          ) : null}
+        </Space>
+      ),
+      okText: "Delete",
+      okButtonProps: { danger: true },
+      onOk: () => handleDeleteTask(task, { deleteRemoteBranch })
+    });
+  };
+
+  return (
+    <>
+      {contextHolder}
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
+          <Flex vertical gap={0}>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              {archivedView ? "Archived Tasks" : "Tasks"}
+            </Typography.Title>
+            <Space size={8} wrap>
+              <Typography.Text type="secondary">
+                {archivedView
+                  ? "Archived tasks are kept out of the active work queue. They stay read-only, but you can still delete them."
+                  : "Track build and ask tasks across their execution lifecycle."}
+              </Typography.Text>
+              <Typography.Link onClick={() => router.push(archivedView ? "/tasks" : "/tasks?view=archived")}>
+                {archivedView ? "Active Tasks" : "Archived"}
+              </Typography.Link>
+            </Space>
+          </Flex>
+          <Space>
+            {canCreateTask ? (
+              <Button type="primary" onClick={() => router.push("/tasks/new")}>
+                New Task
+              </Button>
+            ) : null}
+          </Space>
+        </Flex>
+
+        <Card bordered={false}>
+          <Space size={12} wrap>
+            <Input placeholder="Filter by title" value={titleFilter} onChange={(event) => setTitleFilter(event.target.value)} />
+            <Select
+              allowClear
+              placeholder="Filter by repository"
+              style={{ minWidth: 220 }}
+              value={repoFilter}
+              options={repositories.map((repository) => ({ label: repository.name, value: repository.id }))}
+              onChange={(value) => setRepoFilter(value)}
+            />
+            <DatePicker
+              style={{ minWidth: 220 }}
+              placeholder="Filter by created date"
+              onChange={(value) => setCreatedAtFilter(value ? value.format("YYYY-MM-DD") : null)}
+            />
+          </Space>
+          <Divider />
+          <Table<Task>
+            rowKey="id"
+            loading={loading}
+            dataSource={filteredTasks}
+            pagination={{ pageSize: 10 }}
+            style={{ cursor: "pointer" }}
+            onRow={(record) => ({
+              onClick: () => {
+                markTaskSeen(record);
+                setSeenTaskVersions((current) => {
+                  if (current[record.id] === record.updatedAt) {
+                    return current;
+                  }
+
+                  return {
+                    ...current,
+                    [record.id]: record.updatedAt
+                  };
+                });
+                router.push(`/tasks/${record.id}`);
+              }
+            })}
+            columns={[
+              {
+                title: "Title",
+                dataIndex: "title",
+                render: (value: string, task) => {
+                  const markerColor = task.hasPendingCheckpoint ? "#FA8C16" : !isTaskSeen(task, seenTaskVersions) ? "#1C8057" : null;
+                  const markerLabel = task.hasPendingCheckpoint ? "Pending checkpoint" : "Unseen task";
+                  const showWorkingIndicator = isTaskWorking(task);
+
+                  return (
+                    <Space size={8}>
+                      {task.pinned ? <PushpinFilled style={{ color: "#1C8057" }} /> : null}
+                      {showWorkingIndicator ? (
+                        <span aria-label={getWorkingIndicatorLabel(task)} title={getWorkingIndicatorLabel(task)} style={{ display: "inline-flex" }}>
+                          <Spin size="small" />
+                        </span>
+                      ) : null}
+                      {markerColor ? (
+                        <span
+                          aria-label={markerLabel}
+                          style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: "50%",
+                            backgroundColor: markerColor,
+                            display: "inline-block",
+                            flex: "0 0 auto"
+                          }}
+                        />
+                      ) : null}
+                      <span>{value}</span>
+                    </Space>
+                  );
+                }
+              },
+              {
+                title: "Repository",
+                dataIndex: "repoName"
+              },
+              {
+                title: "Type",
+                dataIndex: "taskType",
+                render: (value: Task["taskType"]) => getTaskTypeLabel(value)
+              },
+              {
+                title: "Provider",
+                dataIndex: "provider",
+                render: (value: Task["provider"]) => getAgentProviderLabel(value)
+              },
+              {
+                title: "Action",
+                dataIndex: "lastAction",
+                render: (value: Task["lastAction"]) => value ?? "draft"
+              },
+              {
+                title: "Created At",
+                dataIndex: "createdAt",
+                sorter: (a, b) => a.createdAt.localeCompare(b.createdAt),
+                render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
+              },
+              {
+                title: "Deadline",
+                dataIndex: "deadline",
+                sorter: (a, b) => (a.deadline ?? "").localeCompare(b.deadline ?? ""),
+                render: (value: Task["deadline"]) => (value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "None")
+              },
+              {
+                title: "Actions",
+                key: "actions",
+                width: 170,
+                render: (_value, task) => (
+                  <Space onClick={(event) => event.stopPropagation()}>
+                    {canEditTask && !archivedView ? (
+                      <Button size="small" loading={archivingTaskId === task.id} disabled={isTaskExecutionBusy(task)} onClick={() => confirmArchiveTask(task)}>
+                        Archive
+                      </Button>
+                    ) : null}
+                    {canDeleteTask ? (
+                      <Button danger size="small" loading={deletingTaskId === task.id} disabled={isTaskExecutionBusy(task)} onClick={() => confirmDeleteTask(task)}>
+                        Delete
+                      </Button>
+                    ) : null}
+                  </Space>
+                )
+              }
+            ]}
+          />
+        </Card>
+      </Space>
+    </>
+  );
+}
+````
+
 ## File: apps/web/src/auth/access.ts
 ````typescript
 import type { PermissionScope } from "@agentswarm/shared-types";
@@ -35515,107 +34816,6 @@ export const getSelectedNavigationKey = (pathname: string): string => {
   }
 
   return pathname;
-};
-````
-
-## File: apps/web/src/utils/task-definition-submit.ts
-````typescript
-"use client";
-
-import type { Task, TaskDefinitionInput } from "@agentswarm/shared-types";
-import { api } from "../api/client";
-
-export const startMessageForDefinition = (definition: TaskDefinitionInput): string => {
-  if (definition.sourceType === "pull_request") {
-    return "Pull request task created and started";
-  }
-
-  if (definition.sourceType === "issue") {
-    return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
-  }
-
-  if (definition.sourceType === "sequence") {
-    return "Sequence task created and started";
-  }
-
-  return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
-};
-
-export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promise<Task> => {
-  if (definition.sourceType === "issue") {
-    return api.createTaskFromIssue({
-      repoId: definition.repoId,
-      issueNumber: definition.issueNumber,
-      includeComments: definition.includeComments,
-      notes: definition.notes,
-      deadline: definition.deadline,
-      taskType: definition.taskType,
-      title: definition.title,
-      provider: definition.provider,
-      providerProfile: definition.providerProfile,
-      modelOverride: definition.model || undefined,
-      codexCredentialSource: definition.codexCredentialSource,
-      baseBranch: definition.baseBranch,
-      branchStrategy: definition.branchStrategy
-    });
-  }
-
-  if (definition.sourceType === "pull_request") {
-    return api.createTaskFromPullRequest({
-      repoId: definition.repoId,
-      pullRequestNumber: definition.pullRequestNumber,
-      notes: definition.notes,
-      deadline: definition.deadline,
-      title: definition.title,
-      provider: definition.provider,
-      providerProfile: definition.providerProfile,
-      modelOverride: definition.model || undefined,
-      codexCredentialSource: definition.codexCredentialSource
-    });
-  }
-
-  if (definition.sourceType === "sequence") {
-    return api.createTask({
-      title: definition.title,
-      repoId: definition.repoId,
-      prompt: "",
-      notes: definition.notes,
-      deadline: definition.deadline,
-      attachments: definition.attachments,
-      taskType: definition.taskType,
-      provider: definition.provider,
-      providerProfile: definition.providerProfile,
-      modelOverride: definition.model || undefined,
-      codexCredentialSource: definition.codexCredentialSource,
-      baseBranch: definition.baseBranch,
-      branchStrategy: definition.branchStrategy,
-      task_source: "sequence",
-      sequence_id: definition.sequenceId,
-      sequence_variables: definition.sequenceVariables
-    });
-  }
-
-  return api.createTask({
-    title: definition.title,
-    repoId: definition.repoId,
-    prompt: definition.prompt,
-    notes: definition.notes,
-    deadline: definition.deadline,
-    attachments: definition.sourceType === "blank" || definition.sourceType === "snippet" ? definition.attachments : undefined,
-    taskType: definition.taskType,
-    provider: definition.provider,
-    providerProfile: definition.providerProfile,
-    modelOverride: definition.model || undefined,
-    codexCredentialSource: definition.codexCredentialSource,
-    baseBranch: definition.baseBranch,
-    branchStrategy: definition.branchStrategy,
-    ...(definition.sourceType === "snippet"
-        ? {
-            task_source: "snippet" as const,
-            snippet_id: definition.snippetId
-          }
-        : { task_source: "blank" as const })
-  });
 };
 ````
 
@@ -36404,6 +35604,240 @@ Harness remote mode:
 - GitHub sync ownership and conflict policy: [docs/github-sync-ownership-model.md](docs/github-sync-ownership-model.md)
 ````
 
+## File: apps/server/src/lib/task-start-orchestrator.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import type { Task } from "@agentswarm/shared-types";
+import { getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "./task-start-orchestrator.js";
+
+const createTask = (overrides: Partial<Task> = {}): Task =>
+  ({
+    id: "task-1",
+    title: "Test task",
+    deadline: null,
+    pinned: false,
+    hasPendingCheckpoint: false,
+    activeInteractiveSession: false,
+    activeTerminalSessionMode: null,
+    ownerUserId: null,
+    creatorName: null,
+    repoId: "repo-1",
+    repoName: "repo",
+    repoUrl: "https://github.com/example/repo.git",
+    repoDefaultBranch: "main",
+    taskType: "build",
+    provider: "codex",
+    providerProfile: "high",
+    modelOverride: null,
+    codexCredentialSource: "auto",
+    baseBranch: "main",
+    branchStrategy: "feature_branch",
+    complexity: "normal",
+    branchName: "feature/task-1",
+    workspaceBaseRef: null,
+    prompt: "Do the work",
+    notes: "",
+    executionSummary: "",
+    resultMarkdown: null,
+    branchDiff: null,
+    status: "open",
+    workflowStatus: "ready",
+    executionStatus: "idle",
+    executionAction: "build",
+    reviewReason: null,
+    logs: [],
+    createdAt: "2026-05-24T00:00:00.000Z",
+    updatedAt: "2026-05-24T00:00:00.000Z",
+    startedAt: null,
+    finishedAt: null,
+    errorMessage: null,
+    lastAction: "build",
+    enqueued: false,
+    ...overrides
+  }) satisfies Task as Task;
+
+describe("orchestrateTaskStart", () => {
+  it("prepares workspace and returns started task when start succeeds", async () => {
+    const task = createTask();
+    const prepared: string[] = [];
+    const triggered: Array<{ taskId: string; action: string }> = [];
+    const result = await orchestrateTaskStart(
+      {
+        taskStore: { getTask: async () => task } as never,
+        scheduler: {
+          triggerAction: async (taskId: string, action: string) => {
+            triggered.push({ taskId, action });
+            return true;
+          }
+        } as never,
+        spawner: {
+          prepareTaskWorkspaceOnly: async (input: Task) => {
+            prepared.push(input.id);
+            return task;
+          }
+        } as never
+      },
+      {
+        task,
+        fallbackMessage: "Task follow-up failed"
+      }
+    );
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.task.id, task.id);
+    }
+    assert.deepEqual(prepared, [task.id]);
+    assert.deepEqual(triggered, [{ taskId: task.id, action: "build" }]);
+  });
+
+  it("returns 409 for start failures", async () => {
+    const task = createTask();
+    const result = await orchestrateTaskStart(
+      {
+        taskStore: { getTask: async () => task } as never,
+        scheduler: { triggerAction: async () => false } as never,
+        spawner: { prepareTaskWorkspaceOnly: async () => task } as never
+      },
+      {
+        task,
+        fallbackMessage: "Task follow-up failed"
+      }
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.statusCode, 409);
+      assert.match(result.message, /could not be started/i);
+    }
+  });
+
+  it("maps new task action from task type", () => {
+    assert.equal(getTriggerActionForNewTask(createTask({ taskType: "build" })), "build");
+    assert.equal(getTriggerActionForNewTask(createTask({ taskType: "ask" })), "ask");
+  });
+});
+
+describe("orchestrateTaskActionStart", () => {
+  it("returns reason code when a pending checkpoint blocks mutation", async () => {
+    const task = createTask();
+    const result = await orchestrateTaskActionStart(
+      {
+        taskStore: {
+          hasPendingChangeProposal: async () => true,
+          getActiveInteractiveSession: async () => null
+        } as never,
+        scheduler: {} as never
+      },
+      {
+        task,
+        action: "build"
+      }
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.statusCode, 409);
+      assert.equal(result.reasonCode, "pending_checkpoint");
+    }
+  });
+
+  it("returns busy message when task is already active", async () => {
+    const task = createTask({ status: "building" });
+    const result = await orchestrateTaskActionStart(
+      {
+        taskStore: {
+          hasPendingChangeProposal: async () => false,
+          getActiveInteractiveSession: async () => null
+        } as never,
+        scheduler: {} as never
+      },
+      {
+        task,
+        action: "build"
+      }
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.message, "Task is already running");
+    }
+  });
+
+  it("returns capacity message for parallel ask when no capacity is available", async () => {
+    const task = createTask({ status: "building", taskType: "ask" });
+    const result = await orchestrateTaskActionStart(
+      {
+        taskStore: {
+          hasPendingChangeProposal: async () => false,
+          getActiveInteractiveSession: async () => null
+        } as never,
+        scheduler: {
+          hasExecutionCapacity: async () => false
+        } as never
+      },
+      {
+        task,
+        action: "ask",
+        allowParallelAsk: true
+      }
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.message, /capacity/i);
+    }
+  });
+
+  it("returns trigger-rejected message when scheduler refuses to start", async () => {
+    const task = createTask({ status: "open" });
+    const result = await orchestrateTaskActionStart(
+      {
+        taskStore: {
+          hasPendingChangeProposal: async () => false,
+          getActiveInteractiveSession: async () => null
+        } as never,
+        scheduler: {
+          triggerAction: async () => false
+        } as never
+      },
+      {
+        task,
+        action: "build",
+        triggerRejectedMessage: "Task execution could not be started"
+      }
+    );
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.message, "Task execution could not be started");
+    }
+  });
+
+  it("returns ok when scheduler accepts the action", async () => {
+    const task = createTask({ status: "open" });
+    const result = await orchestrateTaskActionStart(
+      {
+        taskStore: {
+          hasPendingChangeProposal: async () => false,
+          getActiveInteractiveSession: async () => null
+        } as never,
+        scheduler: {
+          triggerAction: async () => true
+        } as never
+      },
+      {
+        task,
+        action: "build"
+      }
+    );
+
+    assert.deepEqual(result, { ok: true });
+  });
+});
+````
+
 ## File: apps/server/src/routes/github-webhooks.ts
 ````typescript
 import type { FastifyInstance } from "fastify";
@@ -36955,6 +36389,485 @@ export const registerGitHubWebhookRoutes = (
     return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
   });
 };
+````
+
+## File: apps/server/src/routes/imports.ts
+````typescript
+import { z } from "zod";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { AuthService } from "../lib/auth.js";
+import type { SchedulerService } from "../services/scheduler.js";
+import type { RepositoryStore } from "../services/repository-store.js";
+import type { SettingsStore } from "../services/settings-store.js";
+import type { SpawnerService } from "../services/spawner.js";
+import type { TaskStore } from "../services/task-store.js";
+import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
+import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
+import { requireTaskCapabilityAccess, requireTaskExecutionConfigAccess } from "../lib/task-capability-access.js";
+import { canUserAccessRepository } from "../lib/task-ownership.js";
+import { withBranchSyncCounts, withTaskCreatorName } from "./tasks.js";
+import { normalizeProvider } from "../lib/provider-config.js";
+import type { UserStore } from "../services/user-store.js";
+
+const deadlineSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
+  .nullable();
+
+const issueImportSchema = z.object({
+  repoId: z.string().min(1),
+  issueNumber: z.coerce.number().int().positive(),
+  includeComments: z.boolean().optional(),
+  notes: z.string().max(40_000).optional(),
+  deadline: deadlineSchema.optional(),
+  taskType: z.enum(["build", "ask"]).optional(),
+  title: z.string().trim().optional(),
+  provider: z.enum(["codex", "claude"]).optional(),
+  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+  modelOverride: z.string().trim().min(1).optional(),
+  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+  baseBranch: z.string().trim().min(1).optional(),
+  branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+  model: z.string().trim().min(1).optional(),
+  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
+}).strict();
+
+const pullRequestImportSchema = z.object({
+  repoId: z.string().min(1),
+  pullRequestNumber: z.coerce.number().int().positive(),
+  notes: z.string().max(40_000).optional(),
+  deadline: deadlineSchema.optional(),
+  title: z.string().trim().optional(),
+  provider: z.enum(["codex", "claude"]).optional(),
+  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+  modelOverride: z.string().trim().min(1).optional(),
+  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+  model: z.string().trim().min(1).optional(),
+  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
+});
+
+const applyCreateDefaultsFromSettings = <
+  T extends {
+    provider?: "codex" | "claude";
+    providerProfile?: "low" | "medium" | "high" | "max";
+    modelOverride?: string;
+    model?: string;
+  }
+>(
+  payload: T,
+  settings: Awaited<ReturnType<SettingsStore["getSettings"]>>
+): T => {
+  const provider = normalizeProvider(payload.provider ?? settings.defaultProvider);
+  const providerProfile =
+    payload.providerProfile ??
+    (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort);
+  const hasLegacyModel = Boolean(payload.model?.trim());
+  const modelOverride =
+    payload.modelOverride ??
+    (hasLegacyModel ? undefined : provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel);
+
+  return {
+    ...payload,
+    provider,
+    providerProfile,
+    modelOverride
+  };
+};
+
+export const registerImportRoutes = (
+  app: FastifyInstance,
+  deps: {
+    githubImportService: GitHubImportService;
+    repositoryStore: RepositoryStore;
+    settingsStore: SettingsStore;
+    taskStore: TaskStore;
+    userStore: UserStore;
+    scheduler: SchedulerService;
+    spawner: SpawnerService;
+    auth: AuthService;
+  }
+): void => {
+  const getAccessibleRepository = async (
+    repoId: string,
+    request: FastifyRequest,
+    reply: FastifyReply
+  ) => {
+    const repository = await deps.repositoryStore.getRepository(repoId);
+    if (!repository || !canUserAccessRepository(request.auth?.user, repoId)) {
+      await reply.status(404).send({ message: "Repository not found" });
+      return null;
+    }
+
+    return repository;
+  };
+
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/issues", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repoId = String(request.query.repoId ?? "").trim();
+    if (!repoId) {
+      return reply.status(400).send({ message: "repoId is required" });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      const issues = await deps.githubImportService.listOpenIssues(repository);
+      return reply.send(issues);
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/pull-requests", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repoId = String(request.query.repoId ?? "").trim();
+    if (!repoId) {
+      return reply.status(400).send({ message: "repoId is required" });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      const pullRequests = await deps.githubImportService.listOpenPullRequests(repository);
+      return reply.send(pullRequests);
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/branches", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repoId = String(request.query.repoId ?? "").trim();
+    if (!repoId) {
+      return reply.status(400).send({ message: "repoId is required" });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      const branches = await deps.githubImportService.listBranches(repository);
+      return reply.send(branches);
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.post("/imports/issue", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
+    const parsed = issueImportSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      const settings = await deps.settingsStore.getSettings();
+      const issueRest = applyCreateDefaultsFromSettings(parsed.data, settings);
+      if (
+        !requireTaskCapabilityAccess(request, reply, {
+          taskType: issueRest.taskType ?? "build"
+        })
+      ) {
+        return;
+      }
+      if (!requireTaskExecutionConfigAccess(request, reply, issueRest)) {
+        return;
+      }
+
+      const taskInput = await deps.githubImportService.buildTaskInputFromIssue(repository, issueRest);
+      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
+      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
+        creatorName: request.auth!.user.name
+      });
+      const createdTask = taskWithCreator ?? {
+        ...task,
+        creatorName: request.auth!.user.name
+      };
+      const startResult = await orchestrateTaskStart(
+        {
+          taskStore: deps.taskStore,
+          scheduler: deps.scheduler,
+          spawner: deps.spawner
+        },
+        {
+          task: createdTask,
+          fallbackMessage: "Imported task execution could not be started"
+        }
+      );
+      if (!startResult.ok) {
+        return reply.status(startResult.statusCode).send({ message: startResult.message });
+      }
+      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.post("/imports/pull-request", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
+    const parsed = pullRequestImportSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      if (!requireTaskCapabilityAccess(request, reply, { taskType: "build" })) {
+        return;
+      }
+      const settings = await deps.settingsStore.getSettings();
+      const createPayload = applyCreateDefaultsFromSettings(parsed.data, settings);
+      if (!requireTaskExecutionConfigAccess(request, reply, createPayload)) {
+        return;
+      }
+
+      const taskInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, createPayload);
+      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
+      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
+        creatorName: request.auth!.user.name
+      });
+      const createdTask = taskWithCreator ?? {
+        ...task,
+        creatorName: request.auth!.user.name
+      };
+      const startResult = await orchestrateTaskStart(
+        {
+          taskStore: deps.taskStore,
+          scheduler: deps.scheduler,
+          spawner: deps.spawner
+        },
+        {
+          task: createdTask,
+          fallbackMessage: "Imported task execution could not be started"
+        }
+      );
+      if (!startResult.ok) {
+        return reply.status(startResult.statusCode).send({ message: startResult.message });
+      }
+      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+};
+````
+
+## File: apps/server/src/services/github-status-sync-service.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
+import type { RepositoryStore } from "./repository-store.js";
+import { GitHubStatusSyncService } from "./github-status-sync-service.js";
+
+class MockRepositoryStore implements Pick<RepositoryStore, "getRepository"> {
+  constructor(private readonly repository: Repository | null) {}
+  async getRepository(): Promise<Repository | null> {
+    return this.repository;
+  }
+}
+
+class MockGitHubOutboundService {
+  comments: Array<{ repositoryId: string; issueNumber: number; body: string; idempotencyKey: string }> = [];
+  labels: Array<{ repositoryId: string; issueNumber: number; add?: string[]; remove?: string[]; idempotencyKey: string }> = [];
+
+  async enqueueSummaryComment(input: { repositoryId: string; issueNumber: number; body: string; idempotencyKey: string }): Promise<boolean> {
+    this.comments.push(input);
+    return true;
+  }
+
+  async enqueueLabelUpdate(input: {
+    repositoryId: string;
+    issueNumber: number;
+    add?: string[];
+    remove?: string[];
+    idempotencyKey: string;
+  }): Promise<boolean> {
+    this.labels.push(input);
+    return true;
+  }
+}
+
+const buildTask = (status: Task["status"], overrides: Partial<Task> = {}): Task => ({
+  id: "task-1",
+  title: "Issue #22",
+  deadline: null,
+  pinned: false,
+  hasPendingCheckpoint: false,
+  activeInteractiveSession: false,
+  activeTerminalSessionMode: null,
+  ownerUserId: "user-1",
+  creatorName: "Dev",
+  repoId: "repo-1",
+  repoName: "Repo",
+  repoUrl: "https://github.com/acme/repo",
+  repoDefaultBranch: "main",
+  taskType: "build",
+  provider: "codex",
+  providerProfile: "medium",
+  modelOverride: null,
+  codexCredentialSource: "auto",
+  baseBranch: "main",
+  branchStrategy: "feature_branch",
+  complexity: "normal",
+  branchName: null,
+  workspaceBaseRef: null,
+  prompt: "Imported from GitHub issue #22: Test issue\n\nIssue URL: https://github.com/acme/repo/issues/22",
+  notes: "",
+  resultMarkdown: null,
+  executionSummary: "",
+  branchDiff: null,
+  pullCount: 0,
+  pushCount: 0,
+  lastAction: "build",
+  status,
+  workflowStatus: "ready",
+  executionStatus: "idle",
+  executionAction: "build",
+  reviewReason: null,
+  logs: [],
+  enqueued: false,
+  createdAt: "2026-05-22T00:00:00.000Z",
+  updatedAt: "2026-05-22T00:00:00.000Z",
+  startedAt: null,
+  finishedAt: null,
+  errorMessage: null,
+  ...overrides
+});
+
+describe("GitHubStatusSyncService", () => {
+  it("posts milestone updates when sync_status_enabled is true", async () => {
+    const repository: Repository = {
+      id: "repo-1",
+      name: "Repo",
+      url: "https://github.com/acme/repo",
+      defaultBranch: "main",
+      syncStatusEnabled: true,
+      envVars: [],
+      webhookUrl: null,
+      webhookEnabled: false,
+      webhookSecretConfigured: false,
+      webhookLastAttemptAt: null,
+      webhookLastStatus: null,
+      webhookLastError: null,
+      createdAt: "2026-05-22T00:00:00.000Z",
+      updatedAt: "2026-05-22T00:00:00.000Z"
+    };
+    const outbound = new MockGitHubOutboundService();
+    const service = new GitHubStatusSyncService(new MockRepositoryStore(repository) as unknown as RepositoryStore, outbound as never, () =>
+      "2026-05-22T12:00:00.000Z"
+    );
+
+    const createdEvent: RealtimeEvent = { type: "task:created", payload: buildTask("build_queued") };
+    const startedEvent: RealtimeEvent = { type: "task:updated", payload: buildTask("building") };
+    const doneEvent: RealtimeEvent = { type: "task:updated", payload: buildTask("done", { resultMarkdown: "## Final summary\nShipped." }) };
+
+    await service.handleRealtimeEvent(createdEvent);
+    await service.handleRealtimeEvent(startedEvent);
+    await service.handleRealtimeEvent(doneEvent);
+
+    assert.equal(outbound.labels.length, 2);
+    assert.equal(outbound.comments.length, 2);
+    assert.deepEqual(outbound.labels[0]?.add, ["as:in-progress"]);
+    assert.deepEqual(outbound.labels[1]?.add, ["as:done"]);
+    assert.equal(outbound.comments[0]?.body, "Work started.");
+    assert.equal(outbound.comments[1]?.body, "## Final summary\nShipped.");
+  });
+
+  it("does not post when sync_status_enabled is false", async () => {
+    const repository: Repository = {
+      id: "repo-1",
+      name: "Repo",
+      url: "https://github.com/acme/repo",
+      defaultBranch: "main",
+      syncStatusEnabled: false,
+      envVars: [],
+      webhookUrl: null,
+      webhookEnabled: false,
+      webhookSecretConfigured: false,
+      webhookLastAttemptAt: null,
+      webhookLastStatus: null,
+      webhookLastError: null,
+      createdAt: "2026-05-22T00:00:00.000Z",
+      updatedAt: "2026-05-22T00:00:00.000Z"
+    };
+    const outbound = new MockGitHubOutboundService();
+    const service = new GitHubStatusSyncService(new MockRepositoryStore(repository) as unknown as RepositoryStore, outbound as never);
+
+    await service.handleRealtimeEvent({ type: "task:created", payload: buildTask("build_queued") });
+    await service.handleRealtimeEvent({ type: "task:updated", payload: buildTask("building") });
+
+    assert.equal(outbound.labels.length, 0);
+    assert.equal(outbound.comments.length, 0);
+  });
+
+  it("does not post when task notes explicitly disable sync", async () => {
+    const repository: Repository = {
+      id: "repo-1",
+      name: "Repo",
+      url: "https://github.com/acme/repo",
+      defaultBranch: "main",
+      syncStatusEnabled: true,
+      envVars: [],
+      webhookUrl: null,
+      webhookEnabled: false,
+      webhookSecretConfigured: false,
+      webhookLastAttemptAt: null,
+      webhookLastStatus: null,
+      webhookLastError: null,
+      createdAt: "2026-05-22T00:00:00.000Z",
+      updatedAt: "2026-05-22T00:00:00.000Z"
+    };
+    const outbound = new MockGitHubOutboundService();
+    const service = new GitHubStatusSyncService(new MockRepositoryStore(repository) as unknown as RepositoryStore, outbound as never);
+
+    await service.handleRealtimeEvent({
+      type: "task:created",
+      payload: buildTask("build_queued", { notes: "<!-- agentswarm:github_sync_status_enabled=false -->" })
+    });
+    await service.handleRealtimeEvent({
+      type: "task:updated",
+      payload: buildTask("building", { notes: "<!-- agentswarm:github_sync_status_enabled=false -->" })
+    });
+
+    assert.equal(outbound.labels.length, 0);
+    assert.equal(outbound.comments.length, 0);
+  });
+});
 ````
 
 ## File: apps/server/src/services/repository-store.ts
@@ -39862,89 +39775,105 @@ html[data-theme="forge-light"] .diff-widget-content {
 }
 ````
 
-## File: apps/web/src/utils/task-lifecycle-view-model.test.ts
+## File: apps/web/src/utils/task-definition-submit.ts
 ````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import type { Task } from "@agentswarm/shared-types";
-import { buildTaskLifecycleViewModel } from "./task-lifecycle-view-model";
+"use client";
 
-const createTask = (overrides: Partial<Task> = {}): Task =>
-  ({
-    id: "task-1",
-    title: "Task",
-    deadline: null,
-    pinned: false,
-    hasPendingCheckpoint: false,
-    activeInteractiveSession: false,
-    activeTerminalSessionMode: null,
-    ownerUserId: null,
-    creatorName: null,
-    repoId: "repo-1",
-    repoName: "repo",
-    repoUrl: "https://github.com/example/repo.git",
-    repoDefaultBranch: "main",
-    taskType: "build",
-    provider: "codex",
-    providerProfile: "high",
-    modelOverride: null,
-    codexCredentialSource: "auto",
-    baseBranch: "main",
-    branchStrategy: "feature_branch",
-    complexity: "normal",
-    branchName: "feature/task-1",
-    workspaceBaseRef: null,
-    prompt: "Do the work",
-    notes: "",
-    executionSummary: "",
-    resultMarkdown: null,
-    branchDiff: null,
-    status: "open",
-    workflowStatus: "ready",
-    executionStatus: "idle",
-    executionAction: "build",
-    reviewReason: null,
-    logs: [],
-    createdAt: "2026-05-24T00:00:00.000Z",
-    updatedAt: "2026-05-24T00:00:00.000Z",
-    startedAt: null,
-    finishedAt: null,
-    errorMessage: null,
-    lastAction: "build",
-    enqueued: false,
-    ...overrides
-  }) satisfies Task as Task;
+import type { Task, TaskDefinitionInput } from "@agentswarm/shared-types";
+import { api } from "../api/client";
 
-describe("buildTaskLifecycleViewModel", () => {
-  it("maps preparing workspace state", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "preparing_workspace" }));
-    assert.equal(vm.isPreparingWorkspace, true);
-    assert.equal(vm.resultStatusText, "Preparing workspace");
+export const startMessageForDefinition = (definition: TaskDefinitionInput): string => {
+  if (definition.sourceType === "pull_request") {
+    return "Pull request task created and started";
+  }
+
+  if (definition.sourceType === "issue") {
+    return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
+  }
+
+  if (definition.sourceType === "sequence") {
+    return "Sequence task created and started";
+  }
+
+  return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
+};
+
+export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promise<Task> => {
+  if (definition.sourceType === "issue") {
+    return api.createTaskFromIssue({
+      repoId: definition.repoId,
+      issueNumber: definition.issueNumber,
+      includeComments: definition.includeComments,
+      notes: definition.notes,
+      deadline: definition.deadline,
+      taskType: definition.taskType,
+      title: definition.title,
+      provider: definition.provider,
+      providerProfile: definition.providerProfile,
+      modelOverride: definition.model || undefined,
+      codexCredentialSource: definition.codexCredentialSource,
+      baseBranch: definition.baseBranch,
+      branchStrategy: definition.branchStrategy
+    });
+  }
+
+  if (definition.sourceType === "pull_request") {
+    return api.createTaskFromPullRequest({
+      repoId: definition.repoId,
+      pullRequestNumber: definition.pullRequestNumber,
+      notes: definition.notes,
+      deadline: definition.deadline,
+      title: definition.title,
+      provider: definition.provider,
+      providerProfile: definition.providerProfile,
+      modelOverride: definition.model || undefined,
+      codexCredentialSource: definition.codexCredentialSource
+    });
+  }
+
+  if (definition.sourceType === "sequence") {
+    return api.createTask({
+      title: definition.title,
+      repoId: definition.repoId,
+      prompt: "",
+      notes: definition.notes,
+      deadline: definition.deadline,
+      attachments: definition.attachments,
+      taskType: definition.taskType,
+      provider: definition.provider,
+      providerProfile: definition.providerProfile,
+      modelOverride: definition.model || undefined,
+      codexCredentialSource: definition.codexCredentialSource,
+      baseBranch: definition.baseBranch,
+      branchStrategy: definition.branchStrategy,
+      task_source: "sequence",
+      sequence_id: definition.sequenceId,
+      sequence_variables: definition.sequenceVariables
+    });
+  }
+
+  return api.createTask({
+    title: definition.title,
+    repoId: definition.repoId,
+    prompt: definition.prompt,
+    notes: definition.notes,
+    deadline: definition.deadline,
+    attachments: definition.sourceType === "blank" || definition.sourceType === "snippet" ? definition.attachments : undefined,
+    taskType: definition.taskType,
+    provider: definition.provider,
+    providerProfile: definition.providerProfile,
+    modelOverride: definition.model || undefined,
+    codexCredentialSource: definition.codexCredentialSource,
+    baseBranch: definition.baseBranch,
+    branchStrategy: definition.branchStrategy,
+    ...(definition.sourceType === "snippet"
+        ? {
+            task_source: "snippet" as const,
+            snippet_id: definition.snippetId
+          }
+        : { task_source: "blank" as const })
   });
-
-  it("maps queued build state", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "build_queued", taskType: "build" }));
-    assert.equal(vm.isQueued, true);
-    assert.equal(vm.resultStatusText, "Build queued");
-  });
-
-  it("maps queued ask state", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "ask_queued", taskType: "ask" }));
-    assert.equal(vm.isQueued, true);
-    assert.equal(vm.resultStatusText, "Question queued");
-  });
-
-  it("marks archived tasks", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "archived" }));
-    assert.equal(vm.isArchived, true);
-  });
-
-  it("marks checkpoint mutations as blocked while the task is running", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "building" }));
-    assert.equal(vm.checkpointDiffActionsBlocked, true);
-    assert.ok(vm.checkpointDiffActionsBlockedReason);
-  });
-});
+};
 ````
 
 ## File: apps/server/src/services/sequence-execution-service.ts
@@ -41387,6 +41316,91 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 ````
 
+## File: apps/web/src/utils/task-lifecycle-view-model.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import type { Task } from "@agentswarm/shared-types";
+import { buildTaskLifecycleViewModel } from "./task-lifecycle-view-model";
+
+const createTask = (overrides: Partial<Task> = {}): Task =>
+  ({
+    id: "task-1",
+    title: "Task",
+    deadline: null,
+    pinned: false,
+    hasPendingCheckpoint: false,
+    activeInteractiveSession: false,
+    activeTerminalSessionMode: null,
+    ownerUserId: null,
+    creatorName: null,
+    repoId: "repo-1",
+    repoName: "repo",
+    repoUrl: "https://github.com/example/repo.git",
+    repoDefaultBranch: "main",
+    taskType: "build",
+    provider: "codex",
+    providerProfile: "high",
+    modelOverride: null,
+    codexCredentialSource: "auto",
+    baseBranch: "main",
+    branchStrategy: "feature_branch",
+    complexity: "normal",
+    branchName: "feature/task-1",
+    workspaceBaseRef: null,
+    prompt: "Do the work",
+    notes: "",
+    executionSummary: "",
+    resultMarkdown: null,
+    branchDiff: null,
+    status: "open",
+    workflowStatus: "ready",
+    executionStatus: "idle",
+    executionAction: "build",
+    reviewReason: null,
+    logs: [],
+    createdAt: "2026-05-24T00:00:00.000Z",
+    updatedAt: "2026-05-24T00:00:00.000Z",
+    startedAt: null,
+    finishedAt: null,
+    errorMessage: null,
+    lastAction: "build",
+    enqueued: false,
+    ...overrides
+  }) satisfies Task as Task;
+
+describe("buildTaskLifecycleViewModel", () => {
+  it("maps preparing workspace state", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "preparing_workspace" }));
+    assert.equal(vm.isPreparingWorkspace, true);
+    assert.equal(vm.resultStatusText, "Preparing workspace");
+  });
+
+  it("maps queued build state", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "build_queued", taskType: "build" }));
+    assert.equal(vm.isQueued, true);
+    assert.equal(vm.resultStatusText, "Build queued");
+  });
+
+  it("maps queued ask state", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "ask_queued", taskType: "ask" }));
+    assert.equal(vm.isQueued, true);
+    assert.equal(vm.resultStatusText, "Question queued");
+  });
+
+  it("marks archived tasks", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "archived" }));
+    assert.equal(vm.isArchived, true);
+  });
+
+  it("marks checkpoint mutations as blocked while the task is running", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "building" }));
+    assert.equal(vm.checkpointDiffActionsBlocked, true);
+    assert.ok(vm.checkpointDiffActionsBlockedReason);
+  });
+});
+````
+
 ## File: apps/server/src/routes/repositories.ts
 ````typescript
 import { z } from "zod";
@@ -41693,288 +41707,6 @@ export const registerRepositoryRoutes = (
     return reply.status(204).send();
   });
 };
-````
-
-## File: apps/server/src/services/spawner.workspace-provisioning.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { describe, it } from "node:test";
-import type { Task } from "@agentswarm/shared-types";
-import { SpawnerService } from "./spawner.js";
-
-const createTask = (overrides: Partial<Task> = {}): Task =>
-  ({
-    id: "task-1",
-    title: "Test task",
-    deadline: null,
-    pinned: false,
-    hasPendingCheckpoint: false,
-    activeInteractiveSession: false,
-    activeTerminalSessionMode: null,
-    ownerUserId: null,
-    creatorName: null,
-    repoId: "repo-1",
-    repoName: "repo",
-    repoUrl: "https://github.com/example/repo.git",
-    repoDefaultBranch: "main",
-    taskType: "build",
-    provider: "codex",
-    providerProfile: "high",
-    modelOverride: null,
-    codexCredentialSource: "auto",
-    baseBranch: "main",
-    branchStrategy: "feature_branch",
-    complexity: "normal",
-    branchName: "feature/task-1",
-    workspaceBaseRef: null,
-    prompt: "Do the work",
-    notes: "",
-    executionSummary: "",
-    resultMarkdown: null,
-    branchDiff: null,
-    status: "open",
-    workflowStatus: "ready",
-    executionStatus: "idle",
-    executionAction: "build",
-    reviewReason: null,
-    logs: [],
-    createdAt: "2026-05-24T00:00:00.000Z",
-    updatedAt: "2026-05-24T00:00:00.000Z",
-    startedAt: null,
-    finishedAt: null,
-    errorMessage: null,
-    lastAction: "build",
-    enqueued: false
-  }) satisfies Task as Task;
-
-const createSpawner = (): SpawnerService =>
-  new SpawnerService(
-    {} as never,
-    {
-      getSettings: async () => ({ workspaceProvisioningMode: "clone_only", branchPrefix: "agentswarm" })
-    } as never,
-    {} as never,
-    {} as never
-  );
-
-describe("SpawnerService workspace provisioning", () => {
-  it("releases named locks after completion", async () => {
-    const spawner = createSpawner();
-    const spawnerAny = spawner as any;
-    const locks = new Map<string, Promise<void>>();
-    const key = "task-1";
-
-    const result = await spawnerAny.withNamedLock(locks, key, async () => "ok");
-    assert.equal(result, "ok");
-    assert.equal(locks.has(key), false);
-  });
-
-  it("prepares build workspace via clone model", async () => {
-    const spawner = createSpawner();
-    const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-clone-"));
-    const workspacePath = path.join(root, "task");
-    const task = createTask();
-
-    let cloned = false;
-    let checkedOut = false;
-    spawnerAny.resolveWorkspacePath = () => workspacePath;
-    spawnerAny.resolveWorkspaceHostPath = () => workspacePath;
-    spawnerAny.cloneWorkspaceFromSource = async () => {
-      cloned = true;
-      await mkdir(workspacePath, { recursive: true });
-    };
-    spawnerAny.checkoutTaskWorkspaceBranch = async () => {
-      checkedOut = true;
-    };
-    spawnerAny.gitCommandCapture = async () => "abc123";
-
-    const workspace = await spawnerAny.prepareWorkspace(task, "build", "feature/task-1", "/repo-cache/path", "clone_only");
-    assert.equal(cloned, true);
-    assert.equal(checkedOut, true);
-    assert.equal(workspace.workspacePath, workspacePath);
-    assert.equal(workspace.kind, "clone");
-    assert.equal(workspace.ephemeral, false);
-  });
-
-  it("uses hybrid fallback when clone provisioning fails", async () => {
-    const spawner = createSpawner();
-    const spawnerAny = spawner as any;
-    const task = createTask();
-    const fallbackWorkspace = {
-      workspacePath: "/tmp/fallback",
-      hostWorkspacePath: "/tmp/fallback",
-      startRef: "start",
-      workspaceBaseRef: "start",
-      kind: "clone",
-      ephemeral: false,
-      cleanupRepoPath: null
-    };
-
-    spawnerAny.resolveWorkspacePath = () => "/tmp/workspace";
-    spawnerAny.cloneWorkspaceFromSource = async () => {
-      throw new Error("clone failed");
-    };
-    spawnerAny.classifyWorkspacePrepareFailure = () => "clone_error";
-    spawnerAny.prepareWorkspaceLegacyWorktree = async () => fallbackWorkspace;
-
-    const workspace = await spawnerAny.prepareWorkspace(task, "build", "feature/task-1", "/repo-cache/path", "hybrid");
-    assert.deepEqual(workspace, fallbackWorkspace);
-  });
-
-  it("reuses the existing task workspace for ask runs", async () => {
-    const spawner = createSpawner();
-    const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-ask-"));
-    const taskWorkspacePath = path.join(root, "task-workspace");
-    const task = createTask();
-    await mkdir(taskWorkspacePath, { recursive: true });
-    await mkdir(path.join(taskWorkspacePath, ".git"), { recursive: true });
-
-    spawnerAny.resolveWorkspacePath = () => taskWorkspacePath;
-    spawnerAny.resolveWorkspaceHostPath = () => taskWorkspacePath;
-    spawnerAny.gitCommandCapture = async () => "deadbeef";
-
-    const workspace = await spawnerAny.prepareAskRunWorkspace(task, "feature/task-1", "/repo-cache/path", "clone_only");
-    assert.equal(workspace.workspacePath, taskWorkspacePath);
-    assert.equal(workspace.hostWorkspacePath, taskWorkspacePath);
-    assert.equal(workspace.kind, "clone");
-  });
-
-  it("prepares the task workspace for ask runs when missing", async () => {
-    const spawner = createSpawner();
-    const spawnerAny = spawner as any;
-    const task = createTask();
-    const preparedWorkspace = {
-      workspacePath: "/tmp/task-workspace",
-      hostWorkspacePath: "/tmp/task-workspace",
-      startRef: "start",
-      workspaceBaseRef: "start",
-      kind: "clone",
-      ephemeral: false,
-      cleanupRepoPath: null
-    };
-
-    spawnerAny.resolveWorkspacePath = () => "/tmp/task-workspace";
-    spawnerAny.prepareWorkspace = async () => preparedWorkspace;
-
-    const workspace = await spawnerAny.prepareAskRunWorkspace(task, "feature/task-1", "/repo-cache/path", "clone_only");
-    assert.deepEqual(workspace, preparedWorkspace);
-  });
-
-  it("rebuilds ask workspace when the folder exists but is not a git repo", async () => {
-    const spawner = createSpawner();
-    const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-ask-rebuild-"));
-    const taskWorkspacePath = path.join(root, "task-workspace");
-    const task = createTask();
-    await mkdir(taskWorkspacePath, { recursive: true });
-    await writeFile(path.join(taskWorkspacePath, "README.txt"), "placeholder", "utf8");
-
-    const preparedWorkspace = {
-      workspacePath: taskWorkspacePath,
-      hostWorkspacePath: taskWorkspacePath,
-      startRef: "rebuilt",
-      workspaceBaseRef: "rebuilt",
-      kind: "clone",
-      ephemeral: false,
-      cleanupRepoPath: null
-    };
-
-    let prepareWorkspaceCalled = false;
-    spawnerAny.resolveWorkspacePath = () => taskWorkspacePath;
-    spawnerAny.prepareWorkspace = async () => {
-      prepareWorkspaceCalled = true;
-      return preparedWorkspace;
-    };
-
-    const workspace = await spawnerAny.prepareAskRunWorkspace(task, "feature/task-1", "/repo-cache/path", "clone_only");
-    assert.equal(prepareWorkspaceCalled, true);
-    assert.deepEqual(workspace, preparedWorkspace);
-  });
-
-  it("cleans up ephemeral clone workspace directory", async () => {
-    const spawner = createSpawner();
-    const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-cleanup-"));
-    const workspacePath = path.join(root, "workspace");
-    await mkdir(workspacePath, { recursive: true });
-    await writeFile(path.join(workspacePath, "file.txt"), "x", "utf8");
-
-    await spawnerAny.cleanupPreparedWorkspace({
-      workspacePath,
-      hostWorkspacePath: workspacePath,
-      startRef: "start",
-      workspaceBaseRef: "start",
-      kind: "clone",
-      ephemeral: true,
-      cleanupRepoPath: null
-    });
-
-    const exists = await access(workspacePath)
-      .then(() => true)
-      .catch(() => false);
-    assert.equal(exists, false);
-  });
-
-  it("uses clone workspace metadata for manual postflight runs", async () => {
-    const spawner = createSpawner();
-    const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-postflight-"));
-    const workspacePath = path.join(root, "workspace");
-    const task = createTask({ id: "task-postflight" });
-    await mkdir(workspacePath, { recursive: true });
-
-    let workspaceKindSeen: string | null = null;
-    spawnerAny.validateTaskPostflight = async () => undefined;
-    spawnerAny.resolveWorkspacePath = () => workspacePath;
-    spawnerAny.resolveWorkspaceHostPath = () => workspacePath;
-    spawnerAny.syncTaskStatusForRunningRuns = async () => true;
-    spawnerAny.gitCommandCapture = async () => "cafebabe";
-    spawnerAny.listUntrackedRelativePaths = async () => [];
-    spawnerAny.runConfiguredPostflight = async (_task: Task, workspace: { kind: string }) => {
-      workspaceKindSeen = workspace.kind;
-    };
-    spawnerAny.stripEphemeralWorkspaceFiles = async () => undefined;
-    spawnerAny.collectWorkingTreeDiffSinceRef = async () => ({
-      diff: "",
-      diffStat: "",
-      changedFiles: [],
-      diffTruncated: false,
-      toRef: "cafebabe"
-    });
-
-    const runtimeCredentials = {
-      githubToken: null,
-      gitUsername: "x-access-token",
-      openaiApiKey: null,
-      anthropicApiKey: null,
-      codexAuthJson: null,
-      openaiBaseUrl: null,
-      defaultProvider: "codex"
-    };
-    spawnerAny.settingsStore = {
-      getSettings: async () => ({ branchPrefix: "agentswarm" }),
-      getRuntimeCredentials: async () => runtimeCredentials
-    };
-    spawnerAny.taskStore = {
-      createRun: async () => ({ id: "run-1" }),
-      updateRun: async () => null,
-      appendLogForRun: async () => undefined,
-      hasPendingChangeProposal: async () => false,
-      setStatus: async () => null,
-      patchTask: async () => null,
-      getTask: async () => task,
-      appendLog: async () => undefined
-    };
-
-    await spawner.runTaskPostflight(task);
-    assert.equal(workspaceKindSeen, "clone");
-  });
-});
 ````
 
 ## File: docs/product/user-flows.md
@@ -42631,6 +42363,288 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
 ];
 ````
 
+## File: apps/server/src/services/spawner.workspace-provisioning.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { describe, it } from "node:test";
+import type { Task } from "@agentswarm/shared-types";
+import { SpawnerService } from "./spawner.js";
+
+const createTask = (overrides: Partial<Task> = {}): Task =>
+  ({
+    id: "task-1",
+    title: "Test task",
+    deadline: null,
+    pinned: false,
+    hasPendingCheckpoint: false,
+    activeInteractiveSession: false,
+    activeTerminalSessionMode: null,
+    ownerUserId: null,
+    creatorName: null,
+    repoId: "repo-1",
+    repoName: "repo",
+    repoUrl: "https://github.com/example/repo.git",
+    repoDefaultBranch: "main",
+    taskType: "build",
+    provider: "codex",
+    providerProfile: "high",
+    modelOverride: null,
+    codexCredentialSource: "auto",
+    baseBranch: "main",
+    branchStrategy: "feature_branch",
+    complexity: "normal",
+    branchName: "feature/task-1",
+    workspaceBaseRef: null,
+    prompt: "Do the work",
+    notes: "",
+    executionSummary: "",
+    resultMarkdown: null,
+    branchDiff: null,
+    status: "open",
+    workflowStatus: "ready",
+    executionStatus: "idle",
+    executionAction: "build",
+    reviewReason: null,
+    logs: [],
+    createdAt: "2026-05-24T00:00:00.000Z",
+    updatedAt: "2026-05-24T00:00:00.000Z",
+    startedAt: null,
+    finishedAt: null,
+    errorMessage: null,
+    lastAction: "build",
+    enqueued: false
+  }) satisfies Task as Task;
+
+const createSpawner = (): SpawnerService =>
+  new SpawnerService(
+    {} as never,
+    {
+      getSettings: async () => ({ workspaceProvisioningMode: "clone_only", branchPrefix: "agentswarm" })
+    } as never,
+    {} as never,
+    {} as never
+  );
+
+describe("SpawnerService workspace provisioning", () => {
+  it("releases named locks after completion", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const locks = new Map<string, Promise<void>>();
+    const key = "task-1";
+
+    const result = await spawnerAny.withNamedLock(locks, key, async () => "ok");
+    assert.equal(result, "ok");
+    assert.equal(locks.has(key), false);
+  });
+
+  it("prepares build workspace via clone model", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-clone-"));
+    const workspacePath = path.join(root, "task");
+    const task = createTask();
+
+    let cloned = false;
+    let checkedOut = false;
+    spawnerAny.resolveWorkspacePath = () => workspacePath;
+    spawnerAny.resolveWorkspaceHostPath = () => workspacePath;
+    spawnerAny.cloneWorkspaceFromSource = async () => {
+      cloned = true;
+      await mkdir(workspacePath, { recursive: true });
+    };
+    spawnerAny.checkoutTaskWorkspaceBranch = async () => {
+      checkedOut = true;
+    };
+    spawnerAny.gitCommandCapture = async () => "abc123";
+
+    const workspace = await spawnerAny.prepareWorkspace(task, "build", "feature/task-1", "/repo-cache/path", "clone_only");
+    assert.equal(cloned, true);
+    assert.equal(checkedOut, true);
+    assert.equal(workspace.workspacePath, workspacePath);
+    assert.equal(workspace.kind, "clone");
+    assert.equal(workspace.ephemeral, false);
+  });
+
+  it("uses hybrid fallback when clone provisioning fails", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const task = createTask();
+    const fallbackWorkspace = {
+      workspacePath: "/tmp/fallback",
+      hostWorkspacePath: "/tmp/fallback",
+      startRef: "start",
+      workspaceBaseRef: "start",
+      kind: "clone",
+      ephemeral: false,
+      cleanupRepoPath: null
+    };
+
+    spawnerAny.resolveWorkspacePath = () => "/tmp/workspace";
+    spawnerAny.cloneWorkspaceFromSource = async () => {
+      throw new Error("clone failed");
+    };
+    spawnerAny.classifyWorkspacePrepareFailure = () => "clone_error";
+    spawnerAny.prepareWorkspaceLegacyWorktree = async () => fallbackWorkspace;
+
+    const workspace = await spawnerAny.prepareWorkspace(task, "build", "feature/task-1", "/repo-cache/path", "hybrid");
+    assert.deepEqual(workspace, fallbackWorkspace);
+  });
+
+  it("reuses the existing task workspace for ask runs", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-ask-"));
+    const taskWorkspacePath = path.join(root, "task-workspace");
+    const task = createTask();
+    await mkdir(taskWorkspacePath, { recursive: true });
+    await mkdir(path.join(taskWorkspacePath, ".git"), { recursive: true });
+
+    spawnerAny.resolveWorkspacePath = () => taskWorkspacePath;
+    spawnerAny.resolveWorkspaceHostPath = () => taskWorkspacePath;
+    spawnerAny.gitCommandCapture = async () => "deadbeef";
+
+    const workspace = await spawnerAny.prepareAskRunWorkspace(task, "feature/task-1", "/repo-cache/path", "clone_only");
+    assert.equal(workspace.workspacePath, taskWorkspacePath);
+    assert.equal(workspace.hostWorkspacePath, taskWorkspacePath);
+    assert.equal(workspace.kind, "clone");
+  });
+
+  it("prepares the task workspace for ask runs when missing", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const task = createTask();
+    const preparedWorkspace = {
+      workspacePath: "/tmp/task-workspace",
+      hostWorkspacePath: "/tmp/task-workspace",
+      startRef: "start",
+      workspaceBaseRef: "start",
+      kind: "clone",
+      ephemeral: false,
+      cleanupRepoPath: null
+    };
+
+    spawnerAny.resolveWorkspacePath = () => "/tmp/task-workspace";
+    spawnerAny.prepareWorkspace = async () => preparedWorkspace;
+
+    const workspace = await spawnerAny.prepareAskRunWorkspace(task, "feature/task-1", "/repo-cache/path", "clone_only");
+    assert.deepEqual(workspace, preparedWorkspace);
+  });
+
+  it("rebuilds ask workspace when the folder exists but is not a git repo", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-ask-rebuild-"));
+    const taskWorkspacePath = path.join(root, "task-workspace");
+    const task = createTask();
+    await mkdir(taskWorkspacePath, { recursive: true });
+    await writeFile(path.join(taskWorkspacePath, "README.txt"), "placeholder", "utf8");
+
+    const preparedWorkspace = {
+      workspacePath: taskWorkspacePath,
+      hostWorkspacePath: taskWorkspacePath,
+      startRef: "rebuilt",
+      workspaceBaseRef: "rebuilt",
+      kind: "clone",
+      ephemeral: false,
+      cleanupRepoPath: null
+    };
+
+    let prepareWorkspaceCalled = false;
+    spawnerAny.resolveWorkspacePath = () => taskWorkspacePath;
+    spawnerAny.prepareWorkspace = async () => {
+      prepareWorkspaceCalled = true;
+      return preparedWorkspace;
+    };
+
+    const workspace = await spawnerAny.prepareAskRunWorkspace(task, "feature/task-1", "/repo-cache/path", "clone_only");
+    assert.equal(prepareWorkspaceCalled, true);
+    assert.deepEqual(workspace, preparedWorkspace);
+  });
+
+  it("cleans up ephemeral clone workspace directory", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-cleanup-"));
+    const workspacePath = path.join(root, "workspace");
+    await mkdir(workspacePath, { recursive: true });
+    await writeFile(path.join(workspacePath, "file.txt"), "x", "utf8");
+
+    await spawnerAny.cleanupPreparedWorkspace({
+      workspacePath,
+      hostWorkspacePath: workspacePath,
+      startRef: "start",
+      workspaceBaseRef: "start",
+      kind: "clone",
+      ephemeral: true,
+      cleanupRepoPath: null
+    });
+
+    const exists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    assert.equal(exists, false);
+  });
+
+  it("uses clone workspace metadata for manual postflight runs", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-postflight-"));
+    const workspacePath = path.join(root, "workspace");
+    const task = createTask({ id: "task-postflight" });
+    await mkdir(workspacePath, { recursive: true });
+
+    let workspaceKindSeen: string | null = null;
+    spawnerAny.validateTaskPostflight = async () => undefined;
+    spawnerAny.resolveWorkspacePath = () => workspacePath;
+    spawnerAny.resolveWorkspaceHostPath = () => workspacePath;
+    spawnerAny.syncTaskStatusForRunningRuns = async () => true;
+    spawnerAny.gitCommandCapture = async () => "cafebabe";
+    spawnerAny.listUntrackedRelativePaths = async () => [];
+    spawnerAny.runConfiguredPostflight = async (_task: Task, workspace: { kind: string }) => {
+      workspaceKindSeen = workspace.kind;
+    };
+    spawnerAny.stripEphemeralWorkspaceFiles = async () => undefined;
+    spawnerAny.collectWorkingTreeDiffSinceRef = async () => ({
+      diff: "",
+      diffStat: "",
+      changedFiles: [],
+      diffTruncated: false,
+      toRef: "cafebabe"
+    });
+
+    const runtimeCredentials = {
+      githubToken: null,
+      gitUsername: "x-access-token",
+      openaiApiKey: null,
+      anthropicApiKey: null,
+      codexAuthJson: null,
+      openaiBaseUrl: null,
+      defaultProvider: "codex"
+    };
+    spawnerAny.settingsStore = {
+      getSettings: async () => ({ branchPrefix: "agentswarm" }),
+      getRuntimeCredentials: async () => runtimeCredentials
+    };
+    spawnerAny.taskStore = {
+      createRun: async () => ({ id: "run-1" }),
+      updateRun: async () => null,
+      appendLogForRun: async () => undefined,
+      hasPendingChangeProposal: async () => false,
+      setStatus: async () => null,
+      patchTask: async () => null,
+      getTask: async () => task,
+      appendLog: async () => undefined
+    };
+
+    await spawner.runTaskPostflight(task);
+    assert.equal(workspaceKindSeen, "clone");
+  });
+});
+````
+
 ## File: apps/server/package.json
 ````json
 {
@@ -43035,6 +43049,217 @@ HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
 ## License
 
 No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.
+````
+
+## File: apps/web/components/task-create-modal.tsx
+````typescript
+"use client";
+
+import { useEffect, useState } from "react";
+import type { Task, TaskDraft, TaskSourceType } from "@agentswarm/shared-types";
+import { App, Button, Form, Modal } from "antd";
+import { api } from "../src/api/client";
+import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
+import { buildTaskDraftDefinition, formValuesFromTaskDraft, promptImageFilesFromTaskDraft } from "../src/utils/task-drafts";
+import { trackEvent } from "../src/utils/analytics";
+import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
+import { useAuth } from "./auth-provider";
+import {
+  TaskDefinitionFields,
+  type TaskDefinitionFormValues,
+  buildTaskDefinitionInput,
+  getTaskDefinitionInitialValues
+} from "./task-definition-fields";
+
+interface TaskCreateModalProps {
+  open: boolean;
+  onClose: () => void;
+  draft?: TaskDraft | null;
+  onCreated?: (task: Task) => void;
+  onDraftCreated?: (draft: TaskDraft) => void;
+  onDraftUpdated?: (draft: TaskDraft) => void;
+  onDraftDeleted?: (draftId: string) => void;
+}
+
+export function TaskCreateModal({ open, onClose, draft, onCreated, onDraftCreated, onDraftUpdated, onDraftDeleted }: TaskCreateModalProps) {
+  const { message } = App.useApp();
+  const { can } = useAuth();
+  const [form] = Form.useForm<TaskDefinitionFormValues>();
+  const [submitting, setSubmitting] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [deletingDraft, setDeletingDraft] = useState(false);
+  const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
+  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
+  const canCreateAnyTaskMode = can("task:build") || can("task:ask");
+  const isEditingDraft = Boolean(draft);
+  const busy = submitting || savingDraft || deletingDraft;
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    form.resetFields();
+    if (draft) {
+      form.setFieldsValue(formValuesFromTaskDraft(draft));
+      setPromptImageFiles(promptImageFilesFromTaskDraft(draft));
+      return;
+    }
+
+    form.setFieldsValue(getTaskDefinitionInitialValues(undefined));
+    setPromptImageFiles([]);
+  }, [draft, form, open]);
+
+  const handleCancel = () => {
+    if (busy) {
+      return;
+    }
+
+    form.resetFields();
+    setPromptImageFiles([]);
+    onClose();
+  };
+
+  const handleSubmit = async (values: TaskDefinitionFormValues) => {
+    setSubmitting(true);
+    try {
+      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
+      const definition = buildTaskDefinitionInput(values, encodedAttachments);
+      trackEvent("task_create_submitted", { source: definition.sourceType });
+
+      const creationPromise = createTaskFromDefinition(definition);
+      form.resetFields();
+      setPromptImageFiles([]);
+      setSubmitting(false);
+      onClose();
+
+      void creationPromise
+        .then(async (task) => {
+          if (draft) {
+            await api.deleteTaskDraft(draft.id).catch(() => undefined);
+            onDraftDeleted?.(draft.id);
+          }
+          onCreated?.(task);
+          message.success(startMessageForDefinition(definition));
+        })
+        .catch((error) => {
+          message.error(error instanceof Error ? error.message : "Failed to create task");
+        });
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to create task");
+      setSubmitting(false);
+    }
+  };
+
+  const handleSaveDraft = async () => {
+    const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
+    setSavingDraft(true);
+    try {
+      const definition = await buildTaskDraftDefinition(values, promptImageFiles);
+      const title = values.title?.trim() || definition.prompt?.trim().split(/\r?\n/u)[0]?.slice(0, 120) || "Untitled Draft";
+      const savedDraft = draft
+        ? await api.updateTaskDraft(draft.id, {
+            title,
+            definition
+          })
+        : await api.createTaskDraft({
+            title,
+            definition
+          });
+      form.resetFields();
+      setPromptImageFiles([]);
+      onClose();
+      if (draft) {
+        onDraftUpdated?.(savedDraft);
+      } else {
+        onDraftCreated?.(savedDraft);
+      }
+      message.success("Draft saved");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to save draft");
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
+  const handleDeleteDraft = async () => {
+    if (!draft) {
+      return;
+    }
+
+    setDeletingDraft(true);
+    try {
+      await api.deleteTaskDraft(draft.id);
+      form.resetFields();
+      setPromptImageFiles([]);
+      onClose();
+      onDraftDeleted?.(draft.id);
+      message.success("Draft deleted");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to delete draft");
+    } finally {
+      setDeletingDraft(false);
+    }
+  };
+
+  const footer = [
+    <Button key="cancel" onClick={handleCancel} disabled={busy}>
+      Cancel
+    </Button>,
+    ...(isEditingDraft
+      ? [
+          <Button key="delete" danger loading={deletingDraft} disabled={submitting || savingDraft} onClick={() => void handleDeleteDraft()}>
+            Delete Draft
+          </Button>
+        ]
+      : []),
+    <Button key="draft" loading={savingDraft} disabled={submitting || deletingDraft} onClick={() => void handleSaveDraft()}>
+      Save Draft
+    </Button>,
+    <Button
+      key="submit"
+      type="primary"
+      loading={submitting}
+      disabled={!canCreateAnyTaskMode || savingDraft || deletingDraft}
+      onClick={() => form.submit()}
+    >
+      {selectedSourceType === "issue"
+        ? "Create Task From Issue"
+        : selectedSourceType === "pull_request"
+          ? "Create Task From Pull Request"
+          : "Create Task"}
+    </Button>
+  ];
+
+  return (
+    <Modal
+      open={open}
+      onCancel={handleCancel}
+      title={isEditingDraft ? "Edit Draft" : "New Task"}
+      width="min(1180px, calc(100vw - 32px))"
+      destroyOnHidden
+      maskClosable={!busy}
+      styles={{
+        body: {
+          maxHeight: "calc(100vh - 220px)",
+          overflowY: "auto",
+          overflowX: "hidden",
+          paddingTop: 12
+        }
+      }}
+      footer={footer}
+    >
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={getTaskDefinitionInitialValues(undefined)}
+        onFinish={handleSubmit}
+      >
+        <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
+      </Form>
+    </Modal>
+  );
+}
 ````
 
 ## File: apps/server/src/services/task-store.ts
@@ -45974,217 +46199,6 @@ export class PostgresTaskStore implements TaskStore {
     }
     return next;
   }
-}
-````
-
-## File: apps/web/components/task-create-modal.tsx
-````typescript
-"use client";
-
-import { useEffect, useState } from "react";
-import type { Task, TaskDraft, TaskSourceType } from "@agentswarm/shared-types";
-import { App, Button, Form, Modal } from "antd";
-import { api } from "../src/api/client";
-import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
-import { buildTaskDraftDefinition, formValuesFromTaskDraft, promptImageFilesFromTaskDraft } from "../src/utils/task-drafts";
-import { trackEvent } from "../src/utils/analytics";
-import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
-import { useAuth } from "./auth-provider";
-import {
-  TaskDefinitionFields,
-  type TaskDefinitionFormValues,
-  buildTaskDefinitionInput,
-  getTaskDefinitionInitialValues
-} from "./task-definition-fields";
-
-interface TaskCreateModalProps {
-  open: boolean;
-  onClose: () => void;
-  draft?: TaskDraft | null;
-  onCreated?: (task: Task) => void;
-  onDraftCreated?: (draft: TaskDraft) => void;
-  onDraftUpdated?: (draft: TaskDraft) => void;
-  onDraftDeleted?: (draftId: string) => void;
-}
-
-export function TaskCreateModal({ open, onClose, draft, onCreated, onDraftCreated, onDraftUpdated, onDraftDeleted }: TaskCreateModalProps) {
-  const { message } = App.useApp();
-  const { can } = useAuth();
-  const [form] = Form.useForm<TaskDefinitionFormValues>();
-  const [submitting, setSubmitting] = useState(false);
-  const [savingDraft, setSavingDraft] = useState(false);
-  const [deletingDraft, setDeletingDraft] = useState(false);
-  const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
-  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
-  const canCreateAnyTaskMode = can("task:build") || can("task:ask");
-  const isEditingDraft = Boolean(draft);
-  const busy = submitting || savingDraft || deletingDraft;
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    form.resetFields();
-    if (draft) {
-      form.setFieldsValue(formValuesFromTaskDraft(draft));
-      setPromptImageFiles(promptImageFilesFromTaskDraft(draft));
-      return;
-    }
-
-    form.setFieldsValue(getTaskDefinitionInitialValues(undefined));
-    setPromptImageFiles([]);
-  }, [draft, form, open]);
-
-  const handleCancel = () => {
-    if (busy) {
-      return;
-    }
-
-    form.resetFields();
-    setPromptImageFiles([]);
-    onClose();
-  };
-
-  const handleSubmit = async (values: TaskDefinitionFormValues) => {
-    setSubmitting(true);
-    try {
-      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
-      const definition = buildTaskDefinitionInput(values, encodedAttachments);
-      trackEvent("task_create_submitted", { source: definition.sourceType });
-
-      const creationPromise = createTaskFromDefinition(definition);
-      form.resetFields();
-      setPromptImageFiles([]);
-      setSubmitting(false);
-      onClose();
-
-      void creationPromise
-        .then(async (task) => {
-          if (draft) {
-            await api.deleteTaskDraft(draft.id).catch(() => undefined);
-            onDraftDeleted?.(draft.id);
-          }
-          onCreated?.(task);
-          message.success(startMessageForDefinition(definition));
-        })
-        .catch((error) => {
-          message.error(error instanceof Error ? error.message : "Failed to create task");
-        });
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "Failed to create task");
-      setSubmitting(false);
-    }
-  };
-
-  const handleSaveDraft = async () => {
-    const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
-    setSavingDraft(true);
-    try {
-      const definition = await buildTaskDraftDefinition(values, promptImageFiles);
-      const title = values.title?.trim() || definition.prompt?.trim().split(/\r?\n/u)[0]?.slice(0, 120) || "Untitled Draft";
-      const savedDraft = draft
-        ? await api.updateTaskDraft(draft.id, {
-            title,
-            definition
-          })
-        : await api.createTaskDraft({
-            title,
-            definition
-          });
-      form.resetFields();
-      setPromptImageFiles([]);
-      onClose();
-      if (draft) {
-        onDraftUpdated?.(savedDraft);
-      } else {
-        onDraftCreated?.(savedDraft);
-      }
-      message.success("Draft saved");
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "Failed to save draft");
-    } finally {
-      setSavingDraft(false);
-    }
-  };
-
-  const handleDeleteDraft = async () => {
-    if (!draft) {
-      return;
-    }
-
-    setDeletingDraft(true);
-    try {
-      await api.deleteTaskDraft(draft.id);
-      form.resetFields();
-      setPromptImageFiles([]);
-      onClose();
-      onDraftDeleted?.(draft.id);
-      message.success("Draft deleted");
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "Failed to delete draft");
-    } finally {
-      setDeletingDraft(false);
-    }
-  };
-
-  const footer = [
-    <Button key="cancel" onClick={handleCancel} disabled={busy}>
-      Cancel
-    </Button>,
-    ...(isEditingDraft
-      ? [
-          <Button key="delete" danger loading={deletingDraft} disabled={submitting || savingDraft} onClick={() => void handleDeleteDraft()}>
-            Delete Draft
-          </Button>
-        ]
-      : []),
-    <Button key="draft" loading={savingDraft} disabled={submitting || deletingDraft} onClick={() => void handleSaveDraft()}>
-      Save Draft
-    </Button>,
-    <Button
-      key="submit"
-      type="primary"
-      loading={submitting}
-      disabled={!canCreateAnyTaskMode || savingDraft || deletingDraft}
-      onClick={() => form.submit()}
-    >
-      {selectedSourceType === "issue"
-        ? "Create Task From Issue"
-        : selectedSourceType === "pull_request"
-          ? "Create Task From Pull Request"
-          : "Create Task"}
-    </Button>
-  ];
-
-  return (
-    <Modal
-      open={open}
-      onCancel={handleCancel}
-      title={isEditingDraft ? "Edit Draft" : "New Task"}
-      width="min(1180px, calc(100vw - 32px))"
-      destroyOnHidden
-      maskClosable={!busy}
-      styles={{
-        body: {
-          maxHeight: "calc(100vh - 220px)",
-          overflowY: "auto",
-          overflowX: "hidden",
-          paddingTop: 12
-        }
-      }}
-      footer={footer}
-    >
-      <Form
-        form={form}
-        layout="vertical"
-        initialValues={getTaskDefinitionInitialValues(undefined)}
-        onFinish={handleSubmit}
-      >
-        <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
-      </Form>
-    </Modal>
-  );
 }
 ````
 
