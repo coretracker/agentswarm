@@ -5,6 +5,14 @@ import type { TaskDraftStore } from "../services/task-draft-store.js";
 
 const stringMapSchema = z.record(z.string()).optional();
 
+const deadlineSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
+  .nullable()
+  .optional();
+
 const attachmentSchema = z.object({
   name: z.string().trim().min(1).max(255),
   mimeType: z.string().trim().min(1).max(255),
@@ -14,6 +22,7 @@ const attachmentSchema = z.object({
 const draftDefinitionSchema = z.object({
   sourceType: z.enum(["blank", "snippet", "sequence", "issue", "pull_request"]).optional(),
   title: z.string().max(500).optional(),
+  deadline: deadlineSchema,
   repoId: z.string().max(120).optional(),
   prompt: z.string().max(48_000).optional(),
   notes: z.string().max(48_000).optional(),

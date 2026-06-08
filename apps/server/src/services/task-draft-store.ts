@@ -8,6 +8,20 @@ const TASK_DRAFT_IDS_KEY_PREFIX = "agentswarm:task_draft_ids:";
 
 const nowIso = (): string => new Date().toISOString();
 
+const normalizeDeadline = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const timestamp = Date.parse(trimmed);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+};
+
 const normalizeString = (value: unknown, maxLength: number): string | undefined => {
   if (typeof value !== "string") {
     return undefined;
@@ -76,6 +90,7 @@ export const normalizeTaskDraftDefinition = (value: unknown): TaskDraftDefinitio
   return {
     sourceType,
     title: normalizeString(record.title, 500),
+    deadline: normalizeDeadline(record.deadline),
     repoId: normalizeString(record.repoId, 120),
     prompt: typeof record.prompt === "string" ? record.prompt : undefined,
     notes: typeof record.notes === "string" ? record.notes : undefined,

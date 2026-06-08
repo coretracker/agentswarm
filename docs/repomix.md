@@ -149,6 +149,7 @@ apps/
         snippet-store.ts
         spawner.ts
         spawner.workspace-provisioning.test.ts
+        task-draft-store.test.ts
         task-draft-store.ts
         task-queue-store.ts
         task-store.test.ts
@@ -4830,6 +4831,29 @@ export class RedisSessionStore implements SessionStore {
     await pipeline.exec();
   }
 }
+````
+
+## File: apps/server/src/services/task-draft-store.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { normalizeTaskDraftDefinition } from "./task-draft-store.js";
+
+describe("normalizeTaskDraftDefinition", () => {
+  it("normalizes draft deadlines", () => {
+    const definition = normalizeTaskDraftDefinition({
+      deadline: "2026-06-15T10:30:00+02:00"
+    });
+
+    assert.equal(definition.deadline, "2026-06-15T08:30:00.000Z");
+  });
+
+  it("clears empty and invalid draft deadlines", () => {
+    assert.equal(normalizeTaskDraftDefinition({ deadline: "" }).deadline, null);
+    assert.equal(normalizeTaskDraftDefinition({ deadline: "not a date" }).deadline, null);
+    assert.equal(normalizeTaskDraftDefinition({ deadline: null }).deadline, null);
+  });
+});
 ````
 
 ## File: apps/server/src/services/task-queue-store.ts
@@ -14913,6 +14937,14 @@ import type { TaskDraftStore } from "../services/task-draft-store.js";
 
 const stringMapSchema = z.record(z.string()).optional();
 
+const deadlineSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
+  .nullable()
+  .optional();
+
 const attachmentSchema = z.object({
   name: z.string().trim().min(1).max(255),
   mimeType: z.string().trim().min(1).max(255),
@@ -14922,6 +14954,7 @@ const attachmentSchema = z.object({
 const draftDefinitionSchema = z.object({
   sourceType: z.enum(["blank", "snippet", "sequence", "issue", "pull_request"]).optional(),
   title: z.string().max(500).optional(),
+  deadline: deadlineSchema,
   repoId: z.string().max(120).optional(),
   prompt: z.string().max(48_000).optional(),
   notes: z.string().max(48_000).optional(),
@@ -16673,6 +16706,20 @@ const TASK_DRAFT_IDS_KEY_PREFIX = "agentswarm:task_draft_ids:";
 
 const nowIso = (): string => new Date().toISOString();
 
+const normalizeDeadline = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const timestamp = Date.parse(trimmed);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+};
+
 const normalizeString = (value: unknown, maxLength: number): string | undefined => {
   if (typeof value !== "string") {
     return undefined;
@@ -16741,6 +16788,7 @@ export const normalizeTaskDraftDefinition = (value: unknown): TaskDraftDefinitio
   return {
     sourceType,
     title: normalizeString(record.title, 500),
+    deadline: normalizeDeadline(record.deadline),
     repoId: normalizeString(record.repoId, 120),
     prompt: typeof record.prompt === "string" ? record.prompt : undefined,
     notes: typeof record.notes === "string" ? record.notes : undefined,
@@ -21131,6 +21179,196 @@ Scale:
 4. CI does not yet run full PR readiness (`pr-ready.sh` / full harness test scope).
 ````
 
+## File: docs/github-sync-ownership-model.md
+````markdown
+# GitHub Sync Ownership Model (MVP)
+
+## Goal
+Make GitHub sync behavior predictable by defining exactly which system is authoritative for each field and how conflicts are resolved.
+
+## Models Compared
+
+### 1) `github_authoritative`
+- GitHub is the source of truth for synced fields.
+- Internal edits to synced fields are treated as temporary and will be overwritten by incoming GitHub events.
+
+Pros:
+- Matches what users already expect from GitHub.
+- Lower risk of drift for issue state/metadata.
+
+Cons:
+- Internal edits may appear to "disappear" unless clearly marked as local-only.
+- Requires good webhook reliability.
+
+### 2) `internal_authoritative`
+- Internal task system is the source of truth for synced fields.
+- GitHub changes are informational and do not automatically override internal state.
+
+Pros:
+- Full control inside the product.
+- Works even when GitHub data is delayed.
+
+Cons:
+- High drift risk from GitHub.
+- Harder to explain for GitHub-first teams.
+
+### 3) `hybrid_sync`
+- Ownership differs by field (some GitHub-owned, some internal-owned).
+- Bidirectional updates are allowed only for explicitly shared fields.
+
+Pros:
+- Flexible and practical for mixed workflows.
+- Preserves internal workflow while staying aligned with GitHub metadata.
+
+Cons:
+- More rules to explain.
+- Needs clear UI audit trail.
+
+## Recommended MVP Default
+Use `hybrid_sync` as default, with strict per-field ownership.
+
+Reason:
+- It minimizes user surprise in day-to-day use.
+- It avoids forcing all behavior into a single system.
+- It supports current webhook/import flows and allows gradual expansion.
+
+## Source-of-Truth Mapping (MVP)
+
+| Field | Source of Truth | Direction | Notes |
+|---|---|---|---|
+| GitHub issue/PR number, URL | GitHub | GitHub -> internal | Immutable link fields after task creation. |
+| Title (imported task title) | Internal | Internal -> GitHub (optional later) | Internal title can diverge; show "custom title" badge if changed. |
+| Status/state | Internal (execution), GitHub (issue/PR lifecycle) | Bidirectional with mapping rules | Internal run status and GitHub open/closed are related but not identical. |
+| Labels | GitHub (for GitHub-prefixed labels), Internal (for internal-prefixed labels) | Bidirectional by namespace | Reserve `gh:*` for GitHub mirror, `as:*` for internal-only labels. |
+| Comments | Dual ownership by origin | Bidirectional append-only | Never edit/delete remote comments during MVP sync. |
+| Assignee | Internal | Internal -> GitHub (optional later) | Keep assignment stable for internal permission model. |
+| Description/body snapshot | GitHub at import time | GitHub -> internal (manual refresh only) | Treated as imported context, not live-synced text. |
+
+## Conflict Resolution Rules
+
+### Status
+- Maintain a mapping table:
+  - GitHub `open` -> internal `open` (or keep current running state if actively executing).
+  - GitHub `closed` -> internal `done` only if task is not running.
+- If internal task is running and GitHub closes issue/PR:
+  - Keep internal state unchanged.
+  - Add sync alert: `GitHub closed while task running`.
+  - Ask user to resolve with explicit action (`stop`, `complete`, or `reopen on GitHub`).
+
+### Labels
+- Namespace labels:
+  - `gh:*` labels are GitHub-owned mirrors and are overwritten by latest GitHub payload.
+  - `as:*` labels are internal-owned and never overwritten by GitHub.
+- If same semantic label exists in both systems without prefix:
+  - Convert during sync to `gh:<name>` to prevent future ambiguity.
+
+### Comments
+- Append-only sync for MVP:
+  - GitHub comments import as external entries with source metadata.
+  - Internal comments sync out only when user marks them as "publish to GitHub".
+- Never mutate existing comment content across systems in MVP.
+- On duplicate detection (same source id), keep first and skip duplicates.
+
+## Fallback When Systems Disagree
+
+1. Detect disagreement by field (`status`, `labels`, `comments`) and record timestamp/source.
+2. Apply deterministic winner based on mapping table above.
+3. Store a sync event log entry with:
+   - field
+   - local value
+   - remote value
+   - winning value
+   - rule used
+4. Surface a plain-language UI notice:
+   - Example: `GitHub label set won for gh:* labels at 2026-05-21 14:00 UTC.`
+5. If no rule safely applies, do not auto-merge:
+   - mark as `needs_manual_resolution`
+   - keep both values visible
+   - provide one-click user choice
+
+## UX Transparency Requirements
+- Every sync-driven overwrite must show:
+  - what changed
+  - which system won
+  - why (rule name)
+  - when it happened (UTC timestamp)
+- Users should always be able to filter history by `sync events`.
+- Avoid hidden automatic edits; all automatic conflict outcomes must be auditable.
+
+## Task-to-GitHub Status Mapping (Issue #22)
+
+### Scope
+- This mapping controls when internal task status changes create GitHub updates (labels and comments).
+- Goal: useful progress signals with low noise.
+
+### Repo-Level Switch
+- Add optional repository setting: `sync_status_enabled` (default: `false`).
+- If `sync_status_enabled=false`:
+  - no automatic status label updates are sent to GitHub
+  - no automatic status comments are sent to GitHub
+  - manual user comments can still be posted when explicitly requested
+- If `sync_status_enabled=true`:
+  - apply the milestone-only policy below
+
+### GitHub Labels Used for Status
+- Use exactly one active label from:
+  - `as:queued`
+  - `as:in-progress`
+  - `as:blocked`
+  - `as:done`
+- On change, remove the previous `as:*` status label and apply the new one.
+
+### Milestone-Only Posting Policy
+- Post only on meaningful milestones:
+  - work started
+  - blocked waiting on input/dependency
+  - unblocked and resumed
+  - completed
+  - failed/cancelled with clear outcome
+- Do not post for routine churn:
+  - retries
+  - step-level progress
+  - short-lived state flips
+  - background sync-only adjustments
+
+### Internal Status -> GitHub Action Mapping
+
+| Internal Transition | Update GitHub Label | Post GitHub Comment | Comment Template (short) |
+|---|---|---|---|
+| `queued -> in_progress` | `as:in-progress` | Yes | `Work started.` |
+| `in_progress -> blocked` | `as:blocked` | Yes | `Work blocked: <reason>.` |
+| `blocked -> in_progress` | `as:in-progress` | Yes | `Work resumed after unblock.` |
+| `in_progress -> done` | `as:done` | Yes | `Work completed.` |
+| `in_progress -> failed` | keep `as:in-progress` or set `as:blocked` (team choice) | Yes | `Work stopped: <failure summary>.` |
+| `in_progress -> cancelled` | keep current or set `as:queued` (team choice) | Yes | `Work cancelled.` |
+| `queued -> cancelled` | `as:queued` (unchanged) | No | n/a |
+| `queued -> queued` | none | No | n/a |
+| `in_progress -> in_progress` | none | No | n/a |
+| `blocked -> blocked` | none | No | n/a |
+| `done -> done` | none | No | n/a |
+
+### Transitions That Must Not Post Updates
+- Any transition where source and destination are the same.
+- Automatic retry state changes that return to the same milestone stage.
+- Internal-only housekeeping transitions (for example: scheduler rebalance, worker handoff).
+- Bulk backfill/import reconciliation updates.
+- Any status change while `sync_status_enabled=false`.
+
+### Sample Timeline: Issue Flow
+1. Issue imported -> task created as `queued` (no comment posted).
+2. Agent begins work -> set `as:in-progress`; post `Work started.`
+3. Missing requirement found -> set `as:blocked`; post `Work blocked: waiting for acceptance criteria.`
+4. User provides answer -> set `as:in-progress`; post `Work resumed after unblock.`
+5. Work completes -> set `as:done`; post `Work completed.`
+
+### Sample Timeline: PR Flow
+1. PR imported -> task `queued` (no comment posted).
+2. Agent starts edits -> `as:in-progress`; post `Work started.`
+3. CI failure blocks merge -> `as:blocked`; post `Work blocked: CI failing on test suite.`
+4. Fix applied and CI passes -> `as:in-progress`; post `Work resumed after unblock.`
+5. PR ready/merged -> `as:done`; post `Work completed.`
+````
+
 ## File: scripts/harness/lib/remote-build.sh
 ````bash
 #!/usr/bin/env bash
@@ -25184,196 +25422,6 @@ Top gaps are prioritized from `docs/quality/scorecard.md`.
 ## TODO
 - TODO: assign owner and target date for each item.
 - TODO: track status (`open`, `in progress`, `done`) for each item.
-````
-
-## File: docs/github-sync-ownership-model.md
-````markdown
-# GitHub Sync Ownership Model (MVP)
-
-## Goal
-Make GitHub sync behavior predictable by defining exactly which system is authoritative for each field and how conflicts are resolved.
-
-## Models Compared
-
-### 1) `github_authoritative`
-- GitHub is the source of truth for synced fields.
-- Internal edits to synced fields are treated as temporary and will be overwritten by incoming GitHub events.
-
-Pros:
-- Matches what users already expect from GitHub.
-- Lower risk of drift for issue state/metadata.
-
-Cons:
-- Internal edits may appear to "disappear" unless clearly marked as local-only.
-- Requires good webhook reliability.
-
-### 2) `internal_authoritative`
-- Internal task system is the source of truth for synced fields.
-- GitHub changes are informational and do not automatically override internal state.
-
-Pros:
-- Full control inside the product.
-- Works even when GitHub data is delayed.
-
-Cons:
-- High drift risk from GitHub.
-- Harder to explain for GitHub-first teams.
-
-### 3) `hybrid_sync`
-- Ownership differs by field (some GitHub-owned, some internal-owned).
-- Bidirectional updates are allowed only for explicitly shared fields.
-
-Pros:
-- Flexible and practical for mixed workflows.
-- Preserves internal workflow while staying aligned with GitHub metadata.
-
-Cons:
-- More rules to explain.
-- Needs clear UI audit trail.
-
-## Recommended MVP Default
-Use `hybrid_sync` as default, with strict per-field ownership.
-
-Reason:
-- It minimizes user surprise in day-to-day use.
-- It avoids forcing all behavior into a single system.
-- It supports current webhook/import flows and allows gradual expansion.
-
-## Source-of-Truth Mapping (MVP)
-
-| Field | Source of Truth | Direction | Notes |
-|---|---|---|---|
-| GitHub issue/PR number, URL | GitHub | GitHub -> internal | Immutable link fields after task creation. |
-| Title (imported task title) | Internal | Internal -> GitHub (optional later) | Internal title can diverge; show "custom title" badge if changed. |
-| Status/state | Internal (execution), GitHub (issue/PR lifecycle) | Bidirectional with mapping rules | Internal run status and GitHub open/closed are related but not identical. |
-| Labels | GitHub (for GitHub-prefixed labels), Internal (for internal-prefixed labels) | Bidirectional by namespace | Reserve `gh:*` for GitHub mirror, `as:*` for internal-only labels. |
-| Comments | Dual ownership by origin | Bidirectional append-only | Never edit/delete remote comments during MVP sync. |
-| Assignee | Internal | Internal -> GitHub (optional later) | Keep assignment stable for internal permission model. |
-| Description/body snapshot | GitHub at import time | GitHub -> internal (manual refresh only) | Treated as imported context, not live-synced text. |
-
-## Conflict Resolution Rules
-
-### Status
-- Maintain a mapping table:
-  - GitHub `open` -> internal `open` (or keep current running state if actively executing).
-  - GitHub `closed` -> internal `done` only if task is not running.
-- If internal task is running and GitHub closes issue/PR:
-  - Keep internal state unchanged.
-  - Add sync alert: `GitHub closed while task running`.
-  - Ask user to resolve with explicit action (`stop`, `complete`, or `reopen on GitHub`).
-
-### Labels
-- Namespace labels:
-  - `gh:*` labels are GitHub-owned mirrors and are overwritten by latest GitHub payload.
-  - `as:*` labels are internal-owned and never overwritten by GitHub.
-- If same semantic label exists in both systems without prefix:
-  - Convert during sync to `gh:<name>` to prevent future ambiguity.
-
-### Comments
-- Append-only sync for MVP:
-  - GitHub comments import as external entries with source metadata.
-  - Internal comments sync out only when user marks them as "publish to GitHub".
-- Never mutate existing comment content across systems in MVP.
-- On duplicate detection (same source id), keep first and skip duplicates.
-
-## Fallback When Systems Disagree
-
-1. Detect disagreement by field (`status`, `labels`, `comments`) and record timestamp/source.
-2. Apply deterministic winner based on mapping table above.
-3. Store a sync event log entry with:
-   - field
-   - local value
-   - remote value
-   - winning value
-   - rule used
-4. Surface a plain-language UI notice:
-   - Example: `GitHub label set won for gh:* labels at 2026-05-21 14:00 UTC.`
-5. If no rule safely applies, do not auto-merge:
-   - mark as `needs_manual_resolution`
-   - keep both values visible
-   - provide one-click user choice
-
-## UX Transparency Requirements
-- Every sync-driven overwrite must show:
-  - what changed
-  - which system won
-  - why (rule name)
-  - when it happened (UTC timestamp)
-- Users should always be able to filter history by `sync events`.
-- Avoid hidden automatic edits; all automatic conflict outcomes must be auditable.
-
-## Task-to-GitHub Status Mapping (Issue #22)
-
-### Scope
-- This mapping controls when internal task status changes create GitHub updates (labels and comments).
-- Goal: useful progress signals with low noise.
-
-### Repo-Level Switch
-- Add optional repository setting: `sync_status_enabled` (default: `false`).
-- If `sync_status_enabled=false`:
-  - no automatic status label updates are sent to GitHub
-  - no automatic status comments are sent to GitHub
-  - manual user comments can still be posted when explicitly requested
-- If `sync_status_enabled=true`:
-  - apply the milestone-only policy below
-
-### GitHub Labels Used for Status
-- Use exactly one active label from:
-  - `as:queued`
-  - `as:in-progress`
-  - `as:blocked`
-  - `as:done`
-- On change, remove the previous `as:*` status label and apply the new one.
-
-### Milestone-Only Posting Policy
-- Post only on meaningful milestones:
-  - work started
-  - blocked waiting on input/dependency
-  - unblocked and resumed
-  - completed
-  - failed/cancelled with clear outcome
-- Do not post for routine churn:
-  - retries
-  - step-level progress
-  - short-lived state flips
-  - background sync-only adjustments
-
-### Internal Status -> GitHub Action Mapping
-
-| Internal Transition | Update GitHub Label | Post GitHub Comment | Comment Template (short) |
-|---|---|---|---|
-| `queued -> in_progress` | `as:in-progress` | Yes | `Work started.` |
-| `in_progress -> blocked` | `as:blocked` | Yes | `Work blocked: <reason>.` |
-| `blocked -> in_progress` | `as:in-progress` | Yes | `Work resumed after unblock.` |
-| `in_progress -> done` | `as:done` | Yes | `Work completed.` |
-| `in_progress -> failed` | keep `as:in-progress` or set `as:blocked` (team choice) | Yes | `Work stopped: <failure summary>.` |
-| `in_progress -> cancelled` | keep current or set `as:queued` (team choice) | Yes | `Work cancelled.` |
-| `queued -> cancelled` | `as:queued` (unchanged) | No | n/a |
-| `queued -> queued` | none | No | n/a |
-| `in_progress -> in_progress` | none | No | n/a |
-| `blocked -> blocked` | none | No | n/a |
-| `done -> done` | none | No | n/a |
-
-### Transitions That Must Not Post Updates
-- Any transition where source and destination are the same.
-- Automatic retry state changes that return to the same milestone stage.
-- Internal-only housekeeping transitions (for example: scheduler rebalance, worker handoff).
-- Bulk backfill/import reconciliation updates.
-- Any status change while `sync_status_enabled=false`.
-
-### Sample Timeline: Issue Flow
-1. Issue imported -> task created as `queued` (no comment posted).
-2. Agent begins work -> set `as:in-progress`; post `Work started.`
-3. Missing requirement found -> set `as:blocked`; post `Work blocked: waiting for acceptance criteria.`
-4. User provides answer -> set `as:in-progress`; post `Work resumed after unblock.`
-5. Work completes -> set `as:done`; post `Work completed.`
-
-### Sample Timeline: PR Flow
-1. PR imported -> task `queued` (no comment posted).
-2. Agent starts edits -> `as:in-progress`; post `Work started.`
-3. CI failure blocks merge -> `as:blocked`; post `Work blocked: CI failing on test suite.`
-4. Fix applied and CI passes -> `as:in-progress`; post `Work resumed after unblock.`
-5. PR ready/merged -> `as:done`; post `Work completed.`
 ````
 
 ## File: docs/index.md
@@ -32424,6 +32472,114 @@ export function buildTaskHistoryEntries(input: {
 }
 ````
 
+## File: AGENTS.md
+````markdown
+# Agent Harness Guide
+
+This file is a short operating guide for coding agents in this repository.
+
+## Start Here
+- If `REMOTE_BUILD=1`, export `REMOTE_BUILD_IMAGE` first.
+- Run `./scripts/harness/doctor.sh`
+- Run `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh` on clean checkout
+- Run `./scripts/harness/check-human-gated-flow.sh`
+- Run `./scripts/harness/check.sh`
+- Run `./scripts/harness/test.sh` (canonical test command)
+- Run `./scripts/harness/start.sh` (foreground dev mode)
+
+## Expected PR Workflow
+1. Run `./scripts/harness/pr-ready.sh`.
+2. Fix any failing checks.
+3. Complete the agent self-review checklist: `docs/development/agent-review.md`.
+4. Open a PR using `.github/pull_request_template.md`.
+5. Confirm docs are updated when behavior changes.
+
+Note:
+- `pr-ready.sh` includes architecture boundary checks.
+- `test.sh` supports `TEST_SCOPE=unit|integration|e2e|all`.
+
+## Documentation Table of Contents
+- [Architecture Summary](ARCHITECTURE.md)
+- [Docs Home](docs/index.md)
+- [Development Setup](docs/development/setup.md)
+- [Development Commands](docs/development/commands.md)
+- [Human-Gated Flow](docs/development/human-gated-taskwise-delivery-flow.md)
+- [Testing](docs/development/testing.md)
+- [Debugging](docs/development/debugging.md)
+- [Agent Self-Review](docs/development/agent-review.md)
+- [PR Workflow](docs/development/pr-workflow.md)
+- [Architecture Docs](docs/architecture/index.md)
+- [Product Docs](docs/product/index.md)
+- [Quality Docs](docs/quality/scorecard.md)
+- [Golden Principles](docs/quality/golden-principles.md)
+
+## Execution Plans
+- Small tasks can use inline plans in the task conversation.
+- Non-trivial tasks must use the Non-Trivial Task Flow below.
+- Complex tasks must create an execution plan using `docs/exec-plans/template.md`.
+- Plans must be updated during work as steps complete or scope changes.
+- Completed plans move from `docs/exec-plans/active/` to `docs/exec-plans/completed/`.
+- Complex task plans must include the required `Human-Gated Flow Evidence` checklist from the template.
+- Flow reference: `docs/development/human-gated-taskwise-delivery-flow.md`.
+
+## Non-Trivial Task Flow
+Use this flow for any task that requires repository changes beyond a tiny, obvious edit, touches multiple files, changes behavior, affects tests or build output, or has ambiguous requirements.
+
+```mermaid
+flowchart TB
+    A["Read Requirements"] --> B["Quick Repo Research"]
+    B --> C{"Clear Enough?"}
+    C -- No --> D["Ask Clarifying Questions"]
+    D --> A
+    C -- Yes --> E["Create Short Plan + Task List"]
+    E --> F["Human Review / Approval"]
+    F --> G{"Approved?"}
+    G -- No --> A
+    G -- Yes --> H["Run Baseline Checks"]
+    H --> I["Implement Next Task"]
+    I --> J["Run Tests / Build"]
+    J --> K{"Passed?"}
+    K -- No --> I
+    K -- Yes --> L["Self Review"]
+    L --> M{"More Tasks?"}
+    M -- Yes --> I
+    M -- No --> N["Final Verification"]
+    N --> R["Complete"]
+```
+
+## Operating Rules
+- Prefer harness scripts in `scripts/harness/`.
+- Treat non-zero exit codes as failures.
+- Do not assume behavior that is not documented in this repository.
+- Mark missing evidence as `TODO` instead of guessing.
+- Before starting work, inspect `docs/repomix.md` for the current repository context bundle.
+- After any agent run that changes code or repository files, execute `npx repomix --style markdown --output docs/repomix.md` to refresh the repository context bundle.
+- Keep `docs/repomix.md` as the canonical Repomix output referenced by agents.
+
+## Remote Build Runner
+Use `http://host.docker.internal:38127` and call `POST /run` with:
+- `image`
+- `workdir`
+- `cmd` (non-empty string array, for example `["sh","-lc","echo ok"]`)
+
+For `workdir`, prefer `TASK_WORKSPACE_PATH`.
+
+Runner mount support:
+- `dockerSocketContainerPath`: `/var/run/docker.sock` (available for mounting Docker into the runner container)
+
+Harness remote mode:
+- Set `REMOTE_BUILD=1` to force harness scripts to run in Remote Build Runner.
+- Set `REMOTE_BUILD_IMAGE` to the container image used by the runner request.
+- Optional: set `REMOTE_BUILD_RUNNER_URL` (defaults to `http://host.docker.internal:38127`).
+- Harness scripts auto-route to `POST /run` before local execution when remote mode is enabled.
+- Set `REMOTE_BUILD=0` (or unset it) to run harness scripts locally.
+- Use a remote image that has: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
+- `test.sh` auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`) for browser E2E when the remote runner cannot launch Playwright locally.
+
+## Sync Policy Reference
+- GitHub sync ownership and conflict policy: [docs/github-sync-ownership-model.md](docs/github-sync-ownership-model.md)
+````
+
 ## File: apps/server/src/services/sequence-execution-service.test.ts
 ````typescript
 import assert from "node:assert/strict";
@@ -34042,323 +34198,6 @@ export function SnippetsPage() {
 }
 ````
 
-## File: apps/web/components/tasks-kanban-board-page.tsx
-````typescript
-"use client";
-
-import { useMemo, useState, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
-import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
-import { CSS } from "@dnd-kit/utilities";
-import { PlusOutlined } from "@ant-design/icons";
-import {
-  getTaskExecutionStatusLabel,
-  getTaskTypeLabel,
-  getTaskWorkflowStatusLabel,
-  type Task,
-  type TaskDraft,
-  type UpdateTaskStateInput
-} from "@agentswarm/shared-types";
-import { Button, Card, Empty, Flex, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
-import dayjs from "dayjs";
-import { api } from "../src/api/client";
-import { useTaskDrafts } from "../src/hooks/useTaskDrafts";
-import { useTasks } from "../src/hooks/useTasks";
-import { useAuth } from "./auth-provider";
-import { TaskCreateModal } from "./task-create-modal";
-
-type BoardColumnId = "backlog" | "ready" | "in_progress" | "review" | "done";
-type BoardTaskStatus = UpdateTaskStateInput["status"];
-type BoardItem =
-  | { id: string; type: "draft"; draft: TaskDraft; column: BoardColumnId }
-  | { id: string; type: "task"; task: Task; column: BoardColumnId };
-
-const columns: Array<{ id: BoardColumnId; title: string; taskStatus?: BoardTaskStatus; acceptsTasks: boolean }> = [
-  { id: "backlog", title: "Backlog", acceptsTasks: false },
-  { id: "ready", title: getTaskWorkflowStatusLabel("ready"), taskStatus: "open", acceptsTasks: true },
-  { id: "in_progress", title: getTaskWorkflowStatusLabel("in_progress"), taskStatus: "in_progress", acceptsTasks: true },
-  { id: "review", title: getTaskWorkflowStatusLabel("review"), taskStatus: "in_review", acceptsTasks: true },
-  { id: "done", title: getTaskWorkflowStatusLabel("done"), taskStatus: "done", acceptsTasks: true }
-];
-
-const taskColumn = (task: Task): BoardColumnId => {
-  if (task.workflowStatus === "done") {
-    return "done";
-  }
-  if (task.workflowStatus === "review") {
-    return "review";
-  }
-  if (task.workflowStatus === "in_progress") {
-    return "in_progress";
-  }
-  return "ready";
-};
-
-const getItemDeadline = (item: BoardItem): string | null =>
-  item.type === "task" ? item.task.deadline : item.draft.definition.deadline ?? null;
-
-const getItemTitle = (item: BoardItem): string => (item.type === "task" ? item.task.title : item.draft.title);
-
-const compareItemsByDeadline = (left: BoardItem, right: BoardItem): number => {
-  const leftDeadline = getItemDeadline(left);
-  const rightDeadline = getItemDeadline(right);
-  if (leftDeadline && rightDeadline) {
-    const deadlineComparison = leftDeadline.localeCompare(rightDeadline);
-    if (deadlineComparison !== 0) {
-      return deadlineComparison;
-    }
-  } else if (leftDeadline) {
-    return -1;
-  } else if (rightDeadline) {
-    return 1;
-  }
-
-  return getItemTitle(left).localeCompare(getItemTitle(right));
-};
-
-function KanbanColumn({
-  column,
-  canCreate,
-  onAdd,
-  children
-}: {
-  column: (typeof columns)[number];
-  canCreate: boolean;
-  onAdd: (column: (typeof columns)[number]) => void;
-  children: ReactNode;
-}) {
-  const { token } = antTheme.useToken();
-  const { setNodeRef, isOver } = useDroppable({
-    id: column.id,
-    disabled: !column.acceptsTasks
-  });
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={{
-        minWidth: 290,
-        width: 320,
-        flex: "0 0 320px",
-        background: isOver ? token.colorPrimaryBg : token.colorFillQuaternary,
-        border: `1px solid ${isOver ? token.colorPrimaryBorder : token.colorBorderSecondary}`,
-        borderRadius: 8,
-        padding: 12,
-        minHeight: "calc(100vh - 220px)"
-      }}
-    >
-      <Flex vertical gap={12}>
-        <Flex justify="space-between" align="center">
-          <Typography.Text strong>{column.title}</Typography.Text>
-          {canCreate ? (
-            <Button
-              type="text"
-              size="small"
-              icon={<PlusOutlined />}
-              aria-label={`Create in ${column.title}`}
-              title={`Create in ${column.title}`}
-              onClick={() => onAdd(column)}
-            />
-          ) : null}
-        </Flex>
-        {children}
-      </Flex>
-    </div>
-  );
-}
-
-function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardItem) => void }) {
-  const draggable = useDraggable({
-    id: item.id,
-    disabled: item.type !== "task",
-    data: item
-  });
-  const style = {
-    transform: CSS.Translate.toString(draggable.transform),
-    opacity: draggable.isDragging ? 0.65 : 1,
-    cursor: item.type === "task" ? "grab" : "pointer"
-  };
-  const task = item.type === "task" ? item.task : null;
-  const draft = item.type === "draft" ? item.draft : null;
-  const deadline = getItemDeadline(item);
-
-  return (
-    <Card
-      ref={draggable.setNodeRef}
-      {...draggable.listeners}
-      {...draggable.attributes}
-      size="small"
-      hoverable
-      onClick={() => onOpen(item)}
-      style={{ ...style, borderRadius: 8 }}
-      bodyStyle={{ padding: 12 }}
-    >
-      <Flex vertical gap={8}>
-        <Typography.Text strong ellipsis={{ tooltip: task?.title ?? draft?.title }}>
-          {task?.title ?? draft?.title}
-        </Typography.Text>
-        <Space size={[6, 6]} wrap>
-          {draft ? <Tag color="default">Draft</Tag> : null}
-          {task ? <Tag>{getTaskTypeLabel(task.taskType)}</Tag> : null}
-          {task && task.executionStatus !== "idle" ? <Tag color={task.executionStatus === "failed" ? "red" : "blue"}>{getTaskExecutionStatusLabel(task.executionStatus)}</Tag> : null}
-          {task?.reviewReason ? <Tag color="gold">{task.reviewReason}</Tag> : null}
-        </Space>
-        {task ? (
-          <>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {task.repoName}
-            </Typography.Text>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
-            </Typography.Text>
-          </>
-        ) : (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
-          </Typography.Text>
-        )}
-      </Flex>
-    </Card>
-  );
-}
-
-export function TasksKanbanBoardPage() {
-  const router = useRouter();
-  const { can } = useAuth();
-  const [messageApi, contextHolder] = message.useMessage();
-  const { tasks, setTasks, loading: tasksLoading } = useTasks({ view: "active" });
-  const { drafts, setDrafts, loading: draftsLoading } = useTaskDrafts();
-  const [movingTaskId, setMovingTaskId] = useState<string | null>(null);
-  const [taskCreateModalOpen, setTaskCreateModalOpen] = useState(false);
-  const [selectedDraft, setSelectedDraft] = useState<TaskDraft | null>(null);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-  const loading = tasksLoading || draftsLoading;
-  const canCreateTask = can("task:create");
-
-  const items = useMemo<BoardItem[]>(() => {
-    const taskItems: BoardItem[] = tasks
-      .filter((task) => task.status !== "archived")
-      .map((task) => ({ id: `task:${task.id}`, type: "task", task, column: taskColumn(task) }));
-    const draftItems: BoardItem[] = drafts.map((draft) => ({ id: `draft:${draft.id}`, type: "draft", draft, column: "backlog" }));
-    return [...draftItems, ...taskItems];
-  }, [drafts, tasks]);
-
-  const itemsByColumn = useMemo(
-    () =>
-      Object.fromEntries(
-        columns.map((column) => [
-          column.id,
-          items.filter((item) => item.column === column.id).sort(compareItemsByDeadline)
-        ])
-      ) as Record<BoardColumnId, BoardItem[]>,
-    [items]
-  );
-
-  const openItem = (item: BoardItem) => {
-    if (item.type === "draft") {
-      setSelectedDraft(item.draft);
-      setTaskCreateModalOpen(true);
-      return;
-    }
-
-    router.push(`/tasks/${item.task.id}`);
-  };
-
-  const openCreateModal = () => {
-    setSelectedDraft(null);
-    setTaskCreateModalOpen(true);
-  };
-
-  const closeCreateModal = () => {
-    setTaskCreateModalOpen(false);
-    setSelectedDraft(null);
-  };
-
-  const handleDragEnd = async (event: DragEndEvent) => {
-    const item = event.active.data.current as BoardItem | undefined;
-    const column = columns.find((entry) => entry.id === event.over?.id);
-    if (!item || item.type !== "task" || !column?.taskStatus || item.column === column.id) {
-      return;
-    }
-
-    setMovingTaskId(item.task.id);
-    try {
-      const updated = await api.updateTaskState(item.task.id, { status: column.taskStatus });
-      setTasks((current) => current.map((task) => (task.id === updated.id ? { ...task, ...updated, logs: task.logs } : task)));
-      messageApi.success(`Moved to ${column.title}`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Could not move task");
-    } finally {
-      setMovingTaskId(null);
-    }
-  };
-
-  return (
-    <>
-      {contextHolder}
-      <Flex vertical gap={16}>
-        <Flex justify="space-between" align="center" gap={16} wrap="wrap">
-          <Flex vertical gap={0}>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              Task Board
-            </Typography.Title>
-            <Typography.Text type="secondary">Plan drafts and move active tasks through the workflow.</Typography.Text>
-          </Flex>
-          <Space>
-            <Button onClick={() => router.push("/tasks")}>Table</Button>
-            {canCreateTask ? <Button type="primary" onClick={openCreateModal}>New Task</Button> : null}
-          </Space>
-        </Flex>
-        {loading ? (
-          <Flex justify="center" style={{ padding: 80 }}>
-            <Spin />
-          </Flex>
-        ) : (
-          <DndContext sensors={sensors} onDragEnd={(event) => void handleDragEnd(event)}>
-            <Flex gap={16} align="stretch" style={{ overflowX: "auto", paddingBottom: 12 }}>
-              {columns.map((column) => (
-                <KanbanColumn key={column.id} column={column} canCreate={canCreateTask} onAdd={openCreateModal}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {itemsByColumn[column.id].length} item{itemsByColumn[column.id].length === 1 ? "" : "s"}
-                  </Typography.Text>
-                  {itemsByColumn[column.id].length === 0 ? (
-                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No cards" />
-                  ) : (
-                    <Flex vertical gap={10}>
-                      {itemsByColumn[column.id].map((item) => (
-                        <KanbanCard key={item.id} item={item} onOpen={openItem} />
-                      ))}
-                    </Flex>
-                  )}
-                </KanbanColumn>
-              ))}
-            </Flex>
-          </DndContext>
-        )}
-        {movingTaskId ? <Typography.Text type="secondary">Moving task...</Typography.Text> : null}
-      </Flex>
-      <TaskCreateModal
-        open={taskCreateModalOpen}
-        draft={selectedDraft}
-        onClose={closeCreateModal}
-        onCreated={(task) => {
-          setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
-        }}
-        onDraftCreated={(draft) => {
-          setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
-        }}
-        onDraftUpdated={(draft) => {
-          setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
-        }}
-        onDraftDeleted={(draftId) => {
-          setDrafts((current) => current.filter((item) => item.id !== draftId));
-        }}
-      />
-    </>
-  );
-}
-````
-
 ## File: apps/web/components/tasks-page.tsx
 ````typescript
 "use client";
@@ -35494,114 +35333,6 @@ export const buildTaskLifecycleViewModel = (task: Task | null | undefined): Task
     resultStatusText
   };
 };
-````
-
-## File: AGENTS.md
-````markdown
-# Agent Harness Guide
-
-This file is a short operating guide for coding agents in this repository.
-
-## Start Here
-- If `REMOTE_BUILD=1`, export `REMOTE_BUILD_IMAGE` first.
-- Run `./scripts/harness/doctor.sh`
-- Run `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh` on clean checkout
-- Run `./scripts/harness/check-human-gated-flow.sh`
-- Run `./scripts/harness/check.sh`
-- Run `./scripts/harness/test.sh` (canonical test command)
-- Run `./scripts/harness/start.sh` (foreground dev mode)
-
-## Expected PR Workflow
-1. Run `./scripts/harness/pr-ready.sh`.
-2. Fix any failing checks.
-3. Complete the agent self-review checklist: `docs/development/agent-review.md`.
-4. Open a PR using `.github/pull_request_template.md`.
-5. Confirm docs are updated when behavior changes.
-
-Note:
-- `pr-ready.sh` includes architecture boundary checks.
-- `test.sh` supports `TEST_SCOPE=unit|integration|e2e|all`.
-
-## Documentation Table of Contents
-- [Architecture Summary](ARCHITECTURE.md)
-- [Docs Home](docs/index.md)
-- [Development Setup](docs/development/setup.md)
-- [Development Commands](docs/development/commands.md)
-- [Human-Gated Flow](docs/development/human-gated-taskwise-delivery-flow.md)
-- [Testing](docs/development/testing.md)
-- [Debugging](docs/development/debugging.md)
-- [Agent Self-Review](docs/development/agent-review.md)
-- [PR Workflow](docs/development/pr-workflow.md)
-- [Architecture Docs](docs/architecture/index.md)
-- [Product Docs](docs/product/index.md)
-- [Quality Docs](docs/quality/scorecard.md)
-- [Golden Principles](docs/quality/golden-principles.md)
-
-## Execution Plans
-- Small tasks can use inline plans in the task conversation.
-- Non-trivial tasks must use the Non-Trivial Task Flow below.
-- Complex tasks must create an execution plan using `docs/exec-plans/template.md`.
-- Plans must be updated during work as steps complete or scope changes.
-- Completed plans move from `docs/exec-plans/active/` to `docs/exec-plans/completed/`.
-- Complex task plans must include the required `Human-Gated Flow Evidence` checklist from the template.
-- Flow reference: `docs/development/human-gated-taskwise-delivery-flow.md`.
-
-## Non-Trivial Task Flow
-Use this flow for any task that requires repository changes beyond a tiny, obvious edit, touches multiple files, changes behavior, affects tests or build output, or has ambiguous requirements.
-
-```mermaid
-flowchart TB
-    A["Read Requirements"] --> B["Quick Repo Research"]
-    B --> C{"Clear Enough?"}
-    C -- No --> D["Ask Clarifying Questions"]
-    D --> A
-    C -- Yes --> E["Create Short Plan + Task List"]
-    E --> F["Human Review / Approval"]
-    F --> G{"Approved?"}
-    G -- No --> A
-    G -- Yes --> H["Run Baseline Checks"]
-    H --> I["Implement Next Task"]
-    I --> J["Run Tests / Build"]
-    J --> K{"Passed?"}
-    K -- No --> I
-    K -- Yes --> L["Self Review"]
-    L --> M{"More Tasks?"}
-    M -- Yes --> I
-    M -- No --> N["Final Verification"]
-    N --> R["Complete"]
-```
-
-## Operating Rules
-- Prefer harness scripts in `scripts/harness/`.
-- Treat non-zero exit codes as failures.
-- Do not assume behavior that is not documented in this repository.
-- Mark missing evidence as `TODO` instead of guessing.
-- Before starting work, inspect `docs/repomix.md` for the current repository context bundle.
-- After any agent run that changes code or repository files, execute `npx repomix --style markdown --output docs/repomix.md` to refresh the repository context bundle.
-- Keep `docs/repomix.md` as the canonical Repomix output referenced by agents.
-
-## Remote Build Runner
-Use `http://host.docker.internal:38127` and call `POST /run` with:
-- `image`
-- `workdir`
-- `cmd` (non-empty string array, for example `["sh","-lc","echo ok"]`)
-
-For `workdir`, prefer `TASK_WORKSPACE_PATH`.
-
-Runner mount support:
-- `dockerSocketContainerPath`: `/var/run/docker.sock` (available for mounting Docker into the runner container)
-
-Harness remote mode:
-- Set `REMOTE_BUILD=1` to force harness scripts to run in Remote Build Runner.
-- Set `REMOTE_BUILD_IMAGE` to the container image used by the runner request.
-- Optional: set `REMOTE_BUILD_RUNNER_URL` (defaults to `http://host.docker.internal:38127`).
-- Harness scripts auto-route to `POST /run` before local execution when remote mode is enabled.
-- Set `REMOTE_BUILD=0` (or unset it) to run harness scripts locally.
-- Use a remote image that has: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
-- `test.sh` auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`) for browser E2E when the remote runner cannot launch Playwright locally.
-
-## Sync Policy Reference
-- GitHub sync ownership and conflict policy: [docs/github-sync-ownership-model.md](docs/github-sync-ownership-model.md)
 ````
 
 ## File: apps/server/src/lib/task-start-orchestrator.test.ts
@@ -39775,6 +39506,323 @@ html[data-theme="forge-light"] .diff-widget-content {
 }
 ````
 
+## File: apps/web/components/tasks-kanban-board-page.tsx
+````typescript
+"use client";
+
+import { useMemo, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
+import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
+import { PlusOutlined } from "@ant-design/icons";
+import {
+  getTaskExecutionStatusLabel,
+  getTaskTypeLabel,
+  getTaskWorkflowStatusLabel,
+  type Task,
+  type TaskDraft,
+  type UpdateTaskStateInput
+} from "@agentswarm/shared-types";
+import { Button, Card, Empty, Flex, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
+import dayjs from "dayjs";
+import { api } from "../src/api/client";
+import { useTaskDrafts } from "../src/hooks/useTaskDrafts";
+import { useTasks } from "../src/hooks/useTasks";
+import { useAuth } from "./auth-provider";
+import { TaskCreateModal } from "./task-create-modal";
+
+type BoardColumnId = "backlog" | "ready" | "in_progress" | "review" | "done";
+type BoardTaskStatus = UpdateTaskStateInput["status"];
+type BoardItem =
+  | { id: string; type: "draft"; draft: TaskDraft; column: BoardColumnId }
+  | { id: string; type: "task"; task: Task; column: BoardColumnId };
+
+const columns: Array<{ id: BoardColumnId; title: string; taskStatus?: BoardTaskStatus; acceptsTasks: boolean }> = [
+  { id: "backlog", title: "Backlog", acceptsTasks: false },
+  { id: "ready", title: getTaskWorkflowStatusLabel("ready"), taskStatus: "open", acceptsTasks: true },
+  { id: "in_progress", title: getTaskWorkflowStatusLabel("in_progress"), taskStatus: "in_progress", acceptsTasks: true },
+  { id: "review", title: getTaskWorkflowStatusLabel("review"), taskStatus: "in_review", acceptsTasks: true },
+  { id: "done", title: getTaskWorkflowStatusLabel("done"), taskStatus: "done", acceptsTasks: true }
+];
+
+const taskColumn = (task: Task): BoardColumnId => {
+  if (task.workflowStatus === "done") {
+    return "done";
+  }
+  if (task.workflowStatus === "review") {
+    return "review";
+  }
+  if (task.workflowStatus === "in_progress") {
+    return "in_progress";
+  }
+  return "ready";
+};
+
+const getItemDeadline = (item: BoardItem): string | null =>
+  item.type === "task" ? item.task.deadline : item.draft.definition.deadline ?? null;
+
+const getItemTitle = (item: BoardItem): string => (item.type === "task" ? item.task.title : item.draft.title);
+
+const compareItemsByDeadline = (left: BoardItem, right: BoardItem): number => {
+  const leftDeadline = getItemDeadline(left);
+  const rightDeadline = getItemDeadline(right);
+  if (leftDeadline && rightDeadline) {
+    const deadlineComparison = leftDeadline.localeCompare(rightDeadline);
+    if (deadlineComparison !== 0) {
+      return deadlineComparison;
+    }
+  } else if (leftDeadline) {
+    return -1;
+  } else if (rightDeadline) {
+    return 1;
+  }
+
+  return getItemTitle(left).localeCompare(getItemTitle(right));
+};
+
+function KanbanColumn({
+  column,
+  canCreate,
+  onAdd,
+  children
+}: {
+  column: (typeof columns)[number];
+  canCreate: boolean;
+  onAdd: (column: (typeof columns)[number]) => void;
+  children: ReactNode;
+}) {
+  const { token } = antTheme.useToken();
+  const { setNodeRef, isOver } = useDroppable({
+    id: column.id,
+    disabled: !column.acceptsTasks
+  });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        minWidth: 290,
+        width: 320,
+        flex: "0 0 320px",
+        background: isOver ? token.colorPrimaryBg : token.colorFillQuaternary,
+        border: `1px solid ${isOver ? token.colorPrimaryBorder : token.colorBorderSecondary}`,
+        borderRadius: 8,
+        padding: 12,
+        minHeight: "calc(100vh - 220px)"
+      }}
+    >
+      <Flex vertical gap={12}>
+        <Flex justify="space-between" align="center">
+          <Typography.Text strong>{column.title}</Typography.Text>
+          {canCreate ? (
+            <Button
+              type="text"
+              size="small"
+              icon={<PlusOutlined />}
+              aria-label={`Create in ${column.title}`}
+              title={`Create in ${column.title}`}
+              onClick={() => onAdd(column)}
+            />
+          ) : null}
+        </Flex>
+        {children}
+      </Flex>
+    </div>
+  );
+}
+
+function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardItem) => void }) {
+  const draggable = useDraggable({
+    id: item.id,
+    disabled: item.type !== "task",
+    data: item
+  });
+  const style = {
+    transform: CSS.Translate.toString(draggable.transform),
+    opacity: draggable.isDragging ? 0.65 : 1,
+    cursor: item.type === "task" ? "grab" : "pointer"
+  };
+  const task = item.type === "task" ? item.task : null;
+  const draft = item.type === "draft" ? item.draft : null;
+  const deadline = getItemDeadline(item);
+
+  return (
+    <Card
+      ref={draggable.setNodeRef}
+      {...draggable.listeners}
+      {...draggable.attributes}
+      size="small"
+      hoverable
+      onClick={() => onOpen(item)}
+      style={{ ...style, borderRadius: 8 }}
+      bodyStyle={{ padding: 12 }}
+    >
+      <Flex vertical gap={8}>
+        <Typography.Text strong ellipsis={{ tooltip: task?.title ?? draft?.title }}>
+          {task?.title ?? draft?.title}
+        </Typography.Text>
+        <Space size={[6, 6]} wrap>
+          {draft ? <Tag color="default">Draft</Tag> : null}
+          {task ? <Tag>{getTaskTypeLabel(task.taskType)}</Tag> : null}
+          {task && task.executionStatus !== "idle" ? <Tag color={task.executionStatus === "failed" ? "red" : "blue"}>{getTaskExecutionStatusLabel(task.executionStatus)}</Tag> : null}
+          {task?.reviewReason ? <Tag color="gold">{task.reviewReason}</Tag> : null}
+        </Space>
+        {task ? (
+          <>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {task.repoName}
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
+            </Typography.Text>
+          </>
+        ) : (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
+          </Typography.Text>
+        )}
+      </Flex>
+    </Card>
+  );
+}
+
+export function TasksKanbanBoardPage() {
+  const router = useRouter();
+  const { can } = useAuth();
+  const [messageApi, contextHolder] = message.useMessage();
+  const { tasks, setTasks, loading: tasksLoading } = useTasks({ view: "active" });
+  const { drafts, setDrafts, loading: draftsLoading } = useTaskDrafts();
+  const [movingTaskId, setMovingTaskId] = useState<string | null>(null);
+  const [taskCreateModalOpen, setTaskCreateModalOpen] = useState(false);
+  const [selectedDraft, setSelectedDraft] = useState<TaskDraft | null>(null);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const loading = tasksLoading || draftsLoading;
+  const canCreateTask = can("task:create");
+
+  const items = useMemo<BoardItem[]>(() => {
+    const taskItems: BoardItem[] = tasks
+      .filter((task) => task.status !== "archived")
+      .map((task) => ({ id: `task:${task.id}`, type: "task", task, column: taskColumn(task) }));
+    const draftItems: BoardItem[] = drafts.map((draft) => ({ id: `draft:${draft.id}`, type: "draft", draft, column: "backlog" }));
+    return [...draftItems, ...taskItems];
+  }, [drafts, tasks]);
+
+  const itemsByColumn = useMemo(
+    () =>
+      Object.fromEntries(
+        columns.map((column) => [
+          column.id,
+          items.filter((item) => item.column === column.id).sort(compareItemsByDeadline)
+        ])
+      ) as Record<BoardColumnId, BoardItem[]>,
+    [items]
+  );
+
+  const openItem = (item: BoardItem) => {
+    if (item.type === "draft") {
+      setSelectedDraft(item.draft);
+      setTaskCreateModalOpen(true);
+      return;
+    }
+
+    router.push(`/tasks/${item.task.id}`);
+  };
+
+  const openCreateModal = () => {
+    setSelectedDraft(null);
+    setTaskCreateModalOpen(true);
+  };
+
+  const closeCreateModal = () => {
+    setTaskCreateModalOpen(false);
+    setSelectedDraft(null);
+  };
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const item = event.active.data.current as BoardItem | undefined;
+    const column = columns.find((entry) => entry.id === event.over?.id);
+    if (!item || item.type !== "task" || !column?.taskStatus || item.column === column.id) {
+      return;
+    }
+
+    setMovingTaskId(item.task.id);
+    try {
+      const updated = await api.updateTaskState(item.task.id, { status: column.taskStatus });
+      setTasks((current) => current.map((task) => (task.id === updated.id ? { ...task, ...updated, logs: task.logs } : task)));
+      messageApi.success(`Moved to ${column.title}`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Could not move task");
+    } finally {
+      setMovingTaskId(null);
+    }
+  };
+
+  return (
+    <>
+      {contextHolder}
+      <Flex vertical gap={16}>
+        <Flex justify="space-between" align="center" gap={16} wrap="wrap">
+          <Flex vertical gap={0}>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              Task Board
+            </Typography.Title>
+            <Typography.Text type="secondary">Plan drafts and move active tasks through the workflow.</Typography.Text>
+          </Flex>
+          <Space>
+            <Button onClick={() => router.push("/tasks")}>Table</Button>
+            {canCreateTask ? <Button type="primary" onClick={openCreateModal}>New Task</Button> : null}
+          </Space>
+        </Flex>
+        {loading ? (
+          <Flex justify="center" style={{ padding: 80 }}>
+            <Spin />
+          </Flex>
+        ) : (
+          <DndContext sensors={sensors} onDragEnd={(event) => void handleDragEnd(event)}>
+            <Flex gap={16} align="stretch" style={{ overflowX: "auto", paddingBottom: 12 }}>
+              {columns.map((column) => (
+                <KanbanColumn key={column.id} column={column} canCreate={canCreateTask} onAdd={openCreateModal}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {itemsByColumn[column.id].length} item{itemsByColumn[column.id].length === 1 ? "" : "s"}
+                  </Typography.Text>
+                  {itemsByColumn[column.id].length === 0 ? (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No cards" />
+                  ) : (
+                    <Flex vertical gap={10}>
+                      {itemsByColumn[column.id].map((item) => (
+                        <KanbanCard key={item.id} item={item} onOpen={openItem} />
+                      ))}
+                    </Flex>
+                  )}
+                </KanbanColumn>
+              ))}
+            </Flex>
+          </DndContext>
+        )}
+        {movingTaskId ? <Typography.Text type="secondary">Moving task...</Typography.Text> : null}
+      </Flex>
+      <TaskCreateModal
+        open={taskCreateModalOpen}
+        draft={selectedDraft}
+        onClose={closeCreateModal}
+        onCreated={(task) => {
+          setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+        }}
+        onDraftCreated={(draft) => {
+          setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
+        }}
+        onDraftUpdated={(draft) => {
+          setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
+        }}
+        onDraftDeleted={(draftId) => {
+          setDrafts((current) => current.filter((item) => item.id !== draftId));
+        }}
+      />
+    </>
+  );
+}
+````
+
 ## File: apps/web/src/utils/task-definition-submit.ts
 ````typescript
 "use client";
@@ -41939,6 +41987,372 @@ flowchart TD
 ```
 ````
 
+## File: README.md
+````markdown
+<p align="center">
+  <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
+</p>
+
+# AgentSwarm
+
+AgentSwarm is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
+
+The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
+
+## Features
+
+- Create build or ask tasks from a blank prompt, reusable snippet, GitHub issue, or pull request.
+- Run Codex and Claude tasks in isolated Docker runtime containers.
+- Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
+- Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
+- Open task workspaces in an interactive browser terminal.
+- Configure repositories, credentials, roles, users, provider defaults, snippets, and prompt sequences.
+- Automate task creation from GitHub webhooks and repository automation rules.
+- Add repository-local postflight checks with `.agentswarm/postflight.yml`.
+
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| Docker | Required for the main app stack and agent runtime containers. |
+| Docker Compose | `docker compose` is preferred; `docker-compose` is also supported. |
+| Bash | Required by the helper and harness scripts. |
+| Node.js 20+ and npm | Required for local development, checks, tests, and builds. |
+| Python 3 | Required when installing local npm dependencies because native modules such as `node-pty` may build from source. |
+
+## Installation
+
+Clone the repository:
+
+```bash
+git clone git@github.com:coretracker/agentswarm.git
+cd agentswarm
+```
+
+Create a local environment file:
+
+```bash
+cp .env.example .env
+```
+
+Initialize the Docker stack and runtime images:
+
+```bash
+./agentswarm.sh init
+```
+
+For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
+
+```bash
+HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+```
+
+## Quick Start
+
+Start the app:
+
+```bash
+./agentswarm.sh start
+```
+
+Open the UI:
+
+```text
+http://localhost:3217/login
+```
+
+Bootstrap credentials come from `.env.example` and are used only when the first admin user is created. Review and change them before exposing the app outside a local development environment.
+
+After signing in:
+
+1. Open **Settings** and add provider credentials for OpenAI/Codex and/or Anthropic/Claude.
+2. Open **Repositories** and add a Git repository.
+3. Open **Tasks** and create a build or ask task.
+4. Review task output, logs, diffs, and checkpoints from the task detail page.
+
+Stop the app:
+
+```bash
+./agentswarm.sh stop
+```
+
+## Usage
+
+### Common Commands
+
+| Command | Description |
+| --- | --- |
+| `./agentswarm.sh init` | Build runtime images, rebuild compose images, and start the stack. |
+| `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
+| `./agentswarm.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
+| `./agentswarm.sh stop` | Stop the Docker Compose stack. |
+| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
+
+The health endpoint is available at:
+
+```bash
+curl -fsS http://localhost:3217/api/health
+```
+
+### Creating Tasks
+
+Tasks are the main unit of work in AgentSwarm.
+
+- **Build tasks** ask an agent to make repository changes.
+- **Ask tasks** ask an agent to inspect and answer without changing code.
+- **Snippet tasks** start from reusable prompt templates and variables.
+- **GitHub-imported tasks** can be created from issues, pull requests, review comments, and automation rules.
+
+Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
+
+### GitHub Webhooks
+
+AgentSwarm supports repository-scoped GitHub webhooks that can create tasks automatically.
+
+For each repository, configure this webhook URL in GitHub:
+
+```text
+https://<your-host>/api/webhooks/github/<repositoryId>
+```
+
+Use content type `application/json` and subscribe to the events you want to automate, such as Issues, Pull requests, Pull request review comments, Issue comments, and Reactions.
+
+Example repository automation rule:
+
+```json
+[
+  {
+    "id": "ai-issue-opened",
+    "name": "AI issue to build task",
+    "enabled": true,
+    "trigger": "issue_opened",
+    "syncStatusEnabled": true,
+    "labelFilter": {
+      "labelsAny": ["ai"],
+      "labelsNone": ["wip"]
+    },
+    "task": {
+      "assigneeEmail": "dev@example.com",
+      "taskType": "build",
+      "provider": "codex",
+      "providerProfile": "high",
+      "modelOverride": "gpt-5.4",
+      "codexCredentialSource": "profile"
+    }
+  }
+]
+```
+
+Supported automation triggers include:
+
+- `issue_opened`
+- `pull_request_opened`
+- comment or reaction triggers when rule-level comment automation is enabled
+
+### Postflight Checks
+
+Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
+
+Example:
+
+```yaml
+version: 1
+enabled: true
+
+when:
+  task_types: ["build"]
+  providers: ["codex", "claude"]
+
+runner:
+  image: "mcr.microsoft.com/playwright:v1.52.0-jammy"
+  timeout_seconds: 1800
+
+steps:
+  - run: "npm ci"
+  - run: "npx playwright test tests/mobile-screenshots.spec.ts --project=mobile-web --update-snapshots"
+
+on_failure: "fail_task"
+```
+
+## Configuration
+
+Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the AgentSwarm Settings UI, not in `.env`.
+
+### Core Environment Variables
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
+| `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
+| `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
+| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
+| `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
+| `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
+| `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
+| `APP_ENVIRONMENT` | Runtime environment label. | `local` |
+
+### Storage
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `DATABASE_URL` | Postgres connection string. | see `.env.example` |
+| `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start. | `true` |
+| `REDIS_HOST_PORT` | Host port for Redis in local Docker setups. | `6379` |
+| `POSTGRES_HOST_PORT` | Host port for Postgres in local Docker setups. | `5432` |
+
+Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub.
+
+### Git and Workspaces
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `GIT_USER_NAME` | Git author name used by the server. | `AgentSwarm Bot` |
+| `GIT_USER_EMAIL` | Git author email used by the server. | `agentswarm@local.dev` |
+| `TASK_WORKSPACE_HOST_ROOT` | Absolute host path for task workspaces. | unset |
+| `LOCAL_PLANS_HOST_ROOT` | Absolute host path for local plan storage. | unset |
+
+`TASK_WORKSPACE_HOST_ROOT` is important in Docker setups because the server and runtime containers must mount the same host workspace directory.
+
+### Frontend API Routing
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_URL` | Explicit public API base URL. | empty |
+| `NEXT_PUBLIC_SOCKET_URL` | Explicit public Socket.IO URL. | empty |
+
+Leave these empty to use the bundled same-origin `/api` proxy.
+
+### Runtime Images
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
+| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
+| `GIT_TERMINAL_IMAGE` | Restricted Git terminal image. | `local/git-terminal:latest` |
+| `CODEX_INTERACTIVE_IMAGE` | Interactive Codex terminal image. | `local/codex-interactive:latest` |
+| `CLAUDE_INTERACTIVE_IMAGE` | Interactive Claude terminal image. | `local/claude-interactive:latest` |
+
+### Docker Socket Access
+
+Docker socket access is disabled by default and should stay disabled unless a runtime must start nested containers.
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into Codex/Claude runtime containers. | `false` |
+| `DOCKER_SOCKET_HOST_PATH` | Host Docker socket path. | `/var/run/docker.sock` |
+| `DOCKER_SOCKET_CONTAINER_PATH_CODEX` | In-container socket path for Codex runtimes. | `/var/run/docker.sock` |
+| `DOCKER_SOCKET_CONTAINER_PATH_CLAUDE` | In-container socket path for Claude runtimes. | `/var/run/docker.sock` |
+
+Mounting `docker.sock` is highly privileged and can effectively grant host-level control from inside the runtime container.
+
+## Project Structure
+
+```text
+.
++-- apps/
+|   +-- server/          # Backend API, orchestration, stores, routes, schedulers
+|   +-- web/             # Next.js web app
++-- packages/
+|   +-- shared-types/    # Shared TypeScript types used by server and web
++-- agent-runtime-codex/ # Automated Codex task runtime
++-- agent-runtime-claude/# Automated Claude task runtime
++-- tools/               # Supporting runtime and terminal tooling
++-- docs/                # Architecture, development, product, and quality docs
++-- scripts/harness/     # Canonical setup, check, test, and PR scripts
++-- task-workspaces/     # Runtime task workspaces; do not commit
++-- docker-compose.yml   # Local Docker stack
++-- agentswarm.sh        # Main stack helper script
+```
+
+## Development
+
+Install dependencies on a clean checkout:
+
+```bash
+HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+```
+
+Useful development commands:
+
+| Command | Description |
+| --- | --- |
+| `./scripts/harness/doctor.sh` | Verify required tooling and harness availability. |
+| `./scripts/harness/setup.sh` | Initialize the Docker stack and runtime folders. |
+| `./scripts/harness/check.sh` | Run docs checks, boundary checks, lint, and build. |
+| `./scripts/harness/test.sh` | Run the canonical test suite. |
+| `./scripts/harness/pr-ready.sh` | Run pull request readiness checks. |
+| `npm run dev` | Run server and web dev processes together. |
+| `npm run lint` | Run TypeScript no-emit checks for server and web. |
+| `npm run build` | Build shared types, server, and web. |
+| `npm run test` | Run `./scripts/harness/test.sh`. |
+
+Workspace-specific commands:
+
+```bash
+npm run dev -w @agentswarm/server
+npm run dev -w @agentswarm/web
+npm run build -w @agentswarm/shared-types
+```
+
+Before opening a pull request, run:
+
+```bash
+./scripts/harness/pr-ready.sh
+```
+
+The repository uses execution-plan and human-gated-flow checks for non-trivial changes. Useful references:
+
+- `docs/development/setup.md`
+- `docs/development/commands.md`
+- `docs/development/testing.md`
+- `docs/development/pr-workflow.md`
+- `docs/development/agent-review.md`
+
+After any agent-generated repository edit, refresh the Repomix context bundle:
+
+```bash
+npx repomix --style markdown --output docs/repomix.md
+```
+
+## FAQ
+
+### Where do I configure API keys?
+
+Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings UI. Credentials are write-only from the UI and are not returned by the API.
+
+### Can I run without Docker?
+
+The documented and supported path is Docker-based. Some server and web commands can run locally with Node.js, but the full task execution flow depends on Docker runtime containers.
+
+### What does a `202` response from a GitHub webhook mean?
+
+It means AgentSwarm accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
+
+### How do I reset local data?
+
+Run setup with a database reset:
+
+```bash
+HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
+```
+
+## Contributing
+
+1. Read the relevant docs in `docs/index.md`.
+2. Keep changes scoped and update docs when behavior changes.
+3. Run the canonical checks before opening a pull request:
+
+   ```bash
+   ./scripts/harness/pr-ready.sh
+   ```
+
+4. Use the pull request template in `.github/pull_request_template.md`.
+
+## License
+
+No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.
+````
+
 ## File: apps/server/src/db/migrations.ts
 ````typescript
 export interface PostgresMigration {
@@ -42659,7 +43073,7 @@ describe("SpawnerService workspace provisioning", () => {
     "db:backfill:redis-to-postgres": "tsx src/db/backfill-redis-to-postgres.ts",
     "build": "tsc -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/sequence-resolution.test.ts src/services/sequence-execution-service.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
+    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/sequence-resolution.test.ts src/services/sequence-execution-service.test.ts src/services/task-store.test.ts src/services/task-draft-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
   },
   "dependencies": {
     "@agentswarm/shared-types": "*",
@@ -42683,372 +43097,6 @@ describe("SpawnerService workspace provisioning", () => {
     "typescript": "^5.6.3"
   }
 }
-````
-
-## File: README.md
-````markdown
-<p align="center">
-  <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
-</p>
-
-# AgentSwarm
-
-AgentSwarm is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
-
-The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
-
-## Features
-
-- Create build or ask tasks from a blank prompt, reusable snippet, GitHub issue, or pull request.
-- Run Codex and Claude tasks in isolated Docker runtime containers.
-- Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
-- Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
-- Open task workspaces in an interactive browser terminal.
-- Configure repositories, credentials, roles, users, provider defaults, snippets, and prompt sequences.
-- Automate task creation from GitHub webhooks and repository automation rules.
-- Add repository-local postflight checks with `.agentswarm/postflight.yml`.
-
-## Requirements
-
-| Requirement | Notes |
-| --- | --- |
-| Docker | Required for the main app stack and agent runtime containers. |
-| Docker Compose | `docker compose` is preferred; `docker-compose` is also supported. |
-| Bash | Required by the helper and harness scripts. |
-| Node.js 20+ and npm | Required for local development, checks, tests, and builds. |
-| Python 3 | Required when installing local npm dependencies because native modules such as `node-pty` may build from source. |
-
-## Installation
-
-Clone the repository:
-
-```bash
-git clone git@github.com:coretracker/agentswarm.git
-cd agentswarm
-```
-
-Create a local environment file:
-
-```bash
-cp .env.example .env
-```
-
-Initialize the Docker stack and runtime images:
-
-```bash
-./agentswarm.sh init
-```
-
-For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
-
-```bash
-HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-```
-
-## Quick Start
-
-Start the app:
-
-```bash
-./agentswarm.sh start
-```
-
-Open the UI:
-
-```text
-http://localhost:3217/login
-```
-
-Bootstrap credentials come from `.env.example` and are used only when the first admin user is created. Review and change them before exposing the app outside a local development environment.
-
-After signing in:
-
-1. Open **Settings** and add provider credentials for OpenAI/Codex and/or Anthropic/Claude.
-2. Open **Repositories** and add a Git repository.
-3. Open **Tasks** and create a build or ask task.
-4. Review task output, logs, diffs, and checkpoints from the task detail page.
-
-Stop the app:
-
-```bash
-./agentswarm.sh stop
-```
-
-## Usage
-
-### Common Commands
-
-| Command | Description |
-| --- | --- |
-| `./agentswarm.sh init` | Build runtime images, rebuild compose images, and start the stack. |
-| `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
-| `./agentswarm.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
-| `./agentswarm.sh stop` | Stop the Docker Compose stack. |
-| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
-
-The health endpoint is available at:
-
-```bash
-curl -fsS http://localhost:3217/api/health
-```
-
-### Creating Tasks
-
-Tasks are the main unit of work in AgentSwarm.
-
-- **Build tasks** ask an agent to make repository changes.
-- **Ask tasks** ask an agent to inspect and answer without changing code.
-- **Snippet tasks** start from reusable prompt templates and variables.
-- **GitHub-imported tasks** can be created from issues, pull requests, review comments, and automation rules.
-
-Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
-
-### GitHub Webhooks
-
-AgentSwarm supports repository-scoped GitHub webhooks that can create tasks automatically.
-
-For each repository, configure this webhook URL in GitHub:
-
-```text
-https://<your-host>/api/webhooks/github/<repositoryId>
-```
-
-Use content type `application/json` and subscribe to the events you want to automate, such as Issues, Pull requests, Pull request review comments, Issue comments, and Reactions.
-
-Example repository automation rule:
-
-```json
-[
-  {
-    "id": "ai-issue-opened",
-    "name": "AI issue to build task",
-    "enabled": true,
-    "trigger": "issue_opened",
-    "syncStatusEnabled": true,
-    "labelFilter": {
-      "labelsAny": ["ai"],
-      "labelsNone": ["wip"]
-    },
-    "task": {
-      "assigneeEmail": "dev@example.com",
-      "taskType": "build",
-      "provider": "codex",
-      "providerProfile": "high",
-      "modelOverride": "gpt-5.4",
-      "codexCredentialSource": "profile"
-    }
-  }
-]
-```
-
-Supported automation triggers include:
-
-- `issue_opened`
-- `pull_request_opened`
-- comment or reaction triggers when rule-level comment automation is enabled
-
-### Postflight Checks
-
-Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
-
-Example:
-
-```yaml
-version: 1
-enabled: true
-
-when:
-  task_types: ["build"]
-  providers: ["codex", "claude"]
-
-runner:
-  image: "mcr.microsoft.com/playwright:v1.52.0-jammy"
-  timeout_seconds: 1800
-
-steps:
-  - run: "npm ci"
-  - run: "npx playwright test tests/mobile-screenshots.spec.ts --project=mobile-web --update-snapshots"
-
-on_failure: "fail_task"
-```
-
-## Configuration
-
-Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the AgentSwarm Settings UI, not in `.env`.
-
-### Core Environment Variables
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
-| `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
-| `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
-| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
-| `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
-| `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
-| `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
-| `APP_ENVIRONMENT` | Runtime environment label. | `local` |
-
-### Storage
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `DATABASE_URL` | Postgres connection string. | see `.env.example` |
-| `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start. | `true` |
-| `REDIS_HOST_PORT` | Host port for Redis in local Docker setups. | `6379` |
-| `POSTGRES_HOST_PORT` | Host port for Postgres in local Docker setups. | `5432` |
-
-Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub.
-
-### Git and Workspaces
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `GIT_USER_NAME` | Git author name used by the server. | `AgentSwarm Bot` |
-| `GIT_USER_EMAIL` | Git author email used by the server. | `agentswarm@local.dev` |
-| `TASK_WORKSPACE_HOST_ROOT` | Absolute host path for task workspaces. | unset |
-| `LOCAL_PLANS_HOST_ROOT` | Absolute host path for local plan storage. | unset |
-
-`TASK_WORKSPACE_HOST_ROOT` is important in Docker setups because the server and runtime containers must mount the same host workspace directory.
-
-### Frontend API Routing
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `NEXT_PUBLIC_API_URL` | Explicit public API base URL. | empty |
-| `NEXT_PUBLIC_SOCKET_URL` | Explicit public Socket.IO URL. | empty |
-
-Leave these empty to use the bundled same-origin `/api` proxy.
-
-### Runtime Images
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
-| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
-| `GIT_TERMINAL_IMAGE` | Restricted Git terminal image. | `local/git-terminal:latest` |
-| `CODEX_INTERACTIVE_IMAGE` | Interactive Codex terminal image. | `local/codex-interactive:latest` |
-| `CLAUDE_INTERACTIVE_IMAGE` | Interactive Claude terminal image. | `local/claude-interactive:latest` |
-
-### Docker Socket Access
-
-Docker socket access is disabled by default and should stay disabled unless a runtime must start nested containers.
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into Codex/Claude runtime containers. | `false` |
-| `DOCKER_SOCKET_HOST_PATH` | Host Docker socket path. | `/var/run/docker.sock` |
-| `DOCKER_SOCKET_CONTAINER_PATH_CODEX` | In-container socket path for Codex runtimes. | `/var/run/docker.sock` |
-| `DOCKER_SOCKET_CONTAINER_PATH_CLAUDE` | In-container socket path for Claude runtimes. | `/var/run/docker.sock` |
-
-Mounting `docker.sock` is highly privileged and can effectively grant host-level control from inside the runtime container.
-
-## Project Structure
-
-```text
-.
-+-- apps/
-|   +-- server/          # Backend API, orchestration, stores, routes, schedulers
-|   +-- web/             # Next.js web app
-+-- packages/
-|   +-- shared-types/    # Shared TypeScript types used by server and web
-+-- agent-runtime-codex/ # Automated Codex task runtime
-+-- agent-runtime-claude/# Automated Claude task runtime
-+-- tools/               # Supporting runtime and terminal tooling
-+-- docs/                # Architecture, development, product, and quality docs
-+-- scripts/harness/     # Canonical setup, check, test, and PR scripts
-+-- task-workspaces/     # Runtime task workspaces; do not commit
-+-- docker-compose.yml   # Local Docker stack
-+-- agentswarm.sh        # Main stack helper script
-```
-
-## Development
-
-Install dependencies on a clean checkout:
-
-```bash
-HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-```
-
-Useful development commands:
-
-| Command | Description |
-| --- | --- |
-| `./scripts/harness/doctor.sh` | Verify required tooling and harness availability. |
-| `./scripts/harness/setup.sh` | Initialize the Docker stack and runtime folders. |
-| `./scripts/harness/check.sh` | Run docs checks, boundary checks, lint, and build. |
-| `./scripts/harness/test.sh` | Run the canonical test suite. |
-| `./scripts/harness/pr-ready.sh` | Run pull request readiness checks. |
-| `npm run dev` | Run server and web dev processes together. |
-| `npm run lint` | Run TypeScript no-emit checks for server and web. |
-| `npm run build` | Build shared types, server, and web. |
-| `npm run test` | Run `./scripts/harness/test.sh`. |
-
-Workspace-specific commands:
-
-```bash
-npm run dev -w @agentswarm/server
-npm run dev -w @agentswarm/web
-npm run build -w @agentswarm/shared-types
-```
-
-Before opening a pull request, run:
-
-```bash
-./scripts/harness/pr-ready.sh
-```
-
-The repository uses execution-plan and human-gated-flow checks for non-trivial changes. Useful references:
-
-- `docs/development/setup.md`
-- `docs/development/commands.md`
-- `docs/development/testing.md`
-- `docs/development/pr-workflow.md`
-- `docs/development/agent-review.md`
-
-After any agent-generated repository edit, refresh the Repomix context bundle:
-
-```bash
-npx repomix --style markdown --output docs/repomix.md
-```
-
-## FAQ
-
-### Where do I configure API keys?
-
-Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings UI. Credentials are write-only from the UI and are not returned by the API.
-
-### Can I run without Docker?
-
-The documented and supported path is Docker-based. Some server and web commands can run locally with Node.js, but the full task execution flow depends on Docker runtime containers.
-
-### What does a `202` response from a GitHub webhook mean?
-
-It means AgentSwarm accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
-
-### How do I reset local data?
-
-Run setup with a database reset:
-
-```bash
-HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
-```
-
-## Contributing
-
-1. Read the relevant docs in `docs/index.md`.
-2. Keep changes scoped and update docs when behavior changes.
-3. Run the canonical checks before opening a pull request:
-
-   ```bash
-   ./scripts/harness/pr-ready.sh
-   ```
-
-4. Use the pull request template in `.github/pull_request_template.md`.
-
-## License
-
-No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.
 ````
 
 ## File: apps/web/components/task-create-modal.tsx
