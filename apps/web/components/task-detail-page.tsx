@@ -4405,8 +4405,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         items={events.map((event) => ({
           key: event.id,
           color: getTimelineEventColor(event),
-          icon: getTimelineEventIcon(event),
-          content: renderTimelineEventContent(event)
+          dot: getTimelineEventIcon(event),
+          children: renderTimelineEventContent(event)
         }))}
       />
     );

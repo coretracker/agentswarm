@@ -3977,6 +3977,616 @@ export class PostgresCredentialStore implements CredentialStore {
 }
 ````
 
+## File: apps/server/src/services/github-outbound-queue-store.ts
+````typescript
+import { randomUUID } from "node:crypto";
+import type Redis from "ioredis";
+
+const OUTBOUND_QUEUE_KEY = "agentswarm:github_outbound_queue";
+const OUTBOUND_JOB_KEY_PREFIX = "agentswarm:github_outbound:";
+const OUTBOUND_IDEMPOTENCY_KEY_PREFIX = "agentswarm:github_outbound_idempotency:";
+const OUTBOUND_DEAD_LETTER_KEY = "agentswarm:github_outbound_dead_letter";
+const OUTBOUND_RATE_GUARD_KEY_PREFIX = "agentswarm:github_outbound_rate_guard:";
+const IDEMPOTENCY_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+export type GitHubOutboundJobType = "summary_comment" | "label_update";
+
+export interface GitHubSummaryCommentPayload {
+  issueNumber: number;
+  body: string;
+}
+
+export interface GitHubLabelUpdatePayload {
+  issueNumber: number;
+  add: string[];
+  remove: string[];
+}
+
+export interface GitHubOutboundJob {
+  id: string;
+  repositoryId: string;
+  type: GitHubOutboundJobType;
+  payload: GitHubSummaryCommentPayload | GitHubLabelUpdatePayload;
+  idempotencyKey: string;
+  attempt: number;
+  createdAt: string;
+}
+
+export interface GitHubOutboundDeadLetter {
+  job: GitHubOutboundJob;
+  failedAt: string;
+  reason: string;
+}
+
+export interface GitHubOutboundQueueStore {
+  enqueueJob(job: Omit<GitHubOutboundJob, "id" | "attempt" | "createdAt">): Promise<boolean>;
+  listDueJobIds(now: number, limit: number): Promise<string[]>;
+  getJob(jobId: string): Promise<GitHubOutboundJob | null>;
+  deleteJob(jobId: string): Promise<void>;
+  schedule(job: GitHubOutboundJob, delayMs: number, incrementAttempt: boolean): Promise<void>;
+  moveToDeadLetter(job: GitHubOutboundJob, reason: string): Promise<void>;
+  getRepoNotBefore(repositoryId: string): Promise<number | null>;
+  setRepoNotBefore(repositoryId: string, timestampMs: number): Promise<void>;
+}
+
+const nowIso = (): string => new Date().toISOString();
+
+export class RedisGitHubOutboundQueueStore implements GitHubOutboundQueueStore {
+  constructor(private readonly redis: Redis) {}
+
+  private jobKey(jobId: string): string {
+    return `${OUTBOUND_JOB_KEY_PREFIX}${jobId}`;
+  }
+
+  private idempotencyKey(key: string): string {
+    return `${OUTBOUND_IDEMPOTENCY_KEY_PREFIX}${key}`;
+  }
+
+  private rateGuardKey(repositoryId: string): string {
+    return `${OUTBOUND_RATE_GUARD_KEY_PREFIX}${repositoryId}`;
+  }
+
+  async enqueueJob(job: Omit<GitHubOutboundJob, "id" | "attempt" | "createdAt">): Promise<boolean> {
+    const idemKey = this.idempotencyKey(job.idempotencyKey);
+    const existing = await this.redis.get(idemKey);
+    if (existing) {
+      return false;
+    }
+
+    const queued: GitHubOutboundJob = {
+      id: randomUUID(),
+      repositoryId: job.repositoryId,
+      type: job.type,
+      payload: job.payload,
+      idempotencyKey: job.idempotencyKey,
+      attempt: 1,
+      createdAt: nowIso()
+    };
+
+    await this.redis
+      .multi()
+      .set(idemKey, "queued", "EX", IDEMPOTENCY_TTL_SECONDS)
+      .set(this.jobKey(queued.id), JSON.stringify(queued))
+      .zadd(OUTBOUND_QUEUE_KEY, Date.now(), queued.id)
+      .exec();
+
+    return true;
+  }
+
+  async listDueJobIds(now: number, limit: number): Promise<string[]> {
+    return this.redis.zrangebyscore(OUTBOUND_QUEUE_KEY, 0, now, "LIMIT", 0, limit);
+  }
+
+  async getJob(jobId: string): Promise<GitHubOutboundJob | null> {
+    const raw = await this.redis.get(this.jobKey(jobId));
+    if (!raw) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as GitHubOutboundJob;
+      if (
+        typeof parsed.id === "string" &&
+        typeof parsed.repositoryId === "string" &&
+        (parsed.type === "summary_comment" || parsed.type === "label_update") &&
+        typeof parsed.idempotencyKey === "string" &&
+        typeof parsed.attempt === "number" &&
+        parsed.payload &&
+        typeof parsed.payload === "object"
+      ) {
+        return parsed;
+      }
+    } catch {
+      // Ignore invalid payloads.
+    }
+
+    return null;
+  }
+
+  async deleteJob(jobId: string): Promise<void> {
+    await this.redis.multi().zrem(OUTBOUND_QUEUE_KEY, jobId).del(this.jobKey(jobId)).exec();
+  }
+
+  async schedule(job: GitHubOutboundJob, delayMs: number, incrementAttempt: boolean): Promise<void> {
+    const next: GitHubOutboundJob = {
+      ...job,
+      attempt: incrementAttempt ? job.attempt + 1 : job.attempt
+    };
+
+    await this.redis
+      .multi()
+      .set(this.jobKey(job.id), JSON.stringify(next))
+      .zadd(OUTBOUND_QUEUE_KEY, Date.now() + Math.max(1_000, delayMs), job.id)
+      .exec();
+  }
+
+  async moveToDeadLetter(job: GitHubOutboundJob, reason: string): Promise<void> {
+    const payload: GitHubOutboundDeadLetter = {
+      job,
+      failedAt: nowIso(),
+      reason
+    };
+
+    await this.redis
+      .multi()
+      .zrem(OUTBOUND_QUEUE_KEY, job.id)
+      .del(this.jobKey(job.id))
+      .lpush(OUTBOUND_DEAD_LETTER_KEY, JSON.stringify(payload))
+      .ltrim(OUTBOUND_DEAD_LETTER_KEY, 0, 499)
+      .exec();
+  }
+
+  async getRepoNotBefore(repositoryId: string): Promise<number | null> {
+    const raw = await this.redis.get(this.rateGuardKey(repositoryId));
+    if (!raw) {
+      return null;
+    }
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  async setRepoNotBefore(repositoryId: string, timestampMs: number): Promise<void> {
+    const ttlSeconds = Math.max(30, Math.ceil((timestampMs - Date.now()) / 1000) + 30);
+    await this.redis.set(this.rateGuardKey(repositoryId), String(timestampMs), "EX", ttlSeconds);
+  }
+}
+````
+
+## File: apps/server/src/services/github-outbound-service.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { afterEach, describe, it } from "node:test";
+import type { Repository } from "@agentswarm/shared-types";
+import type { GitHubOutboundJob, GitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
+import { GitHubOutboundService } from "./github-outbound-service.js";
+
+class InMemoryQueueStore implements GitHubOutboundQueueStore {
+  jobs = new Map<string, GitHubOutboundJob>();
+  due = new Set<string>();
+  deadLetters: Array<{ id: string; reason: string }> = [];
+  idempotency = new Set<string>();
+  repoNotBefore = new Map<string, number>();
+
+  async enqueueJob(job: Omit<GitHubOutboundJob, "id" | "attempt" | "createdAt">): Promise<boolean> {
+    if (this.idempotency.has(job.idempotencyKey)) {
+      return false;
+    }
+    this.idempotency.add(job.idempotencyKey);
+    const queued: GitHubOutboundJob = {
+      ...job,
+      id: `${job.idempotencyKey}:${Math.random()}`,
+      attempt: 1,
+      createdAt: new Date().toISOString()
+    };
+    this.jobs.set(queued.id, queued);
+    this.due.add(queued.id);
+    return true;
+  }
+
+  async listDueJobIds(_now: number, limit: number): Promise<string[]> {
+    return [...this.due].slice(0, limit);
+  }
+
+  async getJob(jobId: string): Promise<GitHubOutboundJob | null> {
+    return this.jobs.get(jobId) ?? null;
+  }
+
+  async deleteJob(jobId: string): Promise<void> {
+    this.jobs.delete(jobId);
+    this.due.delete(jobId);
+  }
+
+  async schedule(job: GitHubOutboundJob, _delayMs: number, incrementAttempt: boolean): Promise<void> {
+    this.jobs.set(job.id, {
+      ...job,
+      attempt: incrementAttempt ? job.attempt + 1 : job.attempt
+    });
+    this.due.add(job.id);
+  }
+
+  async moveToDeadLetter(job: GitHubOutboundJob, reason: string): Promise<void> {
+    this.deadLetters.push({ id: job.id, reason });
+    this.jobs.delete(job.id);
+    this.due.delete(job.id);
+  }
+
+  async getRepoNotBefore(repositoryId: string): Promise<number | null> {
+    return this.repoNotBefore.get(repositoryId) ?? null;
+  }
+
+  async setRepoNotBefore(repositoryId: string, timestampMs: number): Promise<void> {
+    this.repoNotBefore.set(repositoryId, timestampMs);
+  }
+}
+
+const repo = (): Repository => ({
+  id: "repo-1",
+  name: "Repo",
+  url: "https://github.com/example/repo.git",
+  defaultBranch: "main",
+  envVars: [],
+  webhookUrl: null,
+  webhookEnabled: false,
+  webhookSecretConfigured: false,
+  webhookLastAttemptAt: null,
+  webhookLastStatus: null,
+  webhookLastError: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z"
+});
+
+describe("GitHubOutboundService", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("deduplicates by idempotency key", async () => {
+    const queue = new InMemoryQueueStore();
+    const service = new GitHubOutboundService(
+      queue,
+      { getRepository: async () => repo() } as never,
+      { getRuntimeCredentials: async () => ({ githubToken: "token" }) } as never
+    );
+
+    const first = await service.enqueueSummaryComment({
+      repositoryId: "repo-1",
+      issueNumber: 20,
+      body: "Summary",
+      idempotencyKey: "same-key"
+    });
+    const second = await service.enqueueSummaryComment({
+      repositoryId: "repo-1",
+      issueNumber: 20,
+      body: "Summary",
+      idempotencyKey: "same-key"
+    });
+
+    assert.equal(first, true);
+    assert.equal(second, false);
+  });
+
+  it("retries failed jobs and dead-letters after max attempts", async () => {
+    const queue = new InMemoryQueueStore();
+    const service = new GitHubOutboundService(
+      queue,
+      { getRepository: async () => repo() } as never,
+      { getRuntimeCredentials: async () => ({ githubToken: "token" }) } as never
+    );
+
+    await service.enqueueSummaryComment({
+      repositoryId: "repo-1",
+      issueNumber: 20,
+      body: "Summary",
+      idempotencyKey: "retry-key"
+    });
+
+    globalThis.fetch = (async () => new Response("nope", { status: 500 })) as typeof fetch;
+
+    for (let index = 0; index < 4; index += 1) {
+      await (service as unknown as { processDueJobs: () => Promise<void> }).processDueJobs();
+    }
+
+    assert.equal(queue.jobs.size, 0);
+    assert.equal(queue.deadLetters.length, 1);
+    assert.match(queue.deadLetters[0]?.reason ?? "", /GitHub API error 500/i);
+  });
+
+  it("rate-guards by repository to avoid burst spam", async () => {
+    const queue = new InMemoryQueueStore();
+    const service = new GitHubOutboundService(
+      queue,
+      { getRepository: async () => repo() } as never,
+      { getRuntimeCredentials: async () => ({ githubToken: "token" }) } as never
+    );
+
+    await service.enqueueSummaryComment({
+      repositoryId: "repo-1",
+      issueNumber: 20,
+      body: "one",
+      idempotencyKey: "k1"
+    });
+    await service.enqueueSummaryComment({
+      repositoryId: "repo-1",
+      issueNumber: 20,
+      body: "two",
+      idempotencyKey: "k2"
+    });
+
+    let callCount = 0;
+    globalThis.fetch = (async () => {
+      callCount += 1;
+      return new Response("ok", { status: 201 });
+    }) as typeof fetch;
+
+    await (service as unknown as { processDueJobs: () => Promise<void> }).processDueJobs();
+    assert.equal(callCount, 1);
+
+    await (service as unknown as { processDueJobs: () => Promise<void> }).processDueJobs();
+    assert.equal(callCount, 1);
+
+    queue.repoNotBefore.set("repo-1", Date.now() - 1);
+    await (service as unknown as { processDueJobs: () => Promise<void> }).processDueJobs();
+    assert.equal(callCount, 2);
+  });
+});
+````
+
+## File: apps/server/src/services/github-outbound-service.ts
+````typescript
+import type { Repository } from "@agentswarm/shared-types";
+import type { RepositoryStore } from "./repository-store.js";
+import type { SettingsStore } from "./settings-store.js";
+import type {
+  GitHubLabelUpdatePayload,
+  GitHubOutboundJob,
+  GitHubOutboundQueueStore,
+  GitHubSummaryCommentPayload
+} from "./github-outbound-queue-store.js";
+
+const GITHUB_API_URL = "https://api.github.com";
+const PROCESS_INTERVAL_MS = 1_000;
+const BATCH_SIZE = 25;
+const MAX_ATTEMPTS = 4;
+const RETRY_DELAYS_MS = [10_000, 60_000, 300_000];
+const PER_REPO_MIN_SPACING_MS = 2_500;
+
+const parseGitHubRepository = (repoUrl: string): { owner: string; repo: string } => {
+  const httpsMatch = repoUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  if (httpsMatch) {
+    return { owner: httpsMatch[1]!, repo: httpsMatch[2]! };
+  }
+
+  const sshMatch = repoUrl.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
+  if (sshMatch) {
+    return { owner: sshMatch[1]!, repo: sshMatch[2]! };
+  }
+
+  throw new Error("Repository URL is not a github.com repository.");
+};
+
+const normalizeLabelList = (labels: string[]): string[] =>
+  Array.from(new Set(labels.map((entry) => entry.trim()).filter((entry) => entry.length > 0)));
+
+const isSummaryCommentPayload = (payload: GitHubOutboundJob["payload"]): payload is GitHubSummaryCommentPayload =>
+  typeof (payload as GitHubSummaryCommentPayload).issueNumber === "number" && typeof (payload as GitHubSummaryCommentPayload).body === "string";
+
+const isLabelUpdatePayload = (payload: GitHubOutboundJob["payload"]): payload is GitHubLabelUpdatePayload =>
+  typeof (payload as GitHubLabelUpdatePayload).issueNumber === "number" &&
+  Array.isArray((payload as GitHubLabelUpdatePayload).add) &&
+  Array.isArray((payload as GitHubLabelUpdatePayload).remove);
+
+export class GitHubOutboundService {
+  private interval: NodeJS.Timeout | null = null;
+  private draining = false;
+
+  constructor(
+    private readonly queueStore: GitHubOutboundQueueStore,
+    private readonly repositoryStore: RepositoryStore,
+    private readonly settingsStore: SettingsStore
+  ) {}
+
+  async enqueueSummaryComment(input: {
+    repositoryId: string;
+    issueNumber: number;
+    body: string;
+    idempotencyKey: string;
+  }): Promise<boolean> {
+    return this.queueStore.enqueueJob({
+      repositoryId: input.repositoryId,
+      type: "summary_comment",
+      payload: {
+        issueNumber: input.issueNumber,
+        body: input.body
+      },
+      idempotencyKey: input.idempotencyKey
+    });
+  }
+
+  async enqueueLabelUpdate(input: {
+    repositoryId: string;
+    issueNumber: number;
+    add?: string[];
+    remove?: string[];
+    idempotencyKey: string;
+  }): Promise<boolean> {
+    return this.queueStore.enqueueJob({
+      repositoryId: input.repositoryId,
+      type: "label_update",
+      payload: {
+        issueNumber: input.issueNumber,
+        add: normalizeLabelList(input.add ?? []),
+        remove: normalizeLabelList(input.remove ?? [])
+      },
+      idempotencyKey: input.idempotencyKey
+    });
+  }
+
+  start(): void {
+    if (this.interval) {
+      return;
+    }
+    this.interval = setInterval(() => {
+      void this.processDueJobs();
+    }, PROCESS_INTERVAL_MS);
+  }
+
+  stop(): void {
+    if (!this.interval) {
+      return;
+    }
+    clearInterval(this.interval);
+    this.interval = null;
+  }
+
+  private async getGitHubToken(): Promise<string> {
+    const creds = await this.settingsStore.getRuntimeCredentials();
+    if (!creds.githubToken) {
+      throw new Error("GitHub token is not configured.");
+    }
+    return creds.githubToken;
+  }
+
+  private async fetchRepositoryOrThrow(repositoryId: string): Promise<Repository> {
+    const repository = await this.repositoryStore.getRepository(repositoryId);
+    if (!repository) {
+      throw new Error("Repository not found.");
+    }
+    return repository;
+  }
+
+  private async callGitHubApi(path: string, init: RequestInit): Promise<Response> {
+    const token = await this.getGitHubToken();
+    const response = await fetch(`${GITHUB_API_URL}${path}`, {
+      ...init,
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": "AgentSwarm",
+        "X-GitHub-Api-Version": "2022-11-28",
+        ...(init.headers ?? {})
+      }
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`GitHub API error ${response.status}: ${text || response.statusText}`);
+    }
+
+    return response;
+  }
+
+  private async postSummaryComment(repository: Repository, payload: GitHubSummaryCommentPayload): Promise<void> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const body = payload.body.trim();
+    if (!body) {
+      throw new Error("Summary comment body is empty.");
+    }
+
+    await this.callGitHubApi(`/repos/${owner}/${repo}/issues/${payload.issueNumber}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body })
+    });
+  }
+
+  private async updateLabels(repository: Repository, payload: GitHubLabelUpdatePayload): Promise<void> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const issuePath = `/repos/${owner}/${repo}/issues/${payload.issueNumber}`;
+
+    const issueResponse = await this.callGitHubApi(issuePath, { method: "GET" });
+    const issueData = (await issueResponse.json()) as { labels?: Array<{ name?: string }> };
+    const existing = new Set((issueData.labels ?? []).map((label) => (label.name ?? "").trim()).filter(Boolean));
+
+    for (const label of payload.remove) {
+      existing.delete(label);
+    }
+    for (const label of payload.add) {
+      existing.add(label);
+    }
+
+    await this.callGitHubApi(issuePath, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ labels: [...existing] })
+    });
+  }
+
+  private async deliver(job: GitHubOutboundJob): Promise<void> {
+    const repository = await this.fetchRepositoryOrThrow(job.repositoryId);
+
+    if (job.type === "summary_comment") {
+      if (!isSummaryCommentPayload(job.payload)) {
+        throw new Error("Invalid summary_comment payload.");
+      }
+      await this.postSummaryComment(repository, job.payload);
+      return;
+    }
+
+    if (job.type === "label_update") {
+      if (!isLabelUpdatePayload(job.payload)) {
+        throw new Error("Invalid label_update payload.");
+      }
+      await this.updateLabels(repository, {
+        issueNumber: job.payload.issueNumber,
+        add: normalizeLabelList(job.payload.add),
+        remove: normalizeLabelList(job.payload.remove)
+      });
+      return;
+    }
+
+    throw new Error("Unsupported outbound job type.");
+  }
+
+  private async processDueJobs(): Promise<void> {
+    if (this.draining) {
+      return;
+    }
+
+    this.draining = true;
+    try {
+      const dueIds = await this.queueStore.listDueJobIds(Date.now(), BATCH_SIZE);
+      if (dueIds.length === 0) {
+        return;
+      }
+
+      for (const jobId of dueIds) {
+        const job = await this.queueStore.getJob(jobId);
+        if (!job) {
+          await this.queueStore.deleteJob(jobId);
+          continue;
+        }
+
+        const repoNotBefore = await this.queueStore.getRepoNotBefore(job.repositoryId);
+        const now = Date.now();
+        if (repoNotBefore !== null && repoNotBefore > now) {
+          await this.queueStore.schedule(job, repoNotBefore - now, false);
+          continue;
+        }
+
+        try {
+          await this.deliver(job);
+          await this.queueStore.deleteJob(job.id);
+          await this.queueStore.setRepoNotBefore(job.repositoryId, Date.now() + PER_REPO_MIN_SPACING_MS);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "GitHub outbound delivery failed.";
+          if (job.attempt >= MAX_ATTEMPTS) {
+            await this.queueStore.moveToDeadLetter(job, reason);
+            continue;
+          }
+
+          const retryDelay = RETRY_DELAYS_MS[Math.max(0, job.attempt - 1)] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1]!;
+          await this.queueStore.schedule(job, retryDelay, true);
+        }
+      }
+    } finally {
+      this.draining = false;
+    }
+  }
+}
+````
+
 ## File: apps/server/src/services/openai-diff-assist-service.ts
 ````typescript
 import { access } from "node:fs/promises";
@@ -16165,616 +16775,6 @@ export const registerSnippetRoutes = (
     return reply.status(204).send();
   });
 };
-````
-
-## File: apps/server/src/services/github-outbound-queue-store.ts
-````typescript
-import { randomUUID } from "node:crypto";
-import type Redis from "ioredis";
-
-const OUTBOUND_QUEUE_KEY = "agentswarm:github_outbound_queue";
-const OUTBOUND_JOB_KEY_PREFIX = "agentswarm:github_outbound:";
-const OUTBOUND_IDEMPOTENCY_KEY_PREFIX = "agentswarm:github_outbound_idempotency:";
-const OUTBOUND_DEAD_LETTER_KEY = "agentswarm:github_outbound_dead_letter";
-const OUTBOUND_RATE_GUARD_KEY_PREFIX = "agentswarm:github_outbound_rate_guard:";
-const IDEMPOTENCY_TTL_SECONDS = 7 * 24 * 60 * 60;
-
-export type GitHubOutboundJobType = "summary_comment" | "label_update";
-
-export interface GitHubSummaryCommentPayload {
-  issueNumber: number;
-  body: string;
-}
-
-export interface GitHubLabelUpdatePayload {
-  issueNumber: number;
-  add: string[];
-  remove: string[];
-}
-
-export interface GitHubOutboundJob {
-  id: string;
-  repositoryId: string;
-  type: GitHubOutboundJobType;
-  payload: GitHubSummaryCommentPayload | GitHubLabelUpdatePayload;
-  idempotencyKey: string;
-  attempt: number;
-  createdAt: string;
-}
-
-export interface GitHubOutboundDeadLetter {
-  job: GitHubOutboundJob;
-  failedAt: string;
-  reason: string;
-}
-
-export interface GitHubOutboundQueueStore {
-  enqueueJob(job: Omit<GitHubOutboundJob, "id" | "attempt" | "createdAt">): Promise<boolean>;
-  listDueJobIds(now: number, limit: number): Promise<string[]>;
-  getJob(jobId: string): Promise<GitHubOutboundJob | null>;
-  deleteJob(jobId: string): Promise<void>;
-  schedule(job: GitHubOutboundJob, delayMs: number, incrementAttempt: boolean): Promise<void>;
-  moveToDeadLetter(job: GitHubOutboundJob, reason: string): Promise<void>;
-  getRepoNotBefore(repositoryId: string): Promise<number | null>;
-  setRepoNotBefore(repositoryId: string, timestampMs: number): Promise<void>;
-}
-
-const nowIso = (): string => new Date().toISOString();
-
-export class RedisGitHubOutboundQueueStore implements GitHubOutboundQueueStore {
-  constructor(private readonly redis: Redis) {}
-
-  private jobKey(jobId: string): string {
-    return `${OUTBOUND_JOB_KEY_PREFIX}${jobId}`;
-  }
-
-  private idempotencyKey(key: string): string {
-    return `${OUTBOUND_IDEMPOTENCY_KEY_PREFIX}${key}`;
-  }
-
-  private rateGuardKey(repositoryId: string): string {
-    return `${OUTBOUND_RATE_GUARD_KEY_PREFIX}${repositoryId}`;
-  }
-
-  async enqueueJob(job: Omit<GitHubOutboundJob, "id" | "attempt" | "createdAt">): Promise<boolean> {
-    const idemKey = this.idempotencyKey(job.idempotencyKey);
-    const existing = await this.redis.get(idemKey);
-    if (existing) {
-      return false;
-    }
-
-    const queued: GitHubOutboundJob = {
-      id: randomUUID(),
-      repositoryId: job.repositoryId,
-      type: job.type,
-      payload: job.payload,
-      idempotencyKey: job.idempotencyKey,
-      attempt: 1,
-      createdAt: nowIso()
-    };
-
-    await this.redis
-      .multi()
-      .set(idemKey, "queued", "EX", IDEMPOTENCY_TTL_SECONDS)
-      .set(this.jobKey(queued.id), JSON.stringify(queued))
-      .zadd(OUTBOUND_QUEUE_KEY, Date.now(), queued.id)
-      .exec();
-
-    return true;
-  }
-
-  async listDueJobIds(now: number, limit: number): Promise<string[]> {
-    return this.redis.zrangebyscore(OUTBOUND_QUEUE_KEY, 0, now, "LIMIT", 0, limit);
-  }
-
-  async getJob(jobId: string): Promise<GitHubOutboundJob | null> {
-    const raw = await this.redis.get(this.jobKey(jobId));
-    if (!raw) {
-      return null;
-    }
-
-    try {
-      const parsed = JSON.parse(raw) as GitHubOutboundJob;
-      if (
-        typeof parsed.id === "string" &&
-        typeof parsed.repositoryId === "string" &&
-        (parsed.type === "summary_comment" || parsed.type === "label_update") &&
-        typeof parsed.idempotencyKey === "string" &&
-        typeof parsed.attempt === "number" &&
-        parsed.payload &&
-        typeof parsed.payload === "object"
-      ) {
-        return parsed;
-      }
-    } catch {
-      // Ignore invalid payloads.
-    }
-
-    return null;
-  }
-
-  async deleteJob(jobId: string): Promise<void> {
-    await this.redis.multi().zrem(OUTBOUND_QUEUE_KEY, jobId).del(this.jobKey(jobId)).exec();
-  }
-
-  async schedule(job: GitHubOutboundJob, delayMs: number, incrementAttempt: boolean): Promise<void> {
-    const next: GitHubOutboundJob = {
-      ...job,
-      attempt: incrementAttempt ? job.attempt + 1 : job.attempt
-    };
-
-    await this.redis
-      .multi()
-      .set(this.jobKey(job.id), JSON.stringify(next))
-      .zadd(OUTBOUND_QUEUE_KEY, Date.now() + Math.max(1_000, delayMs), job.id)
-      .exec();
-  }
-
-  async moveToDeadLetter(job: GitHubOutboundJob, reason: string): Promise<void> {
-    const payload: GitHubOutboundDeadLetter = {
-      job,
-      failedAt: nowIso(),
-      reason
-    };
-
-    await this.redis
-      .multi()
-      .zrem(OUTBOUND_QUEUE_KEY, job.id)
-      .del(this.jobKey(job.id))
-      .lpush(OUTBOUND_DEAD_LETTER_KEY, JSON.stringify(payload))
-      .ltrim(OUTBOUND_DEAD_LETTER_KEY, 0, 499)
-      .exec();
-  }
-
-  async getRepoNotBefore(repositoryId: string): Promise<number | null> {
-    const raw = await this.redis.get(this.rateGuardKey(repositoryId));
-    if (!raw) {
-      return null;
-    }
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  async setRepoNotBefore(repositoryId: string, timestampMs: number): Promise<void> {
-    const ttlSeconds = Math.max(30, Math.ceil((timestampMs - Date.now()) / 1000) + 30);
-    await this.redis.set(this.rateGuardKey(repositoryId), String(timestampMs), "EX", ttlSeconds);
-  }
-}
-````
-
-## File: apps/server/src/services/github-outbound-service.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
-import type { Repository } from "@agentswarm/shared-types";
-import type { GitHubOutboundJob, GitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
-import { GitHubOutboundService } from "./github-outbound-service.js";
-
-class InMemoryQueueStore implements GitHubOutboundQueueStore {
-  jobs = new Map<string, GitHubOutboundJob>();
-  due = new Set<string>();
-  deadLetters: Array<{ id: string; reason: string }> = [];
-  idempotency = new Set<string>();
-  repoNotBefore = new Map<string, number>();
-
-  async enqueueJob(job: Omit<GitHubOutboundJob, "id" | "attempt" | "createdAt">): Promise<boolean> {
-    if (this.idempotency.has(job.idempotencyKey)) {
-      return false;
-    }
-    this.idempotency.add(job.idempotencyKey);
-    const queued: GitHubOutboundJob = {
-      ...job,
-      id: `${job.idempotencyKey}:${Math.random()}`,
-      attempt: 1,
-      createdAt: new Date().toISOString()
-    };
-    this.jobs.set(queued.id, queued);
-    this.due.add(queued.id);
-    return true;
-  }
-
-  async listDueJobIds(_now: number, limit: number): Promise<string[]> {
-    return [...this.due].slice(0, limit);
-  }
-
-  async getJob(jobId: string): Promise<GitHubOutboundJob | null> {
-    return this.jobs.get(jobId) ?? null;
-  }
-
-  async deleteJob(jobId: string): Promise<void> {
-    this.jobs.delete(jobId);
-    this.due.delete(jobId);
-  }
-
-  async schedule(job: GitHubOutboundJob, _delayMs: number, incrementAttempt: boolean): Promise<void> {
-    this.jobs.set(job.id, {
-      ...job,
-      attempt: incrementAttempt ? job.attempt + 1 : job.attempt
-    });
-    this.due.add(job.id);
-  }
-
-  async moveToDeadLetter(job: GitHubOutboundJob, reason: string): Promise<void> {
-    this.deadLetters.push({ id: job.id, reason });
-    this.jobs.delete(job.id);
-    this.due.delete(job.id);
-  }
-
-  async getRepoNotBefore(repositoryId: string): Promise<number | null> {
-    return this.repoNotBefore.get(repositoryId) ?? null;
-  }
-
-  async setRepoNotBefore(repositoryId: string, timestampMs: number): Promise<void> {
-    this.repoNotBefore.set(repositoryId, timestampMs);
-  }
-}
-
-const repo = (): Repository => ({
-  id: "repo-1",
-  name: "Repo",
-  url: "https://github.com/example/repo.git",
-  defaultBranch: "main",
-  envVars: [],
-  webhookUrl: null,
-  webhookEnabled: false,
-  webhookSecretConfigured: false,
-  webhookLastAttemptAt: null,
-  webhookLastStatus: null,
-  webhookLastError: null,
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:00.000Z"
-});
-
-describe("GitHubOutboundService", () => {
-  const originalFetch = globalThis.fetch;
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("deduplicates by idempotency key", async () => {
-    const queue = new InMemoryQueueStore();
-    const service = new GitHubOutboundService(
-      queue,
-      { getRepository: async () => repo() } as never,
-      { getRuntimeCredentials: async () => ({ githubToken: "token" }) } as never
-    );
-
-    const first = await service.enqueueSummaryComment({
-      repositoryId: "repo-1",
-      issueNumber: 20,
-      body: "Summary",
-      idempotencyKey: "same-key"
-    });
-    const second = await service.enqueueSummaryComment({
-      repositoryId: "repo-1",
-      issueNumber: 20,
-      body: "Summary",
-      idempotencyKey: "same-key"
-    });
-
-    assert.equal(first, true);
-    assert.equal(second, false);
-  });
-
-  it("retries failed jobs and dead-letters after max attempts", async () => {
-    const queue = new InMemoryQueueStore();
-    const service = new GitHubOutboundService(
-      queue,
-      { getRepository: async () => repo() } as never,
-      { getRuntimeCredentials: async () => ({ githubToken: "token" }) } as never
-    );
-
-    await service.enqueueSummaryComment({
-      repositoryId: "repo-1",
-      issueNumber: 20,
-      body: "Summary",
-      idempotencyKey: "retry-key"
-    });
-
-    globalThis.fetch = (async () => new Response("nope", { status: 500 })) as typeof fetch;
-
-    for (let index = 0; index < 4; index += 1) {
-      await (service as unknown as { processDueJobs: () => Promise<void> }).processDueJobs();
-    }
-
-    assert.equal(queue.jobs.size, 0);
-    assert.equal(queue.deadLetters.length, 1);
-    assert.match(queue.deadLetters[0]?.reason ?? "", /GitHub API error 500/i);
-  });
-
-  it("rate-guards by repository to avoid burst spam", async () => {
-    const queue = new InMemoryQueueStore();
-    const service = new GitHubOutboundService(
-      queue,
-      { getRepository: async () => repo() } as never,
-      { getRuntimeCredentials: async () => ({ githubToken: "token" }) } as never
-    );
-
-    await service.enqueueSummaryComment({
-      repositoryId: "repo-1",
-      issueNumber: 20,
-      body: "one",
-      idempotencyKey: "k1"
-    });
-    await service.enqueueSummaryComment({
-      repositoryId: "repo-1",
-      issueNumber: 20,
-      body: "two",
-      idempotencyKey: "k2"
-    });
-
-    let callCount = 0;
-    globalThis.fetch = (async () => {
-      callCount += 1;
-      return new Response("ok", { status: 201 });
-    }) as typeof fetch;
-
-    await (service as unknown as { processDueJobs: () => Promise<void> }).processDueJobs();
-    assert.equal(callCount, 1);
-
-    await (service as unknown as { processDueJobs: () => Promise<void> }).processDueJobs();
-    assert.equal(callCount, 1);
-
-    queue.repoNotBefore.set("repo-1", Date.now() - 1);
-    await (service as unknown as { processDueJobs: () => Promise<void> }).processDueJobs();
-    assert.equal(callCount, 2);
-  });
-});
-````
-
-## File: apps/server/src/services/github-outbound-service.ts
-````typescript
-import type { Repository } from "@agentswarm/shared-types";
-import type { RepositoryStore } from "./repository-store.js";
-import type { SettingsStore } from "./settings-store.js";
-import type {
-  GitHubLabelUpdatePayload,
-  GitHubOutboundJob,
-  GitHubOutboundQueueStore,
-  GitHubSummaryCommentPayload
-} from "./github-outbound-queue-store.js";
-
-const GITHUB_API_URL = "https://api.github.com";
-const PROCESS_INTERVAL_MS = 1_000;
-const BATCH_SIZE = 25;
-const MAX_ATTEMPTS = 4;
-const RETRY_DELAYS_MS = [10_000, 60_000, 300_000];
-const PER_REPO_MIN_SPACING_MS = 2_500;
-
-const parseGitHubRepository = (repoUrl: string): { owner: string; repo: string } => {
-  const httpsMatch = repoUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
-  if (httpsMatch) {
-    return { owner: httpsMatch[1]!, repo: httpsMatch[2]! };
-  }
-
-  const sshMatch = repoUrl.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (sshMatch) {
-    return { owner: sshMatch[1]!, repo: sshMatch[2]! };
-  }
-
-  throw new Error("Repository URL is not a github.com repository.");
-};
-
-const normalizeLabelList = (labels: string[]): string[] =>
-  Array.from(new Set(labels.map((entry) => entry.trim()).filter((entry) => entry.length > 0)));
-
-const isSummaryCommentPayload = (payload: GitHubOutboundJob["payload"]): payload is GitHubSummaryCommentPayload =>
-  typeof (payload as GitHubSummaryCommentPayload).issueNumber === "number" && typeof (payload as GitHubSummaryCommentPayload).body === "string";
-
-const isLabelUpdatePayload = (payload: GitHubOutboundJob["payload"]): payload is GitHubLabelUpdatePayload =>
-  typeof (payload as GitHubLabelUpdatePayload).issueNumber === "number" &&
-  Array.isArray((payload as GitHubLabelUpdatePayload).add) &&
-  Array.isArray((payload as GitHubLabelUpdatePayload).remove);
-
-export class GitHubOutboundService {
-  private interval: NodeJS.Timeout | null = null;
-  private draining = false;
-
-  constructor(
-    private readonly queueStore: GitHubOutboundQueueStore,
-    private readonly repositoryStore: RepositoryStore,
-    private readonly settingsStore: SettingsStore
-  ) {}
-
-  async enqueueSummaryComment(input: {
-    repositoryId: string;
-    issueNumber: number;
-    body: string;
-    idempotencyKey: string;
-  }): Promise<boolean> {
-    return this.queueStore.enqueueJob({
-      repositoryId: input.repositoryId,
-      type: "summary_comment",
-      payload: {
-        issueNumber: input.issueNumber,
-        body: input.body
-      },
-      idempotencyKey: input.idempotencyKey
-    });
-  }
-
-  async enqueueLabelUpdate(input: {
-    repositoryId: string;
-    issueNumber: number;
-    add?: string[];
-    remove?: string[];
-    idempotencyKey: string;
-  }): Promise<boolean> {
-    return this.queueStore.enqueueJob({
-      repositoryId: input.repositoryId,
-      type: "label_update",
-      payload: {
-        issueNumber: input.issueNumber,
-        add: normalizeLabelList(input.add ?? []),
-        remove: normalizeLabelList(input.remove ?? [])
-      },
-      idempotencyKey: input.idempotencyKey
-    });
-  }
-
-  start(): void {
-    if (this.interval) {
-      return;
-    }
-    this.interval = setInterval(() => {
-      void this.processDueJobs();
-    }, PROCESS_INTERVAL_MS);
-  }
-
-  stop(): void {
-    if (!this.interval) {
-      return;
-    }
-    clearInterval(this.interval);
-    this.interval = null;
-  }
-
-  private async getGitHubToken(): Promise<string> {
-    const creds = await this.settingsStore.getRuntimeCredentials();
-    if (!creds.githubToken) {
-      throw new Error("GitHub token is not configured.");
-    }
-    return creds.githubToken;
-  }
-
-  private async fetchRepositoryOrThrow(repositoryId: string): Promise<Repository> {
-    const repository = await this.repositoryStore.getRepository(repositoryId);
-    if (!repository) {
-      throw new Error("Repository not found.");
-    }
-    return repository;
-  }
-
-  private async callGitHubApi(path: string, init: RequestInit): Promise<Response> {
-    const token = await this.getGitHubToken();
-    const response = await fetch(`${GITHUB_API_URL}${path}`, {
-      ...init,
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${token}`,
-        "User-Agent": "AgentSwarm",
-        "X-GitHub-Api-Version": "2022-11-28",
-        ...(init.headers ?? {})
-      }
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`GitHub API error ${response.status}: ${text || response.statusText}`);
-    }
-
-    return response;
-  }
-
-  private async postSummaryComment(repository: Repository, payload: GitHubSummaryCommentPayload): Promise<void> {
-    const { owner, repo } = parseGitHubRepository(repository.url);
-    const body = payload.body.trim();
-    if (!body) {
-      throw new Error("Summary comment body is empty.");
-    }
-
-    await this.callGitHubApi(`/repos/${owner}/${repo}/issues/${payload.issueNumber}/comments`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ body })
-    });
-  }
-
-  private async updateLabels(repository: Repository, payload: GitHubLabelUpdatePayload): Promise<void> {
-    const { owner, repo } = parseGitHubRepository(repository.url);
-    const issuePath = `/repos/${owner}/${repo}/issues/${payload.issueNumber}`;
-
-    const issueResponse = await this.callGitHubApi(issuePath, { method: "GET" });
-    const issueData = (await issueResponse.json()) as { labels?: Array<{ name?: string }> };
-    const existing = new Set((issueData.labels ?? []).map((label) => (label.name ?? "").trim()).filter(Boolean));
-
-    for (const label of payload.remove) {
-      existing.delete(label);
-    }
-    for (const label of payload.add) {
-      existing.add(label);
-    }
-
-    await this.callGitHubApi(issuePath, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ labels: [...existing] })
-    });
-  }
-
-  private async deliver(job: GitHubOutboundJob): Promise<void> {
-    const repository = await this.fetchRepositoryOrThrow(job.repositoryId);
-
-    if (job.type === "summary_comment") {
-      if (!isSummaryCommentPayload(job.payload)) {
-        throw new Error("Invalid summary_comment payload.");
-      }
-      await this.postSummaryComment(repository, job.payload);
-      return;
-    }
-
-    if (job.type === "label_update") {
-      if (!isLabelUpdatePayload(job.payload)) {
-        throw new Error("Invalid label_update payload.");
-      }
-      await this.updateLabels(repository, {
-        issueNumber: job.payload.issueNumber,
-        add: normalizeLabelList(job.payload.add),
-        remove: normalizeLabelList(job.payload.remove)
-      });
-      return;
-    }
-
-    throw new Error("Unsupported outbound job type.");
-  }
-
-  private async processDueJobs(): Promise<void> {
-    if (this.draining) {
-      return;
-    }
-
-    this.draining = true;
-    try {
-      const dueIds = await this.queueStore.listDueJobIds(Date.now(), BATCH_SIZE);
-      if (dueIds.length === 0) {
-        return;
-      }
-
-      for (const jobId of dueIds) {
-        const job = await this.queueStore.getJob(jobId);
-        if (!job) {
-          await this.queueStore.deleteJob(jobId);
-          continue;
-        }
-
-        const repoNotBefore = await this.queueStore.getRepoNotBefore(job.repositoryId);
-        const now = Date.now();
-        if (repoNotBefore !== null && repoNotBefore > now) {
-          await this.queueStore.schedule(job, repoNotBefore - now, false);
-          continue;
-        }
-
-        try {
-          await this.deliver(job);
-          await this.queueStore.deleteJob(job.id);
-          await this.queueStore.setRepoNotBefore(job.repositoryId, Date.now() + PER_REPO_MIN_SPACING_MS);
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : "GitHub outbound delivery failed.";
-          if (job.attempt >= MAX_ATTEMPTS) {
-            await this.queueStore.moveToDeadLetter(job, reason);
-            continue;
-          }
-
-          const retryDelay = RETRY_DELAYS_MS[Math.max(0, job.attempt - 1)] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1]!;
-          await this.queueStore.schedule(job, retryDelay, true);
-        }
-      }
-    } finally {
-      this.draining = false;
-    }
-  }
-}
 ````
 
 ## File: apps/server/src/services/repo-sync-manager.ts
@@ -29080,6 +29080,37 @@ export const registerGitHubWebhookRoutes = (
 };
 ````
 
+## File: apps/server/src/services/app-stores.ts
+````typescript
+import type { CredentialStore } from "./credential-store.js";
+import type { RepositoryStore } from "./repository-store.js";
+import type { RoleStore } from "./role-store.js";
+import type { SessionStore } from "./session-store.js";
+import type { SettingsStore } from "./settings-store.js";
+import type { SnippetStore } from "./snippet-store.js";
+import type { SequenceStore } from "./sequence-store.js";
+import type { TaskQueueStore } from "./task-queue-store.js";
+import type { TaskStore } from "./task-store.js";
+import type { UserStore } from "./user-store.js";
+import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
+import type { GitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
+
+export interface AppStores {
+  taskStore: TaskStore;
+  taskQueueStore: TaskQueueStore;
+  githubOutboundQueueStore: GitHubOutboundQueueStore;
+  webhookDeliveryStore: WebhookDeliveryStore;
+  snippetStore: SnippetStore;
+  sequenceStore: SequenceStore;
+  repositoryStore: RepositoryStore;
+  credentialStore: CredentialStore;
+  roleStore: RoleStore;
+  userStore: UserStore;
+  sessionStore: SessionStore;
+  settingsStore: SettingsStore;
+}
+````
+
 ## File: apps/server/src/services/create-postgres-stores.ts
 ````typescript
 import type { Pool } from "pg";
@@ -32737,37 +32768,6 @@ await writeFile(
 );
 
 console.log("[runtime] completed");
-````
-
-## File: apps/server/src/services/app-stores.ts
-````typescript
-import type { CredentialStore } from "./credential-store.js";
-import type { RepositoryStore } from "./repository-store.js";
-import type { RoleStore } from "./role-store.js";
-import type { SessionStore } from "./session-store.js";
-import type { SettingsStore } from "./settings-store.js";
-import type { SnippetStore } from "./snippet-store.js";
-import type { SequenceStore } from "./sequence-store.js";
-import type { TaskQueueStore } from "./task-queue-store.js";
-import type { TaskStore } from "./task-store.js";
-import type { UserStore } from "./user-store.js";
-import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
-import type { GitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
-
-export interface AppStores {
-  taskStore: TaskStore;
-  taskQueueStore: TaskQueueStore;
-  githubOutboundQueueStore: GitHubOutboundQueueStore;
-  webhookDeliveryStore: WebhookDeliveryStore;
-  snippetStore: SnippetStore;
-  sequenceStore: SequenceStore;
-  repositoryStore: RepositoryStore;
-  credentialStore: CredentialStore;
-  roleStore: RoleStore;
-  userStore: UserStore;
-  sessionStore: SessionStore;
-  settingsStore: SettingsStore;
-}
 ````
 
 ## File: apps/server/src/services/repository-store.ts
@@ -40408,6 +40408,349 @@ export class SequenceExecutionService {
 }
 ````
 
+## File: apps/server/src/index.ts
+````typescript
+import Fastify from "fastify";
+import { randomUUID } from "node:crypto";
+import cookie from "@fastify/cookie";
+import cors from "@fastify/cors";
+import * as Sentry from "@sentry/node";
+import { Server as SocketIOServer } from "socket.io";
+import type { RealtimeEvent } from "@agentswarm/shared-types";
+import { env } from "./config/env.js";
+import { createAuthService } from "./lib/auth.js";
+import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
+import { createRedisClients } from "./lib/redis.js";
+import { EventBus } from "./lib/events.js";
+import { createPostgresStores } from "./services/create-postgres-stores.js";
+import { registerAuthRoutes } from "./routes/auth.js";
+import { SpawnerService } from "./services/spawner.js";
+import { SchedulerService } from "./services/scheduler.js";
+import { GitHubImportService } from "./services/github-import-service.js";
+import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
+import { GitHubOutboundService } from "./services/github-outbound-service.js";
+import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
+import { registerRoleRoutes } from "./routes/roles.js";
+import { registerTaskRoutes } from "./routes/tasks.js";
+import { registerUserRoutes } from "./routes/users.js";
+import { registerSettingsRoutes } from "./routes/settings.js";
+import { registerRepositoryRoutes } from "./routes/repositories.js";
+import { registerImportRoutes } from "./routes/imports.js";
+import { registerSnippetRoutes } from "./routes/snippets.js";
+import { registerSequenceRoutes } from "./routes/sequences.js";
+import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
+import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
+
+const readHeaderValue = (value: string | string[] | undefined): string | null => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (Array.isArray(value) && value.length > 0) {
+    const first = value[0]?.trim();
+    return first && first.length > 0 ? first : null;
+  }
+  return null;
+};
+
+const getOperationIdFromHeaders = (headers: Record<string, string | string[] | undefined>): string | null =>
+  readHeaderValue(headers["x-operation-id"]) ?? readHeaderValue(headers["x-agent-operation-id"]);
+
+const bootstrap = async (): Promise<void> => {
+  const sentryEnabled = env.SENTRY_ENABLED && env.SENTRY_DSN.trim().length > 0;
+  if (sentryEnabled) {
+    Sentry.init({
+      dsn: env.SENTRY_DSN,
+      tracesSampleRate: 1
+    });
+  }
+
+  const app = Fastify({
+    logger: {
+      level: process.env.LOG_LEVEL ?? "info",
+      base: { service: "agentswarm-server" }
+    },
+    disableRequestLogging: true,
+    requestIdHeader: "x-request-id",
+    genReqId: (rawRequest) => readHeaderValue(rawRequest.headers["x-request-id"]) ?? randomUUID(),
+    bodyLimit: 35 * 1024 * 1024
+  });
+  await app.register(cookie);
+  app.decorateRequest("auth", null);
+  await app.register(cors, {
+    origin: env.CORS_ORIGIN,
+    credentials: true
+  });
+  app.addHook("onRequest", async (request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    reply.header("x-request-id", request.id);
+    if (operationId) {
+      reply.header("x-operation-id", operationId);
+    }
+    request.log.info(
+      {
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url
+      },
+      "request.started"
+    );
+  });
+  app.addHook("onResponse", async (request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    request.log.info(
+      {
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url,
+        statusCode: reply.statusCode,
+        durationMs: reply.elapsedTime
+      },
+      "request.completed"
+    );
+  });
+  app.log.info(
+    {
+      event: "startup.config",
+      port: env.PORT,
+      corsOrigin: env.CORS_ORIGIN,
+      durableStores: "postgres",
+      runtimeServices: "redis",
+      postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
+      sentryEnabled,
+      taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
+      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
+    },
+    "Server configuration loaded"
+  );
+
+  const redisClients = createRedisClients(env.REDIS_URL);
+  const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
+  const postgresPool = createPostgresPool(env.DATABASE_URL);
+  if (env.POSTGRES_AUTO_MIGRATE) {
+    app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
+    await runPostgresMigrations(postgresPool);
+    app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
+  } else {
+    app.log.info({ event: "startup.migrations", mode: "manual" }, "Skipping auto-migrations");
+  }
+
+  const {
+    taskStore,
+    taskQueueStore,
+    githubOutboundQueueStore,
+    webhookDeliveryStore,
+    snippetStore,
+    sequenceStore,
+    repositoryStore,
+    credentialStore,
+    roleStore,
+    userStore,
+    sessionStore,
+    settingsStore
+  } = createPostgresStores(
+    postgresPool,
+    redisClients,
+    eventBus,
+    env.AUTH_SESSION_TTL_DAYS
+  );
+  const auth = createAuthService({
+    userStore,
+    sessionStore,
+    cookieName: env.AUTH_COOKIE_NAME,
+    taskStore,
+    credentialStore
+  });
+  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
+  const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
+  const githubImportService = new GitHubImportService(settingsStore);
+  const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
+  const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
+  const githubStatusSyncService = new GitHubStatusSyncService(repositoryStore, githubOutboundService);
+
+  await roleStore.ensureDefaultAdminRole();
+  await userStore.ensureDefaultAdminUser({
+    name: env.DEFAULT_ADMIN_NAME,
+    email: env.DEFAULT_ADMIN_EMAIL,
+    password: env.DEFAULT_ADMIN_PASSWORD
+  });
+
+  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore });
+  registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
+  registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
+  registerTaskRoutes(app, {
+    taskStore,
+    taskQueueStore,
+    repositoryStore,
+    userStore,
+    scheduler,
+    spawner,
+    settingsStore,
+    sequenceStore,
+    snippetStore,
+    auth
+  });
+  registerSnippetRoutes(app, { snippetStore, auth });
+  registerSequenceRoutes(app, { sequenceStore, auth });
+  registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
+  registerSettingsRoutes(app, { settingsStore, scheduler, auth });
+  registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, userStore, scheduler, spawner, auth });
+  registerGitHubWebhookRoutes(app, {
+    repositoryStore,
+    githubImportService,
+    taskStore,
+    userStore,
+    scheduler,
+    spawner,
+    snippetStore
+  });
+
+  app.get("/health", async () => ({ ok: true }));
+
+  app.setErrorHandler((error, request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    request.log.error(
+      {
+        err: error,
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url
+      },
+      "request.failed"
+    );
+    if (sentryEnabled) {
+      Sentry.captureException(error, {
+        tags: {
+          route: request.routeOptions.url
+        },
+        extra: {
+          requestId: request.id,
+          operationId,
+          method: request.method,
+          url: request.url
+        }
+      });
+    }
+    void reply.send(error);
+  });
+
+  await app.ready();
+  attachTaskInteractiveTerminalUpgrade(app.server, {
+    auth,
+    taskStore,
+    settingsStore,
+    spawner,
+    userStore,
+    repositoryStore
+  });
+
+  const io = new SocketIOServer(app.server, {
+    cors: {
+      origin: env.CORS_ORIGIN,
+      credentials: true
+    }
+  });
+  io.use(auth.authorizeSocket());
+
+  io.on("connection", (socket) => {
+    auth.onSocketConnection(socket);
+    app.log.info({ socketId: socket.id }, "Socket client connected");
+  });
+
+  await redisClients.sub.subscribe(env.EVENT_CHANNEL);
+  redisClients.sub.on("message", (_channel, message) => {
+    try {
+      const event = JSON.parse(message) as RealtimeEvent;
+      void webhookDeliveryService.handleRealtimeEvent(event);
+      void githubStatusSyncService.handleRealtimeEvent(event);
+      void auth.emitScopedRealtimeEvent(io, event);
+    } catch (error) {
+      app.log.error({ error }, "Failed to parse event message");
+    }
+  });
+
+  webhookDeliveryService.start();
+  githubOutboundService.start();
+  await scheduler.bootstrap();
+
+  let closeStarted = false;
+  const close = async (): Promise<void> => {
+    if (closeStarted) {
+      return;
+    }
+    closeStarted = true;
+    scheduler.stop();
+    webhookDeliveryService.stop();
+    githubOutboundService.stop();
+    io.close();
+    await Promise.all([
+      ...(postgresPool ? [postgresPool.end()] : []),
+      redisClients.command.quit(),
+      redisClients.pub.quit(),
+      redisClients.sub.quit()
+    ]);
+    await app.close();
+    if (sentryEnabled) {
+      await Sentry.close(2_000);
+    }
+  };
+
+  process.on("SIGINT", () => {
+    app.log.warn({ signal: "SIGINT" }, "Shutdown signal received");
+    void close();
+  });
+  process.on("SIGTERM", () => {
+    app.log.warn({ signal: "SIGTERM" }, "Shutdown signal received");
+    void close();
+  });
+
+  process.on("uncaughtException", (error) => {
+    app.log.fatal({ err: error }, "Unhandled exception");
+    if (sentryEnabled) {
+      Sentry.captureException(error);
+    }
+    void close().finally(() => process.exit(1));
+  });
+  process.on("unhandledRejection", (reason) => {
+    app.log.fatal({ reason }, "Unhandled promise rejection");
+    if (sentryEnabled) {
+      Sentry.captureException(reason);
+    }
+    void close().finally(() => process.exit(1));
+  });
+
+  const listenAddress = await app.listen({ port: env.PORT, host: "0.0.0.0" });
+  app.log.info(
+    {
+      event: "startup.ready",
+      listenAddress,
+      healthPath: "/health",
+      proxyHealthPath: "/api/health"
+    },
+    "Server started"
+  );
+};
+
+void bootstrap().catch((error) => {
+  // Startup errors should stop the process so Docker restart policies can react.
+  const errorForLog =
+    error instanceof Error
+      ? { name: error.name, message: error.message, stack: error.stack }
+      : { message: String(error) };
+  console.error(
+    JSON.stringify({
+      level: "fatal",
+      event: "startup.bootstrap_failed",
+      error: errorForLog
+    })
+  );
+  process.exit(1);
+});
+````
+
 ## File: apps/web/components/app-shell.tsx
 ````typescript
 "use client";
@@ -41591,349 +41934,6 @@ describe("buildTaskLifecycleViewModel", () => {
     assert.equal(vm.checkpointDiffActionsBlocked, true);
     assert.ok(vm.checkpointDiffActionsBlockedReason);
   });
-});
-````
-
-## File: apps/server/src/index.ts
-````typescript
-import Fastify from "fastify";
-import { randomUUID } from "node:crypto";
-import cookie from "@fastify/cookie";
-import cors from "@fastify/cors";
-import * as Sentry from "@sentry/node";
-import { Server as SocketIOServer } from "socket.io";
-import type { RealtimeEvent } from "@agentswarm/shared-types";
-import { env } from "./config/env.js";
-import { createAuthService } from "./lib/auth.js";
-import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
-import { createRedisClients } from "./lib/redis.js";
-import { EventBus } from "./lib/events.js";
-import { createPostgresStores } from "./services/create-postgres-stores.js";
-import { registerAuthRoutes } from "./routes/auth.js";
-import { SpawnerService } from "./services/spawner.js";
-import { SchedulerService } from "./services/scheduler.js";
-import { GitHubImportService } from "./services/github-import-service.js";
-import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
-import { GitHubOutboundService } from "./services/github-outbound-service.js";
-import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
-import { registerRoleRoutes } from "./routes/roles.js";
-import { registerTaskRoutes } from "./routes/tasks.js";
-import { registerUserRoutes } from "./routes/users.js";
-import { registerSettingsRoutes } from "./routes/settings.js";
-import { registerRepositoryRoutes } from "./routes/repositories.js";
-import { registerImportRoutes } from "./routes/imports.js";
-import { registerSnippetRoutes } from "./routes/snippets.js";
-import { registerSequenceRoutes } from "./routes/sequences.js";
-import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
-import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
-
-const readHeaderValue = (value: string | string[] | undefined): string | null => {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  if (Array.isArray(value) && value.length > 0) {
-    const first = value[0]?.trim();
-    return first && first.length > 0 ? first : null;
-  }
-  return null;
-};
-
-const getOperationIdFromHeaders = (headers: Record<string, string | string[] | undefined>): string | null =>
-  readHeaderValue(headers["x-operation-id"]) ?? readHeaderValue(headers["x-agent-operation-id"]);
-
-const bootstrap = async (): Promise<void> => {
-  const sentryEnabled = env.SENTRY_ENABLED && env.SENTRY_DSN.trim().length > 0;
-  if (sentryEnabled) {
-    Sentry.init({
-      dsn: env.SENTRY_DSN,
-      tracesSampleRate: 1
-    });
-  }
-
-  const app = Fastify({
-    logger: {
-      level: process.env.LOG_LEVEL ?? "info",
-      base: { service: "agentswarm-server" }
-    },
-    disableRequestLogging: true,
-    requestIdHeader: "x-request-id",
-    genReqId: (rawRequest) => readHeaderValue(rawRequest.headers["x-request-id"]) ?? randomUUID(),
-    bodyLimit: 35 * 1024 * 1024
-  });
-  await app.register(cookie);
-  app.decorateRequest("auth", null);
-  await app.register(cors, {
-    origin: env.CORS_ORIGIN,
-    credentials: true
-  });
-  app.addHook("onRequest", async (request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    reply.header("x-request-id", request.id);
-    if (operationId) {
-      reply.header("x-operation-id", operationId);
-    }
-    request.log.info(
-      {
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url
-      },
-      "request.started"
-    );
-  });
-  app.addHook("onResponse", async (request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    request.log.info(
-      {
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url,
-        statusCode: reply.statusCode,
-        durationMs: reply.elapsedTime
-      },
-      "request.completed"
-    );
-  });
-  app.log.info(
-    {
-      event: "startup.config",
-      port: env.PORT,
-      corsOrigin: env.CORS_ORIGIN,
-      durableStores: "postgres",
-      runtimeServices: "redis",
-      postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
-      sentryEnabled,
-      taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
-      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
-    },
-    "Server configuration loaded"
-  );
-
-  const redisClients = createRedisClients(env.REDIS_URL);
-  const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
-  const postgresPool = createPostgresPool(env.DATABASE_URL);
-  if (env.POSTGRES_AUTO_MIGRATE) {
-    app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
-    await runPostgresMigrations(postgresPool);
-    app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
-  } else {
-    app.log.info({ event: "startup.migrations", mode: "manual" }, "Skipping auto-migrations");
-  }
-
-  const {
-    taskStore,
-    taskQueueStore,
-    githubOutboundQueueStore,
-    webhookDeliveryStore,
-    snippetStore,
-    sequenceStore,
-    repositoryStore,
-    credentialStore,
-    roleStore,
-    userStore,
-    sessionStore,
-    settingsStore
-  } = createPostgresStores(
-    postgresPool,
-    redisClients,
-    eventBus,
-    env.AUTH_SESSION_TTL_DAYS
-  );
-  const auth = createAuthService({
-    userStore,
-    sessionStore,
-    cookieName: env.AUTH_COOKIE_NAME,
-    taskStore,
-    credentialStore
-  });
-  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
-  const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
-  const githubImportService = new GitHubImportService(settingsStore);
-  const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
-  const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
-  const githubStatusSyncService = new GitHubStatusSyncService(repositoryStore, githubOutboundService);
-
-  await roleStore.ensureDefaultAdminRole();
-  await userStore.ensureDefaultAdminUser({
-    name: env.DEFAULT_ADMIN_NAME,
-    email: env.DEFAULT_ADMIN_EMAIL,
-    password: env.DEFAULT_ADMIN_PASSWORD
-  });
-
-  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore });
-  registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
-  registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
-  registerTaskRoutes(app, {
-    taskStore,
-    taskQueueStore,
-    repositoryStore,
-    userStore,
-    scheduler,
-    spawner,
-    settingsStore,
-    sequenceStore,
-    snippetStore,
-    auth
-  });
-  registerSnippetRoutes(app, { snippetStore, auth });
-  registerSequenceRoutes(app, { sequenceStore, auth });
-  registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
-  registerSettingsRoutes(app, { settingsStore, scheduler, auth });
-  registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, userStore, scheduler, spawner, auth });
-  registerGitHubWebhookRoutes(app, {
-    repositoryStore,
-    githubImportService,
-    taskStore,
-    userStore,
-    scheduler,
-    spawner,
-    snippetStore
-  });
-
-  app.get("/health", async () => ({ ok: true }));
-
-  app.setErrorHandler((error, request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    request.log.error(
-      {
-        err: error,
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url
-      },
-      "request.failed"
-    );
-    if (sentryEnabled) {
-      Sentry.captureException(error, {
-        tags: {
-          route: request.routeOptions.url
-        },
-        extra: {
-          requestId: request.id,
-          operationId,
-          method: request.method,
-          url: request.url
-        }
-      });
-    }
-    void reply.send(error);
-  });
-
-  await app.ready();
-  attachTaskInteractiveTerminalUpgrade(app.server, {
-    auth,
-    taskStore,
-    settingsStore,
-    spawner,
-    userStore,
-    repositoryStore
-  });
-
-  const io = new SocketIOServer(app.server, {
-    cors: {
-      origin: env.CORS_ORIGIN,
-      credentials: true
-    }
-  });
-  io.use(auth.authorizeSocket());
-
-  io.on("connection", (socket) => {
-    auth.onSocketConnection(socket);
-    app.log.info({ socketId: socket.id }, "Socket client connected");
-  });
-
-  await redisClients.sub.subscribe(env.EVENT_CHANNEL);
-  redisClients.sub.on("message", (_channel, message) => {
-    try {
-      const event = JSON.parse(message) as RealtimeEvent;
-      void webhookDeliveryService.handleRealtimeEvent(event);
-      void githubStatusSyncService.handleRealtimeEvent(event);
-      void auth.emitScopedRealtimeEvent(io, event);
-    } catch (error) {
-      app.log.error({ error }, "Failed to parse event message");
-    }
-  });
-
-  webhookDeliveryService.start();
-  githubOutboundService.start();
-  await scheduler.bootstrap();
-
-  let closeStarted = false;
-  const close = async (): Promise<void> => {
-    if (closeStarted) {
-      return;
-    }
-    closeStarted = true;
-    scheduler.stop();
-    webhookDeliveryService.stop();
-    githubOutboundService.stop();
-    io.close();
-    await Promise.all([
-      ...(postgresPool ? [postgresPool.end()] : []),
-      redisClients.command.quit(),
-      redisClients.pub.quit(),
-      redisClients.sub.quit()
-    ]);
-    await app.close();
-    if (sentryEnabled) {
-      await Sentry.close(2_000);
-    }
-  };
-
-  process.on("SIGINT", () => {
-    app.log.warn({ signal: "SIGINT" }, "Shutdown signal received");
-    void close();
-  });
-  process.on("SIGTERM", () => {
-    app.log.warn({ signal: "SIGTERM" }, "Shutdown signal received");
-    void close();
-  });
-
-  process.on("uncaughtException", (error) => {
-    app.log.fatal({ err: error }, "Unhandled exception");
-    if (sentryEnabled) {
-      Sentry.captureException(error);
-    }
-    void close().finally(() => process.exit(1));
-  });
-  process.on("unhandledRejection", (reason) => {
-    app.log.fatal({ reason }, "Unhandled promise rejection");
-    if (sentryEnabled) {
-      Sentry.captureException(reason);
-    }
-    void close().finally(() => process.exit(1));
-  });
-
-  const listenAddress = await app.listen({ port: env.PORT, host: "0.0.0.0" });
-  app.log.info(
-    {
-      event: "startup.ready",
-      listenAddress,
-      healthPath: "/health",
-      proxyHealthPath: "/api/health"
-    },
-    "Server started"
-  );
-};
-
-void bootstrap().catch((error) => {
-  // Startup errors should stop the process so Docker restart policies can react.
-  const errorForLog =
-    error instanceof Error
-      ? { name: error.name, message: error.message, stack: error.stack }
-      : { message: String(error) };
-  console.error(
-    JSON.stringify({
-      level: "fatal",
-      event: "startup.bootstrap_failed",
-      error: errorForLog
-    })
-  );
-  process.exit(1);
 });
 ````
 
@@ -61014,8 +61014,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         items={events.map((event) => ({
           key: event.id,
           color: getTimelineEventColor(event),
-          icon: getTimelineEventIcon(event),
-          content: renderTimelineEventContent(event)
+          dot: getTimelineEventIcon(event),
+          children: renderTimelineEventContent(event)
         }))}
       />
     );
