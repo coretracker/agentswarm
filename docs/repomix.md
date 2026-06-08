@@ -15252,6 +15252,7 @@ export class GitHubImportService {
       repoId: repository.id,
       prompt,
       notes: input.notes?.trim() ?? "",
+      deadline: input.deadline ?? null,
       taskType,
       provider: input.provider,
       providerProfile: input.providerProfile,
@@ -15357,6 +15358,7 @@ export class GitHubImportService {
       repoId: repository.id,
       prompt,
       notes: input.notes?.trim() ?? "",
+      deadline: input.deadline ?? null,
       taskType: "build",
       provider: input.provider,
       providerProfile: input.providerProfile,
@@ -16771,6 +16773,262 @@ export const resolveSequenceStepPrompts = async (input: {
 
   return stepPrompts;
 };
+````
+
+## File: apps/server/src/services/snippet-store.ts
+````typescript
+import { nanoid } from "nanoid";
+import type Redis from "ioredis";
+import type { Pool } from "pg";
+import type { CreateSnippetInput, Snippet, SnippetVariable, UpdateSnippetInput } from "@agentswarm/shared-types";
+import { EventBus } from "../lib/events.js";
+
+const SNIPPET_KEY_PREFIX = "agentswarm:snippet:";
+const SNIPPET_IDS_KEY = "agentswarm:snippet_ids";
+const SNIPPET_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SNIPPET_VARIABLE_MAX_COUNT = 100;
+const SNIPPET_VARIABLE_NAME_MAX_LENGTH = 128;
+const SNIPPET_VARIABLE_TEXT_MAX_LENGTH = 200;
+const SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH = 2000;
+const NEWLINE_PATTERN = /\r?\n/u;
+
+const nowIso = (): string => new Date().toISOString();
+const normalizeSnippetVariables = (value: unknown): SnippetVariable[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const variables: SnippetVariable[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+
+    const record = entry as Record<string, unknown>;
+    const name = typeof record.name === "string" ? record.name.trim() : "";
+    if (!name || name.length > SNIPPET_VARIABLE_NAME_MAX_LENGTH || !SNIPPET_VARIABLE_NAME_PATTERN.test(name) || seen.has(name)) {
+      continue;
+    }
+
+    const type = record.type === "multiline" ? "multiline" : "text";
+    const title = typeof record.title === "string" ? record.title.trim() : "";
+    const description = typeof record.description === "string" ? record.description.trim() : "";
+    const defaultValue = typeof record.defaultValue === "string" ? record.defaultValue : "";
+    const normalizedDefaultValue = type === "text" ? (defaultValue.split(NEWLINE_PATTERN)[0] ?? "") : defaultValue;
+    variables.push({
+      name,
+      type,
+      title: title.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH),
+      description: description.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH),
+      defaultValue: normalizedDefaultValue.slice(0, SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH)
+    });
+    seen.add(name);
+    if (variables.length >= SNIPPET_VARIABLE_MAX_COUNT) {
+      break;
+    }
+  }
+
+  return variables;
+};
+
+export interface SnippetStore {
+  createSnippet(input: CreateSnippetInput): Promise<Snippet>;
+  listSnippets(): Promise<Snippet[]>;
+  getSnippet(snippetId: string): Promise<Snippet | null>;
+  updateSnippet(snippetId: string, input: UpdateSnippetInput): Promise<Snippet | null>;
+  deleteSnippet(snippetId: string): Promise<boolean>;
+}
+
+export class RedisSnippetStore implements SnippetStore {
+  constructor(
+    private readonly redis: Redis,
+    private readonly eventBus: EventBus
+  ) {}
+
+  private snippetKey(snippetId: string): string {
+    return `${SNIPPET_KEY_PREFIX}${snippetId}`;
+  }
+
+  private buildSnippet(
+    input: CreateSnippetInput | UpdateSnippetInput,
+    current?: Pick<Snippet, "id" | "createdAt">
+  ): Snippet {
+    const timestamp = nowIso();
+    return {
+      id: current?.id ?? nanoid(),
+      name: input.name.trim(),
+      content: input.content.trim(),
+      variables: normalizeSnippetVariables(input.variables),
+      createdAt: current?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+  }
+
+  async createSnippet(input: CreateSnippetInput): Promise<Snippet> {
+    const snippet = this.buildSnippet(input);
+    await this.redis
+      .multi()
+      .set(this.snippetKey(snippet.id), JSON.stringify(snippet))
+      .sadd(SNIPPET_IDS_KEY, snippet.id)
+      .exec();
+    await this.eventBus.publish({ type: "snippet:created", payload: snippet });
+    return snippet;
+  }
+
+  async listSnippets(): Promise<Snippet[]> {
+    const ids = await this.redis.smembers(SNIPPET_IDS_KEY);
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const pipeline = this.redis.pipeline();
+    for (const id of ids) {
+      pipeline.get(this.snippetKey(id));
+    }
+
+    const result = await pipeline.exec();
+    const snippets: Snippet[] = [];
+    for (const row of result ?? []) {
+      const raw = row[1];
+      if (typeof raw === "string") {
+        const parsed = JSON.parse(raw) as Snippet;
+        snippets.push({ ...parsed, variables: normalizeSnippetVariables(parsed.variables) });
+      }
+    }
+
+    return snippets.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  async getSnippet(snippetId: string): Promise<Snippet | null> {
+    const raw = await this.redis.get(this.snippetKey(snippetId));
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Snippet;
+    return { ...parsed, variables: normalizeSnippetVariables(parsed.variables) };
+  }
+
+  async updateSnippet(snippetId: string, input: UpdateSnippetInput): Promise<Snippet | null> {
+    const current = await this.getSnippet(snippetId);
+    if (!current) {
+      return null;
+    }
+
+    const next = this.buildSnippet(input, current);
+    await this.redis.set(this.snippetKey(snippetId), JSON.stringify(next));
+    await this.eventBus.publish({ type: "snippet:updated", payload: next });
+    return next;
+  }
+
+  async deleteSnippet(snippetId: string): Promise<boolean> {
+    const exists = await this.redis.exists(this.snippetKey(snippetId));
+    if (!exists) {
+      return false;
+    }
+
+    await this.redis.multi().del(this.snippetKey(snippetId)).srem(SNIPPET_IDS_KEY, snippetId).exec();
+    await this.eventBus.publish({ type: "snippet:deleted", payload: { id: snippetId } });
+    return true;
+  }
+}
+
+export class PostgresSnippetStore implements SnippetStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly eventBus: EventBus
+  ) {}
+
+  private buildSnippet(
+    input: CreateSnippetInput | UpdateSnippetInput,
+    current?: Pick<Snippet, "id" | "createdAt">
+  ): Snippet {
+    const timestamp = nowIso();
+    return {
+      id: current?.id ?? nanoid(),
+      name: input.name.trim(),
+      content: input.content.trim(),
+      variables: normalizeSnippetVariables(input.variables),
+      createdAt: current?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+  }
+
+  async createSnippet(input: CreateSnippetInput): Promise<Snippet> {
+    const snippet = this.buildSnippet(input);
+    await this.pool.query(
+      `
+        INSERT INTO snippets (id, name, content, created_at, updated_at, variables)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+      `,
+      [snippet.id, snippet.name, snippet.content, snippet.createdAt, snippet.updatedAt, JSON.stringify(snippet.variables)]
+    );
+    await this.eventBus.publish({ type: "snippet:created", payload: snippet });
+    return snippet;
+  }
+
+  async listSnippets(): Promise<Snippet[]> {
+    const result = await this.pool.query(
+      "SELECT id, name, content, variables, created_at, updated_at FROM snippets ORDER BY updated_at DESC"
+    );
+    return result.rows.map((row) => ({
+      id: String(row.id),
+      name: String(row.name),
+      content: String(row.content),
+      variables: normalizeSnippetVariables(row.variables),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    }));
+  }
+
+  async getSnippet(snippetId: string): Promise<Snippet | null> {
+    const result = await this.pool.query(
+      "SELECT id, name, content, variables, created_at, updated_at FROM snippets WHERE id = $1",
+      [snippetId]
+    );
+    const row = result.rows[0];
+    return row
+      ? {
+          id: String(row.id),
+          name: String(row.name),
+          content: String(row.content),
+          variables: normalizeSnippetVariables(row.variables),
+          createdAt: String(row.created_at),
+          updatedAt: String(row.updated_at)
+        }
+      : null;
+  }
+
+  async updateSnippet(snippetId: string, input: UpdateSnippetInput): Promise<Snippet | null> {
+    const current = await this.getSnippet(snippetId);
+    if (!current) {
+      return null;
+    }
+
+    const next = this.buildSnippet(input, current);
+    await this.pool.query(
+      `
+        UPDATE snippets
+        SET name = $2, content = $3, updated_at = $4, variables = $5::jsonb
+        WHERE id = $1
+      `,
+      [snippetId, next.name, next.content, next.updatedAt, JSON.stringify(next.variables)]
+    );
+    await this.eventBus.publish({ type: "snippet:updated", payload: next });
+    return next;
+  }
+
+  async deleteSnippet(snippetId: string): Promise<boolean> {
+    const result = await this.pool.query("DELETE FROM snippets WHERE id = $1", [snippetId]);
+    if (result.rowCount === 0) {
+      return false;
+    }
+
+    await this.eventBus.publish({ type: "snippet:deleted", payload: { id: snippetId } });
+    return true;
+  }
+}
 ````
 
 ## File: apps/server/src/services/task-draft-store.ts
@@ -19985,12 +20243,123 @@ export const mergeSnippetVariables = (input: {
 };
 ````
 
+## File: apps/web/src/utils/snippets.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { applySnippetVariables, insertSnippetContent } from "./snippets";
+
+describe("insertSnippetContent", () => {
+  it("returns the snippet when the current value is empty", () => {
+    assert.equal(insertSnippetContent("", "  Follow the existing style guide.  "), "Follow the existing style guide.");
+  });
+
+  it("appends the snippet with a blank line separator", () => {
+    assert.equal(
+      insertSnippetContent("Implement the API endpoint.", "Add request validation."),
+      "Implement the API endpoint.\n\nAdd request validation."
+    );
+  });
+
+  it("keeps the current value when the snippet is blank", () => {
+    assert.equal(insertSnippetContent("Existing prompt", "   "), "Existing prompt");
+  });
+});
+
+describe("applySnippetVariables", () => {
+  it("replaces placeholders for defined variables", () => {
+    assert.equal(
+      applySnippetVariables("Hello {{name}} from {{team}}", [
+        { name: "name", type: "text", title: "", description: "", defaultValue: "" },
+        { name: "team", type: "text", title: "", description: "", defaultValue: "" }
+      ], { name: "Ada", team: "Core" }),
+      "Hello Ada from Core"
+    );
+  });
+
+  it("keeps placeholders for undefined variables", () => {
+    assert.equal(
+      applySnippetVariables("{{known}} / {{unknown}}", [{ name: "known", type: "text", title: "", description: "", defaultValue: "" }], { known: "ok" }),
+      "ok / {{unknown}}"
+    );
+  });
+
+  it("uses default values when no explicit value is provided", () => {
+    assert.equal(
+      applySnippetVariables("Hello {{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "there" }], {}),
+      "Hello there"
+    );
+  });
+
+  it("forces text variables to single-line values", () => {
+    assert.equal(
+      applySnippetVariables("{{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "Line1\nLine2" }], {}),
+      "Line1"
+    );
+    assert.equal(
+      applySnippetVariables("{{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "" }], { name: "A\nB" }),
+      "A"
+    );
+  });
+
+  it("keeps multiline values for multiline variables", () => {
+    assert.equal(
+      applySnippetVariables("{{details}}", [{ name: "details", type: "multiline", title: "", description: "", defaultValue: "A\nB" }], {}),
+      "A\nB"
+    );
+  });
+});
+````
+
+## File: apps/web/src/utils/snippets.ts
+````typescript
+import type { SnippetVariable } from "@agentswarm/shared-types";
+
+const SNIPPET_PLACEHOLDER_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
+
+export const insertSnippetContent = (current: string | null | undefined, snippet: string | null | undefined): string => {
+  const snippetText = snippet?.trim() ?? "";
+  if (!snippetText) {
+    return current ?? "";
+  }
+
+  const currentText = current ?? "";
+  if (currentText.trim().length === 0) {
+    return snippetText;
+  }
+
+  return `${currentText.trimEnd()}\n\n${snippetText}`;
+};
+
+export const applySnippetVariables = (
+  content: string | null | undefined,
+  variables: SnippetVariable[] | null | undefined,
+  values: Record<string, string>
+): string => {
+  const snippetText = content ?? "";
+  const variablesByName = new Map((variables ?? []).map((entry) => [entry.name, entry]));
+  return snippetText.replace(SNIPPET_PLACEHOLDER_PATTERN, (_match, name: string) => {
+    const variable = variablesByName.get(name);
+    if (!variable) {
+      return `{{${name}}}`;
+    }
+    const value = values[name];
+    const selected = typeof value === "string" && value.length > 0 ? value : variable.defaultValue ?? "";
+    if (variable.type === "text") {
+      return selected.split(/\r?\n/u)[0] ?? "";
+    }
+    return selected;
+  });
+};
+````
+
 ## File: apps/web/src/utils/task-drafts.ts
 ````typescript
 "use client";
 
+import dayjs from "dayjs";
 import type { TaskDraft, TaskDraftDefinition } from "@agentswarm/shared-types";
-import type { TaskDefinitionFormValues } from "../../components/task-definition-fields";
+import { getTaskDefinitionDeadlineIso, type TaskDefinitionFormValues } from "../../components/task-definition-fields";
 import {
   encodeTaskPromptImageFiles,
   taskPromptAttachmentInputsToSelectedFiles,
@@ -20003,6 +20372,7 @@ export const buildTaskDraftDefinition = async (
 ): Promise<TaskDraftDefinition> => ({
   sourceType: values.sourceType ?? "blank",
   title: values.title,
+  deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
   repoId: values.repoId,
   prompt: values.prompt,
   notes: values.notes,
@@ -20025,7 +20395,8 @@ export const buildTaskDraftDefinition = async (
 
 export const formValuesFromTaskDraft = (draft: TaskDraft): TaskDefinitionFormValues => ({
   ...draft.definition,
-  sourceType: draft.definition.sourceType ?? "blank"
+  sourceType: draft.definition.sourceType ?? "blank",
+  deadline: draft.definition.deadline ? dayjs(draft.definition.deadline) : null
 });
 
 export const promptImageFilesFromTaskDraft = (draft: TaskDraft): SelectedTaskPromptImageFile[] =>
@@ -23018,6 +23389,107 @@ export const normalizeTaskLifecycleStatus = (
 };
 ````
 
+## File: apps/server/src/routes/snippets.ts
+````typescript
+import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import type { AuthService } from "../lib/auth.js";
+import type { SnippetStore } from "../services/snippet-store.js";
+
+const snippetSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  content: z.string().trim().min(1).max(20000),
+  variables: z
+    .array(
+      z
+        .object({
+          name: z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(128),
+          type: z.enum(["text", "multiline"]),
+          title: z.string().trim().max(200).default(""),
+          description: z.string().trim().max(200).default(""),
+          defaultValue: z.string().max(2000).default("")
+        })
+        .superRefine((value, ctx) => {
+          if (value.type === "text" && /[\r\n]/.test(value.defaultValue)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["defaultValue"],
+              message: "Default value for text variables must be a single line."
+            });
+          }
+        })
+    )
+    .max(100)
+    .optional()
+});
+
+export const registerSnippetRoutes = (
+  app: FastifyInstance,
+  deps: {
+    snippetStore: SnippetStore;
+    auth: AuthService;
+  }
+): void => {
+  app.get("/snippets", { preHandler: deps.auth.requireAllScopes(["snippet:list"]) }, async () => deps.snippetStore.listSnippets());
+
+  app.get<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:read"]) }, async (request, reply) => {
+    const snippet = await deps.snippetStore.getSnippet(request.params.id);
+    if (!snippet) {
+      return reply.status(404).send({ message: "Snippet not found" });
+    }
+
+    return reply.send(snippet);
+  });
+
+  app.post("/snippets", { preHandler: deps.auth.requireAllScopes(["snippet:create"]) }, async (request, reply) => {
+    const parsed = snippetSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const snippet = await deps.snippetStore.createSnippet(parsed.data);
+    return reply.status(201).send(snippet);
+  });
+
+  app.post<{ Params: { id: string } }>("/snippets/:id/duplicate", { preHandler: deps.auth.requireAllScopes(["snippet:create"]) }, async (request, reply) => {
+    const source = await deps.snippetStore.getSnippet(request.params.id);
+    if (!source) {
+      return reply.status(404).send({ message: "Snippet not found" });
+    }
+
+    const duplicated = await deps.snippetStore.createSnippet({
+      name: `Copy of ${source.name}`,
+      content: source.content,
+      variables: source.variables
+    });
+    return reply.status(201).send(duplicated);
+  });
+
+  app.patch<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:edit"]) }, async (request, reply) => {
+    const parsed = snippetSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const snippet = await deps.snippetStore.updateSnippet(request.params.id, parsed.data);
+    if (!snippet) {
+      return reply.status(404).send({ message: "Snippet not found" });
+    }
+
+    return reply.send(snippet);
+  });
+
+  app.delete<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:delete"]) }, async (request, reply) => {
+    const deleted = await deps.snippetStore.deleteSnippet(request.params.id);
+    if (!deleted) {
+      return reply.status(404).send({ message: "Snippet not found" });
+    }
+
+    return reply.status(204).send();
+  });
+};
+````
+
 ## File: apps/server/src/services/github-status-sync-service.ts
 ````typescript
 import type { RealtimeEvent, Task, TaskStatus } from "@agentswarm/shared-types";
@@ -23366,262 +23838,6 @@ describe("resolveSequenceStepPrompts", () => {
     );
   });
 });
-````
-
-## File: apps/server/src/services/snippet-store.ts
-````typescript
-import { nanoid } from "nanoid";
-import type Redis from "ioredis";
-import type { Pool } from "pg";
-import type { CreateSnippetInput, Snippet, SnippetVariable, UpdateSnippetInput } from "@agentswarm/shared-types";
-import { EventBus } from "../lib/events.js";
-
-const SNIPPET_KEY_PREFIX = "agentswarm:snippet:";
-const SNIPPET_IDS_KEY = "agentswarm:snippet_ids";
-const SNIPPET_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const SNIPPET_VARIABLE_MAX_COUNT = 100;
-const SNIPPET_VARIABLE_NAME_MAX_LENGTH = 128;
-const SNIPPET_VARIABLE_TEXT_MAX_LENGTH = 200;
-const SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH = 2000;
-const NEWLINE_PATTERN = /\r?\n/u;
-
-const nowIso = (): string => new Date().toISOString();
-const normalizeSnippetVariables = (value: unknown): SnippetVariable[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const variables: SnippetVariable[] = [];
-  const seen = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-
-    const record = entry as Record<string, unknown>;
-    const name = typeof record.name === "string" ? record.name.trim() : "";
-    if (!name || name.length > SNIPPET_VARIABLE_NAME_MAX_LENGTH || !SNIPPET_VARIABLE_NAME_PATTERN.test(name) || seen.has(name)) {
-      continue;
-    }
-
-    const type = record.type === "multiline" ? "multiline" : "text";
-    const title = typeof record.title === "string" ? record.title.trim() : "";
-    const description = typeof record.description === "string" ? record.description.trim() : "";
-    const defaultValue = typeof record.defaultValue === "string" ? record.defaultValue : "";
-    const normalizedDefaultValue = type === "text" ? (defaultValue.split(NEWLINE_PATTERN)[0] ?? "") : defaultValue;
-    variables.push({
-      name,
-      type,
-      title: title.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH),
-      description: description.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH),
-      defaultValue: normalizedDefaultValue.slice(0, SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH)
-    });
-    seen.add(name);
-    if (variables.length >= SNIPPET_VARIABLE_MAX_COUNT) {
-      break;
-    }
-  }
-
-  return variables;
-};
-
-export interface SnippetStore {
-  createSnippet(input: CreateSnippetInput): Promise<Snippet>;
-  listSnippets(): Promise<Snippet[]>;
-  getSnippet(snippetId: string): Promise<Snippet | null>;
-  updateSnippet(snippetId: string, input: UpdateSnippetInput): Promise<Snippet | null>;
-  deleteSnippet(snippetId: string): Promise<boolean>;
-}
-
-export class RedisSnippetStore implements SnippetStore {
-  constructor(
-    private readonly redis: Redis,
-    private readonly eventBus: EventBus
-  ) {}
-
-  private snippetKey(snippetId: string): string {
-    return `${SNIPPET_KEY_PREFIX}${snippetId}`;
-  }
-
-  private buildSnippet(
-    input: CreateSnippetInput | UpdateSnippetInput,
-    current?: Pick<Snippet, "id" | "createdAt">
-  ): Snippet {
-    const timestamp = nowIso();
-    return {
-      id: current?.id ?? nanoid(),
-      name: input.name.trim(),
-      content: input.content.trim(),
-      variables: normalizeSnippetVariables(input.variables),
-      createdAt: current?.createdAt ?? timestamp,
-      updatedAt: timestamp
-    };
-  }
-
-  async createSnippet(input: CreateSnippetInput): Promise<Snippet> {
-    const snippet = this.buildSnippet(input);
-    await this.redis
-      .multi()
-      .set(this.snippetKey(snippet.id), JSON.stringify(snippet))
-      .sadd(SNIPPET_IDS_KEY, snippet.id)
-      .exec();
-    await this.eventBus.publish({ type: "snippet:created", payload: snippet });
-    return snippet;
-  }
-
-  async listSnippets(): Promise<Snippet[]> {
-    const ids = await this.redis.smembers(SNIPPET_IDS_KEY);
-    if (ids.length === 0) {
-      return [];
-    }
-
-    const pipeline = this.redis.pipeline();
-    for (const id of ids) {
-      pipeline.get(this.snippetKey(id));
-    }
-
-    const result = await pipeline.exec();
-    const snippets: Snippet[] = [];
-    for (const row of result ?? []) {
-      const raw = row[1];
-      if (typeof raw === "string") {
-        const parsed = JSON.parse(raw) as Snippet;
-        snippets.push({ ...parsed, variables: normalizeSnippetVariables(parsed.variables) });
-      }
-    }
-
-    return snippets.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  }
-
-  async getSnippet(snippetId: string): Promise<Snippet | null> {
-    const raw = await this.redis.get(this.snippetKey(snippetId));
-    if (!raw) {
-      return null;
-    }
-
-    const parsed = JSON.parse(raw) as Snippet;
-    return { ...parsed, variables: normalizeSnippetVariables(parsed.variables) };
-  }
-
-  async updateSnippet(snippetId: string, input: UpdateSnippetInput): Promise<Snippet | null> {
-    const current = await this.getSnippet(snippetId);
-    if (!current) {
-      return null;
-    }
-
-    const next = this.buildSnippet(input, current);
-    await this.redis.set(this.snippetKey(snippetId), JSON.stringify(next));
-    await this.eventBus.publish({ type: "snippet:updated", payload: next });
-    return next;
-  }
-
-  async deleteSnippet(snippetId: string): Promise<boolean> {
-    const exists = await this.redis.exists(this.snippetKey(snippetId));
-    if (!exists) {
-      return false;
-    }
-
-    await this.redis.multi().del(this.snippetKey(snippetId)).srem(SNIPPET_IDS_KEY, snippetId).exec();
-    await this.eventBus.publish({ type: "snippet:deleted", payload: { id: snippetId } });
-    return true;
-  }
-}
-
-export class PostgresSnippetStore implements SnippetStore {
-  constructor(
-    private readonly pool: Pool,
-    private readonly eventBus: EventBus
-  ) {}
-
-  private buildSnippet(
-    input: CreateSnippetInput | UpdateSnippetInput,
-    current?: Pick<Snippet, "id" | "createdAt">
-  ): Snippet {
-    const timestamp = nowIso();
-    return {
-      id: current?.id ?? nanoid(),
-      name: input.name.trim(),
-      content: input.content.trim(),
-      variables: normalizeSnippetVariables(input.variables),
-      createdAt: current?.createdAt ?? timestamp,
-      updatedAt: timestamp
-    };
-  }
-
-  async createSnippet(input: CreateSnippetInput): Promise<Snippet> {
-    const snippet = this.buildSnippet(input);
-    await this.pool.query(
-      `
-        INSERT INTO snippets (id, name, content, created_at, updated_at, variables)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-      `,
-      [snippet.id, snippet.name, snippet.content, snippet.createdAt, snippet.updatedAt, JSON.stringify(snippet.variables)]
-    );
-    await this.eventBus.publish({ type: "snippet:created", payload: snippet });
-    return snippet;
-  }
-
-  async listSnippets(): Promise<Snippet[]> {
-    const result = await this.pool.query(
-      "SELECT id, name, content, variables, created_at, updated_at FROM snippets ORDER BY updated_at DESC"
-    );
-    return result.rows.map((row) => ({
-      id: String(row.id),
-      name: String(row.name),
-      content: String(row.content),
-      variables: normalizeSnippetVariables(row.variables),
-      createdAt: String(row.created_at),
-      updatedAt: String(row.updated_at)
-    }));
-  }
-
-  async getSnippet(snippetId: string): Promise<Snippet | null> {
-    const result = await this.pool.query(
-      "SELECT id, name, content, variables, created_at, updated_at FROM snippets WHERE id = $1",
-      [snippetId]
-    );
-    const row = result.rows[0];
-    return row
-      ? {
-          id: String(row.id),
-          name: String(row.name),
-          content: String(row.content),
-          variables: normalizeSnippetVariables(row.variables),
-          createdAt: String(row.created_at),
-          updatedAt: String(row.updated_at)
-        }
-      : null;
-  }
-
-  async updateSnippet(snippetId: string, input: UpdateSnippetInput): Promise<Snippet | null> {
-    const current = await this.getSnippet(snippetId);
-    if (!current) {
-      return null;
-    }
-
-    const next = this.buildSnippet(input, current);
-    await this.pool.query(
-      `
-        UPDATE snippets
-        SET name = $2, content = $3, updated_at = $4, variables = $5::jsonb
-        WHERE id = $1
-      `,
-      [snippetId, next.name, next.content, next.updatedAt, JSON.stringify(next.variables)]
-    );
-    await this.eventBus.publish({ type: "snippet:updated", payload: next });
-    return next;
-  }
-
-  async deleteSnippet(snippetId: string): Promise<boolean> {
-    const result = await this.pool.query("DELETE FROM snippets WHERE id = $1", [snippetId]);
-    if (result.rowCount === 0) {
-      return false;
-    }
-
-    await this.eventBus.publish({ type: "snippet:deleted", payload: { id: snippetId } });
-    return true;
-  }
-}
 ````
 
 ## File: apps/web/components/repositories-page.tsx
@@ -24377,116 +24593,6 @@ export function getCodeTokenStyles(token: GlobalToken): TokenStyleMap {
     string: { color: token.colorSuccessText }
   };
 }
-````
-
-## File: apps/web/src/utils/snippets.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { applySnippetVariables, insertSnippetContent } from "./snippets";
-
-describe("insertSnippetContent", () => {
-  it("returns the snippet when the current value is empty", () => {
-    assert.equal(insertSnippetContent("", "  Follow the existing style guide.  "), "Follow the existing style guide.");
-  });
-
-  it("appends the snippet with a blank line separator", () => {
-    assert.equal(
-      insertSnippetContent("Implement the API endpoint.", "Add request validation."),
-      "Implement the API endpoint.\n\nAdd request validation."
-    );
-  });
-
-  it("keeps the current value when the snippet is blank", () => {
-    assert.equal(insertSnippetContent("Existing prompt", "   "), "Existing prompt");
-  });
-});
-
-describe("applySnippetVariables", () => {
-  it("replaces placeholders for defined variables", () => {
-    assert.equal(
-      applySnippetVariables("Hello {{name}} from {{team}}", [
-        { name: "name", type: "text", title: "", description: "", defaultValue: "" },
-        { name: "team", type: "text", title: "", description: "", defaultValue: "" }
-      ], { name: "Ada", team: "Core" }),
-      "Hello Ada from Core"
-    );
-  });
-
-  it("keeps placeholders for undefined variables", () => {
-    assert.equal(
-      applySnippetVariables("{{known}} / {{unknown}}", [{ name: "known", type: "text", title: "", description: "", defaultValue: "" }], { known: "ok" }),
-      "ok / {{unknown}}"
-    );
-  });
-
-  it("uses default values when no explicit value is provided", () => {
-    assert.equal(
-      applySnippetVariables("Hello {{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "there" }], {}),
-      "Hello there"
-    );
-  });
-
-  it("forces text variables to single-line values", () => {
-    assert.equal(
-      applySnippetVariables("{{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "Line1\nLine2" }], {}),
-      "Line1"
-    );
-    assert.equal(
-      applySnippetVariables("{{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "" }], { name: "A\nB" }),
-      "A"
-    );
-  });
-
-  it("keeps multiline values for multiline variables", () => {
-    assert.equal(
-      applySnippetVariables("{{details}}", [{ name: "details", type: "multiline", title: "", description: "", defaultValue: "A\nB" }], {}),
-      "A\nB"
-    );
-  });
-});
-````
-
-## File: apps/web/src/utils/snippets.ts
-````typescript
-import type { SnippetVariable } from "@agentswarm/shared-types";
-
-const SNIPPET_PLACEHOLDER_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
-
-export const insertSnippetContent = (current: string | null | undefined, snippet: string | null | undefined): string => {
-  const snippetText = snippet?.trim() ?? "";
-  if (!snippetText) {
-    return current ?? "";
-  }
-
-  const currentText = current ?? "";
-  if (currentText.trim().length === 0) {
-    return snippetText;
-  }
-
-  return `${currentText.trimEnd()}\n\n${snippetText}`;
-};
-
-export const applySnippetVariables = (
-  content: string | null | undefined,
-  variables: SnippetVariable[] | null | undefined,
-  values: Record<string, string>
-): string => {
-  const snippetText = content ?? "";
-  const variablesByName = new Map((variables ?? []).map((entry) => [entry.name, entry]));
-  return snippetText.replace(SNIPPET_PLACEHOLDER_PATTERN, (_match, name: string) => {
-    const variable = variablesByName.get(name);
-    if (!variable) {
-      return `{{${name}}}`;
-    }
-    const value = values[name];
-    const selected = typeof value === "string" && value.length > 0 ? value : variable.defaultValue ?? "";
-    if (variable.type === "text") {
-      return selected.split(/\r?\n/u)[0] ?? "";
-    }
-    return selected;
-  });
-};
 ````
 
 ## File: docs/development/commands.md
@@ -26425,107 +26531,6 @@ export const registerSettingsRoutes = (
 };
 ````
 
-## File: apps/server/src/routes/snippets.ts
-````typescript
-import type { FastifyInstance } from "fastify";
-import { z } from "zod";
-import type { AuthService } from "../lib/auth.js";
-import type { SnippetStore } from "../services/snippet-store.js";
-
-const snippetSchema = z.object({
-  name: z.string().trim().min(1).max(120),
-  content: z.string().trim().min(1).max(20000),
-  variables: z
-    .array(
-      z
-        .object({
-          name: z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(128),
-          type: z.enum(["text", "multiline"]),
-          title: z.string().trim().max(200).default(""),
-          description: z.string().trim().max(200).default(""),
-          defaultValue: z.string().max(2000).default("")
-        })
-        .superRefine((value, ctx) => {
-          if (value.type === "text" && /[\r\n]/.test(value.defaultValue)) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["defaultValue"],
-              message: "Default value for text variables must be a single line."
-            });
-          }
-        })
-    )
-    .max(100)
-    .optional()
-});
-
-export const registerSnippetRoutes = (
-  app: FastifyInstance,
-  deps: {
-    snippetStore: SnippetStore;
-    auth: AuthService;
-  }
-): void => {
-  app.get("/snippets", { preHandler: deps.auth.requireAllScopes(["snippet:list"]) }, async () => deps.snippetStore.listSnippets());
-
-  app.get<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:read"]) }, async (request, reply) => {
-    const snippet = await deps.snippetStore.getSnippet(request.params.id);
-    if (!snippet) {
-      return reply.status(404).send({ message: "Snippet not found" });
-    }
-
-    return reply.send(snippet);
-  });
-
-  app.post("/snippets", { preHandler: deps.auth.requireAllScopes(["snippet:create"]) }, async (request, reply) => {
-    const parsed = snippetSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const snippet = await deps.snippetStore.createSnippet(parsed.data);
-    return reply.status(201).send(snippet);
-  });
-
-  app.post<{ Params: { id: string } }>("/snippets/:id/duplicate", { preHandler: deps.auth.requireAllScopes(["snippet:create"]) }, async (request, reply) => {
-    const source = await deps.snippetStore.getSnippet(request.params.id);
-    if (!source) {
-      return reply.status(404).send({ message: "Snippet not found" });
-    }
-
-    const duplicated = await deps.snippetStore.createSnippet({
-      name: `Copy of ${source.name}`,
-      content: source.content,
-      variables: source.variables
-    });
-    return reply.status(201).send(duplicated);
-  });
-
-  app.patch<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:edit"]) }, async (request, reply) => {
-    const parsed = snippetSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const snippet = await deps.snippetStore.updateSnippet(request.params.id, parsed.data);
-    if (!snippet) {
-      return reply.status(404).send({ message: "Snippet not found" });
-    }
-
-    return reply.send(snippet);
-  });
-
-  app.delete<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:delete"]) }, async (request, reply) => {
-    const deleted = await deps.snippetStore.deleteSnippet(request.params.id);
-    if (!deleted) {
-      return reply.status(404).send({ message: "Snippet not found" });
-    }
-
-    return reply.status(204).send();
-  });
-};
-````
-
 ## File: apps/server/src/services/create-postgres-stores.ts
 ````typescript
 import type { Pool } from "pg";
@@ -26802,6 +26807,24 @@ describe("TaskStore.createTask", () => {
     assert.equal(task.executionStatus, "queued");
     assert.equal(task.executionAction, "build");
     assert.equal(task.startedAt, null);
+    assert.equal(task.deadline, null);
+  });
+
+  it("normalizes task deadlines", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(
+      {
+        ...createTaskInput,
+        deadline: "2026-06-15T10:30:00+02:00"
+      },
+      repository,
+      "user-1"
+    );
+
+    assert.equal(task.deadline, "2026-06-15T08:30:00.000Z");
   });
 });
 ````
@@ -26923,6 +26946,7 @@ class FakeRedis {
 const baseTask = (): Task => ({
   id: "task-1",
   title: "Example task",
+  deadline: null,
   pinned: false,
   hasPendingCheckpoint: false,
   ownerUserId: "user-1",
@@ -27621,6 +27645,739 @@ await writeFile(
 );
 
 console.log("[runtime] completed");
+````
+
+## File: apps/server/src/db/backfill-redis-to-postgres.ts
+````typescript
+import type Redis from "ioredis";
+import { env } from "../config/env.js";
+import { createPostgresPool, runPostgresMigrations, withPostgresTransaction } from "../lib/postgres.js";
+import { createRedisClients } from "../lib/redis.js";
+
+const ROLE_KEY_PREFIX = "agentswarm:role:";
+const ROLE_IDS_KEY = "agentswarm:role_ids";
+
+const USER_KEY_PREFIX = "agentswarm:user:";
+const USER_IDS_KEY = "agentswarm:user_ids";
+const BOOTSTRAP_ADMIN_MARKER_KEY = "agentswarm:bootstrap_admin_user_id";
+
+const REPO_KEY_PREFIX = "agentswarm:repo:";
+const REPO_IDS_KEY = "agentswarm:repo_ids";
+
+const SNIPPET_KEY_PREFIX = "agentswarm:snippet:";
+const SNIPPET_IDS_KEY = "agentswarm:snippet_ids";
+
+const SETTINGS_KEY = "agentswarm:settings";
+const CREDENTIALS_KEY = "agentswarm:credential_settings";
+
+const TASK_KEY_PREFIX = "agentswarm:task:";
+const TASK_LOG_KEY_PREFIX = "agentswarm:task_logs:";
+const TASK_MESSAGE_KEY_PREFIX = "agentswarm:task_messages:";
+const TASK_RUN_KEY_PREFIX = "agentswarm:task_run:";
+const TASK_RUN_LOG_KEY_PREFIX = "agentswarm:task_run_logs:";
+const TASK_RUN_IDS_KEY_PREFIX = "agentswarm:task_run_ids:";
+const TASK_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_change_proposal:";
+const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "agentswarm:task_change_proposal_ids:";
+const TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX = "agentswarm:task_active_interactive_session:";
+const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "agentswarm:task_interactive_terminal_transcript:";
+const TASK_IDS_KEY = "agentswarm:task_ids";
+
+type JsonRecord = Record<string, unknown>;
+
+interface RoleRecord extends JsonRecord {
+  id: string;
+  name: string;
+  description?: string;
+  scopes?: unknown[];
+  allowedProviders?: unknown[];
+  allowedModels?: unknown[];
+  allowedEfforts?: unknown[];
+  scopeVersion?: number;
+  isSystem?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface UserRecord extends JsonRecord {
+  id: string;
+  name: string;
+  email: string;
+  active?: boolean;
+  roleIds?: string[];
+  repositoryIds?: string[];
+  passwordHash: string;
+  passwordSalt: string;
+  lastLoginAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface RepositoryRecord extends JsonRecord {
+  id: string;
+  name: string;
+  url: string;
+  defaultBranch?: string;
+  envVars?: unknown[];
+  envSecrets?: unknown[];
+  webhookUrl?: string | null;
+  webhookEnabled?: boolean;
+  webhookSecret?: string | null;
+  webhookLastAttemptAt?: string | null;
+  webhookLastStatus?: string | null;
+  webhookLastError?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface SnippetRecord extends JsonRecord {
+  id: string;
+  name: string;
+  content: string;
+  variables?: unknown[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface SettingsRecord extends JsonRecord {
+  defaultProvider?: string;
+  maxAgents?: number;
+  branchPrefix?: string;
+  gitUsername?: string;
+  mcpServers?: unknown[];
+  openaiBaseUrl?: string | null;
+  codexDefaultModel?: string;
+  codexDefaultEffort?: string;
+  claudeDefaultModel?: string;
+  claudeDefaultEffort?: string;
+}
+
+interface TaskRecord extends JsonRecord {
+  id: string;
+  ownerUserId?: string | null;
+  status?: string;
+  pinned?: boolean;
+  createdAt: string;
+}
+
+const nowIso = (): string => new Date().toISOString();
+
+const parseJson = <T>(raw: string | null): T | null => {
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+};
+
+const getJson = async <T>(redis: Redis, key: string): Promise<T | null> => parseJson<T>(await redis.get(key));
+
+const trimString = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const repositoryEnvVarArray = (
+  value: unknown
+): Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized: Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const rawKey = (entry as Record<string, unknown>).key;
+    const key = typeof rawKey === "string" ? rawKey.trim() : "";
+    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || seen.has(key)) {
+      continue;
+    }
+    const type = (entry as Record<string, unknown>).type === "file" ? "file" : "text";
+    if (type === "file") {
+      const fileId = trimString((entry as Record<string, unknown>).fileId);
+      if (!fileId) {
+        continue;
+      }
+      const fileName = trimString((entry as Record<string, unknown>).fileName) ?? `${key}.bin`;
+      const sizeBytesRaw = (entry as Record<string, unknown>).sizeBytes;
+      const sizeBytes = typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0 ? Math.floor(sizeBytesRaw) : 0;
+      normalized.push({ key, type: "file", fileId, fileName, sizeBytes });
+      seen.add(key);
+      continue;
+    }
+    const rawValue = (entry as Record<string, unknown>).value;
+    const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
+    normalized.push({ key, type: "text", value: normalizedValue });
+    seen.add(key);
+  }
+  return normalized;
+};
+
+const repositoryEnvSecretArray = (
+  value: unknown
+): Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized: Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const rawKey = (entry as Record<string, unknown>).key;
+    const key = typeof rawKey === "string" ? rawKey.trim() : "";
+    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || seen.has(key)) {
+      continue;
+    }
+    const type = (entry as Record<string, unknown>).type === "file" ? "file" : "text";
+    if (type === "file") {
+      const fileId = trimString((entry as Record<string, unknown>).fileId);
+      if (!fileId) {
+        continue;
+      }
+      const fileName = trimString((entry as Record<string, unknown>).fileName) ?? `${key}.bin`;
+      const sizeBytesRaw = (entry as Record<string, unknown>).sizeBytes;
+      const sizeBytes = typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0 ? Math.floor(sizeBytesRaw) : 0;
+      normalized.push({ key, type: "file", fileId, fileName, sizeBytes });
+      seen.add(key);
+      continue;
+    }
+    const rawValue = (entry as Record<string, unknown>).value;
+    const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
+    if (!normalizedValue) {
+      continue;
+    }
+    normalized.push({ key, type: "text", value: normalizedValue });
+    seen.add(key);
+  }
+  return normalized;
+};
+
+const stringArray = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? Array.from(
+        new Set(
+          value
+            .filter((entry): entry is string => typeof entry === "string")
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+        )
+      )
+    : [];
+
+const loadRoles = async (redis: Redis): Promise<RoleRecord[]> => {
+  const roleIds = await redis.smembers(ROLE_IDS_KEY);
+  const roles: RoleRecord[] = [];
+  for (const roleId of roleIds) {
+    const role = await getJson<RoleRecord>(redis, `${ROLE_KEY_PREFIX}${roleId}`);
+    if (role?.id) {
+      roles.push(role);
+    }
+  }
+  return roles;
+};
+
+const loadUsers = async (redis: Redis): Promise<UserRecord[]> => {
+  const userIds = await redis.smembers(USER_IDS_KEY);
+  const users: UserRecord[] = [];
+  for (const userId of userIds) {
+    const user = await getJson<UserRecord>(redis, `${USER_KEY_PREFIX}${userId}`);
+    if (user?.id) {
+      users.push(user);
+    }
+  }
+  return users;
+};
+
+const loadRepositories = async (redis: Redis): Promise<RepositoryRecord[]> => {
+  const repositoryIds = await redis.smembers(REPO_IDS_KEY);
+  const repositories: RepositoryRecord[] = [];
+  for (const repositoryId of repositoryIds) {
+    const repository = await getJson<RepositoryRecord>(redis, `${REPO_KEY_PREFIX}${repositoryId}`);
+    if (repository?.id) {
+      repositories.push(repository);
+    }
+  }
+  return repositories;
+};
+
+const loadSnippets = async (redis: Redis): Promise<SnippetRecord[]> => {
+  const snippetIds = await redis.smembers(SNIPPET_IDS_KEY);
+  const snippets: SnippetRecord[] = [];
+  for (const snippetId of snippetIds) {
+    const snippet = await getJson<SnippetRecord>(redis, `${SNIPPET_KEY_PREFIX}${snippetId}`);
+    if (snippet?.id) {
+      snippets.push(snippet);
+    }
+  }
+  return snippets;
+};
+
+interface TaskSnapshot {
+  task: TaskRecord;
+  logs: string[];
+  messages: JsonRecord[];
+  runs: Array<{ run: JsonRecord; logs: string[] }>;
+  proposals: JsonRecord[];
+  activeInteractiveSession: JsonRecord | null;
+  transcripts: JsonRecord[];
+}
+
+const loadTaskSnapshots = async (redis: Redis): Promise<TaskSnapshot[]> => {
+  const taskIds = await redis.smembers(TASK_IDS_KEY);
+  const snapshots: TaskSnapshot[] = [];
+
+  for (const taskId of taskIds) {
+    const task = await getJson<TaskRecord>(redis, `${TASK_KEY_PREFIX}${taskId}`);
+    if (!task?.id) {
+      continue;
+    }
+
+    const [logs, rawMessages, runIds, proposalIds, activeInteractiveSession] = await Promise.all([
+      redis.lrange(`${TASK_LOG_KEY_PREFIX}${taskId}`, 0, -1),
+      redis.lrange(`${TASK_MESSAGE_KEY_PREFIX}${taskId}`, 0, -1),
+      redis.lrange(`${TASK_RUN_IDS_KEY_PREFIX}${taskId}`, 0, -1),
+      redis.lrange(`${TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX}${taskId}`, 0, -1),
+      getJson<JsonRecord>(redis, `${TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX}${taskId}`)
+    ]);
+
+    const messages = rawMessages
+      .map((raw) => parseJson<JsonRecord>(raw))
+      .filter((message): message is JsonRecord => message !== null);
+
+    const runs: Array<{ run: JsonRecord; logs: string[] }> = [];
+    for (const runId of runIds) {
+      const run = await getJson<JsonRecord>(redis, `${TASK_RUN_KEY_PREFIX}${runId}`);
+      if (!run) {
+        continue;
+      }
+
+      const runLogs = await redis.lrange(`${TASK_RUN_LOG_KEY_PREFIX}${runId}`, 0, -1);
+      runs.push({ run, logs: runLogs });
+    }
+
+    const proposals: JsonRecord[] = [];
+    for (const proposalId of proposalIds) {
+      const proposal = await getJson<JsonRecord>(redis, `${TASK_CHANGE_PROPOSAL_KEY_PREFIX}${proposalId}`);
+      if (proposal) {
+        proposals.push(proposal);
+      }
+    }
+
+    const transcriptsBySessionId = new Map<string, JsonRecord>();
+    for (const message of messages) {
+      const sessionId = trimString(message.sessionId);
+      if (!sessionId) {
+        continue;
+      }
+
+      const transcript = await getJson<JsonRecord>(redis, `${TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX}${sessionId}`);
+      if (transcript) {
+        transcriptsBySessionId.set(sessionId, transcript);
+      }
+    }
+
+    snapshots.push({
+      task,
+      logs,
+      messages,
+      runs,
+      proposals,
+      activeInteractiveSession,
+      transcripts: Array.from(transcriptsBySessionId.values())
+    });
+  }
+
+  return snapshots;
+};
+
+const main = async (): Promise<void> => {
+  const redisClients = createRedisClients(env.REDIS_URL);
+  const postgresPool = createPostgresPool(env.DATABASE_URL);
+
+  try {
+    await runPostgresMigrations(postgresPool);
+
+    const redis = redisClients.command;
+    const [roles, users, repositories, snippets, settings, credentialsRaw, taskSnapshots, bootstrapAdminUserId] = await Promise.all([
+      loadRoles(redis),
+      loadUsers(redis),
+      loadRepositories(redis),
+      loadSnippets(redis),
+      getJson<SettingsRecord>(redis, SETTINGS_KEY),
+      redis.get(CREDENTIALS_KEY),
+      loadTaskSnapshots(redis),
+      redis.get(BOOTSTRAP_ADMIN_MARKER_KEY)
+    ]);
+    const repositoryIds = new Set(repositories.map((repository) => repository.id));
+    let skippedUserRepositoryAssignments = 0;
+
+    await withPostgresTransaction(postgresPool, async (client) => {
+      await client.query(`
+        TRUNCATE TABLE
+          task_run_logs,
+          task_messages,
+          task_logs,
+          task_change_proposals,
+          task_active_interactive_sessions,
+          task_interactive_terminal_transcripts,
+          task_runs,
+          tasks,
+          user_repositories,
+          user_roles,
+          users,
+          roles,
+          repositories,
+          snippets,
+          system_settings,
+          credentials,
+          app_metadata
+        RESTART IDENTITY CASCADE
+      `);
+
+      if (bootstrapAdminUserId) {
+        await client.query(
+          "INSERT INTO app_metadata (key, value, updated_at) VALUES ($1, $2, $3)",
+          [BOOTSTRAP_ADMIN_MARKER_KEY, bootstrapAdminUserId, nowIso()]
+        );
+      }
+
+      for (const role of roles) {
+        await client.query(
+          `
+            INSERT INTO roles (
+              id,
+              name,
+              name_key,
+              description,
+              scopes,
+              allowed_providers,
+              allowed_models,
+              allowed_efforts,
+              scope_version,
+              is_system,
+              created_at,
+              updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12)
+          `,
+          [
+            role.id,
+            String(role.name ?? "").trim(),
+            String(role.name ?? "").trim().toLowerCase(),
+            String(role.description ?? "").trim(),
+            JSON.stringify(Array.isArray(role.scopes) ? role.scopes : []),
+            JSON.stringify(Array.isArray(role.allowedProviders) ? role.allowedProviders : []),
+            JSON.stringify(Array.isArray(role.allowedModels) ? role.allowedModels : []),
+            JSON.stringify(Array.isArray(role.allowedEfforts) ? role.allowedEfforts : []),
+            typeof role.scopeVersion === "number" ? role.scopeVersion : 0,
+            role.isSystem === true,
+            role.createdAt,
+            role.updatedAt
+          ]
+        );
+      }
+
+      for (const user of users) {
+        await client.query(
+          `
+            INSERT INTO users (
+              id,
+              name,
+              email,
+              active,
+              agent_response_preference,
+              password_hash,
+              password_salt,
+              last_login_at,
+              created_at,
+              updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+          `,
+          [
+            user.id,
+            String(user.name ?? "").trim(),
+            String(user.email ?? "").trim().toLowerCase(),
+            user.active !== false,
+            JSON.stringify(
+              user.agentResponsePreference &&
+                typeof user.agentResponsePreference === "object"
+                ? user.agentResponsePreference
+                : { enabled: false, style: null }
+            ),
+            user.passwordHash,
+            user.passwordSalt,
+            user.lastLoginAt ?? null,
+            user.createdAt,
+            user.updatedAt
+          ]
+        );
+
+        for (const roleId of stringArray(user.roleIds)) {
+          await client.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)", [user.id, roleId]);
+        }
+      }
+
+      for (const repository of repositories) {
+        await client.query(
+          `
+            INSERT INTO repositories (
+              id,
+              name,
+              url,
+              default_branch,
+              env_vars,
+              env_secrets,
+              webhook_url,
+              webhook_enabled,
+              webhook_secret,
+              webhook_last_attempt_at,
+              webhook_last_status,
+              webhook_last_error,
+              created_at,
+              updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14)
+          `,
+          [
+            repository.id,
+            String(repository.name ?? "").trim(),
+            String(repository.url ?? "").trim(),
+            trimString(repository.defaultBranch) ?? "develop",
+            JSON.stringify(repositoryEnvVarArray(repository.envVars)),
+            JSON.stringify(repositoryEnvSecretArray(repository.envSecrets)),
+            trimString(repository.webhookUrl),
+            repository.webhookEnabled === true,
+            trimString(repository.webhookSecret),
+            repository.webhookLastAttemptAt ?? null,
+            trimString(repository.webhookLastStatus),
+            trimString(repository.webhookLastError),
+            repository.createdAt,
+            repository.updatedAt
+          ]
+        );
+      }
+
+      for (const user of users) {
+        for (const repositoryId of stringArray(user.repositoryIds)) {
+          if (!repositoryIds.has(repositoryId)) {
+            skippedUserRepositoryAssignments += 1;
+            continue;
+          }
+          await client.query("INSERT INTO user_repositories (user_id, repository_id) VALUES ($1, $2)", [user.id, repositoryId]);
+        }
+      }
+
+      for (const snippet of snippets) {
+        await client.query(
+          "INSERT INTO snippets (id, name, content, created_at, updated_at, variables) VALUES ($1, $2, $3, $4, $5, $6::jsonb)",
+          [
+            snippet.id,
+            String(snippet.name ?? "").trim(),
+            String(snippet.content ?? "").trim(),
+            snippet.createdAt,
+            snippet.updatedAt,
+            JSON.stringify(Array.isArray(snippet.variables) ? snippet.variables : [])
+          ]
+        );
+      }
+
+      if (settings) {
+        await client.query(
+          `
+            INSERT INTO system_settings (
+              singleton_id,
+              default_provider,
+              max_agents,
+              branch_prefix,
+              workspace_provisioning_mode,
+              git_username,
+              mcp_servers,
+              openai_base_url,
+              task_prompt_magic_model,
+              task_prompt_magic_template,
+              codex_default_model,
+              codex_default_effort,
+              claude_default_model,
+              claude_default_effort,
+              response_preference_presets
+            )
+            VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13::jsonb)
+          `,
+          [
+            trimString(settings.defaultProvider) ?? "codex",
+            typeof settings.maxAgents === "number" ? settings.maxAgents : 2,
+            trimString(settings.branchPrefix) ?? "agentswarm",
+            trimString((settings as { workspaceProvisioningMode?: string }).workspaceProvisioningMode) ?? "clone_only",
+            trimString(settings.gitUsername) ?? "x-access-token",
+            JSON.stringify(Array.isArray(settings.mcpServers) ? settings.mcpServers : []),
+            trimString(settings.openaiBaseUrl),
+            trimString((settings as { taskPromptMagicModel?: string }).taskPromptMagicModel) ?? "gpt-5.4-mini",
+            trimString((settings as { taskPromptMagicTemplate?: string }).taskPromptMagicTemplate) ?? "",
+            trimString(settings.codexDefaultModel) ?? "gpt-5.4",
+            trimString(settings.codexDefaultEffort) ?? "high",
+            trimString(settings.claudeDefaultModel) ?? "claude-sonnet-4-5",
+            trimString(settings.claudeDefaultEffort) ?? "high",
+            JSON.stringify(Array.isArray(settings.responsePreferencePresets) ? settings.responsePreferencePresets : [])
+          ]
+        );
+      }
+
+      if (credentialsRaw) {
+        await client.query(
+          "INSERT INTO credentials (singleton_id, payload_encrypted, updated_at) VALUES (1, $1, $2)",
+          [credentialsRaw, nowIso()]
+        );
+      }
+
+      for (const snapshot of taskSnapshots) {
+        const { task, logs, messages, runs, proposals, activeInteractiveSession, transcripts } = snapshot;
+
+        await client.query(
+          `
+            INSERT INTO tasks (id, owner_user_id, status, pinned, created_at, task_data)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+          `,
+          [
+            task.id,
+            trimString(task.ownerUserId),
+            trimString(task.status) ?? "open",
+            task.pinned === true,
+            task.createdAt,
+            JSON.stringify(task)
+          ]
+        );
+
+        for (const line of logs) {
+          await client.query("INSERT INTO task_logs (task_id, line) VALUES ($1, $2)", [task.id, line]);
+        }
+
+        for (const message of messages) {
+          const messageId = trimString(message.id);
+          const createdAt = trimString(message.createdAt);
+          if (!messageId || !createdAt) {
+            continue;
+          }
+
+          await client.query(
+            `
+              INSERT INTO task_messages (message_id, task_id, created_at, message_data)
+              VALUES ($1, $2, $3, $4::jsonb)
+            `,
+            [messageId, task.id, createdAt, JSON.stringify(message)]
+          );
+        }
+
+        for (const { run, logs: runLogs } of runs) {
+          const runId = trimString(run.id);
+          const startedAt = trimString(run.startedAt);
+          if (!runId || !startedAt) {
+            continue;
+          }
+
+          await client.query(
+            "INSERT INTO task_runs (id, task_id, started_at, run_data) VALUES ($1, $2, $3, $4::jsonb)",
+            [runId, task.id, startedAt, JSON.stringify(run)]
+          );
+
+          for (const line of runLogs) {
+            await client.query("INSERT INTO task_run_logs (run_id, line) VALUES ($1, $2)", [runId, line]);
+          }
+        }
+
+        for (const proposal of proposals) {
+          const proposalId = trimString(proposal.id);
+          const createdAt = trimString(proposal.createdAt);
+          if (!proposalId || !createdAt) {
+            continue;
+          }
+
+          await client.query(
+            `
+              INSERT INTO task_change_proposals (id, task_id, status, created_at, resolved_at, proposal_data)
+              VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+            `,
+            [
+              proposalId,
+              task.id,
+              trimString(proposal.status) ?? "pending",
+              createdAt,
+              trimString(proposal.resolvedAt),
+              JSON.stringify(proposal)
+            ]
+          );
+        }
+
+        if (activeInteractiveSession) {
+          await client.query(
+            "INSERT INTO task_active_interactive_sessions (task_id, session_data) VALUES ($1, $2::jsonb)",
+            [task.id, JSON.stringify(activeInteractiveSession)]
+          );
+        }
+
+        for (const transcript of transcripts) {
+          const sessionId = trimString(transcript.sessionId);
+          if (!sessionId) {
+            continue;
+          }
+
+          await client.query(
+            `
+              INSERT INTO task_interactive_terminal_transcripts (session_id, task_id, transcript_data)
+              VALUES ($1, $2, $3::jsonb)
+              ON CONFLICT (session_id) DO UPDATE
+              SET
+                task_id = EXCLUDED.task_id,
+                transcript_data = EXCLUDED.transcript_data
+            `,
+            [sessionId, task.id, JSON.stringify(transcript)]
+          );
+        }
+      }
+    });
+
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          roles: roles.length,
+          users: users.length,
+          repositories: repositories.length,
+          skippedUserRepositoryAssignments,
+          snippets: snippets.length,
+          tasks: taskSnapshots.length
+        },
+        null,
+        2
+      )
+    );
+  } finally {
+    await Promise.all([
+      postgresPool.end(),
+      redisClients.command.quit(),
+      redisClients.pub.quit(),
+      redisClients.sub.quit()
+    ]);
+  }
+};
+
+void main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
 ````
 
 ## File: apps/server/src/lib/task-interactive-terminal.ts
@@ -31337,13 +32094,27 @@ function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardIte
           {task?.reviewReason ? <Tag color="gold">{task.reviewReason}</Tag> : null}
         </Space>
         {task ? (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {task.repoName} · {dayjs(task.updatedAt).format("YYYY-MM-DD HH:mm")}
-          </Typography.Text>
+          <>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {task.repoName} · {dayjs(task.updatedAt).format("YYYY-MM-DD HH:mm")}
+            </Typography.Text>
+            {task.deadline ? (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Deadline {dayjs(task.deadline).format("YYYY-MM-DD HH:mm")}
+              </Typography.Text>
+            ) : null}
+          </>
         ) : (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Updated {dayjs(draft!.updatedAt).format("YYYY-MM-DD HH:mm")}
-          </Typography.Text>
+          <>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Updated {dayjs(draft!.updatedAt).format("YYYY-MM-DD HH:mm")}
+            </Typography.Text>
+            {draft?.definition.deadline ? (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Deadline {dayjs(draft.definition.deadline).format("YYYY-MM-DD HH:mm")}
+              </Typography.Text>
+            ) : null}
+          </>
         )}
       </Flex>
     </Card>
@@ -31788,6 +32559,12 @@ export function TasksPage() {
                 dataIndex: "createdAt",
                 sorter: (a, b) => a.createdAt.localeCompare(b.createdAt),
                 render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
+              },
+              {
+                title: "Deadline",
+                dataIndex: "deadline",
+                sorter: (a, b) => (a.deadline ?? "").localeCompare(b.deadline ?? ""),
+                render: (value: Task["deadline"]) => (value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "None")
               },
               {
                 title: "Actions",
@@ -32286,739 +33063,6 @@ export function buildTaskHistoryEntries(input: {
 }
 ````
 
-## File: apps/server/src/db/backfill-redis-to-postgres.ts
-````typescript
-import type Redis from "ioredis";
-import { env } from "../config/env.js";
-import { createPostgresPool, runPostgresMigrations, withPostgresTransaction } from "../lib/postgres.js";
-import { createRedisClients } from "../lib/redis.js";
-
-const ROLE_KEY_PREFIX = "agentswarm:role:";
-const ROLE_IDS_KEY = "agentswarm:role_ids";
-
-const USER_KEY_PREFIX = "agentswarm:user:";
-const USER_IDS_KEY = "agentswarm:user_ids";
-const BOOTSTRAP_ADMIN_MARKER_KEY = "agentswarm:bootstrap_admin_user_id";
-
-const REPO_KEY_PREFIX = "agentswarm:repo:";
-const REPO_IDS_KEY = "agentswarm:repo_ids";
-
-const SNIPPET_KEY_PREFIX = "agentswarm:snippet:";
-const SNIPPET_IDS_KEY = "agentswarm:snippet_ids";
-
-const SETTINGS_KEY = "agentswarm:settings";
-const CREDENTIALS_KEY = "agentswarm:credential_settings";
-
-const TASK_KEY_PREFIX = "agentswarm:task:";
-const TASK_LOG_KEY_PREFIX = "agentswarm:task_logs:";
-const TASK_MESSAGE_KEY_PREFIX = "agentswarm:task_messages:";
-const TASK_RUN_KEY_PREFIX = "agentswarm:task_run:";
-const TASK_RUN_LOG_KEY_PREFIX = "agentswarm:task_run_logs:";
-const TASK_RUN_IDS_KEY_PREFIX = "agentswarm:task_run_ids:";
-const TASK_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_change_proposal:";
-const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "agentswarm:task_change_proposal_ids:";
-const TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX = "agentswarm:task_active_interactive_session:";
-const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "agentswarm:task_interactive_terminal_transcript:";
-const TASK_IDS_KEY = "agentswarm:task_ids";
-
-type JsonRecord = Record<string, unknown>;
-
-interface RoleRecord extends JsonRecord {
-  id: string;
-  name: string;
-  description?: string;
-  scopes?: unknown[];
-  allowedProviders?: unknown[];
-  allowedModels?: unknown[];
-  allowedEfforts?: unknown[];
-  scopeVersion?: number;
-  isSystem?: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface UserRecord extends JsonRecord {
-  id: string;
-  name: string;
-  email: string;
-  active?: boolean;
-  roleIds?: string[];
-  repositoryIds?: string[];
-  passwordHash: string;
-  passwordSalt: string;
-  lastLoginAt?: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface RepositoryRecord extends JsonRecord {
-  id: string;
-  name: string;
-  url: string;
-  defaultBranch?: string;
-  envVars?: unknown[];
-  envSecrets?: unknown[];
-  webhookUrl?: string | null;
-  webhookEnabled?: boolean;
-  webhookSecret?: string | null;
-  webhookLastAttemptAt?: string | null;
-  webhookLastStatus?: string | null;
-  webhookLastError?: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface SnippetRecord extends JsonRecord {
-  id: string;
-  name: string;
-  content: string;
-  variables?: unknown[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface SettingsRecord extends JsonRecord {
-  defaultProvider?: string;
-  maxAgents?: number;
-  branchPrefix?: string;
-  gitUsername?: string;
-  mcpServers?: unknown[];
-  openaiBaseUrl?: string | null;
-  codexDefaultModel?: string;
-  codexDefaultEffort?: string;
-  claudeDefaultModel?: string;
-  claudeDefaultEffort?: string;
-}
-
-interface TaskRecord extends JsonRecord {
-  id: string;
-  ownerUserId?: string | null;
-  status?: string;
-  pinned?: boolean;
-  createdAt: string;
-}
-
-const nowIso = (): string => new Date().toISOString();
-
-const parseJson = <T>(raw: string | null): T | null => {
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-};
-
-const getJson = async <T>(redis: Redis, key: string): Promise<T | null> => parseJson<T>(await redis.get(key));
-
-const trimString = (value: unknown): string | null => {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : null;
-};
-
-const repositoryEnvVarArray = (
-  value: unknown
-): Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const normalized: Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> = [];
-  const seen = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-    const rawKey = (entry as Record<string, unknown>).key;
-    const key = typeof rawKey === "string" ? rawKey.trim() : "";
-    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || seen.has(key)) {
-      continue;
-    }
-    const type = (entry as Record<string, unknown>).type === "file" ? "file" : "text";
-    if (type === "file") {
-      const fileId = trimString((entry as Record<string, unknown>).fileId);
-      if (!fileId) {
-        continue;
-      }
-      const fileName = trimString((entry as Record<string, unknown>).fileName) ?? `${key}.bin`;
-      const sizeBytesRaw = (entry as Record<string, unknown>).sizeBytes;
-      const sizeBytes = typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0 ? Math.floor(sizeBytesRaw) : 0;
-      normalized.push({ key, type: "file", fileId, fileName, sizeBytes });
-      seen.add(key);
-      continue;
-    }
-    const rawValue = (entry as Record<string, unknown>).value;
-    const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
-    normalized.push({ key, type: "text", value: normalizedValue });
-    seen.add(key);
-  }
-  return normalized;
-};
-
-const repositoryEnvSecretArray = (
-  value: unknown
-): Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const normalized: Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> = [];
-  const seen = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-    const rawKey = (entry as Record<string, unknown>).key;
-    const key = typeof rawKey === "string" ? rawKey.trim() : "";
-    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || seen.has(key)) {
-      continue;
-    }
-    const type = (entry as Record<string, unknown>).type === "file" ? "file" : "text";
-    if (type === "file") {
-      const fileId = trimString((entry as Record<string, unknown>).fileId);
-      if (!fileId) {
-        continue;
-      }
-      const fileName = trimString((entry as Record<string, unknown>).fileName) ?? `${key}.bin`;
-      const sizeBytesRaw = (entry as Record<string, unknown>).sizeBytes;
-      const sizeBytes = typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0 ? Math.floor(sizeBytesRaw) : 0;
-      normalized.push({ key, type: "file", fileId, fileName, sizeBytes });
-      seen.add(key);
-      continue;
-    }
-    const rawValue = (entry as Record<string, unknown>).value;
-    const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
-    if (!normalizedValue) {
-      continue;
-    }
-    normalized.push({ key, type: "text", value: normalizedValue });
-    seen.add(key);
-  }
-  return normalized;
-};
-
-const stringArray = (value: unknown): string[] =>
-  Array.isArray(value)
-    ? Array.from(
-        new Set(
-          value
-            .filter((entry): entry is string => typeof entry === "string")
-            .map((entry) => entry.trim())
-            .filter(Boolean)
-        )
-      )
-    : [];
-
-const loadRoles = async (redis: Redis): Promise<RoleRecord[]> => {
-  const roleIds = await redis.smembers(ROLE_IDS_KEY);
-  const roles: RoleRecord[] = [];
-  for (const roleId of roleIds) {
-    const role = await getJson<RoleRecord>(redis, `${ROLE_KEY_PREFIX}${roleId}`);
-    if (role?.id) {
-      roles.push(role);
-    }
-  }
-  return roles;
-};
-
-const loadUsers = async (redis: Redis): Promise<UserRecord[]> => {
-  const userIds = await redis.smembers(USER_IDS_KEY);
-  const users: UserRecord[] = [];
-  for (const userId of userIds) {
-    const user = await getJson<UserRecord>(redis, `${USER_KEY_PREFIX}${userId}`);
-    if (user?.id) {
-      users.push(user);
-    }
-  }
-  return users;
-};
-
-const loadRepositories = async (redis: Redis): Promise<RepositoryRecord[]> => {
-  const repositoryIds = await redis.smembers(REPO_IDS_KEY);
-  const repositories: RepositoryRecord[] = [];
-  for (const repositoryId of repositoryIds) {
-    const repository = await getJson<RepositoryRecord>(redis, `${REPO_KEY_PREFIX}${repositoryId}`);
-    if (repository?.id) {
-      repositories.push(repository);
-    }
-  }
-  return repositories;
-};
-
-const loadSnippets = async (redis: Redis): Promise<SnippetRecord[]> => {
-  const snippetIds = await redis.smembers(SNIPPET_IDS_KEY);
-  const snippets: SnippetRecord[] = [];
-  for (const snippetId of snippetIds) {
-    const snippet = await getJson<SnippetRecord>(redis, `${SNIPPET_KEY_PREFIX}${snippetId}`);
-    if (snippet?.id) {
-      snippets.push(snippet);
-    }
-  }
-  return snippets;
-};
-
-interface TaskSnapshot {
-  task: TaskRecord;
-  logs: string[];
-  messages: JsonRecord[];
-  runs: Array<{ run: JsonRecord; logs: string[] }>;
-  proposals: JsonRecord[];
-  activeInteractiveSession: JsonRecord | null;
-  transcripts: JsonRecord[];
-}
-
-const loadTaskSnapshots = async (redis: Redis): Promise<TaskSnapshot[]> => {
-  const taskIds = await redis.smembers(TASK_IDS_KEY);
-  const snapshots: TaskSnapshot[] = [];
-
-  for (const taskId of taskIds) {
-    const task = await getJson<TaskRecord>(redis, `${TASK_KEY_PREFIX}${taskId}`);
-    if (!task?.id) {
-      continue;
-    }
-
-    const [logs, rawMessages, runIds, proposalIds, activeInteractiveSession] = await Promise.all([
-      redis.lrange(`${TASK_LOG_KEY_PREFIX}${taskId}`, 0, -1),
-      redis.lrange(`${TASK_MESSAGE_KEY_PREFIX}${taskId}`, 0, -1),
-      redis.lrange(`${TASK_RUN_IDS_KEY_PREFIX}${taskId}`, 0, -1),
-      redis.lrange(`${TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX}${taskId}`, 0, -1),
-      getJson<JsonRecord>(redis, `${TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX}${taskId}`)
-    ]);
-
-    const messages = rawMessages
-      .map((raw) => parseJson<JsonRecord>(raw))
-      .filter((message): message is JsonRecord => message !== null);
-
-    const runs: Array<{ run: JsonRecord; logs: string[] }> = [];
-    for (const runId of runIds) {
-      const run = await getJson<JsonRecord>(redis, `${TASK_RUN_KEY_PREFIX}${runId}`);
-      if (!run) {
-        continue;
-      }
-
-      const runLogs = await redis.lrange(`${TASK_RUN_LOG_KEY_PREFIX}${runId}`, 0, -1);
-      runs.push({ run, logs: runLogs });
-    }
-
-    const proposals: JsonRecord[] = [];
-    for (const proposalId of proposalIds) {
-      const proposal = await getJson<JsonRecord>(redis, `${TASK_CHANGE_PROPOSAL_KEY_PREFIX}${proposalId}`);
-      if (proposal) {
-        proposals.push(proposal);
-      }
-    }
-
-    const transcriptsBySessionId = new Map<string, JsonRecord>();
-    for (const message of messages) {
-      const sessionId = trimString(message.sessionId);
-      if (!sessionId) {
-        continue;
-      }
-
-      const transcript = await getJson<JsonRecord>(redis, `${TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX}${sessionId}`);
-      if (transcript) {
-        transcriptsBySessionId.set(sessionId, transcript);
-      }
-    }
-
-    snapshots.push({
-      task,
-      logs,
-      messages,
-      runs,
-      proposals,
-      activeInteractiveSession,
-      transcripts: Array.from(transcriptsBySessionId.values())
-    });
-  }
-
-  return snapshots;
-};
-
-const main = async (): Promise<void> => {
-  const redisClients = createRedisClients(env.REDIS_URL);
-  const postgresPool = createPostgresPool(env.DATABASE_URL);
-
-  try {
-    await runPostgresMigrations(postgresPool);
-
-    const redis = redisClients.command;
-    const [roles, users, repositories, snippets, settings, credentialsRaw, taskSnapshots, bootstrapAdminUserId] = await Promise.all([
-      loadRoles(redis),
-      loadUsers(redis),
-      loadRepositories(redis),
-      loadSnippets(redis),
-      getJson<SettingsRecord>(redis, SETTINGS_KEY),
-      redis.get(CREDENTIALS_KEY),
-      loadTaskSnapshots(redis),
-      redis.get(BOOTSTRAP_ADMIN_MARKER_KEY)
-    ]);
-    const repositoryIds = new Set(repositories.map((repository) => repository.id));
-    let skippedUserRepositoryAssignments = 0;
-
-    await withPostgresTransaction(postgresPool, async (client) => {
-      await client.query(`
-        TRUNCATE TABLE
-          task_run_logs,
-          task_messages,
-          task_logs,
-          task_change_proposals,
-          task_active_interactive_sessions,
-          task_interactive_terminal_transcripts,
-          task_runs,
-          tasks,
-          user_repositories,
-          user_roles,
-          users,
-          roles,
-          repositories,
-          snippets,
-          system_settings,
-          credentials,
-          app_metadata
-        RESTART IDENTITY CASCADE
-      `);
-
-      if (bootstrapAdminUserId) {
-        await client.query(
-          "INSERT INTO app_metadata (key, value, updated_at) VALUES ($1, $2, $3)",
-          [BOOTSTRAP_ADMIN_MARKER_KEY, bootstrapAdminUserId, nowIso()]
-        );
-      }
-
-      for (const role of roles) {
-        await client.query(
-          `
-            INSERT INTO roles (
-              id,
-              name,
-              name_key,
-              description,
-              scopes,
-              allowed_providers,
-              allowed_models,
-              allowed_efforts,
-              scope_version,
-              is_system,
-              created_at,
-              updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12)
-          `,
-          [
-            role.id,
-            String(role.name ?? "").trim(),
-            String(role.name ?? "").trim().toLowerCase(),
-            String(role.description ?? "").trim(),
-            JSON.stringify(Array.isArray(role.scopes) ? role.scopes : []),
-            JSON.stringify(Array.isArray(role.allowedProviders) ? role.allowedProviders : []),
-            JSON.stringify(Array.isArray(role.allowedModels) ? role.allowedModels : []),
-            JSON.stringify(Array.isArray(role.allowedEfforts) ? role.allowedEfforts : []),
-            typeof role.scopeVersion === "number" ? role.scopeVersion : 0,
-            role.isSystem === true,
-            role.createdAt,
-            role.updatedAt
-          ]
-        );
-      }
-
-      for (const user of users) {
-        await client.query(
-          `
-            INSERT INTO users (
-              id,
-              name,
-              email,
-              active,
-              agent_response_preference,
-              password_hash,
-              password_salt,
-              last_login_at,
-              created_at,
-              updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
-          `,
-          [
-            user.id,
-            String(user.name ?? "").trim(),
-            String(user.email ?? "").trim().toLowerCase(),
-            user.active !== false,
-            JSON.stringify(
-              user.agentResponsePreference &&
-                typeof user.agentResponsePreference === "object"
-                ? user.agentResponsePreference
-                : { enabled: false, style: null }
-            ),
-            user.passwordHash,
-            user.passwordSalt,
-            user.lastLoginAt ?? null,
-            user.createdAt,
-            user.updatedAt
-          ]
-        );
-
-        for (const roleId of stringArray(user.roleIds)) {
-          await client.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)", [user.id, roleId]);
-        }
-      }
-
-      for (const repository of repositories) {
-        await client.query(
-          `
-            INSERT INTO repositories (
-              id,
-              name,
-              url,
-              default_branch,
-              env_vars,
-              env_secrets,
-              webhook_url,
-              webhook_enabled,
-              webhook_secret,
-              webhook_last_attempt_at,
-              webhook_last_status,
-              webhook_last_error,
-              created_at,
-              updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14)
-          `,
-          [
-            repository.id,
-            String(repository.name ?? "").trim(),
-            String(repository.url ?? "").trim(),
-            trimString(repository.defaultBranch) ?? "develop",
-            JSON.stringify(repositoryEnvVarArray(repository.envVars)),
-            JSON.stringify(repositoryEnvSecretArray(repository.envSecrets)),
-            trimString(repository.webhookUrl),
-            repository.webhookEnabled === true,
-            trimString(repository.webhookSecret),
-            repository.webhookLastAttemptAt ?? null,
-            trimString(repository.webhookLastStatus),
-            trimString(repository.webhookLastError),
-            repository.createdAt,
-            repository.updatedAt
-          ]
-        );
-      }
-
-      for (const user of users) {
-        for (const repositoryId of stringArray(user.repositoryIds)) {
-          if (!repositoryIds.has(repositoryId)) {
-            skippedUserRepositoryAssignments += 1;
-            continue;
-          }
-          await client.query("INSERT INTO user_repositories (user_id, repository_id) VALUES ($1, $2)", [user.id, repositoryId]);
-        }
-      }
-
-      for (const snippet of snippets) {
-        await client.query(
-          "INSERT INTO snippets (id, name, content, created_at, updated_at, variables) VALUES ($1, $2, $3, $4, $5, $6::jsonb)",
-          [
-            snippet.id,
-            String(snippet.name ?? "").trim(),
-            String(snippet.content ?? "").trim(),
-            snippet.createdAt,
-            snippet.updatedAt,
-            JSON.stringify(Array.isArray(snippet.variables) ? snippet.variables : [])
-          ]
-        );
-      }
-
-      if (settings) {
-        await client.query(
-          `
-            INSERT INTO system_settings (
-              singleton_id,
-              default_provider,
-              max_agents,
-              branch_prefix,
-              workspace_provisioning_mode,
-              git_username,
-              mcp_servers,
-              openai_base_url,
-              task_prompt_magic_model,
-              task_prompt_magic_template,
-              codex_default_model,
-              codex_default_effort,
-              claude_default_model,
-              claude_default_effort,
-              response_preference_presets
-            )
-            VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13::jsonb)
-          `,
-          [
-            trimString(settings.defaultProvider) ?? "codex",
-            typeof settings.maxAgents === "number" ? settings.maxAgents : 2,
-            trimString(settings.branchPrefix) ?? "agentswarm",
-            trimString((settings as { workspaceProvisioningMode?: string }).workspaceProvisioningMode) ?? "clone_only",
-            trimString(settings.gitUsername) ?? "x-access-token",
-            JSON.stringify(Array.isArray(settings.mcpServers) ? settings.mcpServers : []),
-            trimString(settings.openaiBaseUrl),
-            trimString((settings as { taskPromptMagicModel?: string }).taskPromptMagicModel) ?? "gpt-5.4-mini",
-            trimString((settings as { taskPromptMagicTemplate?: string }).taskPromptMagicTemplate) ?? "",
-            trimString(settings.codexDefaultModel) ?? "gpt-5.4",
-            trimString(settings.codexDefaultEffort) ?? "high",
-            trimString(settings.claudeDefaultModel) ?? "claude-sonnet-4-5",
-            trimString(settings.claudeDefaultEffort) ?? "high",
-            JSON.stringify(Array.isArray(settings.responsePreferencePresets) ? settings.responsePreferencePresets : [])
-          ]
-        );
-      }
-
-      if (credentialsRaw) {
-        await client.query(
-          "INSERT INTO credentials (singleton_id, payload_encrypted, updated_at) VALUES (1, $1, $2)",
-          [credentialsRaw, nowIso()]
-        );
-      }
-
-      for (const snapshot of taskSnapshots) {
-        const { task, logs, messages, runs, proposals, activeInteractiveSession, transcripts } = snapshot;
-
-        await client.query(
-          `
-            INSERT INTO tasks (id, owner_user_id, status, pinned, created_at, task_data)
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-          `,
-          [
-            task.id,
-            trimString(task.ownerUserId),
-            trimString(task.status) ?? "open",
-            task.pinned === true,
-            task.createdAt,
-            JSON.stringify(task)
-          ]
-        );
-
-        for (const line of logs) {
-          await client.query("INSERT INTO task_logs (task_id, line) VALUES ($1, $2)", [task.id, line]);
-        }
-
-        for (const message of messages) {
-          const messageId = trimString(message.id);
-          const createdAt = trimString(message.createdAt);
-          if (!messageId || !createdAt) {
-            continue;
-          }
-
-          await client.query(
-            `
-              INSERT INTO task_messages (message_id, task_id, created_at, message_data)
-              VALUES ($1, $2, $3, $4::jsonb)
-            `,
-            [messageId, task.id, createdAt, JSON.stringify(message)]
-          );
-        }
-
-        for (const { run, logs: runLogs } of runs) {
-          const runId = trimString(run.id);
-          const startedAt = trimString(run.startedAt);
-          if (!runId || !startedAt) {
-            continue;
-          }
-
-          await client.query(
-            "INSERT INTO task_runs (id, task_id, started_at, run_data) VALUES ($1, $2, $3, $4::jsonb)",
-            [runId, task.id, startedAt, JSON.stringify(run)]
-          );
-
-          for (const line of runLogs) {
-            await client.query("INSERT INTO task_run_logs (run_id, line) VALUES ($1, $2)", [runId, line]);
-          }
-        }
-
-        for (const proposal of proposals) {
-          const proposalId = trimString(proposal.id);
-          const createdAt = trimString(proposal.createdAt);
-          if (!proposalId || !createdAt) {
-            continue;
-          }
-
-          await client.query(
-            `
-              INSERT INTO task_change_proposals (id, task_id, status, created_at, resolved_at, proposal_data)
-              VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-            `,
-            [
-              proposalId,
-              task.id,
-              trimString(proposal.status) ?? "pending",
-              createdAt,
-              trimString(proposal.resolvedAt),
-              JSON.stringify(proposal)
-            ]
-          );
-        }
-
-        if (activeInteractiveSession) {
-          await client.query(
-            "INSERT INTO task_active_interactive_sessions (task_id, session_data) VALUES ($1, $2::jsonb)",
-            [task.id, JSON.stringify(activeInteractiveSession)]
-          );
-        }
-
-        for (const transcript of transcripts) {
-          const sessionId = trimString(transcript.sessionId);
-          if (!sessionId) {
-            continue;
-          }
-
-          await client.query(
-            `
-              INSERT INTO task_interactive_terminal_transcripts (session_id, task_id, transcript_data)
-              VALUES ($1, $2, $3::jsonb)
-              ON CONFLICT (session_id) DO UPDATE
-              SET
-                task_id = EXCLUDED.task_id,
-                transcript_data = EXCLUDED.transcript_data
-            `,
-            [sessionId, task.id, JSON.stringify(transcript)]
-          );
-        }
-      }
-    });
-
-    console.log(
-      JSON.stringify(
-        {
-          ok: true,
-          roles: roles.length,
-          users: users.length,
-          repositories: repositories.length,
-          skippedUserRepositoryAssignments,
-          snippets: snippets.length,
-          tasks: taskSnapshots.length
-        },
-        null,
-        2
-      )
-    );
-  } finally {
-    await Promise.all([
-      postgresPool.end(),
-      redisClients.command.quit(),
-      redisClients.pub.quit(),
-      redisClients.sub.quit()
-    ]);
-  }
-};
-
-void main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
-````
-
 ## File: apps/server/src/lib/task-start-orchestrator.test.ts
 ````typescript
 import assert from "node:assert/strict";
@@ -33030,6 +33074,7 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
   ({
     id: "task-1",
     title: "Test task",
+    deadline: null,
     pinned: false,
     hasPendingCheckpoint: false,
     activeInteractiveSession: false,
@@ -33270,11 +33315,19 @@ import { withBranchSyncCounts, withTaskCreatorName } from "./tasks.js";
 import { normalizeProvider } from "../lib/provider-config.js";
 import type { UserStore } from "../services/user-store.js";
 
+const deadlineSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
+  .nullable();
+
 const issueImportSchema = z.object({
   repoId: z.string().min(1),
   issueNumber: z.coerce.number().int().positive(),
   includeComments: z.boolean().optional(),
   notes: z.string().max(40_000).optional(),
+  deadline: deadlineSchema.optional(),
   taskType: z.enum(["build", "ask"]).optional(),
   title: z.string().trim().optional(),
   provider: z.enum(["codex", "claude"]).optional(),
@@ -33291,6 +33344,7 @@ const pullRequestImportSchema = z.object({
   repoId: z.string().min(1),
   pullRequestNumber: z.coerce.number().int().positive(),
   notes: z.string().max(40_000).optional(),
+  deadline: deadlineSchema.optional(),
   title: z.string().trim().optional(),
   provider: z.enum(["codex", "claude"]).optional(),
   providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
@@ -33577,6 +33631,7 @@ class MockGitHubOutboundService {
 const buildTask = (status: Task["status"], overrides: Partial<Task> = {}): Task => ({
   id: "task-1",
   title: "Issue #22",
+  deadline: null,
   pinned: false,
   hasPendingCheckpoint: false,
   activeInteractiveSession: false,
@@ -35163,6 +35218,182 @@ export function SequencesPage() {
 }
 ````
 
+## File: apps/web/components/snippets-page.tsx
+````typescript
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import dayjs from "dayjs";
+import type { Snippet } from "@agentswarm/shared-types";
+import { CopyOutlined } from "@ant-design/icons";
+import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
+import { api } from "../src/api/client";
+import { useSnippets } from "../src/hooks/useSnippets";
+import { useAuth } from "./auth-provider";
+import { trackEvent } from "../src/utils/analytics";
+
+const summarizeSnippet = (value: string): string => {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "Empty";
+  }
+  return normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized;
+};
+
+export function SnippetsPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { snippets, loading } = useSnippets();
+  const { can } = useAuth();
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [messageApi, contextHolder] = message.useMessage();
+  const canCreateSnippet = can("snippet:create");
+  const canEditSnippet = can("snippet:edit");
+  const canDeleteSnippet = can("snippet:delete");
+  const canDuplicateSnippet = can("snippet:create");
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const savedState = searchParams.get("saved");
+    if (!savedState) {
+      return;
+    }
+    if (savedState === "created") {
+      messageApi.success("Snippet created");
+    } else if (savedState === "updated") {
+      messageApi.success("Snippet updated");
+    }
+    router.replace("/snippets");
+  }, [messageApi, router, searchParams]);
+
+  const copySnippetToClipboard = async (content: string, label: string) => {
+    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      messageApi.error("Clipboard access is unavailable in this browser.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(content);
+      messageApi.success(`${label} copied`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to copy snippet");
+    }
+  };
+
+  return (
+    <>
+      {contextHolder}
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
+          <Flex vertical gap={0}>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              Snippets
+            </Typography.Title>
+            <Typography.Text type="secondary">
+              Store reusable text blocks and insert them into task prompts and follow-up messages.
+            </Typography.Text>
+          </Flex>
+          {canCreateSnippet ? (
+            <Button type="primary" onClick={() => router.push("/snippets/new?from=list")}>
+              Add Snippet
+            </Button>
+          ) : null}
+        </Flex>
+
+        <Card bordered={false}>
+          <Table<Snippet>
+            rowKey="id"
+            loading={loading}
+            dataSource={snippets}
+            pagination={{ pageSize: 10 }}
+            columns={[
+              {
+                title: "Name",
+                dataIndex: "name"
+              },
+              {
+                title: "Preview",
+                dataIndex: "content",
+                render: (value: string) => summarizeSnippet(value)
+              },
+              {
+                title: "Updated At",
+                dataIndex: "updatedAt",
+                sorter: (left, right) => left.updatedAt.localeCompare(right.updatedAt),
+                defaultSortOrder: "descend",
+                render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
+              },
+              {
+                title: "Actions",
+                key: "actions",
+                width: 280,
+                render: (_value, snippet) => (
+                  <Space size={8} wrap={false} style={{ whiteSpace: "nowrap" }}>
+                    <Button size="small" icon={<CopyOutlined />} onClick={() => void copySnippetToClipboard(snippet.content, snippet.name)}>
+                      Copy
+                    </Button>
+                    {canEditSnippet ? (
+                      <Button size="small" onClick={() => router.push(`/snippets/${snippet.id}/edit?from=list`)}>
+                        Edit
+                      </Button>
+                    ) : null}
+                    {canDuplicateSnippet ? (
+                      <Button
+                        size="small"
+                        loading={duplicatingId === snippet.id}
+                        onClick={async () => {
+                          setDuplicatingId(snippet.id);
+                          try {
+                            const duplicated = await api.duplicateSnippet(snippet.id);
+                            trackEvent("snippet_duplicated", { source: "list", snippet_id: snippet.id, duplicated_snippet_id: duplicated.id });
+                            messageApi.success("Snippet duplicated");
+                            router.push(`/snippets/${duplicated.id}/edit?from=duplicate`);
+                          } catch (error) {
+                            messageApi.error(error instanceof Error ? error.message : "Failed to duplicate snippet");
+                          } finally {
+                            setDuplicatingId(null);
+                          }
+                        }}
+                      >
+                        Duplicate
+                      </Button>
+                    ) : null}
+                    {canDeleteSnippet ? (
+                      <Popconfirm
+                        title="Delete snippet?"
+                        description={`Delete "${snippet.name}"?`}
+                        okText="Delete"
+                        okButtonProps={{ danger: true, loading: deletingId === snippet.id }}
+                        onConfirm={async () => {
+                          setDeletingId(snippet.id);
+                          try {
+                            await api.deleteSnippet(snippet.id);
+                            messageApi.success("Snippet deleted");
+                          } catch (error) {
+                            messageApi.error(error instanceof Error ? error.message : "Failed to delete snippet");
+                          } finally {
+                            setDeletingId(null);
+                          }
+                        }}
+                      >
+                        <Button danger size="small">
+                          Delete
+                        </Button>
+                      </Popconfirm>
+                    ) : null}
+                  </Space>
+                )
+              }
+            ]}
+          />
+        </Card>
+      </Space>
+    </>
+  );
+}
+````
+
 ## File: apps/web/src/auth/access.ts
 ````typescript
 import type { PermissionScope } from "@agentswarm/shared-types";
@@ -35317,6 +35548,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
       issueNumber: definition.issueNumber,
       includeComments: definition.includeComments,
       notes: definition.notes,
+      deadline: definition.deadline,
       taskType: definition.taskType,
       title: definition.title,
       provider: definition.provider,
@@ -35333,6 +35565,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
       repoId: definition.repoId,
       pullRequestNumber: definition.pullRequestNumber,
       notes: definition.notes,
+      deadline: definition.deadline,
       title: definition.title,
       provider: definition.provider,
       providerProfile: definition.providerProfile,
@@ -35347,6 +35580,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
       repoId: definition.repoId,
       prompt: "",
       notes: definition.notes,
+      deadline: definition.deadline,
       attachments: definition.attachments,
       taskType: definition.taskType,
       provider: definition.provider,
@@ -35366,6 +35600,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
     repoId: definition.repoId,
     prompt: definition.prompt,
     notes: definition.notes,
+    deadline: definition.deadline,
     attachments: definition.sourceType === "blank" || definition.sourceType === "snippet" ? definition.attachments : undefined,
     taskType: definition.taskType,
     provider: definition.provider,
@@ -39627,182 +39862,6 @@ html[data-theme="forge-light"] .diff-widget-content {
 }
 ````
 
-## File: apps/web/components/snippets-page.tsx
-````typescript
-"use client";
-
-import { useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import dayjs from "dayjs";
-import type { Snippet } from "@agentswarm/shared-types";
-import { CopyOutlined } from "@ant-design/icons";
-import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
-import { api } from "../src/api/client";
-import { useSnippets } from "../src/hooks/useSnippets";
-import { useAuth } from "./auth-provider";
-import { trackEvent } from "../src/utils/analytics";
-
-const summarizeSnippet = (value: string): string => {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return "Empty";
-  }
-  return normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized;
-};
-
-export function SnippetsPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const { snippets, loading } = useSnippets();
-  const { can } = useAuth();
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [messageApi, contextHolder] = message.useMessage();
-  const canCreateSnippet = can("snippet:create");
-  const canEditSnippet = can("snippet:edit");
-  const canDeleteSnippet = can("snippet:delete");
-  const canDuplicateSnippet = can("snippet:create");
-  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
-
-  useEffect(() => {
-    const savedState = searchParams.get("saved");
-    if (!savedState) {
-      return;
-    }
-    if (savedState === "created") {
-      messageApi.success("Snippet created");
-    } else if (savedState === "updated") {
-      messageApi.success("Snippet updated");
-    }
-    router.replace("/snippets");
-  }, [messageApi, router, searchParams]);
-
-  const copySnippetToClipboard = async (content: string, label: string) => {
-    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-      messageApi.error("Clipboard access is unavailable in this browser.");
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(content);
-      messageApi.success(`${label} copied`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to copy snippet");
-    }
-  };
-
-  return (
-    <>
-      {contextHolder}
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
-        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-          <Flex vertical gap={0}>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              Snippets
-            </Typography.Title>
-            <Typography.Text type="secondary">
-              Store reusable text blocks and insert them into task prompts and follow-up messages.
-            </Typography.Text>
-          </Flex>
-          {canCreateSnippet ? (
-            <Button type="primary" onClick={() => router.push("/snippets/new?from=list")}>
-              Add Snippet
-            </Button>
-          ) : null}
-        </Flex>
-
-        <Card bordered={false}>
-          <Table<Snippet>
-            rowKey="id"
-            loading={loading}
-            dataSource={snippets}
-            pagination={{ pageSize: 10 }}
-            columns={[
-              {
-                title: "Name",
-                dataIndex: "name"
-              },
-              {
-                title: "Preview",
-                dataIndex: "content",
-                render: (value: string) => summarizeSnippet(value)
-              },
-              {
-                title: "Updated At",
-                dataIndex: "updatedAt",
-                sorter: (left, right) => left.updatedAt.localeCompare(right.updatedAt),
-                defaultSortOrder: "descend",
-                render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
-              },
-              {
-                title: "Actions",
-                key: "actions",
-                width: 280,
-                render: (_value, snippet) => (
-                  <Space size={8} wrap={false} style={{ whiteSpace: "nowrap" }}>
-                    <Button size="small" icon={<CopyOutlined />} onClick={() => void copySnippetToClipboard(snippet.content, snippet.name)}>
-                      Copy
-                    </Button>
-                    {canEditSnippet ? (
-                      <Button size="small" onClick={() => router.push(`/snippets/${snippet.id}/edit?from=list`)}>
-                        Edit
-                      </Button>
-                    ) : null}
-                    {canDuplicateSnippet ? (
-                      <Button
-                        size="small"
-                        loading={duplicatingId === snippet.id}
-                        onClick={async () => {
-                          setDuplicatingId(snippet.id);
-                          try {
-                            const duplicated = await api.duplicateSnippet(snippet.id);
-                            trackEvent("snippet_duplicated", { source: "list", snippet_id: snippet.id, duplicated_snippet_id: duplicated.id });
-                            messageApi.success("Snippet duplicated");
-                            router.push(`/snippets/${duplicated.id}/edit?from=duplicate`);
-                          } catch (error) {
-                            messageApi.error(error instanceof Error ? error.message : "Failed to duplicate snippet");
-                          } finally {
-                            setDuplicatingId(null);
-                          }
-                        }}
-                      >
-                        Duplicate
-                      </Button>
-                    ) : null}
-                    {canDeleteSnippet ? (
-                      <Popconfirm
-                        title="Delete snippet?"
-                        description={`Delete "${snippet.name}"?`}
-                        okText="Delete"
-                        okButtonProps={{ danger: true, loading: deletingId === snippet.id }}
-                        onConfirm={async () => {
-                          setDeletingId(snippet.id);
-                          try {
-                            await api.deleteSnippet(snippet.id);
-                            messageApi.success("Snippet deleted");
-                          } catch (error) {
-                            messageApi.error(error instanceof Error ? error.message : "Failed to delete snippet");
-                          } finally {
-                            setDeletingId(null);
-                          }
-                        }}
-                      >
-                        <Button danger size="small">
-                          Delete
-                        </Button>
-                      </Popconfirm>
-                    ) : null}
-                  </Space>
-                )
-              }
-            ]}
-          />
-        </Card>
-      </Space>
-    </>
-  );
-}
-````
-
 ## File: apps/web/src/utils/task-lifecycle-view-model.test.ts
 ````typescript
 import assert from "node:assert/strict";
@@ -39814,6 +39873,7 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
   ({
     id: "task-1",
     title: "Task",
+    deadline: null,
     pinned: false,
     hasPendingCheckpoint: false,
     activeInteractiveSession: false,
@@ -41649,6 +41709,7 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
   ({
     id: "task-1",
     title: "Test task",
+    deadline: null,
     pinned: false,
     hasPendingCheckpoint: false,
     activeInteractiveSession: false,
@@ -42146,412 +42207,6 @@ flowchart TD
 ```
 ````
 
-## File: README.md
-````markdown
-<p align="center">
-  <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
-</p>
-
-# AgentSwarm
-
-AgentSwarm is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
-
-The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
-
-## Features
-
-- Create build or ask tasks from a blank prompt, reusable snippet, GitHub issue, or pull request.
-- Run Codex and Claude tasks in isolated Docker runtime containers.
-- Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
-- Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
-- Open task workspaces in an interactive browser terminal.
-- Configure repositories, credentials, roles, users, provider defaults, snippets, and prompt sequences.
-- Automate task creation from GitHub webhooks and repository automation rules.
-- Add repository-local postflight checks with `.agentswarm/postflight.yml`.
-
-## Requirements
-
-| Requirement | Notes |
-| --- | --- |
-| Docker | Required for the main app stack and agent runtime containers. |
-| Docker Compose | `docker compose` is preferred; `docker-compose` is also supported. |
-| Bash | Required by the helper and harness scripts. |
-| Node.js 20+ and npm | Required for local development, checks, tests, and builds. |
-| Python 3 | Required when installing local npm dependencies because native modules such as `node-pty` may build from source. |
-
-## Installation
-
-Clone the repository:
-
-```bash
-git clone git@github.com:coretracker/agentswarm.git
-cd agentswarm
-```
-
-Create a local environment file:
-
-```bash
-cp .env.example .env
-```
-
-Initialize the Docker stack and runtime images:
-
-```bash
-./agentswarm.sh init
-```
-
-For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
-
-```bash
-HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-```
-
-## Quick Start
-
-Start the app:
-
-```bash
-./agentswarm.sh start
-```
-
-Open the UI:
-
-```text
-http://localhost:3217/login
-```
-
-Bootstrap credentials come from `.env.example` and are used only when the first admin user is created. Review and change them before exposing the app outside a local development environment.
-
-After signing in:
-
-1. Open **Settings** and add provider credentials for OpenAI/Codex and/or Anthropic/Claude.
-2. Open **Repositories** and add a Git repository.
-3. Open **Tasks** and create a build or ask task.
-4. Review task output, logs, diffs, and checkpoints from the task detail page.
-
-Stop the app:
-
-```bash
-./agentswarm.sh stop
-```
-
-## Usage
-
-### Common Commands
-
-| Command | Description |
-| --- | --- |
-| `./agentswarm.sh init` | Build runtime images, rebuild compose images, and start the stack. |
-| `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
-| `./agentswarm.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
-| `./agentswarm.sh stop` | Stop the Docker Compose stack. |
-| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
-
-The health endpoint is available at:
-
-```bash
-curl -fsS http://localhost:3217/api/health
-```
-
-### Creating Tasks
-
-Tasks are the main unit of work in AgentSwarm.
-
-- **Build tasks** ask an agent to make repository changes.
-- **Ask tasks** ask an agent to inspect and answer without changing code.
-- **Snippet tasks** start from reusable prompt templates and variables.
-- **GitHub-imported tasks** can be created from issues, pull requests, review comments, and automation rules.
-
-Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
-
-### GitHub Webhooks
-
-AgentSwarm supports repository-scoped GitHub webhooks that can create tasks automatically.
-
-For each repository, configure this webhook URL in GitHub:
-
-```text
-https://<your-host>/api/webhooks/github/<repositoryId>
-```
-
-Use content type `application/json` and subscribe to the events you want to automate, such as Issues, Pull requests, Pull request review comments, Issue comments, and Reactions.
-
-Example repository automation rule:
-
-```json
-[
-  {
-    "id": "ai-issue-opened",
-    "name": "AI issue to build task",
-    "enabled": true,
-    "trigger": "issue_opened",
-    "syncStatusEnabled": true,
-    "labelFilter": {
-      "labelsAny": ["ai"],
-      "labelsNone": ["wip"]
-    },
-    "task": {
-      "assigneeEmail": "dev@example.com",
-      "taskType": "build",
-      "provider": "codex",
-      "providerProfile": "high",
-      "modelOverride": "gpt-5.4",
-      "codexCredentialSource": "profile"
-    }
-  }
-]
-```
-
-Supported automation triggers include:
-
-- `issue_opened`
-- `pull_request_opened`
-- comment or reaction triggers when rule-level comment automation is enabled
-
-### Postflight Checks
-
-Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
-
-Example:
-
-```yaml
-version: 1
-enabled: true
-
-when:
-  task_types: ["build"]
-  providers: ["codex", "claude"]
-
-runner:
-  image: "mcr.microsoft.com/playwright:v1.52.0-jammy"
-  timeout_seconds: 1800
-
-steps:
-  - run: "npm ci"
-  - run: "npx playwright test tests/mobile-screenshots.spec.ts --project=mobile-web --update-snapshots"
-
-on_failure: "fail_task"
-```
-
-## Configuration
-
-Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the AgentSwarm Settings UI, not in `.env`.
-
-### Core Environment Variables
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
-| `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
-| `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
-| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
-| `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
-| `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
-| `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
-| `APP_ENVIRONMENT` | Runtime environment label. | `local` |
-
-### Storage
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `DATABASE_URL` | Postgres connection string. | see `.env.example` |
-| `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start. | `true` |
-| `REDIS_HOST_PORT` | Host port for Redis in local Docker setups. | `6379` |
-| `POSTGRES_HOST_PORT` | Host port for Postgres in local Docker setups. | `5432` |
-
-Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub.
-
-### Git and Workspaces
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `GIT_USER_NAME` | Git author name used by the server. | `AgentSwarm Bot` |
-| `GIT_USER_EMAIL` | Git author email used by the server. | `agentswarm@local.dev` |
-| `TASK_WORKSPACE_HOST_ROOT` | Absolute host path for task workspaces. | unset |
-| `LOCAL_PLANS_HOST_ROOT` | Absolute host path for local plan storage. | unset |
-
-`TASK_WORKSPACE_HOST_ROOT` is important in Docker setups because the server and runtime containers must mount the same host workspace directory.
-
-### Frontend API Routing
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `NEXT_PUBLIC_API_URL` | Explicit public API base URL. | empty |
-| `NEXT_PUBLIC_SOCKET_URL` | Explicit public Socket.IO URL. | empty |
-
-Leave these empty to use the bundled same-origin `/api` proxy.
-
-### Runtime Images
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
-| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
-| `GIT_TERMINAL_IMAGE` | Restricted Git terminal image. | `local/git-terminal:latest` |
-| `CODEX_INTERACTIVE_IMAGE` | Interactive Codex terminal image. | `local/codex-interactive:latest` |
-| `CLAUDE_INTERACTIVE_IMAGE` | Interactive Claude terminal image. | `local/claude-interactive:latest` |
-
-### Docker Socket Access
-
-Docker socket access is disabled by default and should stay disabled unless a runtime must start nested containers.
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into Codex/Claude runtime containers. | `false` |
-| `DOCKER_SOCKET_HOST_PATH` | Host Docker socket path. | `/var/run/docker.sock` |
-| `DOCKER_SOCKET_CONTAINER_PATH_CODEX` | In-container socket path for Codex runtimes. | `/var/run/docker.sock` |
-| `DOCKER_SOCKET_CONTAINER_PATH_CLAUDE` | In-container socket path for Claude runtimes. | `/var/run/docker.sock` |
-
-Mounting `docker.sock` is highly privileged and can effectively grant host-level control from inside the runtime container.
-
-## Project Structure
-
-```text
-.
-+-- apps/
-|   +-- server/          # Backend API, orchestration, stores, routes, schedulers
-|   +-- web/             # Next.js web app
-+-- packages/
-|   +-- shared-types/    # Shared TypeScript types used by server and web
-+-- agent-runtime-codex/ # Automated Codex task runtime
-+-- agent-runtime-claude/# Automated Claude task runtime
-+-- tools/               # Supporting runtime and terminal tooling
-+-- docs/                # Architecture, development, product, and quality docs
-+-- scripts/harness/     # Canonical setup, check, test, and PR scripts
-+-- task-workspaces/     # Runtime task workspaces; do not commit
-+-- docker-compose.yml   # Local Docker stack
-+-- agentswarm.sh        # Main stack helper script
-```
-
-## Development
-
-Install dependencies on a clean checkout:
-
-```bash
-HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-```
-
-Useful development commands:
-
-| Command | Description |
-| --- | --- |
-| `./scripts/harness/doctor.sh` | Verify required tooling and harness availability. |
-| `./scripts/harness/setup.sh` | Initialize the Docker stack and runtime folders. |
-| `./scripts/harness/check.sh` | Run docs checks, boundary checks, lint, and build. |
-| `./scripts/harness/test.sh` | Run the canonical test suite. |
-| `./scripts/harness/pr-ready.sh` | Run pull request readiness checks. |
-| `npm run dev` | Run server and web dev processes together. |
-| `npm run lint` | Run TypeScript no-emit checks for server and web. |
-| `npm run build` | Build shared types, server, and web. |
-| `npm run test` | Run `./scripts/harness/test.sh`. |
-
-Workspace-specific commands:
-
-```bash
-npm run dev -w @agentswarm/server
-npm run dev -w @agentswarm/web
-npm run build -w @agentswarm/shared-types
-```
-
-Before opening a pull request, run:
-
-```bash
-./scripts/harness/pr-ready.sh
-```
-
-The repository uses execution-plan and human-gated-flow checks for non-trivial changes. Useful references:
-
-- `docs/development/setup.md`
-- `docs/development/commands.md`
-- `docs/development/testing.md`
-- `docs/development/pr-workflow.md`
-- `docs/development/agent-review.md`
-
-After any agent-generated repository edit, refresh the Repomix context bundle:
-
-```bash
-npx repomix --style markdown --output docs/repomix.md
-```
-
-## FAQ
-
-### Where do I configure API keys?
-
-Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings UI. Credentials are write-only from the UI and are not returned by the API.
-
-### Can I run without Docker?
-
-The documented and supported path is Docker-based. Some server and web commands can run locally with Node.js, but the full task execution flow depends on Docker runtime containers.
-
-### What does a `202` response from a GitHub webhook mean?
-
-It means AgentSwarm accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
-
-### How do I reset local data?
-
-Run setup with a database reset:
-
-```bash
-HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
-```
-
-## Contributing
-
-1. Read the relevant docs in `docs/index.md`.
-2. Keep changes scoped and update docs when behavior changes.
-3. Run the canonical checks before opening a pull request:
-
-   ```bash
-   ./scripts/harness/pr-ready.sh
-   ```
-
-4. Use the pull request template in `.github/pull_request_template.md`.
-
-## License
-
-No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.
-````
-
-## File: apps/server/package.json
-````json
-{
-  "name": "@agentswarm/server",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
-    "db:migrate": "tsx src/db/migrate.ts",
-    "db:backfill:redis-to-postgres": "tsx src/db/backfill-redis-to-postgres.ts",
-    "build": "tsc -p tsconfig.json",
-    "lint": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/sequence-resolution.test.ts src/services/sequence-execution-service.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
-  },
-  "dependencies": {
-    "@agentswarm/shared-types": "*",
-    "@fastify/cookie": "^11.0.2",
-    "@fastify/cors": "^10.0.1",
-    "@sentry/node": "^10.53.1",
-    "fastify": "^5.0.0",
-    "ioredis": "^5.4.1",
-    "nanoid": "^5.1.0",
-    "node-pty": "^1.0.0",
-    "pg": "^8.20.0",
-    "socket.io": "^4.8.1",
-    "ws": "^8.18.0",
-    "zod": "^3.24.1"
-  },
-  "devDependencies": {
-    "@types/node": "^22.8.6",
-    "@types/pg": "^8.20.0",
-    "@types/ws": "^8.5.13",
-    "tsx": "^4.19.1",
-    "typescript": "^5.6.3"
-  }
-}
-````
-
 ## File: apps/server/src/db/migrations.ts
 ````typescript
 export interface PostgresMigration {
@@ -42976,6 +42631,412 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
 ];
 ````
 
+## File: apps/server/package.json
+````json
+{
+  "name": "@agentswarm/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:backfill:redis-to-postgres": "tsx src/db/backfill-redis-to-postgres.ts",
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/sequence-resolution.test.ts src/services/sequence-execution-service.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
+  },
+  "dependencies": {
+    "@agentswarm/shared-types": "*",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/cors": "^10.0.1",
+    "@sentry/node": "^10.53.1",
+    "fastify": "^5.0.0",
+    "ioredis": "^5.4.1",
+    "nanoid": "^5.1.0",
+    "node-pty": "^1.0.0",
+    "pg": "^8.20.0",
+    "socket.io": "^4.8.1",
+    "ws": "^8.18.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.8.6",
+    "@types/pg": "^8.20.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}
+````
+
+## File: README.md
+````markdown
+<p align="center">
+  <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
+</p>
+
+# AgentSwarm
+
+AgentSwarm is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
+
+The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
+
+## Features
+
+- Create build or ask tasks from a blank prompt, reusable snippet, GitHub issue, or pull request.
+- Run Codex and Claude tasks in isolated Docker runtime containers.
+- Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
+- Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
+- Open task workspaces in an interactive browser terminal.
+- Configure repositories, credentials, roles, users, provider defaults, snippets, and prompt sequences.
+- Automate task creation from GitHub webhooks and repository automation rules.
+- Add repository-local postflight checks with `.agentswarm/postflight.yml`.
+
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| Docker | Required for the main app stack and agent runtime containers. |
+| Docker Compose | `docker compose` is preferred; `docker-compose` is also supported. |
+| Bash | Required by the helper and harness scripts. |
+| Node.js 20+ and npm | Required for local development, checks, tests, and builds. |
+| Python 3 | Required when installing local npm dependencies because native modules such as `node-pty` may build from source. |
+
+## Installation
+
+Clone the repository:
+
+```bash
+git clone git@github.com:coretracker/agentswarm.git
+cd agentswarm
+```
+
+Create a local environment file:
+
+```bash
+cp .env.example .env
+```
+
+Initialize the Docker stack and runtime images:
+
+```bash
+./agentswarm.sh init
+```
+
+For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
+
+```bash
+HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+```
+
+## Quick Start
+
+Start the app:
+
+```bash
+./agentswarm.sh start
+```
+
+Open the UI:
+
+```text
+http://localhost:3217/login
+```
+
+Bootstrap credentials come from `.env.example` and are used only when the first admin user is created. Review and change them before exposing the app outside a local development environment.
+
+After signing in:
+
+1. Open **Settings** and add provider credentials for OpenAI/Codex and/or Anthropic/Claude.
+2. Open **Repositories** and add a Git repository.
+3. Open **Tasks** and create a build or ask task.
+4. Review task output, logs, diffs, and checkpoints from the task detail page.
+
+Stop the app:
+
+```bash
+./agentswarm.sh stop
+```
+
+## Usage
+
+### Common Commands
+
+| Command | Description |
+| --- | --- |
+| `./agentswarm.sh init` | Build runtime images, rebuild compose images, and start the stack. |
+| `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
+| `./agentswarm.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
+| `./agentswarm.sh stop` | Stop the Docker Compose stack. |
+| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
+
+The health endpoint is available at:
+
+```bash
+curl -fsS http://localhost:3217/api/health
+```
+
+### Creating Tasks
+
+Tasks are the main unit of work in AgentSwarm.
+
+- **Build tasks** ask an agent to make repository changes.
+- **Ask tasks** ask an agent to inspect and answer without changing code.
+- **Snippet tasks** start from reusable prompt templates and variables.
+- **GitHub-imported tasks** can be created from issues, pull requests, review comments, and automation rules.
+
+Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
+
+### GitHub Webhooks
+
+AgentSwarm supports repository-scoped GitHub webhooks that can create tasks automatically.
+
+For each repository, configure this webhook URL in GitHub:
+
+```text
+https://<your-host>/api/webhooks/github/<repositoryId>
+```
+
+Use content type `application/json` and subscribe to the events you want to automate, such as Issues, Pull requests, Pull request review comments, Issue comments, and Reactions.
+
+Example repository automation rule:
+
+```json
+[
+  {
+    "id": "ai-issue-opened",
+    "name": "AI issue to build task",
+    "enabled": true,
+    "trigger": "issue_opened",
+    "syncStatusEnabled": true,
+    "labelFilter": {
+      "labelsAny": ["ai"],
+      "labelsNone": ["wip"]
+    },
+    "task": {
+      "assigneeEmail": "dev@example.com",
+      "taskType": "build",
+      "provider": "codex",
+      "providerProfile": "high",
+      "modelOverride": "gpt-5.4",
+      "codexCredentialSource": "profile"
+    }
+  }
+]
+```
+
+Supported automation triggers include:
+
+- `issue_opened`
+- `pull_request_opened`
+- comment or reaction triggers when rule-level comment automation is enabled
+
+### Postflight Checks
+
+Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
+
+Example:
+
+```yaml
+version: 1
+enabled: true
+
+when:
+  task_types: ["build"]
+  providers: ["codex", "claude"]
+
+runner:
+  image: "mcr.microsoft.com/playwright:v1.52.0-jammy"
+  timeout_seconds: 1800
+
+steps:
+  - run: "npm ci"
+  - run: "npx playwright test tests/mobile-screenshots.spec.ts --project=mobile-web --update-snapshots"
+
+on_failure: "fail_task"
+```
+
+## Configuration
+
+Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the AgentSwarm Settings UI, not in `.env`.
+
+### Core Environment Variables
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
+| `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
+| `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
+| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
+| `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
+| `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
+| `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
+| `APP_ENVIRONMENT` | Runtime environment label. | `local` |
+
+### Storage
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `DATABASE_URL` | Postgres connection string. | see `.env.example` |
+| `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start. | `true` |
+| `REDIS_HOST_PORT` | Host port for Redis in local Docker setups. | `6379` |
+| `POSTGRES_HOST_PORT` | Host port for Postgres in local Docker setups. | `5432` |
+
+Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub.
+
+### Git and Workspaces
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `GIT_USER_NAME` | Git author name used by the server. | `AgentSwarm Bot` |
+| `GIT_USER_EMAIL` | Git author email used by the server. | `agentswarm@local.dev` |
+| `TASK_WORKSPACE_HOST_ROOT` | Absolute host path for task workspaces. | unset |
+| `LOCAL_PLANS_HOST_ROOT` | Absolute host path for local plan storage. | unset |
+
+`TASK_WORKSPACE_HOST_ROOT` is important in Docker setups because the server and runtime containers must mount the same host workspace directory.
+
+### Frontend API Routing
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_URL` | Explicit public API base URL. | empty |
+| `NEXT_PUBLIC_SOCKET_URL` | Explicit public Socket.IO URL. | empty |
+
+Leave these empty to use the bundled same-origin `/api` proxy.
+
+### Runtime Images
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
+| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
+| `GIT_TERMINAL_IMAGE` | Restricted Git terminal image. | `local/git-terminal:latest` |
+| `CODEX_INTERACTIVE_IMAGE` | Interactive Codex terminal image. | `local/codex-interactive:latest` |
+| `CLAUDE_INTERACTIVE_IMAGE` | Interactive Claude terminal image. | `local/claude-interactive:latest` |
+
+### Docker Socket Access
+
+Docker socket access is disabled by default and should stay disabled unless a runtime must start nested containers.
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into Codex/Claude runtime containers. | `false` |
+| `DOCKER_SOCKET_HOST_PATH` | Host Docker socket path. | `/var/run/docker.sock` |
+| `DOCKER_SOCKET_CONTAINER_PATH_CODEX` | In-container socket path for Codex runtimes. | `/var/run/docker.sock` |
+| `DOCKER_SOCKET_CONTAINER_PATH_CLAUDE` | In-container socket path for Claude runtimes. | `/var/run/docker.sock` |
+
+Mounting `docker.sock` is highly privileged and can effectively grant host-level control from inside the runtime container.
+
+## Project Structure
+
+```text
+.
++-- apps/
+|   +-- server/          # Backend API, orchestration, stores, routes, schedulers
+|   +-- web/             # Next.js web app
++-- packages/
+|   +-- shared-types/    # Shared TypeScript types used by server and web
++-- agent-runtime-codex/ # Automated Codex task runtime
++-- agent-runtime-claude/# Automated Claude task runtime
++-- tools/               # Supporting runtime and terminal tooling
++-- docs/                # Architecture, development, product, and quality docs
++-- scripts/harness/     # Canonical setup, check, test, and PR scripts
++-- task-workspaces/     # Runtime task workspaces; do not commit
++-- docker-compose.yml   # Local Docker stack
++-- agentswarm.sh        # Main stack helper script
+```
+
+## Development
+
+Install dependencies on a clean checkout:
+
+```bash
+HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+```
+
+Useful development commands:
+
+| Command | Description |
+| --- | --- |
+| `./scripts/harness/doctor.sh` | Verify required tooling and harness availability. |
+| `./scripts/harness/setup.sh` | Initialize the Docker stack and runtime folders. |
+| `./scripts/harness/check.sh` | Run docs checks, boundary checks, lint, and build. |
+| `./scripts/harness/test.sh` | Run the canonical test suite. |
+| `./scripts/harness/pr-ready.sh` | Run pull request readiness checks. |
+| `npm run dev` | Run server and web dev processes together. |
+| `npm run lint` | Run TypeScript no-emit checks for server and web. |
+| `npm run build` | Build shared types, server, and web. |
+| `npm run test` | Run `./scripts/harness/test.sh`. |
+
+Workspace-specific commands:
+
+```bash
+npm run dev -w @agentswarm/server
+npm run dev -w @agentswarm/web
+npm run build -w @agentswarm/shared-types
+```
+
+Before opening a pull request, run:
+
+```bash
+./scripts/harness/pr-ready.sh
+```
+
+The repository uses execution-plan and human-gated-flow checks for non-trivial changes. Useful references:
+
+- `docs/development/setup.md`
+- `docs/development/commands.md`
+- `docs/development/testing.md`
+- `docs/development/pr-workflow.md`
+- `docs/development/agent-review.md`
+
+After any agent-generated repository edit, refresh the Repomix context bundle:
+
+```bash
+npx repomix --style markdown --output docs/repomix.md
+```
+
+## FAQ
+
+### Where do I configure API keys?
+
+Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings UI. Credentials are write-only from the UI and are not returned by the API.
+
+### Can I run without Docker?
+
+The documented and supported path is Docker-based. Some server and web commands can run locally with Node.js, but the full task execution flow depends on Docker runtime containers.
+
+### What does a `202` response from a GitHub webhook mean?
+
+It means AgentSwarm accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
+
+### How do I reset local data?
+
+Run setup with a database reset:
+
+```bash
+HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
+```
+
+## Contributing
+
+1. Read the relevant docs in `docs/index.md`.
+2. Keep changes scoped and update docs when behavior changes.
+3. Run the canonical checks before opening a pull request:
+
+   ```bash
+   ./scripts/harness/pr-ready.sh
+   ```
+
+4. Use the pull request template in `.github/pull_request_template.md`.
+
+## License
+
+No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.
+````
+
 ## File: apps/server/src/services/task-store.ts
 ````typescript
 import { nanoid } from "nanoid";
@@ -43051,6 +43112,20 @@ const LEGACY_START_MODE_FIELD = "start" + "Mode";
 const nowIso = (): string => new Date().toISOString();
 const POSTGRES_DEADLOCK_ERROR_CODE = "40P01";
 const POSTGRES_SERIALIZATION_ERROR_CODE = "40001";
+
+const normalizeDeadline = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const timestamp = Date.parse(trimmed);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+};
 
 const isRetryablePostgresError = (error: unknown): boolean => {
   if (!error || typeof error !== "object" || !("code" in error)) {
@@ -43359,6 +43434,7 @@ export class RedisTaskStore implements TaskStore {
   private normalizeTask(task: Task): Task {
     const legacyTask = task as Task & {
       taskType?: string;
+      deadline?: string | null;
       ownerUserId?: string | null;
       repoDefaultBranch?: string;
       resultMarkdown?: string | null;
@@ -43390,6 +43466,7 @@ export class RedisTaskStore implements TaskStore {
         : "blank";
     const normalizedTask: Task = {
       ...taskWithoutStartMode,
+      deadline: normalizeDeadline(legacyTask.deadline),
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
@@ -43604,6 +43681,7 @@ export class RedisTaskStore implements TaskStore {
     const promptRaw = (input.prompt ?? "").trim();
     const prompt = promptRaw.length > 0 ? promptRaw : "(No prompt provided.)";
     const notes = (input.notes ?? "").trim();
+    const deadline = normalizeDeadline(input.deadline);
     const complexity = classifyTaskComplexity(title, prompt);
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
@@ -43625,6 +43703,7 @@ export class RedisTaskStore implements TaskStore {
     const task: Task = {
       id: nanoid(),
       title,
+      deadline,
       pinned: false,
       hasPendingCheckpoint: false,
       activeInteractiveSession: false,
@@ -44602,6 +44681,7 @@ export class PostgresTaskStore implements TaskStore {
   private normalizeTask(task: Task): Task {
     const legacyTask = task as Task & {
       taskType?: string;
+      deadline?: string | null;
       ownerUserId?: string | null;
       repoDefaultBranch?: string;
       resultMarkdown?: string | null;
@@ -44632,6 +44712,7 @@ export class PostgresTaskStore implements TaskStore {
         : "blank";
     const normalizedTask: Task = {
       ...taskWithoutStartMode,
+      deadline: normalizeDeadline(legacyTask.deadline),
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
@@ -44934,6 +45015,7 @@ export class PostgresTaskStore implements TaskStore {
     const promptRaw = (input.prompt ?? "").trim();
     const prompt = promptRaw.length > 0 ? promptRaw : "(No prompt provided.)";
     const notes = (input.notes ?? "").trim();
+    const deadline = normalizeDeadline(input.deadline);
     const complexity = classifyTaskComplexity(title, prompt);
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
@@ -44955,6 +45037,7 @@ export class PostgresTaskStore implements TaskStore {
     const task: Task = {
       id: nanoid(),
       title,
+      deadline,
       pinned: false,
       hasPendingCheckpoint: false,
       activeInteractiveSession: false,
@@ -46164,6 +46247,7 @@ import type {
   UpdateSnippetInput,
   UpdateTaskPinInput,
   UpdateTaskNotesInput,
+  UpdateTaskDeadlineInput,
   UpdateTaskAssigneeInput,
   UpdateTaskStateInput,
   UpdateUserNotesInput,
@@ -46634,6 +46718,11 @@ export const api = {
     }),
   updateTaskNotes: (id: string, input: UpdateTaskNotesInput) =>
     request<Task>(`/tasks/${id}/notes`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskDeadline: (id: string, input: UpdateTaskDeadlineInput) =>
+    request<Task>(`/tasks/${id}/deadline`, {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
@@ -51669,6 +51758,7 @@ export class CancelledTaskError extends Error {
 
 import { useEffect, useState } from "react";
 import type { FormInstance } from "antd";
+import dayjs, { type Dayjs } from "dayjs";
 import type {
   AgentProvider,
   CodexCredentialSource,
@@ -51692,7 +51782,7 @@ import {
   getEffortOptionsForProvider,
   getModelsForProvider
 } from "@agentswarm/shared-types";
-import { Alert, Button, Card, Checkbox, Col, Flex, Form, Input, Modal, Row, Select, Space, Typography, message } from "antd";
+import { Alert, Button, Card, Checkbox, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Space, Typography, message } from "antd";
 import { RobotOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -51709,6 +51799,7 @@ import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
 export type TaskDefinitionFormValues = {
   sourceType?: TaskSourceType;
   title?: string;
+  deadline?: string | null | Dayjs;
   repoId?: string;
   prompt?: string;
   notes?: string;
@@ -51776,6 +51867,15 @@ const deriveTitleFromPrompt = (prompt: string): string => {
   return lines[0];
 };
 
+export const getTaskDefinitionDeadlineIso = (value: TaskDefinitionFormValues["deadline"]): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = dayjs.isDayjs(value) ? value : dayjs(value);
+  return parsed.isValid() ? parsed.toISOString() : undefined;
+};
+
 export const getTaskDefinitionInitialValues = (
   settings?: SystemSettings | null
 ): Partial<TaskDefinitionFormValues> => {
@@ -51805,6 +51905,7 @@ export const buildTaskDefinitionInput = (
     return {
       sourceType: "blank",
       title: values.title?.trim() ?? "",
+      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
       repoId: values.repoId ?? "",
       prompt: values.prompt?.trim() ?? "",
       notes: values.notes?.trim() ?? "",
@@ -51823,6 +51924,7 @@ export const buildTaskDefinitionInput = (
     return {
       sourceType: "issue",
       title: values.title?.trim() || undefined,
+      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
       notes: values.notes?.trim() || undefined,
       repoId: values.repoId ?? "",
       issueNumber: values.issueNumber ?? 0,
@@ -51842,6 +51944,7 @@ export const buildTaskDefinitionInput = (
     return {
       sourceType: "snippet",
       title: values.title?.trim() ?? "",
+      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
       repoId: values.repoId ?? "",
       snippetId: values.snippetId ?? "",
       prompt: renderedPrompt.trim(),
@@ -51861,6 +51964,7 @@ export const buildTaskDefinitionInput = (
     return {
       sourceType: "sequence",
       title: values.title?.trim() ?? "",
+      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
       repoId: values.repoId ?? "",
       sequenceId: values.sequenceId ?? "",
       sequenceVariables: values.sequenceVariables ?? {},
@@ -51879,6 +51983,7 @@ export const buildTaskDefinitionInput = (
   return {
     sourceType: "pull_request",
     title: values.title?.trim() || undefined,
+    deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
     notes: values.notes?.trim() || undefined,
     repoId: values.repoId ?? "",
     pullRequestNumber: values.pullRequestNumber ?? 0,
@@ -52621,6 +52726,16 @@ export function TaskDefinitionFields({
             />
           </Form.Item>
 
+          <Form.Item name="deadline" label="Deadline">
+            <DatePicker
+              showTime={{ format: "HH:mm" }}
+              format="YYYY-MM-DD HH:mm"
+              placeholder="No deadline"
+              style={{ width: "100%" }}
+              allowClear
+            />
+          </Form.Item>
+
           {isPullRequestSource ? (
             <Form.Item name="pullRequestNumber" label="Pull Request" rules={[{ required: true }]}>
               <Select
@@ -52859,9 +52974,17 @@ const taskPromptAttachmentInputSchema = z.object({
   dataBase64: z.string().trim().min(1)
 });
 
+const deadlineSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
+  .nullable();
+
 const createTaskSchema = z
   .object({
     title: z.string().min(1),
+    deadline: deadlineSchema.optional(),
     repoId: z.string().min(1),
     prompt: z.string().default(""),
     notes: z.string().max(40_000).optional(),
@@ -52931,6 +53054,10 @@ const updateTaskTitleSchema = z.object({
 
 const updateTaskNotesSchema = z.object({
   notes: z.string().max(40_000)
+});
+
+const updateTaskDeadlineSchema = z.object({
+  deadline: deadlineSchema
 });
 
 const updateTaskStateSchema = z.object({
@@ -54402,6 +54529,29 @@ export const registerTaskRoutes = (
     return reply.send(updated);
   });
 
+  app.patch<{ Params: { id: string } }>("/tasks/:id/deadline", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateTaskDeadlineSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    const deadline = parsed.data.deadline === null ? null : new Date(Date.parse(parsed.data.deadline)).toISOString();
+    const updated = await deps.taskStore.patchTask(task.id, {
+      deadline
+    });
+
+    return reply.send(updated);
+  });
+
   app.patch<{ Params: { id: string } }>("/tasks/:id/state", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const parsed = updateTaskStateSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -55352,6 +55502,7 @@ export type CodexCredentialSource = "auto" | "profile" | "global";
 export interface Task {
   id: string;
   title: string;
+  deadline: string | null;
   pinned: boolean;
   hasPendingCheckpoint: boolean;
   activeInteractiveSession?: boolean;
@@ -55530,6 +55681,7 @@ export interface CreateTaskPromptAttachmentInput {
 export interface TaskDraftDefinition {
   sourceType?: TaskSourceType;
   title?: string;
+  deadline?: string | null;
   repoId?: string;
   prompt?: string;
   notes?: string;
@@ -55779,6 +55931,7 @@ export interface UpdateRepositoryInput {
 
 export interface CreateTaskInput {
   title: string;
+  deadline?: string | null;
   repoId: string;
   prompt: string;
   notes?: string;
@@ -55803,6 +55956,7 @@ export type TaskSourceType = "blank" | "snippet" | "sequence" | "issue" | "pull_
 export interface BlankTaskDefinitionInput {
   sourceType: "blank";
   title: string;
+  deadline?: string | null;
   repoId: string;
   prompt: string;
   notes?: string;
@@ -55819,6 +55973,7 @@ export interface BlankTaskDefinitionInput {
 export interface IssueTaskDefinitionInput {
   sourceType: "issue";
   title?: string;
+  deadline?: string | null;
   notes?: string;
   repoId: string;
   issueNumber: number;
@@ -55835,6 +55990,7 @@ export interface IssueTaskDefinitionInput {
 export interface PullRequestTaskDefinitionInput {
   sourceType: "pull_request";
   title?: string;
+  deadline?: string | null;
   notes?: string;
   repoId: string;
   pullRequestNumber: number;
@@ -55847,6 +56003,7 @@ export interface PullRequestTaskDefinitionInput {
 export interface SnippetTaskDefinitionInput {
   sourceType: "snippet";
   title: string;
+  deadline?: string | null;
   repoId: string;
   snippetId: string;
   prompt: string;
@@ -55864,6 +56021,7 @@ export interface SnippetTaskDefinitionInput {
 export interface SequenceTaskDefinitionInput {
   sourceType: "sequence";
   title: string;
+  deadline?: string | null;
   repoId: string;
   sequenceId: string;
   sequenceVariables?: Record<string, string>;
@@ -55982,6 +56140,7 @@ export interface CreateTaskFromIssueInput {
   issueNumber: number;
   includeComments?: boolean;
   notes?: string;
+  deadline?: string | null;
   taskType?: Extract<TaskType, "build" | "ask">;
   title?: string;
   provider?: AgentProvider;
@@ -55999,6 +56158,7 @@ export interface CreateTaskFromPullRequestInput {
   pullRequestNumber: number;
   title?: string;
   notes?: string;
+  deadline?: string | null;
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
@@ -56029,6 +56189,10 @@ export interface UpdateTaskTitleInput {
 
 export interface UpdateTaskNotesInput {
   notes: string;
+}
+
+export interface UpdateTaskDeadlineInput {
+  deadline: string | null;
 }
 
 export interface UpdateUserNotesInput {
@@ -56496,6 +56660,7 @@ import {
   Card,
   Checkbox,
   Collapse,
+  DatePicker,
   Descriptions,
   Divider,
   Dropdown,
@@ -57221,6 +57386,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "message"
     | "pin"
     | "assign"
+    | "deadline"
     | "state"
     | "renameTitle"
     | "editComment"
@@ -57675,6 +57841,27 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       showTaskActionError(error, "Failed to assign task");
     } finally {
       setSubmitting((current) => (current === "assign" ? null : current));
+    }
+  };
+  const handleUpdateDeadline = async (nextDeadline: string | null): Promise<void> => {
+    if (!task || !canEditTask || isArchived) {
+      return;
+    }
+
+    const currentDeadline = task.deadline ? dayjs(task.deadline).toISOString() : null;
+    if (nextDeadline === currentDeadline) {
+      return;
+    }
+
+    setSubmitting("deadline");
+    try {
+      const updatedTask = await api.updateTaskDeadline(task.id, { deadline: nextDeadline });
+      applyUpdatedTask(updatedTask);
+      messageApi.success(updatedTask.deadline ? "Deadline updated" : "Deadline cleared");
+    } catch (error) {
+      showTaskActionError(error, "Failed to update deadline");
+    } finally {
+      setSubmitting((current) => (current === "deadline" ? null : current));
     }
   };
   const persistTaskConfig = async ({
@@ -59693,6 +59880,24 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           {hasBranch ? <Descriptions.Item label="Branch Strategy">{task ? getTaskBranchStrategyLabel(task.branchStrategy) : ""}</Descriptions.Item> : null}
           {hasBranch ? <Descriptions.Item label="Target Branch">{task?.branchName ?? "(pending)"}</Descriptions.Item> : null}
           <Descriptions.Item label="Created">{task ? dayjs(task.createdAt).format("YYYY-MM-DD HH:mm") : ""}</Descriptions.Item>
+          <Descriptions.Item label="Deadline">
+            {canEditTask && !isArchived ? (
+              <DatePicker
+                value={task?.deadline ? dayjs(task.deadline) : null}
+                showTime={{ format: "HH:mm" }}
+                format="YYYY-MM-DD HH:mm"
+                placeholder="No deadline"
+                allowClear
+                disabled={submitting === "deadline"}
+                onChange={(value) => void handleUpdateDeadline(value ? value.toISOString() : null)}
+                style={{ minWidth: 220 }}
+              />
+            ) : task?.deadline ? (
+              dayjs(task.deadline).format("YYYY-MM-DD HH:mm")
+            ) : (
+              "None"
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label="Provider">{getAgentProviderLabel(currentTaskProvider)}</Descriptions.Item>
           <Descriptions.Item label="Effort">{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
           <Descriptions.Item label="Last Action">{task?.lastAction ?? "draft"}</Descriptions.Item>

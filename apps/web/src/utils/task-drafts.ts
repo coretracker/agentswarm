@@ -1,7 +1,8 @@
 "use client";
 
+import dayjs from "dayjs";
 import type { TaskDraft, TaskDraftDefinition } from "@agentswarm/shared-types";
-import type { TaskDefinitionFormValues } from "../../components/task-definition-fields";
+import { getTaskDefinitionDeadlineIso, type TaskDefinitionFormValues } from "../../components/task-definition-fields";
 import {
   encodeTaskPromptImageFiles,
   taskPromptAttachmentInputsToSelectedFiles,
@@ -14,6 +15,7 @@ export const buildTaskDraftDefinition = async (
 ): Promise<TaskDraftDefinition> => ({
   sourceType: values.sourceType ?? "blank",
   title: values.title,
+  deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
   repoId: values.repoId,
   prompt: values.prompt,
   notes: values.notes,
@@ -36,7 +38,8 @@ export const buildTaskDraftDefinition = async (
 
 export const formValuesFromTaskDraft = (draft: TaskDraft): TaskDefinitionFormValues => ({
   ...draft.definition,
-  sourceType: draft.definition.sourceType ?? "blank"
+  sourceType: draft.definition.sourceType ?? "blank",
+  deadline: draft.definition.deadline ? dayjs(draft.definition.deadline) : null
 });
 
 export const promptImageFilesFromTaskDraft = (draft: TaskDraft): SelectedTaskPromptImageFile[] =>

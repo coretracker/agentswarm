@@ -50,9 +50,17 @@ const taskPromptAttachmentInputSchema = z.object({
   dataBase64: z.string().trim().min(1)
 });
 
+const deadlineSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
+  .nullable();
+
 const createTaskSchema = z
   .object({
     title: z.string().min(1),
+    deadline: deadlineSchema.optional(),
     repoId: z.string().min(1),
     prompt: z.string().default(""),
     notes: z.string().max(40_000).optional(),
@@ -122,6 +130,10 @@ const updateTaskTitleSchema = z.object({
 
 const updateTaskNotesSchema = z.object({
   notes: z.string().max(40_000)
+});
+
+const updateTaskDeadlineSchema = z.object({
+  deadline: deadlineSchema
 });
 
 const updateTaskStateSchema = z.object({
@@ -1588,6 +1600,29 @@ export const registerTaskRoutes = (
 
     const updated = await deps.taskStore.patchTask(task.id, {
       notes: parsed.data.notes.trim()
+    });
+
+    return reply.send(updated);
+  });
+
+  app.patch<{ Params: { id: string } }>("/tasks/:id/deadline", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateTaskDeadlineSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    const deadline = parsed.data.deadline === null ? null : new Date(Date.parse(parsed.data.deadline)).toISOString();
+    const updated = await deps.taskStore.patchTask(task.id, {
+      deadline
     });
 
     return reply.send(updated);

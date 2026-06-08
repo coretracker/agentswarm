@@ -7,6 +7,7 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
   ({
     id: "task-1",
     title: "Test task",
+    deadline: null,
     pinned: false,
     hasPendingCheckpoint: false,
     activeInteractiveSession: false,

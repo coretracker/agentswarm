@@ -35,6 +35,7 @@ class MockGitHubOutboundService {
 const buildTask = (status: Task["status"], overrides: Partial<Task> = {}): Task => ({
   id: "task-1",
   title: "Issue #22",
+  deadline: null,
   pinned: false,
   hasPendingCheckpoint: false,
   activeInteractiveSession: false,

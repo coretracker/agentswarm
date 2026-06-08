@@ -72,6 +72,20 @@ const nowIso = (): string => new Date().toISOString();
 const POSTGRES_DEADLOCK_ERROR_CODE = "40P01";
 const POSTGRES_SERIALIZATION_ERROR_CODE = "40001";
 
+const normalizeDeadline = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const timestamp = Date.parse(trimmed);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+};
+
 const isRetryablePostgresError = (error: unknown): boolean => {
   if (!error || typeof error !== "object" || !("code" in error)) {
     return false;
@@ -379,6 +393,7 @@ export class RedisTaskStore implements TaskStore {
   private normalizeTask(task: Task): Task {
     const legacyTask = task as Task & {
       taskType?: string;
+      deadline?: string | null;
       ownerUserId?: string | null;
       repoDefaultBranch?: string;
       resultMarkdown?: string | null;
@@ -410,6 +425,7 @@ export class RedisTaskStore implements TaskStore {
         : "blank";
     const normalizedTask: Task = {
       ...taskWithoutStartMode,
+      deadline: normalizeDeadline(legacyTask.deadline),
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
@@ -624,6 +640,7 @@ export class RedisTaskStore implements TaskStore {
     const promptRaw = (input.prompt ?? "").trim();
     const prompt = promptRaw.length > 0 ? promptRaw : "(No prompt provided.)";
     const notes = (input.notes ?? "").trim();
+    const deadline = normalizeDeadline(input.deadline);
     const complexity = classifyTaskComplexity(title, prompt);
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
@@ -645,6 +662,7 @@ export class RedisTaskStore implements TaskStore {
     const task: Task = {
       id: nanoid(),
       title,
+      deadline,
       pinned: false,
       hasPendingCheckpoint: false,
       activeInteractiveSession: false,
@@ -1622,6 +1640,7 @@ export class PostgresTaskStore implements TaskStore {
   private normalizeTask(task: Task): Task {
     const legacyTask = task as Task & {
       taskType?: string;
+      deadline?: string | null;
       ownerUserId?: string | null;
       repoDefaultBranch?: string;
       resultMarkdown?: string | null;
@@ -1652,6 +1671,7 @@ export class PostgresTaskStore implements TaskStore {
         : "blank";
     const normalizedTask: Task = {
       ...taskWithoutStartMode,
+      deadline: normalizeDeadline(legacyTask.deadline),
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
@@ -1954,6 +1974,7 @@ export class PostgresTaskStore implements TaskStore {
     const promptRaw = (input.prompt ?? "").trim();
     const prompt = promptRaw.length > 0 ? promptRaw : "(No prompt provided.)";
     const notes = (input.notes ?? "").trim();
+    const deadline = normalizeDeadline(input.deadline);
     const complexity = classifyTaskComplexity(title, prompt);
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
@@ -1975,6 +1996,7 @@ export class PostgresTaskStore implements TaskStore {
     const task: Task = {
       id: nanoid(),
       title,
+      deadline,
       pinned: false,
       hasPendingCheckpoint: false,
       activeInteractiveSession: false,

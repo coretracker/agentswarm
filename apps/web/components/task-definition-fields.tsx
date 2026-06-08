@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { FormInstance } from "antd";
+import dayjs, { type Dayjs } from "dayjs";
 import type {
   AgentProvider,
   CodexCredentialSource,
@@ -25,7 +26,7 @@ import {
   getEffortOptionsForProvider,
   getModelsForProvider
 } from "@agentswarm/shared-types";
-import { Alert, Button, Card, Checkbox, Col, Flex, Form, Input, Modal, Row, Select, Space, Typography, message } from "antd";
+import { Alert, Button, Card, Checkbox, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Space, Typography, message } from "antd";
 import { RobotOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -42,6 +43,7 @@ import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
 export type TaskDefinitionFormValues = {
   sourceType?: TaskSourceType;
   title?: string;
+  deadline?: string | null | Dayjs;
   repoId?: string;
   prompt?: string;
   notes?: string;
@@ -109,6 +111,15 @@ const deriveTitleFromPrompt = (prompt: string): string => {
   return lines[0];
 };
 
+export const getTaskDefinitionDeadlineIso = (value: TaskDefinitionFormValues["deadline"]): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = dayjs.isDayjs(value) ? value : dayjs(value);
+  return parsed.isValid() ? parsed.toISOString() : undefined;
+};
+
 export const getTaskDefinitionInitialValues = (
   settings?: SystemSettings | null
 ): Partial<TaskDefinitionFormValues> => {
@@ -138,6 +149,7 @@ export const buildTaskDefinitionInput = (
     return {
       sourceType: "blank",
       title: values.title?.trim() ?? "",
+      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
       repoId: values.repoId ?? "",
       prompt: values.prompt?.trim() ?? "",
       notes: values.notes?.trim() ?? "",
@@ -156,6 +168,7 @@ export const buildTaskDefinitionInput = (
     return {
       sourceType: "issue",
       title: values.title?.trim() || undefined,
+      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
       notes: values.notes?.trim() || undefined,
       repoId: values.repoId ?? "",
       issueNumber: values.issueNumber ?? 0,
@@ -175,6 +188,7 @@ export const buildTaskDefinitionInput = (
     return {
       sourceType: "snippet",
       title: values.title?.trim() ?? "",
+      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
       repoId: values.repoId ?? "",
       snippetId: values.snippetId ?? "",
       prompt: renderedPrompt.trim(),
@@ -194,6 +208,7 @@ export const buildTaskDefinitionInput = (
     return {
       sourceType: "sequence",
       title: values.title?.trim() ?? "",
+      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
       repoId: values.repoId ?? "",
       sequenceId: values.sequenceId ?? "",
       sequenceVariables: values.sequenceVariables ?? {},
@@ -212,6 +227,7 @@ export const buildTaskDefinitionInput = (
   return {
     sourceType: "pull_request",
     title: values.title?.trim() || undefined,
+    deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
     notes: values.notes?.trim() || undefined,
     repoId: values.repoId ?? "",
     pullRequestNumber: values.pullRequestNumber ?? 0,
@@ -951,6 +967,16 @@ export function TaskDefinitionFields({
                 form.setFieldValue("issueNumber", undefined);
                 form.setFieldValue("pullRequestNumber", undefined);
               }}
+            />
+          </Form.Item>
+
+          <Form.Item name="deadline" label="Deadline">
+            <DatePicker
+              showTime={{ format: "HH:mm" }}
+              format="YYYY-MM-DD HH:mm"
+              placeholder="No deadline"
+              style={{ width: "100%" }}
+              allowClear
             />
           </Form.Item>
 

@@ -214,5 +214,23 @@ describe("TaskStore.createTask", () => {
     assert.equal(task.executionStatus, "queued");
     assert.equal(task.executionAction, "build");
     assert.equal(task.startedAt, null);
+    assert.equal(task.deadline, null);
+  });
+
+  it("normalizes task deadlines", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(
+      {
+        ...createTaskInput,
+        deadline: "2026-06-15T10:30:00+02:00"
+      },
+      repository,
+      "user-1"
+    );
+
+    assert.equal(task.deadline, "2026-06-15T08:30:00.000Z");
   });
 });

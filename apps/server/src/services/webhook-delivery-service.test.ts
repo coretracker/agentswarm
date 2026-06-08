@@ -113,6 +113,7 @@ class FakeRedis {
 const baseTask = (): Task => ({
   id: "task-1",
   title: "Example task",
+  deadline: null,
   pinned: false,
   hasPendingCheckpoint: false,
   ownerUserId: "user-1",

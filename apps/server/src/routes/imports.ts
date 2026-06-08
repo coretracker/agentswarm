@@ -14,11 +14,19 @@ import { withBranchSyncCounts, withTaskCreatorName } from "./tasks.js";
 import { normalizeProvider } from "../lib/provider-config.js";
 import type { UserStore } from "../services/user-store.js";
 
+const deadlineSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
+  .nullable();
+
 const issueImportSchema = z.object({
   repoId: z.string().min(1),
   issueNumber: z.coerce.number().int().positive(),
   includeComments: z.boolean().optional(),
   notes: z.string().max(40_000).optional(),
+  deadline: deadlineSchema.optional(),
   taskType: z.enum(["build", "ask"]).optional(),
   title: z.string().trim().optional(),
   provider: z.enum(["codex", "claude"]).optional(),
@@ -35,6 +43,7 @@ const pullRequestImportSchema = z.object({
   repoId: z.string().min(1),
   pullRequestNumber: z.coerce.number().int().positive(),
   notes: z.string().max(40_000).optional(),
+  deadline: deadlineSchema.optional(),
   title: z.string().trim().optional(),
   provider: z.enum(["codex", "claude"]).optional(),
   providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),

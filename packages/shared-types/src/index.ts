@@ -455,6 +455,7 @@ export type CodexCredentialSource = "auto" | "profile" | "global";
 export interface Task {
   id: string;
   title: string;
+  deadline: string | null;
   pinned: boolean;
   hasPendingCheckpoint: boolean;
   activeInteractiveSession?: boolean;
@@ -633,6 +634,7 @@ export interface CreateTaskPromptAttachmentInput {
 export interface TaskDraftDefinition {
   sourceType?: TaskSourceType;
   title?: string;
+  deadline?: string | null;
   repoId?: string;
   prompt?: string;
   notes?: string;
@@ -882,6 +884,7 @@ export interface UpdateRepositoryInput {
 
 export interface CreateTaskInput {
   title: string;
+  deadline?: string | null;
   repoId: string;
   prompt: string;
   notes?: string;
@@ -906,6 +909,7 @@ export type TaskSourceType = "blank" | "snippet" | "sequence" | "issue" | "pull_
 export interface BlankTaskDefinitionInput {
   sourceType: "blank";
   title: string;
+  deadline?: string | null;
   repoId: string;
   prompt: string;
   notes?: string;
@@ -922,6 +926,7 @@ export interface BlankTaskDefinitionInput {
 export interface IssueTaskDefinitionInput {
   sourceType: "issue";
   title?: string;
+  deadline?: string | null;
   notes?: string;
   repoId: string;
   issueNumber: number;
@@ -938,6 +943,7 @@ export interface IssueTaskDefinitionInput {
 export interface PullRequestTaskDefinitionInput {
   sourceType: "pull_request";
   title?: string;
+  deadline?: string | null;
   notes?: string;
   repoId: string;
   pullRequestNumber: number;
@@ -950,6 +956,7 @@ export interface PullRequestTaskDefinitionInput {
 export interface SnippetTaskDefinitionInput {
   sourceType: "snippet";
   title: string;
+  deadline?: string | null;
   repoId: string;
   snippetId: string;
   prompt: string;
@@ -967,6 +974,7 @@ export interface SnippetTaskDefinitionInput {
 export interface SequenceTaskDefinitionInput {
   sourceType: "sequence";
   title: string;
+  deadline?: string | null;
   repoId: string;
   sequenceId: string;
   sequenceVariables?: Record<string, string>;
@@ -1085,6 +1093,7 @@ export interface CreateTaskFromIssueInput {
   issueNumber: number;
   includeComments?: boolean;
   notes?: string;
+  deadline?: string | null;
   taskType?: Extract<TaskType, "build" | "ask">;
   title?: string;
   provider?: AgentProvider;
@@ -1102,6 +1111,7 @@ export interface CreateTaskFromPullRequestInput {
   pullRequestNumber: number;
   title?: string;
   notes?: string;
+  deadline?: string | null;
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
@@ -1132,6 +1142,10 @@ export interface UpdateTaskTitleInput {
 
 export interface UpdateTaskNotesInput {
   notes: string;
+}
+
+export interface UpdateTaskDeadlineInput {
+  deadline: string | null;
 }
 
 export interface UpdateUserNotesInput {

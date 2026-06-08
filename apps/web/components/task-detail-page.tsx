@@ -44,6 +44,7 @@ import {
   Card,
   Checkbox,
   Collapse,
+  DatePicker,
   Descriptions,
   Divider,
   Dropdown,
@@ -769,6 +770,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "message"
     | "pin"
     | "assign"
+    | "deadline"
     | "state"
     | "renameTitle"
     | "editComment"
@@ -1223,6 +1225,27 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       showTaskActionError(error, "Failed to assign task");
     } finally {
       setSubmitting((current) => (current === "assign" ? null : current));
+    }
+  };
+  const handleUpdateDeadline = async (nextDeadline: string | null): Promise<void> => {
+    if (!task || !canEditTask || isArchived) {
+      return;
+    }
+
+    const currentDeadline = task.deadline ? dayjs(task.deadline).toISOString() : null;
+    if (nextDeadline === currentDeadline) {
+      return;
+    }
+
+    setSubmitting("deadline");
+    try {
+      const updatedTask = await api.updateTaskDeadline(task.id, { deadline: nextDeadline });
+      applyUpdatedTask(updatedTask);
+      messageApi.success(updatedTask.deadline ? "Deadline updated" : "Deadline cleared");
+    } catch (error) {
+      showTaskActionError(error, "Failed to update deadline");
+    } finally {
+      setSubmitting((current) => (current === "deadline" ? null : current));
     }
   };
   const persistTaskConfig = async ({
@@ -3241,6 +3264,24 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           {hasBranch ? <Descriptions.Item label="Branch Strategy">{task ? getTaskBranchStrategyLabel(task.branchStrategy) : ""}</Descriptions.Item> : null}
           {hasBranch ? <Descriptions.Item label="Target Branch">{task?.branchName ?? "(pending)"}</Descriptions.Item> : null}
           <Descriptions.Item label="Created">{task ? dayjs(task.createdAt).format("YYYY-MM-DD HH:mm") : ""}</Descriptions.Item>
+          <Descriptions.Item label="Deadline">
+            {canEditTask && !isArchived ? (
+              <DatePicker
+                value={task?.deadline ? dayjs(task.deadline) : null}
+                showTime={{ format: "HH:mm" }}
+                format="YYYY-MM-DD HH:mm"
+                placeholder="No deadline"
+                allowClear
+                disabled={submitting === "deadline"}
+                onChange={(value) => void handleUpdateDeadline(value ? value.toISOString() : null)}
+                style={{ minWidth: 220 }}
+              />
+            ) : task?.deadline ? (
+              dayjs(task.deadline).format("YYYY-MM-DD HH:mm")
+            ) : (
+              "None"
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label="Provider">{getAgentProviderLabel(currentTaskProvider)}</Descriptions.Item>
           <Descriptions.Item label="Effort">{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
           <Descriptions.Item label="Last Action">{task?.lastAction ?? "draft"}</Descriptions.Item>

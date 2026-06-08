@@ -135,13 +135,27 @@ function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardIte
           {task?.reviewReason ? <Tag color="gold">{task.reviewReason}</Tag> : null}
         </Space>
         {task ? (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {task.repoName} · {dayjs(task.updatedAt).format("YYYY-MM-DD HH:mm")}
-          </Typography.Text>
+          <>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {task.repoName} · {dayjs(task.updatedAt).format("YYYY-MM-DD HH:mm")}
+            </Typography.Text>
+            {task.deadline ? (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Deadline {dayjs(task.deadline).format("YYYY-MM-DD HH:mm")}
+              </Typography.Text>
+            ) : null}
+          </>
         ) : (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Updated {dayjs(draft!.updatedAt).format("YYYY-MM-DD HH:mm")}
-          </Typography.Text>
+          <>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Updated {dayjs(draft!.updatedAt).format("YYYY-MM-DD HH:mm")}
+            </Typography.Text>
+            {draft?.definition.deadline ? (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Deadline {dayjs(draft.definition.deadline).format("YYYY-MM-DD HH:mm")}
+              </Typography.Text>
+            ) : null}
+          </>
         )}
       </Flex>
     </Card>
