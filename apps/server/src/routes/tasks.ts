@@ -1,5 +1,6 @@
 import path from "node:path";
-import { rm } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { rm, stat } from "node:fs/promises";
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
@@ -675,6 +676,35 @@ export const registerTaskRoutes = (
       }
 
       return reply.send(await deps.taskStore.listRunsPage(task.id, parsedQuery.data));
+    }
+  );
+
+  app.get<{ Params: { id: string; runId: string } }>(
+    "/tasks/:id/runs/:runId/raw-json",
+    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      const run = await deps.taskStore.getRun(request.params.runId);
+      if (!run || run.taskId !== task.id) {
+        return reply.status(404).send({ message: "Run not found." });
+      }
+
+      const rawEventsJsonlPath = deps.spawner.resolveTaskRunRawEventsJsonlPath(task.id, run.id);
+      const fileStats = await stat(rawEventsJsonlPath).catch(() => null);
+      if (!fileStats?.isFile()) {
+        return reply.status(404).send({ message: "Raw JSON stream is unavailable for this run." });
+      }
+
+      const provider = run.provider === "claude" ? "claude" : "codex";
+      reply.header("Content-Type", "application/x-ndjson");
+      reply.header("Cache-Control", "no-store");
+      reply.header("Content-Length", String(fileStats.size));
+      reply.header("Content-Disposition", `attachment; filename="agentswarm-${task.id}-${run.id}-${provider}-raw.jsonl"`);
+      return reply.send(createReadStream(rawEventsJsonlPath));
     }
   );
 

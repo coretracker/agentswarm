@@ -403,6 +403,8 @@ export const api = {
     const query = params.toString();
     return request<HistoryPageResult<TaskRun>>(`/tasks/${id}/runs${query ? `?${query}` : ""}`);
   },
+  getTaskRunRawJsonUrl: (taskId: string, runId: string) =>
+    buildApiUrl(`/tasks/${taskId}/runs/${encodeURIComponent(runId)}/raw-json`),
   listTaskChangeProposals: (id: string, options?: HistoryPageOptions) => {
     const params = new URLSearchParams();
     const before = options?.before?.trim();

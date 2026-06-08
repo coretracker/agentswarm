@@ -1,3 +1,4 @@
+import { createWriteStream } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -32,6 +33,9 @@ const codexDir = configuredStatePath && configuredStatePath.length > 0 ? configu
 const homeDir = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : path.dirname(codexDir);
 const lastMessageFile = path.join(path.dirname(manifest.resultJsonPath), "codex-last-message.txt");
 const sessionIdFile = path.join(codexDir, "agentswarm-session-id.txt");
+const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
+  ? manifest.rawEventsJsonlPath.trim()
+  : path.join(path.dirname(manifest.resultJsonPath), "raw-events.jsonl");
 
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -142,6 +146,7 @@ const extractSessionIdFromOutputLine = (line) => {
 await mkdir(homeDir, { recursive: true });
 await mkdir(codexDir, { recursive: true });
 await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
+await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
 await writeFile(path.join(codexDir, "config.toml"), providerConfig, "utf8");
 if (codexAuthJson) {
   await writeFile(path.join(codexDir, "auth.json"), codexAuthJson, "utf8");
@@ -303,8 +308,10 @@ if (persistedSessionId) {
 const execProc = spawn("codex", args, { env: process.env, cwd: manifest.workspacePath, stdio: ["ignore", "pipe", "pipe"] });
 let stdoutBuffer = "";
 let stderrBuffer = "";
+const rawEventsStream = createWriteStream(rawEventsJsonlPath, { flags: "a" });
 
 execProc.stdout.on("data", (chunk) => {
+  rawEventsStream.write(chunk);
   const text = chunk.toString();
   stdoutBuffer += text;
   const lines = stdoutBuffer.split("\n");
@@ -321,6 +328,7 @@ execProc.stderr.on("data", (chunk) => {
   stderrBuffer += chunk.toString();
   process.stderr.write(chunk);
 });
+let codexProcessError = null;
 await new Promise((resolve, reject) => {
   execProc.on("error", reject);
   execProc.on("close", (code) => {
@@ -337,7 +345,16 @@ await new Promise((resolve, reject) => {
     const stderrTail = stderrBuffer.trim();
     reject(new Error(`codex exited with code ${code ?? "unknown"}${stderrTail ? `: ${stderrTail}` : ""}`));
   });
+}).catch((error) => {
+  codexProcessError = error;
 });
+await new Promise((resolve, reject) => {
+  rawEventsStream.end(() => resolve());
+  rawEventsStream.on("error", reject);
+});
+if (codexProcessError) {
+  throw codexProcessError;
+}
 
 if (!resolvedSessionId) {
   resolvedSessionId = await inferSessionIdFromRolloutFiles();

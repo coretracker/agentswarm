@@ -1,3 +1,4 @@
+import { createWriteStream } from "node:fs";
 import { access, constants, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -21,6 +22,10 @@ if (!anthropicApiKey) {
 
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
+const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
+  ? manifest.rawEventsJsonlPath.trim()
+  : path.join(path.dirname(manifest.resultJsonPath), "raw-events.jsonl");
+await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
 process.env.ANTHROPIC_API_KEY = anthropicApiKey;
 process.env.GIT_OPTIONAL_LOCKS = "0";
 const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
@@ -246,6 +251,7 @@ const proc = spawn("su-exec", [runtimeIdentity, claudeBinary, ...args], {
   stdio: ["ignore", "pipe", "pipe"]
 });
 let stdoutBuffer = "";
+const rawEventsStream = createWriteStream(rawEventsJsonlPath, { flags: "a" });
 
 const truncateForLog = (value, maxLength = 320) => {
   if (typeof value !== "string") {
@@ -441,6 +447,7 @@ const handleRawStreamEvent = (rawEvent) => {
 };
 
 proc.stdout.on("data", (chunk) => {
+  rawEventsStream.write(chunk);
   stdoutBuffer += chunk.toString();
   const lines = stdoutBuffer.split("\n");
   stdoutBuffer = lines.pop() ?? "";
@@ -483,10 +490,20 @@ proc.stdout.on("data", (chunk) => {
   }
 });
 proc.stderr.on("data", (chunk) => process.stderr.write(chunk));
+let claudeProcessError = null;
 await new Promise((resolve, reject) => {
   proc.on("error", reject);
   proc.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`claude exited with code ${code ?? "unknown"}`))));
+}).catch((error) => {
+  claudeProcessError = error;
 });
+await new Promise((resolve, reject) => {
+  rawEventsStream.end(() => resolve());
+  rawEventsStream.on("error", reject);
+});
+if (claudeProcessError) {
+  throw claudeProcessError;
+}
 flushPartialTextBuffer();
 
 const resultError = buildResultError();

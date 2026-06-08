@@ -70,7 +70,7 @@ import {
   message,
   theme as antTheme
 } from "antd";
-import { ArrowRightOutlined, CopyOutlined, EditOutlined, LoadingOutlined, MoreOutlined, RobotOutlined, RollbackOutlined } from "@ant-design/icons";
+import { ArrowRightOutlined, CopyOutlined, DownloadOutlined, EditOutlined, LoadingOutlined, MoreOutlined, RobotOutlined, RollbackOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -4280,6 +4280,19 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         {
           key: run.id,
           label: `Logs${run.logs.length > 0 ? ` (${run.logs.length})` : ""}`,
+          extra: run.hasRawJson ? (
+            <Tooltip title="Download raw provider JSONL">
+              <Button
+                size="small"
+                type="text"
+                icon={<DownloadOutlined />}
+                href={api.getTaskRunRawJsonUrl(taskId, run.id)}
+                onClick={(event) => event.stopPropagation()}
+              >
+                Raw JSON
+              </Button>
+            </Tooltip>
+          ) : null,
           children: renderRunLogsPanel(run)
         }
       ]}

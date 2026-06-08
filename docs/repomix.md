@@ -4833,27 +4833,260 @@ export class RedisSessionStore implements SessionStore {
 }
 ````
 
-## File: apps/server/src/services/task-draft-store.test.ts
+## File: apps/server/src/services/snippet-store.ts
 ````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { normalizeTaskDraftDefinition } from "./task-draft-store.js";
+import { nanoid } from "nanoid";
+import type Redis from "ioredis";
+import type { Pool } from "pg";
+import type { CreateSnippetInput, Snippet, SnippetVariable, UpdateSnippetInput } from "@agentswarm/shared-types";
+import { EventBus } from "../lib/events.js";
 
-describe("normalizeTaskDraftDefinition", () => {
-  it("normalizes draft deadlines", () => {
-    const definition = normalizeTaskDraftDefinition({
-      deadline: "2026-06-15T10:30:00+02:00"
+const SNIPPET_KEY_PREFIX = "agentswarm:snippet:";
+const SNIPPET_IDS_KEY = "agentswarm:snippet_ids";
+const SNIPPET_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SNIPPET_VARIABLE_MAX_COUNT = 100;
+const SNIPPET_VARIABLE_NAME_MAX_LENGTH = 128;
+const SNIPPET_VARIABLE_TEXT_MAX_LENGTH = 200;
+const SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH = 2000;
+const NEWLINE_PATTERN = /\r?\n/u;
+
+const nowIso = (): string => new Date().toISOString();
+const normalizeSnippetVariables = (value: unknown): SnippetVariable[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const variables: SnippetVariable[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+
+    const record = entry as Record<string, unknown>;
+    const name = typeof record.name === "string" ? record.name.trim() : "";
+    if (!name || name.length > SNIPPET_VARIABLE_NAME_MAX_LENGTH || !SNIPPET_VARIABLE_NAME_PATTERN.test(name) || seen.has(name)) {
+      continue;
+    }
+
+    const type = record.type === "multiline" ? "multiline" : "text";
+    const title = typeof record.title === "string" ? record.title.trim() : "";
+    const description = typeof record.description === "string" ? record.description.trim() : "";
+    const defaultValue = typeof record.defaultValue === "string" ? record.defaultValue : "";
+    const normalizedDefaultValue = type === "text" ? (defaultValue.split(NEWLINE_PATTERN)[0] ?? "") : defaultValue;
+    variables.push({
+      name,
+      type,
+      title: title.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH),
+      description: description.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH),
+      defaultValue: normalizedDefaultValue.slice(0, SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH)
     });
+    seen.add(name);
+    if (variables.length >= SNIPPET_VARIABLE_MAX_COUNT) {
+      break;
+    }
+  }
 
-    assert.equal(definition.deadline, "2026-06-15T08:30:00.000Z");
-  });
+  return variables;
+};
 
-  it("clears empty and invalid draft deadlines", () => {
-    assert.equal(normalizeTaskDraftDefinition({ deadline: "" }).deadline, null);
-    assert.equal(normalizeTaskDraftDefinition({ deadline: "not a date" }).deadline, null);
-    assert.equal(normalizeTaskDraftDefinition({ deadline: null }).deadline, null);
-  });
-});
+export interface SnippetStore {
+  createSnippet(input: CreateSnippetInput): Promise<Snippet>;
+  listSnippets(): Promise<Snippet[]>;
+  getSnippet(snippetId: string): Promise<Snippet | null>;
+  updateSnippet(snippetId: string, input: UpdateSnippetInput): Promise<Snippet | null>;
+  deleteSnippet(snippetId: string): Promise<boolean>;
+}
+
+export class RedisSnippetStore implements SnippetStore {
+  constructor(
+    private readonly redis: Redis,
+    private readonly eventBus: EventBus
+  ) {}
+
+  private snippetKey(snippetId: string): string {
+    return `${SNIPPET_KEY_PREFIX}${snippetId}`;
+  }
+
+  private buildSnippet(
+    input: CreateSnippetInput | UpdateSnippetInput,
+    current?: Pick<Snippet, "id" | "createdAt">
+  ): Snippet {
+    const timestamp = nowIso();
+    return {
+      id: current?.id ?? nanoid(),
+      name: input.name.trim(),
+      content: input.content.trim(),
+      variables: normalizeSnippetVariables(input.variables),
+      createdAt: current?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+  }
+
+  async createSnippet(input: CreateSnippetInput): Promise<Snippet> {
+    const snippet = this.buildSnippet(input);
+    await this.redis
+      .multi()
+      .set(this.snippetKey(snippet.id), JSON.stringify(snippet))
+      .sadd(SNIPPET_IDS_KEY, snippet.id)
+      .exec();
+    await this.eventBus.publish({ type: "snippet:created", payload: snippet });
+    return snippet;
+  }
+
+  async listSnippets(): Promise<Snippet[]> {
+    const ids = await this.redis.smembers(SNIPPET_IDS_KEY);
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const pipeline = this.redis.pipeline();
+    for (const id of ids) {
+      pipeline.get(this.snippetKey(id));
+    }
+
+    const result = await pipeline.exec();
+    const snippets: Snippet[] = [];
+    for (const row of result ?? []) {
+      const raw = row[1];
+      if (typeof raw === "string") {
+        const parsed = JSON.parse(raw) as Snippet;
+        snippets.push({ ...parsed, variables: normalizeSnippetVariables(parsed.variables) });
+      }
+    }
+
+    return snippets.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  async getSnippet(snippetId: string): Promise<Snippet | null> {
+    const raw = await this.redis.get(this.snippetKey(snippetId));
+    if (!raw) {
+      return null;
+    }
+
+    const parsed = JSON.parse(raw) as Snippet;
+    return { ...parsed, variables: normalizeSnippetVariables(parsed.variables) };
+  }
+
+  async updateSnippet(snippetId: string, input: UpdateSnippetInput): Promise<Snippet | null> {
+    const current = await this.getSnippet(snippetId);
+    if (!current) {
+      return null;
+    }
+
+    const next = this.buildSnippet(input, current);
+    await this.redis.set(this.snippetKey(snippetId), JSON.stringify(next));
+    await this.eventBus.publish({ type: "snippet:updated", payload: next });
+    return next;
+  }
+
+  async deleteSnippet(snippetId: string): Promise<boolean> {
+    const exists = await this.redis.exists(this.snippetKey(snippetId));
+    if (!exists) {
+      return false;
+    }
+
+    await this.redis.multi().del(this.snippetKey(snippetId)).srem(SNIPPET_IDS_KEY, snippetId).exec();
+    await this.eventBus.publish({ type: "snippet:deleted", payload: { id: snippetId } });
+    return true;
+  }
+}
+
+export class PostgresSnippetStore implements SnippetStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly eventBus: EventBus
+  ) {}
+
+  private buildSnippet(
+    input: CreateSnippetInput | UpdateSnippetInput,
+    current?: Pick<Snippet, "id" | "createdAt">
+  ): Snippet {
+    const timestamp = nowIso();
+    return {
+      id: current?.id ?? nanoid(),
+      name: input.name.trim(),
+      content: input.content.trim(),
+      variables: normalizeSnippetVariables(input.variables),
+      createdAt: current?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+  }
+
+  async createSnippet(input: CreateSnippetInput): Promise<Snippet> {
+    const snippet = this.buildSnippet(input);
+    await this.pool.query(
+      `
+        INSERT INTO snippets (id, name, content, created_at, updated_at, variables)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+      `,
+      [snippet.id, snippet.name, snippet.content, snippet.createdAt, snippet.updatedAt, JSON.stringify(snippet.variables)]
+    );
+    await this.eventBus.publish({ type: "snippet:created", payload: snippet });
+    return snippet;
+  }
+
+  async listSnippets(): Promise<Snippet[]> {
+    const result = await this.pool.query(
+      "SELECT id, name, content, variables, created_at, updated_at FROM snippets ORDER BY updated_at DESC"
+    );
+    return result.rows.map((row) => ({
+      id: String(row.id),
+      name: String(row.name),
+      content: String(row.content),
+      variables: normalizeSnippetVariables(row.variables),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    }));
+  }
+
+  async getSnippet(snippetId: string): Promise<Snippet | null> {
+    const result = await this.pool.query(
+      "SELECT id, name, content, variables, created_at, updated_at FROM snippets WHERE id = $1",
+      [snippetId]
+    );
+    const row = result.rows[0];
+    return row
+      ? {
+          id: String(row.id),
+          name: String(row.name),
+          content: String(row.content),
+          variables: normalizeSnippetVariables(row.variables),
+          createdAt: String(row.created_at),
+          updatedAt: String(row.updated_at)
+        }
+      : null;
+  }
+
+  async updateSnippet(snippetId: string, input: UpdateSnippetInput): Promise<Snippet | null> {
+    const current = await this.getSnippet(snippetId);
+    if (!current) {
+      return null;
+    }
+
+    const next = this.buildSnippet(input, current);
+    await this.pool.query(
+      `
+        UPDATE snippets
+        SET name = $2, content = $3, updated_at = $4, variables = $5::jsonb
+        WHERE id = $1
+      `,
+      [snippetId, next.name, next.content, next.updatedAt, JSON.stringify(next.variables)]
+    );
+    await this.eventBus.publish({ type: "snippet:updated", payload: next });
+    return next;
+  }
+
+  async deleteSnippet(snippetId: string): Promise<boolean> {
+    const result = await this.pool.query("DELETE FROM snippets WHERE id = $1", [snippetId]);
+    if (result.rowCount === 0) {
+      return false;
+    }
+
+    await this.eventBus.publish({ type: "snippet:deleted", payload: { id: snippetId } });
+    return true;
+  }
+}
 ````
 
 ## File: apps/server/src/services/task-queue-store.ts
@@ -12481,6 +12714,116 @@ export function isImageDiffPath(filePath: string): boolean {
 }
 ````
 
+## File: apps/web/src/utils/snippets.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { applySnippetVariables, insertSnippetContent } from "./snippets";
+
+describe("insertSnippetContent", () => {
+  it("returns the snippet when the current value is empty", () => {
+    assert.equal(insertSnippetContent("", "  Follow the existing style guide.  "), "Follow the existing style guide.");
+  });
+
+  it("appends the snippet with a blank line separator", () => {
+    assert.equal(
+      insertSnippetContent("Implement the API endpoint.", "Add request validation."),
+      "Implement the API endpoint.\n\nAdd request validation."
+    );
+  });
+
+  it("keeps the current value when the snippet is blank", () => {
+    assert.equal(insertSnippetContent("Existing prompt", "   "), "Existing prompt");
+  });
+});
+
+describe("applySnippetVariables", () => {
+  it("replaces placeholders for defined variables", () => {
+    assert.equal(
+      applySnippetVariables("Hello {{name}} from {{team}}", [
+        { name: "name", type: "text", title: "", description: "", defaultValue: "" },
+        { name: "team", type: "text", title: "", description: "", defaultValue: "" }
+      ], { name: "Ada", team: "Core" }),
+      "Hello Ada from Core"
+    );
+  });
+
+  it("keeps placeholders for undefined variables", () => {
+    assert.equal(
+      applySnippetVariables("{{known}} / {{unknown}}", [{ name: "known", type: "text", title: "", description: "", defaultValue: "" }], { known: "ok" }),
+      "ok / {{unknown}}"
+    );
+  });
+
+  it("uses default values when no explicit value is provided", () => {
+    assert.equal(
+      applySnippetVariables("Hello {{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "there" }], {}),
+      "Hello there"
+    );
+  });
+
+  it("forces text variables to single-line values", () => {
+    assert.equal(
+      applySnippetVariables("{{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "Line1\nLine2" }], {}),
+      "Line1"
+    );
+    assert.equal(
+      applySnippetVariables("{{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "" }], { name: "A\nB" }),
+      "A"
+    );
+  });
+
+  it("keeps multiline values for multiline variables", () => {
+    assert.equal(
+      applySnippetVariables("{{details}}", [{ name: "details", type: "multiline", title: "", description: "", defaultValue: "A\nB" }], {}),
+      "A\nB"
+    );
+  });
+});
+````
+
+## File: apps/web/src/utils/snippets.ts
+````typescript
+import type { SnippetVariable } from "@agentswarm/shared-types";
+
+const SNIPPET_PLACEHOLDER_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
+
+export const insertSnippetContent = (current: string | null | undefined, snippet: string | null | undefined): string => {
+  const snippetText = snippet?.trim() ?? "";
+  if (!snippetText) {
+    return current ?? "";
+  }
+
+  const currentText = current ?? "";
+  if (currentText.trim().length === 0) {
+    return snippetText;
+  }
+
+  return `${currentText.trimEnd()}\n\n${snippetText}`;
+};
+
+export const applySnippetVariables = (
+  content: string | null | undefined,
+  variables: SnippetVariable[] | null | undefined,
+  values: Record<string, string>
+): string => {
+  const snippetText = content ?? "";
+  const variablesByName = new Map((variables ?? []).map((entry) => [entry.name, entry]));
+  return snippetText.replace(SNIPPET_PLACEHOLDER_PATTERN, (_match, name: string) => {
+    const variable = variablesByName.get(name);
+    if (!variable) {
+      return `{{${name}}}`;
+    }
+    const value = values[name];
+    const selected = typeof value === "string" && value.length > 0 ? value : variable.defaultValue ?? "";
+    if (variable.type === "text") {
+      return selected.split(/\r?\n/u)[0] ?? "";
+    }
+    return selected;
+  });
+};
+````
+
 ## File: apps/web/Dockerfile
 ````
 FROM node:20-alpine
@@ -13813,6 +14156,7 @@ ENTRYPOINT ["node", "/usr/local/bin/run-task.mjs"]
 
 ## File: agent-runtime-claude/run-task.mjs
 ````javascript
+import { createWriteStream } from "node:fs";
 import { access, constants, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -13836,6 +14180,10 @@ if (!anthropicApiKey) {
 
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
+const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
+  ? manifest.rawEventsJsonlPath.trim()
+  : path.join(path.dirname(manifest.resultJsonPath), "raw-events.jsonl");
+await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
 process.env.ANTHROPIC_API_KEY = anthropicApiKey;
 process.env.GIT_OPTIONAL_LOCKS = "0";
 const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
@@ -14061,6 +14409,7 @@ const proc = spawn("su-exec", [runtimeIdentity, claudeBinary, ...args], {
   stdio: ["ignore", "pipe", "pipe"]
 });
 let stdoutBuffer = "";
+const rawEventsStream = createWriteStream(rawEventsJsonlPath, { flags: "a" });
 
 const truncateForLog = (value, maxLength = 320) => {
   if (typeof value !== "string") {
@@ -14256,6 +14605,7 @@ const handleRawStreamEvent = (rawEvent) => {
 };
 
 proc.stdout.on("data", (chunk) => {
+  rawEventsStream.write(chunk);
   stdoutBuffer += chunk.toString();
   const lines = stdoutBuffer.split("\n");
   stdoutBuffer = lines.pop() ?? "";
@@ -14298,10 +14648,20 @@ proc.stdout.on("data", (chunk) => {
   }
 });
 proc.stderr.on("data", (chunk) => process.stderr.write(chunk));
+let claudeProcessError = null;
 await new Promise((resolve, reject) => {
   proc.on("error", reject);
   proc.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`claude exited with code ${code ?? "unknown"}`))));
+}).catch((error) => {
+  claudeProcessError = error;
 });
+await new Promise((resolve, reject) => {
+  rawEventsStream.end(() => resolve());
+  rawEventsStream.on("error", reject);
+});
+if (claudeProcessError) {
+  throw claudeProcessError;
+}
 flushPartialTextBuffer();
 
 const resultError = buildResultError();
@@ -14928,108 +15288,102 @@ describe("github webhook event coverage", () => {
 });
 ````
 
-## File: apps/server/src/routes/task-drafts.ts
+## File: apps/server/src/routes/snippets.ts
 ````typescript
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AuthService } from "../lib/auth.js";
-import type { TaskDraftStore } from "../services/task-draft-store.js";
+import type { SnippetStore } from "../services/snippet-store.js";
 
-const stringMapSchema = z.record(z.string()).optional();
-
-const deadlineSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
-  .nullable()
-  .optional();
-
-const attachmentSchema = z.object({
-  name: z.string().trim().min(1).max(255),
-  mimeType: z.string().trim().min(1).max(255),
-  dataBase64: z.string().min(1)
+const snippetSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  content: z.string().trim().min(1).max(20000),
+  variables: z
+    .array(
+      z
+        .object({
+          name: z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(128),
+          type: z.enum(["text", "multiline"]),
+          title: z.string().trim().max(200).default(""),
+          description: z.string().trim().max(200).default(""),
+          defaultValue: z.string().max(2000).default("")
+        })
+        .superRefine((value, ctx) => {
+          if (value.type === "text" && /[\r\n]/.test(value.defaultValue)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["defaultValue"],
+              message: "Default value for text variables must be a single line."
+            });
+          }
+        })
+    )
+    .max(100)
+    .optional()
 });
 
-const draftDefinitionSchema = z.object({
-  sourceType: z.enum(["blank", "snippet", "sequence", "issue", "pull_request"]).optional(),
-  title: z.string().max(500).optional(),
-  deadline: deadlineSchema,
-  repoId: z.string().max(120).optional(),
-  prompt: z.string().max(48_000).optional(),
-  notes: z.string().max(48_000).optional(),
-  taskType: z.enum(["build", "ask"]).optional(),
-  provider: z.enum(["codex", "claude"]).optional(),
-  model: z.string().max(256).optional(),
-  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-  baseBranch: z.string().max(255).optional(),
-  branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-  issueNumber: z.number().int().nonnegative().optional(),
-  includeComments: z.boolean().optional(),
-  pullRequestNumber: z.number().int().nonnegative().optional(),
-  snippetId: z.string().max(120).optional(),
-  snippetVariables: stringMapSchema,
-  sequenceId: z.string().max(120).optional(),
-  sequenceVariables: stringMapSchema,
-  attachments: z.array(attachmentSchema).max(6).optional()
-});
-
-const createDraftSchema = z.object({
-  title: z.string().trim().max(500).optional(),
-  definition: draftDefinitionSchema
-});
-
-const updateDraftSchema = z.object({
-  title: z.string().trim().max(500).optional(),
-  definition: draftDefinitionSchema.optional()
-});
-
-export const registerTaskDraftRoutes = (
+export const registerSnippetRoutes = (
   app: FastifyInstance,
   deps: {
-    taskDraftStore: TaskDraftStore;
+    snippetStore: SnippetStore;
     auth: AuthService;
   }
 ): void => {
-  app.get("/task-drafts", { preHandler: deps.auth.requireAllScopes(["task:list"]) }, async (request) =>
-    deps.taskDraftStore.listDrafts(request.auth!.user.id)
-  );
+  app.get("/snippets", { preHandler: deps.auth.requireAllScopes(["snippet:list"]) }, async () => deps.snippetStore.listSnippets());
 
-  app.get<{ Params: { id: string } }>("/task-drafts/:id", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
-    const draft = await deps.taskDraftStore.getDraft(request.auth!.user.id, request.params.id);
-    if (!draft) {
-      return reply.status(404).send({ message: "Task draft not found" });
+  app.get<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:read"]) }, async (request, reply) => {
+    const snippet = await deps.snippetStore.getSnippet(request.params.id);
+    if (!snippet) {
+      return reply.status(404).send({ message: "Snippet not found" });
     }
-    return reply.send(draft);
+
+    return reply.send(snippet);
   });
 
-  app.post("/task-drafts", { preHandler: deps.auth.requireAllScopes(["task:create"]) }, async (request, reply) => {
-    const parsed = createDraftSchema.safeParse(request.body);
+  app.post("/snippets", { preHandler: deps.auth.requireAllScopes(["snippet:create"]) }, async (request, reply) => {
+    const parsed = snippetSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
     }
-    const draft = await deps.taskDraftStore.createDraft(request.auth!.user.id, parsed.data);
-    return reply.status(201).send(draft);
+
+    const snippet = await deps.snippetStore.createSnippet(parsed.data);
+    return reply.status(201).send(snippet);
   });
 
-  app.patch<{ Params: { id: string } }>("/task-drafts/:id", { preHandler: deps.auth.requireAllScopes(["task:create"]) }, async (request, reply) => {
-    const parsed = updateDraftSchema.safeParse(request.body);
+  app.post<{ Params: { id: string } }>("/snippets/:id/duplicate", { preHandler: deps.auth.requireAllScopes(["snippet:create"]) }, async (request, reply) => {
+    const source = await deps.snippetStore.getSnippet(request.params.id);
+    if (!source) {
+      return reply.status(404).send({ message: "Snippet not found" });
+    }
+
+    const duplicated = await deps.snippetStore.createSnippet({
+      name: `Copy of ${source.name}`,
+      content: source.content,
+      variables: source.variables
+    });
+    return reply.status(201).send(duplicated);
+  });
+
+  app.patch<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:edit"]) }, async (request, reply) => {
+    const parsed = snippetSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
     }
-    const draft = await deps.taskDraftStore.updateDraft(request.auth!.user.id, request.params.id, parsed.data);
-    if (!draft) {
-      return reply.status(404).send({ message: "Task draft not found" });
+
+    const snippet = await deps.snippetStore.updateSnippet(request.params.id, parsed.data);
+    if (!snippet) {
+      return reply.status(404).send({ message: "Snippet not found" });
     }
-    return reply.send(draft);
+
+    return reply.send(snippet);
   });
 
-  app.delete<{ Params: { id: string } }>("/task-drafts/:id", { preHandler: deps.auth.requireAllScopes(["task:create"]) }, async (request, reply) => {
-    const deleted = await deps.taskDraftStore.deleteDraft(request.auth!.user.id, request.params.id);
+  app.delete<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:delete"]) }, async (request, reply) => {
+    const deleted = await deps.snippetStore.deleteSnippet(request.params.id);
     if (!deleted) {
-      return reply.status(404).send({ message: "Task draft not found" });
+      return reply.status(404).send({ message: "Snippet not found" });
     }
+
     return reply.status(204).send();
   });
 };
@@ -16438,554 +16792,27 @@ export const resolveSequenceStepPrompts = async (input: {
 };
 ````
 
-## File: apps/server/src/services/snippet-store.ts
+## File: apps/server/src/services/task-draft-store.test.ts
 ````typescript
-import { nanoid } from "nanoid";
-import type Redis from "ioredis";
-import type { Pool } from "pg";
-import type { CreateSnippetInput, Snippet, SnippetVariable, UpdateSnippetInput } from "@agentswarm/shared-types";
-import { EventBus } from "../lib/events.js";
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { normalizeTaskDraftDefinition } from "./task-draft-store.js";
 
-const SNIPPET_KEY_PREFIX = "agentswarm:snippet:";
-const SNIPPET_IDS_KEY = "agentswarm:snippet_ids";
-const SNIPPET_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const SNIPPET_VARIABLE_MAX_COUNT = 100;
-const SNIPPET_VARIABLE_NAME_MAX_LENGTH = 128;
-const SNIPPET_VARIABLE_TEXT_MAX_LENGTH = 200;
-const SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH = 2000;
-const NEWLINE_PATTERN = /\r?\n/u;
-
-const nowIso = (): string => new Date().toISOString();
-const normalizeSnippetVariables = (value: unknown): SnippetVariable[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const variables: SnippetVariable[] = [];
-  const seen = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-
-    const record = entry as Record<string, unknown>;
-    const name = typeof record.name === "string" ? record.name.trim() : "";
-    if (!name || name.length > SNIPPET_VARIABLE_NAME_MAX_LENGTH || !SNIPPET_VARIABLE_NAME_PATTERN.test(name) || seen.has(name)) {
-      continue;
-    }
-
-    const type = record.type === "multiline" ? "multiline" : "text";
-    const title = typeof record.title === "string" ? record.title.trim() : "";
-    const description = typeof record.description === "string" ? record.description.trim() : "";
-    const defaultValue = typeof record.defaultValue === "string" ? record.defaultValue : "";
-    const normalizedDefaultValue = type === "text" ? (defaultValue.split(NEWLINE_PATTERN)[0] ?? "") : defaultValue;
-    variables.push({
-      name,
-      type,
-      title: title.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH),
-      description: description.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH),
-      defaultValue: normalizedDefaultValue.slice(0, SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH)
+describe("normalizeTaskDraftDefinition", () => {
+  it("normalizes draft deadlines", () => {
+    const definition = normalizeTaskDraftDefinition({
+      deadline: "2026-06-15T10:30:00+02:00"
     });
-    seen.add(name);
-    if (variables.length >= SNIPPET_VARIABLE_MAX_COUNT) {
-      break;
-    }
-  }
 
-  return variables;
-};
+    assert.equal(definition.deadline, "2026-06-15T08:30:00.000Z");
+  });
 
-export interface SnippetStore {
-  createSnippet(input: CreateSnippetInput): Promise<Snippet>;
-  listSnippets(): Promise<Snippet[]>;
-  getSnippet(snippetId: string): Promise<Snippet | null>;
-  updateSnippet(snippetId: string, input: UpdateSnippetInput): Promise<Snippet | null>;
-  deleteSnippet(snippetId: string): Promise<boolean>;
-}
-
-export class RedisSnippetStore implements SnippetStore {
-  constructor(
-    private readonly redis: Redis,
-    private readonly eventBus: EventBus
-  ) {}
-
-  private snippetKey(snippetId: string): string {
-    return `${SNIPPET_KEY_PREFIX}${snippetId}`;
-  }
-
-  private buildSnippet(
-    input: CreateSnippetInput | UpdateSnippetInput,
-    current?: Pick<Snippet, "id" | "createdAt">
-  ): Snippet {
-    const timestamp = nowIso();
-    return {
-      id: current?.id ?? nanoid(),
-      name: input.name.trim(),
-      content: input.content.trim(),
-      variables: normalizeSnippetVariables(input.variables),
-      createdAt: current?.createdAt ?? timestamp,
-      updatedAt: timestamp
-    };
-  }
-
-  async createSnippet(input: CreateSnippetInput): Promise<Snippet> {
-    const snippet = this.buildSnippet(input);
-    await this.redis
-      .multi()
-      .set(this.snippetKey(snippet.id), JSON.stringify(snippet))
-      .sadd(SNIPPET_IDS_KEY, snippet.id)
-      .exec();
-    await this.eventBus.publish({ type: "snippet:created", payload: snippet });
-    return snippet;
-  }
-
-  async listSnippets(): Promise<Snippet[]> {
-    const ids = await this.redis.smembers(SNIPPET_IDS_KEY);
-    if (ids.length === 0) {
-      return [];
-    }
-
-    const pipeline = this.redis.pipeline();
-    for (const id of ids) {
-      pipeline.get(this.snippetKey(id));
-    }
-
-    const result = await pipeline.exec();
-    const snippets: Snippet[] = [];
-    for (const row of result ?? []) {
-      const raw = row[1];
-      if (typeof raw === "string") {
-        const parsed = JSON.parse(raw) as Snippet;
-        snippets.push({ ...parsed, variables: normalizeSnippetVariables(parsed.variables) });
-      }
-    }
-
-    return snippets.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  }
-
-  async getSnippet(snippetId: string): Promise<Snippet | null> {
-    const raw = await this.redis.get(this.snippetKey(snippetId));
-    if (!raw) {
-      return null;
-    }
-
-    const parsed = JSON.parse(raw) as Snippet;
-    return { ...parsed, variables: normalizeSnippetVariables(parsed.variables) };
-  }
-
-  async updateSnippet(snippetId: string, input: UpdateSnippetInput): Promise<Snippet | null> {
-    const current = await this.getSnippet(snippetId);
-    if (!current) {
-      return null;
-    }
-
-    const next = this.buildSnippet(input, current);
-    await this.redis.set(this.snippetKey(snippetId), JSON.stringify(next));
-    await this.eventBus.publish({ type: "snippet:updated", payload: next });
-    return next;
-  }
-
-  async deleteSnippet(snippetId: string): Promise<boolean> {
-    const exists = await this.redis.exists(this.snippetKey(snippetId));
-    if (!exists) {
-      return false;
-    }
-
-    await this.redis.multi().del(this.snippetKey(snippetId)).srem(SNIPPET_IDS_KEY, snippetId).exec();
-    await this.eventBus.publish({ type: "snippet:deleted", payload: { id: snippetId } });
-    return true;
-  }
-}
-
-export class PostgresSnippetStore implements SnippetStore {
-  constructor(
-    private readonly pool: Pool,
-    private readonly eventBus: EventBus
-  ) {}
-
-  private buildSnippet(
-    input: CreateSnippetInput | UpdateSnippetInput,
-    current?: Pick<Snippet, "id" | "createdAt">
-  ): Snippet {
-    const timestamp = nowIso();
-    return {
-      id: current?.id ?? nanoid(),
-      name: input.name.trim(),
-      content: input.content.trim(),
-      variables: normalizeSnippetVariables(input.variables),
-      createdAt: current?.createdAt ?? timestamp,
-      updatedAt: timestamp
-    };
-  }
-
-  async createSnippet(input: CreateSnippetInput): Promise<Snippet> {
-    const snippet = this.buildSnippet(input);
-    await this.pool.query(
-      `
-        INSERT INTO snippets (id, name, content, created_at, updated_at, variables)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-      `,
-      [snippet.id, snippet.name, snippet.content, snippet.createdAt, snippet.updatedAt, JSON.stringify(snippet.variables)]
-    );
-    await this.eventBus.publish({ type: "snippet:created", payload: snippet });
-    return snippet;
-  }
-
-  async listSnippets(): Promise<Snippet[]> {
-    const result = await this.pool.query(
-      "SELECT id, name, content, variables, created_at, updated_at FROM snippets ORDER BY updated_at DESC"
-    );
-    return result.rows.map((row) => ({
-      id: String(row.id),
-      name: String(row.name),
-      content: String(row.content),
-      variables: normalizeSnippetVariables(row.variables),
-      createdAt: String(row.created_at),
-      updatedAt: String(row.updated_at)
-    }));
-  }
-
-  async getSnippet(snippetId: string): Promise<Snippet | null> {
-    const result = await this.pool.query(
-      "SELECT id, name, content, variables, created_at, updated_at FROM snippets WHERE id = $1",
-      [snippetId]
-    );
-    const row = result.rows[0];
-    return row
-      ? {
-          id: String(row.id),
-          name: String(row.name),
-          content: String(row.content),
-          variables: normalizeSnippetVariables(row.variables),
-          createdAt: String(row.created_at),
-          updatedAt: String(row.updated_at)
-        }
-      : null;
-  }
-
-  async updateSnippet(snippetId: string, input: UpdateSnippetInput): Promise<Snippet | null> {
-    const current = await this.getSnippet(snippetId);
-    if (!current) {
-      return null;
-    }
-
-    const next = this.buildSnippet(input, current);
-    await this.pool.query(
-      `
-        UPDATE snippets
-        SET name = $2, content = $3, updated_at = $4, variables = $5::jsonb
-        WHERE id = $1
-      `,
-      [snippetId, next.name, next.content, next.updatedAt, JSON.stringify(next.variables)]
-    );
-    await this.eventBus.publish({ type: "snippet:updated", payload: next });
-    return next;
-  }
-
-  async deleteSnippet(snippetId: string): Promise<boolean> {
-    const result = await this.pool.query("DELETE FROM snippets WHERE id = $1", [snippetId]);
-    if (result.rowCount === 0) {
-      return false;
-    }
-
-    await this.eventBus.publish({ type: "snippet:deleted", payload: { id: snippetId } });
-    return true;
-  }
-}
-````
-
-## File: apps/server/src/services/task-draft-store.ts
-````typescript
-import { nanoid } from "nanoid";
-import type Redis from "ioredis";
-import type { Pool } from "pg";
-import type { CreateTaskDraftInput, TaskDraft, TaskDraftDefinition, UpdateTaskDraftInput } from "@agentswarm/shared-types";
-
-const TASK_DRAFT_KEY_PREFIX = "agentswarm:task_draft:";
-const TASK_DRAFT_IDS_KEY_PREFIX = "agentswarm:task_draft_ids:";
-
-const nowIso = (): string => new Date().toISOString();
-
-const normalizeDeadline = (value: unknown): string | null => {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const timestamp = Date.parse(trimmed);
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
-};
-
-const normalizeString = (value: unknown, maxLength: number): string | undefined => {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed.slice(0, maxLength) : undefined;
-};
-
-const normalizeStringMap = (value: unknown): Record<string, string> | undefined => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-
-  const result: Record<string, string> = {};
-  for (const [key, rawValue] of Object.entries(value as Record<string, unknown>)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-      continue;
-    }
-    result[key] = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
-  }
-  return Object.keys(result).length > 0 ? result : undefined;
-};
-
-const normalizeAttachments = (value: unknown): TaskDraftDefinition["attachments"] => {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-
-  return value
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") {
-        return null;
-      }
-      const record = entry as Record<string, unknown>;
-      const name = normalizeString(record.name, 255);
-      const mimeType = normalizeString(record.mimeType, 255);
-      const dataBase64 = typeof record.dataBase64 === "string" ? record.dataBase64 : "";
-      if (!name || !mimeType || dataBase64.length === 0) {
-        return null;
-      }
-      return { name, mimeType, dataBase64 };
-    })
-    .filter((entry): entry is NonNullable<TaskDraftDefinition["attachments"]>[number] => entry !== null)
-    .slice(0, 6);
-};
-
-export const normalizeTaskDraftDefinition = (value: unknown): TaskDraftDefinition => {
-  const record = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-  const sourceType =
-    record.sourceType === "snippet" || record.sourceType === "sequence" || record.sourceType === "issue" || record.sourceType === "pull_request"
-      ? record.sourceType
-      : "blank";
-  const provider = record.provider === "claude" ? "claude" : record.provider === "codex" ? "codex" : undefined;
-  const taskType = record.taskType === "ask" ? "ask" : record.taskType === "build" ? "build" : undefined;
-  const providerProfile =
-    record.providerProfile === "low" || record.providerProfile === "medium" || record.providerProfile === "high" || record.providerProfile === "max"
-      ? record.providerProfile
-      : undefined;
-  const codexCredentialSource =
-    record.codexCredentialSource === "profile" || record.codexCredentialSource === "global" || record.codexCredentialSource === "auto"
-      ? record.codexCredentialSource
-      : undefined;
-  const branchStrategy = record.branchStrategy === "work_on_branch" ? "work_on_branch" : record.branchStrategy === "feature_branch" ? "feature_branch" : undefined;
-  const numberOrUndefined = (raw: unknown): number | undefined => (Number.isFinite(raw) ? Math.max(0, Math.floor(Number(raw))) : undefined);
-
-  return {
-    sourceType,
-    title: normalizeString(record.title, 500),
-    deadline: normalizeDeadline(record.deadline),
-    repoId: normalizeString(record.repoId, 120),
-    prompt: typeof record.prompt === "string" ? record.prompt : undefined,
-    notes: typeof record.notes === "string" ? record.notes : undefined,
-    taskType,
-    provider,
-    model: normalizeString(record.model, 256),
-    providerProfile,
-    codexCredentialSource,
-    baseBranch: normalizeString(record.baseBranch, 255),
-    branchStrategy,
-    issueNumber: numberOrUndefined(record.issueNumber),
-    includeComments: typeof record.includeComments === "boolean" ? record.includeComments : undefined,
-    pullRequestNumber: numberOrUndefined(record.pullRequestNumber),
-    snippetId: normalizeString(record.snippetId, 120),
-    snippetVariables: normalizeStringMap(record.snippetVariables),
-    sequenceId: normalizeString(record.sequenceId, 120),
-    sequenceVariables: normalizeStringMap(record.sequenceVariables),
-    attachments: normalizeAttachments(record.attachments)
-  };
-};
-
-const normalizeDraftTitle = (input: Pick<CreateTaskDraftInput | UpdateTaskDraftInput, "title" | "definition">): string => {
-  const explicit = normalizeString(input.title, 500);
-  if (explicit) {
-    return explicit;
-  }
-  const fromDefinition = normalizeString(input.definition?.title, 500);
-  return fromDefinition ?? "Untitled Draft";
-};
-
-export interface TaskDraftStore {
-  createDraft(ownerUserId: string, input: CreateTaskDraftInput): Promise<TaskDraft>;
-  listDrafts(ownerUserId: string): Promise<TaskDraft[]>;
-  getDraft(ownerUserId: string, draftId: string): Promise<TaskDraft | null>;
-  updateDraft(ownerUserId: string, draftId: string, input: UpdateTaskDraftInput): Promise<TaskDraft | null>;
-  deleteDraft(ownerUserId: string, draftId: string): Promise<boolean>;
-}
-
-export class RedisTaskDraftStore implements TaskDraftStore {
-  constructor(private readonly redis: Redis) {}
-
-  private draftKey(draftId: string): string {
-    return `${TASK_DRAFT_KEY_PREFIX}${draftId}`;
-  }
-
-  private draftIdsKey(ownerUserId: string): string {
-    return `${TASK_DRAFT_IDS_KEY_PREFIX}${ownerUserId}`;
-  }
-
-  private normalizeDraft(raw: TaskDraft): TaskDraft {
-    return {
-      ...raw,
-      title: normalizeDraftTitle(raw),
-      definition: normalizeTaskDraftDefinition(raw.definition)
-    };
-  }
-
-  async createDraft(ownerUserId: string, input: CreateTaskDraftInput): Promise<TaskDraft> {
-    const timestamp = nowIso();
-    const draft: TaskDraft = {
-      id: nanoid(),
-      ownerUserId,
-      title: normalizeDraftTitle(input),
-      definition: normalizeTaskDraftDefinition(input.definition),
-      createdAt: timestamp,
-      updatedAt: timestamp
-    };
-    await this.redis.multi().set(this.draftKey(draft.id), JSON.stringify(draft)).sadd(this.draftIdsKey(ownerUserId), draft.id).exec();
-    return draft;
-  }
-
-  async listDrafts(ownerUserId: string): Promise<TaskDraft[]> {
-    const ids = await this.redis.smembers(this.draftIdsKey(ownerUserId));
-    if (ids.length === 0) {
-      return [];
-    }
-    const pipeline = this.redis.pipeline();
-    for (const id of ids) {
-      pipeline.get(this.draftKey(id));
-    }
-    const rows = await pipeline.exec();
-    const drafts: TaskDraft[] = [];
-    for (const row of rows ?? []) {
-      if (typeof row[1] === "string") {
-        drafts.push(this.normalizeDraft(JSON.parse(row[1]) as TaskDraft));
-      }
-    }
-    return drafts.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  }
-
-  async getDraft(ownerUserId: string, draftId: string): Promise<TaskDraft | null> {
-    const raw = await this.redis.get(this.draftKey(draftId));
-    if (!raw) {
-      return null;
-    }
-    const draft = this.normalizeDraft(JSON.parse(raw) as TaskDraft);
-    return draft.ownerUserId === ownerUserId ? draft : null;
-  }
-
-  async updateDraft(ownerUserId: string, draftId: string, input: UpdateTaskDraftInput): Promise<TaskDraft | null> {
-    const current = await this.getDraft(ownerUserId, draftId);
-    if (!current) {
-      return null;
-    }
-    const definition = input.definition === undefined ? current.definition : normalizeTaskDraftDefinition(input.definition);
-    const next: TaskDraft = {
-      ...current,
-      title: normalizeDraftTitle({ title: input.title ?? current.title, definition }),
-      definition,
-      updatedAt: nowIso()
-    };
-    await this.redis.set(this.draftKey(draftId), JSON.stringify(next));
-    return next;
-  }
-
-  async deleteDraft(ownerUserId: string, draftId: string): Promise<boolean> {
-    const current = await this.getDraft(ownerUserId, draftId);
-    if (!current) {
-      return false;
-    }
-    await this.redis.multi().del(this.draftKey(draftId)).srem(this.draftIdsKey(ownerUserId), draftId).exec();
-    return true;
-  }
-}
-
-export class PostgresTaskDraftStore implements TaskDraftStore {
-  constructor(private readonly pool: Pool) {}
-
-  private normalizeDraft(row: Record<string, unknown>): TaskDraft {
-    const definition = normalizeTaskDraftDefinition(row.definition);
-    return {
-      id: String(row.id),
-      ownerUserId: String(row.owner_user_id),
-      title: normalizeDraftTitle({ title: typeof row.title === "string" ? row.title : undefined, definition }),
-      definition,
-      createdAt: String(row.created_at),
-      updatedAt: String(row.updated_at)
-    };
-  }
-
-  async createDraft(ownerUserId: string, input: CreateTaskDraftInput): Promise<TaskDraft> {
-    const timestamp = nowIso();
-    const definition = normalizeTaskDraftDefinition(input.definition);
-    const draft: TaskDraft = {
-      id: nanoid(),
-      ownerUserId,
-      title: normalizeDraftTitle({ title: input.title, definition }),
-      definition,
-      createdAt: timestamp,
-      updatedAt: timestamp
-    };
-    await this.pool.query(
-      "INSERT INTO task_drafts (id, owner_user_id, title, definition, created_at, updated_at) VALUES ($1, $2, $3, $4::jsonb, $5, $6)",
-      [draft.id, draft.ownerUserId, draft.title, JSON.stringify(draft.definition), draft.createdAt, draft.updatedAt]
-    );
-    return draft;
-  }
-
-  async listDrafts(ownerUserId: string): Promise<TaskDraft[]> {
-    const result = await this.pool.query(
-      "SELECT id, owner_user_id, title, definition, created_at, updated_at FROM task_drafts WHERE owner_user_id = $1 ORDER BY updated_at DESC",
-      [ownerUserId]
-    );
-    return result.rows.map((row) => this.normalizeDraft(row));
-  }
-
-  async getDraft(ownerUserId: string, draftId: string): Promise<TaskDraft | null> {
-    const result = await this.pool.query(
-      "SELECT id, owner_user_id, title, definition, created_at, updated_at FROM task_drafts WHERE owner_user_id = $1 AND id = $2",
-      [ownerUserId, draftId]
-    );
-    return result.rows[0] ? this.normalizeDraft(result.rows[0]) : null;
-  }
-
-  async updateDraft(ownerUserId: string, draftId: string, input: UpdateTaskDraftInput): Promise<TaskDraft | null> {
-    const current = await this.getDraft(ownerUserId, draftId);
-    if (!current) {
-      return null;
-    }
-    const definition = input.definition === undefined ? current.definition : normalizeTaskDraftDefinition(input.definition);
-    const title = normalizeDraftTitle({ title: input.title ?? current.title, definition });
-    const updatedAt = nowIso();
-    const result = await this.pool.query(
-      `UPDATE task_drafts
-       SET title = $3, definition = $4::jsonb, updated_at = $5
-       WHERE owner_user_id = $1 AND id = $2
-       RETURNING id, owner_user_id, title, definition, created_at, updated_at`,
-      [ownerUserId, draftId, title, JSON.stringify(definition), updatedAt]
-    );
-    return result.rows[0] ? this.normalizeDraft(result.rows[0]) : null;
-  }
-
-  async deleteDraft(ownerUserId: string, draftId: string): Promise<boolean> {
-    const result = await this.pool.query("DELETE FROM task_drafts WHERE owner_user_id = $1 AND id = $2", [ownerUserId, draftId]);
-    return (result.rowCount ?? 0) > 0;
-  }
-}
+  it("clears empty and invalid draft deadlines", () => {
+    assert.equal(normalizeTaskDraftDefinition({ deadline: "" }).deadline, null);
+    assert.equal(normalizeTaskDraftDefinition({ deadline: "not a date" }).deadline, null);
+    assert.equal(normalizeTaskDraftDefinition({ deadline: null }).deadline, null);
+  });
+});
 ````
 
 ## File: apps/web/app/repositories/[id]/edit/page.tsx
@@ -19918,116 +19745,6 @@ export const mergeSnippetVariables = (input: {
 
   const changed = JSON.stringify(next) !== JSON.stringify(input.current.map((entry) => normalizeVariable(entry)));
   return { next, conflicts: Array.from(conflicts), changed };
-};
-````
-
-## File: apps/web/src/utils/snippets.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { applySnippetVariables, insertSnippetContent } from "./snippets";
-
-describe("insertSnippetContent", () => {
-  it("returns the snippet when the current value is empty", () => {
-    assert.equal(insertSnippetContent("", "  Follow the existing style guide.  "), "Follow the existing style guide.");
-  });
-
-  it("appends the snippet with a blank line separator", () => {
-    assert.equal(
-      insertSnippetContent("Implement the API endpoint.", "Add request validation."),
-      "Implement the API endpoint.\n\nAdd request validation."
-    );
-  });
-
-  it("keeps the current value when the snippet is blank", () => {
-    assert.equal(insertSnippetContent("Existing prompt", "   "), "Existing prompt");
-  });
-});
-
-describe("applySnippetVariables", () => {
-  it("replaces placeholders for defined variables", () => {
-    assert.equal(
-      applySnippetVariables("Hello {{name}} from {{team}}", [
-        { name: "name", type: "text", title: "", description: "", defaultValue: "" },
-        { name: "team", type: "text", title: "", description: "", defaultValue: "" }
-      ], { name: "Ada", team: "Core" }),
-      "Hello Ada from Core"
-    );
-  });
-
-  it("keeps placeholders for undefined variables", () => {
-    assert.equal(
-      applySnippetVariables("{{known}} / {{unknown}}", [{ name: "known", type: "text", title: "", description: "", defaultValue: "" }], { known: "ok" }),
-      "ok / {{unknown}}"
-    );
-  });
-
-  it("uses default values when no explicit value is provided", () => {
-    assert.equal(
-      applySnippetVariables("Hello {{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "there" }], {}),
-      "Hello there"
-    );
-  });
-
-  it("forces text variables to single-line values", () => {
-    assert.equal(
-      applySnippetVariables("{{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "Line1\nLine2" }], {}),
-      "Line1"
-    );
-    assert.equal(
-      applySnippetVariables("{{name}}", [{ name: "name", type: "text", title: "", description: "", defaultValue: "" }], { name: "A\nB" }),
-      "A"
-    );
-  });
-
-  it("keeps multiline values for multiline variables", () => {
-    assert.equal(
-      applySnippetVariables("{{details}}", [{ name: "details", type: "multiline", title: "", description: "", defaultValue: "A\nB" }], {}),
-      "A\nB"
-    );
-  });
-});
-````
-
-## File: apps/web/src/utils/snippets.ts
-````typescript
-import type { SnippetVariable } from "@agentswarm/shared-types";
-
-const SNIPPET_PLACEHOLDER_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
-
-export const insertSnippetContent = (current: string | null | undefined, snippet: string | null | undefined): string => {
-  const snippetText = snippet?.trim() ?? "";
-  if (!snippetText) {
-    return current ?? "";
-  }
-
-  const currentText = current ?? "";
-  if (currentText.trim().length === 0) {
-    return snippetText;
-  }
-
-  return `${currentText.trimEnd()}\n\n${snippetText}`;
-};
-
-export const applySnippetVariables = (
-  content: string | null | undefined,
-  variables: SnippetVariable[] | null | undefined,
-  values: Record<string, string>
-): string => {
-  const snippetText = content ?? "";
-  const variablesByName = new Map((variables ?? []).map((entry) => [entry.name, entry]));
-  return snippetText.replace(SNIPPET_PLACEHOLDER_PATTERN, (_match, name: string) => {
-    const variable = variablesByName.get(name);
-    if (!variable) {
-      return `{{${name}}}`;
-    }
-    const value = values[name];
-    const selected = typeof value === "string" && value.length > 0 ? value : variable.defaultValue ?? "";
-    if (variable.type === "text") {
-      return selected.split(/\r?\n/u)[0] ?? "";
-    }
-    return selected;
-  });
 };
 ````
 
@@ -23207,102 +22924,108 @@ export const normalizeTaskLifecycleStatus = (
 };
 ````
 
-## File: apps/server/src/routes/snippets.ts
+## File: apps/server/src/routes/task-drafts.ts
 ````typescript
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AuthService } from "../lib/auth.js";
-import type { SnippetStore } from "../services/snippet-store.js";
+import type { TaskDraftStore } from "../services/task-draft-store.js";
 
-const snippetSchema = z.object({
-  name: z.string().trim().min(1).max(120),
-  content: z.string().trim().min(1).max(20000),
-  variables: z
-    .array(
-      z
-        .object({
-          name: z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(128),
-          type: z.enum(["text", "multiline"]),
-          title: z.string().trim().max(200).default(""),
-          description: z.string().trim().max(200).default(""),
-          defaultValue: z.string().max(2000).default("")
-        })
-        .superRefine((value, ctx) => {
-          if (value.type === "text" && /[\r\n]/.test(value.defaultValue)) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["defaultValue"],
-              message: "Default value for text variables must be a single line."
-            });
-          }
-        })
-    )
-    .max(100)
-    .optional()
+const stringMapSchema = z.record(z.string()).optional();
+
+const deadlineSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
+  .nullable()
+  .optional();
+
+const attachmentSchema = z.object({
+  name: z.string().trim().min(1).max(255),
+  mimeType: z.string().trim().min(1).max(255),
+  dataBase64: z.string().min(1)
 });
 
-export const registerSnippetRoutes = (
+const draftDefinitionSchema = z.object({
+  sourceType: z.enum(["blank", "snippet", "sequence", "issue", "pull_request"]).optional(),
+  title: z.string().max(500).optional(),
+  deadline: deadlineSchema,
+  repoId: z.string().max(120).optional(),
+  prompt: z.string().max(48_000).optional(),
+  notes: z.string().max(48_000).optional(),
+  taskType: z.enum(["build", "ask"]).optional(),
+  provider: z.enum(["codex", "claude"]).optional(),
+  model: z.string().max(256).optional(),
+  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+  baseBranch: z.string().max(255).optional(),
+  branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+  issueNumber: z.number().int().nonnegative().optional(),
+  includeComments: z.boolean().optional(),
+  pullRequestNumber: z.number().int().nonnegative().optional(),
+  snippetId: z.string().max(120).optional(),
+  snippetVariables: stringMapSchema,
+  sequenceId: z.string().max(120).optional(),
+  sequenceVariables: stringMapSchema,
+  attachments: z.array(attachmentSchema).max(6).optional()
+});
+
+const createDraftSchema = z.object({
+  title: z.string().trim().max(500).optional(),
+  definition: draftDefinitionSchema
+});
+
+const updateDraftSchema = z.object({
+  title: z.string().trim().max(500).optional(),
+  definition: draftDefinitionSchema.optional()
+});
+
+export const registerTaskDraftRoutes = (
   app: FastifyInstance,
   deps: {
-    snippetStore: SnippetStore;
+    taskDraftStore: TaskDraftStore;
     auth: AuthService;
   }
 ): void => {
-  app.get("/snippets", { preHandler: deps.auth.requireAllScopes(["snippet:list"]) }, async () => deps.snippetStore.listSnippets());
+  app.get("/task-drafts", { preHandler: deps.auth.requireAllScopes(["task:list"]) }, async (request) =>
+    deps.taskDraftStore.listDrafts(request.auth!.user.id)
+  );
 
-  app.get<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:read"]) }, async (request, reply) => {
-    const snippet = await deps.snippetStore.getSnippet(request.params.id);
-    if (!snippet) {
-      return reply.status(404).send({ message: "Snippet not found" });
+  app.get<{ Params: { id: string } }>("/task-drafts/:id", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
+    const draft = await deps.taskDraftStore.getDraft(request.auth!.user.id, request.params.id);
+    if (!draft) {
+      return reply.status(404).send({ message: "Task draft not found" });
     }
-
-    return reply.send(snippet);
+    return reply.send(draft);
   });
 
-  app.post("/snippets", { preHandler: deps.auth.requireAllScopes(["snippet:create"]) }, async (request, reply) => {
-    const parsed = snippetSchema.safeParse(request.body);
+  app.post("/task-drafts", { preHandler: deps.auth.requireAllScopes(["task:create"]) }, async (request, reply) => {
+    const parsed = createDraftSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
     }
-
-    const snippet = await deps.snippetStore.createSnippet(parsed.data);
-    return reply.status(201).send(snippet);
+    const draft = await deps.taskDraftStore.createDraft(request.auth!.user.id, parsed.data);
+    return reply.status(201).send(draft);
   });
 
-  app.post<{ Params: { id: string } }>("/snippets/:id/duplicate", { preHandler: deps.auth.requireAllScopes(["snippet:create"]) }, async (request, reply) => {
-    const source = await deps.snippetStore.getSnippet(request.params.id);
-    if (!source) {
-      return reply.status(404).send({ message: "Snippet not found" });
-    }
-
-    const duplicated = await deps.snippetStore.createSnippet({
-      name: `Copy of ${source.name}`,
-      content: source.content,
-      variables: source.variables
-    });
-    return reply.status(201).send(duplicated);
-  });
-
-  app.patch<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:edit"]) }, async (request, reply) => {
-    const parsed = snippetSchema.safeParse(request.body);
+  app.patch<{ Params: { id: string } }>("/task-drafts/:id", { preHandler: deps.auth.requireAllScopes(["task:create"]) }, async (request, reply) => {
+    const parsed = updateDraftSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
     }
-
-    const snippet = await deps.snippetStore.updateSnippet(request.params.id, parsed.data);
-    if (!snippet) {
-      return reply.status(404).send({ message: "Snippet not found" });
+    const draft = await deps.taskDraftStore.updateDraft(request.auth!.user.id, request.params.id, parsed.data);
+    if (!draft) {
+      return reply.status(404).send({ message: "Task draft not found" });
     }
-
-    return reply.send(snippet);
+    return reply.send(draft);
   });
 
-  app.delete<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:delete"]) }, async (request, reply) => {
-    const deleted = await deps.snippetStore.deleteSnippet(request.params.id);
+  app.delete<{ Params: { id: string } }>("/task-drafts/:id", { preHandler: deps.auth.requireAllScopes(["task:create"]) }, async (request, reply) => {
+    const deleted = await deps.taskDraftStore.deleteDraft(request.auth!.user.id, request.params.id);
     if (!deleted) {
-      return reply.status(404).send({ message: "Snippet not found" });
+      return reply.status(404).send({ message: "Task draft not found" });
     }
-
     return reply.status(204).send();
   });
 };
@@ -24026,6 +23749,300 @@ describe("resolveSequenceStepPrompts", () => {
     );
   });
 });
+````
+
+## File: apps/server/src/services/task-draft-store.ts
+````typescript
+import { nanoid } from "nanoid";
+import type Redis from "ioredis";
+import type { Pool } from "pg";
+import type { CreateTaskDraftInput, TaskDraft, TaskDraftDefinition, UpdateTaskDraftInput } from "@agentswarm/shared-types";
+
+const TASK_DRAFT_KEY_PREFIX = "agentswarm:task_draft:";
+const TASK_DRAFT_IDS_KEY_PREFIX = "agentswarm:task_draft_ids:";
+
+const nowIso = (): string => new Date().toISOString();
+
+const normalizeDeadline = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const timestamp = Date.parse(trimmed);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+};
+
+const normalizeString = (value: unknown, maxLength: number): string | undefined => {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed.slice(0, maxLength) : undefined;
+};
+
+const normalizeStringMap = (value: unknown): Record<string, string> | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const result: Record<string, string> = {};
+  for (const [key, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      continue;
+    }
+    result[key] = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+};
+
+const normalizeAttachments = (value: unknown): TaskDraftDefinition["attachments"] => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return null;
+      }
+      const record = entry as Record<string, unknown>;
+      const name = normalizeString(record.name, 255);
+      const mimeType = normalizeString(record.mimeType, 255);
+      const dataBase64 = typeof record.dataBase64 === "string" ? record.dataBase64 : "";
+      if (!name || !mimeType || dataBase64.length === 0) {
+        return null;
+      }
+      return { name, mimeType, dataBase64 };
+    })
+    .filter((entry): entry is NonNullable<TaskDraftDefinition["attachments"]>[number] => entry !== null)
+    .slice(0, 6);
+};
+
+export const normalizeTaskDraftDefinition = (value: unknown): TaskDraftDefinition => {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const sourceType =
+    record.sourceType === "snippet" || record.sourceType === "sequence" || record.sourceType === "issue" || record.sourceType === "pull_request"
+      ? record.sourceType
+      : "blank";
+  const provider = record.provider === "claude" ? "claude" : record.provider === "codex" ? "codex" : undefined;
+  const taskType = record.taskType === "ask" ? "ask" : record.taskType === "build" ? "build" : undefined;
+  const providerProfile =
+    record.providerProfile === "low" || record.providerProfile === "medium" || record.providerProfile === "high" || record.providerProfile === "max"
+      ? record.providerProfile
+      : undefined;
+  const codexCredentialSource =
+    record.codexCredentialSource === "profile" || record.codexCredentialSource === "global" || record.codexCredentialSource === "auto"
+      ? record.codexCredentialSource
+      : undefined;
+  const branchStrategy = record.branchStrategy === "work_on_branch" ? "work_on_branch" : record.branchStrategy === "feature_branch" ? "feature_branch" : undefined;
+  const numberOrUndefined = (raw: unknown): number | undefined => (Number.isFinite(raw) ? Math.max(0, Math.floor(Number(raw))) : undefined);
+
+  return {
+    sourceType,
+    title: normalizeString(record.title, 500),
+    deadline: normalizeDeadline(record.deadline),
+    repoId: normalizeString(record.repoId, 120),
+    prompt: typeof record.prompt === "string" ? record.prompt : undefined,
+    notes: typeof record.notes === "string" ? record.notes : undefined,
+    taskType,
+    provider,
+    model: normalizeString(record.model, 256),
+    providerProfile,
+    codexCredentialSource,
+    baseBranch: normalizeString(record.baseBranch, 255),
+    branchStrategy,
+    issueNumber: numberOrUndefined(record.issueNumber),
+    includeComments: typeof record.includeComments === "boolean" ? record.includeComments : undefined,
+    pullRequestNumber: numberOrUndefined(record.pullRequestNumber),
+    snippetId: normalizeString(record.snippetId, 120),
+    snippetVariables: normalizeStringMap(record.snippetVariables),
+    sequenceId: normalizeString(record.sequenceId, 120),
+    sequenceVariables: normalizeStringMap(record.sequenceVariables),
+    attachments: normalizeAttachments(record.attachments)
+  };
+};
+
+const normalizeDraftTitle = (input: Pick<CreateTaskDraftInput | UpdateTaskDraftInput, "title" | "definition">): string => {
+  const explicit = normalizeString(input.title, 500);
+  if (explicit) {
+    return explicit;
+  }
+  const fromDefinition = normalizeString(input.definition?.title, 500);
+  return fromDefinition ?? "Untitled Draft";
+};
+
+export interface TaskDraftStore {
+  createDraft(ownerUserId: string, input: CreateTaskDraftInput): Promise<TaskDraft>;
+  listDrafts(ownerUserId: string): Promise<TaskDraft[]>;
+  getDraft(ownerUserId: string, draftId: string): Promise<TaskDraft | null>;
+  updateDraft(ownerUserId: string, draftId: string, input: UpdateTaskDraftInput): Promise<TaskDraft | null>;
+  deleteDraft(ownerUserId: string, draftId: string): Promise<boolean>;
+}
+
+export class RedisTaskDraftStore implements TaskDraftStore {
+  constructor(private readonly redis: Redis) {}
+
+  private draftKey(draftId: string): string {
+    return `${TASK_DRAFT_KEY_PREFIX}${draftId}`;
+  }
+
+  private draftIdsKey(ownerUserId: string): string {
+    return `${TASK_DRAFT_IDS_KEY_PREFIX}${ownerUserId}`;
+  }
+
+  private normalizeDraft(raw: TaskDraft): TaskDraft {
+    return {
+      ...raw,
+      title: normalizeDraftTitle(raw),
+      definition: normalizeTaskDraftDefinition(raw.definition)
+    };
+  }
+
+  async createDraft(ownerUserId: string, input: CreateTaskDraftInput): Promise<TaskDraft> {
+    const timestamp = nowIso();
+    const draft: TaskDraft = {
+      id: nanoid(),
+      ownerUserId,
+      title: normalizeDraftTitle(input),
+      definition: normalizeTaskDraftDefinition(input.definition),
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    await this.redis.multi().set(this.draftKey(draft.id), JSON.stringify(draft)).sadd(this.draftIdsKey(ownerUserId), draft.id).exec();
+    return draft;
+  }
+
+  async listDrafts(ownerUserId: string): Promise<TaskDraft[]> {
+    const ids = await this.redis.smembers(this.draftIdsKey(ownerUserId));
+    if (ids.length === 0) {
+      return [];
+    }
+    const pipeline = this.redis.pipeline();
+    for (const id of ids) {
+      pipeline.get(this.draftKey(id));
+    }
+    const rows = await pipeline.exec();
+    const drafts: TaskDraft[] = [];
+    for (const row of rows ?? []) {
+      if (typeof row[1] === "string") {
+        drafts.push(this.normalizeDraft(JSON.parse(row[1]) as TaskDraft));
+      }
+    }
+    return drafts.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  }
+
+  async getDraft(ownerUserId: string, draftId: string): Promise<TaskDraft | null> {
+    const raw = await this.redis.get(this.draftKey(draftId));
+    if (!raw) {
+      return null;
+    }
+    const draft = this.normalizeDraft(JSON.parse(raw) as TaskDraft);
+    return draft.ownerUserId === ownerUserId ? draft : null;
+  }
+
+  async updateDraft(ownerUserId: string, draftId: string, input: UpdateTaskDraftInput): Promise<TaskDraft | null> {
+    const current = await this.getDraft(ownerUserId, draftId);
+    if (!current) {
+      return null;
+    }
+    const definition = input.definition === undefined ? current.definition : normalizeTaskDraftDefinition(input.definition);
+    const next: TaskDraft = {
+      ...current,
+      title: normalizeDraftTitle({ title: input.title ?? current.title, definition }),
+      definition,
+      updatedAt: nowIso()
+    };
+    await this.redis.set(this.draftKey(draftId), JSON.stringify(next));
+    return next;
+  }
+
+  async deleteDraft(ownerUserId: string, draftId: string): Promise<boolean> {
+    const current = await this.getDraft(ownerUserId, draftId);
+    if (!current) {
+      return false;
+    }
+    await this.redis.multi().del(this.draftKey(draftId)).srem(this.draftIdsKey(ownerUserId), draftId).exec();
+    return true;
+  }
+}
+
+export class PostgresTaskDraftStore implements TaskDraftStore {
+  constructor(private readonly pool: Pool) {}
+
+  private normalizeDraft(row: Record<string, unknown>): TaskDraft {
+    const definition = normalizeTaskDraftDefinition(row.definition);
+    return {
+      id: String(row.id),
+      ownerUserId: String(row.owner_user_id),
+      title: normalizeDraftTitle({ title: typeof row.title === "string" ? row.title : undefined, definition }),
+      definition,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    };
+  }
+
+  async createDraft(ownerUserId: string, input: CreateTaskDraftInput): Promise<TaskDraft> {
+    const timestamp = nowIso();
+    const definition = normalizeTaskDraftDefinition(input.definition);
+    const draft: TaskDraft = {
+      id: nanoid(),
+      ownerUserId,
+      title: normalizeDraftTitle({ title: input.title, definition }),
+      definition,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    await this.pool.query(
+      "INSERT INTO task_drafts (id, owner_user_id, title, definition, created_at, updated_at) VALUES ($1, $2, $3, $4::jsonb, $5, $6)",
+      [draft.id, draft.ownerUserId, draft.title, JSON.stringify(draft.definition), draft.createdAt, draft.updatedAt]
+    );
+    return draft;
+  }
+
+  async listDrafts(ownerUserId: string): Promise<TaskDraft[]> {
+    const result = await this.pool.query(
+      "SELECT id, owner_user_id, title, definition, created_at, updated_at FROM task_drafts WHERE owner_user_id = $1 ORDER BY updated_at DESC",
+      [ownerUserId]
+    );
+    return result.rows.map((row) => this.normalizeDraft(row));
+  }
+
+  async getDraft(ownerUserId: string, draftId: string): Promise<TaskDraft | null> {
+    const result = await this.pool.query(
+      "SELECT id, owner_user_id, title, definition, created_at, updated_at FROM task_drafts WHERE owner_user_id = $1 AND id = $2",
+      [ownerUserId, draftId]
+    );
+    return result.rows[0] ? this.normalizeDraft(result.rows[0]) : null;
+  }
+
+  async updateDraft(ownerUserId: string, draftId: string, input: UpdateTaskDraftInput): Promise<TaskDraft | null> {
+    const current = await this.getDraft(ownerUserId, draftId);
+    if (!current) {
+      return null;
+    }
+    const definition = input.definition === undefined ? current.definition : normalizeTaskDraftDefinition(input.definition);
+    const title = normalizeDraftTitle({ title: input.title ?? current.title, definition });
+    const updatedAt = nowIso();
+    const result = await this.pool.query(
+      `UPDATE task_drafts
+       SET title = $3, definition = $4::jsonb, updated_at = $5
+       WHERE owner_user_id = $1 AND id = $2
+       RETURNING id, owner_user_id, title, definition, created_at, updated_at`,
+      [ownerUserId, draftId, title, JSON.stringify(definition), updatedAt]
+    );
+    return result.rows[0] ? this.normalizeDraft(result.rows[0]) : null;
+  }
+
+  async deleteDraft(ownerUserId: string, draftId: string): Promise<boolean> {
+    const result = await this.pool.query("DELETE FROM task_drafts WHERE owner_user_id = $1 AND id = $2", [ownerUserId, draftId]);
+    return (result.rowCount ?? 0) > 0;
+  }
+}
 ````
 
 ## File: apps/web/components/repositories-page.tsx
@@ -26836,6 +26853,7 @@ The terms below come from current repository docs and code.
 
 ## File: agent-runtime-codex/run-task.mjs
 ````javascript
+import { createWriteStream } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -26870,6 +26888,9 @@ const codexDir = configuredStatePath && configuredStatePath.length > 0 ? configu
 const homeDir = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : path.dirname(codexDir);
 const lastMessageFile = path.join(path.dirname(manifest.resultJsonPath), "codex-last-message.txt");
 const sessionIdFile = path.join(codexDir, "agentswarm-session-id.txt");
+const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
+  ? manifest.rawEventsJsonlPath.trim()
+  : path.join(path.dirname(manifest.resultJsonPath), "raw-events.jsonl");
 
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -26980,6 +27001,7 @@ const extractSessionIdFromOutputLine = (line) => {
 await mkdir(homeDir, { recursive: true });
 await mkdir(codexDir, { recursive: true });
 await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
+await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
 await writeFile(path.join(codexDir, "config.toml"), providerConfig, "utf8");
 if (codexAuthJson) {
   await writeFile(path.join(codexDir, "auth.json"), codexAuthJson, "utf8");
@@ -27141,8 +27163,10 @@ if (persistedSessionId) {
 const execProc = spawn("codex", args, { env: process.env, cwd: manifest.workspacePath, stdio: ["ignore", "pipe", "pipe"] });
 let stdoutBuffer = "";
 let stderrBuffer = "";
+const rawEventsStream = createWriteStream(rawEventsJsonlPath, { flags: "a" });
 
 execProc.stdout.on("data", (chunk) => {
+  rawEventsStream.write(chunk);
   const text = chunk.toString();
   stdoutBuffer += text;
   const lines = stdoutBuffer.split("\n");
@@ -27159,6 +27183,7 @@ execProc.stderr.on("data", (chunk) => {
   stderrBuffer += chunk.toString();
   process.stderr.write(chunk);
 });
+let codexProcessError = null;
 await new Promise((resolve, reject) => {
   execProc.on("error", reject);
   execProc.on("close", (code) => {
@@ -27175,7 +27200,16 @@ await new Promise((resolve, reject) => {
     const stderrTail = stderrBuffer.trim();
     reject(new Error(`codex exited with code ${code ?? "unknown"}${stderrTail ? `: ${stderrTail}` : ""}`));
   });
+}).catch((error) => {
+  codexProcessError = error;
 });
+await new Promise((resolve, reject) => {
+  rawEventsStream.end(() => resolve());
+  rawEventsStream.on("error", reject);
+});
+if (codexProcessError) {
+  throw codexProcessError;
+}
 
 if (!resolvedSessionId) {
   resolvedSessionId = await inferSessionIdFromRolloutFiles();
@@ -31885,6 +31919,182 @@ export function SettingsPage() {
 }
 ````
 
+## File: apps/web/components/snippets-page.tsx
+````typescript
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import dayjs from "dayjs";
+import type { Snippet } from "@agentswarm/shared-types";
+import { CopyOutlined } from "@ant-design/icons";
+import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
+import { api } from "../src/api/client";
+import { useSnippets } from "../src/hooks/useSnippets";
+import { useAuth } from "./auth-provider";
+import { trackEvent } from "../src/utils/analytics";
+
+const summarizeSnippet = (value: string): string => {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "Empty";
+  }
+  return normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized;
+};
+
+export function SnippetsPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { snippets, loading } = useSnippets();
+  const { can } = useAuth();
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [messageApi, contextHolder] = message.useMessage();
+  const canCreateSnippet = can("snippet:create");
+  const canEditSnippet = can("snippet:edit");
+  const canDeleteSnippet = can("snippet:delete");
+  const canDuplicateSnippet = can("snippet:create");
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const savedState = searchParams.get("saved");
+    if (!savedState) {
+      return;
+    }
+    if (savedState === "created") {
+      messageApi.success("Snippet created");
+    } else if (savedState === "updated") {
+      messageApi.success("Snippet updated");
+    }
+    router.replace("/snippets");
+  }, [messageApi, router, searchParams]);
+
+  const copySnippetToClipboard = async (content: string, label: string) => {
+    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      messageApi.error("Clipboard access is unavailable in this browser.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(content);
+      messageApi.success(`${label} copied`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to copy snippet");
+    }
+  };
+
+  return (
+    <>
+      {contextHolder}
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
+          <Flex vertical gap={0}>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              Snippets
+            </Typography.Title>
+            <Typography.Text type="secondary">
+              Store reusable text blocks and insert them into task prompts and follow-up messages.
+            </Typography.Text>
+          </Flex>
+          {canCreateSnippet ? (
+            <Button type="primary" onClick={() => router.push("/snippets/new?from=list")}>
+              Add Snippet
+            </Button>
+          ) : null}
+        </Flex>
+
+        <Card bordered={false}>
+          <Table<Snippet>
+            rowKey="id"
+            loading={loading}
+            dataSource={snippets}
+            pagination={{ pageSize: 10 }}
+            columns={[
+              {
+                title: "Name",
+                dataIndex: "name"
+              },
+              {
+                title: "Preview",
+                dataIndex: "content",
+                render: (value: string) => summarizeSnippet(value)
+              },
+              {
+                title: "Updated At",
+                dataIndex: "updatedAt",
+                sorter: (left, right) => left.updatedAt.localeCompare(right.updatedAt),
+                defaultSortOrder: "descend",
+                render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
+              },
+              {
+                title: "Actions",
+                key: "actions",
+                width: 280,
+                render: (_value, snippet) => (
+                  <Space size={8} wrap={false} style={{ whiteSpace: "nowrap" }}>
+                    <Button size="small" icon={<CopyOutlined />} onClick={() => void copySnippetToClipboard(snippet.content, snippet.name)}>
+                      Copy
+                    </Button>
+                    {canEditSnippet ? (
+                      <Button size="small" onClick={() => router.push(`/snippets/${snippet.id}/edit?from=list`)}>
+                        Edit
+                      </Button>
+                    ) : null}
+                    {canDuplicateSnippet ? (
+                      <Button
+                        size="small"
+                        loading={duplicatingId === snippet.id}
+                        onClick={async () => {
+                          setDuplicatingId(snippet.id);
+                          try {
+                            const duplicated = await api.duplicateSnippet(snippet.id);
+                            trackEvent("snippet_duplicated", { source: "list", snippet_id: snippet.id, duplicated_snippet_id: duplicated.id });
+                            messageApi.success("Snippet duplicated");
+                            router.push(`/snippets/${duplicated.id}/edit?from=duplicate`);
+                          } catch (error) {
+                            messageApi.error(error instanceof Error ? error.message : "Failed to duplicate snippet");
+                          } finally {
+                            setDuplicatingId(null);
+                          }
+                        }}
+                      >
+                        Duplicate
+                      </Button>
+                    ) : null}
+                    {canDeleteSnippet ? (
+                      <Popconfirm
+                        title="Delete snippet?"
+                        description={`Delete "${snippet.name}"?`}
+                        okText="Delete"
+                        okButtonProps={{ danger: true, loading: deletingId === snippet.id }}
+                        onConfirm={async () => {
+                          setDeletingId(snippet.id);
+                          try {
+                            await api.deleteSnippet(snippet.id);
+                            messageApi.success("Snippet deleted");
+                          } catch (error) {
+                            messageApi.error(error instanceof Error ? error.message : "Failed to delete snippet");
+                          } finally {
+                            setDeletingId(null);
+                          }
+                        }}
+                      >
+                        <Button danger size="small">
+                          Delete
+                        </Button>
+                      </Popconfirm>
+                    ) : null}
+                  </Space>
+                )
+              }
+            ]}
+          />
+        </Card>
+      </Space>
+    </>
+  );
+}
+````
+
 ## File: apps/web/components/task-create-page.tsx
 ````typescript
 "use client";
@@ -34000,182 +34210,6 @@ export function SequencesPage() {
                             messageApi.success("Sequence deleted");
                           } catch (error) {
                             messageApi.error(error instanceof Error ? error.message : "Failed to delete sequence");
-                          } finally {
-                            setDeletingId(null);
-                          }
-                        }}
-                      >
-                        <Button danger size="small">
-                          Delete
-                        </Button>
-                      </Popconfirm>
-                    ) : null}
-                  </Space>
-                )
-              }
-            ]}
-          />
-        </Card>
-      </Space>
-    </>
-  );
-}
-````
-
-## File: apps/web/components/snippets-page.tsx
-````typescript
-"use client";
-
-import { useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import dayjs from "dayjs";
-import type { Snippet } from "@agentswarm/shared-types";
-import { CopyOutlined } from "@ant-design/icons";
-import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
-import { api } from "../src/api/client";
-import { useSnippets } from "../src/hooks/useSnippets";
-import { useAuth } from "./auth-provider";
-import { trackEvent } from "../src/utils/analytics";
-
-const summarizeSnippet = (value: string): string => {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return "Empty";
-  }
-  return normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized;
-};
-
-export function SnippetsPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const { snippets, loading } = useSnippets();
-  const { can } = useAuth();
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [messageApi, contextHolder] = message.useMessage();
-  const canCreateSnippet = can("snippet:create");
-  const canEditSnippet = can("snippet:edit");
-  const canDeleteSnippet = can("snippet:delete");
-  const canDuplicateSnippet = can("snippet:create");
-  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
-
-  useEffect(() => {
-    const savedState = searchParams.get("saved");
-    if (!savedState) {
-      return;
-    }
-    if (savedState === "created") {
-      messageApi.success("Snippet created");
-    } else if (savedState === "updated") {
-      messageApi.success("Snippet updated");
-    }
-    router.replace("/snippets");
-  }, [messageApi, router, searchParams]);
-
-  const copySnippetToClipboard = async (content: string, label: string) => {
-    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-      messageApi.error("Clipboard access is unavailable in this browser.");
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(content);
-      messageApi.success(`${label} copied`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to copy snippet");
-    }
-  };
-
-  return (
-    <>
-      {contextHolder}
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
-        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-          <Flex vertical gap={0}>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              Snippets
-            </Typography.Title>
-            <Typography.Text type="secondary">
-              Store reusable text blocks and insert them into task prompts and follow-up messages.
-            </Typography.Text>
-          </Flex>
-          {canCreateSnippet ? (
-            <Button type="primary" onClick={() => router.push("/snippets/new?from=list")}>
-              Add Snippet
-            </Button>
-          ) : null}
-        </Flex>
-
-        <Card bordered={false}>
-          <Table<Snippet>
-            rowKey="id"
-            loading={loading}
-            dataSource={snippets}
-            pagination={{ pageSize: 10 }}
-            columns={[
-              {
-                title: "Name",
-                dataIndex: "name"
-              },
-              {
-                title: "Preview",
-                dataIndex: "content",
-                render: (value: string) => summarizeSnippet(value)
-              },
-              {
-                title: "Updated At",
-                dataIndex: "updatedAt",
-                sorter: (left, right) => left.updatedAt.localeCompare(right.updatedAt),
-                defaultSortOrder: "descend",
-                render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
-              },
-              {
-                title: "Actions",
-                key: "actions",
-                width: 280,
-                render: (_value, snippet) => (
-                  <Space size={8} wrap={false} style={{ whiteSpace: "nowrap" }}>
-                    <Button size="small" icon={<CopyOutlined />} onClick={() => void copySnippetToClipboard(snippet.content, snippet.name)}>
-                      Copy
-                    </Button>
-                    {canEditSnippet ? (
-                      <Button size="small" onClick={() => router.push(`/snippets/${snippet.id}/edit?from=list`)}>
-                        Edit
-                      </Button>
-                    ) : null}
-                    {canDuplicateSnippet ? (
-                      <Button
-                        size="small"
-                        loading={duplicatingId === snippet.id}
-                        onClick={async () => {
-                          setDuplicatingId(snippet.id);
-                          try {
-                            const duplicated = await api.duplicateSnippet(snippet.id);
-                            trackEvent("snippet_duplicated", { source: "list", snippet_id: snippet.id, duplicated_snippet_id: duplicated.id });
-                            messageApi.success("Snippet duplicated");
-                            router.push(`/snippets/${duplicated.id}/edit?from=duplicate`);
-                          } catch (error) {
-                            messageApi.error(error instanceof Error ? error.message : "Failed to duplicate snippet");
-                          } finally {
-                            setDuplicatingId(null);
-                          }
-                        }}
-                      >
-                        Duplicate
-                      </Button>
-                    ) : null}
-                    {canDeleteSnippet ? (
-                      <Popconfirm
-                        title="Delete snippet?"
-                        description={`Delete "${snippet.name}"?`}
-                        okText="Delete"
-                        okButtonProps={{ danger: true, loading: deletingId === snippet.id }}
-                        onConfirm={async () => {
-                          setDeletingId(snippet.id);
-                          try {
-                            await api.deleteSnippet(snippet.id);
-                            messageApi.success("Snippet deleted");
-                          } catch (error) {
-                            messageApi.error(error instanceof Error ? error.message : "Failed to delete snippet");
                           } finally {
                             setDeletingId(null);
                           }
@@ -43574,6 +43608,7 @@ export type UpdateTaskRunPatch = Partial<
     | "branchName"
     | "changeProposalCheckpointRef"
     | "changeProposalUntrackedPaths"
+    | "hasRawJson"
   >
 >;
 
@@ -43908,7 +43943,8 @@ export class RedisTaskStore implements TaskStore {
       ...run,
       changeOutcome: run.changeOutcome === "changed" || run.changeOutcome === "no_change" ? run.changeOutcome : null,
       changeProposalCheckpointRef: run.changeProposalCheckpointRef ?? null,
-      changeProposalUntrackedPaths: Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : null
+      changeProposalUntrackedPaths: Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : null,
+      hasRawJson: run.hasRawJson === true
     };
   }
 
@@ -44266,6 +44302,7 @@ export class RedisTaskStore implements TaskStore {
       errorMessage: null,
       changeProposalCheckpointRef: null,
       changeProposalUntrackedPaths: null,
+      hasRawJson: false,
       logs: []
     };
 
@@ -44291,6 +44328,7 @@ export class RedisTaskStore implements TaskStore {
         | "branchName"
         | "changeProposalCheckpointRef"
         | "changeProposalUntrackedPaths"
+        | "hasRawJson"
       >
     >
   ): Promise<TaskRun | null> {
@@ -45619,6 +45657,7 @@ export class PostgresTaskStore implements TaskStore {
       errorMessage: null,
       changeProposalCheckpointRef: null,
       changeProposalUntrackedPaths: null,
+      hasRawJson: false,
       logs: []
     };
 
@@ -46657,6 +46696,8 @@ export const api = {
     const query = params.toString();
     return request<HistoryPageResult<TaskRun>>(`/tasks/${id}/runs${query ? `?${query}` : ""}`);
   },
+  getTaskRunRawJsonUrl: (taskId: string, runId: string) =>
+    buildApiUrl(`/tasks/${taskId}/runs/${encodeURIComponent(runId)}/raw-json`),
   listTaskChangeProposals: (id: string, options?: HistoryPageOptions) => {
     const params = new URLSearchParams();
     const before = options?.before?.trim();
@@ -46975,6 +47016,7 @@ interface RuntimeManifest {
   workspacePath: string;
   resultMarkdownPath: string;
   resultJsonPath: string;
+  rawEventsJsonlPath: string;
   providerConfigPath: string;
 }
 
@@ -48295,6 +48337,19 @@ export class SpawnerService {
 
   private resolveWorkspaceHostPath(taskId: string): string {
     return path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
+  }
+
+  resolveTaskRunRawEventsJsonlPath(taskId: string, runId: string): string {
+    return path.join(resolveTaskStateRootPaths(taskId).serverPath, "raw-runs", `${sanitizePathSegment(runId)}.jsonl`);
+  }
+
+  private async prepareTaskRunRawEventsJsonl(taskId: string, runId: string): Promise<string> {
+    const rawEventsJsonlPath = this.resolveTaskRunRawEventsJsonlPath(taskId, runId);
+    await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
+    await writeFile(rawEventsJsonlPath, "", "utf8");
+    await chmod(path.dirname(rawEventsJsonlPath), 0o777).catch(() => undefined);
+    await chmod(rawEventsJsonlPath, 0o666).catch(() => undefined);
+    return rawEventsJsonlPath;
   }
 
   private registerActiveExecution(
@@ -51401,6 +51456,12 @@ export class SpawnerService {
       this.executionContextStorage.enterWith({ taskId: task.id, executionId });
       const payloadDir = this.resolveRuntimePayloadDir(task.id, executionId);
       const appendRunLog = (line: string) => this.taskStore.appendLogForRun(task.id, line, runId);
+      const rawEventsJsonlPath = runId
+        ? await this.prepareTaskRunRawEventsJsonl(task.id, runId)
+        : path.join(payloadDir, "raw-events.jsonl");
+      if (runId) {
+        await this.taskStore.updateRun(runId, { hasRawJson: true });
+      }
       await this.syncTaskStatusForRunningRuns(task.id, {
         branchName,
         ...(action === "ask" && task.executionStatus === "running" ? {} : { lastAction: action })
@@ -51473,6 +51534,7 @@ export class SpawnerService {
         workspacePath: workspace.workspacePath,
         resultMarkdownPath,
         resultJsonPath,
+        rawEventsJsonlPath,
         providerConfigPath
       };
       await appendRunLog(`Spawner: preparing ${task.provider} runtime image (${action}).`);
@@ -52985,7 +53047,8 @@ export function TaskDefinitionFields({
 ## File: apps/server/src/routes/tasks.ts
 ````typescript
 import path from "node:path";
-import { rm } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { rm, stat } from "node:fs/promises";
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
@@ -53661,6 +53724,35 @@ export const registerTaskRoutes = (
       }
 
       return reply.send(await deps.taskStore.listRunsPage(task.id, parsedQuery.data));
+    }
+  );
+
+  app.get<{ Params: { id: string; runId: string } }>(
+    "/tasks/:id/runs/:runId/raw-json",
+    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      const run = await deps.taskStore.getRun(request.params.runId);
+      if (!run || run.taskId !== task.id) {
+        return reply.status(404).send({ message: "Run not found." });
+      }
+
+      const rawEventsJsonlPath = deps.spawner.resolveTaskRunRawEventsJsonlPath(task.id, run.id);
+      const fileStats = await stat(rawEventsJsonlPath).catch(() => null);
+      if (!fileStats?.isFile()) {
+        return reply.status(404).send({ message: "Raw JSON stream is unavailable for this run." });
+      }
+
+      const provider = run.provider === "claude" ? "claude" : "codex";
+      reply.header("Content-Type", "application/x-ndjson");
+      reply.header("Cache-Control", "no-store");
+      reply.header("Content-Length", String(fileStats.size));
+      reply.header("Content-Disposition", `attachment; filename="agentswarm-${task.id}-${run.id}-${provider}-raw.jsonl"`);
+      return reply.send(createReadStream(rawEventsJsonlPath));
     }
   );
 
@@ -55820,6 +55912,8 @@ export interface TaskRun {
   changeProposalCheckpointRef?: string | null;
   /** Untracked paths (repo-relative) at checkpoint; used so reject does not wipe pre-existing untracked files. */
   changeProposalUntrackedPaths?: string[] | null;
+  /** True when the provider's native JSONL stream has been captured for this run. */
+  hasRawJson?: boolean;
   logs: string[];
 }
 
@@ -56748,7 +56842,7 @@ import {
   message,
   theme as antTheme
 } from "antd";
-import { ArrowRightOutlined, CopyOutlined, EditOutlined, LoadingOutlined, MoreOutlined, RobotOutlined, RollbackOutlined } from "@ant-design/icons";
+import { ArrowRightOutlined, CopyOutlined, DownloadOutlined, EditOutlined, LoadingOutlined, MoreOutlined, RobotOutlined, RollbackOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -60958,6 +61052,19 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         {
           key: run.id,
           label: `Logs${run.logs.length > 0 ? ` (${run.logs.length})` : ""}`,
+          extra: run.hasRawJson ? (
+            <Tooltip title="Download raw provider JSONL">
+              <Button
+                size="small"
+                type="text"
+                icon={<DownloadOutlined />}
+                href={api.getTaskRunRawJsonUrl(taskId, run.id)}
+                onClick={(event) => event.stopPropagation()}
+              >
+                Raw JSON
+              </Button>
+            </Tooltip>
+          ) : null,
           children: renderRunLogsPanel(run)
         }
       ]}

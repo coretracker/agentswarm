@@ -135,6 +135,7 @@ interface RuntimeManifest {
   workspacePath: string;
   resultMarkdownPath: string;
   resultJsonPath: string;
+  rawEventsJsonlPath: string;
   providerConfigPath: string;
 }
 
@@ -1455,6 +1456,19 @@ export class SpawnerService {
 
   private resolveWorkspaceHostPath(taskId: string): string {
     return path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
+  }
+
+  resolveTaskRunRawEventsJsonlPath(taskId: string, runId: string): string {
+    return path.join(resolveTaskStateRootPaths(taskId).serverPath, "raw-runs", `${sanitizePathSegment(runId)}.jsonl`);
+  }
+
+  private async prepareTaskRunRawEventsJsonl(taskId: string, runId: string): Promise<string> {
+    const rawEventsJsonlPath = this.resolveTaskRunRawEventsJsonlPath(taskId, runId);
+    await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
+    await writeFile(rawEventsJsonlPath, "", "utf8");
+    await chmod(path.dirname(rawEventsJsonlPath), 0o777).catch(() => undefined);
+    await chmod(rawEventsJsonlPath, 0o666).catch(() => undefined);
+    return rawEventsJsonlPath;
   }
 
   private registerActiveExecution(
@@ -4561,6 +4575,12 @@ export class SpawnerService {
       this.executionContextStorage.enterWith({ taskId: task.id, executionId });
       const payloadDir = this.resolveRuntimePayloadDir(task.id, executionId);
       const appendRunLog = (line: string) => this.taskStore.appendLogForRun(task.id, line, runId);
+      const rawEventsJsonlPath = runId
+        ? await this.prepareTaskRunRawEventsJsonl(task.id, runId)
+        : path.join(payloadDir, "raw-events.jsonl");
+      if (runId) {
+        await this.taskStore.updateRun(runId, { hasRawJson: true });
+      }
       await this.syncTaskStatusForRunningRuns(task.id, {
         branchName,
         ...(action === "ask" && task.executionStatus === "running" ? {} : { lastAction: action })
@@ -4633,6 +4653,7 @@ export class SpawnerService {
         workspacePath: workspace.workspacePath,
         resultMarkdownPath,
         resultJsonPath,
+        rawEventsJsonlPath,
         providerConfigPath
       };
       await appendRunLog(`Spawner: preparing ${task.provider} runtime image (${action}).`);

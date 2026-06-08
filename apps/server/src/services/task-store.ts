@@ -260,6 +260,7 @@ export type UpdateTaskRunPatch = Partial<
     | "branchName"
     | "changeProposalCheckpointRef"
     | "changeProposalUntrackedPaths"
+    | "hasRawJson"
   >
 >;
 
@@ -594,7 +595,8 @@ export class RedisTaskStore implements TaskStore {
       ...run,
       changeOutcome: run.changeOutcome === "changed" || run.changeOutcome === "no_change" ? run.changeOutcome : null,
       changeProposalCheckpointRef: run.changeProposalCheckpointRef ?? null,
-      changeProposalUntrackedPaths: Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : null
+      changeProposalUntrackedPaths: Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : null,
+      hasRawJson: run.hasRawJson === true
     };
   }
 
@@ -952,6 +954,7 @@ export class RedisTaskStore implements TaskStore {
       errorMessage: null,
       changeProposalCheckpointRef: null,
       changeProposalUntrackedPaths: null,
+      hasRawJson: false,
       logs: []
     };
 
@@ -977,6 +980,7 @@ export class RedisTaskStore implements TaskStore {
         | "branchName"
         | "changeProposalCheckpointRef"
         | "changeProposalUntrackedPaths"
+        | "hasRawJson"
       >
     >
   ): Promise<TaskRun | null> {
@@ -2305,6 +2309,7 @@ export class PostgresTaskStore implements TaskStore {
       errorMessage: null,
       changeProposalCheckpointRef: null,
       changeProposalUntrackedPaths: null,
+      hasRawJson: false,
       logs: []
     };
 

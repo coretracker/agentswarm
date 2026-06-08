@@ -711,6 +711,8 @@ export interface TaskRun {
   changeProposalCheckpointRef?: string | null;
   /** Untracked paths (repo-relative) at checkpoint; used so reject does not wipe pre-existing untracked files. */
   changeProposalUntrackedPaths?: string[] | null;
+  /** True when the provider's native JSONL stream has been captured for this run. */
+  hasRawJson?: boolean;
   logs: string[];
 }
 
