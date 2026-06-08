@@ -758,6 +758,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "build"
     | "ask"
     | "cancel"
+    | "startDraft"
     | "config"
     | "pull"
     | "push"
@@ -1051,6 +1052,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const isAskTask = taskType === "ask";
   const isImplementationTask = isBuildTask;
   const isArchived = task?.status === "archived";
+  const isDraft = task?.status === "draft";
   const canEditTask = can("task:edit");
   const canCreateTask = can("task:create");
   const canBuildTasks = can("task:build");
@@ -1068,6 +1070,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const checkpointDiffActionsBlocked = lifecycle.checkpointDiffActionsBlocked;
   const isPreparingWorkspace = lifecycle.isPreparingWorkspace;
   const canCancel = canEditTask && (isQueued || isActive);
+  const canStartDraft = canEditTask && !!task && isDraft && !isQueued && !isActive;
   const hasBranchForSync = isBuildTask || isAskTask;
   const canPull = canEditTask && hasBranchForSync && !!task?.branchName && !isArchived && !isActive;
   const canPush = canPull;
@@ -1082,7 +1085,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const pushCount = task?.pushCount ?? 0;
   const canDelete = canDeleteTask && !!task && !isActive;
   const canArchive = canEditTask && !!task && !isActive && !isArchived;
-  const canChangeTaskState = canEditTask && !!task && !isArchived && !isQueued && !isActive;
+  const canChangeTaskState = canEditTask && !!task && !isArchived && !isDraft && !isQueued && !isActive;
   const canAssignTask = canEditTask && canListUsers && isAdminTaskUser && !!task && !isArchived;
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
   const roleAllowedModels = session?.user.allowedModels ?? [];
@@ -2111,7 +2114,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const interactiveComposerSelected = selectedChatAction === "interactive";
   const terminalComposerSelected = selectedChatAction === "terminal";
   const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive" && selectedChatAction !== "terminal";
-  const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived";
+  const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived" || task.status === "draft";
   const promptMagicVisible = (selectedChatAction === "build" || selectedChatAction === "ask") && canCreateTask;
   const parallelAskAllowed =
     selectedChatAction === "ask" &&
@@ -3233,7 +3236,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         canDelete ? { key: "delete", label: "Delete Task", danger: true } : null
       ].filter(Boolean)
     : [];
-  const hasExecutionButtons = canCancel;
+  const hasExecutionButtons = canCancel || canStartDraft;
   const hasGitHubDiffTargetAction = githubPullRequestLookupPending || Boolean(githubDiffTarget);
   const assigneeLabel = task?.ownerUserId ? (assigneeNameById.get(task.ownerUserId) ?? task.ownerUserId) : "Unassigned";
   const contextContent = (
@@ -5469,6 +5472,34 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
                       {hasExecutionButtons ? (
                         <Space wrap size={8}>
+                          {canStartDraft ? (
+                            <Button
+                              type="primary"
+                              onClick={async () => {
+                                setSubmitting("startDraft");
+                                try {
+                                  const updatedTask = await api.startTask(task.id);
+                                  setTask((current) =>
+                                    current
+                                      ? {
+                                          ...current,
+                                          ...updatedTask,
+                                          logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+                                        }
+                                      : updatedTask
+                                  );
+                                  messageApi.success("Draft started");
+                                } catch (error) {
+                                  showTaskActionError(error, "Draft task could not be started");
+                                } finally {
+                                  setSubmitting(null);
+                                }
+                              }}
+                              loading={submitting === "startDraft"}
+                            >
+                              Start Draft
+                            </Button>
+                          ) : null}
                           {canCancel ? (
                             <Button
                               danger
@@ -5498,6 +5529,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                       showIcon
                       message="Archived task"
                       description="Archived tasks are read-only for task changes. You can still inspect history, output, diffs, and delete the task."
+                    />
+                  ) : isDraft ? (
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="Draft task"
+                      description="This task is saved but has not started. Start the draft when it is ready for agent work."
                     />
                   ) : !canEditTask ? (
                     <Alert

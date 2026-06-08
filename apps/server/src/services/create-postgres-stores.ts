@@ -10,7 +10,6 @@ import { PostgresSettingsStore } from "./settings-store.js";
 import { PostgresSnippetStore } from "./snippet-store.js";
 import { PostgresSequenceStore } from "./sequence-store.js";
 import { RedisTaskQueueStore } from "./task-queue-store.js";
-import { PostgresTaskDraftStore } from "./task-draft-store.js";
 import { PostgresTaskStore } from "./task-store.js";
 import { PostgresUserStore } from "./user-store.js";
 import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
@@ -23,7 +22,6 @@ export const createPostgresStores = (
   sessionTtlDays: number
 ): AppStores => {
   const taskStore = new PostgresTaskStore(pool, eventBus);
-  const taskDraftStore = new PostgresTaskDraftStore(pool);
   const taskQueueStore = new RedisTaskQueueStore(redisClients.command);
   const githubOutboundQueueStore = new RedisGitHubOutboundQueueStore(redisClients.command);
   const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
@@ -38,7 +36,6 @@ export const createPostgresStores = (
 
   return {
     taskStore,
-    taskDraftStore,
     taskQueueStore,
     githubOutboundQueueStore,
     webhookDeliveryStore,

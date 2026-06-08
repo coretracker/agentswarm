@@ -57,6 +57,7 @@ export type TaskMessageRole = "user" | "assistant" | "system";
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 
 export type TaskStatus =
+  | "draft"
   | "scheduled"
   | "build_queued"
   | "preparing_workspace"
@@ -631,49 +632,6 @@ export interface CreateTaskPromptAttachmentInput {
   dataBase64: string;
 }
 
-export interface TaskDraftDefinition {
-  sourceType?: TaskSourceType;
-  title?: string;
-  deadline?: string | null;
-  repoId?: string;
-  prompt?: string;
-  notes?: string;
-  taskType?: TaskType;
-  provider?: AgentProvider;
-  model?: string;
-  providerProfile?: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  issueNumber?: number;
-  includeComments?: boolean;
-  pullRequestNumber?: number;
-  snippetId?: string;
-  snippetVariables?: Record<string, string>;
-  sequenceId?: string;
-  sequenceVariables?: Record<string, string>;
-  attachments?: CreateTaskPromptAttachmentInput[];
-}
-
-export interface TaskDraft {
-  id: string;
-  ownerUserId: string;
-  title: string;
-  definition: TaskDraftDefinition;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface CreateTaskDraftInput {
-  title?: string;
-  definition: TaskDraftDefinition;
-}
-
-export interface UpdateTaskDraftInput {
-  title?: string;
-  definition?: TaskDraftDefinition;
-}
-
 export interface TaskMessage {
   id: string;
   taskId: string;
@@ -886,6 +844,7 @@ export interface UpdateRepositoryInput {
 
 export interface CreateTaskInput {
   title: string;
+  draft?: boolean;
   deadline?: string | null;
   repoId: string;
   prompt: string;
@@ -1092,6 +1051,7 @@ export interface SequenceRun {
 
 export interface CreateTaskFromIssueInput {
   repoId: string;
+  draft?: boolean;
   issueNumber: number;
   includeComments?: boolean;
   notes?: string;
@@ -1110,6 +1070,7 @@ export interface CreateTaskFromIssueInput {
 
 export interface CreateTaskFromPullRequestInput {
   repoId: string;
+  draft?: boolean;
   pullRequestNumber: number;
   title?: string;
   notes?: string;
@@ -1297,6 +1258,10 @@ export const getTaskExecutionAction = (
     return task.activeTerminalSessionMode === "git" ? "terminal" : "interactive";
   }
 
+  if (task.status === "draft") {
+    return null;
+  }
+
   if (task.executionAction === "build" || task.executionAction === "ask" || task.executionAction === "interactive" || task.executionAction === "terminal") {
     return task.executionAction;
   }
@@ -1341,7 +1306,7 @@ export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingChe
     return "review";
   }
 
-  if (task.status === "scheduled") {
+  if (task.status === "draft" || task.status === "scheduled") {
     return "backlog";
   }
 
@@ -1379,6 +1344,7 @@ export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
 
 export const getTaskStatusLabel = (status: TaskStatus): string =>
   ({
+    draft: "Draft",
     scheduled: "Scheduled",
     build_queued: "Build Queued",
     preparing_workspace: "Preparing Workspace",

@@ -61,6 +61,7 @@ const deadlineSchema = z
 const createTaskSchema = z
   .object({
     title: z.string().min(1),
+    draft: z.boolean().optional(),
     deadline: deadlineSchema.optional(),
     repoId: z.string().min(1),
     prompt: z.string().default(""),
@@ -1304,7 +1305,7 @@ export const registerTaskRoutes = (
     let sequenceRunContext:
       | { runId: string; action: TaskAction; stepPrompts: string[]; initialKnownRunIds: Set<string> }
       | null = null;
-    if (createPayload.task_source === "sequence" && sequenceId && sequenceStepPrompts.length > 0) {
+    if (createPayload.draft !== true && createPayload.task_source === "sequence" && sequenceId && sequenceStepPrompts.length > 0) {
       const { runId } = await sequenceExecutionService.initializeRun(sequenceId, createdTask.id, sequenceStepPrompts, sequenceExecutionMode);
       const initialRuns = await deps.taskStore.listRuns(createdTask.id);
       await deps.taskStore.appendLog(createdTask.id, `Sequence run started with ${sequenceStepPrompts.length} step(s).`);
@@ -1328,6 +1329,16 @@ export const registerTaskRoutes = (
       if (initialMessage) {
         await deps.taskStore.setMessageAttachments(createdTask.id, initialMessage.id, persistedAttachments);
       }
+    }
+    if (createPayload.draft === true) {
+      await deps.taskStore.appendMessage(createdTask.id, {
+        role: "user",
+        action: getTriggerActionForNewTask(createdTask),
+        content: createPayload.prompt.trim().length > 0 ? createPayload.prompt.trim() : "(No prompt provided.)",
+        ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
+      });
+      const draftTask = (await deps.taskStore.getTask(createdTask.id)) ?? createdTask;
+      return reply.status(201).send(await withTaskCreatorName(deps.userStore, draftTask));
     }
     const startResult = await orchestrateTaskStart(
       {
@@ -1438,6 +1449,58 @@ export const registerTaskRoutes = (
 
     const refreshed = await deps.taskStore.getTask(task.id);
     return reply.send(refreshed);
+  });
+
+  app.post<{ Params: { id: string } }>("/tasks/:id/start", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (task.status !== "draft") {
+      return reply.status(409).send({ message: "Only draft tasks can be started with this endpoint." });
+    }
+
+    const action = getTriggerActionForNewTask(task);
+    if (!requireTaskActionCapabilityAccess(request, reply, action)) {
+      return;
+    }
+
+    const promotedTask = await deps.taskStore.setStatus(task.id, "open", {
+      executionStatus: "idle",
+      executionAction: null,
+      errorMessage: null,
+      startedAt: null,
+      finishedAt: null
+    });
+    const startTask = promotedTask ?? task;
+    const messages = await deps.taskStore.listMessages(task.id);
+    const firstUserMessage = messages.find((message) => message.role === "user") ?? null;
+    const startResult = await orchestrateTaskStart(
+      {
+        taskStore: deps.taskStore,
+        scheduler: deps.scheduler,
+        spawner: deps.spawner
+      },
+      {
+        task: startTask,
+        fallbackMessage: "Draft task start failed",
+        input: {
+          content: firstUserMessage?.content?.trim() || startTask.prompt,
+          ...(firstUserMessage?.attachments && firstUserMessage.attachments.length > 0 ? { attachments: firstUserMessage.attachments } : {})
+        }
+      }
+    );
+    if (!startResult.ok) {
+      await deps.taskStore.setStatus(task.id, "draft", {
+        executionStatus: "idle",
+        executionAction: null,
+        enqueued: false
+      });
+      return reply.status(startResult.statusCode).send({ message: startResult.message });
+    }
+
+    return reply.send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/new-session", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {

@@ -19,10 +19,11 @@ export const startMessageForDefinition = (definition: TaskDefinitionInput): stri
   return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
 };
 
-export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promise<Task> => {
+export const createTaskFromDefinition = (definition: TaskDefinitionInput, options: { draft?: boolean } = {}): Promise<Task> => {
   if (definition.sourceType === "issue") {
     return api.createTaskFromIssue({
       repoId: definition.repoId,
+      draft: options.draft,
       issueNumber: definition.issueNumber,
       includeComments: definition.includeComments,
       notes: definition.notes,
@@ -41,6 +42,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
   if (definition.sourceType === "pull_request") {
     return api.createTaskFromPullRequest({
       repoId: definition.repoId,
+      draft: options.draft,
       pullRequestNumber: definition.pullRequestNumber,
       notes: definition.notes,
       deadline: definition.deadline,
@@ -55,6 +57,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
   if (definition.sourceType === "sequence") {
     return api.createTask({
       title: definition.title,
+      draft: options.draft,
       repoId: definition.repoId,
       prompt: "",
       notes: definition.notes,
@@ -75,6 +78,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
 
   return api.createTask({
     title: definition.title,
+    draft: options.draft,
     repoId: definition.repoId,
     prompt: definition.prompt,
     notes: definition.notes,

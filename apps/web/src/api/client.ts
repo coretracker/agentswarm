@@ -11,7 +11,6 @@ import type {
   CreateTaskFromPullRequestInput,
   CreateTaskMessageInput,
   CreateRepositoryInput,
-  CreateTaskDraftInput,
   CreateTaskInput,
   CreateUserInput,
   GitHubBranchReference,
@@ -26,7 +25,6 @@ import type {
   Snippet,
   SystemSettings,
   Task,
-  TaskDraft,
   OpenAiDiffAssistInput,
   OpenAiDiffAssistResult,
   TaskPromptMagicInput,
@@ -63,7 +61,6 @@ import type {
   UpdateAuthProfileInput,
   UpdateCredentialSettingsInput,
   UpdateTaskConfigInput,
-  UpdateTaskDraftInput,
   UpdateRepositoryInput,
   UpdateSettingsInput,
   UpdateUserInput,
@@ -252,21 +249,9 @@ export const api = {
     return request<Task[]>(`/tasks${query ? `?${query}` : ""}`);
   },
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
-  listTaskDrafts: () => request<TaskDraft[]>("/task-drafts"),
-  getTaskDraft: (id: string) => request<TaskDraft>(`/task-drafts/${id}`),
-  createTaskDraft: (input: CreateTaskDraftInput) =>
-    request<TaskDraft>("/task-drafts", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateTaskDraft: (id: string, input: UpdateTaskDraftInput) =>
-    request<TaskDraft>(`/task-drafts/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteTaskDraft: (id: string) =>
-    request<void>(`/task-drafts/${id}`, {
-      method: "DELETE"
+  startTask: (id: string) =>
+    request<Task>(`/tasks/${id}/start`, {
+      method: "POST"
     }),
   getTaskSequenceRun: (id: string) => request<SequenceRun>(`/tasks/${id}/sequence-run`),
   approveTaskSequenceRun: (id: string) =>

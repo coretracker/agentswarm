@@ -20,7 +20,6 @@ import { GitHubOutboundService } from "./services/github-outbound-service.js";
 import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
 import { registerRoleRoutes } from "./routes/roles.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
-import { registerTaskDraftRoutes } from "./routes/task-drafts.js";
 import { registerUserRoutes } from "./routes/users.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
@@ -128,7 +127,6 @@ const bootstrap = async (): Promise<void> => {
 
   const {
     taskStore,
-    taskDraftStore,
     taskQueueStore,
     githubOutboundQueueStore,
     webhookDeliveryStore,
@@ -182,7 +180,6 @@ const bootstrap = async (): Promise<void> => {
     snippetStore,
     auth
   });
-  registerTaskDraftRoutes(app, { taskDraftStore, auth });
   registerSnippetRoutes(app, { snippetStore, auth });
   registerSequenceRoutes(app, { sequenceStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });

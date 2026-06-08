@@ -117,7 +117,6 @@ apps/
         sequences.ts
         settings.ts
         snippets.ts
-        task-drafts.ts
         tasks.ts
         users.ts
       services/
@@ -149,8 +148,6 @@ apps/
         snippet-store.ts
         spawner.ts
         spawner.workspace-provisioning.test.ts
-        task-draft-store.test.ts
-        task-draft-store.ts
         task-queue-store.ts
         task-store.test.ts
         task-store.ts
@@ -200,9 +197,6 @@ apps/
           page.tsx
         board/
           page.tsx
-        drafts/
-          [id]/
-            page.tsx
         new/
           page.tsx
         page.tsx
@@ -237,7 +231,6 @@ apps/
       task-definition-fields.tsx
       task-detail-page.tsx
       task-diff-openai-panel.tsx
-      task-draft-editor-page.tsx
       task-files-tab.tsx
       task-interactive-terminal-view.tsx
       task-prompt-attachments-input.tsx
@@ -265,7 +258,6 @@ apps/
         useSocket.ts
         useTask.ts
         useTaskChangeProposals.ts
-        useTaskDrafts.ts
         useTaskMessages.ts
         useTaskRuns.ts
         useTasks.ts
@@ -285,7 +277,6 @@ apps/
         snippets.test.ts
         snippets.ts
         task-definition-submit.ts
-        task-drafts.ts
         task-history.test.ts
         task-history.ts
         task-lifecycle-view-model.test.ts
@@ -3140,6 +3131,77 @@ export const registerAuthRoutes = (
     });
   });
 };
+````
+
+## File: apps/server/src/routes/github-webhooks.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import {
+  buildGitHubEventDedupeKey,
+  hasSupportedGitHubAction,
+  isDuplicateGitHubEvent,
+  isSupportedGitHubEvent,
+  isValidGitHubEventPayload
+} from "./github-webhooks.js";
+
+describe("github webhook event coverage", () => {
+  it("supports required event types", () => {
+    assert.equal(isSupportedGitHubEvent("issues"), true);
+    assert.equal(isSupportedGitHubEvent("pull_request"), true);
+    assert.equal(isSupportedGitHubEvent("issue_comment"), true);
+    assert.equal(isSupportedGitHubEvent("pull_request_review_comment"), true);
+    assert.equal(isSupportedGitHubEvent("reaction"), true);
+    assert.equal(isSupportedGitHubEvent("push"), false);
+  });
+
+  it("accepts allowed actions and rejects unsupported ones", () => {
+    assert.equal(hasSupportedGitHubAction("issues", "opened"), true);
+    assert.equal(hasSupportedGitHubAction("pull_request", "synchronize"), true);
+    assert.equal(hasSupportedGitHubAction("issue_comment", "created"), true);
+    assert.equal(hasSupportedGitHubAction("pull_request_review_comment", "edited"), true);
+    assert.equal(hasSupportedGitHubAction("reaction", "deleted"), true);
+    assert.equal(hasSupportedGitHubAction("issues", "transferred"), false);
+  });
+
+  it("validates minimum payload shape for supported events", () => {
+    assert.equal(isValidGitHubEventPayload("issues", { action: "opened", issue: { number: 1 } }), true);
+    assert.equal(isValidGitHubEventPayload("pull_request", { action: "opened", pull_request: { number: 2 } }), true);
+    assert.equal(isValidGitHubEventPayload("issue_comment", { action: "created", issue: { number: 1 }, comment: { id: 99 } }), true);
+    assert.equal(
+      isValidGitHubEventPayload("pull_request_review_comment", {
+        action: "created",
+        pull_request: { number: 2 },
+        comment: { id: 300 }
+      }),
+      true
+    );
+    assert.equal(isValidGitHubEventPayload("reaction", { action: "created", content: "+1" }), true);
+
+    assert.equal(isValidGitHubEventPayload("issues", { action: "opened" }), false);
+    assert.equal(isValidGitHubEventPayload("pull_request", { action: "opened" }), false);
+    assert.equal(isValidGitHubEventPayload("issue_comment", { action: "created", issue: { number: 1 } }), false);
+    assert.equal(
+      isValidGitHubEventPayload("pull_request_review_comment", { action: "created", pull_request: { number: 2 } }),
+      false
+    );
+    assert.equal(isValidGitHubEventPayload("reaction", { action: "created" }), false);
+  });
+
+  it("builds event-level dedupe keys and suppresses duplicates", () => {
+    const payload = { action: "opened", issue: { number: 17 } } as Record<string, unknown>;
+    const key = buildGitHubEventDedupeKey("repo-1", "issues", "opened", payload, null);
+    assert.equal(key, "issues:repo-1:opened:17");
+
+    const deliveryPayload = { action: "opened", issue: { number: 17 } } as Record<string, unknown>;
+    assert.equal(isDuplicateGitHubEvent("repo-2", "issues", "opened", deliveryPayload, "delivery-1"), false);
+    assert.equal(isDuplicateGitHubEvent("repo-2", "issues", "opened", deliveryPayload, "delivery-1"), true);
+
+    const reviewPayload = { action: "created", pull_request: { number: 5 }, comment: { id: 808 } } as Record<string, unknown>;
+    const reviewKey = buildGitHubEventDedupeKey("repo-9", "pull_request_review_comment", "created", reviewPayload, null);
+    assert.equal(reviewKey, "pull_request_review_comment:repo-9:created:808");
+  });
+});
 ````
 
 ## File: apps/server/src/routes/roles.ts
@@ -14154,557 +14216,6 @@ COPY run-task.mjs /usr/local/bin/run-task.mjs
 ENTRYPOINT ["node", "/usr/local/bin/run-task.mjs"]
 ````
 
-## File: agent-runtime-claude/run-task.mjs
-````javascript
-import { createWriteStream } from "node:fs";
-import { access, constants, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
-import path from "node:path";
-
-const manifestPath = process.env.TASK_MANIFEST_FILE;
-const providerConfigPath = process.env.PROVIDER_CONFIG_FILE;
-const anthropicApiKey = process.env.ANTHROPIC_API_KEY ?? "";
-
-if (!manifestPath) {
-  console.error("TASK_MANIFEST_FILE is required");
-  process.exit(1);
-}
-if (!providerConfigPath) {
-  console.error("PROVIDER_CONFIG_FILE is required");
-  process.exit(1);
-}
-if (!anthropicApiKey) {
-  console.error("ANTHROPIC_API_KEY is required");
-  process.exit(1);
-}
-
-const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
-const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
-  ? manifest.rawEventsJsonlPath.trim()
-  : path.join(path.dirname(manifest.resultJsonPath), "raw-events.jsonl");
-await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
-process.env.ANTHROPIC_API_KEY = anthropicApiKey;
-process.env.GIT_OPTIONAL_LOCKS = "0";
-const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
-const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
-const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-const isSessionId = (value) => typeof value === "string" && SESSION_ID_PATTERN.test(value.trim());
-
-const readPersistedSessionId = async (sessionIdPath) => {
-  const raw = await readFile(sessionIdPath, "utf8").catch(() => "");
-  const candidate = raw.trim();
-  return isSessionId(candidate) ? candidate : null;
-};
-
-const writePersistedSessionId = async (sessionIdPath, sessionId) => {
-  if (!isSessionId(sessionId)) {
-    return;
-  }
-
-  await writeFile(sessionIdPath, `${sessionId.trim()}\n`, "utf8");
-};
-
-const runCommand = (command, args, options = {}) =>
-  new Promise((resolve, reject) => {
-    const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], ...options });
-    let stderr = "";
-
-    proc.stdout.on("data", (chunk) => process.stdout.write(chunk));
-    proc.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-      process.stderr.write(chunk);
-    });
-    proc.on("error", reject);
-    proc.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
-    });
-  });
-
-const isExecutable = async (candidate) => {
-  try {
-    await access(candidate, constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const resolveClaudeBinary = async (runtimeHome) => {
-  const homeBinary = path.join(runtimeHome, ".local", "bin", "claude");
-  if (await isExecutable(homeBinary)) {
-    return homeBinary;
-  }
-
-  const legacyBinary = "/opt/claude-code/.local/bin/claude";
-  if (await isExecutable(legacyBinary)) {
-    await mkdir(path.dirname(homeBinary), { recursive: true });
-    await symlink(legacyBinary, homeBinary).catch(() => undefined);
-    if (await isExecutable(homeBinary)) {
-      return homeBinary;
-    }
-    return legacyBinary;
-  }
-
-  return homeBinary;
-};
-
-const buildResponsePreferencePreamble = () => {
-  const preference = manifest.agentResponsePreference;
-  if (!preference || typeof preference !== "object") {
-    return "";
-  }
-
-  const lines = ["Response style:"];
-  if (preference.audience === "technical") {
-    lines.push("- Audience: technical.");
-  } else if (preference.audience === "non_technical") {
-    lines.push("- Audience: non-technical.");
-  } else if (preference.audience === "mixed") {
-    lines.push("- Audience: mixed.");
-  }
-
-  if (preference.explanationDepth) {
-    lines.push(`- Explanation depth: ${preference.explanationDepth}.`);
-  }
-  if (preference.jargonLevel) {
-    lines.push(`- Jargon level: ${preference.jargonLevel}.`);
-  }
-  if (preference.codePreference) {
-    lines.push(`- Code preference: ${preference.codePreference}.`);
-  }
-  if (preference.clarifyBehavior) {
-    lines.push(`- Clarification behavior: ${preference.clarifyBehavior}.`);
-  }
-  if (preference.formattingStyle) {
-    lines.push(`- Formatting style: ${preference.formattingStyle}.`);
-  }
-  if (typeof preference.extraInstructions === "string" && preference.extraInstructions.trim()) {
-    lines.push(`- Extra instructions: ${preference.extraInstructions.trim()}`);
-  }
-
-  if (lines.length === 1) {
-    return "";
-  }
-
-  return lines.join("\n");
-};
-
-const buildPrompt = () => {
-  const rawContent = typeof manifest.content === "string" && manifest.content.trim().length > 0
-    ? manifest.content.trim()
-    : (typeof manifest.prompt === "string" ? manifest.prompt.trim() : "");
-  const attachments = Array.isArray(manifest.attachments)
-    ? manifest.attachments.filter(
-        (attachment) =>
-          attachment &&
-          typeof attachment === "object" &&
-          typeof attachment.name === "string" &&
-          typeof attachment.absolutePath === "string" &&
-          attachment.name.trim().length > 0 &&
-          attachment.absolutePath.trim().length > 0
-      )
-    : [];
-
-  if (rawContent.length === 0) {
-    throw new Error("Task prompt is empty");
-  }
-
-  const promptSections = [];
-  if (attachments.length > 0) {
-    promptSections.push(
-      "Reference Images:",
-      ...attachments.map((attachment) => `- ${attachment.absolutePath.trim()} (${attachment.name.trim()})`),
-      ""
-    );
-  }
-  const responsePreferencePreamble = buildResponsePreferencePreamble();
-  if (responsePreferencePreamble) {
-    promptSections.push(responsePreferencePreamble, "");
-  }
-  promptSections.push("Current user request:", "", rawContent);
-  return promptSections.join("\n");
-};
-
-const mcpTools = providerConfigPath
-  ? Object.keys((JSON.parse(await readFile(providerConfigPath, "utf8").catch(() => "{}"))?.mcpServers ?? {})).map((name) => `mcp__${name}`)
-  : [];
-const isAsk = manifest.action === "ask";
-const allowedTools = (isAsk
-  ? ["Read", "LS", "Grep", "Glob", "TodoWrite", "Task", ...mcpTools]
-  : ["Bash", "Read", "Edit", "Write", "MultiEdit", "LS", "Grep", "Glob", "TodoWrite", "Task", ...mcpTools]
-).join(",");
-
-const args = [
-  "-p",
-  buildPrompt(),
-  "--output-format",
-  "stream-json",
-  "--include-partial-messages",
-  "--verbose",
-  "--allowedTools",
-  allowedTools,
-  "--mcp-config",
-  providerConfigPath
-];
-if (isAsk) {
-  args.push("--permission-mode", "plan");
-} else {
-  args.push("--dangerously-skip-permissions");
-}
-if (manifest.resolvedModel) {
-  args.push("--model", manifest.resolvedModel);
-}
-
-const workspaceStats = await stat(manifest.workspacePath);
-const runtimeIdentity = workspaceStats.uid > 0 && workspaceStats.gid > 0 ? `${workspaceStats.uid}:${workspaceStats.gid}` : "agent:agent";
-const runtimeHome = configuredHomeDir && configuredHomeDir.length > 0
-  ? configuredHomeDir
-  : path.join("/runtime", `claude-home-${runtimeIdentity.replace(/[:/]/g, "-")}`);
-const providerStatePath = configuredStatePath && configuredStatePath.length > 0
-  ? configuredStatePath
-  : path.join(runtimeHome, ".claude");
-await mkdir(runtimeHome, { recursive: true });
-await mkdir(providerStatePath, { recursive: true });
-const sessionIdFilePath = path.join(providerStatePath, "agentswarm-session-id.txt");
-const persistedSessionId = await readPersistedSessionId(sessionIdFilePath);
-if (persistedSessionId) {
-  args.push("--resume", persistedSessionId);
-}
-const claudeBinary = await resolveClaudeBinary(runtimeHome);
-
-console.log(
-  `[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only tools)" : ""} session=${persistedSessionId ?? "new"}`
-);
-console.log(`[runtime] claude thinking_budget_tokens=${manifest.resolvedThinkingBudgetTokens ?? "default"}`);
-await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(manifest.resultJsonPath)]);
-console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);
-
-let finalMarkdown = "";
-let resultSubtype = null;
-let resultDetails = null;
-let resolvedSessionId = persistedSessionId;
-const assistantLines = [];
-const toolBlocks = new Map();
-let sawPartialAssistantText = false;
-let partialTextBuffer = "";
-const proc = spawn("su-exec", [runtimeIdentity, claudeBinary, ...args], {
-  env: {
-    ...process.env,
-    ...(typeof manifest.resolvedThinkingBudgetTokens === "number"
-      ? { MAX_THINKING_TOKENS: String(manifest.resolvedThinkingBudgetTokens) }
-      : {}),
-    HOME: runtimeHome,
-    GIT_CONFIG_COUNT: "1",
-    GIT_CONFIG_KEY_0: "safe.directory",
-    GIT_CONFIG_VALUE_0: manifest.workspacePath
-  },
-  cwd: manifest.workspacePath,
-  stdio: ["ignore", "pipe", "pipe"]
-});
-let stdoutBuffer = "";
-const rawEventsStream = createWriteStream(rawEventsJsonlPath, { flags: "a" });
-
-const truncateForLog = (value, maxLength = 320) => {
-  if (typeof value !== "string") {
-    return "";
-  }
-
-  return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value;
-};
-
-const flushPartialTextBuffer = () => {
-  const line = partialTextBuffer.trim();
-  if (line) {
-    console.log(`[claude] ${line}`);
-  }
-  partialTextBuffer = "";
-};
-
-const appendPartialText = (text) => {
-  if (!text) {
-    return;
-  }
-
-  sawPartialAssistantText = true;
-  partialTextBuffer += text;
-
-  while (partialTextBuffer.includes("\n")) {
-    const newlineIndex = partialTextBuffer.indexOf("\n");
-    const line = partialTextBuffer.slice(0, newlineIndex).trim();
-    if (line) {
-      console.log(`[claude] ${line}`);
-    }
-    partialTextBuffer = partialTextBuffer.slice(newlineIndex + 1);
-  }
-};
-
-const emitAssistantText = (message) => {
-  const blocks = Array.isArray(message?.content) ? message.content : [];
-  for (const block of blocks) {
-    if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
-      assistantLines.push(block.text.trim());
-      if (!sawPartialAssistantText) {
-        console.log(`[claude] ${block.text.trim()}`);
-      }
-    }
-  }
-};
-
-const extractResultMarkdown = (value) => {
-  if (typeof value === "string" && value.trim()) {
-    return value.trim();
-  }
-
-  if (Array.isArray(value)) {
-    const text = value
-      .flatMap((entry) => {
-        if (typeof entry === "string") {
-          return [entry];
-        }
-
-        if (entry && typeof entry === "object" && typeof entry.text === "string") {
-          return [entry.text];
-        }
-
-        return [];
-      })
-      .join("\n\n")
-      .trim();
-    return text || "";
-  }
-
-  if (value && typeof value === "object") {
-    if (typeof value.text === "string" && value.text.trim()) {
-      return value.text.trim();
-    }
-
-    if (Array.isArray(value.content)) {
-      return extractResultMarkdown(value.content);
-    }
-
-    if (typeof value.result === "string" && value.result.trim()) {
-      return value.result.trim();
-    }
-  }
-
-  return "";
-};
-
-const describeResultEvent = (event) => {
-  if (!event || typeof event !== "object") {
-    return "";
-  }
-
-  const candidates = [
-    typeof event.error === "string" ? event.error : "",
-    typeof event.message === "string" ? event.message : "",
-    typeof event.result === "string" ? event.result : "",
-    typeof event.details === "string" ? event.details : ""
-  ].filter((value) => value.trim().length > 0);
-
-  if (candidates.length > 0) {
-    return candidates[0].trim();
-  }
-
-  return "";
-};
-
-const buildResultError = () => {
-  if (!resultSubtype || resultSubtype === "success") {
-    return null;
-  }
-
-  if (resultSubtype.includes("max_turns")) {
-    return new Error(
-      `Claude hit a turn limit before producing a final answer.${resultDetails ? ` ${resultDetails}` : ""} AgentSwarm did not set --max-turns for this run.`
-    );
-  }
-
-  return new Error(
-    `Claude finished without a successful result (subtype=${resultSubtype}).${resultDetails ? ` ${resultDetails}` : ""}`
-  );
-};
-
-const handleRawStreamEvent = (rawEvent) => {
-  if (!rawEvent || typeof rawEvent !== "object") {
-    return;
-  }
-
-  switch (rawEvent.type) {
-    case "message_start": {
-      const id = rawEvent.message?.id ?? "unknown";
-      console.log(`[runtime] claude message_start id=${id}`);
-      return;
-    }
-    case "content_block_start": {
-      const block = rawEvent.content_block ?? {};
-      const index = rawEvent.index ?? "unknown";
-      if (block.type === "tool_use" || block.type === "server_tool_use") {
-        toolBlocks.set(index, { name: block.name ?? "tool", input: "" });
-        console.log(`[runtime] claude tool start name=${block.name ?? "tool"} index=${index}`);
-      } else if (block.type === "text") {
-        console.log(`[runtime] claude text block start index=${index}`);
-      } else if (typeof block.type === "string") {
-        console.log(`[runtime] claude block start type=${block.type} index=${index}`);
-      }
-      return;
-    }
-    case "content_block_delta": {
-      const delta = rawEvent.delta ?? {};
-      const index = rawEvent.index;
-      if (delta.type === "text_delta" && typeof delta.text === "string") {
-        appendPartialText(delta.text);
-        return;
-      }
-
-      if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
-        const current = toolBlocks.get(index) ?? { name: "tool", input: "" };
-        current.input += delta.partial_json;
-        toolBlocks.set(index, current);
-      }
-      return;
-    }
-    case "content_block_stop": {
-      flushPartialTextBuffer();
-      const current = toolBlocks.get(rawEvent.index);
-      if (current) {
-        const preview = truncateForLog(current.input.replace(/\s+/g, " ").trim());
-        console.log(
-          preview
-            ? `[runtime] claude tool input name=${current.name} payload=${preview}`
-            : `[runtime] claude tool end name=${current.name}`
-        );
-        toolBlocks.delete(rawEvent.index);
-      }
-      return;
-    }
-    case "message_delta": {
-      flushPartialTextBuffer();
-      const stopReason = rawEvent.delta?.stop_reason ?? rawEvent.stop_reason ?? "streaming";
-      console.log(`[runtime] claude message_delta stop_reason=${stopReason}`);
-      return;
-    }
-    case "message_stop": {
-      flushPartialTextBuffer();
-      console.log("[runtime] claude message_stop");
-      return;
-    }
-    default: {
-      if (typeof rawEvent.type === "string") {
-        console.log(`[runtime] claude stream event type=${rawEvent.type}`);
-      }
-    }
-  }
-};
-
-proc.stdout.on("data", (chunk) => {
-  rawEventsStream.write(chunk);
-  stdoutBuffer += chunk.toString();
-  const lines = stdoutBuffer.split("\n");
-  stdoutBuffer = lines.pop() ?? "";
-
-  for (const line of lines) {
-    if (!line.trim()) {
-      continue;
-    }
-
-    try {
-      const event = JSON.parse(line);
-      const sessionIdCandidate = [event.session_id, event.sessionId, event.event?.session_id, event.event?.sessionId]
-        .find((value) => isSessionId(value));
-      if (sessionIdCandidate) {
-        resolvedSessionId = sessionIdCandidate.trim();
-      }
-
-      if (event.type === "system" && event.subtype === "init") {
-        console.log(
-          `[runtime] claude init model=${event.model} permissionMode=${event.permissionMode} session_id=${resolvedSessionId ?? "unknown"}`
-        );
-      } else if (event.type === "stream_event" && event.event) {
-        handleRawStreamEvent(event.event);
-      } else if (event.type === "assistant") {
-        emitAssistantText(event.message);
-      } else if (event.type === "result") {
-        flushPartialTextBuffer();
-        resultSubtype = typeof event.subtype === "string" ? event.subtype : null;
-        resultDetails = describeResultEvent(event);
-        finalMarkdown = extractResultMarkdown(event.result);
-        console.log(
-          `[runtime] claude result subtype=${resultSubtype ?? "unknown"}${resultDetails ? ` detail=${truncateForLog(resultDetails)}` : ""}`
-        );
-      } else {
-        console.log(`[runtime] claude event type=${event.type ?? "unknown"}`);
-      }
-    } catch {
-      console.log(`[runtime] ${line}`);
-    }
-  }
-});
-proc.stderr.on("data", (chunk) => process.stderr.write(chunk));
-let claudeProcessError = null;
-await new Promise((resolve, reject) => {
-  proc.on("error", reject);
-  proc.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`claude exited with code ${code ?? "unknown"}`))));
-}).catch((error) => {
-  claudeProcessError = error;
-});
-await new Promise((resolve, reject) => {
-  rawEventsStream.end(() => resolve());
-  rawEventsStream.on("error", reject);
-});
-if (claudeProcessError) {
-  throw claudeProcessError;
-}
-flushPartialTextBuffer();
-
-const resultError = buildResultError();
-if (resultError) {
-  throw resultError;
-}
-
-if (!finalMarkdown) {
-  finalMarkdown = assistantLines.join("\n\n").trim();
-}
-if (!finalMarkdown) {
-  throw new Error("Claude completed without producing final markdown output.");
-}
-
-if (resolvedSessionId) {
-  await writePersistedSessionId(sessionIdFilePath, resolvedSessionId);
-  console.log(`[runtime] claude session_id=${resolvedSessionId}`);
-}
-
-await writeFile(manifest.resultMarkdownPath, `${finalMarkdown}\n`, "utf8");
-await writeFile(
-  manifest.resultJsonPath,
-  JSON.stringify(
-    {
-      taskType: manifest.taskType,
-      status: "success",
-      summaryMarkdown: finalMarkdown,
-      changedFiles: [],
-      metadata: {
-        provider: manifest.provider,
-        action: manifest.action,
-        ...(resolvedSessionId ? { sessionId: resolvedSessionId } : {})
-      }
-    },
-    null,
-    2
-  ),
-  "utf8"
-);
-
-console.log("[runtime] completed");
-````
-
 ## File: agent-runtime-codex/Dockerfile
 ````
 FROM node:20-alpine
@@ -15215,77 +14726,6 @@ export async function getMutationBlocked(taskStore: TaskStore, taskId: string): 
 export async function getMutationBlockedReason(taskStore: TaskStore, taskId: string): Promise<string | null> {
   return (await getMutationBlocked(taskStore, taskId))?.message ?? null;
 }
-````
-
-## File: apps/server/src/routes/github-webhooks.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import {
-  buildGitHubEventDedupeKey,
-  hasSupportedGitHubAction,
-  isDuplicateGitHubEvent,
-  isSupportedGitHubEvent,
-  isValidGitHubEventPayload
-} from "./github-webhooks.js";
-
-describe("github webhook event coverage", () => {
-  it("supports required event types", () => {
-    assert.equal(isSupportedGitHubEvent("issues"), true);
-    assert.equal(isSupportedGitHubEvent("pull_request"), true);
-    assert.equal(isSupportedGitHubEvent("issue_comment"), true);
-    assert.equal(isSupportedGitHubEvent("pull_request_review_comment"), true);
-    assert.equal(isSupportedGitHubEvent("reaction"), true);
-    assert.equal(isSupportedGitHubEvent("push"), false);
-  });
-
-  it("accepts allowed actions and rejects unsupported ones", () => {
-    assert.equal(hasSupportedGitHubAction("issues", "opened"), true);
-    assert.equal(hasSupportedGitHubAction("pull_request", "synchronize"), true);
-    assert.equal(hasSupportedGitHubAction("issue_comment", "created"), true);
-    assert.equal(hasSupportedGitHubAction("pull_request_review_comment", "edited"), true);
-    assert.equal(hasSupportedGitHubAction("reaction", "deleted"), true);
-    assert.equal(hasSupportedGitHubAction("issues", "transferred"), false);
-  });
-
-  it("validates minimum payload shape for supported events", () => {
-    assert.equal(isValidGitHubEventPayload("issues", { action: "opened", issue: { number: 1 } }), true);
-    assert.equal(isValidGitHubEventPayload("pull_request", { action: "opened", pull_request: { number: 2 } }), true);
-    assert.equal(isValidGitHubEventPayload("issue_comment", { action: "created", issue: { number: 1 }, comment: { id: 99 } }), true);
-    assert.equal(
-      isValidGitHubEventPayload("pull_request_review_comment", {
-        action: "created",
-        pull_request: { number: 2 },
-        comment: { id: 300 }
-      }),
-      true
-    );
-    assert.equal(isValidGitHubEventPayload("reaction", { action: "created", content: "+1" }), true);
-
-    assert.equal(isValidGitHubEventPayload("issues", { action: "opened" }), false);
-    assert.equal(isValidGitHubEventPayload("pull_request", { action: "opened" }), false);
-    assert.equal(isValidGitHubEventPayload("issue_comment", { action: "created", issue: { number: 1 } }), false);
-    assert.equal(
-      isValidGitHubEventPayload("pull_request_review_comment", { action: "created", pull_request: { number: 2 } }),
-      false
-    );
-    assert.equal(isValidGitHubEventPayload("reaction", { action: "created" }), false);
-  });
-
-  it("builds event-level dedupe keys and suppresses duplicates", () => {
-    const payload = { action: "opened", issue: { number: 17 } } as Record<string, unknown>;
-    const key = buildGitHubEventDedupeKey("repo-1", "issues", "opened", payload, null);
-    assert.equal(key, "issues:repo-1:opened:17");
-
-    const deliveryPayload = { action: "opened", issue: { number: 17 } } as Record<string, unknown>;
-    assert.equal(isDuplicateGitHubEvent("repo-2", "issues", "opened", deliveryPayload, "delivery-1"), false);
-    assert.equal(isDuplicateGitHubEvent("repo-2", "issues", "opened", deliveryPayload, "delivery-1"), true);
-
-    const reviewPayload = { action: "created", pull_request: { number: 5 }, comment: { id: 808 } } as Record<string, unknown>;
-    const reviewKey = buildGitHubEventDedupeKey("repo-9", "pull_request_review_comment", "created", reviewPayload, null);
-    assert.equal(reviewKey, "pull_request_review_comment:repo-9:created:808");
-  });
-});
 ````
 
 ## File: apps/server/src/routes/snippets.ts
@@ -16493,7 +15933,7 @@ export class SchedulerService {
     }
 
     const allowParallelAsk = action === "ask" && task.executionStatus === "running" && (task.executionAction === "build" || task.executionAction === "ask");
-    if ((!allowParallelAsk && isExecutionBusy(task)) || task.status === "archived") {
+    if ((!allowParallelAsk && isExecutionBusy(task)) || task.status === "archived" || task.status === "draft") {
       return false;
     }
 
@@ -16537,7 +15977,7 @@ export class SchedulerService {
       return false;
     }
 
-    if (isExecutionBusy(task) || task.status === "archived") {
+    if (isExecutionBusy(task) || task.status === "archived" || task.status === "draft") {
       return false;
     }
 
@@ -16792,29 +16232,6 @@ export const resolveSequenceStepPrompts = async (input: {
 };
 ````
 
-## File: apps/server/src/services/task-draft-store.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { normalizeTaskDraftDefinition } from "./task-draft-store.js";
-
-describe("normalizeTaskDraftDefinition", () => {
-  it("normalizes draft deadlines", () => {
-    const definition = normalizeTaskDraftDefinition({
-      deadline: "2026-06-15T10:30:00+02:00"
-    });
-
-    assert.equal(definition.deadline, "2026-06-15T08:30:00.000Z");
-  });
-
-  it("clears empty and invalid draft deadlines", () => {
-    assert.equal(normalizeTaskDraftDefinition({ deadline: "" }).deadline, null);
-    assert.equal(normalizeTaskDraftDefinition({ deadline: "not a date" }).deadline, null);
-    assert.equal(normalizeTaskDraftDefinition({ deadline: null }).deadline, null);
-  });
-});
-````
-
 ## File: apps/web/app/repositories/[id]/edit/page.tsx
 ````typescript
 import { RepositoryEditorPage } from "../../../../components/repository-editor-page";
@@ -16889,15 +16306,6 @@ export default function TasksBoardRoute() {
       <TasksKanbanBoardPage />
     </Suspense>
   );
-}
-````
-
-## File: apps/web/app/tasks/drafts/[id]/page.tsx
-````typescript
-import { TaskDraftEditorPage } from "../../../../components/task-draft-editor-page";
-
-export default function TaskDraftRoute({ params }: { params: { id: string } }) {
-  return <TaskDraftEditorPage draftId={params.id} />;
 }
 ````
 
@@ -17629,152 +17037,6 @@ export function NotesMarkdownEditor({ value, onChange, disabled = false }: Notes
         plugins={notesEditorPlugins}
       />
     </div>
-  );
-}
-````
-
-## File: apps/web/components/task-draft-editor-page.tsx
-````typescript
-"use client";
-
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { Button, Flex, Form, Space, Spin, Typography, message } from "antd";
-import { api } from "../src/api/client";
-import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
-import {
-  buildTaskDraftDefinition,
-  formValuesFromTaskDraft,
-  promptImageFilesFromTaskDraft
-} from "../src/utils/task-drafts";
-import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
-import {
-  TaskDefinitionFields,
-  buildTaskDefinitionInput,
-  getTaskDefinitionInitialValues,
-  type TaskDefinitionFormValues
-} from "./task-definition-fields";
-import { useAuth } from "./auth-provider";
-
-export function TaskDraftEditorPage({ draftId }: { draftId: string }) {
-  const router = useRouter();
-  const { can } = useAuth();
-  const [form] = Form.useForm<TaskDefinitionFormValues>();
-  const [messageApi, contextHolder] = message.useMessage();
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
-  const canCreateAnyTaskMode = can("task:build") || can("task:ask");
-
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
-    void api
-      .getTaskDraft(draftId)
-      .then((draft) => {
-        if (!active) {
-          return;
-        }
-        form.setFieldsValue(formValuesFromTaskDraft(draft));
-        setPromptImageFiles(promptImageFilesFromTaskDraft(draft));
-        setLoading(false);
-      })
-      .catch((error) => {
-        if (!active) {
-          return;
-        }
-        messageApi.error(error instanceof Error ? error.message : "Failed to load draft");
-        setLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [draftId, form, messageApi]);
-
-  const saveDraft = async () => {
-    const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
-    setSaving(true);
-    try {
-      const definition = await buildTaskDraftDefinition(values, promptImageFiles);
-      await api.updateTaskDraft(draftId, {
-        title: values.title?.trim() || definition.prompt?.trim().split(/\r?\n/u)[0]?.slice(0, 120) || "Untitled Draft",
-        definition
-      });
-      messageApi.success("Draft saved");
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to save draft");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const createTask = async (values: TaskDefinitionFormValues) => {
-    setCreating(true);
-    try {
-      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
-      const definition = buildTaskDefinitionInput(values, encodedAttachments);
-      const task = await createTaskFromDefinition(definition);
-      await api.deleteTaskDraft(draftId).catch(() => undefined);
-      messageApi.success(startMessageForDefinition(definition));
-      router.push(`/tasks/${task.id}`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to create task");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const deleteDraft = async () => {
-    setDeleting(true);
-    try {
-      await api.deleteTaskDraft(draftId);
-      messageApi.success("Draft deleted");
-      router.push("/tasks/board");
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to delete draft");
-    } finally {
-      setDeleting(false);
-    }
-  };
-
-  return (
-    <>
-      {contextHolder}
-      <Form form={form} layout="vertical" initialValues={getTaskDefinitionInitialValues()} onFinish={createTask}>
-        <Flex vertical gap={16}>
-          <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-            <Flex vertical gap={0}>
-              <Typography.Title level={2} style={{ margin: 0 }}>
-                Edit Draft
-              </Typography.Title>
-              <Typography.Text type="secondary">Plan the task before turning it into runnable agent work.</Typography.Text>
-            </Flex>
-            <Space>
-              <Button onClick={() => router.push("/tasks/board")}>Back to Board</Button>
-              <Button danger loading={deleting} onClick={() => void deleteDraft()}>
-                Delete Draft
-              </Button>
-              <Button loading={saving} onClick={() => void saveDraft()}>
-                Save Draft
-              </Button>
-              <Button type="primary" htmlType="submit" loading={creating} disabled={!canCreateAnyTaskMode}>
-                Create Task
-              </Button>
-            </Space>
-          </Flex>
-          {loading ? (
-            <Flex justify="center" style={{ padding: 80 }}>
-              <Spin />
-            </Flex>
-          ) : (
-            <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
-          )}
-        </Flex>
-      </Form>
-    </>
   );
 }
 ````
@@ -19365,55 +18627,6 @@ export const useSequences = (enabled = true) => {
   }, [enabled, socket]);
 
   return { sequences, setSequences, loading };
-};
-````
-
-## File: apps/web/src/hooks/useTaskDrafts.ts
-````typescript
-"use client";
-
-import { useEffect, useState } from "react";
-import type { TaskDraft } from "@agentswarm/shared-types";
-import { api } from "../api/client";
-
-const sortDrafts = (items: TaskDraft[]): TaskDraft[] => [...items].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-
-export const useTaskDrafts = (enabled = true) => {
-  const [drafts, setDrafts] = useState<TaskDraft[]>([]);
-  const [loading, setLoading] = useState(enabled);
-
-  useEffect(() => {
-    if (!enabled) {
-      setDrafts([]);
-      setLoading(false);
-      return;
-    }
-
-    let active = true;
-    setLoading(true);
-    void api
-      .listTaskDrafts()
-      .then((items) => {
-        if (!active) {
-          return;
-        }
-        setDrafts(sortDrafts(items));
-        setLoading(false);
-      })
-      .catch(() => {
-        if (!active) {
-          return;
-        }
-        setDrafts([]);
-        setLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [enabled]);
-
-  return { drafts, setDrafts, loading };
 };
 ````
 
@@ -22395,6 +21608,557 @@ export default defineConfig({
 }
 ````
 
+## File: agent-runtime-claude/run-task.mjs
+````javascript
+import { createWriteStream } from "node:fs";
+import { access, constants, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import path from "node:path";
+
+const manifestPath = process.env.TASK_MANIFEST_FILE;
+const providerConfigPath = process.env.PROVIDER_CONFIG_FILE;
+const anthropicApiKey = process.env.ANTHROPIC_API_KEY ?? "";
+
+if (!manifestPath) {
+  console.error("TASK_MANIFEST_FILE is required");
+  process.exit(1);
+}
+if (!providerConfigPath) {
+  console.error("PROVIDER_CONFIG_FILE is required");
+  process.exit(1);
+}
+if (!anthropicApiKey) {
+  console.error("ANTHROPIC_API_KEY is required");
+  process.exit(1);
+}
+
+const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
+const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
+  ? manifest.rawEventsJsonlPath.trim()
+  : path.join(path.dirname(manifest.resultJsonPath), "raw-events.jsonl");
+await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
+process.env.ANTHROPIC_API_KEY = anthropicApiKey;
+process.env.GIT_OPTIONAL_LOCKS = "0";
+const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
+const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const isSessionId = (value) => typeof value === "string" && SESSION_ID_PATTERN.test(value.trim());
+
+const readPersistedSessionId = async (sessionIdPath) => {
+  const raw = await readFile(sessionIdPath, "utf8").catch(() => "");
+  const candidate = raw.trim();
+  return isSessionId(candidate) ? candidate : null;
+};
+
+const writePersistedSessionId = async (sessionIdPath, sessionId) => {
+  if (!isSessionId(sessionId)) {
+    return;
+  }
+
+  await writeFile(sessionIdPath, `${sessionId.trim()}\n`, "utf8");
+};
+
+const runCommand = (command, args, options = {}) =>
+  new Promise((resolve, reject) => {
+    const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], ...options });
+    let stderr = "";
+
+    proc.stdout.on("data", (chunk) => process.stdout.write(chunk));
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      process.stderr.write(chunk);
+    });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+    });
+  });
+
+const isExecutable = async (candidate) => {
+  try {
+    await access(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const resolveClaudeBinary = async (runtimeHome) => {
+  const homeBinary = path.join(runtimeHome, ".local", "bin", "claude");
+  if (await isExecutable(homeBinary)) {
+    return homeBinary;
+  }
+
+  const legacyBinary = "/opt/claude-code/.local/bin/claude";
+  if (await isExecutable(legacyBinary)) {
+    await mkdir(path.dirname(homeBinary), { recursive: true });
+    await symlink(legacyBinary, homeBinary).catch(() => undefined);
+    if (await isExecutable(homeBinary)) {
+      return homeBinary;
+    }
+    return legacyBinary;
+  }
+
+  return homeBinary;
+};
+
+const buildResponsePreferencePreamble = () => {
+  const preference = manifest.agentResponsePreference;
+  if (!preference || typeof preference !== "object") {
+    return "";
+  }
+
+  const lines = ["Response style:"];
+  if (preference.audience === "technical") {
+    lines.push("- Audience: technical.");
+  } else if (preference.audience === "non_technical") {
+    lines.push("- Audience: non-technical.");
+  } else if (preference.audience === "mixed") {
+    lines.push("- Audience: mixed.");
+  }
+
+  if (preference.explanationDepth) {
+    lines.push(`- Explanation depth: ${preference.explanationDepth}.`);
+  }
+  if (preference.jargonLevel) {
+    lines.push(`- Jargon level: ${preference.jargonLevel}.`);
+  }
+  if (preference.codePreference) {
+    lines.push(`- Code preference: ${preference.codePreference}.`);
+  }
+  if (preference.clarifyBehavior) {
+    lines.push(`- Clarification behavior: ${preference.clarifyBehavior}.`);
+  }
+  if (preference.formattingStyle) {
+    lines.push(`- Formatting style: ${preference.formattingStyle}.`);
+  }
+  if (typeof preference.extraInstructions === "string" && preference.extraInstructions.trim()) {
+    lines.push(`- Extra instructions: ${preference.extraInstructions.trim()}`);
+  }
+
+  if (lines.length === 1) {
+    return "";
+  }
+
+  return lines.join("\n");
+};
+
+const buildPrompt = () => {
+  const rawContent = typeof manifest.content === "string" && manifest.content.trim().length > 0
+    ? manifest.content.trim()
+    : (typeof manifest.prompt === "string" ? manifest.prompt.trim() : "");
+  const attachments = Array.isArray(manifest.attachments)
+    ? manifest.attachments.filter(
+        (attachment) =>
+          attachment &&
+          typeof attachment === "object" &&
+          typeof attachment.name === "string" &&
+          typeof attachment.absolutePath === "string" &&
+          attachment.name.trim().length > 0 &&
+          attachment.absolutePath.trim().length > 0
+      )
+    : [];
+
+  if (rawContent.length === 0) {
+    throw new Error("Task prompt is empty");
+  }
+
+  const promptSections = [];
+  if (attachments.length > 0) {
+    promptSections.push(
+      "Reference Images:",
+      ...attachments.map((attachment) => `- ${attachment.absolutePath.trim()} (${attachment.name.trim()})`),
+      ""
+    );
+  }
+  const responsePreferencePreamble = buildResponsePreferencePreamble();
+  if (responsePreferencePreamble) {
+    promptSections.push(responsePreferencePreamble, "");
+  }
+  promptSections.push("Current user request:", "", rawContent);
+  return promptSections.join("\n");
+};
+
+const mcpTools = providerConfigPath
+  ? Object.keys((JSON.parse(await readFile(providerConfigPath, "utf8").catch(() => "{}"))?.mcpServers ?? {})).map((name) => `mcp__${name}`)
+  : [];
+const isAsk = manifest.action === "ask";
+const allowedTools = (isAsk
+  ? ["Read", "LS", "Grep", "Glob", "TodoWrite", "Task", ...mcpTools]
+  : ["Bash", "Read", "Edit", "Write", "MultiEdit", "LS", "Grep", "Glob", "TodoWrite", "Task", ...mcpTools]
+).join(",");
+
+const args = [
+  "-p",
+  buildPrompt(),
+  "--output-format",
+  "stream-json",
+  "--include-partial-messages",
+  "--verbose",
+  "--allowedTools",
+  allowedTools,
+  "--mcp-config",
+  providerConfigPath
+];
+if (isAsk) {
+  args.push("--permission-mode", "plan");
+} else {
+  args.push("--dangerously-skip-permissions");
+}
+if (manifest.resolvedModel) {
+  args.push("--model", manifest.resolvedModel);
+}
+
+const workspaceStats = await stat(manifest.workspacePath);
+const runtimeIdentity = workspaceStats.uid > 0 && workspaceStats.gid > 0 ? `${workspaceStats.uid}:${workspaceStats.gid}` : "agent:agent";
+const runtimeHome = configuredHomeDir && configuredHomeDir.length > 0
+  ? configuredHomeDir
+  : path.join("/runtime", `claude-home-${runtimeIdentity.replace(/[:/]/g, "-")}`);
+const providerStatePath = configuredStatePath && configuredStatePath.length > 0
+  ? configuredStatePath
+  : path.join(runtimeHome, ".claude");
+await mkdir(runtimeHome, { recursive: true });
+await mkdir(providerStatePath, { recursive: true });
+const sessionIdFilePath = path.join(providerStatePath, "agentswarm-session-id.txt");
+const persistedSessionId = await readPersistedSessionId(sessionIdFilePath);
+if (persistedSessionId) {
+  args.push("--resume", persistedSessionId);
+}
+const claudeBinary = await resolveClaudeBinary(runtimeHome);
+
+console.log(
+  `[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only tools)" : ""} session=${persistedSessionId ?? "new"}`
+);
+console.log(`[runtime] claude thinking_budget_tokens=${manifest.resolvedThinkingBudgetTokens ?? "default"}`);
+await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(manifest.resultJsonPath)]);
+console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);
+
+let finalMarkdown = "";
+let resultSubtype = null;
+let resultDetails = null;
+let resolvedSessionId = persistedSessionId;
+const assistantLines = [];
+const toolBlocks = new Map();
+let sawPartialAssistantText = false;
+let partialTextBuffer = "";
+const proc = spawn("su-exec", [runtimeIdentity, claudeBinary, ...args], {
+  env: {
+    ...process.env,
+    ...(typeof manifest.resolvedThinkingBudgetTokens === "number"
+      ? { MAX_THINKING_TOKENS: String(manifest.resolvedThinkingBudgetTokens) }
+      : {}),
+    HOME: runtimeHome,
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "safe.directory",
+    GIT_CONFIG_VALUE_0: manifest.workspacePath
+  },
+  cwd: manifest.workspacePath,
+  stdio: ["ignore", "pipe", "pipe"]
+});
+let stdoutBuffer = "";
+const rawEventsStream = createWriteStream(rawEventsJsonlPath, { flags: "a" });
+
+const truncateForLog = (value, maxLength = 320) => {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value;
+};
+
+const flushPartialTextBuffer = () => {
+  const line = partialTextBuffer.trim();
+  if (line) {
+    console.log(`[claude] ${line}`);
+  }
+  partialTextBuffer = "";
+};
+
+const appendPartialText = (text) => {
+  if (!text) {
+    return;
+  }
+
+  sawPartialAssistantText = true;
+  partialTextBuffer += text;
+
+  while (partialTextBuffer.includes("\n")) {
+    const newlineIndex = partialTextBuffer.indexOf("\n");
+    const line = partialTextBuffer.slice(0, newlineIndex).trim();
+    if (line) {
+      console.log(`[claude] ${line}`);
+    }
+    partialTextBuffer = partialTextBuffer.slice(newlineIndex + 1);
+  }
+};
+
+const emitAssistantText = (message) => {
+  const blocks = Array.isArray(message?.content) ? message.content : [];
+  for (const block of blocks) {
+    if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
+      assistantLines.push(block.text.trim());
+      if (!sawPartialAssistantText) {
+        console.log(`[claude] ${block.text.trim()}`);
+      }
+    }
+  }
+};
+
+const extractResultMarkdown = (value) => {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+
+  if (Array.isArray(value)) {
+    const text = value
+      .flatMap((entry) => {
+        if (typeof entry === "string") {
+          return [entry];
+        }
+
+        if (entry && typeof entry === "object" && typeof entry.text === "string") {
+          return [entry.text];
+        }
+
+        return [];
+      })
+      .join("\n\n")
+      .trim();
+    return text || "";
+  }
+
+  if (value && typeof value === "object") {
+    if (typeof value.text === "string" && value.text.trim()) {
+      return value.text.trim();
+    }
+
+    if (Array.isArray(value.content)) {
+      return extractResultMarkdown(value.content);
+    }
+
+    if (typeof value.result === "string" && value.result.trim()) {
+      return value.result.trim();
+    }
+  }
+
+  return "";
+};
+
+const describeResultEvent = (event) => {
+  if (!event || typeof event !== "object") {
+    return "";
+  }
+
+  const candidates = [
+    typeof event.error === "string" ? event.error : "",
+    typeof event.message === "string" ? event.message : "",
+    typeof event.result === "string" ? event.result : "",
+    typeof event.details === "string" ? event.details : ""
+  ].filter((value) => value.trim().length > 0);
+
+  if (candidates.length > 0) {
+    return candidates[0].trim();
+  }
+
+  return "";
+};
+
+const buildResultError = () => {
+  if (!resultSubtype || resultSubtype === "success") {
+    return null;
+  }
+
+  if (resultSubtype.includes("max_turns")) {
+    return new Error(
+      `Claude hit a turn limit before producing a final answer.${resultDetails ? ` ${resultDetails}` : ""} AgentSwarm did not set --max-turns for this run.`
+    );
+  }
+
+  return new Error(
+    `Claude finished without a successful result (subtype=${resultSubtype}).${resultDetails ? ` ${resultDetails}` : ""}`
+  );
+};
+
+const handleRawStreamEvent = (rawEvent) => {
+  if (!rawEvent || typeof rawEvent !== "object") {
+    return;
+  }
+
+  switch (rawEvent.type) {
+    case "message_start": {
+      const id = rawEvent.message?.id ?? "unknown";
+      console.log(`[runtime] claude message_start id=${id}`);
+      return;
+    }
+    case "content_block_start": {
+      const block = rawEvent.content_block ?? {};
+      const index = rawEvent.index ?? "unknown";
+      if (block.type === "tool_use" || block.type === "server_tool_use") {
+        toolBlocks.set(index, { name: block.name ?? "tool", input: "" });
+        console.log(`[runtime] claude tool start name=${block.name ?? "tool"} index=${index}`);
+      } else if (block.type === "text") {
+        console.log(`[runtime] claude text block start index=${index}`);
+      } else if (typeof block.type === "string") {
+        console.log(`[runtime] claude block start type=${block.type} index=${index}`);
+      }
+      return;
+    }
+    case "content_block_delta": {
+      const delta = rawEvent.delta ?? {};
+      const index = rawEvent.index;
+      if (delta.type === "text_delta" && typeof delta.text === "string") {
+        appendPartialText(delta.text);
+        return;
+      }
+
+      if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
+        const current = toolBlocks.get(index) ?? { name: "tool", input: "" };
+        current.input += delta.partial_json;
+        toolBlocks.set(index, current);
+      }
+      return;
+    }
+    case "content_block_stop": {
+      flushPartialTextBuffer();
+      const current = toolBlocks.get(rawEvent.index);
+      if (current) {
+        const preview = truncateForLog(current.input.replace(/\s+/g, " ").trim());
+        console.log(
+          preview
+            ? `[runtime] claude tool input name=${current.name} payload=${preview}`
+            : `[runtime] claude tool end name=${current.name}`
+        );
+        toolBlocks.delete(rawEvent.index);
+      }
+      return;
+    }
+    case "message_delta": {
+      flushPartialTextBuffer();
+      const stopReason = rawEvent.delta?.stop_reason ?? rawEvent.stop_reason ?? "streaming";
+      console.log(`[runtime] claude message_delta stop_reason=${stopReason}`);
+      return;
+    }
+    case "message_stop": {
+      flushPartialTextBuffer();
+      console.log("[runtime] claude message_stop");
+      return;
+    }
+    default: {
+      if (typeof rawEvent.type === "string") {
+        console.log(`[runtime] claude stream event type=${rawEvent.type}`);
+      }
+    }
+  }
+};
+
+proc.stdout.on("data", (chunk) => {
+  rawEventsStream.write(chunk);
+  stdoutBuffer += chunk.toString();
+  const lines = stdoutBuffer.split("\n");
+  stdoutBuffer = lines.pop() ?? "";
+
+  for (const line of lines) {
+    if (!line.trim()) {
+      continue;
+    }
+
+    try {
+      const event = JSON.parse(line);
+      const sessionIdCandidate = [event.session_id, event.sessionId, event.event?.session_id, event.event?.sessionId]
+        .find((value) => isSessionId(value));
+      if (sessionIdCandidate) {
+        resolvedSessionId = sessionIdCandidate.trim();
+      }
+
+      if (event.type === "system" && event.subtype === "init") {
+        console.log(
+          `[runtime] claude init model=${event.model} permissionMode=${event.permissionMode} session_id=${resolvedSessionId ?? "unknown"}`
+        );
+      } else if (event.type === "stream_event" && event.event) {
+        handleRawStreamEvent(event.event);
+      } else if (event.type === "assistant") {
+        emitAssistantText(event.message);
+      } else if (event.type === "result") {
+        flushPartialTextBuffer();
+        resultSubtype = typeof event.subtype === "string" ? event.subtype : null;
+        resultDetails = describeResultEvent(event);
+        finalMarkdown = extractResultMarkdown(event.result);
+        console.log(
+          `[runtime] claude result subtype=${resultSubtype ?? "unknown"}${resultDetails ? ` detail=${truncateForLog(resultDetails)}` : ""}`
+        );
+      } else {
+        console.log(`[runtime] claude event type=${event.type ?? "unknown"}`);
+      }
+    } catch {
+      console.log(`[runtime] ${line}`);
+    }
+  }
+});
+proc.stderr.on("data", (chunk) => process.stderr.write(chunk));
+let claudeProcessError = null;
+await new Promise((resolve, reject) => {
+  proc.on("error", reject);
+  proc.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`claude exited with code ${code ?? "unknown"}`))));
+}).catch((error) => {
+  claudeProcessError = error;
+});
+await new Promise((resolve, reject) => {
+  rawEventsStream.end(() => resolve());
+  rawEventsStream.on("error", reject);
+});
+if (claudeProcessError) {
+  throw claudeProcessError;
+}
+flushPartialTextBuffer();
+
+const resultError = buildResultError();
+if (resultError) {
+  throw resultError;
+}
+
+if (!finalMarkdown) {
+  finalMarkdown = assistantLines.join("\n\n").trim();
+}
+if (!finalMarkdown) {
+  throw new Error("Claude completed without producing final markdown output.");
+}
+
+if (resolvedSessionId) {
+  await writePersistedSessionId(sessionIdFilePath, resolvedSessionId);
+  console.log(`[runtime] claude session_id=${resolvedSessionId}`);
+}
+
+await writeFile(manifest.resultMarkdownPath, `${finalMarkdown}\n`, "utf8");
+await writeFile(
+  manifest.resultJsonPath,
+  JSON.stringify(
+    {
+      taskType: manifest.taskType,
+      status: "success",
+      summaryMarkdown: finalMarkdown,
+      changedFiles: [],
+      metadata: {
+        provider: manifest.provider,
+        action: manifest.action,
+        ...(resolvedSessionId ? { sessionId: resolvedSessionId } : {})
+      }
+    },
+    null,
+    2
+  ),
+  "utf8"
+);
+
+console.log("[runtime] completed");
+````
+
 ## File: apps/server/src/lib/auth.ts
 ````typescript
 import type { IncomingHttpHeaders } from "node:http";
@@ -22854,7 +22618,7 @@ export const reconcileTaskStatusWithPendingCheckpoint = (
   status: TaskStatus,
   hasPendingCheckpoint: boolean
 ): TaskStatus => {
-  if (status === "scheduled" || status === "archived") {
+  if (status === "draft" || status === "scheduled" || status === "archived") {
     return status;
   }
 
@@ -22884,6 +22648,7 @@ export const normalizeTaskLifecycleStatus = (
 ): TaskStatus => {
   if (
     status === "scheduled" ||
+    status === "draft" ||
     status === "build_queued" ||
     status === "preparing_workspace" ||
     status === "building" ||
@@ -22921,113 +22686,6 @@ export const normalizeTaskLifecycleStatus = (
   }
 
   return resolveTaskReadyStatus(hasPendingCheckpoint);
-};
-````
-
-## File: apps/server/src/routes/task-drafts.ts
-````typescript
-import type { FastifyInstance } from "fastify";
-import { z } from "zod";
-import type { AuthService } from "../lib/auth.js";
-import type { TaskDraftStore } from "../services/task-draft-store.js";
-
-const stringMapSchema = z.record(z.string()).optional();
-
-const deadlineSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
-  .nullable()
-  .optional();
-
-const attachmentSchema = z.object({
-  name: z.string().trim().min(1).max(255),
-  mimeType: z.string().trim().min(1).max(255),
-  dataBase64: z.string().min(1)
-});
-
-const draftDefinitionSchema = z.object({
-  sourceType: z.enum(["blank", "snippet", "sequence", "issue", "pull_request"]).optional(),
-  title: z.string().max(500).optional(),
-  deadline: deadlineSchema,
-  repoId: z.string().max(120).optional(),
-  prompt: z.string().max(48_000).optional(),
-  notes: z.string().max(48_000).optional(),
-  taskType: z.enum(["build", "ask"]).optional(),
-  provider: z.enum(["codex", "claude"]).optional(),
-  model: z.string().max(256).optional(),
-  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-  baseBranch: z.string().max(255).optional(),
-  branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-  issueNumber: z.number().int().nonnegative().optional(),
-  includeComments: z.boolean().optional(),
-  pullRequestNumber: z.number().int().nonnegative().optional(),
-  snippetId: z.string().max(120).optional(),
-  snippetVariables: stringMapSchema,
-  sequenceId: z.string().max(120).optional(),
-  sequenceVariables: stringMapSchema,
-  attachments: z.array(attachmentSchema).max(6).optional()
-});
-
-const createDraftSchema = z.object({
-  title: z.string().trim().max(500).optional(),
-  definition: draftDefinitionSchema
-});
-
-const updateDraftSchema = z.object({
-  title: z.string().trim().max(500).optional(),
-  definition: draftDefinitionSchema.optional()
-});
-
-export const registerTaskDraftRoutes = (
-  app: FastifyInstance,
-  deps: {
-    taskDraftStore: TaskDraftStore;
-    auth: AuthService;
-  }
-): void => {
-  app.get("/task-drafts", { preHandler: deps.auth.requireAllScopes(["task:list"]) }, async (request) =>
-    deps.taskDraftStore.listDrafts(request.auth!.user.id)
-  );
-
-  app.get<{ Params: { id: string } }>("/task-drafts/:id", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
-    const draft = await deps.taskDraftStore.getDraft(request.auth!.user.id, request.params.id);
-    if (!draft) {
-      return reply.status(404).send({ message: "Task draft not found" });
-    }
-    return reply.send(draft);
-  });
-
-  app.post("/task-drafts", { preHandler: deps.auth.requireAllScopes(["task:create"]) }, async (request, reply) => {
-    const parsed = createDraftSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-    const draft = await deps.taskDraftStore.createDraft(request.auth!.user.id, parsed.data);
-    return reply.status(201).send(draft);
-  });
-
-  app.patch<{ Params: { id: string } }>("/task-drafts/:id", { preHandler: deps.auth.requireAllScopes(["task:create"]) }, async (request, reply) => {
-    const parsed = updateDraftSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-    const draft = await deps.taskDraftStore.updateDraft(request.auth!.user.id, request.params.id, parsed.data);
-    if (!draft) {
-      return reply.status(404).send({ message: "Task draft not found" });
-    }
-    return reply.send(draft);
-  });
-
-  app.delete<{ Params: { id: string } }>("/task-drafts/:id", { preHandler: deps.auth.requireAllScopes(["task:create"]) }, async (request, reply) => {
-    const deleted = await deps.taskDraftStore.deleteDraft(request.auth!.user.id, request.params.id);
-    if (!deleted) {
-      return reply.status(404).send({ message: "Task draft not found" });
-    }
-    return reply.status(204).send();
-  });
 };
 ````
 
@@ -23749,300 +23407,6 @@ describe("resolveSequenceStepPrompts", () => {
     );
   });
 });
-````
-
-## File: apps/server/src/services/task-draft-store.ts
-````typescript
-import { nanoid } from "nanoid";
-import type Redis from "ioredis";
-import type { Pool } from "pg";
-import type { CreateTaskDraftInput, TaskDraft, TaskDraftDefinition, UpdateTaskDraftInput } from "@agentswarm/shared-types";
-
-const TASK_DRAFT_KEY_PREFIX = "agentswarm:task_draft:";
-const TASK_DRAFT_IDS_KEY_PREFIX = "agentswarm:task_draft_ids:";
-
-const nowIso = (): string => new Date().toISOString();
-
-const normalizeDeadline = (value: unknown): string | null => {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const timestamp = Date.parse(trimmed);
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
-};
-
-const normalizeString = (value: unknown, maxLength: number): string | undefined => {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed.slice(0, maxLength) : undefined;
-};
-
-const normalizeStringMap = (value: unknown): Record<string, string> | undefined => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-
-  const result: Record<string, string> = {};
-  for (const [key, rawValue] of Object.entries(value as Record<string, unknown>)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-      continue;
-    }
-    result[key] = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
-  }
-  return Object.keys(result).length > 0 ? result : undefined;
-};
-
-const normalizeAttachments = (value: unknown): TaskDraftDefinition["attachments"] => {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-
-  return value
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") {
-        return null;
-      }
-      const record = entry as Record<string, unknown>;
-      const name = normalizeString(record.name, 255);
-      const mimeType = normalizeString(record.mimeType, 255);
-      const dataBase64 = typeof record.dataBase64 === "string" ? record.dataBase64 : "";
-      if (!name || !mimeType || dataBase64.length === 0) {
-        return null;
-      }
-      return { name, mimeType, dataBase64 };
-    })
-    .filter((entry): entry is NonNullable<TaskDraftDefinition["attachments"]>[number] => entry !== null)
-    .slice(0, 6);
-};
-
-export const normalizeTaskDraftDefinition = (value: unknown): TaskDraftDefinition => {
-  const record = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-  const sourceType =
-    record.sourceType === "snippet" || record.sourceType === "sequence" || record.sourceType === "issue" || record.sourceType === "pull_request"
-      ? record.sourceType
-      : "blank";
-  const provider = record.provider === "claude" ? "claude" : record.provider === "codex" ? "codex" : undefined;
-  const taskType = record.taskType === "ask" ? "ask" : record.taskType === "build" ? "build" : undefined;
-  const providerProfile =
-    record.providerProfile === "low" || record.providerProfile === "medium" || record.providerProfile === "high" || record.providerProfile === "max"
-      ? record.providerProfile
-      : undefined;
-  const codexCredentialSource =
-    record.codexCredentialSource === "profile" || record.codexCredentialSource === "global" || record.codexCredentialSource === "auto"
-      ? record.codexCredentialSource
-      : undefined;
-  const branchStrategy = record.branchStrategy === "work_on_branch" ? "work_on_branch" : record.branchStrategy === "feature_branch" ? "feature_branch" : undefined;
-  const numberOrUndefined = (raw: unknown): number | undefined => (Number.isFinite(raw) ? Math.max(0, Math.floor(Number(raw))) : undefined);
-
-  return {
-    sourceType,
-    title: normalizeString(record.title, 500),
-    deadline: normalizeDeadline(record.deadline),
-    repoId: normalizeString(record.repoId, 120),
-    prompt: typeof record.prompt === "string" ? record.prompt : undefined,
-    notes: typeof record.notes === "string" ? record.notes : undefined,
-    taskType,
-    provider,
-    model: normalizeString(record.model, 256),
-    providerProfile,
-    codexCredentialSource,
-    baseBranch: normalizeString(record.baseBranch, 255),
-    branchStrategy,
-    issueNumber: numberOrUndefined(record.issueNumber),
-    includeComments: typeof record.includeComments === "boolean" ? record.includeComments : undefined,
-    pullRequestNumber: numberOrUndefined(record.pullRequestNumber),
-    snippetId: normalizeString(record.snippetId, 120),
-    snippetVariables: normalizeStringMap(record.snippetVariables),
-    sequenceId: normalizeString(record.sequenceId, 120),
-    sequenceVariables: normalizeStringMap(record.sequenceVariables),
-    attachments: normalizeAttachments(record.attachments)
-  };
-};
-
-const normalizeDraftTitle = (input: Pick<CreateTaskDraftInput | UpdateTaskDraftInput, "title" | "definition">): string => {
-  const explicit = normalizeString(input.title, 500);
-  if (explicit) {
-    return explicit;
-  }
-  const fromDefinition = normalizeString(input.definition?.title, 500);
-  return fromDefinition ?? "Untitled Draft";
-};
-
-export interface TaskDraftStore {
-  createDraft(ownerUserId: string, input: CreateTaskDraftInput): Promise<TaskDraft>;
-  listDrafts(ownerUserId: string): Promise<TaskDraft[]>;
-  getDraft(ownerUserId: string, draftId: string): Promise<TaskDraft | null>;
-  updateDraft(ownerUserId: string, draftId: string, input: UpdateTaskDraftInput): Promise<TaskDraft | null>;
-  deleteDraft(ownerUserId: string, draftId: string): Promise<boolean>;
-}
-
-export class RedisTaskDraftStore implements TaskDraftStore {
-  constructor(private readonly redis: Redis) {}
-
-  private draftKey(draftId: string): string {
-    return `${TASK_DRAFT_KEY_PREFIX}${draftId}`;
-  }
-
-  private draftIdsKey(ownerUserId: string): string {
-    return `${TASK_DRAFT_IDS_KEY_PREFIX}${ownerUserId}`;
-  }
-
-  private normalizeDraft(raw: TaskDraft): TaskDraft {
-    return {
-      ...raw,
-      title: normalizeDraftTitle(raw),
-      definition: normalizeTaskDraftDefinition(raw.definition)
-    };
-  }
-
-  async createDraft(ownerUserId: string, input: CreateTaskDraftInput): Promise<TaskDraft> {
-    const timestamp = nowIso();
-    const draft: TaskDraft = {
-      id: nanoid(),
-      ownerUserId,
-      title: normalizeDraftTitle(input),
-      definition: normalizeTaskDraftDefinition(input.definition),
-      createdAt: timestamp,
-      updatedAt: timestamp
-    };
-    await this.redis.multi().set(this.draftKey(draft.id), JSON.stringify(draft)).sadd(this.draftIdsKey(ownerUserId), draft.id).exec();
-    return draft;
-  }
-
-  async listDrafts(ownerUserId: string): Promise<TaskDraft[]> {
-    const ids = await this.redis.smembers(this.draftIdsKey(ownerUserId));
-    if (ids.length === 0) {
-      return [];
-    }
-    const pipeline = this.redis.pipeline();
-    for (const id of ids) {
-      pipeline.get(this.draftKey(id));
-    }
-    const rows = await pipeline.exec();
-    const drafts: TaskDraft[] = [];
-    for (const row of rows ?? []) {
-      if (typeof row[1] === "string") {
-        drafts.push(this.normalizeDraft(JSON.parse(row[1]) as TaskDraft));
-      }
-    }
-    return drafts.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  }
-
-  async getDraft(ownerUserId: string, draftId: string): Promise<TaskDraft | null> {
-    const raw = await this.redis.get(this.draftKey(draftId));
-    if (!raw) {
-      return null;
-    }
-    const draft = this.normalizeDraft(JSON.parse(raw) as TaskDraft);
-    return draft.ownerUserId === ownerUserId ? draft : null;
-  }
-
-  async updateDraft(ownerUserId: string, draftId: string, input: UpdateTaskDraftInput): Promise<TaskDraft | null> {
-    const current = await this.getDraft(ownerUserId, draftId);
-    if (!current) {
-      return null;
-    }
-    const definition = input.definition === undefined ? current.definition : normalizeTaskDraftDefinition(input.definition);
-    const next: TaskDraft = {
-      ...current,
-      title: normalizeDraftTitle({ title: input.title ?? current.title, definition }),
-      definition,
-      updatedAt: nowIso()
-    };
-    await this.redis.set(this.draftKey(draftId), JSON.stringify(next));
-    return next;
-  }
-
-  async deleteDraft(ownerUserId: string, draftId: string): Promise<boolean> {
-    const current = await this.getDraft(ownerUserId, draftId);
-    if (!current) {
-      return false;
-    }
-    await this.redis.multi().del(this.draftKey(draftId)).srem(this.draftIdsKey(ownerUserId), draftId).exec();
-    return true;
-  }
-}
-
-export class PostgresTaskDraftStore implements TaskDraftStore {
-  constructor(private readonly pool: Pool) {}
-
-  private normalizeDraft(row: Record<string, unknown>): TaskDraft {
-    const definition = normalizeTaskDraftDefinition(row.definition);
-    return {
-      id: String(row.id),
-      ownerUserId: String(row.owner_user_id),
-      title: normalizeDraftTitle({ title: typeof row.title === "string" ? row.title : undefined, definition }),
-      definition,
-      createdAt: String(row.created_at),
-      updatedAt: String(row.updated_at)
-    };
-  }
-
-  async createDraft(ownerUserId: string, input: CreateTaskDraftInput): Promise<TaskDraft> {
-    const timestamp = nowIso();
-    const definition = normalizeTaskDraftDefinition(input.definition);
-    const draft: TaskDraft = {
-      id: nanoid(),
-      ownerUserId,
-      title: normalizeDraftTitle({ title: input.title, definition }),
-      definition,
-      createdAt: timestamp,
-      updatedAt: timestamp
-    };
-    await this.pool.query(
-      "INSERT INTO task_drafts (id, owner_user_id, title, definition, created_at, updated_at) VALUES ($1, $2, $3, $4::jsonb, $5, $6)",
-      [draft.id, draft.ownerUserId, draft.title, JSON.stringify(draft.definition), draft.createdAt, draft.updatedAt]
-    );
-    return draft;
-  }
-
-  async listDrafts(ownerUserId: string): Promise<TaskDraft[]> {
-    const result = await this.pool.query(
-      "SELECT id, owner_user_id, title, definition, created_at, updated_at FROM task_drafts WHERE owner_user_id = $1 ORDER BY updated_at DESC",
-      [ownerUserId]
-    );
-    return result.rows.map((row) => this.normalizeDraft(row));
-  }
-
-  async getDraft(ownerUserId: string, draftId: string): Promise<TaskDraft | null> {
-    const result = await this.pool.query(
-      "SELECT id, owner_user_id, title, definition, created_at, updated_at FROM task_drafts WHERE owner_user_id = $1 AND id = $2",
-      [ownerUserId, draftId]
-    );
-    return result.rows[0] ? this.normalizeDraft(result.rows[0]) : null;
-  }
-
-  async updateDraft(ownerUserId: string, draftId: string, input: UpdateTaskDraftInput): Promise<TaskDraft | null> {
-    const current = await this.getDraft(ownerUserId, draftId);
-    if (!current) {
-      return null;
-    }
-    const definition = input.definition === undefined ? current.definition : normalizeTaskDraftDefinition(input.definition);
-    const title = normalizeDraftTitle({ title: input.title ?? current.title, definition });
-    const updatedAt = nowIso();
-    const result = await this.pool.query(
-      `UPDATE task_drafts
-       SET title = $3, definition = $4::jsonb, updated_at = $5
-       WHERE owner_user_id = $1 AND id = $2
-       RETURNING id, owner_user_id, title, definition, created_at, updated_at`,
-      [ownerUserId, draftId, title, JSON.stringify(definition), updatedAt]
-    );
-    return result.rows[0] ? this.normalizeDraft(result.rows[0]) : null;
-  }
-
-  async deleteDraft(ownerUserId: string, draftId: string): Promise<boolean> {
-    const result = await this.pool.query("DELETE FROM task_drafts WHERE owner_user_id = $1 AND id = $2", [ownerUserId, draftId]);
-    return (result.rowCount ?? 0) > 0;
-  }
-}
 ````
 
 ## File: apps/web/components/repositories-page.tsx
@@ -24798,56 +24162,6 @@ export function getCodeTokenStyles(token: GlobalToken): TokenStyleMap {
     string: { color: token.colorSuccessText }
   };
 }
-````
-
-## File: apps/web/src/utils/task-drafts.ts
-````typescript
-"use client";
-
-import dayjs from "dayjs";
-import type { TaskDraft, TaskDraftDefinition } from "@agentswarm/shared-types";
-import { getTaskDefinitionDeadlineIso, type TaskDefinitionFormValues } from "../../components/task-definition-fields";
-import {
-  encodeTaskPromptImageFiles,
-  taskPromptAttachmentInputsToSelectedFiles,
-  type SelectedTaskPromptImageFile
-} from "./task-prompt-attachments";
-
-export const buildTaskDraftDefinition = async (
-  values: TaskDefinitionFormValues,
-  promptImageFiles: SelectedTaskPromptImageFile[]
-): Promise<TaskDraftDefinition> => ({
-  sourceType: values.sourceType ?? "blank",
-  title: values.title,
-  deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
-  repoId: values.repoId,
-  prompt: values.prompt,
-  notes: values.notes,
-  taskType: values.taskType,
-  provider: values.provider,
-  model: values.model,
-  providerProfile: values.providerProfile,
-  codexCredentialSource: values.codexCredentialSource,
-  baseBranch: values.baseBranch,
-  branchStrategy: values.branchStrategy,
-  issueNumber: values.issueNumber,
-  includeComments: values.includeComments,
-  pullRequestNumber: values.pullRequestNumber,
-  snippetId: values.snippetId,
-  snippetVariables: values.snippetVariables,
-  sequenceId: values.sequenceId,
-  sequenceVariables: values.sequenceVariables,
-  attachments: await encodeTaskPromptImageFiles(promptImageFiles)
-});
-
-export const formValuesFromTaskDraft = (draft: TaskDraft): TaskDefinitionFormValues => ({
-  ...draft.definition,
-  sourceType: draft.definition.sourceType ?? "blank",
-  deadline: draft.definition.deadline ? dayjs(draft.definition.deadline) : null
-});
-
-export const promptImageFilesFromTaskDraft = (draft: TaskDraft): SelectedTaskPromptImageFile[] =>
-  taskPromptAttachmentInputsToSelectedFiles(draft.definition.attachments);
 ````
 
 ## File: docs/development/commands.md
@@ -26208,6 +25522,10 @@ describe("normalizeTaskLifecycleStatus", () => {
     assert.equal(normalizeTaskLifecycleStatus("build_queued", "build", false), "open");
     assert.equal(normalizeTaskLifecycleStatus("asking", "ask", false), "open");
   });
+
+  it("preserves draft state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("draft", "build", false), "draft");
+  });
 });
 
 describe("reconcileTaskStatusWithPendingCheckpoint", () => {
@@ -26236,6 +25554,10 @@ describe("reconcileTaskStatusWithPendingCheckpoint", () => {
 
   it("keeps scheduled tasks unchanged", () => {
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("scheduled", true), "scheduled");
+  });
+
+  it("keeps draft tasks unchanged", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("draft", true), "draft");
   });
 });
 ````
@@ -26610,7 +25932,6 @@ import { PostgresSettingsStore } from "./settings-store.js";
 import { PostgresSnippetStore } from "./snippet-store.js";
 import { PostgresSequenceStore } from "./sequence-store.js";
 import { RedisTaskQueueStore } from "./task-queue-store.js";
-import { PostgresTaskDraftStore } from "./task-draft-store.js";
 import { PostgresTaskStore } from "./task-store.js";
 import { PostgresUserStore } from "./user-store.js";
 import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
@@ -26623,7 +25944,6 @@ export const createPostgresStores = (
   sessionTtlDays: number
 ): AppStores => {
   const taskStore = new PostgresTaskStore(pool, eventBus);
-  const taskDraftStore = new PostgresTaskDraftStore(pool);
   const taskQueueStore = new RedisTaskQueueStore(redisClients.command);
   const githubOutboundQueueStore = new RedisGitHubOutboundQueueStore(redisClients.command);
   const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
@@ -26638,7 +25958,6 @@ export const createPostgresStores = (
 
   return {
     taskStore,
-    taskDraftStore,
     taskQueueStore,
     githubOutboundQueueStore,
     webhookDeliveryStore,
@@ -26849,403 +26168,6 @@ The terms below come from current repository docs and code.
 
 ## TODO
 - TODO: Confirm final user-facing wording for “checkpoint” vs “change proposal” in product UI copy.
-````
-
-## File: agent-runtime-codex/run-task.mjs
-````javascript
-import { createWriteStream } from "node:fs";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
-import path from "node:path";
-
-const manifestPath = process.env.TASK_MANIFEST_FILE;
-const providerConfigPath = process.env.PROVIDER_CONFIG_FILE;
-const openAiApiKey = process.env.OPENAI_API_KEY ?? "";
-const openAiBaseUrl = process.env.OPENAI_BASE_URL ?? "";
-const codexAuthJsonB64 = process.env.CODEX_AUTH_JSON_B64 ?? "";
-const codexAuthJson = codexAuthJsonB64.trim()
-  ? Buffer.from(codexAuthJsonB64, "base64").toString("utf8").trim()
-  : "";
-
-if (!manifestPath) {
-  console.error("TASK_MANIFEST_FILE is required");
-  process.exit(1);
-}
-if (!providerConfigPath) {
-  console.error("PROVIDER_CONFIG_FILE is required");
-  process.exit(1);
-}
-if (!openAiApiKey && !codexAuthJson) {
-  console.error("OPENAI_API_KEY or CODEX_AUTH_JSON_B64 is required");
-  process.exit(1);
-}
-
-const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-const providerConfig = await readFile(providerConfigPath, "utf8").catch(() => "");
-const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
-const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
-const codexDir = configuredStatePath && configuredStatePath.length > 0 ? configuredStatePath : path.join("/root", ".codex");
-const homeDir = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : path.dirname(codexDir);
-const lastMessageFile = path.join(path.dirname(manifest.resultJsonPath), "codex-last-message.txt");
-const sessionIdFile = path.join(codexDir, "agentswarm-session-id.txt");
-const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
-  ? manifest.rawEventsJsonlPath.trim()
-  : path.join(path.dirname(manifest.resultJsonPath), "raw-events.jsonl");
-
-const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-const isSessionId = (value) => typeof value === "string" && SESSION_ID_PATTERN.test(value.trim());
-
-const readPersistedSessionId = async () => {
-  const raw = await readFile(sessionIdFile, "utf8").catch(() => "");
-  const candidate = raw.trim();
-  return isSessionId(candidate) ? candidate : null;
-};
-
-const writePersistedSessionId = async (sessionId) => {
-  if (!isSessionId(sessionId)) {
-    return;
-  }
-
-  await writeFile(sessionIdFile, `${sessionId.trim()}\n`, "utf8");
-};
-
-const listRolloutFiles = async (sessionsRoot) => {
-  const pending = [sessionsRoot];
-  const files = [];
-
-  while (pending.length > 0) {
-    const currentDir = pending.pop();
-    if (!currentDir) {
-      continue;
-    }
-
-    const entries = await readdir(currentDir, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name);
-      if (entry.isDirectory()) {
-        pending.push(fullPath);
-        continue;
-      }
-
-      if (entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl")) {
-        files.push(fullPath);
-      }
-    }
-  }
-
-  return files;
-};
-
-const sessionIdFromRolloutFileName = (rolloutPath) => {
-  const match = path.basename(rolloutPath).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
-  return match?.[1] ?? null;
-};
-
-const inferSessionIdFromRolloutFiles = async () => {
-  const sessionsRoot = path.join(codexDir, "sessions");
-  const rolloutFiles = await listRolloutFiles(sessionsRoot);
-  if (rolloutFiles.length === 0) {
-    return null;
-  }
-
-  const withMtime = await Promise.all(
-    rolloutFiles.map(async (rolloutPath) => ({
-      rolloutPath,
-      mtimeMs: (await stat(rolloutPath).catch(() => null))?.mtimeMs ?? 0
-    }))
-  );
-  withMtime.sort((left, right) => right.mtimeMs - left.mtimeMs);
-
-  for (const { rolloutPath } of withMtime) {
-    const candidate = sessionIdFromRolloutFileName(rolloutPath);
-    if (isSessionId(candidate)) {
-      return candidate;
-    }
-  }
-
-  return null;
-};
-
-const extractSessionIdFromJsonEvent = (event) => {
-  if (!event || typeof event !== "object") {
-    return null;
-  }
-
-  const directFields = [event.session_id, event.sessionId, event.thread_id, event.threadId];
-  for (const value of directFields) {
-    if (isSessionId(value)) {
-      return value.trim();
-    }
-  }
-
-  if (event.type === "session_meta" && event.payload && typeof event.payload === "object" && isSessionId(event.payload.id)) {
-    return event.payload.id.trim();
-  }
-
-  return null;
-};
-
-const extractSessionIdFromOutputLine = (line) => {
-  if (!line || !line.trim().startsWith("{")) {
-    return null;
-  }
-
-  try {
-    return extractSessionIdFromJsonEvent(JSON.parse(line));
-  } catch {
-    return null;
-  }
-};
-
-await mkdir(homeDir, { recursive: true });
-await mkdir(codexDir, { recursive: true });
-await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
-await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
-await writeFile(path.join(codexDir, "config.toml"), providerConfig, "utf8");
-if (codexAuthJson) {
-  await writeFile(path.join(codexDir, "auth.json"), codexAuthJson, "utf8");
-}
-console.log("[runtime] wrote Codex config");
-
-if (openAiBaseUrl) {
-  process.env.OPENAI_BASE_URL = openAiBaseUrl;
-}
-if (openAiApiKey) {
-  process.env.OPENAI_API_KEY = openAiApiKey;
-}
-process.env.GIT_OPTIONAL_LOCKS = "0";
-process.env.HOME = homeDir;
-
-const buildResponsePreferencePreamble = () => {
-  const preference = manifest.agentResponsePreference;
-  if (!preference || typeof preference !== "object") {
-    return "";
-  }
-
-  const lines = ["Response style:"];
-  if (preference.audience === "technical") {
-    lines.push("- Audience: technical.");
-  } else if (preference.audience === "non_technical") {
-    lines.push("- Audience: non-technical.");
-  } else if (preference.audience === "mixed") {
-    lines.push("- Audience: mixed.");
-  }
-
-  if (preference.explanationDepth) {
-    lines.push(`- Explanation depth: ${preference.explanationDepth}.`);
-  }
-  if (preference.jargonLevel) {
-    lines.push(`- Jargon level: ${preference.jargonLevel}.`);
-  }
-  if (preference.codePreference) {
-    lines.push(`- Code preference: ${preference.codePreference}.`);
-  }
-  if (preference.clarifyBehavior) {
-    lines.push(`- Clarification behavior: ${preference.clarifyBehavior}.`);
-  }
-  if (preference.formattingStyle) {
-    lines.push(`- Formatting style: ${preference.formattingStyle}.`);
-  }
-  if (typeof preference.extraInstructions === "string" && preference.extraInstructions.trim()) {
-    lines.push(`- Extra instructions: ${preference.extraInstructions.trim()}`);
-  }
-
-  if (lines.length === 1) {
-    return "";
-  }
-
-  return lines.join("\n");
-};
-
-const buildPrompt = () => {
-  const rawContent = typeof manifest.content === "string" && manifest.content.trim().length > 0
-    ? manifest.content.trim()
-    : (typeof manifest.prompt === "string" ? manifest.prompt.trim() : "");
-  const attachments = Array.isArray(manifest.attachments)
-    ? manifest.attachments.filter(
-        (attachment) =>
-          attachment &&
-          typeof attachment === "object" &&
-          typeof attachment.name === "string" &&
-          typeof attachment.absolutePath === "string" &&
-          attachment.name.trim().length > 0 &&
-          attachment.absolutePath.trim().length > 0
-      )
-    : [];
-
-  if (rawContent.length === 0) {
-    throw new Error("Task prompt is empty");
-  }
-
-  const promptSections = [];
-  if (attachments.length > 0) {
-    promptSections.push(
-      "Reference Images:",
-      ...attachments.map((attachment) => `- ${attachment.absolutePath.trim()} (${attachment.name.trim()})`),
-      ""
-    );
-  }
-  const responsePreferencePreamble = buildResponsePreferencePreamble();
-  if (responsePreferencePreamble) {
-    promptSections.push(responsePreferencePreamble, "");
-  }
-  promptSections.push("Current user request:", "", rawContent);
-  return promptSections.join("\n");
-};
-
-if (!codexAuthJson) {
-  await new Promise((resolve, reject) => {
-    const proc = spawn("codex", ["login", "--with-api-key"], {
-      env: process.env,
-      cwd: manifest.workspacePath,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-    proc.stdin.write(openAiApiKey);
-    proc.stdin.end();
-    proc.stdout.on("data", (chunk) => process.stdout.write(chunk));
-    proc.stderr.on("data", (chunk) => process.stderr.write(chunk));
-    proc.on("error", reject);
-    proc.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      reject(new Error(`codex login exited with ${code ?? "unknown"}`));
-    });
-  });
-}
-
-const prompt = buildPrompt();
-const isAsk = manifest.action === "ask";
-const persistedSessionId = await readPersistedSessionId();
-let resolvedSessionId = persistedSessionId;
-
-console.log(
-  `[runtime] running codex action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only instruction)" : ""} session=${persistedSessionId ?? "new"}`
-);
-const args = [
-  "exec",
-  "-C",
-  manifest.workspacePath,
-  "-c",
-  "cli_auth_credentials_store=file",
-  "--color",
-  "never",
-  "--json",
-  "--output-last-message",
-  lastMessageFile
-];
-// Ask-mode immutability is enforced by mounting the workspace as read-only in the spawner.
-// Avoid Codex sandbox flags here because nested bubblewrap can fail on hosts without user namespaces.
-args.push("--dangerously-bypass-approvals-and-sandbox");
-if (manifest.resolvedModel) {
-  args.push("-m", manifest.resolvedModel);
-}
-if (manifest.resolvedReasoningEffort) {
-  args.push("-c", `model_reasoning_effort=\"${manifest.resolvedReasoningEffort}\"`);
-}
-if (persistedSessionId) {
-  args.push("resume", persistedSessionId);
-}
-for (const attachment of Array.isArray(manifest.attachments) ? manifest.attachments : []) {
-  if (typeof attachment?.absolutePath === "string" && attachment.absolutePath.trim().length > 0) {
-    args.push("--image", attachment.absolutePath.trim());
-  }
-}
-if (persistedSessionId) {
-  args.push(prompt);
-} else {
-  args.push("--", prompt);
-}
-
-const execProc = spawn("codex", args, { env: process.env, cwd: manifest.workspacePath, stdio: ["ignore", "pipe", "pipe"] });
-let stdoutBuffer = "";
-let stderrBuffer = "";
-const rawEventsStream = createWriteStream(rawEventsJsonlPath, { flags: "a" });
-
-execProc.stdout.on("data", (chunk) => {
-  rawEventsStream.write(chunk);
-  const text = chunk.toString();
-  stdoutBuffer += text;
-  const lines = stdoutBuffer.split("\n");
-  stdoutBuffer = lines.pop() ?? "";
-  for (const line of lines) {
-    const candidate = extractSessionIdFromOutputLine(line);
-    if (candidate) {
-      resolvedSessionId = candidate;
-    }
-  }
-  process.stdout.write(chunk);
-});
-execProc.stderr.on("data", (chunk) => {
-  stderrBuffer += chunk.toString();
-  process.stderr.write(chunk);
-});
-let codexProcessError = null;
-await new Promise((resolve, reject) => {
-  execProc.on("error", reject);
-  execProc.on("close", (code) => {
-    const trailingSessionId = extractSessionIdFromOutputLine(stdoutBuffer);
-    if (trailingSessionId) {
-      resolvedSessionId = trailingSessionId;
-    }
-
-    if (code === 0) {
-      resolve();
-      return;
-    }
-
-    const stderrTail = stderrBuffer.trim();
-    reject(new Error(`codex exited with code ${code ?? "unknown"}${stderrTail ? `: ${stderrTail}` : ""}`));
-  });
-}).catch((error) => {
-  codexProcessError = error;
-});
-await new Promise((resolve, reject) => {
-  rawEventsStream.end(() => resolve());
-  rawEventsStream.on("error", reject);
-});
-if (codexProcessError) {
-  throw codexProcessError;
-}
-
-if (!resolvedSessionId) {
-  resolvedSessionId = await inferSessionIdFromRolloutFiles();
-}
-if (resolvedSessionId) {
-  await writePersistedSessionId(resolvedSessionId);
-  console.log(`[runtime] codex session_id=${resolvedSessionId}`);
-}
-
-const summaryMarkdown = (await readFile(lastMessageFile, "utf8").catch(() => "")).trim();
-if (!summaryMarkdown) {
-  throw new Error("codex returned empty summary markdown");
-}
-
-await writeFile(manifest.resultMarkdownPath, `${summaryMarkdown}\n`, "utf8");
-await writeFile(
-  manifest.resultJsonPath,
-  JSON.stringify(
-    {
-      taskType: manifest.taskType,
-      status: "success",
-      summaryMarkdown,
-      changedFiles: [],
-      metadata: {
-        provider: manifest.provider,
-        action: manifest.action,
-        ...(resolvedSessionId ? { sessionId: resolvedSessionId } : {})
-      }
-    },
-    null,
-    2
-  ),
-  "utf8"
-);
-
-console.log("[runtime] completed");
 ````
 
 ## File: apps/server/src/db/backfill-redis-to-postgres.ts
@@ -29202,7 +28124,6 @@ import type { SettingsStore } from "./settings-store.js";
 import type { SnippetStore } from "./snippet-store.js";
 import type { SequenceStore } from "./sequence-store.js";
 import type { TaskQueueStore } from "./task-queue-store.js";
-import type { TaskDraftStore } from "./task-draft-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { UserStore } from "./user-store.js";
 import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
@@ -29210,7 +28131,6 @@ import type { GitHubOutboundQueueStore } from "./github-outbound-queue-store.js"
 
 export interface AppStores {
   taskStore: TaskStore;
-  taskDraftStore: TaskDraftStore;
   taskQueueStore: TaskQueueStore;
   githubOutboundQueueStore: GitHubOutboundQueueStore;
   webhookDeliveryStore: WebhookDeliveryStore;
@@ -30097,6 +29017,22 @@ describe("TaskStore.createTask", () => {
     assert.equal(task.executionAction, "build");
     assert.equal(task.startedAt, null);
     assert.equal(task.deadline, null);
+  });
+
+  it("creates draft tasks without queueing execution", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask({ ...createTaskInput, draft: true }, repository, "user-1");
+
+    assert.equal(task.status, "draft");
+    assert.equal(task.workflowStatus, "backlog");
+    assert.equal(task.executionStatus, "idle");
+    assert.equal(task.executionAction, null);
+    assert.equal(task.startedAt, null);
+    assert.equal(task.finishedAt, null);
+    assert.deepEqual(await taskStore.listMessages(task.id), []);
   });
 
   it("normalizes task deadlines", async () => {
@@ -32103,9 +31039,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { TaskSourceType, TaskType } from "@agentswarm/shared-types";
 import { Button, Flex, Form, Space, Typography, message } from "antd";
-import { api } from "../src/api/client";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
-import { buildTaskDraftDefinition } from "../src/utils/task-drafts";
 import { trackEvent } from "../src/utils/analytics";
 import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
@@ -32161,13 +31095,11 @@ export function TaskCreatePage() {
     const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
     setSavingDraft(true);
     try {
-      const definition = await buildTaskDraftDefinition(values, promptImageFiles);
-      const draft = await api.createTaskDraft({
-        title: values.title?.trim() || definition.prompt?.trim().split(/\r?\n/u)[0]?.slice(0, 120) || "Untitled Draft",
-        definition
-      });
+      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
+      const definition = buildTaskDefinitionInput(values, encodedAttachments);
+      const draft = await createTaskFromDefinition(definition, { draft: true });
       messageApi.success("Draft saved");
-      router.push(`/tasks/drafts/${draft.id}`);
+      router.push(`/tasks/${draft.id}`);
     } catch (error) {
       messageApi.error(error instanceof Error ? error.message : "Failed to save draft");
     } finally {
@@ -32788,6 +31720,956 @@ Harness remote mode:
 
 ## Sync Policy Reference
 - GitHub sync ownership and conflict policy: [docs/github-sync-ownership-model.md](docs/github-sync-ownership-model.md)
+````
+
+## File: agent-runtime-codex/run-task.mjs
+````javascript
+import { createWriteStream } from "node:fs";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import path from "node:path";
+
+const manifestPath = process.env.TASK_MANIFEST_FILE;
+const providerConfigPath = process.env.PROVIDER_CONFIG_FILE;
+const openAiApiKey = process.env.OPENAI_API_KEY ?? "";
+const openAiBaseUrl = process.env.OPENAI_BASE_URL ?? "";
+const codexAuthJsonB64 = process.env.CODEX_AUTH_JSON_B64 ?? "";
+const codexAuthJson = codexAuthJsonB64.trim()
+  ? Buffer.from(codexAuthJsonB64, "base64").toString("utf8").trim()
+  : "";
+
+if (!manifestPath) {
+  console.error("TASK_MANIFEST_FILE is required");
+  process.exit(1);
+}
+if (!providerConfigPath) {
+  console.error("PROVIDER_CONFIG_FILE is required");
+  process.exit(1);
+}
+if (!openAiApiKey && !codexAuthJson) {
+  console.error("OPENAI_API_KEY or CODEX_AUTH_JSON_B64 is required");
+  process.exit(1);
+}
+
+const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+const providerConfig = await readFile(providerConfigPath, "utf8").catch(() => "");
+const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
+const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
+const codexDir = configuredStatePath && configuredStatePath.length > 0 ? configuredStatePath : path.join("/root", ".codex");
+const homeDir = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : path.dirname(codexDir);
+const lastMessageFile = path.join(path.dirname(manifest.resultJsonPath), "codex-last-message.txt");
+const sessionIdFile = path.join(codexDir, "agentswarm-session-id.txt");
+const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
+  ? manifest.rawEventsJsonlPath.trim()
+  : path.join(path.dirname(manifest.resultJsonPath), "raw-events.jsonl");
+
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const isSessionId = (value) => typeof value === "string" && SESSION_ID_PATTERN.test(value.trim());
+
+const readPersistedSessionId = async () => {
+  const raw = await readFile(sessionIdFile, "utf8").catch(() => "");
+  const candidate = raw.trim();
+  return isSessionId(candidate) ? candidate : null;
+};
+
+const writePersistedSessionId = async (sessionId) => {
+  if (!isSessionId(sessionId)) {
+    return;
+  }
+
+  await writeFile(sessionIdFile, `${sessionId.trim()}\n`, "utf8");
+};
+
+const listRolloutFiles = async (sessionsRoot) => {
+  const pending = [sessionsRoot];
+  const files = [];
+
+  while (pending.length > 0) {
+    const currentDir = pending.pop();
+    if (!currentDir) {
+      continue;
+    }
+
+    const entries = await readdir(currentDir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(fullPath);
+        continue;
+      }
+
+      if (entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl")) {
+        files.push(fullPath);
+      }
+    }
+  }
+
+  return files;
+};
+
+const sessionIdFromRolloutFileName = (rolloutPath) => {
+  const match = path.basename(rolloutPath).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
+  return match?.[1] ?? null;
+};
+
+const inferSessionIdFromRolloutFiles = async () => {
+  const sessionsRoot = path.join(codexDir, "sessions");
+  const rolloutFiles = await listRolloutFiles(sessionsRoot);
+  if (rolloutFiles.length === 0) {
+    return null;
+  }
+
+  const withMtime = await Promise.all(
+    rolloutFiles.map(async (rolloutPath) => ({
+      rolloutPath,
+      mtimeMs: (await stat(rolloutPath).catch(() => null))?.mtimeMs ?? 0
+    }))
+  );
+  withMtime.sort((left, right) => right.mtimeMs - left.mtimeMs);
+
+  for (const { rolloutPath } of withMtime) {
+    const candidate = sessionIdFromRolloutFileName(rolloutPath);
+    if (isSessionId(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+};
+
+const extractSessionIdFromJsonEvent = (event) => {
+  if (!event || typeof event !== "object") {
+    return null;
+  }
+
+  const directFields = [event.session_id, event.sessionId, event.thread_id, event.threadId];
+  for (const value of directFields) {
+    if (isSessionId(value)) {
+      return value.trim();
+    }
+  }
+
+  if (event.type === "session_meta" && event.payload && typeof event.payload === "object" && isSessionId(event.payload.id)) {
+    return event.payload.id.trim();
+  }
+
+  return null;
+};
+
+const extractSessionIdFromOutputLine = (line) => {
+  if (!line || !line.trim().startsWith("{")) {
+    return null;
+  }
+
+  try {
+    return extractSessionIdFromJsonEvent(JSON.parse(line));
+  } catch {
+    return null;
+  }
+};
+
+await mkdir(homeDir, { recursive: true });
+await mkdir(codexDir, { recursive: true });
+await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
+await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
+await writeFile(path.join(codexDir, "config.toml"), providerConfig, "utf8");
+if (codexAuthJson) {
+  await writeFile(path.join(codexDir, "auth.json"), codexAuthJson, "utf8");
+}
+console.log("[runtime] wrote Codex config");
+
+if (openAiBaseUrl) {
+  process.env.OPENAI_BASE_URL = openAiBaseUrl;
+}
+if (openAiApiKey) {
+  process.env.OPENAI_API_KEY = openAiApiKey;
+}
+process.env.GIT_OPTIONAL_LOCKS = "0";
+process.env.HOME = homeDir;
+
+const buildResponsePreferencePreamble = () => {
+  const preference = manifest.agentResponsePreference;
+  if (!preference || typeof preference !== "object") {
+    return "";
+  }
+
+  const lines = ["Response style:"];
+  if (preference.audience === "technical") {
+    lines.push("- Audience: technical.");
+  } else if (preference.audience === "non_technical") {
+    lines.push("- Audience: non-technical.");
+  } else if (preference.audience === "mixed") {
+    lines.push("- Audience: mixed.");
+  }
+
+  if (preference.explanationDepth) {
+    lines.push(`- Explanation depth: ${preference.explanationDepth}.`);
+  }
+  if (preference.jargonLevel) {
+    lines.push(`- Jargon level: ${preference.jargonLevel}.`);
+  }
+  if (preference.codePreference) {
+    lines.push(`- Code preference: ${preference.codePreference}.`);
+  }
+  if (preference.clarifyBehavior) {
+    lines.push(`- Clarification behavior: ${preference.clarifyBehavior}.`);
+  }
+  if (preference.formattingStyle) {
+    lines.push(`- Formatting style: ${preference.formattingStyle}.`);
+  }
+  if (typeof preference.extraInstructions === "string" && preference.extraInstructions.trim()) {
+    lines.push(`- Extra instructions: ${preference.extraInstructions.trim()}`);
+  }
+
+  if (lines.length === 1) {
+    return "";
+  }
+
+  return lines.join("\n");
+};
+
+const buildPrompt = () => {
+  const rawContent = typeof manifest.content === "string" && manifest.content.trim().length > 0
+    ? manifest.content.trim()
+    : (typeof manifest.prompt === "string" ? manifest.prompt.trim() : "");
+  const attachments = Array.isArray(manifest.attachments)
+    ? manifest.attachments.filter(
+        (attachment) =>
+          attachment &&
+          typeof attachment === "object" &&
+          typeof attachment.name === "string" &&
+          typeof attachment.absolutePath === "string" &&
+          attachment.name.trim().length > 0 &&
+          attachment.absolutePath.trim().length > 0
+      )
+    : [];
+
+  if (rawContent.length === 0) {
+    throw new Error("Task prompt is empty");
+  }
+
+  const promptSections = [];
+  if (attachments.length > 0) {
+    promptSections.push(
+      "Reference Images:",
+      ...attachments.map((attachment) => `- ${attachment.absolutePath.trim()} (${attachment.name.trim()})`),
+      ""
+    );
+  }
+  const responsePreferencePreamble = buildResponsePreferencePreamble();
+  if (responsePreferencePreamble) {
+    promptSections.push(responsePreferencePreamble, "");
+  }
+  promptSections.push("Current user request:", "", rawContent);
+  return promptSections.join("\n");
+};
+
+if (!codexAuthJson) {
+  await new Promise((resolve, reject) => {
+    const proc = spawn("codex", ["login", "--with-api-key"], {
+      env: process.env,
+      cwd: manifest.workspacePath,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    proc.stdin.write(openAiApiKey);
+    proc.stdin.end();
+    proc.stdout.on("data", (chunk) => process.stdout.write(chunk));
+    proc.stderr.on("data", (chunk) => process.stderr.write(chunk));
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(`codex login exited with ${code ?? "unknown"}`));
+    });
+  });
+}
+
+const prompt = buildPrompt();
+const isAsk = manifest.action === "ask";
+const persistedSessionId = await readPersistedSessionId();
+let resolvedSessionId = persistedSessionId;
+
+console.log(
+  `[runtime] running codex action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only instruction)" : ""} session=${persistedSessionId ?? "new"}`
+);
+const args = [
+  "exec",
+  "-C",
+  manifest.workspacePath,
+  "-c",
+  "cli_auth_credentials_store=file",
+  "--color",
+  "never",
+  "--json",
+  "--output-last-message",
+  lastMessageFile
+];
+// Ask-mode immutability is enforced by mounting the workspace as read-only in the spawner.
+// Avoid Codex sandbox flags here because nested bubblewrap can fail on hosts without user namespaces.
+args.push("--dangerously-bypass-approvals-and-sandbox");
+if (manifest.resolvedModel) {
+  args.push("-m", manifest.resolvedModel);
+}
+if (manifest.resolvedReasoningEffort) {
+  args.push("-c", `model_reasoning_effort=\"${manifest.resolvedReasoningEffort}\"`);
+}
+if (persistedSessionId) {
+  args.push("resume", persistedSessionId);
+}
+for (const attachment of Array.isArray(manifest.attachments) ? manifest.attachments : []) {
+  if (typeof attachment?.absolutePath === "string" && attachment.absolutePath.trim().length > 0) {
+    args.push("--image", attachment.absolutePath.trim());
+  }
+}
+if (persistedSessionId) {
+  args.push(prompt);
+} else {
+  args.push("--", prompt);
+}
+
+const execProc = spawn("codex", args, { env: process.env, cwd: manifest.workspacePath, stdio: ["ignore", "pipe", "pipe"] });
+let stdoutBuffer = "";
+let stderrBuffer = "";
+const rawEventsStream = createWriteStream(rawEventsJsonlPath, { flags: "a" });
+
+execProc.stdout.on("data", (chunk) => {
+  rawEventsStream.write(chunk);
+  const text = chunk.toString();
+  stdoutBuffer += text;
+  const lines = stdoutBuffer.split("\n");
+  stdoutBuffer = lines.pop() ?? "";
+  for (const line of lines) {
+    const candidate = extractSessionIdFromOutputLine(line);
+    if (candidate) {
+      resolvedSessionId = candidate;
+    }
+  }
+  process.stdout.write(chunk);
+});
+execProc.stderr.on("data", (chunk) => {
+  stderrBuffer += chunk.toString();
+  process.stderr.write(chunk);
+});
+let codexProcessError = null;
+await new Promise((resolve, reject) => {
+  execProc.on("error", reject);
+  execProc.on("close", (code) => {
+    const trailingSessionId = extractSessionIdFromOutputLine(stdoutBuffer);
+    if (trailingSessionId) {
+      resolvedSessionId = trailingSessionId;
+    }
+
+    if (code === 0) {
+      resolve();
+      return;
+    }
+
+    const stderrTail = stderrBuffer.trim();
+    reject(new Error(`codex exited with code ${code ?? "unknown"}${stderrTail ? `: ${stderrTail}` : ""}`));
+  });
+}).catch((error) => {
+  codexProcessError = error;
+});
+await new Promise((resolve, reject) => {
+  rawEventsStream.end(() => resolve());
+  rawEventsStream.on("error", reject);
+});
+if (codexProcessError) {
+  throw codexProcessError;
+}
+
+if (!resolvedSessionId) {
+  resolvedSessionId = await inferSessionIdFromRolloutFiles();
+}
+if (resolvedSessionId) {
+  await writePersistedSessionId(resolvedSessionId);
+  console.log(`[runtime] codex session_id=${resolvedSessionId}`);
+}
+
+const summaryMarkdown = (await readFile(lastMessageFile, "utf8").catch(() => "")).trim();
+if (!summaryMarkdown) {
+  throw new Error("codex returned empty summary markdown");
+}
+
+await writeFile(manifest.resultMarkdownPath, `${summaryMarkdown}\n`, "utf8");
+await writeFile(
+  manifest.resultJsonPath,
+  JSON.stringify(
+    {
+      taskType: manifest.taskType,
+      status: "success",
+      summaryMarkdown,
+      changedFiles: [],
+      metadata: {
+        provider: manifest.provider,
+        action: manifest.action,
+        ...(resolvedSessionId ? { sessionId: resolvedSessionId } : {})
+      }
+    },
+    null,
+    2
+  ),
+  "utf8"
+);
+
+console.log("[runtime] completed");
+````
+
+## File: apps/server/src/routes/github-webhooks.ts
+````typescript
+import type { FastifyInstance } from "fastify";
+import { SYSTEM_ADMIN_ROLE_ID } from "../services/role-store.js";
+import type { GitHubImportService } from "../services/github-import-service.js";
+import type { RepositoryStore } from "../services/repository-store.js";
+import type { SchedulerService } from "../services/scheduler.js";
+import type { SnippetStore } from "../services/snippet-store.js";
+import type { SpawnerService } from "../services/spawner.js";
+import type { TaskStore } from "../services/task-store.js";
+import type { UserStore } from "../services/user-store.js";
+import { withGitHubStatusSyncMarker } from "../lib/github-status-sync.js";
+import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
+
+const GITHUB_DEDUPE_TTL_MS = 15 * 60 * 1_000;
+const githubEventDedupeCache = new Map<string, number>();
+
+interface GitHubIssueLikePayload {
+  action?: string;
+  issue?: { number?: number; labels?: Array<{ name?: string }> };
+}
+
+interface GitHubPullRequestLikePayload {
+  action?: string;
+  pull_request?: { number?: number; labels?: Array<{ name?: string }> };
+}
+
+interface GitHubIssueCommentPayload {
+  action?: string;
+  issue?: { number?: number; labels?: Array<{ name?: string }>; pull_request?: Record<string, unknown> };
+  comment?: { id?: number; body?: string };
+  sender?: { login?: string; type?: string };
+}
+
+interface GitHubReactionPayload {
+  action?: string;
+  reaction?: { id?: number | null };
+  content?: string;
+  issue?: { number?: number; labels?: Array<{ name?: string }>; pull_request?: Record<string, unknown> };
+  comment?: { id?: number; body?: string };
+  sender?: { login?: string; type?: string };
+}
+
+interface GitHubPullRequestReviewCommentPayload {
+  action?: string;
+  pull_request?: { number?: number; labels?: Array<{ name?: string }> };
+  comment?: { id?: number; body?: string };
+  sender?: { login?: string; type?: string };
+}
+
+const ALLOWED_ACTIONS_BY_EVENT: Record<string, Set<string>> = {
+  issues: new Set(["opened", "edited", "closed", "reopened", "labeled", "unlabeled", "assigned", "unassigned"]),
+  pull_request: new Set(["opened", "edited", "closed", "reopened", "synchronize", "labeled", "unlabeled", "ready_for_review", "converted_to_draft"]),
+  issue_comment: new Set(["created", "edited", "deleted"]),
+  pull_request_review_comment: new Set(["created", "edited", "deleted"]),
+  reaction: new Set(["created", "deleted"])
+};
+
+const normalizeLabels = (labels: Array<{ name?: string }> | undefined): Set<string> =>
+  new Set((labels ?? []).map((entry) => (entry.name ?? "").trim().toLowerCase()).filter(Boolean));
+
+const matchesLabels = (
+  labels: Set<string>,
+  filter: { labelsAny?: string[]; labelsAll?: string[]; labelsNone?: string[] } | undefined
+): boolean => {
+  if (!filter) {
+    return true;
+  }
+  const any = (filter.labelsAny ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+  const all = (filter.labelsAll ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+  const none = (filter.labelsNone ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+  if (any.length > 0 && !any.some((entry) => labels.has(entry))) {
+    return false;
+  }
+  if (all.length > 0 && !all.every((entry) => labels.has(entry))) {
+    return false;
+  }
+  if (none.length > 0 && none.some((entry) => labels.has(entry))) {
+    return false;
+  }
+  return true;
+};
+
+type CommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
+
+const BOT_MENTION_TOKEN = "@agent";
+const DEFAULT_ALLOWED_TRIGGERS: CommentTriggerType[] = ["emoji_reaction", "slash_command", "bot_mention"];
+const DEFAULT_ALLOWED_REACTIONS = ["🤖", "robot"];
+const DEFAULT_ALLOWED_COMMANDS = ["/agent run"];
+
+const normalizeLowercaseList = (value: string[] | undefined): string[] =>
+  Array.from(new Set((value ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean)));
+
+const detectCommentTriggerType = (
+  eventType: string,
+  payload: GitHubIssueCommentPayload | GitHubPullRequestReviewCommentPayload | GitHubReactionPayload
+): { triggerType: CommentTriggerType | null; command: string | null } => {
+  if (eventType === "reaction") {
+    return { triggerType: "emoji_reaction", command: null };
+  }
+
+  const body = String(payload.comment?.body ?? "");
+  const lowered = body.toLowerCase();
+  if (lowered.includes(BOT_MENTION_TOKEN)) {
+    return { triggerType: "bot_mention", command: null };
+  }
+  const command = body
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("/"));
+  if (command) {
+    return { triggerType: "slash_command", command };
+  }
+  return { triggerType: null, command: null };
+};
+
+const canActorTrigger = (payload: { sender?: { login?: string; type?: string } }, allowedActorLogins: string[]): boolean => {
+  const actorType = String(payload.sender?.type ?? "").trim().toLowerCase();
+  const actorLogin = String(payload.sender?.login ?? "").trim().toLowerCase();
+  if (!actorLogin) {
+    return false;
+  }
+  // Guardrail against bot/self loops.
+  if (actorType === "bot" || actorLogin.endsWith("[bot]")) {
+    return false;
+  }
+  if (allowedActorLogins.length === 0) {
+    return true;
+  }
+  return allowedActorLogins.includes(actorLogin);
+};
+
+const resolveOwnerUserId = async (userStore: UserStore): Promise<string | null> => {
+  const users = await userStore.listUsers();
+  const admin = users.find((user) => user.roles.some((role) => role.id === SYSTEM_ADMIN_ROLE_ID));
+  return admin?.id ?? users[0]?.id ?? null;
+};
+
+const resolveAssigneeUserId = async (userStore: UserStore, assigneeEmail: string | undefined): Promise<string | null> => {
+  const normalized = assigneeEmail?.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  const users = await userStore.listUsers();
+  const match = users.find((user) => user.email.trim().toLowerCase() === normalized);
+  return match?.id ?? null;
+};
+
+export const isSupportedGitHubEvent = (eventType: string): boolean => Boolean(ALLOWED_ACTIONS_BY_EVENT[eventType]);
+
+export const hasSupportedGitHubAction = (eventType: string, action: string): boolean => {
+  const allowed = ALLOWED_ACTIONS_BY_EVENT[eventType];
+  return Boolean(allowed?.has(action));
+};
+
+export const isValidGitHubEventPayload = (eventType: string, payload: Record<string, unknown>): boolean => {
+  if (eventType === "issues") {
+    const typed = payload as GitHubIssueLikePayload;
+    return Number.isInteger(typed.issue?.number);
+  }
+  if (eventType === "pull_request") {
+    const typed = payload as GitHubPullRequestLikePayload;
+    return Number.isInteger(typed.pull_request?.number);
+  }
+  if (eventType === "issue_comment") {
+    const typed = payload as GitHubIssueCommentPayload;
+    return Number.isInteger(typed.issue?.number) && Number.isInteger(typed.comment?.id);
+  }
+  if (eventType === "pull_request_review_comment") {
+    const typed = payload as GitHubPullRequestReviewCommentPayload;
+    return Number.isInteger(typed.pull_request?.number) && Number.isInteger(typed.comment?.id);
+  }
+  if (eventType === "reaction") {
+    const typed = payload as GitHubReactionPayload;
+    if (!typed.action) {
+      return false;
+    }
+    if (typed.action === "created") {
+      return typeof typed.content === "string" && typed.content.trim().length > 0;
+    }
+    return true;
+  }
+  return false;
+};
+
+const cleanupExpiredGitHubDedupeEntries = (nowMs: number): void => {
+  for (const [key, expiry] of githubEventDedupeCache) {
+    if (expiry <= nowMs) {
+      githubEventDedupeCache.delete(key);
+    }
+  }
+};
+
+export const buildGitHubEventDedupeKey = (
+  repositoryId: string,
+  eventType: string,
+  action: string,
+  payload: Record<string, unknown>,
+  deliveryId: string | null
+): string => {
+  if (deliveryId) {
+    return `delivery:${repositoryId}:${deliveryId}`;
+  }
+  if (eventType === "issues") {
+    const typed = payload as GitHubIssueLikePayload;
+    return `issues:${repositoryId}:${action}:${typed.issue?.number ?? "unknown"}`;
+  }
+  if (eventType === "pull_request") {
+    const typed = payload as GitHubPullRequestLikePayload;
+    return `pull_request:${repositoryId}:${action}:${typed.pull_request?.number ?? "unknown"}`;
+  }
+  if (eventType === "issue_comment") {
+    const typed = payload as GitHubIssueCommentPayload;
+    return `issue_comment:${repositoryId}:${action}:${typed.comment?.id ?? "unknown"}`;
+  }
+  if (eventType === "pull_request_review_comment") {
+    const typed = payload as GitHubPullRequestReviewCommentPayload;
+    return `pull_request_review_comment:${repositoryId}:${action}:${typed.comment?.id ?? "unknown"}`;
+  }
+  if (eventType === "reaction") {
+    const typed = payload as GitHubReactionPayload;
+    return `reaction:${repositoryId}:${action}:${typed.reaction?.id ?? typed.content ?? "unknown"}`;
+  }
+  return `unknown:${repositoryId}:${eventType}:${action}`;
+};
+
+export const isDuplicateGitHubEvent = (
+  repositoryId: string,
+  eventType: string,
+  action: string,
+  payload: Record<string, unknown>,
+  deliveryId: string | null
+): boolean => {
+  const nowMs = Date.now();
+  cleanupExpiredGitHubDedupeEntries(nowMs);
+  const dedupeKey = buildGitHubEventDedupeKey(repositoryId, eventType, action, payload, deliveryId);
+  const existingExpiry = githubEventDedupeCache.get(dedupeKey);
+  if (existingExpiry && existingExpiry > nowMs) {
+    return true;
+  }
+  githubEventDedupeCache.set(dedupeKey, nowMs + GITHUB_DEDUPE_TTL_MS);
+  return false;
+};
+
+export const registerGitHubWebhookRoutes = (
+  app: FastifyInstance,
+  deps: {
+    repositoryStore: RepositoryStore;
+    githubImportService: GitHubImportService;
+    taskStore: TaskStore;
+    userStore: UserStore;
+    scheduler: SchedulerService;
+    spawner: SpawnerService;
+    snippetStore: SnippetStore;
+  }
+): void => {
+  app.post<{ Params: { repositoryId: string } }>("/webhooks/github/:repositoryId", async (request, reply) => {
+    const repository = await deps.repositoryStore.getRepository(request.params.repositoryId);
+    if (!repository) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    const body = (request.body ?? {}) as Record<string, unknown>;
+
+    const githubEventHeader = request.headers["x-github-event"];
+    const githubEvent = (Array.isArray(githubEventHeader) ? githubEventHeader[0] : githubEventHeader) ?? "";
+    const deliveryHeader = request.headers["x-github-delivery"];
+    const githubDeliveryId = ((Array.isArray(deliveryHeader) ? deliveryHeader[0] : deliveryHeader) ?? "").trim() || null;
+    const action = typeof body.action === "string" ? body.action : "";
+
+    if (!isSupportedGitHubEvent(githubEvent)) {
+      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+    }
+    if (!action || !hasSupportedGitHubAction(githubEvent, action)) {
+      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+    }
+    if (!isValidGitHubEventPayload(githubEvent, body)) {
+      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+    }
+    if (isDuplicateGitHubEvent(repository.id, githubEvent, action, body, githubDeliveryId)) {
+      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+    }
+
+    const rules = repository.githubAutomations ?? [];
+    if (rules.length === 0) {
+      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+    }
+
+    const fallbackOwnerUserId = await resolveOwnerUserId(deps.userStore);
+    if (!fallbackOwnerUserId) {
+      return reply.status(409).send({ message: "No users are available to own webhook-created tasks." });
+    }
+
+    let matched = 0;
+    let created = 0;
+
+    if (githubEvent === "issues") {
+      const payload = body as GitHubIssueLikePayload;
+      if (payload.action !== "opened" || !payload.issue?.number) {
+        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+      }
+      const labels = normalizeLabels(payload.issue.labels);
+      for (const rule of rules) {
+        if (!rule.enabled || rule.trigger !== "issue_opened" || !matchesLabels(labels, rule.labelFilter)) {
+          continue;
+        }
+        matched += 1;
+        const issueInput = await deps.githubImportService.buildTaskInputFromIssue(repository, {
+          repoId: repository.id,
+          issueNumber: payload.issue.number,
+          includeComments: rule.task.includeComments ?? false,
+          notes: rule.task.notes,
+          taskType: rule.task.taskType ?? "build",
+          title: rule.task.titleTemplate,
+          provider: rule.task.provider,
+          providerProfile: rule.task.providerProfile,
+          modelOverride: rule.task.modelOverride ?? undefined,
+          codexCredentialSource: rule.task.codexCredentialSource,
+          baseBranch: rule.task.baseBranch,
+          branchStrategy: rule.task.branchStrategy
+        });
+        if (rule.task.snippetId) {
+          const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
+          if (snippet) {
+            issueInput.notes = [snippet.content, issueInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
+          }
+        }
+        issueInput.notes = withGitHubStatusSyncMarker(issueInput.notes, rule.syncStatusEnabled === true);
+        const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
+        const task = await deps.taskStore.createTask(issueInput, repository, ownerUserId);
+        const startResult = await orchestrateTaskStart(
+          {
+            taskStore: deps.taskStore,
+            scheduler: deps.scheduler,
+            spawner: deps.spawner
+          },
+          {
+            task,
+            fallbackMessage: "Webhook-created task execution could not be started"
+          }
+        );
+        if (!startResult.ok) {
+          throw new Error(startResult.message);
+        }
+        created += 1;
+      }
+      return reply.status(202).send({ accepted: true, matched, created });
+    }
+
+    if (githubEvent === "pull_request") {
+      const payload = body as GitHubPullRequestLikePayload;
+      if (payload.action !== "opened" || !payload.pull_request?.number) {
+        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+      }
+      const labels = normalizeLabels(payload.pull_request.labels);
+      for (const rule of rules) {
+        if (!rule.enabled || rule.trigger !== "pull_request_opened" || !matchesLabels(labels, rule.labelFilter)) {
+          continue;
+        }
+        matched += 1;
+        const prInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, {
+          repoId: repository.id,
+          pullRequestNumber: payload.pull_request.number,
+          notes: rule.task.notes,
+          title: rule.task.titleTemplate,
+          provider: rule.task.provider,
+          providerProfile: rule.task.providerProfile,
+          modelOverride: rule.task.modelOverride ?? undefined,
+          codexCredentialSource: rule.task.codexCredentialSource
+        });
+        if (rule.task.snippetId) {
+          const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
+          if (snippet) {
+            prInput.notes = [snippet.content, prInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
+          }
+        }
+        prInput.notes = withGitHubStatusSyncMarker(prInput.notes, rule.syncStatusEnabled === true);
+        const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
+        const task = await deps.taskStore.createTask(prInput, repository, ownerUserId);
+        const startResult = await orchestrateTaskStart(
+          {
+            taskStore: deps.taskStore,
+            scheduler: deps.scheduler,
+            spawner: deps.spawner
+          },
+          {
+            task,
+            fallbackMessage: "Webhook-created task execution could not be started"
+          }
+        );
+        if (!startResult.ok) {
+          throw new Error(startResult.message);
+        }
+        created += 1;
+      }
+      return reply.status(202).send({ accepted: true, matched, created });
+    }
+
+    if (githubEvent === "issue_comment" || githubEvent === "pull_request_review_comment" || githubEvent === "reaction") {
+      const payload = body as GitHubIssueCommentPayload | GitHubPullRequestReviewCommentPayload | GitHubReactionPayload;
+      if (payload.action !== "created") {
+        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+      }
+
+      const { triggerType, command } = detectCommentTriggerType(githubEvent, payload);
+      if (!triggerType) {
+        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+      }
+      const reactionContent =
+        githubEvent === "reaction" ? String((payload as GitHubReactionPayload).content ?? "").trim().toLowerCase() : null;
+
+      const issueNumber =
+        githubEvent === "pull_request_review_comment"
+          ? (payload as GitHubPullRequestReviewCommentPayload).pull_request?.number
+          : (payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.number;
+      if (!issueNumber) {
+        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+      }
+
+      const isPullRequestConversation =
+        githubEvent === "pull_request_review_comment" ||
+        Boolean((payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.pull_request);
+      const labels = normalizeLabels(
+        isPullRequestConversation
+          ? githubEvent === "pull_request_review_comment"
+            ? (payload as GitHubPullRequestReviewCommentPayload).pull_request?.labels
+            : undefined
+          : (payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.labels
+      );
+      const actorLogin = String(payload.sender?.login ?? "unknown");
+      const actorTimestamp = new Date().toISOString();
+
+      for (const rule of rules) {
+        if (!rule.enabled || rule.automationEnabled !== true) {
+          continue;
+        }
+        if (rule.trigger !== (isPullRequestConversation ? "pull_request_opened" : "issue_opened")) {
+          continue;
+        }
+        if (!matchesLabels(labels, rule.labelFilter)) {
+          continue;
+        }
+
+        const allowedTriggers = (rule.allowedTriggers?.length ? rule.allowedTriggers : DEFAULT_ALLOWED_TRIGGERS).map((entry) => entry.trim());
+        if (!allowedTriggers.includes(triggerType)) {
+          continue;
+        }
+        if (triggerType === "slash_command") {
+          const allowedCommands = (rule.allowedCommands?.length ? rule.allowedCommands : DEFAULT_ALLOWED_COMMANDS).map((entry) => entry.trim().toLowerCase());
+          if (!command || !allowedCommands.includes(command.trim().toLowerCase())) {
+            continue;
+          }
+        }
+        if (triggerType === "emoji_reaction") {
+          const allowedReactions = (rule.allowedReactions?.length ? rule.allowedReactions : DEFAULT_ALLOWED_REACTIONS).map((entry) =>
+            entry.trim().toLowerCase()
+          );
+          if (!reactionContent || !allowedReactions.includes(reactionContent)) {
+            continue;
+          }
+        }
+        const allowedActorLogins = normalizeLowercaseList(rule.allowedActorLogins);
+        if (!canActorTrigger(payload, allowedActorLogins)) {
+          continue;
+        }
+
+        matched += 1;
+        const auditLine = `[GitHub Trigger Audit] actor=@${actorLogin} at=${actorTimestamp} trigger=${triggerType}${command ? ` command=${command}` : ""}`;
+        if (isPullRequestConversation) {
+          const prInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, {
+            repoId: repository.id,
+            pullRequestNumber: issueNumber,
+            notes: [auditLine, rule.task.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n"),
+            title: rule.task.titleTemplate,
+            provider: rule.task.provider,
+            providerProfile: rule.task.providerProfile,
+            modelOverride: rule.task.modelOverride ?? undefined,
+            codexCredentialSource: rule.task.codexCredentialSource
+          });
+          if (rule.task.snippetId) {
+            const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
+            if (snippet) {
+              prInput.notes = [snippet.content, prInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
+            }
+          }
+          prInput.notes = withGitHubStatusSyncMarker(prInput.notes, rule.syncStatusEnabled === true);
+          const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
+          const task = await deps.taskStore.createTask(prInput, repository, ownerUserId);
+          const startResult = await orchestrateTaskStart(
+            {
+              taskStore: deps.taskStore,
+              scheduler: deps.scheduler,
+              spawner: deps.spawner
+          },
+          {
+            task,
+            fallbackMessage: "Webhook-created task execution could not be started"
+          }
+          );
+          if (!startResult.ok) {
+            throw new Error(startResult.message);
+          }
+          created += 1;
+        } else {
+          const issueInput = await deps.githubImportService.buildTaskInputFromIssue(repository, {
+            repoId: repository.id,
+            issueNumber,
+            includeComments: rule.task.includeComments ?? true,
+            notes: [auditLine, rule.task.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n"),
+            taskType: rule.task.taskType ?? "build",
+            title: rule.task.titleTemplate,
+            provider: rule.task.provider,
+            providerProfile: rule.task.providerProfile,
+            modelOverride: rule.task.modelOverride ?? undefined,
+            codexCredentialSource: rule.task.codexCredentialSource,
+            baseBranch: rule.task.baseBranch,
+            branchStrategy: rule.task.branchStrategy
+          });
+          if (rule.task.snippetId) {
+            const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
+            if (snippet) {
+              issueInput.notes = [snippet.content, issueInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
+            }
+          }
+          issueInput.notes = withGitHubStatusSyncMarker(issueInput.notes, rule.syncStatusEnabled === true);
+          const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
+          const task = await deps.taskStore.createTask(issueInput, repository, ownerUserId);
+          const startResult = await orchestrateTaskStart(
+            {
+              taskStore: deps.taskStore,
+              scheduler: deps.scheduler,
+              spawner: deps.spawner
+            },
+            {
+              task,
+              fallbackMessage: "Webhook-created task execution could not be started"
+            }
+          );
+          if (!startResult.ok) {
+            throw new Error(startResult.message);
+          }
+          created += 1;
+        }
+      }
+
+      return reply.status(202).send({ accepted: true, matched, created });
+    }
+
+    return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+  });
+};
 ````
 
 ## File: apps/server/src/services/sequence-execution-service.test.ts
@@ -34660,7 +34542,7 @@ export const resolveDefaultPath = (grantedScopes: Iterable<PermissionScope>): st
 };
 
 export const getSelectedNavigationKey = (pathname: string): string => {
-  if (pathname === "/tasks/board" || pathname.startsWith("/tasks/drafts")) {
+  if (pathname === "/tasks/board") {
     return "/tasks/board";
   }
 
@@ -35603,559 +35485,6 @@ describe("orchestrateTaskActionStart", () => {
 });
 ````
 
-## File: apps/server/src/routes/github-webhooks.ts
-````typescript
-import type { FastifyInstance } from "fastify";
-import { SYSTEM_ADMIN_ROLE_ID } from "../services/role-store.js";
-import type { GitHubImportService } from "../services/github-import-service.js";
-import type { RepositoryStore } from "../services/repository-store.js";
-import type { SchedulerService } from "../services/scheduler.js";
-import type { SnippetStore } from "../services/snippet-store.js";
-import type { SpawnerService } from "../services/spawner.js";
-import type { TaskStore } from "../services/task-store.js";
-import type { UserStore } from "../services/user-store.js";
-import { withGitHubStatusSyncMarker } from "../lib/github-status-sync.js";
-import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
-
-const GITHUB_DEDUPE_TTL_MS = 15 * 60 * 1_000;
-const githubEventDedupeCache = new Map<string, number>();
-
-interface GitHubIssueLikePayload {
-  action?: string;
-  issue?: { number?: number; labels?: Array<{ name?: string }> };
-}
-
-interface GitHubPullRequestLikePayload {
-  action?: string;
-  pull_request?: { number?: number; labels?: Array<{ name?: string }> };
-}
-
-interface GitHubIssueCommentPayload {
-  action?: string;
-  issue?: { number?: number; labels?: Array<{ name?: string }>; pull_request?: Record<string, unknown> };
-  comment?: { id?: number; body?: string };
-  sender?: { login?: string; type?: string };
-}
-
-interface GitHubReactionPayload {
-  action?: string;
-  reaction?: { id?: number | null };
-  content?: string;
-  issue?: { number?: number; labels?: Array<{ name?: string }>; pull_request?: Record<string, unknown> };
-  comment?: { id?: number; body?: string };
-  sender?: { login?: string; type?: string };
-}
-
-interface GitHubPullRequestReviewCommentPayload {
-  action?: string;
-  pull_request?: { number?: number; labels?: Array<{ name?: string }> };
-  comment?: { id?: number; body?: string };
-  sender?: { login?: string; type?: string };
-}
-
-const ALLOWED_ACTIONS_BY_EVENT: Record<string, Set<string>> = {
-  issues: new Set(["opened", "edited", "closed", "reopened", "labeled", "unlabeled", "assigned", "unassigned"]),
-  pull_request: new Set(["opened", "edited", "closed", "reopened", "synchronize", "labeled", "unlabeled", "ready_for_review", "converted_to_draft"]),
-  issue_comment: new Set(["created", "edited", "deleted"]),
-  pull_request_review_comment: new Set(["created", "edited", "deleted"]),
-  reaction: new Set(["created", "deleted"])
-};
-
-const normalizeLabels = (labels: Array<{ name?: string }> | undefined): Set<string> =>
-  new Set((labels ?? []).map((entry) => (entry.name ?? "").trim().toLowerCase()).filter(Boolean));
-
-const matchesLabels = (
-  labels: Set<string>,
-  filter: { labelsAny?: string[]; labelsAll?: string[]; labelsNone?: string[] } | undefined
-): boolean => {
-  if (!filter) {
-    return true;
-  }
-  const any = (filter.labelsAny ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
-  const all = (filter.labelsAll ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
-  const none = (filter.labelsNone ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
-  if (any.length > 0 && !any.some((entry) => labels.has(entry))) {
-    return false;
-  }
-  if (all.length > 0 && !all.every((entry) => labels.has(entry))) {
-    return false;
-  }
-  if (none.length > 0 && none.some((entry) => labels.has(entry))) {
-    return false;
-  }
-  return true;
-};
-
-type CommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
-
-const BOT_MENTION_TOKEN = "@agent";
-const DEFAULT_ALLOWED_TRIGGERS: CommentTriggerType[] = ["emoji_reaction", "slash_command", "bot_mention"];
-const DEFAULT_ALLOWED_REACTIONS = ["🤖", "robot"];
-const DEFAULT_ALLOWED_COMMANDS = ["/agent run"];
-
-const normalizeLowercaseList = (value: string[] | undefined): string[] =>
-  Array.from(new Set((value ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean)));
-
-const detectCommentTriggerType = (
-  eventType: string,
-  payload: GitHubIssueCommentPayload | GitHubPullRequestReviewCommentPayload | GitHubReactionPayload
-): { triggerType: CommentTriggerType | null; command: string | null } => {
-  if (eventType === "reaction") {
-    return { triggerType: "emoji_reaction", command: null };
-  }
-
-  const body = String(payload.comment?.body ?? "");
-  const lowered = body.toLowerCase();
-  if (lowered.includes(BOT_MENTION_TOKEN)) {
-    return { triggerType: "bot_mention", command: null };
-  }
-  const command = body
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line.startsWith("/"));
-  if (command) {
-    return { triggerType: "slash_command", command };
-  }
-  return { triggerType: null, command: null };
-};
-
-const canActorTrigger = (payload: { sender?: { login?: string; type?: string } }, allowedActorLogins: string[]): boolean => {
-  const actorType = String(payload.sender?.type ?? "").trim().toLowerCase();
-  const actorLogin = String(payload.sender?.login ?? "").trim().toLowerCase();
-  if (!actorLogin) {
-    return false;
-  }
-  // Guardrail against bot/self loops.
-  if (actorType === "bot" || actorLogin.endsWith("[bot]")) {
-    return false;
-  }
-  if (allowedActorLogins.length === 0) {
-    return true;
-  }
-  return allowedActorLogins.includes(actorLogin);
-};
-
-const resolveOwnerUserId = async (userStore: UserStore): Promise<string | null> => {
-  const users = await userStore.listUsers();
-  const admin = users.find((user) => user.roles.some((role) => role.id === SYSTEM_ADMIN_ROLE_ID));
-  return admin?.id ?? users[0]?.id ?? null;
-};
-
-const resolveAssigneeUserId = async (userStore: UserStore, assigneeEmail: string | undefined): Promise<string | null> => {
-  const normalized = assigneeEmail?.trim().toLowerCase();
-  if (!normalized) {
-    return null;
-  }
-  const users = await userStore.listUsers();
-  const match = users.find((user) => user.email.trim().toLowerCase() === normalized);
-  return match?.id ?? null;
-};
-
-export const isSupportedGitHubEvent = (eventType: string): boolean => Boolean(ALLOWED_ACTIONS_BY_EVENT[eventType]);
-
-export const hasSupportedGitHubAction = (eventType: string, action: string): boolean => {
-  const allowed = ALLOWED_ACTIONS_BY_EVENT[eventType];
-  return Boolean(allowed?.has(action));
-};
-
-export const isValidGitHubEventPayload = (eventType: string, payload: Record<string, unknown>): boolean => {
-  if (eventType === "issues") {
-    const typed = payload as GitHubIssueLikePayload;
-    return Number.isInteger(typed.issue?.number);
-  }
-  if (eventType === "pull_request") {
-    const typed = payload as GitHubPullRequestLikePayload;
-    return Number.isInteger(typed.pull_request?.number);
-  }
-  if (eventType === "issue_comment") {
-    const typed = payload as GitHubIssueCommentPayload;
-    return Number.isInteger(typed.issue?.number) && Number.isInteger(typed.comment?.id);
-  }
-  if (eventType === "pull_request_review_comment") {
-    const typed = payload as GitHubPullRequestReviewCommentPayload;
-    return Number.isInteger(typed.pull_request?.number) && Number.isInteger(typed.comment?.id);
-  }
-  if (eventType === "reaction") {
-    const typed = payload as GitHubReactionPayload;
-    if (!typed.action) {
-      return false;
-    }
-    if (typed.action === "created") {
-      return typeof typed.content === "string" && typed.content.trim().length > 0;
-    }
-    return true;
-  }
-  return false;
-};
-
-const cleanupExpiredGitHubDedupeEntries = (nowMs: number): void => {
-  for (const [key, expiry] of githubEventDedupeCache) {
-    if (expiry <= nowMs) {
-      githubEventDedupeCache.delete(key);
-    }
-  }
-};
-
-export const buildGitHubEventDedupeKey = (
-  repositoryId: string,
-  eventType: string,
-  action: string,
-  payload: Record<string, unknown>,
-  deliveryId: string | null
-): string => {
-  if (deliveryId) {
-    return `delivery:${repositoryId}:${deliveryId}`;
-  }
-  if (eventType === "issues") {
-    const typed = payload as GitHubIssueLikePayload;
-    return `issues:${repositoryId}:${action}:${typed.issue?.number ?? "unknown"}`;
-  }
-  if (eventType === "pull_request") {
-    const typed = payload as GitHubPullRequestLikePayload;
-    return `pull_request:${repositoryId}:${action}:${typed.pull_request?.number ?? "unknown"}`;
-  }
-  if (eventType === "issue_comment") {
-    const typed = payload as GitHubIssueCommentPayload;
-    return `issue_comment:${repositoryId}:${action}:${typed.comment?.id ?? "unknown"}`;
-  }
-  if (eventType === "pull_request_review_comment") {
-    const typed = payload as GitHubPullRequestReviewCommentPayload;
-    return `pull_request_review_comment:${repositoryId}:${action}:${typed.comment?.id ?? "unknown"}`;
-  }
-  if (eventType === "reaction") {
-    const typed = payload as GitHubReactionPayload;
-    return `reaction:${repositoryId}:${action}:${typed.reaction?.id ?? typed.content ?? "unknown"}`;
-  }
-  return `unknown:${repositoryId}:${eventType}:${action}`;
-};
-
-export const isDuplicateGitHubEvent = (
-  repositoryId: string,
-  eventType: string,
-  action: string,
-  payload: Record<string, unknown>,
-  deliveryId: string | null
-): boolean => {
-  const nowMs = Date.now();
-  cleanupExpiredGitHubDedupeEntries(nowMs);
-  const dedupeKey = buildGitHubEventDedupeKey(repositoryId, eventType, action, payload, deliveryId);
-  const existingExpiry = githubEventDedupeCache.get(dedupeKey);
-  if (existingExpiry && existingExpiry > nowMs) {
-    return true;
-  }
-  githubEventDedupeCache.set(dedupeKey, nowMs + GITHUB_DEDUPE_TTL_MS);
-  return false;
-};
-
-export const registerGitHubWebhookRoutes = (
-  app: FastifyInstance,
-  deps: {
-    repositoryStore: RepositoryStore;
-    githubImportService: GitHubImportService;
-    taskStore: TaskStore;
-    userStore: UserStore;
-    scheduler: SchedulerService;
-    spawner: SpawnerService;
-    snippetStore: SnippetStore;
-  }
-): void => {
-  app.post<{ Params: { repositoryId: string } }>("/webhooks/github/:repositoryId", async (request, reply) => {
-    const repository = await deps.repositoryStore.getRepository(request.params.repositoryId);
-    if (!repository) {
-      return reply.status(404).send({ message: "Repository not found" });
-    }
-
-    const body = (request.body ?? {}) as Record<string, unknown>;
-
-    const githubEventHeader = request.headers["x-github-event"];
-    const githubEvent = (Array.isArray(githubEventHeader) ? githubEventHeader[0] : githubEventHeader) ?? "";
-    const deliveryHeader = request.headers["x-github-delivery"];
-    const githubDeliveryId = ((Array.isArray(deliveryHeader) ? deliveryHeader[0] : deliveryHeader) ?? "").trim() || null;
-    const action = typeof body.action === "string" ? body.action : "";
-
-    if (!isSupportedGitHubEvent(githubEvent)) {
-      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-    }
-    if (!action || !hasSupportedGitHubAction(githubEvent, action)) {
-      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-    }
-    if (!isValidGitHubEventPayload(githubEvent, body)) {
-      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-    }
-    if (isDuplicateGitHubEvent(repository.id, githubEvent, action, body, githubDeliveryId)) {
-      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-    }
-
-    const rules = repository.githubAutomations ?? [];
-    if (rules.length === 0) {
-      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-    }
-
-    const fallbackOwnerUserId = await resolveOwnerUserId(deps.userStore);
-    if (!fallbackOwnerUserId) {
-      return reply.status(409).send({ message: "No users are available to own webhook-created tasks." });
-    }
-
-    let matched = 0;
-    let created = 0;
-
-    if (githubEvent === "issues") {
-      const payload = body as GitHubIssueLikePayload;
-      if (payload.action !== "opened" || !payload.issue?.number) {
-        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-      }
-      const labels = normalizeLabels(payload.issue.labels);
-      for (const rule of rules) {
-        if (!rule.enabled || rule.trigger !== "issue_opened" || !matchesLabels(labels, rule.labelFilter)) {
-          continue;
-        }
-        matched += 1;
-        const issueInput = await deps.githubImportService.buildTaskInputFromIssue(repository, {
-          repoId: repository.id,
-          issueNumber: payload.issue.number,
-          includeComments: rule.task.includeComments ?? false,
-          notes: rule.task.notes,
-          taskType: rule.task.taskType ?? "build",
-          title: rule.task.titleTemplate,
-          provider: rule.task.provider,
-          providerProfile: rule.task.providerProfile,
-          modelOverride: rule.task.modelOverride ?? undefined,
-          codexCredentialSource: rule.task.codexCredentialSource,
-          baseBranch: rule.task.baseBranch,
-          branchStrategy: rule.task.branchStrategy
-        });
-        if (rule.task.snippetId) {
-          const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
-          if (snippet) {
-            issueInput.notes = [snippet.content, issueInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
-          }
-        }
-        issueInput.notes = withGitHubStatusSyncMarker(issueInput.notes, rule.syncStatusEnabled === true);
-        const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
-        const task = await deps.taskStore.createTask(issueInput, repository, ownerUserId);
-        const startResult = await orchestrateTaskStart(
-          {
-            taskStore: deps.taskStore,
-            scheduler: deps.scheduler,
-            spawner: deps.spawner
-          },
-          {
-            task,
-            fallbackMessage: "Webhook-created task execution could not be started"
-          }
-        );
-        if (!startResult.ok) {
-          throw new Error(startResult.message);
-        }
-        created += 1;
-      }
-      return reply.status(202).send({ accepted: true, matched, created });
-    }
-
-    if (githubEvent === "pull_request") {
-      const payload = body as GitHubPullRequestLikePayload;
-      if (payload.action !== "opened" || !payload.pull_request?.number) {
-        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-      }
-      const labels = normalizeLabels(payload.pull_request.labels);
-      for (const rule of rules) {
-        if (!rule.enabled || rule.trigger !== "pull_request_opened" || !matchesLabels(labels, rule.labelFilter)) {
-          continue;
-        }
-        matched += 1;
-        const prInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, {
-          repoId: repository.id,
-          pullRequestNumber: payload.pull_request.number,
-          notes: rule.task.notes,
-          title: rule.task.titleTemplate,
-          provider: rule.task.provider,
-          providerProfile: rule.task.providerProfile,
-          modelOverride: rule.task.modelOverride ?? undefined,
-          codexCredentialSource: rule.task.codexCredentialSource
-        });
-        if (rule.task.snippetId) {
-          const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
-          if (snippet) {
-            prInput.notes = [snippet.content, prInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
-          }
-        }
-        prInput.notes = withGitHubStatusSyncMarker(prInput.notes, rule.syncStatusEnabled === true);
-        const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
-        const task = await deps.taskStore.createTask(prInput, repository, ownerUserId);
-        const startResult = await orchestrateTaskStart(
-          {
-            taskStore: deps.taskStore,
-            scheduler: deps.scheduler,
-            spawner: deps.spawner
-          },
-          {
-            task,
-            fallbackMessage: "Webhook-created task execution could not be started"
-          }
-        );
-        if (!startResult.ok) {
-          throw new Error(startResult.message);
-        }
-        created += 1;
-      }
-      return reply.status(202).send({ accepted: true, matched, created });
-    }
-
-    if (githubEvent === "issue_comment" || githubEvent === "pull_request_review_comment" || githubEvent === "reaction") {
-      const payload = body as GitHubIssueCommentPayload | GitHubPullRequestReviewCommentPayload | GitHubReactionPayload;
-      if (payload.action !== "created") {
-        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-      }
-
-      const { triggerType, command } = detectCommentTriggerType(githubEvent, payload);
-      if (!triggerType) {
-        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-      }
-      const reactionContent =
-        githubEvent === "reaction" ? String((payload as GitHubReactionPayload).content ?? "").trim().toLowerCase() : null;
-
-      const issueNumber =
-        githubEvent === "pull_request_review_comment"
-          ? (payload as GitHubPullRequestReviewCommentPayload).pull_request?.number
-          : (payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.number;
-      if (!issueNumber) {
-        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-      }
-
-      const isPullRequestConversation =
-        githubEvent === "pull_request_review_comment" ||
-        Boolean((payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.pull_request);
-      const labels = normalizeLabels(
-        isPullRequestConversation
-          ? githubEvent === "pull_request_review_comment"
-            ? (payload as GitHubPullRequestReviewCommentPayload).pull_request?.labels
-            : undefined
-          : (payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.labels
-      );
-      const actorLogin = String(payload.sender?.login ?? "unknown");
-      const actorTimestamp = new Date().toISOString();
-
-      for (const rule of rules) {
-        if (!rule.enabled || rule.automationEnabled !== true) {
-          continue;
-        }
-        if (rule.trigger !== (isPullRequestConversation ? "pull_request_opened" : "issue_opened")) {
-          continue;
-        }
-        if (!matchesLabels(labels, rule.labelFilter)) {
-          continue;
-        }
-
-        const allowedTriggers = (rule.allowedTriggers?.length ? rule.allowedTriggers : DEFAULT_ALLOWED_TRIGGERS).map((entry) => entry.trim());
-        if (!allowedTriggers.includes(triggerType)) {
-          continue;
-        }
-        if (triggerType === "slash_command") {
-          const allowedCommands = (rule.allowedCommands?.length ? rule.allowedCommands : DEFAULT_ALLOWED_COMMANDS).map((entry) => entry.trim().toLowerCase());
-          if (!command || !allowedCommands.includes(command.trim().toLowerCase())) {
-            continue;
-          }
-        }
-        if (triggerType === "emoji_reaction") {
-          const allowedReactions = (rule.allowedReactions?.length ? rule.allowedReactions : DEFAULT_ALLOWED_REACTIONS).map((entry) =>
-            entry.trim().toLowerCase()
-          );
-          if (!reactionContent || !allowedReactions.includes(reactionContent)) {
-            continue;
-          }
-        }
-        const allowedActorLogins = normalizeLowercaseList(rule.allowedActorLogins);
-        if (!canActorTrigger(payload, allowedActorLogins)) {
-          continue;
-        }
-
-        matched += 1;
-        const auditLine = `[GitHub Trigger Audit] actor=@${actorLogin} at=${actorTimestamp} trigger=${triggerType}${command ? ` command=${command}` : ""}`;
-        if (isPullRequestConversation) {
-          const prInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, {
-            repoId: repository.id,
-            pullRequestNumber: issueNumber,
-            notes: [auditLine, rule.task.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n"),
-            title: rule.task.titleTemplate,
-            provider: rule.task.provider,
-            providerProfile: rule.task.providerProfile,
-            modelOverride: rule.task.modelOverride ?? undefined,
-            codexCredentialSource: rule.task.codexCredentialSource
-          });
-          if (rule.task.snippetId) {
-            const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
-            if (snippet) {
-              prInput.notes = [snippet.content, prInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
-            }
-          }
-          prInput.notes = withGitHubStatusSyncMarker(prInput.notes, rule.syncStatusEnabled === true);
-          const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
-          const task = await deps.taskStore.createTask(prInput, repository, ownerUserId);
-          const startResult = await orchestrateTaskStart(
-            {
-              taskStore: deps.taskStore,
-              scheduler: deps.scheduler,
-              spawner: deps.spawner
-          },
-          {
-            task,
-            fallbackMessage: "Webhook-created task execution could not be started"
-          }
-          );
-          if (!startResult.ok) {
-            throw new Error(startResult.message);
-          }
-          created += 1;
-        } else {
-          const issueInput = await deps.githubImportService.buildTaskInputFromIssue(repository, {
-            repoId: repository.id,
-            issueNumber,
-            includeComments: rule.task.includeComments ?? true,
-            notes: [auditLine, rule.task.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n"),
-            taskType: rule.task.taskType ?? "build",
-            title: rule.task.titleTemplate,
-            provider: rule.task.provider,
-            providerProfile: rule.task.providerProfile,
-            modelOverride: rule.task.modelOverride ?? undefined,
-            codexCredentialSource: rule.task.codexCredentialSource,
-            baseBranch: rule.task.baseBranch,
-            branchStrategy: rule.task.branchStrategy
-          });
-          if (rule.task.snippetId) {
-            const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
-            if (snippet) {
-              issueInput.notes = [snippet.content, issueInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
-            }
-          }
-          issueInput.notes = withGitHubStatusSyncMarker(issueInput.notes, rule.syncStatusEnabled === true);
-          const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
-          const task = await deps.taskStore.createTask(issueInput, repository, ownerUserId);
-          const startResult = await orchestrateTaskStart(
-            {
-              taskStore: deps.taskStore,
-              scheduler: deps.scheduler,
-              spawner: deps.spawner
-            },
-            {
-              task,
-              fallbackMessage: "Webhook-created task execution could not be started"
-            }
-          );
-          if (!startResult.ok) {
-            throw new Error(startResult.message);
-          }
-          created += 1;
-        }
-      }
-
-      return reply.status(202).send({ accepted: true, matched, created });
-    }
-
-    return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-  });
-};
-````
-
 ## File: apps/server/src/routes/imports.ts
 ````typescript
 import { z } from "zod";
@@ -36183,6 +35512,7 @@ const deadlineSchema = z
 
 const issueImportSchema = z.object({
   repoId: z.string().min(1),
+  draft: z.boolean().optional(),
   issueNumber: z.coerce.number().int().positive(),
   includeComments: z.boolean().optional(),
   notes: z.string().max(40_000).optional(),
@@ -36201,6 +35531,7 @@ const issueImportSchema = z.object({
 
 const pullRequestImportSchema = z.object({
   repoId: z.string().min(1),
+  draft: z.boolean().optional(),
   pullRequestNumber: z.coerce.number().int().positive(),
   notes: z.string().max(40_000).optional(),
   deadline: deadlineSchema.optional(),
@@ -36362,7 +35693,10 @@ export const registerImportRoutes = (
         return;
       }
 
-      const taskInput = await deps.githubImportService.buildTaskInputFromIssue(repository, issueRest);
+      const taskInput = {
+        ...(await deps.githubImportService.buildTaskInputFromIssue(repository, issueRest)),
+        ...(issueRest.draft === true ? { draft: true } : {})
+      };
       const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
       const taskWithCreator = await deps.taskStore.patchTask(task.id, {
         creatorName: request.auth!.user.name
@@ -36371,6 +35705,9 @@ export const registerImportRoutes = (
         ...task,
         creatorName: request.auth!.user.name
       };
+      if (issueRest.draft === true) {
+        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
+      }
       const startResult = await orchestrateTaskStart(
         {
           taskStore: deps.taskStore,
@@ -36416,7 +35753,10 @@ export const registerImportRoutes = (
         return;
       }
 
-      const taskInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, createPayload);
+      const taskInput = {
+        ...(await deps.githubImportService.buildTaskInputFromPullRequest(repository, createPayload)),
+        ...(createPayload.draft === true ? { draft: true } : {})
+      };
       const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
       const taskWithCreator = await deps.taskStore.patchTask(task.id, {
         creatorName: request.auth!.user.name
@@ -36425,6 +35765,9 @@ export const registerImportRoutes = (
         ...task,
         creatorName: request.auth!.user.name
       };
+      if (createPayload.draft === true) {
+        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
+      }
       const startResult = await orchestrateTaskStart(
         {
           taskStore: deps.taskStore,
@@ -39554,22 +38897,18 @@ import {
   getTaskTypeLabel,
   getTaskWorkflowStatusLabel,
   type Task,
-  type TaskDraft,
   type UpdateTaskStateInput
 } from "@agentswarm/shared-types";
 import { Button, Card, Empty, Flex, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
 import dayjs from "dayjs";
 import { api } from "../src/api/client";
-import { useTaskDrafts } from "../src/hooks/useTaskDrafts";
 import { useTasks } from "../src/hooks/useTasks";
 import { useAuth } from "./auth-provider";
 import { TaskCreateModal } from "./task-create-modal";
 
 type BoardColumnId = "backlog" | "ready" | "in_progress" | "review" | "done";
 type BoardTaskStatus = UpdateTaskStateInput["status"];
-type BoardItem =
-  | { id: string; type: "draft"; draft: TaskDraft; column: BoardColumnId }
-  | { id: string; type: "task"; task: Task; column: BoardColumnId };
+type BoardItem = { id: string; task: Task; column: BoardColumnId };
 
 const columns: Array<{ id: BoardColumnId; title: string; taskStatus?: BoardTaskStatus; acceptsTasks: boolean }> = [
   { id: "backlog", title: "Backlog", acceptsTasks: false },
@@ -39580,6 +38919,9 @@ const columns: Array<{ id: BoardColumnId; title: string; taskStatus?: BoardTaskS
 ];
 
 const taskColumn = (task: Task): BoardColumnId => {
+  if (task.status === "draft") {
+    return "backlog";
+  }
   if (task.workflowStatus === "done") {
     return "done";
   }
@@ -39592,10 +38934,9 @@ const taskColumn = (task: Task): BoardColumnId => {
   return "ready";
 };
 
-const getItemDeadline = (item: BoardItem): string | null =>
-  item.type === "task" ? item.task.deadline : item.draft.definition.deadline ?? null;
+const getItemDeadline = (item: BoardItem): string | null => item.task.deadline;
 
-const getItemTitle = (item: BoardItem): string => (item.type === "task" ? item.task.title : item.draft.title);
+const getItemTitle = (item: BoardItem): string => item.task.title;
 
 const compareItemsByDeadline = (left: BoardItem, right: BoardItem): number => {
   const leftDeadline = getItemDeadline(left);
@@ -39668,16 +39009,16 @@ function KanbanColumn({
 function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardItem) => void }) {
   const draggable = useDraggable({
     id: item.id,
-    disabled: item.type !== "task",
+    disabled: item.task.status === "draft",
     data: item
   });
   const style = {
     transform: CSS.Translate.toString(draggable.transform),
     opacity: draggable.isDragging ? 0.65 : 1,
-    cursor: item.type === "task" ? "grab" : "pointer"
+    cursor: item.task.status === "draft" ? "pointer" : "grab"
   };
-  const task = item.type === "task" ? item.task : null;
-  const draft = item.type === "draft" ? item.draft : null;
+  const task = item.task;
+  const isDraft = task.status === "draft";
   const deadline = getItemDeadline(item);
 
   return (
@@ -39692,29 +39033,21 @@ function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardIte
       bodyStyle={{ padding: 12 }}
     >
       <Flex vertical gap={8}>
-        <Typography.Text strong ellipsis={{ tooltip: task?.title ?? draft?.title }}>
-          {task?.title ?? draft?.title}
+        <Typography.Text strong ellipsis={{ tooltip: task.title }}>
+          {task.title}
         </Typography.Text>
         <Space size={[6, 6]} wrap>
-          {draft ? <Tag color="default">Draft</Tag> : null}
-          {task ? <Tag>{getTaskTypeLabel(task.taskType)}</Tag> : null}
-          {task && task.executionStatus !== "idle" ? <Tag color={task.executionStatus === "failed" ? "red" : "blue"}>{getTaskExecutionStatusLabel(task.executionStatus)}</Tag> : null}
-          {task?.reviewReason ? <Tag color="gold">{task.reviewReason}</Tag> : null}
+          {isDraft ? <Tag color="default">Draft</Tag> : null}
+          <Tag>{getTaskTypeLabel(task.taskType)}</Tag>
+          {task.executionStatus !== "idle" ? <Tag color={task.executionStatus === "failed" ? "red" : "blue"}>{getTaskExecutionStatusLabel(task.executionStatus)}</Tag> : null}
+          {task.reviewReason ? <Tag color="gold">{task.reviewReason}</Tag> : null}
         </Space>
-        {task ? (
-          <>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {task.repoName}
-            </Typography.Text>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
-            </Typography.Text>
-          </>
-        ) : (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
-          </Typography.Text>
-        )}
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {task.repoName}
+        </Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
+        </Typography.Text>
       </Flex>
     </Card>
   );
@@ -39725,21 +39058,17 @@ export function TasksKanbanBoardPage() {
   const { can } = useAuth();
   const [messageApi, contextHolder] = message.useMessage();
   const { tasks, setTasks, loading: tasksLoading } = useTasks({ view: "active" });
-  const { drafts, setDrafts, loading: draftsLoading } = useTaskDrafts();
   const [movingTaskId, setMovingTaskId] = useState<string | null>(null);
   const [taskCreateModalOpen, setTaskCreateModalOpen] = useState(false);
-  const [selectedDraft, setSelectedDraft] = useState<TaskDraft | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-  const loading = tasksLoading || draftsLoading;
+  const loading = tasksLoading;
   const canCreateTask = can("task:create");
 
   const items = useMemo<BoardItem[]>(() => {
-    const taskItems: BoardItem[] = tasks
+    return tasks
       .filter((task) => task.status !== "archived")
-      .map((task) => ({ id: `task:${task.id}`, type: "task", task, column: taskColumn(task) }));
-    const draftItems: BoardItem[] = drafts.map((draft) => ({ id: `draft:${draft.id}`, type: "draft", draft, column: "backlog" }));
-    return [...draftItems, ...taskItems];
-  }, [drafts, tasks]);
+      .map((task) => ({ id: `task:${task.id}`, task, column: taskColumn(task) }));
+  }, [tasks]);
 
   const itemsByColumn = useMemo(
     () =>
@@ -39753,29 +39082,21 @@ export function TasksKanbanBoardPage() {
   );
 
   const openItem = (item: BoardItem) => {
-    if (item.type === "draft") {
-      setSelectedDraft(item.draft);
-      setTaskCreateModalOpen(true);
-      return;
-    }
-
     router.push(`/tasks/${item.task.id}`);
   };
 
   const openCreateModal = () => {
-    setSelectedDraft(null);
     setTaskCreateModalOpen(true);
   };
 
   const closeCreateModal = () => {
     setTaskCreateModalOpen(false);
-    setSelectedDraft(null);
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const item = event.active.data.current as BoardItem | undefined;
     const column = columns.find((entry) => entry.id === event.over?.id);
-    if (!item || item.type !== "task" || !column?.taskStatus || item.column === column.id) {
+    if (!item || item.task.status === "draft" || !column?.taskStatus || item.column === column.id) {
       return;
     }
 
@@ -39837,19 +39158,9 @@ export function TasksKanbanBoardPage() {
       </Flex>
       <TaskCreateModal
         open={taskCreateModalOpen}
-        draft={selectedDraft}
         onClose={closeCreateModal}
         onCreated={(task) => {
           setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
-        }}
-        onDraftCreated={(draft) => {
-          setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
-        }}
-        onDraftUpdated={(draft) => {
-          setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
-        }}
-        onDraftDeleted={(draftId) => {
-          setDrafts((current) => current.filter((item) => item.id !== draftId));
         }}
       />
     </>
@@ -39880,10 +39191,11 @@ export const startMessageForDefinition = (definition: TaskDefinitionInput): stri
   return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
 };
 
-export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promise<Task> => {
+export const createTaskFromDefinition = (definition: TaskDefinitionInput, options: { draft?: boolean } = {}): Promise<Task> => {
   if (definition.sourceType === "issue") {
     return api.createTaskFromIssue({
       repoId: definition.repoId,
+      draft: options.draft,
       issueNumber: definition.issueNumber,
       includeComments: definition.includeComments,
       notes: definition.notes,
@@ -39902,6 +39214,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
   if (definition.sourceType === "pull_request") {
     return api.createTaskFromPullRequest({
       repoId: definition.repoId,
+      draft: options.draft,
       pullRequestNumber: definition.pullRequestNumber,
       notes: definition.notes,
       deadline: definition.deadline,
@@ -39916,6 +39229,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
   if (definition.sourceType === "sequence") {
     return api.createTask({
       title: definition.title,
+      draft: options.draft,
       repoId: definition.repoId,
       prompt: "",
       notes: definition.notes,
@@ -39936,6 +39250,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput): Promi
 
   return api.createTask({
     title: definition.title,
+    draft: options.draft,
     repoId: definition.repoId,
     prompt: definition.prompt,
     notes: definition.notes,
@@ -40365,7 +39680,6 @@ import { GitHubOutboundService } from "./services/github-outbound-service.js";
 import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
 import { registerRoleRoutes } from "./routes/roles.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
-import { registerTaskDraftRoutes } from "./routes/task-drafts.js";
 import { registerUserRoutes } from "./routes/users.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
@@ -40473,7 +39787,6 @@ const bootstrap = async (): Promise<void> => {
 
   const {
     taskStore,
-    taskDraftStore,
     taskQueueStore,
     githubOutboundQueueStore,
     webhookDeliveryStore,
@@ -40527,7 +39840,6 @@ const bootstrap = async (): Promise<void> => {
     snippetStore,
     auth
   });
-  registerTaskDraftRoutes(app, { taskDraftStore, auth });
   registerSnippetRoutes(app, { snippetStore, auth });
   registerSequenceRoutes(app, { sequenceStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
@@ -41483,6 +40795,372 @@ describe("buildTaskLifecycleViewModel", () => {
 });
 ````
 
+## File: README.md
+````markdown
+<p align="center">
+  <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
+</p>
+
+# AgentSwarm
+
+AgentSwarm is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
+
+The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
+
+## Features
+
+- Create build or ask tasks from a blank prompt, reusable snippet, GitHub issue, or pull request.
+- Run Codex and Claude tasks in isolated Docker runtime containers.
+- Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
+- Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
+- Open task workspaces in an interactive browser terminal.
+- Configure repositories, credentials, roles, users, provider defaults, snippets, and prompt sequences.
+- Automate task creation from GitHub webhooks and repository automation rules.
+- Add repository-local postflight checks with `.agentswarm/postflight.yml`.
+
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| Docker | Required for the main app stack and agent runtime containers. |
+| Docker Compose | `docker compose` is preferred; `docker-compose` is also supported. |
+| Bash | Required by the helper and harness scripts. |
+| Node.js 20+ and npm | Required for local development, checks, tests, and builds. |
+| Python 3 | Required when installing local npm dependencies because native modules such as `node-pty` may build from source. |
+
+## Installation
+
+Clone the repository:
+
+```bash
+git clone git@github.com:coretracker/agentswarm.git
+cd agentswarm
+```
+
+Create a local environment file:
+
+```bash
+cp .env.example .env
+```
+
+Initialize the Docker stack and runtime images:
+
+```bash
+./agentswarm.sh init
+```
+
+For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
+
+```bash
+HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+```
+
+## Quick Start
+
+Start the app:
+
+```bash
+./agentswarm.sh start
+```
+
+Open the UI:
+
+```text
+http://localhost:3217/login
+```
+
+Bootstrap credentials come from `.env.example` and are used only when the first admin user is created. Review and change them before exposing the app outside a local development environment.
+
+After signing in:
+
+1. Open **Settings** and add provider credentials for OpenAI/Codex and/or Anthropic/Claude.
+2. Open **Repositories** and add a Git repository.
+3. Open **Tasks** and create a build or ask task.
+4. Review task output, logs, diffs, and checkpoints from the task detail page.
+
+Stop the app:
+
+```bash
+./agentswarm.sh stop
+```
+
+## Usage
+
+### Common Commands
+
+| Command | Description |
+| --- | --- |
+| `./agentswarm.sh init` | Build runtime images, rebuild compose images, and start the stack. |
+| `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
+| `./agentswarm.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
+| `./agentswarm.sh stop` | Stop the Docker Compose stack. |
+| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
+
+The health endpoint is available at:
+
+```bash
+curl -fsS http://localhost:3217/api/health
+```
+
+### Creating Tasks
+
+Tasks are the main unit of work in AgentSwarm.
+
+- **Build tasks** ask an agent to make repository changes.
+- **Ask tasks** ask an agent to inspect and answer without changing code.
+- **Snippet tasks** start from reusable prompt templates and variables.
+- **GitHub-imported tasks** can be created from issues, pull requests, review comments, and automation rules.
+
+Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
+
+### GitHub Webhooks
+
+AgentSwarm supports repository-scoped GitHub webhooks that can create tasks automatically.
+
+For each repository, configure this webhook URL in GitHub:
+
+```text
+https://<your-host>/api/webhooks/github/<repositoryId>
+```
+
+Use content type `application/json` and subscribe to the events you want to automate, such as Issues, Pull requests, Pull request review comments, Issue comments, and Reactions.
+
+Example repository automation rule:
+
+```json
+[
+  {
+    "id": "ai-issue-opened",
+    "name": "AI issue to build task",
+    "enabled": true,
+    "trigger": "issue_opened",
+    "syncStatusEnabled": true,
+    "labelFilter": {
+      "labelsAny": ["ai"],
+      "labelsNone": ["wip"]
+    },
+    "task": {
+      "assigneeEmail": "dev@example.com",
+      "taskType": "build",
+      "provider": "codex",
+      "providerProfile": "high",
+      "modelOverride": "gpt-5.4",
+      "codexCredentialSource": "profile"
+    }
+  }
+]
+```
+
+Supported automation triggers include:
+
+- `issue_opened`
+- `pull_request_opened`
+- comment or reaction triggers when rule-level comment automation is enabled
+
+### Postflight Checks
+
+Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
+
+Example:
+
+```yaml
+version: 1
+enabled: true
+
+when:
+  task_types: ["build"]
+  providers: ["codex", "claude"]
+
+runner:
+  image: "mcr.microsoft.com/playwright:v1.52.0-jammy"
+  timeout_seconds: 1800
+
+steps:
+  - run: "npm ci"
+  - run: "npx playwright test tests/mobile-screenshots.spec.ts --project=mobile-web --update-snapshots"
+
+on_failure: "fail_task"
+```
+
+## Configuration
+
+Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the AgentSwarm Settings UI, not in `.env`.
+
+### Core Environment Variables
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
+| `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
+| `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
+| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
+| `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
+| `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
+| `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
+| `APP_ENVIRONMENT` | Runtime environment label. | `local` |
+
+### Storage
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `DATABASE_URL` | Postgres connection string. | see `.env.example` |
+| `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start. | `true` |
+| `REDIS_HOST_PORT` | Host port for Redis in local Docker setups. | `6379` |
+| `POSTGRES_HOST_PORT` | Host port for Postgres in local Docker setups. | `5432` |
+
+Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub.
+
+### Git and Workspaces
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `GIT_USER_NAME` | Git author name used by the server. | `AgentSwarm Bot` |
+| `GIT_USER_EMAIL` | Git author email used by the server. | `agentswarm@local.dev` |
+| `TASK_WORKSPACE_HOST_ROOT` | Absolute host path for task workspaces. | unset |
+| `LOCAL_PLANS_HOST_ROOT` | Absolute host path for local plan storage. | unset |
+
+`TASK_WORKSPACE_HOST_ROOT` is important in Docker setups because the server and runtime containers must mount the same host workspace directory.
+
+### Frontend API Routing
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_URL` | Explicit public API base URL. | empty |
+| `NEXT_PUBLIC_SOCKET_URL` | Explicit public Socket.IO URL. | empty |
+
+Leave these empty to use the bundled same-origin `/api` proxy.
+
+### Runtime Images
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
+| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
+| `GIT_TERMINAL_IMAGE` | Restricted Git terminal image. | `local/git-terminal:latest` |
+| `CODEX_INTERACTIVE_IMAGE` | Interactive Codex terminal image. | `local/codex-interactive:latest` |
+| `CLAUDE_INTERACTIVE_IMAGE` | Interactive Claude terminal image. | `local/claude-interactive:latest` |
+
+### Docker Socket Access
+
+Docker socket access is disabled by default and should stay disabled unless a runtime must start nested containers.
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into Codex/Claude runtime containers. | `false` |
+| `DOCKER_SOCKET_HOST_PATH` | Host Docker socket path. | `/var/run/docker.sock` |
+| `DOCKER_SOCKET_CONTAINER_PATH_CODEX` | In-container socket path for Codex runtimes. | `/var/run/docker.sock` |
+| `DOCKER_SOCKET_CONTAINER_PATH_CLAUDE` | In-container socket path for Claude runtimes. | `/var/run/docker.sock` |
+
+Mounting `docker.sock` is highly privileged and can effectively grant host-level control from inside the runtime container.
+
+## Project Structure
+
+```text
+.
++-- apps/
+|   +-- server/          # Backend API, orchestration, stores, routes, schedulers
+|   +-- web/             # Next.js web app
++-- packages/
+|   +-- shared-types/    # Shared TypeScript types used by server and web
++-- agent-runtime-codex/ # Automated Codex task runtime
++-- agent-runtime-claude/# Automated Claude task runtime
++-- tools/               # Supporting runtime and terminal tooling
++-- docs/                # Architecture, development, product, and quality docs
++-- scripts/harness/     # Canonical setup, check, test, and PR scripts
++-- task-workspaces/     # Runtime task workspaces; do not commit
++-- docker-compose.yml   # Local Docker stack
++-- agentswarm.sh        # Main stack helper script
+```
+
+## Development
+
+Install dependencies on a clean checkout:
+
+```bash
+HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+```
+
+Useful development commands:
+
+| Command | Description |
+| --- | --- |
+| `./scripts/harness/doctor.sh` | Verify required tooling and harness availability. |
+| `./scripts/harness/setup.sh` | Initialize the Docker stack and runtime folders. |
+| `./scripts/harness/check.sh` | Run docs checks, boundary checks, lint, and build. |
+| `./scripts/harness/test.sh` | Run the canonical test suite. |
+| `./scripts/harness/pr-ready.sh` | Run pull request readiness checks. |
+| `npm run dev` | Run server and web dev processes together. |
+| `npm run lint` | Run TypeScript no-emit checks for server and web. |
+| `npm run build` | Build shared types, server, and web. |
+| `npm run test` | Run `./scripts/harness/test.sh`. |
+
+Workspace-specific commands:
+
+```bash
+npm run dev -w @agentswarm/server
+npm run dev -w @agentswarm/web
+npm run build -w @agentswarm/shared-types
+```
+
+Before opening a pull request, run:
+
+```bash
+./scripts/harness/pr-ready.sh
+```
+
+The repository uses execution-plan and human-gated-flow checks for non-trivial changes. Useful references:
+
+- `docs/development/setup.md`
+- `docs/development/commands.md`
+- `docs/development/testing.md`
+- `docs/development/pr-workflow.md`
+- `docs/development/agent-review.md`
+
+After any agent-generated repository edit, refresh the Repomix context bundle:
+
+```bash
+npx repomix --style markdown --output docs/repomix.md
+```
+
+## FAQ
+
+### Where do I configure API keys?
+
+Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings UI. Credentials are write-only from the UI and are not returned by the API.
+
+### Can I run without Docker?
+
+The documented and supported path is Docker-based. Some server and web commands can run locally with Node.js, but the full task execution flow depends on Docker runtime containers.
+
+### What does a `202` response from a GitHub webhook mean?
+
+It means AgentSwarm accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
+
+### How do I reset local data?
+
+Run setup with a database reset:
+
+```bash
+HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
+```
+
+## Contributing
+
+1. Read the relevant docs in `docs/index.md`.
+2. Keep changes scoped and update docs when behavior changes.
+3. Run the canonical checks before opening a pull request:
+
+   ```bash
+   ./scripts/harness/pr-ready.sh
+   ```
+
+4. Use the pull request template in `.github/pull_request_template.md`.
+
+## License
+
+No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.
+````
+
 ## File: apps/server/src/routes/repositories.ts
 ````typescript
 import { z } from "zod";
@@ -42021,372 +41699,6 @@ flowchart TD
 ```
 ````
 
-## File: README.md
-````markdown
-<p align="center">
-  <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
-</p>
-
-# AgentSwarm
-
-AgentSwarm is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
-
-The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
-
-## Features
-
-- Create build or ask tasks from a blank prompt, reusable snippet, GitHub issue, or pull request.
-- Run Codex and Claude tasks in isolated Docker runtime containers.
-- Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
-- Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
-- Open task workspaces in an interactive browser terminal.
-- Configure repositories, credentials, roles, users, provider defaults, snippets, and prompt sequences.
-- Automate task creation from GitHub webhooks and repository automation rules.
-- Add repository-local postflight checks with `.agentswarm/postflight.yml`.
-
-## Requirements
-
-| Requirement | Notes |
-| --- | --- |
-| Docker | Required for the main app stack and agent runtime containers. |
-| Docker Compose | `docker compose` is preferred; `docker-compose` is also supported. |
-| Bash | Required by the helper and harness scripts. |
-| Node.js 20+ and npm | Required for local development, checks, tests, and builds. |
-| Python 3 | Required when installing local npm dependencies because native modules such as `node-pty` may build from source. |
-
-## Installation
-
-Clone the repository:
-
-```bash
-git clone git@github.com:coretracker/agentswarm.git
-cd agentswarm
-```
-
-Create a local environment file:
-
-```bash
-cp .env.example .env
-```
-
-Initialize the Docker stack and runtime images:
-
-```bash
-./agentswarm.sh init
-```
-
-For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
-
-```bash
-HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-```
-
-## Quick Start
-
-Start the app:
-
-```bash
-./agentswarm.sh start
-```
-
-Open the UI:
-
-```text
-http://localhost:3217/login
-```
-
-Bootstrap credentials come from `.env.example` and are used only when the first admin user is created. Review and change them before exposing the app outside a local development environment.
-
-After signing in:
-
-1. Open **Settings** and add provider credentials for OpenAI/Codex and/or Anthropic/Claude.
-2. Open **Repositories** and add a Git repository.
-3. Open **Tasks** and create a build or ask task.
-4. Review task output, logs, diffs, and checkpoints from the task detail page.
-
-Stop the app:
-
-```bash
-./agentswarm.sh stop
-```
-
-## Usage
-
-### Common Commands
-
-| Command | Description |
-| --- | --- |
-| `./agentswarm.sh init` | Build runtime images, rebuild compose images, and start the stack. |
-| `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
-| `./agentswarm.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
-| `./agentswarm.sh stop` | Stop the Docker Compose stack. |
-| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
-
-The health endpoint is available at:
-
-```bash
-curl -fsS http://localhost:3217/api/health
-```
-
-### Creating Tasks
-
-Tasks are the main unit of work in AgentSwarm.
-
-- **Build tasks** ask an agent to make repository changes.
-- **Ask tasks** ask an agent to inspect and answer without changing code.
-- **Snippet tasks** start from reusable prompt templates and variables.
-- **GitHub-imported tasks** can be created from issues, pull requests, review comments, and automation rules.
-
-Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
-
-### GitHub Webhooks
-
-AgentSwarm supports repository-scoped GitHub webhooks that can create tasks automatically.
-
-For each repository, configure this webhook URL in GitHub:
-
-```text
-https://<your-host>/api/webhooks/github/<repositoryId>
-```
-
-Use content type `application/json` and subscribe to the events you want to automate, such as Issues, Pull requests, Pull request review comments, Issue comments, and Reactions.
-
-Example repository automation rule:
-
-```json
-[
-  {
-    "id": "ai-issue-opened",
-    "name": "AI issue to build task",
-    "enabled": true,
-    "trigger": "issue_opened",
-    "syncStatusEnabled": true,
-    "labelFilter": {
-      "labelsAny": ["ai"],
-      "labelsNone": ["wip"]
-    },
-    "task": {
-      "assigneeEmail": "dev@example.com",
-      "taskType": "build",
-      "provider": "codex",
-      "providerProfile": "high",
-      "modelOverride": "gpt-5.4",
-      "codexCredentialSource": "profile"
-    }
-  }
-]
-```
-
-Supported automation triggers include:
-
-- `issue_opened`
-- `pull_request_opened`
-- comment or reaction triggers when rule-level comment automation is enabled
-
-### Postflight Checks
-
-Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
-
-Example:
-
-```yaml
-version: 1
-enabled: true
-
-when:
-  task_types: ["build"]
-  providers: ["codex", "claude"]
-
-runner:
-  image: "mcr.microsoft.com/playwright:v1.52.0-jammy"
-  timeout_seconds: 1800
-
-steps:
-  - run: "npm ci"
-  - run: "npx playwright test tests/mobile-screenshots.spec.ts --project=mobile-web --update-snapshots"
-
-on_failure: "fail_task"
-```
-
-## Configuration
-
-Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the AgentSwarm Settings UI, not in `.env`.
-
-### Core Environment Variables
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
-| `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
-| `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
-| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
-| `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
-| `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
-| `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
-| `APP_ENVIRONMENT` | Runtime environment label. | `local` |
-
-### Storage
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `DATABASE_URL` | Postgres connection string. | see `.env.example` |
-| `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start. | `true` |
-| `REDIS_HOST_PORT` | Host port for Redis in local Docker setups. | `6379` |
-| `POSTGRES_HOST_PORT` | Host port for Postgres in local Docker setups. | `5432` |
-
-Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub.
-
-### Git and Workspaces
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `GIT_USER_NAME` | Git author name used by the server. | `AgentSwarm Bot` |
-| `GIT_USER_EMAIL` | Git author email used by the server. | `agentswarm@local.dev` |
-| `TASK_WORKSPACE_HOST_ROOT` | Absolute host path for task workspaces. | unset |
-| `LOCAL_PLANS_HOST_ROOT` | Absolute host path for local plan storage. | unset |
-
-`TASK_WORKSPACE_HOST_ROOT` is important in Docker setups because the server and runtime containers must mount the same host workspace directory.
-
-### Frontend API Routing
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `NEXT_PUBLIC_API_URL` | Explicit public API base URL. | empty |
-| `NEXT_PUBLIC_SOCKET_URL` | Explicit public Socket.IO URL. | empty |
-
-Leave these empty to use the bundled same-origin `/api` proxy.
-
-### Runtime Images
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
-| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
-| `GIT_TERMINAL_IMAGE` | Restricted Git terminal image. | `local/git-terminal:latest` |
-| `CODEX_INTERACTIVE_IMAGE` | Interactive Codex terminal image. | `local/codex-interactive:latest` |
-| `CLAUDE_INTERACTIVE_IMAGE` | Interactive Claude terminal image. | `local/claude-interactive:latest` |
-
-### Docker Socket Access
-
-Docker socket access is disabled by default and should stay disabled unless a runtime must start nested containers.
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into Codex/Claude runtime containers. | `false` |
-| `DOCKER_SOCKET_HOST_PATH` | Host Docker socket path. | `/var/run/docker.sock` |
-| `DOCKER_SOCKET_CONTAINER_PATH_CODEX` | In-container socket path for Codex runtimes. | `/var/run/docker.sock` |
-| `DOCKER_SOCKET_CONTAINER_PATH_CLAUDE` | In-container socket path for Claude runtimes. | `/var/run/docker.sock` |
-
-Mounting `docker.sock` is highly privileged and can effectively grant host-level control from inside the runtime container.
-
-## Project Structure
-
-```text
-.
-+-- apps/
-|   +-- server/          # Backend API, orchestration, stores, routes, schedulers
-|   +-- web/             # Next.js web app
-+-- packages/
-|   +-- shared-types/    # Shared TypeScript types used by server and web
-+-- agent-runtime-codex/ # Automated Codex task runtime
-+-- agent-runtime-claude/# Automated Claude task runtime
-+-- tools/               # Supporting runtime and terminal tooling
-+-- docs/                # Architecture, development, product, and quality docs
-+-- scripts/harness/     # Canonical setup, check, test, and PR scripts
-+-- task-workspaces/     # Runtime task workspaces; do not commit
-+-- docker-compose.yml   # Local Docker stack
-+-- agentswarm.sh        # Main stack helper script
-```
-
-## Development
-
-Install dependencies on a clean checkout:
-
-```bash
-HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-```
-
-Useful development commands:
-
-| Command | Description |
-| --- | --- |
-| `./scripts/harness/doctor.sh` | Verify required tooling and harness availability. |
-| `./scripts/harness/setup.sh` | Initialize the Docker stack and runtime folders. |
-| `./scripts/harness/check.sh` | Run docs checks, boundary checks, lint, and build. |
-| `./scripts/harness/test.sh` | Run the canonical test suite. |
-| `./scripts/harness/pr-ready.sh` | Run pull request readiness checks. |
-| `npm run dev` | Run server and web dev processes together. |
-| `npm run lint` | Run TypeScript no-emit checks for server and web. |
-| `npm run build` | Build shared types, server, and web. |
-| `npm run test` | Run `./scripts/harness/test.sh`. |
-
-Workspace-specific commands:
-
-```bash
-npm run dev -w @agentswarm/server
-npm run dev -w @agentswarm/web
-npm run build -w @agentswarm/shared-types
-```
-
-Before opening a pull request, run:
-
-```bash
-./scripts/harness/pr-ready.sh
-```
-
-The repository uses execution-plan and human-gated-flow checks for non-trivial changes. Useful references:
-
-- `docs/development/setup.md`
-- `docs/development/commands.md`
-- `docs/development/testing.md`
-- `docs/development/pr-workflow.md`
-- `docs/development/agent-review.md`
-
-After any agent-generated repository edit, refresh the Repomix context bundle:
-
-```bash
-npx repomix --style markdown --output docs/repomix.md
-```
-
-## FAQ
-
-### Where do I configure API keys?
-
-Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings UI. Credentials are write-only from the UI and are not returned by the API.
-
-### Can I run without Docker?
-
-The documented and supported path is Docker-based. Some server and web commands can run locally with Node.js, but the full task execution flow depends on Docker runtime containers.
-
-### What does a `202` response from a GitHub webhook mean?
-
-It means AgentSwarm accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
-
-### How do I reset local data?
-
-Run setup with a database reset:
-
-```bash
-HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
-```
-
-## Contributing
-
-1. Read the relevant docs in `docs/index.md`.
-2. Keep changes scoped and update docs when behavior changes.
-3. Run the canonical checks before opening a pull request:
-
-   ```bash
-   ./scripts/harness/pr-ready.sh
-   ```
-
-4. Use the pull request template in `.github/pull_request_template.md`.
-
-## License
-
-No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.
-````
-
 ## File: apps/server/src/db/migrations.ts
 ````typescript
 export interface PostgresMigration {
@@ -42888,6 +42200,15 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(locks.has(key), false);
   });
 
+  it("resolves raw event mount paths for provider runtimes", () => {
+    const spawner = createSpawner();
+
+    const mount = spawner.resolveTaskRunRawEventsMount("task-123", "run-with-spaces");
+
+    assert.equal(mount.hostDir, "/tmp/agentswarm-task-workspaces/.task-state/task-123/raw-runs");
+    assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
+  });
+
   it("prepares build workspace via clone model", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
@@ -43107,7 +42428,7 @@ describe("SpawnerService workspace provisioning", () => {
     "db:backfill:redis-to-postgres": "tsx src/db/backfill-redis-to-postgres.ts",
     "build": "tsc -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/sequence-resolution.test.ts src/services/sequence-execution-service.test.ts src/services/task-store.test.ts src/services/task-draft-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
+    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/sequence-resolution.test.ts src/services/sequence-execution-service.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
   },
   "dependencies": {
     "@agentswarm/shared-types": "*",
@@ -43138,11 +42459,9 @@ describe("SpawnerService workspace provisioning", () => {
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Task, TaskDraft, TaskSourceType } from "@agentswarm/shared-types";
+import type { Task, TaskSourceType } from "@agentswarm/shared-types";
 import { App, Button, Form, Modal } from "antd";
-import { api } from "../src/api/client";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
-import { buildTaskDraftDefinition, formValuesFromTaskDraft, promptImageFilesFromTaskDraft } from "../src/utils/task-drafts";
 import { trackEvent } from "../src/utils/analytics";
 import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
@@ -43156,25 +42475,19 @@ import {
 interface TaskCreateModalProps {
   open: boolean;
   onClose: () => void;
-  draft?: TaskDraft | null;
   onCreated?: (task: Task) => void;
-  onDraftCreated?: (draft: TaskDraft) => void;
-  onDraftUpdated?: (draft: TaskDraft) => void;
-  onDraftDeleted?: (draftId: string) => void;
 }
 
-export function TaskCreateModal({ open, onClose, draft, onCreated, onDraftCreated, onDraftUpdated, onDraftDeleted }: TaskCreateModalProps) {
+export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalProps) {
   const { message } = App.useApp();
   const { can } = useAuth();
   const [form] = Form.useForm<TaskDefinitionFormValues>();
   const [submitting, setSubmitting] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
-  const [deletingDraft, setDeletingDraft] = useState(false);
   const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const canCreateAnyTaskMode = can("task:build") || can("task:ask");
-  const isEditingDraft = Boolean(draft);
-  const busy = submitting || savingDraft || deletingDraft;
+  const busy = submitting || savingDraft;
 
   useEffect(() => {
     if (!open) {
@@ -43182,15 +42495,9 @@ export function TaskCreateModal({ open, onClose, draft, onCreated, onDraftCreate
     }
 
     form.resetFields();
-    if (draft) {
-      form.setFieldsValue(formValuesFromTaskDraft(draft));
-      setPromptImageFiles(promptImageFilesFromTaskDraft(draft));
-      return;
-    }
-
     form.setFieldsValue(getTaskDefinitionInitialValues(undefined));
     setPromptImageFiles([]);
-  }, [draft, form, open]);
+  }, [form, open]);
 
   const handleCancel = () => {
     if (busy) {
@@ -43217,10 +42524,6 @@ export function TaskCreateModal({ open, onClose, draft, onCreated, onDraftCreate
 
       void creationPromise
         .then(async (task) => {
-          if (draft) {
-            await api.deleteTaskDraft(draft.id).catch(() => undefined);
-            onDraftDeleted?.(draft.id);
-          }
           onCreated?.(task);
           message.success(startMessageForDefinition(definition));
         })
@@ -43234,28 +42537,16 @@ export function TaskCreateModal({ open, onClose, draft, onCreated, onDraftCreate
   };
 
   const handleSaveDraft = async () => {
-    const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
     setSavingDraft(true);
     try {
-      const definition = await buildTaskDraftDefinition(values, promptImageFiles);
-      const title = values.title?.trim() || definition.prompt?.trim().split(/\r?\n/u)[0]?.slice(0, 120) || "Untitled Draft";
-      const savedDraft = draft
-        ? await api.updateTaskDraft(draft.id, {
-            title,
-            definition
-          })
-        : await api.createTaskDraft({
-            title,
-            definition
-          });
+      const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
+      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
+      const definition = buildTaskDefinitionInput(values, encodedAttachments);
+      const savedDraft = await createTaskFromDefinition(definition, { draft: true });
       form.resetFields();
       setPromptImageFiles([]);
       onClose();
-      if (draft) {
-        onDraftUpdated?.(savedDraft);
-      } else {
-        onDraftCreated?.(savedDraft);
-      }
+      onCreated?.(savedDraft);
       message.success("Draft saved");
     } catch (error) {
       message.error(error instanceof Error ? error.message : "Failed to save draft");
@@ -43264,45 +42555,18 @@ export function TaskCreateModal({ open, onClose, draft, onCreated, onDraftCreate
     }
   };
 
-  const handleDeleteDraft = async () => {
-    if (!draft) {
-      return;
-    }
-
-    setDeletingDraft(true);
-    try {
-      await api.deleteTaskDraft(draft.id);
-      form.resetFields();
-      setPromptImageFiles([]);
-      onClose();
-      onDraftDeleted?.(draft.id);
-      message.success("Draft deleted");
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "Failed to delete draft");
-    } finally {
-      setDeletingDraft(false);
-    }
-  };
-
   const footer = [
     <Button key="cancel" onClick={handleCancel} disabled={busy}>
       Cancel
     </Button>,
-    ...(isEditingDraft
-      ? [
-          <Button key="delete" danger loading={deletingDraft} disabled={submitting || savingDraft} onClick={() => void handleDeleteDraft()}>
-            Delete Draft
-          </Button>
-        ]
-      : []),
-    <Button key="draft" loading={savingDraft} disabled={submitting || deletingDraft} onClick={() => void handleSaveDraft()}>
+    <Button key="draft" loading={savingDraft} disabled={submitting} onClick={() => void handleSaveDraft()}>
       Save Draft
     </Button>,
     <Button
       key="submit"
       type="primary"
       loading={submitting}
-      disabled={!canCreateAnyTaskMode || savingDraft || deletingDraft}
+      disabled={!canCreateAnyTaskMode || savingDraft}
       onClick={() => form.submit()}
     >
       {selectedSourceType === "issue"
@@ -43317,7 +42581,7 @@ export function TaskCreateModal({ open, onClose, draft, onCreated, onDraftCreate
     <Modal
       open={open}
       onCancel={handleCancel}
-      title={isEditingDraft ? "Edit Draft" : "New Task"}
+      title="New Task"
       width="min(1180px, calc(100vw - 32px))"
       destroyOnHidden
       maskClosable={!busy}
@@ -43478,6 +42742,7 @@ const getInitialAction = (task: { taskType: Task["taskType"] }): TaskAction => (
 
 const normalizeLegacyTaskType = (taskType: string | null | undefined): Task["taskType"] => (taskType === "ask" ? "ask" : "build");
 const currentTaskStatuses = new Set<TaskStatus>([
+  "draft",
   "scheduled",
   "build_queued",
   "preparing_workspace",
@@ -44007,8 +43272,9 @@ export class RedisTaskStore implements TaskStore {
       taskSource === "sequence" && typeof input.sequence_id === "string" && input.sequence_id.trim().length > 0
         ? input.sequence_id.trim()
         : undefined;
+    const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
-    const initialStatus: TaskStatus = "open";
+    const initialStatus: TaskStatus = isDraft ? "draft" : "open";
     const task: Task = {
       id: nanoid(),
       title,
@@ -44043,9 +43309,9 @@ export class RedisTaskStore implements TaskStore {
       branchDiff: null,
       lastAction: initialAction,
       status: initialStatus,
-      workflowStatus: "ready",
-      executionStatus: "queued",
-      executionAction: initialAction,
+      workflowStatus: isDraft ? "backlog" : "ready",
+      executionStatus: isDraft ? "idle" : "queued",
+      executionAction: isDraft ? null : initialAction,
       reviewReason: null,
       logs: [],
       enqueued: false,
@@ -44060,11 +43326,13 @@ export class RedisTaskStore implements TaskStore {
 
     await this.redis.multi().set(this.taskKey(task.id), JSON.stringify(task)).sadd(TASK_IDS_KEY, task.id).exec();
     await this.publishTaskEvent("task:created", task);
-    await this.appendMessage(task.id, {
-      role: "user",
-      action: initialAction,
-      content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
-    });
+    if (!isDraft) {
+      await this.appendMessage(task.id, {
+        role: "user",
+        action: initialAction,
+        content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
+      });
+    }
 
     return this.withPendingCheckpointState(task);
   }
@@ -45343,8 +44611,9 @@ export class PostgresTaskStore implements TaskStore {
       taskSource === "sequence" && typeof input.sequence_id === "string" && input.sequence_id.trim().length > 0
         ? input.sequence_id.trim()
         : undefined;
+    const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
-    const initialStatus: TaskStatus = "open";
+    const initialStatus: TaskStatus = isDraft ? "draft" : "open";
     const task: Task = {
       id: nanoid(),
       title,
@@ -45379,9 +44648,9 @@ export class PostgresTaskStore implements TaskStore {
       branchDiff: null,
       lastAction: initialAction,
       status: initialStatus,
-      workflowStatus: "ready",
-      executionStatus: "queued",
-      executionAction: initialAction,
+      workflowStatus: isDraft ? "backlog" : "ready",
+      executionStatus: isDraft ? "idle" : "queued",
+      executionAction: isDraft ? null : initialAction,
       reviewReason: null,
       logs: [],
       enqueued: false,
@@ -45396,11 +44665,13 @@ export class PostgresTaskStore implements TaskStore {
 
     await this.storeTask(task);
     await this.publishTaskEvent("task:created", task);
-    await this.appendMessage(task.id, {
-      role: "user",
-      action: initialAction,
-      content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
-    });
+    if (!isDraft) {
+      await this.appendMessage(task.id, {
+        role: "user",
+        action: initialAction,
+        content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
+      });
+    }
 
     return this.withPendingCheckpointState(task);
   }
@@ -46304,7 +45575,6 @@ import type {
   CreateTaskFromPullRequestInput,
   CreateTaskMessageInput,
   CreateRepositoryInput,
-  CreateTaskDraftInput,
   CreateTaskInput,
   CreateUserInput,
   GitHubBranchReference,
@@ -46319,7 +45589,6 @@ import type {
   Snippet,
   SystemSettings,
   Task,
-  TaskDraft,
   OpenAiDiffAssistInput,
   OpenAiDiffAssistResult,
   TaskPromptMagicInput,
@@ -46356,7 +45625,6 @@ import type {
   UpdateAuthProfileInput,
   UpdateCredentialSettingsInput,
   UpdateTaskConfigInput,
-  UpdateTaskDraftInput,
   UpdateRepositoryInput,
   UpdateSettingsInput,
   UpdateUserInput,
@@ -46545,21 +45813,9 @@ export const api = {
     return request<Task[]>(`/tasks${query ? `?${query}` : ""}`);
   },
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
-  listTaskDrafts: () => request<TaskDraft[]>("/task-drafts"),
-  getTaskDraft: (id: string) => request<TaskDraft>(`/task-drafts/${id}`),
-  createTaskDraft: (input: CreateTaskDraftInput) =>
-    request<TaskDraft>("/task-drafts", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateTaskDraft: (id: string, input: UpdateTaskDraftInput) =>
-    request<TaskDraft>(`/task-drafts/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteTaskDraft: (id: string) =>
-    request<void>(`/task-drafts/${id}`, {
-      method: "DELETE"
+  startTask: (id: string) =>
+    request<Task>(`/tasks/${id}/start`, {
+      method: "POST"
     }),
   getTaskSequenceRun: (id: string) => request<SequenceRun>(`/tasks/${id}/sequence-run`),
   approveTaskSequenceRun: (id: string) =>
@@ -48341,6 +47597,17 @@ export class SpawnerService {
 
   resolveTaskRunRawEventsJsonlPath(taskId: string, runId: string): string {
     return path.join(resolveTaskStateRootPaths(taskId).serverPath, "raw-runs", `${sanitizePathSegment(runId)}.jsonl`);
+  }
+
+  resolveTaskRunRawEventsJsonlHostPath(taskId: string, runId: string): string {
+    return path.join(resolveTaskStateRootPaths(taskId).hostPath, "raw-runs", `${sanitizePathSegment(runId)}.jsonl`);
+  }
+
+  resolveTaskRunRawEventsMount(taskId: string, runId: string): { hostDir: string; containerDir: string } {
+    return {
+      hostDir: path.dirname(this.resolveTaskRunRawEventsJsonlHostPath(taskId, runId)),
+      containerDir: path.dirname(this.resolveTaskRunRawEventsJsonlPath(taskId, runId))
+    };
   }
 
   private async prepareTaskRunRawEventsJsonl(taskId: string, runId: string): Promise<string> {
@@ -51589,6 +50856,7 @@ export class SpawnerService {
 
       const containerName = `agentswarm-task-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
       const workspaceMountMode = action === "ask" ? "ro" : "rw";
+      const rawEventsMount = runId ? this.resolveTaskRunRawEventsMount(task.id, runId) : null;
       const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
       const providerStateContainerPath = this.resolveProviderStateContainerPath(task.provider);
       const providerStatePaths = await ensureTaskProviderStatePaths(task.id, task.provider);
@@ -51613,6 +50881,7 @@ export class SpawnerService {
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         "-v",
         `${env.TASK_WORKSPACE_HOST_ROOT}:${env.TASK_WORKSPACE_ROOT}:${workspaceMountMode}`,
+        ...(rawEventsMount ? ["-v", `${rawEventsMount.hostDir}:${rawEventsMount.containerDir}:rw`] : []),
         ...gitRuntimeMounts,
         "-v",
         `${providerStatePaths.hostPath}:${providerStateContainerPath}:rw`,
@@ -53109,6 +52378,7 @@ const deadlineSchema = z
 const createTaskSchema = z
   .object({
     title: z.string().min(1),
+    draft: z.boolean().optional(),
     deadline: deadlineSchema.optional(),
     repoId: z.string().min(1),
     prompt: z.string().default(""),
@@ -54352,7 +53622,7 @@ export const registerTaskRoutes = (
     let sequenceRunContext:
       | { runId: string; action: TaskAction; stepPrompts: string[]; initialKnownRunIds: Set<string> }
       | null = null;
-    if (createPayload.task_source === "sequence" && sequenceId && sequenceStepPrompts.length > 0) {
+    if (createPayload.draft !== true && createPayload.task_source === "sequence" && sequenceId && sequenceStepPrompts.length > 0) {
       const { runId } = await sequenceExecutionService.initializeRun(sequenceId, createdTask.id, sequenceStepPrompts, sequenceExecutionMode);
       const initialRuns = await deps.taskStore.listRuns(createdTask.id);
       await deps.taskStore.appendLog(createdTask.id, `Sequence run started with ${sequenceStepPrompts.length} step(s).`);
@@ -54376,6 +53646,16 @@ export const registerTaskRoutes = (
       if (initialMessage) {
         await deps.taskStore.setMessageAttachments(createdTask.id, initialMessage.id, persistedAttachments);
       }
+    }
+    if (createPayload.draft === true) {
+      await deps.taskStore.appendMessage(createdTask.id, {
+        role: "user",
+        action: getTriggerActionForNewTask(createdTask),
+        content: createPayload.prompt.trim().length > 0 ? createPayload.prompt.trim() : "(No prompt provided.)",
+        ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
+      });
+      const draftTask = (await deps.taskStore.getTask(createdTask.id)) ?? createdTask;
+      return reply.status(201).send(await withTaskCreatorName(deps.userStore, draftTask));
     }
     const startResult = await orchestrateTaskStart(
       {
@@ -54486,6 +53766,58 @@ export const registerTaskRoutes = (
 
     const refreshed = await deps.taskStore.getTask(task.id);
     return reply.send(refreshed);
+  });
+
+  app.post<{ Params: { id: string } }>("/tasks/:id/start", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (task.status !== "draft") {
+      return reply.status(409).send({ message: "Only draft tasks can be started with this endpoint." });
+    }
+
+    const action = getTriggerActionForNewTask(task);
+    if (!requireTaskActionCapabilityAccess(request, reply, action)) {
+      return;
+    }
+
+    const promotedTask = await deps.taskStore.setStatus(task.id, "open", {
+      executionStatus: "idle",
+      executionAction: null,
+      errorMessage: null,
+      startedAt: null,
+      finishedAt: null
+    });
+    const startTask = promotedTask ?? task;
+    const messages = await deps.taskStore.listMessages(task.id);
+    const firstUserMessage = messages.find((message) => message.role === "user") ?? null;
+    const startResult = await orchestrateTaskStart(
+      {
+        taskStore: deps.taskStore,
+        scheduler: deps.scheduler,
+        spawner: deps.spawner
+      },
+      {
+        task: startTask,
+        fallbackMessage: "Draft task start failed",
+        input: {
+          content: firstUserMessage?.content?.trim() || startTask.prompt,
+          ...(firstUserMessage?.attachments && firstUserMessage.attachments.length > 0 ? { attachments: firstUserMessage.attachments } : {})
+        }
+      }
+    );
+    if (!startResult.ok) {
+      await deps.taskStore.setStatus(task.id, "draft", {
+        executionStatus: "idle",
+        executionAction: null,
+        enqueued: false
+      });
+      return reply.status(startResult.statusCode).send({ message: startResult.message });
+    }
+
+    return reply.send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
   });
 
   app.post<{ Params: { id: string } }>("/tasks/:id/new-session", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
@@ -55258,6 +54590,7 @@ export type TaskMessageRole = "user" | "assistant" | "system";
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 
 export type TaskStatus =
+  | "draft"
   | "scheduled"
   | "build_queued"
   | "preparing_workspace"
@@ -55832,49 +55165,6 @@ export interface CreateTaskPromptAttachmentInput {
   dataBase64: string;
 }
 
-export interface TaskDraftDefinition {
-  sourceType?: TaskSourceType;
-  title?: string;
-  deadline?: string | null;
-  repoId?: string;
-  prompt?: string;
-  notes?: string;
-  taskType?: TaskType;
-  provider?: AgentProvider;
-  model?: string;
-  providerProfile?: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  issueNumber?: number;
-  includeComments?: boolean;
-  pullRequestNumber?: number;
-  snippetId?: string;
-  snippetVariables?: Record<string, string>;
-  sequenceId?: string;
-  sequenceVariables?: Record<string, string>;
-  attachments?: CreateTaskPromptAttachmentInput[];
-}
-
-export interface TaskDraft {
-  id: string;
-  ownerUserId: string;
-  title: string;
-  definition: TaskDraftDefinition;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface CreateTaskDraftInput {
-  title?: string;
-  definition: TaskDraftDefinition;
-}
-
-export interface UpdateTaskDraftInput {
-  title?: string;
-  definition?: TaskDraftDefinition;
-}
-
 export interface TaskMessage {
   id: string;
   taskId: string;
@@ -56087,6 +55377,7 @@ export interface UpdateRepositoryInput {
 
 export interface CreateTaskInput {
   title: string;
+  draft?: boolean;
   deadline?: string | null;
   repoId: string;
   prompt: string;
@@ -56293,6 +55584,7 @@ export interface SequenceRun {
 
 export interface CreateTaskFromIssueInput {
   repoId: string;
+  draft?: boolean;
   issueNumber: number;
   includeComments?: boolean;
   notes?: string;
@@ -56311,6 +55603,7 @@ export interface CreateTaskFromIssueInput {
 
 export interface CreateTaskFromPullRequestInput {
   repoId: string;
+  draft?: boolean;
   pullRequestNumber: number;
   title?: string;
   notes?: string;
@@ -56498,6 +55791,10 @@ export const getTaskExecutionAction = (
     return task.activeTerminalSessionMode === "git" ? "terminal" : "interactive";
   }
 
+  if (task.status === "draft") {
+    return null;
+  }
+
   if (task.executionAction === "build" || task.executionAction === "ask" || task.executionAction === "interactive" || task.executionAction === "terminal") {
     return task.executionAction;
   }
@@ -56542,7 +55839,7 @@ export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingChe
     return "review";
   }
 
-  if (task.status === "scheduled") {
+  if (task.status === "draft" || task.status === "scheduled") {
     return "backlog";
   }
 
@@ -56580,6 +55877,7 @@ export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
 
 export const getTaskStatusLabel = (status: TaskStatus): string =>
   ({
+    draft: "Draft",
     scheduled: "Scheduled",
     build_queued: "Build Queued",
     preparing_workspace: "Preparing Workspace",
@@ -57530,6 +56828,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "build"
     | "ask"
     | "cancel"
+    | "startDraft"
     | "config"
     | "pull"
     | "push"
@@ -57823,6 +57122,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const isAskTask = taskType === "ask";
   const isImplementationTask = isBuildTask;
   const isArchived = task?.status === "archived";
+  const isDraft = task?.status === "draft";
   const canEditTask = can("task:edit");
   const canCreateTask = can("task:create");
   const canBuildTasks = can("task:build");
@@ -57840,6 +57140,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const checkpointDiffActionsBlocked = lifecycle.checkpointDiffActionsBlocked;
   const isPreparingWorkspace = lifecycle.isPreparingWorkspace;
   const canCancel = canEditTask && (isQueued || isActive);
+  const canStartDraft = canEditTask && !!task && isDraft && !isQueued && !isActive;
   const hasBranchForSync = isBuildTask || isAskTask;
   const canPull = canEditTask && hasBranchForSync && !!task?.branchName && !isArchived && !isActive;
   const canPush = canPull;
@@ -57854,7 +57155,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const pushCount = task?.pushCount ?? 0;
   const canDelete = canDeleteTask && !!task && !isActive;
   const canArchive = canEditTask && !!task && !isActive && !isArchived;
-  const canChangeTaskState = canEditTask && !!task && !isArchived && !isQueued && !isActive;
+  const canChangeTaskState = canEditTask && !!task && !isArchived && !isDraft && !isQueued && !isActive;
   const canAssignTask = canEditTask && canListUsers && isAdminTaskUser && !!task && !isArchived;
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
   const roleAllowedModels = session?.user.allowedModels ?? [];
@@ -58883,7 +58184,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const interactiveComposerSelected = selectedChatAction === "interactive";
   const terminalComposerSelected = selectedChatAction === "terminal";
   const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive" && selectedChatAction !== "terminal";
-  const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived";
+  const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived" || task.status === "draft";
   const promptMagicVisible = (selectedChatAction === "build" || selectedChatAction === "ask") && canCreateTask;
   const parallelAskAllowed =
     selectedChatAction === "ask" &&
@@ -60005,7 +59306,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         canDelete ? { key: "delete", label: "Delete Task", danger: true } : null
       ].filter(Boolean)
     : [];
-  const hasExecutionButtons = canCancel;
+  const hasExecutionButtons = canCancel || canStartDraft;
   const hasGitHubDiffTargetAction = githubPullRequestLookupPending || Boolean(githubDiffTarget);
   const assigneeLabel = task?.ownerUserId ? (assigneeNameById.get(task.ownerUserId) ?? task.ownerUserId) : "Unassigned";
   const contextContent = (
@@ -62241,6 +61542,34 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
                       {hasExecutionButtons ? (
                         <Space wrap size={8}>
+                          {canStartDraft ? (
+                            <Button
+                              type="primary"
+                              onClick={async () => {
+                                setSubmitting("startDraft");
+                                try {
+                                  const updatedTask = await api.startTask(task.id);
+                                  setTask((current) =>
+                                    current
+                                      ? {
+                                          ...current,
+                                          ...updatedTask,
+                                          logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+                                        }
+                                      : updatedTask
+                                  );
+                                  messageApi.success("Draft started");
+                                } catch (error) {
+                                  showTaskActionError(error, "Draft task could not be started");
+                                } finally {
+                                  setSubmitting(null);
+                                }
+                              }}
+                              loading={submitting === "startDraft"}
+                            >
+                              Start Draft
+                            </Button>
+                          ) : null}
                           {canCancel ? (
                             <Button
                               danger
@@ -62270,6 +61599,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                       showIcon
                       message="Archived task"
                       description="Archived tasks are read-only for task changes. You can still inspect history, output, diffs, and delete the task."
+                    />
+                  ) : isDraft ? (
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="Draft task"
+                      description="This task is saved but has not started. Start the draft when it is ready for agent work."
                     />
                   ) : !canEditTask ? (
                     <Alert

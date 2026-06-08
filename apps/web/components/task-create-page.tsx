@@ -4,9 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { TaskSourceType, TaskType } from "@agentswarm/shared-types";
 import { Button, Flex, Form, Space, Typography, message } from "antd";
-import { api } from "../src/api/client";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
-import { buildTaskDraftDefinition } from "../src/utils/task-drafts";
 import { trackEvent } from "../src/utils/analytics";
 import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
@@ -62,13 +60,11 @@ export function TaskCreatePage() {
     const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
     setSavingDraft(true);
     try {
-      const definition = await buildTaskDraftDefinition(values, promptImageFiles);
-      const draft = await api.createTaskDraft({
-        title: values.title?.trim() || definition.prompt?.trim().split(/\r?\n/u)[0]?.slice(0, 120) || "Untitled Draft",
-        definition
-      });
+      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
+      const definition = buildTaskDefinitionInput(values, encodedAttachments);
+      const draft = await createTaskFromDefinition(definition, { draft: true });
       messageApi.success("Draft saved");
-      router.push(`/tasks/drafts/${draft.id}`);
+      router.push(`/tasks/${draft.id}`);
     } catch (error) {
       messageApi.error(error instanceof Error ? error.message : "Failed to save draft");
     } finally {

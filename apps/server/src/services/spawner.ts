@@ -1462,6 +1462,17 @@ export class SpawnerService {
     return path.join(resolveTaskStateRootPaths(taskId).serverPath, "raw-runs", `${sanitizePathSegment(runId)}.jsonl`);
   }
 
+  resolveTaskRunRawEventsJsonlHostPath(taskId: string, runId: string): string {
+    return path.join(resolveTaskStateRootPaths(taskId).hostPath, "raw-runs", `${sanitizePathSegment(runId)}.jsonl`);
+  }
+
+  resolveTaskRunRawEventsMount(taskId: string, runId: string): { hostDir: string; containerDir: string } {
+    return {
+      hostDir: path.dirname(this.resolveTaskRunRawEventsJsonlHostPath(taskId, runId)),
+      containerDir: path.dirname(this.resolveTaskRunRawEventsJsonlPath(taskId, runId))
+    };
+  }
+
   private async prepareTaskRunRawEventsJsonl(taskId: string, runId: string): Promise<string> {
     const rawEventsJsonlPath = this.resolveTaskRunRawEventsJsonlPath(taskId, runId);
     await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
@@ -4708,6 +4719,7 @@ export class SpawnerService {
 
       const containerName = `agentswarm-task-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
       const workspaceMountMode = action === "ask" ? "ro" : "rw";
+      const rawEventsMount = runId ? this.resolveTaskRunRawEventsMount(task.id, runId) : null;
       const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
       const providerStateContainerPath = this.resolveProviderStateContainerPath(task.provider);
       const providerStatePaths = await ensureTaskProviderStatePaths(task.id, task.provider);
@@ -4732,6 +4744,7 @@ export class SpawnerService {
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         "-v",
         `${env.TASK_WORKSPACE_HOST_ROOT}:${env.TASK_WORKSPACE_ROOT}:${workspaceMountMode}`,
+        ...(rawEventsMount ? ["-v", `${rawEventsMount.hostDir}:${rawEventsMount.containerDir}:rw`] : []),
         ...gitRuntimeMounts,
         "-v",
         `${providerStatePaths.hostPath}:${providerStateContainerPath}:rw`,

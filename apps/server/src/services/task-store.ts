@@ -130,6 +130,7 @@ const getInitialAction = (task: { taskType: Task["taskType"] }): TaskAction => (
 
 const normalizeLegacyTaskType = (taskType: string | null | undefined): Task["taskType"] => (taskType === "ask" ? "ask" : "build");
 const currentTaskStatuses = new Set<TaskStatus>([
+  "draft",
   "scheduled",
   "build_queued",
   "preparing_workspace",
@@ -659,8 +660,9 @@ export class RedisTaskStore implements TaskStore {
       taskSource === "sequence" && typeof input.sequence_id === "string" && input.sequence_id.trim().length > 0
         ? input.sequence_id.trim()
         : undefined;
+    const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
-    const initialStatus: TaskStatus = "open";
+    const initialStatus: TaskStatus = isDraft ? "draft" : "open";
     const task: Task = {
       id: nanoid(),
       title,
@@ -695,9 +697,9 @@ export class RedisTaskStore implements TaskStore {
       branchDiff: null,
       lastAction: initialAction,
       status: initialStatus,
-      workflowStatus: "ready",
-      executionStatus: "queued",
-      executionAction: initialAction,
+      workflowStatus: isDraft ? "backlog" : "ready",
+      executionStatus: isDraft ? "idle" : "queued",
+      executionAction: isDraft ? null : initialAction,
       reviewReason: null,
       logs: [],
       enqueued: false,
@@ -712,11 +714,13 @@ export class RedisTaskStore implements TaskStore {
 
     await this.redis.multi().set(this.taskKey(task.id), JSON.stringify(task)).sadd(TASK_IDS_KEY, task.id).exec();
     await this.publishTaskEvent("task:created", task);
-    await this.appendMessage(task.id, {
-      role: "user",
-      action: initialAction,
-      content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
-    });
+    if (!isDraft) {
+      await this.appendMessage(task.id, {
+        role: "user",
+        action: initialAction,
+        content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
+      });
+    }
 
     return this.withPendingCheckpointState(task);
   }
@@ -1995,8 +1999,9 @@ export class PostgresTaskStore implements TaskStore {
       taskSource === "sequence" && typeof input.sequence_id === "string" && input.sequence_id.trim().length > 0
         ? input.sequence_id.trim()
         : undefined;
+    const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
-    const initialStatus: TaskStatus = "open";
+    const initialStatus: TaskStatus = isDraft ? "draft" : "open";
     const task: Task = {
       id: nanoid(),
       title,
@@ -2031,9 +2036,9 @@ export class PostgresTaskStore implements TaskStore {
       branchDiff: null,
       lastAction: initialAction,
       status: initialStatus,
-      workflowStatus: "ready",
-      executionStatus: "queued",
-      executionAction: initialAction,
+      workflowStatus: isDraft ? "backlog" : "ready",
+      executionStatus: isDraft ? "idle" : "queued",
+      executionAction: isDraft ? null : initialAction,
       reviewReason: null,
       logs: [],
       enqueued: false,
@@ -2048,11 +2053,13 @@ export class PostgresTaskStore implements TaskStore {
 
     await this.storeTask(task);
     await this.publishTaskEvent("task:created", task);
-    await this.appendMessage(task.id, {
-      role: "user",
-      action: initialAction,
-      content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
-    });
+    if (!isDraft) {
+      await this.appendMessage(task.id, {
+        role: "user",
+        action: initialAction,
+        content: prompt.trim().length > 0 ? prompt : "(No prompt provided.)"
+      });
+    }
 
     return this.withPendingCheckpointState(task);
   }

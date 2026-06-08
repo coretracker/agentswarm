@@ -73,6 +73,15 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(locks.has(key), false);
   });
 
+  it("resolves raw event mount paths for provider runtimes", () => {
+    const spawner = createSpawner();
+
+    const mount = spawner.resolveTaskRunRawEventsMount("task-123", "run-with-spaces");
+
+    assert.equal(mount.hostDir, "/tmp/agentswarm-task-workspaces/.task-state/task-123/raw-runs");
+    assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
+  });
+
   it("prepares build workspace via clone model", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;

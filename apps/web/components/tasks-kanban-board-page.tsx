@@ -10,22 +10,18 @@ import {
   getTaskTypeLabel,
   getTaskWorkflowStatusLabel,
   type Task,
-  type TaskDraft,
   type UpdateTaskStateInput
 } from "@agentswarm/shared-types";
 import { Button, Card, Empty, Flex, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
 import dayjs from "dayjs";
 import { api } from "../src/api/client";
-import { useTaskDrafts } from "../src/hooks/useTaskDrafts";
 import { useTasks } from "../src/hooks/useTasks";
 import { useAuth } from "./auth-provider";
 import { TaskCreateModal } from "./task-create-modal";
 
 type BoardColumnId = "backlog" | "ready" | "in_progress" | "review" | "done";
 type BoardTaskStatus = UpdateTaskStateInput["status"];
-type BoardItem =
-  | { id: string; type: "draft"; draft: TaskDraft; column: BoardColumnId }
-  | { id: string; type: "task"; task: Task; column: BoardColumnId };
+type BoardItem = { id: string; task: Task; column: BoardColumnId };
 
 const columns: Array<{ id: BoardColumnId; title: string; taskStatus?: BoardTaskStatus; acceptsTasks: boolean }> = [
   { id: "backlog", title: "Backlog", acceptsTasks: false },
@@ -36,6 +32,9 @@ const columns: Array<{ id: BoardColumnId; title: string; taskStatus?: BoardTaskS
 ];
 
 const taskColumn = (task: Task): BoardColumnId => {
+  if (task.status === "draft") {
+    return "backlog";
+  }
   if (task.workflowStatus === "done") {
     return "done";
   }
@@ -48,10 +47,9 @@ const taskColumn = (task: Task): BoardColumnId => {
   return "ready";
 };
 
-const getItemDeadline = (item: BoardItem): string | null =>
-  item.type === "task" ? item.task.deadline : item.draft.definition.deadline ?? null;
+const getItemDeadline = (item: BoardItem): string | null => item.task.deadline;
 
-const getItemTitle = (item: BoardItem): string => (item.type === "task" ? item.task.title : item.draft.title);
+const getItemTitle = (item: BoardItem): string => item.task.title;
 
 const compareItemsByDeadline = (left: BoardItem, right: BoardItem): number => {
   const leftDeadline = getItemDeadline(left);
@@ -124,16 +122,16 @@ function KanbanColumn({
 function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardItem) => void }) {
   const draggable = useDraggable({
     id: item.id,
-    disabled: item.type !== "task",
+    disabled: item.task.status === "draft",
     data: item
   });
   const style = {
     transform: CSS.Translate.toString(draggable.transform),
     opacity: draggable.isDragging ? 0.65 : 1,
-    cursor: item.type === "task" ? "grab" : "pointer"
+    cursor: item.task.status === "draft" ? "pointer" : "grab"
   };
-  const task = item.type === "task" ? item.task : null;
-  const draft = item.type === "draft" ? item.draft : null;
+  const task = item.task;
+  const isDraft = task.status === "draft";
   const deadline = getItemDeadline(item);
 
   return (
@@ -148,29 +146,21 @@ function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardIte
       bodyStyle={{ padding: 12 }}
     >
       <Flex vertical gap={8}>
-        <Typography.Text strong ellipsis={{ tooltip: task?.title ?? draft?.title }}>
-          {task?.title ?? draft?.title}
+        <Typography.Text strong ellipsis={{ tooltip: task.title }}>
+          {task.title}
         </Typography.Text>
         <Space size={[6, 6]} wrap>
-          {draft ? <Tag color="default">Draft</Tag> : null}
-          {task ? <Tag>{getTaskTypeLabel(task.taskType)}</Tag> : null}
-          {task && task.executionStatus !== "idle" ? <Tag color={task.executionStatus === "failed" ? "red" : "blue"}>{getTaskExecutionStatusLabel(task.executionStatus)}</Tag> : null}
-          {task?.reviewReason ? <Tag color="gold">{task.reviewReason}</Tag> : null}
+          {isDraft ? <Tag color="default">Draft</Tag> : null}
+          <Tag>{getTaskTypeLabel(task.taskType)}</Tag>
+          {task.executionStatus !== "idle" ? <Tag color={task.executionStatus === "failed" ? "red" : "blue"}>{getTaskExecutionStatusLabel(task.executionStatus)}</Tag> : null}
+          {task.reviewReason ? <Tag color="gold">{task.reviewReason}</Tag> : null}
         </Space>
-        {task ? (
-          <>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {task.repoName}
-            </Typography.Text>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
-            </Typography.Text>
-          </>
-        ) : (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
-          </Typography.Text>
-        )}
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {task.repoName}
+        </Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
+        </Typography.Text>
       </Flex>
     </Card>
   );
@@ -181,21 +171,17 @@ export function TasksKanbanBoardPage() {
   const { can } = useAuth();
   const [messageApi, contextHolder] = message.useMessage();
   const { tasks, setTasks, loading: tasksLoading } = useTasks({ view: "active" });
-  const { drafts, setDrafts, loading: draftsLoading } = useTaskDrafts();
   const [movingTaskId, setMovingTaskId] = useState<string | null>(null);
   const [taskCreateModalOpen, setTaskCreateModalOpen] = useState(false);
-  const [selectedDraft, setSelectedDraft] = useState<TaskDraft | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-  const loading = tasksLoading || draftsLoading;
+  const loading = tasksLoading;
   const canCreateTask = can("task:create");
 
   const items = useMemo<BoardItem[]>(() => {
-    const taskItems: BoardItem[] = tasks
+    return tasks
       .filter((task) => task.status !== "archived")
-      .map((task) => ({ id: `task:${task.id}`, type: "task", task, column: taskColumn(task) }));
-    const draftItems: BoardItem[] = drafts.map((draft) => ({ id: `draft:${draft.id}`, type: "draft", draft, column: "backlog" }));
-    return [...draftItems, ...taskItems];
-  }, [drafts, tasks]);
+      .map((task) => ({ id: `task:${task.id}`, task, column: taskColumn(task) }));
+  }, [tasks]);
 
   const itemsByColumn = useMemo(
     () =>
@@ -209,29 +195,21 @@ export function TasksKanbanBoardPage() {
   );
 
   const openItem = (item: BoardItem) => {
-    if (item.type === "draft") {
-      setSelectedDraft(item.draft);
-      setTaskCreateModalOpen(true);
-      return;
-    }
-
     router.push(`/tasks/${item.task.id}`);
   };
 
   const openCreateModal = () => {
-    setSelectedDraft(null);
     setTaskCreateModalOpen(true);
   };
 
   const closeCreateModal = () => {
     setTaskCreateModalOpen(false);
-    setSelectedDraft(null);
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const item = event.active.data.current as BoardItem | undefined;
     const column = columns.find((entry) => entry.id === event.over?.id);
-    if (!item || item.type !== "task" || !column?.taskStatus || item.column === column.id) {
+    if (!item || item.task.status === "draft" || !column?.taskStatus || item.column === column.id) {
       return;
     }
 
@@ -293,19 +271,9 @@ export function TasksKanbanBoardPage() {
       </Flex>
       <TaskCreateModal
         open={taskCreateModalOpen}
-        draft={selectedDraft}
         onClose={closeCreateModal}
         onCreated={(task) => {
           setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
-        }}
-        onDraftCreated={(draft) => {
-          setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
-        }}
-        onDraftUpdated={(draft) => {
-          setDrafts((current) => [draft, ...current.filter((item) => item.id !== draft.id)]);
-        }}
-        onDraftDeleted={(draftId) => {
-          setDrafts((current) => current.filter((item) => item.id !== draftId));
         }}
       />
     </>

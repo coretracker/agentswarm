@@ -23,6 +23,7 @@ const deadlineSchema = z
 
 const issueImportSchema = z.object({
   repoId: z.string().min(1),
+  draft: z.boolean().optional(),
   issueNumber: z.coerce.number().int().positive(),
   includeComments: z.boolean().optional(),
   notes: z.string().max(40_000).optional(),
@@ -41,6 +42,7 @@ const issueImportSchema = z.object({
 
 const pullRequestImportSchema = z.object({
   repoId: z.string().min(1),
+  draft: z.boolean().optional(),
   pullRequestNumber: z.coerce.number().int().positive(),
   notes: z.string().max(40_000).optional(),
   deadline: deadlineSchema.optional(),
@@ -202,7 +204,10 @@ export const registerImportRoutes = (
         return;
       }
 
-      const taskInput = await deps.githubImportService.buildTaskInputFromIssue(repository, issueRest);
+      const taskInput = {
+        ...(await deps.githubImportService.buildTaskInputFromIssue(repository, issueRest)),
+        ...(issueRest.draft === true ? { draft: true } : {})
+      };
       const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
       const taskWithCreator = await deps.taskStore.patchTask(task.id, {
         creatorName: request.auth!.user.name
@@ -211,6 +216,9 @@ export const registerImportRoutes = (
         ...task,
         creatorName: request.auth!.user.name
       };
+      if (issueRest.draft === true) {
+        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
+      }
       const startResult = await orchestrateTaskStart(
         {
           taskStore: deps.taskStore,
@@ -256,7 +264,10 @@ export const registerImportRoutes = (
         return;
       }
 
-      const taskInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, createPayload);
+      const taskInput = {
+        ...(await deps.githubImportService.buildTaskInputFromPullRequest(repository, createPayload)),
+        ...(createPayload.draft === true ? { draft: true } : {})
+      };
       const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
       const taskWithCreator = await deps.taskStore.patchTask(task.id, {
         creatorName: request.auth!.user.name
@@ -265,6 +276,9 @@ export const registerImportRoutes = (
         ...task,
         creatorName: request.auth!.user.name
       };
+      if (createPayload.draft === true) {
+        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
+      }
       const startResult = await orchestrateTaskStart(
         {
           taskStore: deps.taskStore,

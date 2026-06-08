@@ -36,6 +36,10 @@ describe("normalizeTaskLifecycleStatus", () => {
     assert.equal(normalizeTaskLifecycleStatus("build_queued", "build", false), "open");
     assert.equal(normalizeTaskLifecycleStatus("asking", "ask", false), "open");
   });
+
+  it("preserves draft state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("draft", "build", false), "draft");
+  });
 });
 
 describe("reconcileTaskStatusWithPendingCheckpoint", () => {
@@ -64,5 +68,9 @@ describe("reconcileTaskStatusWithPendingCheckpoint", () => {
 
   it("keeps scheduled tasks unchanged", () => {
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("scheduled", true), "scheduled");
+  });
+
+  it("keeps draft tasks unchanged", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("draft", true), "draft");
   });
 });

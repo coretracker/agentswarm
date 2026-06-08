@@ -88,7 +88,7 @@ export const resolveDefaultPath = (grantedScopes: Iterable<PermissionScope>): st
 };
 
 export const getSelectedNavigationKey = (pathname: string): string => {
-  if (pathname === "/tasks/board" || pathname.startsWith("/tasks/drafts")) {
+  if (pathname === "/tasks/board") {
     return "/tasks/board";
   }
 

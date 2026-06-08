@@ -217,6 +217,22 @@ describe("TaskStore.createTask", () => {
     assert.equal(task.deadline, null);
   });
 
+  it("creates draft tasks without queueing execution", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask({ ...createTaskInput, draft: true }, repository, "user-1");
+
+    assert.equal(task.status, "draft");
+    assert.equal(task.workflowStatus, "backlog");
+    assert.equal(task.executionStatus, "idle");
+    assert.equal(task.executionAction, null);
+    assert.equal(task.startedAt, null);
+    assert.equal(task.finishedAt, null);
+    assert.deepEqual(await taskStore.listMessages(task.id), []);
+  });
+
   it("normalizes task deadlines", async () => {
     const redis = new FakeRedis();
     const taskStore = new RedisTaskStore(redis as never, {

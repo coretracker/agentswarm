@@ -64,7 +64,7 @@ export class SchedulerService {
     }
 
     const allowParallelAsk = action === "ask" && task.executionStatus === "running" && (task.executionAction === "build" || task.executionAction === "ask");
-    if ((!allowParallelAsk && isExecutionBusy(task)) || task.status === "archived") {
+    if ((!allowParallelAsk && isExecutionBusy(task)) || task.status === "archived" || task.status === "draft") {
       return false;
     }
 
@@ -108,7 +108,7 @@ export class SchedulerService {
       return false;
     }
 
-    if (isExecutionBusy(task) || task.status === "archived") {
+    if (isExecutionBusy(task) || task.status === "archived" || task.status === "draft") {
       return false;
     }
 
