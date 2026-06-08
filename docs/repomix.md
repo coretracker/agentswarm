@@ -14009,6 +14009,58 @@ export const getAppAntdTheme = (mode: AppThemeMode): ThemeConfig => {
 };
 ````
 
+## File: apps/web/src/theme/code-highlighting.ts
+````typescript
+import type { CSSProperties } from "react";
+import type { PrismTheme } from "prism-react-renderer";
+import { themes } from "prism-react-renderer";
+import type { GlobalToken } from "antd/es/theme/interface";
+import { isDarkAppTheme, type AppThemeMode } from "./antd-theme";
+
+type HighlightTokenKind = "plain" | "comment" | "keyword" | "number" | "string";
+
+type TokenStyleMap = Record<HighlightTokenKind, CSSProperties>;
+
+function createPrismThemeFromToken(baseTheme: PrismTheme, token: GlobalToken, darkMode: boolean): PrismTheme {
+  const keywordColor = darkMode ? token.colorPrimaryText : token.colorPrimary;
+  const stringColor = darkMode ? token.colorSuccessText : token.colorSuccess;
+  const commentColor = token.colorTextTertiary;
+  const numberColor = darkMode ? token.colorWarningText : token.colorWarning;
+
+  return {
+    ...baseTheme,
+    plain: {
+      ...(baseTheme.plain ?? {}),
+      color: token.colorText,
+      backgroundColor: token.colorBgContainer
+    },
+    styles: [
+      ...(baseTheme.styles ?? []),
+      { types: ["comment", "prolog", "doctype", "cdata"], style: { color: commentColor, fontStyle: "italic" } },
+      { types: ["keyword", "selector", "inserted"], style: { color: keywordColor, fontWeight: "600" } },
+      { types: ["string", "char", "attr-value"], style: { color: stringColor } },
+      { types: ["number", "boolean", "constant"], style: { color: numberColor } }
+    ]
+  };
+}
+
+export function getPrismTheme(mode: AppThemeMode, token: GlobalToken): PrismTheme {
+  const darkMode = isDarkAppTheme(mode);
+  const baseTheme = darkMode ? themes.vsDark : themes.github;
+  return createPrismThemeFromToken(baseTheme, token, darkMode);
+}
+
+export function getCodeTokenStyles(token: GlobalToken): TokenStyleMap {
+  return {
+    plain: { color: token.colorText },
+    comment: { color: token.colorTextTertiary, fontStyle: "italic" },
+    keyword: { color: token.colorPrimaryText, fontWeight: 600 },
+    number: { color: token.colorWarningText },
+    string: { color: token.colorSuccessText }
+  };
+}
+````
+
 ## File: apps/web/src/utils/diff.test.ts
 ````typescript
 import assert from "node:assert/strict";
@@ -18890,58 +18942,6 @@ export const useTaskSequenceRun = (taskId: string, enabled = true) => {
 
   return { sequenceRun, loading, refetch };
 };
-````
-
-## File: apps/web/src/theme/code-highlighting.ts
-````typescript
-import type { CSSProperties } from "react";
-import type { PrismTheme } from "prism-react-renderer";
-import { themes } from "prism-react-renderer";
-import type { GlobalToken } from "antd/es/theme/interface";
-import { isDarkAppTheme, type AppThemeMode } from "./antd-theme";
-
-type HighlightTokenKind = "plain" | "comment" | "keyword" | "number" | "string";
-
-type TokenStyleMap = Record<HighlightTokenKind, CSSProperties>;
-
-function createPrismThemeFromToken(baseTheme: PrismTheme, token: GlobalToken, darkMode: boolean): PrismTheme {
-  const keywordColor = darkMode ? token.colorPrimaryText : token.colorPrimary;
-  const stringColor = darkMode ? token.colorSuccessText : token.colorSuccess;
-  const commentColor = token.colorTextTertiary;
-  const numberColor = darkMode ? token.colorWarningText : token.colorWarning;
-
-  return {
-    ...baseTheme,
-    plain: {
-      ...(baseTheme.plain ?? {}),
-      color: token.colorText,
-      backgroundColor: token.colorBgContainer
-    },
-    styles: [
-      ...(baseTheme.styles ?? []),
-      { types: ["comment", "prolog", "doctype", "cdata"], style: { color: commentColor, fontStyle: "italic" } },
-      { types: ["keyword", "selector", "inserted"], style: { color: keywordColor, fontWeight: "600" } },
-      { types: ["string", "char", "attr-value"], style: { color: stringColor } },
-      { types: ["number", "boolean", "constant"], style: { color: numberColor } }
-    ]
-  };
-}
-
-export function getPrismTheme(mode: AppThemeMode, token: GlobalToken): PrismTheme {
-  const darkMode = isDarkAppTheme(mode);
-  const baseTheme = darkMode ? themes.vsDark : themes.github;
-  return createPrismThemeFromToken(baseTheme, token, darkMode);
-}
-
-export function getCodeTokenStyles(token: GlobalToken): TokenStyleMap {
-  return {
-    plain: { color: token.colorText },
-    comment: { color: token.colorTextTertiary, fontStyle: "italic" },
-    keyword: { color: token.colorPrimaryText, fontWeight: 600 },
-    number: { color: token.colorWarningText },
-    string: { color: token.colorSuccessText }
-  };
-}
 ````
 
 ## File: apps/web/src/utils/analytics.ts
@@ -41489,8 +41489,8 @@ type BoardColumnId = "backlog" | "ready" | "in_progress" | "review" | "done";
 type BoardTaskStatus = UpdateTaskStateInput["status"];
 type BoardItem = { id: string; task: Task; column: BoardColumnId };
 
-const columns: Array<{ id: BoardColumnId; title: string; taskStatus?: BoardTaskStatus; acceptsTasks: boolean }> = [
-  { id: "backlog", title: "Backlog", acceptsTasks: false },
+const columns: Array<{ id: BoardColumnId; title: string; taskStatus: BoardTaskStatus; acceptsTasks: boolean }> = [
+  { id: "backlog", title: "Backlog", taskStatus: "draft", acceptsTasks: true },
   { id: "ready", title: getTaskWorkflowStatusLabel("ready"), taskStatus: "open", acceptsTasks: true },
   { id: "in_progress", title: getTaskWorkflowStatusLabel("in_progress"), taskStatus: "in_progress", acceptsTasks: true },
   { id: "review", title: getTaskWorkflowStatusLabel("review"), taskStatus: "in_review", acceptsTasks: true },
@@ -41588,13 +41588,12 @@ function KanbanColumn({
 function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardItem) => void }) {
   const draggable = useDraggable({
     id: item.id,
-    disabled: item.task.status === "draft",
     data: item
   });
   const style = {
     transform: CSS.Translate.toString(draggable.transform),
     opacity: draggable.isDragging ? 0.65 : 1,
-    cursor: item.task.status === "draft" ? "pointer" : "grab"
+    cursor: "grab"
   };
   const task = item.task;
   const isDraft = task.status === "draft";
@@ -41675,7 +41674,7 @@ export function TasksKanbanBoardPage() {
   const handleDragEnd = async (event: DragEndEvent) => {
     const item = event.active.data.current as BoardItem | undefined;
     const column = columns.find((entry) => entry.id === event.over?.id);
-    if (!item || item.task.status === "draft" || !column?.taskStatus || item.column === column.id) {
+    if (!item || !column?.taskStatus || item.column === column.id) {
       return;
     }
 
@@ -43134,6 +43133,7 @@ import type {
   UpdateTaskPinInput,
   UpdateTaskNotesInput,
   UpdateTaskDeadlineInput,
+  UpdateTaskDraftInput,
   UpdateTaskAssigneeInput,
   UpdateTaskStateInput,
   UpdateUserNotesInput,
@@ -43598,6 +43598,11 @@ export const api = {
     }),
   updateTaskDeadline: (id: string, input: UpdateTaskDeadlineInput) =>
     request<Task>(`/tasks/${id}/deadline`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskDraft: (id: string, input: UpdateTaskDraftInput) =>
+    request<Task>(`/tasks/${id}/draft`, {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
@@ -52953,8 +52958,22 @@ const updateTaskDeadlineSchema = z.object({
   deadline: deadlineSchema
 });
 
+const updateTaskDraftSchema = z.object({
+  title: z.string().trim().min(1).max(500),
+  deadline: deadlineSchema,
+  prompt: z.string().trim().default(""),
+  notes: z.string().max(40_000).optional(),
+  taskType: z.enum(["build", "ask"]),
+  provider: z.enum(["codex", "claude"]),
+  providerProfile: z.enum(["low", "medium", "high", "max"]),
+  modelOverride: z.string().trim().min(1).nullable().optional(),
+  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+  baseBranch: z.string().trim().min(1),
+  branchStrategy: z.enum(["feature_branch", "work_on_branch"])
+});
+
 const updateTaskStateSchema = z.object({
-  status: z.enum(["open", "in_progress", "in_review", "awaiting_review", "done"])
+  status: z.enum(["draft", "open", "in_progress", "in_review", "done"])
 });
 
 const updateTaskAssigneeSchema = z.object({
@@ -54406,6 +54425,78 @@ export const registerTaskRoutes = (
     return reply.send(refreshed);
   });
 
+  app.patch<{ Params: { id: string } }>("/tasks/:id/draft", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateTaskDraftSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (task.status !== "draft") {
+      return reply.status(409).send({ message: "Only draft tasks can be edited with this endpoint." });
+    }
+
+    const repository = await deps.repositoryStore.getRepository(task.repoId);
+    if (!repository) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+    if (!canUserAccessRepository(request.auth?.user, repository.id)) {
+      return reply.status(403).send({ message: "Repository access denied" });
+    }
+
+    if (!requireTaskCapabilityAccess(request, reply, { taskType: parsed.data.taskType })) {
+      return;
+    }
+    if (!requireTaskExecutionConfigAccess(request, reply, parsed.data)) {
+      return;
+    }
+
+    const prompt = parsed.data.prompt.trim().length > 0 ? parsed.data.prompt.trim() : "(No prompt provided.)";
+    const title = parsed.data.title.trim();
+    const baseBranch = parsed.data.baseBranch.trim();
+    const deadline = parsed.data.deadline === null ? null : new Date(Date.parse(parsed.data.deadline)).toISOString();
+    const action: TaskAction = parsed.data.taskType === "ask" ? "ask" : "build";
+    const codexCredentialSource = parsed.data.provider === "codex" ? (parsed.data.codexCredentialSource ?? task.codexCredentialSource ?? "auto") : undefined;
+    const updated = await deps.taskStore.patchTask(task.id, {
+      title,
+      deadline,
+      prompt,
+      notes: parsed.data.notes?.trim() ?? "",
+      taskType: parsed.data.taskType,
+      provider: normalizeProvider(parsed.data.provider),
+      providerProfile: parsed.data.providerProfile,
+      modelOverride: parsed.data.modelOverride?.trim() || null,
+      codexCredentialSource,
+      baseBranch,
+      branchStrategy: parsed.data.branchStrategy,
+      branchName: parsed.data.branchStrategy === "work_on_branch" ? baseBranch : null,
+      complexity: classifyTaskComplexity(title, prompt),
+      executionSummary: buildExecutionSummaryFromPrompt(title, prompt),
+      lastAction: action
+    });
+    if (!updated) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    const messages = await deps.taskStore.listMessages(task.id);
+    const firstUserMessage = messages.find((message) => message.role === "user") ?? null;
+    if (firstUserMessage) {
+      await deps.taskStore.updateMessage(task.id, firstUserMessage.id, prompt);
+    } else {
+      await deps.taskStore.appendMessage(task.id, {
+        role: "user",
+        action,
+        content: prompt
+      });
+    }
+
+    return reply.send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, updated)));
+  });
+
   app.patch<{ Params: { id: string } }>("/tasks/:id/config", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const parsed = updateTaskConfigSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -54551,18 +54642,11 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
-      return reply.status(409).send({ message: "Task state cannot be changed while the task is queued or running" });
-    }
-
     if (task.status === parsed.data.status) {
       return reply.send(await withBranchSyncCounts(deps.spawner, task));
     }
 
-    const updated = await deps.taskStore.setStatus(task.id, parsed.data.status, {
-      enqueued: false,
-      errorMessage: null
-    });
+    const updated = await deps.taskStore.setStatus(task.id, parsed.data.status);
     if (!updated) {
       return reply.status(404).send({ message: "Task not found" });
     }
@@ -56183,12 +56267,26 @@ export interface UpdateTaskDeadlineInput {
   deadline: string | null;
 }
 
+export interface UpdateTaskDraftInput {
+  title: string;
+  deadline: string | null;
+  prompt: string;
+  notes?: string;
+  taskType: TaskType;
+  provider: AgentProvider;
+  providerProfile: ProviderProfile;
+  modelOverride?: string | null;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+}
+
 export interface UpdateUserNotesInput {
   notes: string;
 }
 
 export interface UpdateTaskStateInput {
-  status: Extract<TaskStatus, "open" | "in_progress" | "in_review" | "awaiting_review" | "done">;
+  status: Extract<TaskStatus, "draft" | "open" | "in_progress" | "in_review" | "done">;
 }
 
 export interface UpdateTaskAssigneeInput {
@@ -56638,6 +56736,7 @@ import {
   type GitHubPullRequestReference,
   type TaskMergePreview,
   type TaskPushPreview,
+  type UpdateTaskDraftInput,
   type TaskChangeProposal,
   type TaskInteractiveTerminalTranscript,
   type TaskTerminalSessionMode,
@@ -56696,7 +56795,7 @@ import {
   RobotOutlined,
   RollbackOutlined
 } from "@ant-design/icons";
-import dayjs from "dayjs";
+import dayjs, { type Dayjs } from "dayjs";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import { Highlight, type Language } from "prism-react-renderer";
@@ -56743,6 +56842,19 @@ const runStatusColor: Record<TaskRun["status"], string> = {
 
 type ComposerAction = TaskMessageAction | "interactive" | "terminal";
 type SnippetVariableFormValues = Record<string, string>;
+type DraftEditFormValues = {
+  title: string;
+  deadline: Dayjs | null;
+  prompt: string;
+  notes?: string;
+  taskType: Task["taskType"];
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  codexCredentialSource: CodexCredentialSource;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+};
 
 const OPENAI_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
 const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
@@ -56841,6 +56953,11 @@ const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentia
   { label: "Auto (Profile then Global)", value: "auto" },
   { label: "Profile auth.json only", value: "profile" },
   { label: "Global OpenAI key only", value: "global" }
+];
+
+const branchStrategyOptions: Array<{ label: string; value: TaskBranchStrategy }> = [
+  { label: getTaskBranchStrategyLabel("feature_branch"), value: "feature_branch" },
+  { label: getTaskBranchStrategyLabel("work_on_branch"), value: "work_on_branch" }
 ];
 
 interface WorkspaceFilePreviewState {
@@ -57163,11 +57280,12 @@ function getGitHubDiffTarget(task: Task, existingPullRequest?: GitHubPullRequest
 }
 
 type FollowUpMode = "continue" | null;
-type EditableTaskState = Extract<Task["status"], "open" | "in_review" | "awaiting_review" | "done">;
+type EditableTaskState = Extract<Task["status"], "draft" | "open" | "in_progress" | "in_review" | "done">;
 const taskStateOptions: Array<{ value: EditableTaskState; label: string }> = [
+  { value: "draft", label: "Backlog" },
   { value: "open", label: "Open" },
+  { value: "in_progress", label: "In Progress" },
   { value: "in_review", label: "In Review" },
-  { value: "awaiting_review", label: "Awaiting Checkpoint Review" },
   { value: "done", label: "Done" }
 ];
 
@@ -57365,6 +57483,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [assignableUsers, setAssignableUsers] = useState<User[]>([]);
   const [assignableUsersLoading, setAssignableUsersLoading] = useState(false);
   const [followUpForm] = Form.useForm();
+  const [draftEditForm] = Form.useForm<DraftEditFormValues>();
   const [chatInput, setChatInput] = useState("");
   const [chatInputDraftReady, setChatInputDraftReady] = useState(false);
   const [taskPromptMagicLoading, setTaskPromptMagicLoading] = useState(false);
@@ -57374,6 +57493,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [codexCredentialSourceInput, setCodexCredentialSourceInput] = useState<CodexCredentialSource>("auto");
   const [branchStrategyInput, setBranchStrategyInput] = useState<TaskBranchStrategy>("feature_branch");
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(providerInput);
+  const draftEditProvider = (Form.useWatch("provider", draftEditForm) as AgentProvider | undefined) ?? task?.provider ?? "codex";
+  const { models: draftEditProviderModels, loading: draftEditProviderModelsLoading } = useProviderModels(draftEditProvider);
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>(null);
   const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "diff" | "files">("chat");
   const [expandedRunKeys, setExpandedRunKeys] = useState<string[]>([]);
@@ -57398,6 +57519,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "pin"
     | "assign"
     | "deadline"
+    | "draftEdit"
     | "state"
     | "renameTitle"
     | "editComment"
@@ -57525,6 +57647,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [mergeCommitMessageGenerating, setMergeCommitMessageGenerating] = useState(false);
   const [deleteRemoteBranchAfterMerge, setDeleteRemoteBranchAfterMerge] = useState(false);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
+  const [draftEditModalOpen, setDraftEditModalOpen] = useState(false);
   const [taskStateModalOpen, setTaskStateModalOpen] = useState(false);
   const [taskStateDraft, setTaskStateDraft] = useState<EditableTaskState>("open");
   const [renameModalOpen, setRenameModalOpen] = useState(false);
@@ -57711,7 +57834,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const pushCount = task?.pushCount ?? 0;
   const canDelete = canDeleteTask && !!task && !isActive;
   const canArchive = canEditTask && !!task && !isActive && !isArchived;
-  const canChangeTaskState = canEditTask && !!task && !isArchived && !isDraft && !isQueued && !isActive;
+  const canChangeTaskState = canEditTask && !!task && !isArchived;
   const canAssignTask = canEditTask && canListUsers && isAdminTaskUser && !!task && !isArchived;
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
   const roleAllowedModels = session?.user.allowedModels ?? [];
@@ -57723,6 +57846,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
   );
   const allowedEffortOptions = getEffortOptionsForProvider(providerInput).filter(
+    (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
+  );
+  const draftEditAllowedProviderModels = draftEditProviderModels.filter(
+    (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
+  );
+  const draftEditAllowedEffortOptions = getEffortOptionsForProvider(draftEditProvider).filter(
     (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
   );
   const currentTaskProvider = task?.provider ?? "codex";
@@ -58060,6 +58189,34 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setProviderProfileInput(fallback);
     }
   }, [allowedEffortOptions, providerProfileInput]);
+
+  useEffect(() => {
+    if (!draftEditModalOpen || draftEditProviderModelsLoading) {
+      return;
+    }
+    const current = draftEditForm.getFieldValue("model") as string | undefined;
+    if (current && draftEditAllowedProviderModels.some((option) => option.value === current)) {
+      return;
+    }
+    const fallback = draftEditAllowedProviderModels[0]?.value;
+    if (fallback) {
+      draftEditForm.setFieldValue("model", fallback);
+    }
+  }, [draftEditAllowedProviderModels, draftEditForm, draftEditModalOpen, draftEditProviderModelsLoading]);
+
+  useEffect(() => {
+    if (!draftEditModalOpen) {
+      return;
+    }
+    const current = draftEditForm.getFieldValue("providerProfile") as ProviderProfile | undefined;
+    if (current && draftEditAllowedEffortOptions.some((option) => option.value === current)) {
+      return;
+    }
+    const fallback = draftEditAllowedEffortOptions[0]?.value;
+    if (fallback) {
+      draftEditForm.setFieldValue("providerProfile", fallback);
+    }
+  }, [draftEditAllowedEffortOptions, draftEditForm, draftEditModalOpen]);
 
   useEffect(() => {
     if (!allowedChatActions.includes(selectedChatAction)) {
@@ -59330,7 +59487,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     const currentState: EditableTaskState =
-      task.status === "in_review" || task.status === "awaiting_review" || task.status === "done"
+      task.status === "draft" || task.status === "in_progress" || task.status === "in_review" || task.status === "done"
         ? task.status
         : "open";
     setTaskStateDraft(currentState);
@@ -59357,6 +59514,68 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       showTaskActionError(error, "Failed to update task state");
     } finally {
       setSubmitting((current) => (current === "state" ? null : current));
+    }
+  };
+  const openDraftEditModal = () => {
+    if (!task || task.status !== "draft") {
+      return;
+    }
+
+    draftEditForm.setFieldsValue({
+      title: task.title,
+      deadline: task.deadline ? dayjs(task.deadline) : null,
+      prompt: task.prompt === "(No prompt provided.)" ? "" : task.prompt,
+      notes: task.notes ?? "",
+      taskType: task.taskType,
+      provider: task.provider,
+      model: task.modelOverride ?? getDefaultModelForProvider(task.provider),
+      providerProfile: task.providerProfile,
+      codexCredentialSource: task.codexCredentialSource ?? "auto",
+      baseBranch: task.baseBranch,
+      branchStrategy: task.branchStrategy
+    });
+    setDraftEditModalOpen(true);
+  };
+  const closeDraftEditModal = () => {
+    if (submitting === "draftEdit") {
+      return;
+    }
+    setDraftEditModalOpen(false);
+  };
+  const saveDraftEdit = async () => {
+    if (!task || task.status !== "draft" || !canEditTask || isArchived) {
+      return;
+    }
+
+    try {
+      const values = await draftEditForm.validateFields();
+      const input: UpdateTaskDraftInput = {
+        title: values.title.trim(),
+        deadline: values.deadline ? values.deadline.toISOString() : null,
+        prompt: values.prompt.trim(),
+        notes: values.notes?.trim() ?? "",
+        taskType: values.taskType,
+        provider: values.provider,
+        providerProfile: values.providerProfile,
+        modelOverride: values.model.trim() || null,
+        codexCredentialSource: values.provider === "codex" ? values.codexCredentialSource : undefined,
+        baseBranch: values.baseBranch.trim(),
+        branchStrategy: values.branchStrategy
+      };
+
+      setSubmitting("draftEdit");
+      const updatedTask = await api.updateTaskDraft(task.id, input);
+      applyUpdatedTask(updatedTask);
+      syncExecutionConfigInputs(updatedTask);
+      setDraftEditModalOpen(false);
+      void refetchTaskMessages();
+      messageApi.success("Draft updated");
+    } catch (error) {
+      if (error instanceof Error) {
+        showTaskActionError(error, "Failed to update draft");
+      }
+    } finally {
+      setSubmitting((current) => (current === "draftEdit" ? null : current));
     }
   };
   const loadPushPreview = async () => {
@@ -61857,6 +62076,77 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     <>
       {contextHolder}
       <Modal
+        title="Edit Draft"
+        open={draftEditModalOpen}
+        onCancel={closeDraftEditModal}
+        onOk={() => void saveDraftEdit()}
+        okText="Save Draft"
+        confirmLoading={submitting === "draftEdit"}
+        destroyOnClose
+        width="min(900px, calc(100vw - 32px))"
+        styles={{
+          body: {
+            maxHeight: "calc(100vh - 220px)",
+            overflowY: "auto",
+            overflowX: "hidden"
+          }
+        }}
+      >
+        <Form form={draftEditForm} layout="vertical">
+          <Space direction="vertical" size={12} style={{ width: "100%" }}>
+            <Form.Item name="title" label="Title" rules={[{ required: true, message: "Enter a task title" }]} style={{ marginBottom: 0 }}>
+              <Input />
+            </Form.Item>
+            <Form.Item name="prompt" label="Prompt" rules={[{ required: true, message: "Enter a prompt" }]} style={{ marginBottom: 0 }}>
+              <Input.TextArea autoSize={{ minRows: 6, maxRows: 18 }} style={{ resize: "none" }} />
+            </Form.Item>
+            <Form.Item name="notes" label="Notes" style={{ marginBottom: 0 }}>
+              <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} style={{ resize: "none" }} />
+            </Form.Item>
+            <Flex gap={12} wrap="wrap">
+              <Form.Item name="deadline" label="Deadline" style={{ flex: "1 1 220px", marginBottom: 0 }}>
+                <DatePicker showTime allowClear style={{ width: "100%" }} />
+              </Form.Item>
+              <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]} style={{ flex: "1 1 180px", marginBottom: 0 }}>
+                <Select
+                  options={[
+                    ...(can("task:build") ? [{ label: getTaskTypeLabel("build"), value: "build" as const }] : []),
+                    ...(can("task:ask") ? [{ label: getTaskTypeLabel("ask"), value: "ask" as const }] : [])
+                  ]}
+                />
+              </Form.Item>
+            </Flex>
+            <Flex gap={12} wrap="wrap">
+              <Form.Item name="provider" label="Provider" rules={[{ required: true }]} style={{ flex: "1 1 220px", marginBottom: 0 }}>
+                <Select options={providerInputOptions} />
+              </Form.Item>
+              <Form.Item name="model" label="Model" rules={[{ required: true }]} style={{ flex: "1 1 220px", marginBottom: 0 }}>
+                <Select
+                  options={draftEditAllowedProviderModels}
+                  loading={draftEditProviderModelsLoading}
+                  showSearch
+                  optionFilterProp="label"
+                />
+              </Form.Item>
+              <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]} style={{ flex: "1 1 160px", marginBottom: 0 }}>
+                <Select options={draftEditAllowedEffortOptions} />
+              </Form.Item>
+            </Flex>
+            <Flex gap={12} wrap="wrap">
+              <Form.Item name="codexCredentialSource" label="Codex Credential Source" style={{ flex: "1 1 260px", marginBottom: 0 }}>
+                <Select options={codexCredentialSourceOptions} disabled={draftEditProvider !== "codex"} />
+              </Form.Item>
+              <Form.Item name="baseBranch" label="Base Branch" rules={[{ required: true, message: "Enter a base branch" }]} style={{ flex: "1 1 220px", marginBottom: 0 }}>
+                <Input />
+              </Form.Item>
+              <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]} style={{ flex: "1 1 220px", marginBottom: 0 }}>
+                <Select options={branchStrategyOptions} />
+              </Form.Item>
+            </Flex>
+          </Space>
+        </Form>
+      </Modal>
+      <Modal
         title="AI Settings"
         open={aiSettingsModalOpen}
         onCancel={() => setAiSettingsModalOpen(false)}
@@ -62249,6 +62539,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
                       {hasExecutionButtons ? (
                         <Space wrap size={8}>
+                          {isDraft && canEditTask && !isArchived ? (
+                            <Button onClick={openDraftEditModal} loading={submitting === "draftEdit"}>
+                              Edit Draft
+                            </Button>
+                          ) : null}
                           {canStartDraft ? (
                             <Button
                               type="primary"

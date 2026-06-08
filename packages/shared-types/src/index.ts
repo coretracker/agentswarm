@@ -1152,12 +1152,26 @@ export interface UpdateTaskDeadlineInput {
   deadline: string | null;
 }
 
+export interface UpdateTaskDraftInput {
+  title: string;
+  deadline: string | null;
+  prompt: string;
+  notes?: string;
+  taskType: TaskType;
+  provider: AgentProvider;
+  providerProfile: ProviderProfile;
+  modelOverride?: string | null;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+}
+
 export interface UpdateUserNotesInput {
   notes: string;
 }
 
 export interface UpdateTaskStateInput {
-  status: Extract<TaskStatus, "open" | "in_progress" | "in_review" | "awaiting_review" | "done">;
+  status: Extract<TaskStatus, "draft" | "open" | "in_progress" | "in_review" | "done">;
 }
 
 export interface UpdateTaskAssigneeInput {

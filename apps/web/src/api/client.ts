@@ -54,6 +54,7 @@ import type {
   UpdateTaskPinInput,
   UpdateTaskNotesInput,
   UpdateTaskDeadlineInput,
+  UpdateTaskDraftInput,
   UpdateTaskAssigneeInput,
   UpdateTaskStateInput,
   UpdateUserNotesInput,
@@ -518,6 +519,11 @@ export const api = {
     }),
   updateTaskDeadline: (id: string, input: UpdateTaskDeadlineInput) =>
     request<Task>(`/tasks/${id}/deadline`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskDraft: (id: string, input: UpdateTaskDraftInput) =>
+    request<Task>(`/tasks/${id}/draft`, {
       method: "PATCH",
       body: JSON.stringify(input)
     }),

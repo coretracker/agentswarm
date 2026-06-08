@@ -138,8 +138,22 @@ const updateTaskDeadlineSchema = z.object({
   deadline: deadlineSchema
 });
 
+const updateTaskDraftSchema = z.object({
+  title: z.string().trim().min(1).max(500),
+  deadline: deadlineSchema,
+  prompt: z.string().trim().default(""),
+  notes: z.string().max(40_000).optional(),
+  taskType: z.enum(["build", "ask"]),
+  provider: z.enum(["codex", "claude"]),
+  providerProfile: z.enum(["low", "medium", "high", "max"]),
+  modelOverride: z.string().trim().min(1).nullable().optional(),
+  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+  baseBranch: z.string().trim().min(1),
+  branchStrategy: z.enum(["feature_branch", "work_on_branch"])
+});
+
 const updateTaskStateSchema = z.object({
-  status: z.enum(["open", "in_progress", "in_review", "awaiting_review", "done"])
+  status: z.enum(["draft", "open", "in_progress", "in_review", "done"])
 });
 
 const updateTaskAssigneeSchema = z.object({
@@ -1591,6 +1605,78 @@ export const registerTaskRoutes = (
     return reply.send(refreshed);
   });
 
+  app.patch<{ Params: { id: string } }>("/tasks/:id/draft", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateTaskDraftSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (task.status !== "draft") {
+      return reply.status(409).send({ message: "Only draft tasks can be edited with this endpoint." });
+    }
+
+    const repository = await deps.repositoryStore.getRepository(task.repoId);
+    if (!repository) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+    if (!canUserAccessRepository(request.auth?.user, repository.id)) {
+      return reply.status(403).send({ message: "Repository access denied" });
+    }
+
+    if (!requireTaskCapabilityAccess(request, reply, { taskType: parsed.data.taskType })) {
+      return;
+    }
+    if (!requireTaskExecutionConfigAccess(request, reply, parsed.data)) {
+      return;
+    }
+
+    const prompt = parsed.data.prompt.trim().length > 0 ? parsed.data.prompt.trim() : "(No prompt provided.)";
+    const title = parsed.data.title.trim();
+    const baseBranch = parsed.data.baseBranch.trim();
+    const deadline = parsed.data.deadline === null ? null : new Date(Date.parse(parsed.data.deadline)).toISOString();
+    const action: TaskAction = parsed.data.taskType === "ask" ? "ask" : "build";
+    const codexCredentialSource = parsed.data.provider === "codex" ? (parsed.data.codexCredentialSource ?? task.codexCredentialSource ?? "auto") : undefined;
+    const updated = await deps.taskStore.patchTask(task.id, {
+      title,
+      deadline,
+      prompt,
+      notes: parsed.data.notes?.trim() ?? "",
+      taskType: parsed.data.taskType,
+      provider: normalizeProvider(parsed.data.provider),
+      providerProfile: parsed.data.providerProfile,
+      modelOverride: parsed.data.modelOverride?.trim() || null,
+      codexCredentialSource,
+      baseBranch,
+      branchStrategy: parsed.data.branchStrategy,
+      branchName: parsed.data.branchStrategy === "work_on_branch" ? baseBranch : null,
+      complexity: classifyTaskComplexity(title, prompt),
+      executionSummary: buildExecutionSummaryFromPrompt(title, prompt),
+      lastAction: action
+    });
+    if (!updated) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    const messages = await deps.taskStore.listMessages(task.id);
+    const firstUserMessage = messages.find((message) => message.role === "user") ?? null;
+    if (firstUserMessage) {
+      await deps.taskStore.updateMessage(task.id, firstUserMessage.id, prompt);
+    } else {
+      await deps.taskStore.appendMessage(task.id, {
+        role: "user",
+        action,
+        content: prompt
+      });
+    }
+
+    return reply.send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, updated)));
+  });
+
   app.patch<{ Params: { id: string } }>("/tasks/:id/config", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const parsed = updateTaskConfigSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -1736,18 +1822,11 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
-      return reply.status(409).send({ message: "Task state cannot be changed while the task is queued or running" });
-    }
-
     if (task.status === parsed.data.status) {
       return reply.send(await withBranchSyncCounts(deps.spawner, task));
     }
 
-    const updated = await deps.taskStore.setStatus(task.id, parsed.data.status, {
-      enqueued: false,
-      errorMessage: null
-    });
+    const updated = await deps.taskStore.setStatus(task.id, parsed.data.status);
     if (!updated) {
       return reply.status(404).send({ message: "Task not found" });
     }
