@@ -424,472 +424,6 @@ void main().catch((error) => {
 });
 ````
 
-## File: apps/server/src/lib/agent-event-parser.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { parseAgentJsonlEvents } from "./agent-event-parser.js";
-
-describe("parseAgentJsonlEvents", () => {
-  it("normalizes Codex command, file, message, and usage events", () => {
-    const raw = [
-      { type: "thread.started", thread_id: "thread-1" },
-      { type: "turn.started" },
-      { type: "item.started", item: { id: "item_1", type: "command_execution", command: "npm test", aggregated_output: "", exit_code: null, status: "in_progress" } },
-      { type: "item.completed", item: { id: "item_1", type: "command_execution", command: "npm test", aggregated_output: "ok", exit_code: 0, status: "completed" } },
-      { type: "item.completed", item: { id: "item_2", type: "file_change", changes: [{ path: "src/app.ts", kind: "update" }], status: "completed" } },
-      { type: "item.completed", item: { id: "item_3", type: "agent_message", text: "Done" } },
-      { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } }
-    ].map((event) => JSON.stringify(event)).join("\n");
-
-    const events = parseAgentJsonlEvents("codex", raw);
-
-    assert.equal(events.some((event) => event.kind === "tool.started" && event.detail === "npm test"), true);
-    assert.equal(events.some((event) => event.kind === "tool.completed" && event.message === "ok"), true);
-    assert.equal(events.some((event) => event.kind === "file.changed" && event.filePath === "src/app.ts"), true);
-    assert.equal(events.some((event) => event.kind === "assistant.message" && event.message === "Done"), true);
-    assert.equal(events.some((event) => event.kind === "usage.reported"), true);
-  });
-
-  it("normalizes Claude tool results and final result events", () => {
-    const raw = [
-      { type: "system", subtype: "init", session_id: "session-1", model: "claude-sonnet" },
-      { type: "assistant", session_id: "session-1", message: { id: "msg_1", content: [{ type: "tool_use", id: "tool_1", name: "Write", input: { file_path: "test.txt" } }] } },
-      { type: "user", session_id: "session-1", message: { content: [{ type: "tool_result", tool_use_id: "tool_1", content: "File created" }] }, tool_use_result: { type: "create" } },
-      { type: "stream_event", session_id: "session-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Done" } } },
-      { type: "result", subtype: "success", is_error: false, session_id: "session-1", result: "Done", usage: { input_tokens: 1 }, total_cost_usd: 0.01, terminal_reason: "completed" }
-    ].map((event) => JSON.stringify(event)).join("\n");
-
-    const events = parseAgentJsonlEvents("claude", raw);
-
-    assert.equal(events.some((event) => event.kind === "run.started" && event.sessionId === "session-1"), true);
-    assert.equal(events.some((event) => event.kind === "tool.started" && event.toolName === "Write"), true);
-    assert.equal(events.some((event) => event.kind === "tool.completed" && event.toolCallId === "tool_1"), true);
-    assert.equal(events.some((event) => event.kind === "assistant.message.delta" && event.message === "Done"), true);
-    assert.equal(events.some((event) => event.kind === "run.completed" && event.message === "Done"), true);
-    assert.equal(events.some((event) => event.kind === "usage.reported" && event.metrics?.total_cost_usd === 0.01), true);
-  });
-});
-````
-
-## File: apps/server/src/lib/agent-event-parser.ts
-````typescript
-import type { AgentProvider, NormalizedAgentEvent } from "@agentswarm/shared-types";
-
-type JsonObject = Record<string, unknown>;
-
-const isRecord = (value: unknown): value is JsonObject => Boolean(value) && typeof value === "object" && !Array.isArray(value);
-
-const asString = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
-const asNumber = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
-const asRecord = (value: unknown): JsonObject | undefined => (isRecord(value) ? value : undefined);
-
-const truncate = (value: string | undefined, maxLength = 800): string | undefined => {
-  if (!value) {
-    return undefined;
-  }
-  return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
-};
-
-const eventId = (provider: AgentProvider, index: number, suffix: string): string => `${provider}-${index}-${suffix}`;
-
-const push = (
-  events: NormalizedAgentEvent[],
-  provider: AgentProvider,
-  rawEventIndex: number,
-  suffix: string,
-  event: Omit<NormalizedAgentEvent, "id" | "provider" | "rawEventIndex">
-): void => {
-  events.push({
-    id: eventId(provider, rawEventIndex, suffix),
-    provider,
-    rawEventIndex,
-    ...event
-  });
-};
-
-export function parseAgentJsonlEvents(provider: AgentProvider, rawJsonl: string): NormalizedAgentEvent[] {
-  const events: NormalizedAgentEvent[] = [];
-  const lines = rawJsonl.split(/\r?\n/u).filter((line) => line.trim().length > 0);
-
-  lines.forEach((line, index) => {
-    let raw: unknown;
-    try {
-      raw = JSON.parse(line);
-    } catch (error) {
-      push(events, provider, index, "invalid-json", {
-        kind: "unknown",
-        title: "Invalid JSON event",
-        detail: error instanceof Error ? error.message : "Could not parse JSONL line."
-      });
-      return;
-    }
-
-    if (!isRecord(raw)) {
-      push(events, provider, index, "unknown-shape", {
-        kind: "unknown",
-        title: "Unknown event",
-        detail: "Event is not a JSON object."
-      });
-      return;
-    }
-
-    if (provider === "codex") {
-      parseCodexEvent(raw, index, events);
-    } else {
-      parseClaudeEvent(raw, index, events);
-    }
-  });
-
-  return events;
-}
-
-function parseCodexEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[]): void {
-  const type = asString(raw.type);
-  if (type === "thread.started") {
-    const threadId = asString(raw.thread_id);
-    push(events, "codex", index, "thread-started", {
-      kind: "run.started",
-      title: "Codex thread started",
-      sessionId: threadId
-    });
-    return;
-  }
-  if (type === "turn.started") {
-    push(events, "codex", index, "turn-started", {
-      kind: "turn.started",
-      title: "Turn started"
-    });
-    return;
-  }
-  if (type === "turn.completed") {
-    const usage = asRecord(raw.usage);
-    push(events, "codex", index, "turn-completed", {
-      kind: "turn.completed",
-      title: "Turn completed",
-      usage
-    });
-    if (usage) {
-      push(events, "codex", index, "usage", {
-        kind: "usage.reported",
-        title: "Usage reported",
-        usage
-      });
-    }
-    return;
-  }
-  if (type === "item.started" || type === "item.completed") {
-    parseCodexItem(raw, index, events);
-    return;
-  }
-
-  push(events, "codex", index, "unknown", {
-    kind: "unknown",
-    title: type ? `Unknown Codex event: ${type}` : "Unknown Codex event"
-  });
-}
-
-function parseCodexItem(raw: JsonObject, index: number, events: NormalizedAgentEvent[]): void {
-  const wrapperType = asString(raw.type);
-  const item = asRecord(raw.item);
-  const itemType = asString(item?.type);
-  const itemId = asString(item?.id);
-  const status = asString(item?.status);
-  const isCompleted = wrapperType === "item.completed";
-
-  if (itemType === "agent_message" && isCompleted) {
-    push(events, "codex", index, itemId ?? "agent-message", {
-      kind: "assistant.message",
-      title: "Assistant message",
-      message: asString(item?.text),
-      messageId: itemId
-    });
-    return;
-  }
-
-  if (itemType === "command_execution") {
-    const command = asString(item?.command);
-    const exitCode = asNumber(item?.exit_code);
-    const output = truncate(asString(item?.aggregated_output));
-    const kind = !isCompleted ? "tool.started" : exitCode === 0 ? "tool.completed" : "tool.failed";
-    push(events, "codex", index, itemId ?? "command", {
-      kind,
-      title: !isCompleted ? "Command started" : exitCode === 0 ? "Command completed" : "Command failed",
-      detail: command,
-      message: isCompleted ? output : undefined,
-      status: status ?? (!isCompleted ? "in_progress" : undefined),
-      toolCallId: itemId,
-      toolName: "command_execution",
-      exitCode: exitCode ?? null
-    });
-    return;
-  }
-
-  if (itemType === "file_change" && isCompleted) {
-    const changes = Array.isArray(item?.changes) ? item.changes : [];
-    changes.forEach((change, changeIndex) => {
-      const record = asRecord(change);
-      const filePath = asString(record?.path);
-      const fileChangeKind = asString(record?.kind);
-      push(events, "codex", index, `${itemId ?? "file-change"}-${changeIndex}`, {
-        kind: "file.changed",
-        title: fileChangeKind ? `File ${fileChangeKind}` : "File changed",
-        detail: filePath,
-        status,
-        toolCallId: itemId,
-        filePath,
-        fileChangeKind
-      });
-    });
-    return;
-  }
-
-  push(events, "codex", index, itemId ?? "unknown-item", {
-    kind: "unknown",
-    title: itemType ? `Unknown Codex item: ${itemType}` : "Unknown Codex item",
-    status,
-    toolCallId: itemId
-  });
-}
-
-function parseClaudeEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[]): void {
-  const type = asString(raw.type);
-  const sessionId = asString(raw.session_id);
-
-  if (type === "system") {
-    parseClaudeSystemEvent(raw, index, events, sessionId);
-    return;
-  }
-  if (type === "stream_event") {
-    parseClaudeStreamEvent(raw, index, events, sessionId);
-    return;
-  }
-  if (type === "assistant") {
-    parseClaudeAssistantEvent(raw, index, events, sessionId);
-    return;
-  }
-  if (type === "user") {
-    parseClaudeUserEvent(raw, index, events, sessionId);
-    return;
-  }
-  if (type === "result") {
-    parseClaudeResultEvent(raw, index, events, sessionId);
-    return;
-  }
-
-  push(events, "claude", index, "unknown", {
-    kind: "unknown",
-    title: type ? `Unknown Claude event: ${type}` : "Unknown Claude event",
-    sessionId
-  });
-}
-
-function parseClaudeSystemEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
-  const subtype = asString(raw.subtype);
-  if (subtype === "init") {
-    push(events, "claude", index, "init", {
-      kind: "run.started",
-      title: "Claude session started",
-      detail: asString(raw.model),
-      sessionId
-    });
-    return;
-  }
-  if (subtype === "status") {
-    const status = asString(raw.status);
-    push(events, "claude", index, "status", {
-      kind: "run.status",
-      title: status ? `Claude status: ${status}` : "Claude status",
-      status,
-      sessionId
-    });
-    return;
-  }
-  if (subtype === "task_started") {
-    push(events, "claude", index, asString(raw.task_id) ?? "task-started", {
-      kind: "subtask.started",
-      title: asString(raw.description) ?? "Subtask started",
-      status: asString(raw.status),
-      sessionId,
-      toolCallId: asString(raw.tool_use_id),
-      toolName: asString(raw.task_type)
-    });
-    return;
-  }
-  if (subtype === "task_progress") {
-    push(events, "claude", index, asString(raw.task_id) ?? "task-progress", {
-      kind: "subtask.progress",
-      title: asString(raw.description) ?? "Subtask progress",
-      detail: asString(raw.last_tool_name),
-      sessionId,
-      toolCallId: asString(raw.tool_use_id),
-      usage: asRecord(raw.usage)
-    });
-    return;
-  }
-  if (subtype === "task_notification") {
-    const status = asString(raw.status);
-    push(events, "claude", index, asString(raw.task_id) ?? "task-notification", {
-      kind: "subtask.completed",
-      title: asString(raw.summary) ?? "Subtask completed",
-      status,
-      sessionId,
-      toolCallId: asString(raw.tool_use_id),
-      usage: asRecord(raw.usage)
-    });
-    return;
-  }
-  push(events, "claude", index, "unknown-system", {
-    kind: "unknown",
-    title: subtype ? `Unknown Claude system event: ${subtype}` : "Unknown Claude system event",
-    sessionId
-  });
-}
-
-function parseClaudeStreamEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
-  const event = asRecord(raw.event);
-  const streamType = asString(event?.type);
-  if (streamType === "message_start") {
-    const message = asRecord(event?.message);
-    push(events, "claude", index, "message-start", {
-      kind: "assistant.message",
-      title: "Assistant message started",
-      sessionId,
-      messageId: asString(message?.id),
-      usage: asRecord(message?.usage)
-    });
-    return;
-  }
-  if (streamType === "content_block_delta") {
-    const delta = asRecord(event?.delta);
-    if (asString(delta?.type) === "text_delta") {
-      push(events, "claude", index, "text-delta", {
-        kind: "assistant.message.delta",
-        title: "Assistant message delta",
-        message: asString(delta?.text),
-        sessionId
-      });
-    }
-    return;
-  }
-  if (streamType === "message_delta") {
-    const delta = asRecord(event?.delta);
-    const usage = asRecord(event?.usage);
-    push(events, "claude", index, "message-delta", {
-      kind: "assistant.message",
-      title: "Assistant message completed",
-      status: asString(delta?.stop_reason),
-      sessionId,
-      usage
-    });
-    if (usage) {
-      push(events, "claude", index, "usage", {
-        kind: "usage.reported",
-        title: "Usage reported",
-        status: asString(delta?.stop_reason),
-        sessionId,
-        usage
-      });
-    }
-  }
-}
-
-function parseClaudeAssistantEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
-  const message = asRecord(raw.message);
-  const messageId = asString(message?.id);
-  const content = Array.isArray(message?.content) ? message.content : [];
-
-  content.forEach((block, blockIndex) => {
-    const record = asRecord(block);
-    if (!record) {
-      return;
-    }
-    const type = asString(record?.type);
-    if (type === "text") {
-      push(events, "claude", index, `text-${blockIndex}`, {
-        kind: "assistant.message",
-        title: "Assistant message",
-        message: asString(record?.text),
-        sessionId,
-        messageId,
-        usage: asRecord(message?.usage)
-      });
-    } else if (type === "tool_use") {
-      const toolName = asString(record?.name);
-      push(events, "claude", index, asString(record?.id) ?? `tool-${blockIndex}`, {
-        kind: "tool.started",
-        title: toolName ? `${toolName} started` : "Tool started",
-        detail: truncate(JSON.stringify(record.input ?? {})),
-        sessionId,
-        messageId,
-        toolCallId: asString(record?.id),
-        parentToolCallId: asString(raw.parent_tool_use_id) ?? null,
-        toolName
-      });
-    }
-  });
-}
-
-function parseClaudeUserEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
-  const message = asRecord(raw.message);
-  const content = Array.isArray(message?.content) ? message.content : [];
-  content.forEach((block, blockIndex) => {
-    const record = asRecord(block);
-    if (!record) {
-      return;
-    }
-    if (asString(record?.type) !== "tool_result") {
-      return;
-    }
-    const result = raw.tool_use_result;
-    const isFailed =
-      typeof result === "string"
-        ? result.toLowerCase().startsWith("error:")
-        : isRecord(result) && result.interrupted === true;
-    push(events, "claude", index, asString(record?.tool_use_id) ?? `tool-result-${blockIndex}`, {
-      kind: isFailed ? "tool.failed" : "tool.completed",
-      title: isFailed ? "Tool failed" : "Tool completed",
-      message: truncate(typeof record.content === "string" ? record.content : JSON.stringify(record.content ?? "")),
-      sessionId,
-      toolCallId: asString(record?.tool_use_id),
-      parentToolCallId: asString(raw.parent_tool_use_id) ?? null,
-      status: isFailed ? "failed" : "completed"
-    });
-  });
-}
-
-function parseClaudeResultEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
-  const isError = raw.is_error === true || asString(raw.subtype) !== "success";
-  const usage = asRecord(raw.usage);
-  const metrics: Record<string, unknown> = {};
-  for (const key of ["duration_ms", "duration_api_ms", "ttft_ms", "num_turns", "total_cost_usd", "terminal_reason", "stop_reason"]) {
-    if (raw[key] !== undefined) {
-      metrics[key] = raw[key];
-    }
-  }
-
-  push(events, "claude", index, "result", {
-    kind: isError ? "run.failed" : "run.completed",
-    title: isError ? "Claude run failed" : "Claude run completed",
-    message: asString(raw.result),
-    status: asString(raw.subtype),
-    sessionId,
-    usage,
-    metrics
-  });
-  if (usage) {
-    push(events, "claude", index, "result-usage", {
-      kind: "usage.reported",
-      title: "Final usage reported",
-      status: asString(raw.subtype),
-      sessionId,
-      usage,
-      metrics
-    });
-  }
-}
-````
-
 ## File: apps/server/src/lib/branch.ts
 ````typescript
 const sanitizeBranchPrefix = (branchPrefix: string): string => {
@@ -15567,6 +15101,472 @@ COPY run-task.mjs /usr/local/bin/run-task.mjs
 ENTRYPOINT ["node", "/usr/local/bin/run-task.mjs"]
 ````
 
+## File: apps/server/src/lib/agent-event-parser.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { parseAgentJsonlEvents } from "./agent-event-parser.js";
+
+describe("parseAgentJsonlEvents", () => {
+  it("normalizes Codex command, file, message, and usage events", () => {
+    const raw = [
+      { type: "thread.started", thread_id: "thread-1" },
+      { type: "turn.started" },
+      { type: "item.started", item: { id: "item_1", type: "command_execution", command: "npm test", aggregated_output: "", exit_code: null, status: "in_progress" } },
+      { type: "item.completed", item: { id: "item_1", type: "command_execution", command: "npm test", aggregated_output: "ok", exit_code: 0, status: "completed" } },
+      { type: "item.completed", item: { id: "item_2", type: "file_change", changes: [{ path: "src/app.ts", kind: "update" }], status: "completed" } },
+      { type: "item.completed", item: { id: "item_3", type: "agent_message", text: "Done" } },
+      { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 2 } }
+    ].map((event) => JSON.stringify(event)).join("\n");
+
+    const events = parseAgentJsonlEvents("codex", raw);
+
+    assert.equal(events.some((event) => event.kind === "tool.started" && event.detail === "npm test"), true);
+    assert.equal(events.some((event) => event.kind === "tool.completed" && event.message === "ok"), true);
+    assert.equal(events.some((event) => event.kind === "file.changed" && event.filePath === "src/app.ts"), true);
+    assert.equal(events.some((event) => event.kind === "assistant.message" && event.message === "Done"), true);
+    assert.equal(events.some((event) => event.kind === "usage.reported"), true);
+  });
+
+  it("normalizes Claude tool results and final result events", () => {
+    const raw = [
+      { type: "system", subtype: "init", session_id: "session-1", model: "claude-sonnet" },
+      { type: "assistant", session_id: "session-1", message: { id: "msg_1", content: [{ type: "tool_use", id: "tool_1", name: "Write", input: { file_path: "test.txt" } }] } },
+      { type: "user", session_id: "session-1", message: { content: [{ type: "tool_result", tool_use_id: "tool_1", content: "File created" }] }, tool_use_result: { type: "create" } },
+      { type: "stream_event", session_id: "session-1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Done" } } },
+      { type: "result", subtype: "success", is_error: false, session_id: "session-1", result: "Done", usage: { input_tokens: 1 }, total_cost_usd: 0.01, terminal_reason: "completed" }
+    ].map((event) => JSON.stringify(event)).join("\n");
+
+    const events = parseAgentJsonlEvents("claude", raw);
+
+    assert.equal(events.some((event) => event.kind === "run.started" && event.sessionId === "session-1"), true);
+    assert.equal(events.some((event) => event.kind === "tool.started" && event.toolName === "Write"), true);
+    assert.equal(events.some((event) => event.kind === "tool.completed" && event.toolCallId === "tool_1"), true);
+    assert.equal(events.some((event) => event.kind === "assistant.message.delta" && event.message === "Done"), true);
+    assert.equal(events.some((event) => event.kind === "run.completed" && event.message === "Done"), true);
+    assert.equal(events.some((event) => event.kind === "usage.reported" && event.metrics?.total_cost_usd === 0.01), true);
+  });
+});
+````
+
+## File: apps/server/src/lib/agent-event-parser.ts
+````typescript
+import type { AgentProvider, NormalizedAgentEvent } from "@agentswarm/shared-types";
+
+type JsonObject = Record<string, unknown>;
+
+const isRecord = (value: unknown): value is JsonObject => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const asString = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+const asNumber = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+const asRecord = (value: unknown): JsonObject | undefined => (isRecord(value) ? value : undefined);
+
+const truncate = (value: string | undefined, maxLength = 800): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
+};
+
+const eventId = (provider: AgentProvider, index: number, suffix: string): string => `${provider}-${index}-${suffix}`;
+
+const push = (
+  events: NormalizedAgentEvent[],
+  provider: AgentProvider,
+  rawEventIndex: number,
+  suffix: string,
+  event: Omit<NormalizedAgentEvent, "id" | "provider" | "rawEventIndex">
+): void => {
+  events.push({
+    id: eventId(provider, rawEventIndex, suffix),
+    provider,
+    rawEventIndex,
+    ...event
+  });
+};
+
+export function parseAgentJsonlEvents(provider: AgentProvider, rawJsonl: string): NormalizedAgentEvent[] {
+  const events: NormalizedAgentEvent[] = [];
+  const lines = rawJsonl.split(/\r?\n/u).filter((line) => line.trim().length > 0);
+
+  lines.forEach((line, index) => {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line);
+    } catch (error) {
+      push(events, provider, index, "invalid-json", {
+        kind: "unknown",
+        title: "Invalid JSON event",
+        detail: error instanceof Error ? error.message : "Could not parse JSONL line."
+      });
+      return;
+    }
+
+    if (!isRecord(raw)) {
+      push(events, provider, index, "unknown-shape", {
+        kind: "unknown",
+        title: "Unknown event",
+        detail: "Event is not a JSON object."
+      });
+      return;
+    }
+
+    if (provider === "codex") {
+      parseCodexEvent(raw, index, events);
+    } else {
+      parseClaudeEvent(raw, index, events);
+    }
+  });
+
+  return events;
+}
+
+function parseCodexEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[]): void {
+  const type = asString(raw.type);
+  if (type === "thread.started") {
+    const threadId = asString(raw.thread_id);
+    push(events, "codex", index, "thread-started", {
+      kind: "run.started",
+      title: "Codex thread started",
+      sessionId: threadId
+    });
+    return;
+  }
+  if (type === "turn.started") {
+    push(events, "codex", index, "turn-started", {
+      kind: "turn.started",
+      title: "Turn started"
+    });
+    return;
+  }
+  if (type === "turn.completed") {
+    const usage = asRecord(raw.usage);
+    push(events, "codex", index, "turn-completed", {
+      kind: "turn.completed",
+      title: "Turn completed",
+      usage
+    });
+    if (usage) {
+      push(events, "codex", index, "usage", {
+        kind: "usage.reported",
+        title: "Usage reported",
+        usage
+      });
+    }
+    return;
+  }
+  if (type === "item.started" || type === "item.completed") {
+    parseCodexItem(raw, index, events);
+    return;
+  }
+
+  push(events, "codex", index, "unknown", {
+    kind: "unknown",
+    title: type ? `Unknown Codex event: ${type}` : "Unknown Codex event"
+  });
+}
+
+function parseCodexItem(raw: JsonObject, index: number, events: NormalizedAgentEvent[]): void {
+  const wrapperType = asString(raw.type);
+  const item = asRecord(raw.item);
+  const itemType = asString(item?.type);
+  const itemId = asString(item?.id);
+  const status = asString(item?.status);
+  const isCompleted = wrapperType === "item.completed";
+
+  if (itemType === "agent_message" && isCompleted) {
+    push(events, "codex", index, itemId ?? "agent-message", {
+      kind: "assistant.message",
+      title: "Assistant message",
+      message: asString(item?.text),
+      messageId: itemId
+    });
+    return;
+  }
+
+  if (itemType === "command_execution") {
+    const command = asString(item?.command);
+    const exitCode = asNumber(item?.exit_code);
+    const output = truncate(asString(item?.aggregated_output));
+    const kind = !isCompleted ? "tool.started" : exitCode === 0 ? "tool.completed" : "tool.failed";
+    push(events, "codex", index, itemId ?? "command", {
+      kind,
+      title: !isCompleted ? "Command started" : exitCode === 0 ? "Command completed" : "Command failed",
+      detail: command,
+      message: isCompleted ? output : undefined,
+      status: status ?? (!isCompleted ? "in_progress" : undefined),
+      toolCallId: itemId,
+      toolName: "command_execution",
+      exitCode: exitCode ?? null
+    });
+    return;
+  }
+
+  if (itemType === "file_change" && isCompleted) {
+    const changes = Array.isArray(item?.changes) ? item.changes : [];
+    changes.forEach((change, changeIndex) => {
+      const record = asRecord(change);
+      const filePath = asString(record?.path);
+      const fileChangeKind = asString(record?.kind);
+      push(events, "codex", index, `${itemId ?? "file-change"}-${changeIndex}`, {
+        kind: "file.changed",
+        title: fileChangeKind ? `File ${fileChangeKind}` : "File changed",
+        detail: filePath,
+        status,
+        toolCallId: itemId,
+        filePath,
+        fileChangeKind
+      });
+    });
+    return;
+  }
+
+  push(events, "codex", index, itemId ?? "unknown-item", {
+    kind: "unknown",
+    title: itemType ? `Unknown Codex item: ${itemType}` : "Unknown Codex item",
+    status,
+    toolCallId: itemId
+  });
+}
+
+function parseClaudeEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[]): void {
+  const type = asString(raw.type);
+  const sessionId = asString(raw.session_id);
+
+  if (type === "system") {
+    parseClaudeSystemEvent(raw, index, events, sessionId);
+    return;
+  }
+  if (type === "stream_event") {
+    parseClaudeStreamEvent(raw, index, events, sessionId);
+    return;
+  }
+  if (type === "assistant") {
+    parseClaudeAssistantEvent(raw, index, events, sessionId);
+    return;
+  }
+  if (type === "user") {
+    parseClaudeUserEvent(raw, index, events, sessionId);
+    return;
+  }
+  if (type === "result") {
+    parseClaudeResultEvent(raw, index, events, sessionId);
+    return;
+  }
+
+  push(events, "claude", index, "unknown", {
+    kind: "unknown",
+    title: type ? `Unknown Claude event: ${type}` : "Unknown Claude event",
+    sessionId
+  });
+}
+
+function parseClaudeSystemEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
+  const subtype = asString(raw.subtype);
+  if (subtype === "init") {
+    push(events, "claude", index, "init", {
+      kind: "run.started",
+      title: "Claude session started",
+      detail: asString(raw.model),
+      sessionId
+    });
+    return;
+  }
+  if (subtype === "status") {
+    const status = asString(raw.status);
+    push(events, "claude", index, "status", {
+      kind: "run.status",
+      title: status ? `Claude status: ${status}` : "Claude status",
+      status,
+      sessionId
+    });
+    return;
+  }
+  if (subtype === "task_started") {
+    push(events, "claude", index, asString(raw.task_id) ?? "task-started", {
+      kind: "subtask.started",
+      title: asString(raw.description) ?? "Subtask started",
+      status: asString(raw.status),
+      sessionId,
+      toolCallId: asString(raw.tool_use_id),
+      toolName: asString(raw.task_type)
+    });
+    return;
+  }
+  if (subtype === "task_progress") {
+    push(events, "claude", index, asString(raw.task_id) ?? "task-progress", {
+      kind: "subtask.progress",
+      title: asString(raw.description) ?? "Subtask progress",
+      detail: asString(raw.last_tool_name),
+      sessionId,
+      toolCallId: asString(raw.tool_use_id),
+      usage: asRecord(raw.usage)
+    });
+    return;
+  }
+  if (subtype === "task_notification") {
+    const status = asString(raw.status);
+    push(events, "claude", index, asString(raw.task_id) ?? "task-notification", {
+      kind: "subtask.completed",
+      title: asString(raw.summary) ?? "Subtask completed",
+      status,
+      sessionId,
+      toolCallId: asString(raw.tool_use_id),
+      usage: asRecord(raw.usage)
+    });
+    return;
+  }
+  push(events, "claude", index, "unknown-system", {
+    kind: "unknown",
+    title: subtype ? `Unknown Claude system event: ${subtype}` : "Unknown Claude system event",
+    sessionId
+  });
+}
+
+function parseClaudeStreamEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
+  const event = asRecord(raw.event);
+  const streamType = asString(event?.type);
+  if (streamType === "message_start") {
+    const message = asRecord(event?.message);
+    push(events, "claude", index, "message-start", {
+      kind: "assistant.message",
+      title: "Assistant message started",
+      sessionId,
+      messageId: asString(message?.id),
+      usage: asRecord(message?.usage)
+    });
+    return;
+  }
+  if (streamType === "content_block_delta") {
+    const delta = asRecord(event?.delta);
+    if (asString(delta?.type) === "text_delta") {
+      push(events, "claude", index, "text-delta", {
+        kind: "assistant.message.delta",
+        title: "Assistant message delta",
+        message: asString(delta?.text),
+        sessionId
+      });
+    }
+    return;
+  }
+  if (streamType === "message_delta") {
+    const delta = asRecord(event?.delta);
+    const usage = asRecord(event?.usage);
+    push(events, "claude", index, "message-delta", {
+      kind: "assistant.message",
+      title: "Assistant message completed",
+      status: asString(delta?.stop_reason),
+      sessionId,
+      usage
+    });
+    if (usage) {
+      push(events, "claude", index, "usage", {
+        kind: "usage.reported",
+        title: "Usage reported",
+        status: asString(delta?.stop_reason),
+        sessionId,
+        usage
+      });
+    }
+  }
+}
+
+function parseClaudeAssistantEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
+  const message = asRecord(raw.message);
+  const messageId = asString(message?.id);
+  const content = Array.isArray(message?.content) ? message.content : [];
+
+  content.forEach((block, blockIndex) => {
+    const record = asRecord(block);
+    if (!record) {
+      return;
+    }
+    const type = asString(record?.type);
+    if (type === "text") {
+      push(events, "claude", index, `text-${blockIndex}`, {
+        kind: "assistant.message",
+        title: "Assistant message",
+        message: asString(record?.text),
+        sessionId,
+        messageId,
+        usage: asRecord(message?.usage)
+      });
+    } else if (type === "tool_use") {
+      const toolName = asString(record?.name);
+      push(events, "claude", index, asString(record?.id) ?? `tool-${blockIndex}`, {
+        kind: "tool.started",
+        title: toolName ? `${toolName} started` : "Tool started",
+        detail: truncate(JSON.stringify(record.input ?? {})),
+        sessionId,
+        messageId,
+        toolCallId: asString(record?.id),
+        parentToolCallId: asString(raw.parent_tool_use_id) ?? null,
+        toolName
+      });
+    }
+  });
+}
+
+function parseClaudeUserEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
+  const message = asRecord(raw.message);
+  const content = Array.isArray(message?.content) ? message.content : [];
+  content.forEach((block, blockIndex) => {
+    const record = asRecord(block);
+    if (!record) {
+      return;
+    }
+    if (asString(record?.type) !== "tool_result") {
+      return;
+    }
+    const result = raw.tool_use_result;
+    const isFailed =
+      typeof result === "string"
+        ? result.toLowerCase().startsWith("error:")
+        : isRecord(result) && result.interrupted === true;
+    push(events, "claude", index, asString(record?.tool_use_id) ?? `tool-result-${blockIndex}`, {
+      kind: isFailed ? "tool.failed" : "tool.completed",
+      title: isFailed ? "Tool failed" : "Tool completed",
+      message: truncate(typeof record.content === "string" ? record.content : JSON.stringify(record.content ?? "")),
+      sessionId,
+      toolCallId: asString(record?.tool_use_id),
+      parentToolCallId: asString(raw.parent_tool_use_id) ?? null,
+      status: isFailed ? "failed" : "completed"
+    });
+  });
+}
+
+function parseClaudeResultEvent(raw: JsonObject, index: number, events: NormalizedAgentEvent[], sessionId?: string): void {
+  const isError = raw.is_error === true || asString(raw.subtype) !== "success";
+  const usage = asRecord(raw.usage);
+  const metrics: Record<string, unknown> = {};
+  for (const key of ["duration_ms", "duration_api_ms", "ttft_ms", "num_turns", "total_cost_usd", "terminal_reason", "stop_reason"]) {
+    if (raw[key] !== undefined) {
+      metrics[key] = raw[key];
+    }
+  }
+
+  push(events, "claude", index, "result", {
+    kind: isError ? "run.failed" : "run.completed",
+    title: isError ? "Claude run failed" : "Claude run completed",
+    message: asString(raw.result),
+    status: asString(raw.subtype),
+    sessionId,
+    usage,
+    metrics
+  });
+  if (usage) {
+    push(events, "claude", index, "result-usage", {
+      kind: "usage.reported",
+      title: "Final usage reported",
+      status: asString(raw.subtype),
+      sessionId,
+      usage,
+      metrics
+    });
+  }
+}
+````
+
 ## File: apps/server/src/lib/docker-socket-access.test.ts
 ````typescript
 import assert from "node:assert/strict";
@@ -20532,6 +20532,68 @@ Reason:
 5. PR ready/merged -> `as:done`; post `Work completed.`
 ````
 
+## File: examples/github-automations.comment-triggers.json
+````json
+[
+  {
+    "id": "ai-issue-opened",
+    "name": "AI issue -> build task",
+    "enabled": true,
+    "trigger": "issue_opened",
+    "labelFilter": {
+      "labelsAny": ["ai"],
+      "labelsNone": ["wip"]
+    },
+    "task": {
+      "assigneeEmail": "dev@company.com",
+      "taskType": "build",
+      "provider": "codex",
+      "providerProfile": "high",
+      "modelOverride": "gpt-5.4",
+      "codexCredentialSource": "profile"
+    }
+  },
+  {
+    "id": "ai-comment-triggers-on-issues",
+    "name": "Issue comments can intentionally trigger automation",
+    "enabled": true,
+    "trigger": "issue_opened",
+    "automationEnabled": true,
+    "allowedTriggers": ["emoji_reaction", "slash_command", "bot_mention"],
+    "allowedReactions": ["🤖", "eyes"],
+    "allowedCommands": ["/agent run"],
+    "allowedActorLogins": ["repo-admin", "maintainer-1"],
+    "labelFilter": {
+      "labelsAny": ["ai"],
+      "labelsNone": ["wip"]
+    },
+    "task": {
+      "assigneeEmail": "dev@company.com",
+      "taskType": "build",
+      "includeComments": true,
+      "provider": "codex",
+      "providerProfile": "high"
+    }
+  },
+  {
+    "id": "ai-comment-triggers-on-prs",
+    "name": "PR comments can intentionally trigger automation",
+    "enabled": true,
+    "trigger": "pull_request_opened",
+    "automationEnabled": true,
+    "allowedTriggers": ["emoji_reaction", "slash_command", "bot_mention"],
+    "allowedReactions": ["🤖", "rocket"],
+    "allowedCommands": ["/agent run"],
+    "allowedActorLogins": ["repo-admin", "maintainer-1"],
+    "task": {
+      "assigneeEmail": "dev@company.com",
+      "provider": "codex",
+      "providerProfile": "high"
+    }
+  }
+]
+````
+
 ## File: scripts/harness/lib/remote-build.sh
 ````bash
 #!/usr/bin/env bash
@@ -25172,68 +25234,6 @@ Top gaps are prioritized from `docs/quality/scorecard.md`.
 - Completed plans: `docs/exec-plans/completed/`
 ````
 
-## File: examples/github-automations.comment-triggers.json
-````json
-[
-  {
-    "id": "ai-issue-opened",
-    "name": "AI issue -> build task",
-    "enabled": true,
-    "trigger": "issue_opened",
-    "labelFilter": {
-      "labelsAny": ["ai"],
-      "labelsNone": ["wip"]
-    },
-    "task": {
-      "assigneeEmail": "dev@company.com",
-      "taskType": "build",
-      "provider": "codex",
-      "providerProfile": "high",
-      "modelOverride": "gpt-5.4",
-      "codexCredentialSource": "profile"
-    }
-  },
-  {
-    "id": "ai-comment-triggers-on-issues",
-    "name": "Issue comments can intentionally trigger automation",
-    "enabled": true,
-    "trigger": "issue_opened",
-    "automationEnabled": true,
-    "allowedTriggers": ["emoji_reaction", "slash_command", "bot_mention"],
-    "allowedReactions": ["🤖", "eyes"],
-    "allowedCommands": ["/agent run"],
-    "allowedActorLogins": ["repo-admin", "maintainer-1"],
-    "labelFilter": {
-      "labelsAny": ["ai"],
-      "labelsNone": ["wip"]
-    },
-    "task": {
-      "assigneeEmail": "dev@company.com",
-      "taskType": "build",
-      "includeComments": true,
-      "provider": "codex",
-      "providerProfile": "high"
-    }
-  },
-  {
-    "id": "ai-comment-triggers-on-prs",
-    "name": "PR comments can intentionally trigger automation",
-    "enabled": true,
-    "trigger": "pull_request_opened",
-    "automationEnabled": true,
-    "allowedTriggers": ["emoji_reaction", "slash_command", "bot_mention"],
-    "allowedReactions": ["🤖", "rocket"],
-    "allowedCommands": ["/agent run"],
-    "allowedActorLogins": ["repo-admin", "maintainer-1"],
-    "task": {
-      "assigneeEmail": "dev@company.com",
-      "provider": "codex",
-      "providerProfile": "high"
-    }
-  }
-]
-````
-
 ## File: scripts/harness/check.sh
 ````bash
 #!/usr/bin/env bash
@@ -28525,6 +28525,559 @@ describe("reconcileTaskStatusWithPendingCheckpoint", () => {
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("draft", true), "draft");
   });
 });
+````
+
+## File: apps/server/src/routes/github-webhooks.ts
+````typescript
+import type { FastifyInstance } from "fastify";
+import { SYSTEM_ADMIN_ROLE_ID } from "../services/role-store.js";
+import type { GitHubImportService } from "../services/github-import-service.js";
+import type { RepositoryStore } from "../services/repository-store.js";
+import type { SchedulerService } from "../services/scheduler.js";
+import type { SnippetStore } from "../services/snippet-store.js";
+import type { SpawnerService } from "../services/spawner.js";
+import type { TaskStore } from "../services/task-store.js";
+import type { UserStore } from "../services/user-store.js";
+import { withGitHubStatusSyncMarker } from "../lib/github-status-sync.js";
+import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
+
+const GITHUB_DEDUPE_TTL_MS = 15 * 60 * 1_000;
+const githubEventDedupeCache = new Map<string, number>();
+
+interface GitHubIssueLikePayload {
+  action?: string;
+  issue?: { number?: number; labels?: Array<{ name?: string }> };
+}
+
+interface GitHubPullRequestLikePayload {
+  action?: string;
+  pull_request?: { number?: number; labels?: Array<{ name?: string }> };
+}
+
+interface GitHubIssueCommentPayload {
+  action?: string;
+  issue?: { number?: number; labels?: Array<{ name?: string }>; pull_request?: Record<string, unknown> };
+  comment?: { id?: number; body?: string };
+  sender?: { login?: string; type?: string };
+}
+
+interface GitHubReactionPayload {
+  action?: string;
+  reaction?: { id?: number | null };
+  content?: string;
+  issue?: { number?: number; labels?: Array<{ name?: string }>; pull_request?: Record<string, unknown> };
+  comment?: { id?: number; body?: string };
+  sender?: { login?: string; type?: string };
+}
+
+interface GitHubPullRequestReviewCommentPayload {
+  action?: string;
+  pull_request?: { number?: number; labels?: Array<{ name?: string }> };
+  comment?: { id?: number; body?: string };
+  sender?: { login?: string; type?: string };
+}
+
+const ALLOWED_ACTIONS_BY_EVENT: Record<string, Set<string>> = {
+  issues: new Set(["opened", "edited", "closed", "reopened", "labeled", "unlabeled", "assigned", "unassigned"]),
+  pull_request: new Set(["opened", "edited", "closed", "reopened", "synchronize", "labeled", "unlabeled", "ready_for_review", "converted_to_draft"]),
+  issue_comment: new Set(["created", "edited", "deleted"]),
+  pull_request_review_comment: new Set(["created", "edited", "deleted"]),
+  reaction: new Set(["created", "deleted"])
+};
+
+const normalizeLabels = (labels: Array<{ name?: string }> | undefined): Set<string> =>
+  new Set((labels ?? []).map((entry) => (entry.name ?? "").trim().toLowerCase()).filter(Boolean));
+
+const matchesLabels = (
+  labels: Set<string>,
+  filter: { labelsAny?: string[]; labelsAll?: string[]; labelsNone?: string[] } | undefined
+): boolean => {
+  if (!filter) {
+    return true;
+  }
+  const any = (filter.labelsAny ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+  const all = (filter.labelsAll ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+  const none = (filter.labelsNone ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+  if (any.length > 0 && !any.some((entry) => labels.has(entry))) {
+    return false;
+  }
+  if (all.length > 0 && !all.every((entry) => labels.has(entry))) {
+    return false;
+  }
+  if (none.length > 0 && none.some((entry) => labels.has(entry))) {
+    return false;
+  }
+  return true;
+};
+
+type CommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
+
+const BOT_MENTION_TOKEN = "@agent";
+const DEFAULT_ALLOWED_TRIGGERS: CommentTriggerType[] = ["emoji_reaction", "slash_command", "bot_mention"];
+const DEFAULT_ALLOWED_REACTIONS = ["🤖", "robot"];
+const DEFAULT_ALLOWED_COMMANDS = ["/agent run"];
+
+const normalizeLowercaseList = (value: string[] | undefined): string[] =>
+  Array.from(new Set((value ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean)));
+
+const detectCommentTriggerType = (
+  eventType: string,
+  payload: GitHubIssueCommentPayload | GitHubPullRequestReviewCommentPayload | GitHubReactionPayload
+): { triggerType: CommentTriggerType | null; command: string | null } => {
+  if (eventType === "reaction") {
+    return { triggerType: "emoji_reaction", command: null };
+  }
+
+  const body = String(payload.comment?.body ?? "");
+  const lowered = body.toLowerCase();
+  if (lowered.includes(BOT_MENTION_TOKEN)) {
+    return { triggerType: "bot_mention", command: null };
+  }
+  const command = body
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("/"));
+  if (command) {
+    return { triggerType: "slash_command", command };
+  }
+  return { triggerType: null, command: null };
+};
+
+const canActorTrigger = (payload: { sender?: { login?: string; type?: string } }, allowedActorLogins: string[]): boolean => {
+  const actorType = String(payload.sender?.type ?? "").trim().toLowerCase();
+  const actorLogin = String(payload.sender?.login ?? "").trim().toLowerCase();
+  if (!actorLogin) {
+    return false;
+  }
+  // Guardrail against bot/self loops.
+  if (actorType === "bot" || actorLogin.endsWith("[bot]")) {
+    return false;
+  }
+  if (allowedActorLogins.length === 0) {
+    return true;
+  }
+  return allowedActorLogins.includes(actorLogin);
+};
+
+const resolveOwnerUserId = async (userStore: UserStore): Promise<string | null> => {
+  const users = await userStore.listUsers();
+  const admin = users.find((user) => user.roles.some((role) => role.id === SYSTEM_ADMIN_ROLE_ID));
+  return admin?.id ?? users[0]?.id ?? null;
+};
+
+const resolveAssigneeUserId = async (userStore: UserStore, assigneeEmail: string | undefined): Promise<string | null> => {
+  const normalized = assigneeEmail?.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  const users = await userStore.listUsers();
+  const match = users.find((user) => user.email.trim().toLowerCase() === normalized);
+  return match?.id ?? null;
+};
+
+export const isSupportedGitHubEvent = (eventType: string): boolean => Boolean(ALLOWED_ACTIONS_BY_EVENT[eventType]);
+
+export const hasSupportedGitHubAction = (eventType: string, action: string): boolean => {
+  const allowed = ALLOWED_ACTIONS_BY_EVENT[eventType];
+  return Boolean(allowed?.has(action));
+};
+
+export const isValidGitHubEventPayload = (eventType: string, payload: Record<string, unknown>): boolean => {
+  if (eventType === "issues") {
+    const typed = payload as GitHubIssueLikePayload;
+    return Number.isInteger(typed.issue?.number);
+  }
+  if (eventType === "pull_request") {
+    const typed = payload as GitHubPullRequestLikePayload;
+    return Number.isInteger(typed.pull_request?.number);
+  }
+  if (eventType === "issue_comment") {
+    const typed = payload as GitHubIssueCommentPayload;
+    return Number.isInteger(typed.issue?.number) && Number.isInteger(typed.comment?.id);
+  }
+  if (eventType === "pull_request_review_comment") {
+    const typed = payload as GitHubPullRequestReviewCommentPayload;
+    return Number.isInteger(typed.pull_request?.number) && Number.isInteger(typed.comment?.id);
+  }
+  if (eventType === "reaction") {
+    const typed = payload as GitHubReactionPayload;
+    if (!typed.action) {
+      return false;
+    }
+    if (typed.action === "created") {
+      return typeof typed.content === "string" && typed.content.trim().length > 0;
+    }
+    return true;
+  }
+  return false;
+};
+
+const cleanupExpiredGitHubDedupeEntries = (nowMs: number): void => {
+  for (const [key, expiry] of githubEventDedupeCache) {
+    if (expiry <= nowMs) {
+      githubEventDedupeCache.delete(key);
+    }
+  }
+};
+
+export const buildGitHubEventDedupeKey = (
+  repositoryId: string,
+  eventType: string,
+  action: string,
+  payload: Record<string, unknown>,
+  deliveryId: string | null
+): string => {
+  if (deliveryId) {
+    return `delivery:${repositoryId}:${deliveryId}`;
+  }
+  if (eventType === "issues") {
+    const typed = payload as GitHubIssueLikePayload;
+    return `issues:${repositoryId}:${action}:${typed.issue?.number ?? "unknown"}`;
+  }
+  if (eventType === "pull_request") {
+    const typed = payload as GitHubPullRequestLikePayload;
+    return `pull_request:${repositoryId}:${action}:${typed.pull_request?.number ?? "unknown"}`;
+  }
+  if (eventType === "issue_comment") {
+    const typed = payload as GitHubIssueCommentPayload;
+    return `issue_comment:${repositoryId}:${action}:${typed.comment?.id ?? "unknown"}`;
+  }
+  if (eventType === "pull_request_review_comment") {
+    const typed = payload as GitHubPullRequestReviewCommentPayload;
+    return `pull_request_review_comment:${repositoryId}:${action}:${typed.comment?.id ?? "unknown"}`;
+  }
+  if (eventType === "reaction") {
+    const typed = payload as GitHubReactionPayload;
+    return `reaction:${repositoryId}:${action}:${typed.reaction?.id ?? typed.content ?? "unknown"}`;
+  }
+  return `unknown:${repositoryId}:${eventType}:${action}`;
+};
+
+export const isDuplicateGitHubEvent = (
+  repositoryId: string,
+  eventType: string,
+  action: string,
+  payload: Record<string, unknown>,
+  deliveryId: string | null
+): boolean => {
+  const nowMs = Date.now();
+  cleanupExpiredGitHubDedupeEntries(nowMs);
+  const dedupeKey = buildGitHubEventDedupeKey(repositoryId, eventType, action, payload, deliveryId);
+  const existingExpiry = githubEventDedupeCache.get(dedupeKey);
+  if (existingExpiry && existingExpiry > nowMs) {
+    return true;
+  }
+  githubEventDedupeCache.set(dedupeKey, nowMs + GITHUB_DEDUPE_TTL_MS);
+  return false;
+};
+
+export const registerGitHubWebhookRoutes = (
+  app: FastifyInstance,
+  deps: {
+    repositoryStore: RepositoryStore;
+    githubImportService: GitHubImportService;
+    taskStore: TaskStore;
+    userStore: UserStore;
+    scheduler: SchedulerService;
+    spawner: SpawnerService;
+    snippetStore: SnippetStore;
+  }
+): void => {
+  app.post<{ Params: { repositoryId: string } }>("/webhooks/github/:repositoryId", async (request, reply) => {
+    const repository = await deps.repositoryStore.getRepository(request.params.repositoryId);
+    if (!repository) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    const body = (request.body ?? {}) as Record<string, unknown>;
+
+    const githubEventHeader = request.headers["x-github-event"];
+    const githubEvent = (Array.isArray(githubEventHeader) ? githubEventHeader[0] : githubEventHeader) ?? "";
+    const deliveryHeader = request.headers["x-github-delivery"];
+    const githubDeliveryId = ((Array.isArray(deliveryHeader) ? deliveryHeader[0] : deliveryHeader) ?? "").trim() || null;
+    const action = typeof body.action === "string" ? body.action : "";
+
+    if (!isSupportedGitHubEvent(githubEvent)) {
+      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+    }
+    if (!action || !hasSupportedGitHubAction(githubEvent, action)) {
+      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+    }
+    if (!isValidGitHubEventPayload(githubEvent, body)) {
+      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+    }
+    if (isDuplicateGitHubEvent(repository.id, githubEvent, action, body, githubDeliveryId)) {
+      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+    }
+
+    const rules = repository.githubAutomations ?? [];
+    if (rules.length === 0) {
+      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+    }
+
+    const fallbackOwnerUserId = await resolveOwnerUserId(deps.userStore);
+    if (!fallbackOwnerUserId) {
+      return reply.status(409).send({ message: "No users are available to own webhook-created tasks." });
+    }
+
+    let matched = 0;
+    let created = 0;
+
+    if (githubEvent === "issues") {
+      const payload = body as GitHubIssueLikePayload;
+      if (payload.action !== "opened" || !payload.issue?.number) {
+        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+      }
+      const labels = normalizeLabels(payload.issue.labels);
+      for (const rule of rules) {
+        if (!rule.enabled || rule.trigger !== "issue_opened" || !matchesLabels(labels, rule.labelFilter)) {
+          continue;
+        }
+        matched += 1;
+        const issueInput = await deps.githubImportService.buildTaskInputFromIssue(repository, {
+          repoId: repository.id,
+          issueNumber: payload.issue.number,
+          includeComments: rule.task.includeComments ?? false,
+          notes: rule.task.notes,
+          taskType: rule.task.taskType ?? "build",
+          title: rule.task.titleTemplate,
+          provider: rule.task.provider,
+          providerProfile: rule.task.providerProfile,
+          modelOverride: rule.task.modelOverride ?? undefined,
+          codexCredentialSource: rule.task.codexCredentialSource,
+          baseBranch: rule.task.baseBranch,
+          branchStrategy: rule.task.branchStrategy
+        });
+        if (rule.task.snippetId) {
+          const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
+          if (snippet) {
+            issueInput.notes = [snippet.content, issueInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
+          }
+        }
+        issueInput.notes = withGitHubStatusSyncMarker(issueInput.notes, rule.syncStatusEnabled === true);
+        const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
+        const task = await deps.taskStore.createTask(issueInput, repository, ownerUserId);
+        const startResult = await orchestrateTaskStart(
+          {
+            taskStore: deps.taskStore,
+            scheduler: deps.scheduler,
+            spawner: deps.spawner
+          },
+          {
+            task,
+            fallbackMessage: "Webhook-created task execution could not be started"
+          }
+        );
+        if (!startResult.ok) {
+          throw new Error(startResult.message);
+        }
+        created += 1;
+      }
+      return reply.status(202).send({ accepted: true, matched, created });
+    }
+
+    if (githubEvent === "pull_request") {
+      const payload = body as GitHubPullRequestLikePayload;
+      if (payload.action !== "opened" || !payload.pull_request?.number) {
+        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+      }
+      const labels = normalizeLabels(payload.pull_request.labels);
+      for (const rule of rules) {
+        if (!rule.enabled || rule.trigger !== "pull_request_opened" || !matchesLabels(labels, rule.labelFilter)) {
+          continue;
+        }
+        matched += 1;
+        const prInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, {
+          repoId: repository.id,
+          pullRequestNumber: payload.pull_request.number,
+          notes: rule.task.notes,
+          title: rule.task.titleTemplate,
+          provider: rule.task.provider,
+          providerProfile: rule.task.providerProfile,
+          modelOverride: rule.task.modelOverride ?? undefined,
+          codexCredentialSource: rule.task.codexCredentialSource
+        });
+        if (rule.task.snippetId) {
+          const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
+          if (snippet) {
+            prInput.notes = [snippet.content, prInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
+          }
+        }
+        prInput.notes = withGitHubStatusSyncMarker(prInput.notes, rule.syncStatusEnabled === true);
+        const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
+        const task = await deps.taskStore.createTask(prInput, repository, ownerUserId);
+        const startResult = await orchestrateTaskStart(
+          {
+            taskStore: deps.taskStore,
+            scheduler: deps.scheduler,
+            spawner: deps.spawner
+          },
+          {
+            task,
+            fallbackMessage: "Webhook-created task execution could not be started"
+          }
+        );
+        if (!startResult.ok) {
+          throw new Error(startResult.message);
+        }
+        created += 1;
+      }
+      return reply.status(202).send({ accepted: true, matched, created });
+    }
+
+    if (githubEvent === "issue_comment" || githubEvent === "pull_request_review_comment" || githubEvent === "reaction") {
+      const payload = body as GitHubIssueCommentPayload | GitHubPullRequestReviewCommentPayload | GitHubReactionPayload;
+      if (payload.action !== "created") {
+        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+      }
+
+      const { triggerType, command } = detectCommentTriggerType(githubEvent, payload);
+      if (!triggerType) {
+        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+      }
+      const reactionContent =
+        githubEvent === "reaction" ? String((payload as GitHubReactionPayload).content ?? "").trim().toLowerCase() : null;
+
+      const issueNumber =
+        githubEvent === "pull_request_review_comment"
+          ? (payload as GitHubPullRequestReviewCommentPayload).pull_request?.number
+          : (payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.number;
+      if (!issueNumber) {
+        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+      }
+
+      const isPullRequestConversation =
+        githubEvent === "pull_request_review_comment" ||
+        Boolean((payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.pull_request);
+      const labels = normalizeLabels(
+        isPullRequestConversation
+          ? githubEvent === "pull_request_review_comment"
+            ? (payload as GitHubPullRequestReviewCommentPayload).pull_request?.labels
+            : undefined
+          : (payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.labels
+      );
+      const actorLogin = String(payload.sender?.login ?? "unknown");
+      const actorTimestamp = new Date().toISOString();
+
+      for (const rule of rules) {
+        if (!rule.enabled || rule.automationEnabled !== true) {
+          continue;
+        }
+        if (rule.trigger !== (isPullRequestConversation ? "pull_request_opened" : "issue_opened")) {
+          continue;
+        }
+        if (!matchesLabels(labels, rule.labelFilter)) {
+          continue;
+        }
+
+        const allowedTriggers = (rule.allowedTriggers?.length ? rule.allowedTriggers : DEFAULT_ALLOWED_TRIGGERS).map((entry) => entry.trim());
+        if (!allowedTriggers.includes(triggerType)) {
+          continue;
+        }
+        if (triggerType === "slash_command") {
+          const allowedCommands = (rule.allowedCommands?.length ? rule.allowedCommands : DEFAULT_ALLOWED_COMMANDS).map((entry) => entry.trim().toLowerCase());
+          if (!command || !allowedCommands.includes(command.trim().toLowerCase())) {
+            continue;
+          }
+        }
+        if (triggerType === "emoji_reaction") {
+          const allowedReactions = (rule.allowedReactions?.length ? rule.allowedReactions : DEFAULT_ALLOWED_REACTIONS).map((entry) =>
+            entry.trim().toLowerCase()
+          );
+          if (!reactionContent || !allowedReactions.includes(reactionContent)) {
+            continue;
+          }
+        }
+        const allowedActorLogins = normalizeLowercaseList(rule.allowedActorLogins);
+        if (!canActorTrigger(payload, allowedActorLogins)) {
+          continue;
+        }
+
+        matched += 1;
+        const auditLine = `[GitHub Trigger Audit] actor=@${actorLogin} at=${actorTimestamp} trigger=${triggerType}${command ? ` command=${command}` : ""}`;
+        if (isPullRequestConversation) {
+          const prInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, {
+            repoId: repository.id,
+            pullRequestNumber: issueNumber,
+            notes: [auditLine, rule.task.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n"),
+            title: rule.task.titleTemplate,
+            provider: rule.task.provider,
+            providerProfile: rule.task.providerProfile,
+            modelOverride: rule.task.modelOverride ?? undefined,
+            codexCredentialSource: rule.task.codexCredentialSource
+          });
+          if (rule.task.snippetId) {
+            const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
+            if (snippet) {
+              prInput.notes = [snippet.content, prInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
+            }
+          }
+          prInput.notes = withGitHubStatusSyncMarker(prInput.notes, rule.syncStatusEnabled === true);
+          const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
+          const task = await deps.taskStore.createTask(prInput, repository, ownerUserId);
+          const startResult = await orchestrateTaskStart(
+            {
+              taskStore: deps.taskStore,
+              scheduler: deps.scheduler,
+              spawner: deps.spawner
+          },
+          {
+            task,
+            fallbackMessage: "Webhook-created task execution could not be started"
+          }
+          );
+          if (!startResult.ok) {
+            throw new Error(startResult.message);
+          }
+          created += 1;
+        } else {
+          const issueInput = await deps.githubImportService.buildTaskInputFromIssue(repository, {
+            repoId: repository.id,
+            issueNumber,
+            includeComments: rule.task.includeComments ?? true,
+            notes: [auditLine, rule.task.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n"),
+            taskType: rule.task.taskType ?? "build",
+            title: rule.task.titleTemplate,
+            provider: rule.task.provider,
+            providerProfile: rule.task.providerProfile,
+            modelOverride: rule.task.modelOverride ?? undefined,
+            codexCredentialSource: rule.task.codexCredentialSource,
+            baseBranch: rule.task.baseBranch,
+            branchStrategy: rule.task.branchStrategy
+          });
+          if (rule.task.snippetId) {
+            const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
+            if (snippet) {
+              issueInput.notes = [snippet.content, issueInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
+            }
+          }
+          issueInput.notes = withGitHubStatusSyncMarker(issueInput.notes, rule.syncStatusEnabled === true);
+          const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
+          const task = await deps.taskStore.createTask(issueInput, repository, ownerUserId);
+          const startResult = await orchestrateTaskStart(
+            {
+              taskStore: deps.taskStore,
+              scheduler: deps.scheduler,
+              spawner: deps.spawner
+            },
+            {
+              task,
+              fallbackMessage: "Webhook-created task execution could not be started"
+            }
+          );
+          if (!startResult.ok) {
+            throw new Error(startResult.message);
+          }
+          created += 1;
+        }
+      }
+
+      return reply.status(202).send({ accepted: true, matched, created });
+    }
+
+    return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
+  });
+};
 ````
 
 ## File: apps/server/src/services/create-postgres-stores.ts
@@ -32186,559 +32739,6 @@ await writeFile(
 console.log("[runtime] completed");
 ````
 
-## File: apps/server/src/routes/github-webhooks.ts
-````typescript
-import type { FastifyInstance } from "fastify";
-import { SYSTEM_ADMIN_ROLE_ID } from "../services/role-store.js";
-import type { GitHubImportService } from "../services/github-import-service.js";
-import type { RepositoryStore } from "../services/repository-store.js";
-import type { SchedulerService } from "../services/scheduler.js";
-import type { SnippetStore } from "../services/snippet-store.js";
-import type { SpawnerService } from "../services/spawner.js";
-import type { TaskStore } from "../services/task-store.js";
-import type { UserStore } from "../services/user-store.js";
-import { withGitHubStatusSyncMarker } from "../lib/github-status-sync.js";
-import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
-
-const GITHUB_DEDUPE_TTL_MS = 15 * 60 * 1_000;
-const githubEventDedupeCache = new Map<string, number>();
-
-interface GitHubIssueLikePayload {
-  action?: string;
-  issue?: { number?: number; labels?: Array<{ name?: string }> };
-}
-
-interface GitHubPullRequestLikePayload {
-  action?: string;
-  pull_request?: { number?: number; labels?: Array<{ name?: string }> };
-}
-
-interface GitHubIssueCommentPayload {
-  action?: string;
-  issue?: { number?: number; labels?: Array<{ name?: string }>; pull_request?: Record<string, unknown> };
-  comment?: { id?: number; body?: string };
-  sender?: { login?: string; type?: string };
-}
-
-interface GitHubReactionPayload {
-  action?: string;
-  reaction?: { id?: number | null };
-  content?: string;
-  issue?: { number?: number; labels?: Array<{ name?: string }>; pull_request?: Record<string, unknown> };
-  comment?: { id?: number; body?: string };
-  sender?: { login?: string; type?: string };
-}
-
-interface GitHubPullRequestReviewCommentPayload {
-  action?: string;
-  pull_request?: { number?: number; labels?: Array<{ name?: string }> };
-  comment?: { id?: number; body?: string };
-  sender?: { login?: string; type?: string };
-}
-
-const ALLOWED_ACTIONS_BY_EVENT: Record<string, Set<string>> = {
-  issues: new Set(["opened", "edited", "closed", "reopened", "labeled", "unlabeled", "assigned", "unassigned"]),
-  pull_request: new Set(["opened", "edited", "closed", "reopened", "synchronize", "labeled", "unlabeled", "ready_for_review", "converted_to_draft"]),
-  issue_comment: new Set(["created", "edited", "deleted"]),
-  pull_request_review_comment: new Set(["created", "edited", "deleted"]),
-  reaction: new Set(["created", "deleted"])
-};
-
-const normalizeLabels = (labels: Array<{ name?: string }> | undefined): Set<string> =>
-  new Set((labels ?? []).map((entry) => (entry.name ?? "").trim().toLowerCase()).filter(Boolean));
-
-const matchesLabels = (
-  labels: Set<string>,
-  filter: { labelsAny?: string[]; labelsAll?: string[]; labelsNone?: string[] } | undefined
-): boolean => {
-  if (!filter) {
-    return true;
-  }
-  const any = (filter.labelsAny ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
-  const all = (filter.labelsAll ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
-  const none = (filter.labelsNone ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
-  if (any.length > 0 && !any.some((entry) => labels.has(entry))) {
-    return false;
-  }
-  if (all.length > 0 && !all.every((entry) => labels.has(entry))) {
-    return false;
-  }
-  if (none.length > 0 && none.some((entry) => labels.has(entry))) {
-    return false;
-  }
-  return true;
-};
-
-type CommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
-
-const BOT_MENTION_TOKEN = "@agent";
-const DEFAULT_ALLOWED_TRIGGERS: CommentTriggerType[] = ["emoji_reaction", "slash_command", "bot_mention"];
-const DEFAULT_ALLOWED_REACTIONS = ["🤖", "robot"];
-const DEFAULT_ALLOWED_COMMANDS = ["/agent run"];
-
-const normalizeLowercaseList = (value: string[] | undefined): string[] =>
-  Array.from(new Set((value ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean)));
-
-const detectCommentTriggerType = (
-  eventType: string,
-  payload: GitHubIssueCommentPayload | GitHubPullRequestReviewCommentPayload | GitHubReactionPayload
-): { triggerType: CommentTriggerType | null; command: string | null } => {
-  if (eventType === "reaction") {
-    return { triggerType: "emoji_reaction", command: null };
-  }
-
-  const body = String(payload.comment?.body ?? "");
-  const lowered = body.toLowerCase();
-  if (lowered.includes(BOT_MENTION_TOKEN)) {
-    return { triggerType: "bot_mention", command: null };
-  }
-  const command = body
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line.startsWith("/"));
-  if (command) {
-    return { triggerType: "slash_command", command };
-  }
-  return { triggerType: null, command: null };
-};
-
-const canActorTrigger = (payload: { sender?: { login?: string; type?: string } }, allowedActorLogins: string[]): boolean => {
-  const actorType = String(payload.sender?.type ?? "").trim().toLowerCase();
-  const actorLogin = String(payload.sender?.login ?? "").trim().toLowerCase();
-  if (!actorLogin) {
-    return false;
-  }
-  // Guardrail against bot/self loops.
-  if (actorType === "bot" || actorLogin.endsWith("[bot]")) {
-    return false;
-  }
-  if (allowedActorLogins.length === 0) {
-    return true;
-  }
-  return allowedActorLogins.includes(actorLogin);
-};
-
-const resolveOwnerUserId = async (userStore: UserStore): Promise<string | null> => {
-  const users = await userStore.listUsers();
-  const admin = users.find((user) => user.roles.some((role) => role.id === SYSTEM_ADMIN_ROLE_ID));
-  return admin?.id ?? users[0]?.id ?? null;
-};
-
-const resolveAssigneeUserId = async (userStore: UserStore, assigneeEmail: string | undefined): Promise<string | null> => {
-  const normalized = assigneeEmail?.trim().toLowerCase();
-  if (!normalized) {
-    return null;
-  }
-  const users = await userStore.listUsers();
-  const match = users.find((user) => user.email.trim().toLowerCase() === normalized);
-  return match?.id ?? null;
-};
-
-export const isSupportedGitHubEvent = (eventType: string): boolean => Boolean(ALLOWED_ACTIONS_BY_EVENT[eventType]);
-
-export const hasSupportedGitHubAction = (eventType: string, action: string): boolean => {
-  const allowed = ALLOWED_ACTIONS_BY_EVENT[eventType];
-  return Boolean(allowed?.has(action));
-};
-
-export const isValidGitHubEventPayload = (eventType: string, payload: Record<string, unknown>): boolean => {
-  if (eventType === "issues") {
-    const typed = payload as GitHubIssueLikePayload;
-    return Number.isInteger(typed.issue?.number);
-  }
-  if (eventType === "pull_request") {
-    const typed = payload as GitHubPullRequestLikePayload;
-    return Number.isInteger(typed.pull_request?.number);
-  }
-  if (eventType === "issue_comment") {
-    const typed = payload as GitHubIssueCommentPayload;
-    return Number.isInteger(typed.issue?.number) && Number.isInteger(typed.comment?.id);
-  }
-  if (eventType === "pull_request_review_comment") {
-    const typed = payload as GitHubPullRequestReviewCommentPayload;
-    return Number.isInteger(typed.pull_request?.number) && Number.isInteger(typed.comment?.id);
-  }
-  if (eventType === "reaction") {
-    const typed = payload as GitHubReactionPayload;
-    if (!typed.action) {
-      return false;
-    }
-    if (typed.action === "created") {
-      return typeof typed.content === "string" && typed.content.trim().length > 0;
-    }
-    return true;
-  }
-  return false;
-};
-
-const cleanupExpiredGitHubDedupeEntries = (nowMs: number): void => {
-  for (const [key, expiry] of githubEventDedupeCache) {
-    if (expiry <= nowMs) {
-      githubEventDedupeCache.delete(key);
-    }
-  }
-};
-
-export const buildGitHubEventDedupeKey = (
-  repositoryId: string,
-  eventType: string,
-  action: string,
-  payload: Record<string, unknown>,
-  deliveryId: string | null
-): string => {
-  if (deliveryId) {
-    return `delivery:${repositoryId}:${deliveryId}`;
-  }
-  if (eventType === "issues") {
-    const typed = payload as GitHubIssueLikePayload;
-    return `issues:${repositoryId}:${action}:${typed.issue?.number ?? "unknown"}`;
-  }
-  if (eventType === "pull_request") {
-    const typed = payload as GitHubPullRequestLikePayload;
-    return `pull_request:${repositoryId}:${action}:${typed.pull_request?.number ?? "unknown"}`;
-  }
-  if (eventType === "issue_comment") {
-    const typed = payload as GitHubIssueCommentPayload;
-    return `issue_comment:${repositoryId}:${action}:${typed.comment?.id ?? "unknown"}`;
-  }
-  if (eventType === "pull_request_review_comment") {
-    const typed = payload as GitHubPullRequestReviewCommentPayload;
-    return `pull_request_review_comment:${repositoryId}:${action}:${typed.comment?.id ?? "unknown"}`;
-  }
-  if (eventType === "reaction") {
-    const typed = payload as GitHubReactionPayload;
-    return `reaction:${repositoryId}:${action}:${typed.reaction?.id ?? typed.content ?? "unknown"}`;
-  }
-  return `unknown:${repositoryId}:${eventType}:${action}`;
-};
-
-export const isDuplicateGitHubEvent = (
-  repositoryId: string,
-  eventType: string,
-  action: string,
-  payload: Record<string, unknown>,
-  deliveryId: string | null
-): boolean => {
-  const nowMs = Date.now();
-  cleanupExpiredGitHubDedupeEntries(nowMs);
-  const dedupeKey = buildGitHubEventDedupeKey(repositoryId, eventType, action, payload, deliveryId);
-  const existingExpiry = githubEventDedupeCache.get(dedupeKey);
-  if (existingExpiry && existingExpiry > nowMs) {
-    return true;
-  }
-  githubEventDedupeCache.set(dedupeKey, nowMs + GITHUB_DEDUPE_TTL_MS);
-  return false;
-};
-
-export const registerGitHubWebhookRoutes = (
-  app: FastifyInstance,
-  deps: {
-    repositoryStore: RepositoryStore;
-    githubImportService: GitHubImportService;
-    taskStore: TaskStore;
-    userStore: UserStore;
-    scheduler: SchedulerService;
-    spawner: SpawnerService;
-    snippetStore: SnippetStore;
-  }
-): void => {
-  app.post<{ Params: { repositoryId: string } }>("/webhooks/github/:repositoryId", async (request, reply) => {
-    const repository = await deps.repositoryStore.getRepository(request.params.repositoryId);
-    if (!repository) {
-      return reply.status(404).send({ message: "Repository not found" });
-    }
-
-    const body = (request.body ?? {}) as Record<string, unknown>;
-
-    const githubEventHeader = request.headers["x-github-event"];
-    const githubEvent = (Array.isArray(githubEventHeader) ? githubEventHeader[0] : githubEventHeader) ?? "";
-    const deliveryHeader = request.headers["x-github-delivery"];
-    const githubDeliveryId = ((Array.isArray(deliveryHeader) ? deliveryHeader[0] : deliveryHeader) ?? "").trim() || null;
-    const action = typeof body.action === "string" ? body.action : "";
-
-    if (!isSupportedGitHubEvent(githubEvent)) {
-      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-    }
-    if (!action || !hasSupportedGitHubAction(githubEvent, action)) {
-      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-    }
-    if (!isValidGitHubEventPayload(githubEvent, body)) {
-      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-    }
-    if (isDuplicateGitHubEvent(repository.id, githubEvent, action, body, githubDeliveryId)) {
-      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-    }
-
-    const rules = repository.githubAutomations ?? [];
-    if (rules.length === 0) {
-      return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-    }
-
-    const fallbackOwnerUserId = await resolveOwnerUserId(deps.userStore);
-    if (!fallbackOwnerUserId) {
-      return reply.status(409).send({ message: "No users are available to own webhook-created tasks." });
-    }
-
-    let matched = 0;
-    let created = 0;
-
-    if (githubEvent === "issues") {
-      const payload = body as GitHubIssueLikePayload;
-      if (payload.action !== "opened" || !payload.issue?.number) {
-        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-      }
-      const labels = normalizeLabels(payload.issue.labels);
-      for (const rule of rules) {
-        if (!rule.enabled || rule.trigger !== "issue_opened" || !matchesLabels(labels, rule.labelFilter)) {
-          continue;
-        }
-        matched += 1;
-        const issueInput = await deps.githubImportService.buildTaskInputFromIssue(repository, {
-          repoId: repository.id,
-          issueNumber: payload.issue.number,
-          includeComments: rule.task.includeComments ?? false,
-          notes: rule.task.notes,
-          taskType: rule.task.taskType ?? "build",
-          title: rule.task.titleTemplate,
-          provider: rule.task.provider,
-          providerProfile: rule.task.providerProfile,
-          modelOverride: rule.task.modelOverride ?? undefined,
-          codexCredentialSource: rule.task.codexCredentialSource,
-          baseBranch: rule.task.baseBranch,
-          branchStrategy: rule.task.branchStrategy
-        });
-        if (rule.task.snippetId) {
-          const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
-          if (snippet) {
-            issueInput.notes = [snippet.content, issueInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
-          }
-        }
-        issueInput.notes = withGitHubStatusSyncMarker(issueInput.notes, rule.syncStatusEnabled === true);
-        const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
-        const task = await deps.taskStore.createTask(issueInput, repository, ownerUserId);
-        const startResult = await orchestrateTaskStart(
-          {
-            taskStore: deps.taskStore,
-            scheduler: deps.scheduler,
-            spawner: deps.spawner
-          },
-          {
-            task,
-            fallbackMessage: "Webhook-created task execution could not be started"
-          }
-        );
-        if (!startResult.ok) {
-          throw new Error(startResult.message);
-        }
-        created += 1;
-      }
-      return reply.status(202).send({ accepted: true, matched, created });
-    }
-
-    if (githubEvent === "pull_request") {
-      const payload = body as GitHubPullRequestLikePayload;
-      if (payload.action !== "opened" || !payload.pull_request?.number) {
-        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-      }
-      const labels = normalizeLabels(payload.pull_request.labels);
-      for (const rule of rules) {
-        if (!rule.enabled || rule.trigger !== "pull_request_opened" || !matchesLabels(labels, rule.labelFilter)) {
-          continue;
-        }
-        matched += 1;
-        const prInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, {
-          repoId: repository.id,
-          pullRequestNumber: payload.pull_request.number,
-          notes: rule.task.notes,
-          title: rule.task.titleTemplate,
-          provider: rule.task.provider,
-          providerProfile: rule.task.providerProfile,
-          modelOverride: rule.task.modelOverride ?? undefined,
-          codexCredentialSource: rule.task.codexCredentialSource
-        });
-        if (rule.task.snippetId) {
-          const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
-          if (snippet) {
-            prInput.notes = [snippet.content, prInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
-          }
-        }
-        prInput.notes = withGitHubStatusSyncMarker(prInput.notes, rule.syncStatusEnabled === true);
-        const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
-        const task = await deps.taskStore.createTask(prInput, repository, ownerUserId);
-        const startResult = await orchestrateTaskStart(
-          {
-            taskStore: deps.taskStore,
-            scheduler: deps.scheduler,
-            spawner: deps.spawner
-          },
-          {
-            task,
-            fallbackMessage: "Webhook-created task execution could not be started"
-          }
-        );
-        if (!startResult.ok) {
-          throw new Error(startResult.message);
-        }
-        created += 1;
-      }
-      return reply.status(202).send({ accepted: true, matched, created });
-    }
-
-    if (githubEvent === "issue_comment" || githubEvent === "pull_request_review_comment" || githubEvent === "reaction") {
-      const payload = body as GitHubIssueCommentPayload | GitHubPullRequestReviewCommentPayload | GitHubReactionPayload;
-      if (payload.action !== "created") {
-        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-      }
-
-      const { triggerType, command } = detectCommentTriggerType(githubEvent, payload);
-      if (!triggerType) {
-        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-      }
-      const reactionContent =
-        githubEvent === "reaction" ? String((payload as GitHubReactionPayload).content ?? "").trim().toLowerCase() : null;
-
-      const issueNumber =
-        githubEvent === "pull_request_review_comment"
-          ? (payload as GitHubPullRequestReviewCommentPayload).pull_request?.number
-          : (payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.number;
-      if (!issueNumber) {
-        return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-      }
-
-      const isPullRequestConversation =
-        githubEvent === "pull_request_review_comment" ||
-        Boolean((payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.pull_request);
-      const labels = normalizeLabels(
-        isPullRequestConversation
-          ? githubEvent === "pull_request_review_comment"
-            ? (payload as GitHubPullRequestReviewCommentPayload).pull_request?.labels
-            : undefined
-          : (payload as GitHubIssueCommentPayload | GitHubReactionPayload).issue?.labels
-      );
-      const actorLogin = String(payload.sender?.login ?? "unknown");
-      const actorTimestamp = new Date().toISOString();
-
-      for (const rule of rules) {
-        if (!rule.enabled || rule.automationEnabled !== true) {
-          continue;
-        }
-        if (rule.trigger !== (isPullRequestConversation ? "pull_request_opened" : "issue_opened")) {
-          continue;
-        }
-        if (!matchesLabels(labels, rule.labelFilter)) {
-          continue;
-        }
-
-        const allowedTriggers = (rule.allowedTriggers?.length ? rule.allowedTriggers : DEFAULT_ALLOWED_TRIGGERS).map((entry) => entry.trim());
-        if (!allowedTriggers.includes(triggerType)) {
-          continue;
-        }
-        if (triggerType === "slash_command") {
-          const allowedCommands = (rule.allowedCommands?.length ? rule.allowedCommands : DEFAULT_ALLOWED_COMMANDS).map((entry) => entry.trim().toLowerCase());
-          if (!command || !allowedCommands.includes(command.trim().toLowerCase())) {
-            continue;
-          }
-        }
-        if (triggerType === "emoji_reaction") {
-          const allowedReactions = (rule.allowedReactions?.length ? rule.allowedReactions : DEFAULT_ALLOWED_REACTIONS).map((entry) =>
-            entry.trim().toLowerCase()
-          );
-          if (!reactionContent || !allowedReactions.includes(reactionContent)) {
-            continue;
-          }
-        }
-        const allowedActorLogins = normalizeLowercaseList(rule.allowedActorLogins);
-        if (!canActorTrigger(payload, allowedActorLogins)) {
-          continue;
-        }
-
-        matched += 1;
-        const auditLine = `[GitHub Trigger Audit] actor=@${actorLogin} at=${actorTimestamp} trigger=${triggerType}${command ? ` command=${command}` : ""}`;
-        if (isPullRequestConversation) {
-          const prInput = await deps.githubImportService.buildTaskInputFromPullRequest(repository, {
-            repoId: repository.id,
-            pullRequestNumber: issueNumber,
-            notes: [auditLine, rule.task.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n"),
-            title: rule.task.titleTemplate,
-            provider: rule.task.provider,
-            providerProfile: rule.task.providerProfile,
-            modelOverride: rule.task.modelOverride ?? undefined,
-            codexCredentialSource: rule.task.codexCredentialSource
-          });
-          if (rule.task.snippetId) {
-            const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
-            if (snippet) {
-              prInput.notes = [snippet.content, prInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
-            }
-          }
-          prInput.notes = withGitHubStatusSyncMarker(prInput.notes, rule.syncStatusEnabled === true);
-          const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
-          const task = await deps.taskStore.createTask(prInput, repository, ownerUserId);
-          const startResult = await orchestrateTaskStart(
-            {
-              taskStore: deps.taskStore,
-              scheduler: deps.scheduler,
-              spawner: deps.spawner
-          },
-          {
-            task,
-            fallbackMessage: "Webhook-created task execution could not be started"
-          }
-          );
-          if (!startResult.ok) {
-            throw new Error(startResult.message);
-          }
-          created += 1;
-        } else {
-          const issueInput = await deps.githubImportService.buildTaskInputFromIssue(repository, {
-            repoId: repository.id,
-            issueNumber,
-            includeComments: rule.task.includeComments ?? true,
-            notes: [auditLine, rule.task.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n"),
-            taskType: rule.task.taskType ?? "build",
-            title: rule.task.titleTemplate,
-            provider: rule.task.provider,
-            providerProfile: rule.task.providerProfile,
-            modelOverride: rule.task.modelOverride ?? undefined,
-            codexCredentialSource: rule.task.codexCredentialSource,
-            baseBranch: rule.task.baseBranch,
-            branchStrategy: rule.task.branchStrategy
-          });
-          if (rule.task.snippetId) {
-            const snippet = await deps.snippetStore.getSnippet(rule.task.snippetId);
-            if (snippet) {
-              issueInput.notes = [snippet.content, issueInput.notes ?? ""].filter((entry) => entry.trim().length > 0).join("\n\n");
-            }
-          }
-          issueInput.notes = withGitHubStatusSyncMarker(issueInput.notes, rule.syncStatusEnabled === true);
-          const ownerUserId = (await resolveAssigneeUserId(deps.userStore, rule.task.assigneeEmail)) ?? fallbackOwnerUserId;
-          const task = await deps.taskStore.createTask(issueInput, repository, ownerUserId);
-          const startResult = await orchestrateTaskStart(
-            {
-              taskStore: deps.taskStore,
-              scheduler: deps.scheduler,
-              spawner: deps.spawner
-            },
-            {
-              task,
-              fallbackMessage: "Webhook-created task execution could not be started"
-            }
-          );
-          if (!startResult.ok) {
-            throw new Error(startResult.message);
-          }
-          created += 1;
-        }
-      }
-
-      return reply.status(202).send({ accepted: true, matched, created });
-    }
-
-    return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
-  });
-};
-````
-
 ## File: apps/server/src/services/app-stores.ts
 ````typescript
 import type { CredentialStore } from "./credential-store.js";
@@ -32767,6 +32767,1451 @@ export interface AppStores {
   userStore: UserStore;
   sessionStore: SessionStore;
   settingsStore: SettingsStore;
+}
+````
+
+## File: apps/server/src/services/repository-store.ts
+````typescript
+import { nanoid } from "nanoid";
+import type Redis from "ioredis";
+import type { Pool } from "pg";
+import type {
+  CreateRepositoryInput,
+  GitHubAutomationRule,
+  Repository,
+  RepositoryEnvVarInput,
+  RepositoryEnvSecret,
+  RepositoryEnvSecretInput,
+  UpdateRepositoryInput
+} from "@agentswarm/shared-types";
+import { EventBus } from "../lib/events.js";
+import { HttpError } from "../lib/http-error.js";
+import { RepositoryEnvFileStore } from "./repository-env-file-store.js";
+
+const REPO_KEY_PREFIX = "agentswarm:repo:";
+const REPO_IDS_KEY = "agentswarm:repo_ids";
+const USER_KEY_PREFIX = "agentswarm:user:";
+const USER_IDS_KEY = "agentswarm:user_ids";
+const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
+const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
+const REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH = 8192;
+const REPOSITORY_ENV_FILE_NAME_MAX_LENGTH = 255;
+const REPOSITORY_ENV_FILE_MAX_BYTES = 256 * 1024;
+const REPOSITORY_ENV_FILE_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
+const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
+const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
+const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
+const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
+
+const nowIso = (): string => new Date().toISOString();
+export type RepositoryRuntimeEnvEntry =
+  | {
+      key: string;
+      type: "text";
+      value: string;
+    }
+  | {
+      key: string;
+      type: "file";
+      fileId: string;
+      fileName: string;
+    };
+
+interface StoredRepositoryEnvTextValue {
+  key: string;
+  type: "text";
+  value: string;
+}
+
+interface StoredRepositoryEnvFileValue {
+  key: string;
+  type: "file";
+  fileId: string;
+  fileName: string;
+  sizeBytes: number;
+}
+
+type StoredRepositoryEnvValue = StoredRepositoryEnvTextValue | StoredRepositoryEnvFileValue;
+
+type StoredRepository = Omit<Repository, "webhookSecretConfigured" | "githubWebhookSecretConfigured" | "envVars" | "envSecrets"> & {
+  envVars: StoredRepositoryEnvValue[];
+  envSecrets: StoredRepositoryEnvValue[];
+  webhookSecret: string | null;
+  githubWebhookSecret: string | null;
+  webhookSecretConfigured?: boolean;
+  githubWebhookSecretConfigured?: boolean;
+} & Record<string, unknown>;
+
+const normalizeRepositoryEnvFileName = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().replace(/[\\/\x00]/g, "_");
+  if (normalized.length === 0 || normalized.length > REPOSITORY_ENV_FILE_NAME_MAX_LENGTH) {
+    return null;
+  }
+  return normalized;
+};
+
+const decodeRepositoryEnvFileContent = (key: string, contentBase64: string): Buffer => {
+  const normalized = contentBase64.trim().replace(/\s+/g, "");
+  if (!normalized) {
+    throw new HttpError(400, `File content is required for ${key}.`);
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(normalized) || normalized.length % 4 !== 0) {
+    throw new HttpError(400, `File content for ${key} is not valid Base64.`);
+  }
+
+  const decoded = Buffer.from(normalized, "base64");
+  if (decoded.byteLength === 0) {
+    throw new HttpError(400, `File content is required for ${key}.`);
+  }
+  if (decoded.byteLength > REPOSITORY_ENV_FILE_MAX_BYTES) {
+    throw new HttpError(400, `File content for ${key} exceeds ${REPOSITORY_ENV_FILE_MAX_BYTES} bytes.`);
+  }
+  return decoded;
+};
+
+const normalizeStoredRepositoryEnvValues = (
+  value: unknown,
+  options: { secret: boolean }
+): StoredRepositoryEnvValue[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const entries: StoredRepositoryEnvValue[] = [];
+  const seen = new Set<string>();
+  for (const rawEntry of value) {
+    if (!rawEntry || typeof rawEntry !== "object") {
+      continue;
+    }
+
+    const entry = rawEntry as Record<string, unknown>;
+    const rawKey = entry.key;
+    const key = typeof rawKey === "string" ? rawKey.trim() : "";
+    if (
+      !key ||
+      key.length > REPOSITORY_ENV_VAR_KEY_MAX_LENGTH ||
+      !REPOSITORY_ENV_VAR_KEY_PATTERN.test(key) ||
+      seen.has(key)
+    ) {
+      continue;
+    }
+
+    const type = entry.type === "file" ? "file" : "text";
+    if (type === "file") {
+      const fileId = typeof entry.fileId === "string" ? entry.fileId.trim() : "";
+      if (!REPOSITORY_ENV_FILE_ID_PATTERN.test(fileId)) {
+        continue;
+      }
+      const fileName = normalizeRepositoryEnvFileName(entry.fileName) ?? `${key}.bin`;
+      const sizeBytes =
+        typeof entry.sizeBytes === "number" && Number.isFinite(entry.sizeBytes) && entry.sizeBytes > 0
+          ? Math.floor(entry.sizeBytes)
+          : 0;
+      entries.push({
+        key,
+        type: "file",
+        fileId,
+        fileName,
+        sizeBytes
+      });
+      seen.add(key);
+      if (entries.length >= REPOSITORY_ENV_VAR_MAX_COUNT) {
+        break;
+      }
+      continue;
+    }
+
+    const normalizedValue = typeof entry.value === "string" ? entry.value : String(entry.value ?? "");
+    if (normalizedValue.length > REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH) {
+      continue;
+    }
+    if (options.secret && normalizedValue.length === 0) {
+      continue;
+    }
+
+    entries.push({ key, type: "text", value: normalizedValue });
+    seen.add(key);
+    if (entries.length >= REPOSITORY_ENV_VAR_MAX_COUNT) {
+      break;
+    }
+  }
+
+  return entries;
+};
+
+const toRepositoryEnvVars = (value: StoredRepositoryEnvValue[]): Repository["envVars"] =>
+  value.map((entry) =>
+    entry.type === "file"
+      ? {
+          key: entry.key,
+          type: "file",
+          configured: true,
+          fileName: entry.fileName
+        }
+      : {
+          key: entry.key,
+          type: "text",
+          value: entry.value
+        }
+  );
+
+const toConfiguredRepositoryEnvSecrets = (value: StoredRepositoryEnvValue[]): RepositoryEnvSecret[] =>
+  value.map((entry) => ({
+    key: entry.key,
+    configured: true,
+    type: entry.type,
+    ...(entry.type === "file" ? { fileName: entry.fileName } : {})
+  }));
+
+type NormalizedRepositoryEnvVarInput =
+  | {
+      key: string;
+      type: "text";
+      value: string;
+    }
+  | {
+      key: string;
+      type: "file";
+      fileName?: string;
+      fileContentBase64?: string;
+    };
+
+type NormalizedRepositoryEnvSecretInput =
+  | {
+      key: string;
+      type: "text";
+      value?: string;
+    }
+  | {
+      key: string;
+      type: "file";
+      fileName?: string;
+      fileContentBase64?: string;
+    };
+
+const normalizeRepositoryEnvVarInputs = (value: unknown): NormalizedRepositoryEnvVarInput[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const envVars: NormalizedRepositoryEnvVarInput[] = [];
+  const seen = new Set<string>();
+  for (const rawEntry of value) {
+    if (!rawEntry || typeof rawEntry !== "object") {
+      continue;
+    }
+
+    const entry = rawEntry as Record<string, unknown>;
+    const rawKey = entry.key;
+    const key = typeof rawKey === "string" ? rawKey.trim() : "";
+    if (
+      !key ||
+      key.length > REPOSITORY_ENV_VAR_KEY_MAX_LENGTH ||
+      !REPOSITORY_ENV_VAR_KEY_PATTERN.test(key) ||
+      seen.has(key)
+    ) {
+      continue;
+    }
+
+    const type = entry.type === "file" ? "file" : "text";
+    if (type === "file") {
+      envVars.push({
+        key,
+        type: "file",
+        ...(normalizeRepositoryEnvFileName(entry.fileName) ? { fileName: normalizeRepositoryEnvFileName(entry.fileName)! } : {}),
+        ...(typeof entry.fileContentBase64 === "string" && entry.fileContentBase64.trim().length > 0
+          ? { fileContentBase64: entry.fileContentBase64.trim() }
+          : {})
+      });
+    } else {
+      const normalizedValue = typeof entry.value === "string" ? entry.value : String(entry.value ?? "");
+      if (normalizedValue.length > REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH) {
+        continue;
+      }
+      envVars.push({ key, type: "text", value: normalizedValue });
+    }
+
+    seen.add(key);
+    if (envVars.length >= REPOSITORY_ENV_VAR_MAX_COUNT) {
+      break;
+    }
+  }
+  return envVars;
+};
+
+const normalizeRepositoryEnvSecretInputs = (value: unknown): NormalizedRepositoryEnvSecretInput[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const secrets: NormalizedRepositoryEnvSecretInput[] = [];
+  const seen = new Set<string>();
+  for (const rawEntry of value) {
+    if (!rawEntry || typeof rawEntry !== "object") {
+      continue;
+    }
+
+    const entry = rawEntry as Record<string, unknown>;
+    const rawKey = entry.key;
+    const key = typeof rawKey === "string" ? rawKey.trim() : "";
+    if (
+      !key ||
+      key.length > REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH ||
+      !REPOSITORY_ENV_SECRET_KEY_PATTERN.test(key) ||
+      seen.has(key)
+    ) {
+      continue;
+    }
+
+    const type = entry.type === "file" ? "file" : "text";
+    if (type === "file") {
+      secrets.push({
+        key,
+        type: "file",
+        ...(normalizeRepositoryEnvFileName(entry.fileName) ? { fileName: normalizeRepositoryEnvFileName(entry.fileName)! } : {}),
+        ...(typeof entry.fileContentBase64 === "string" && entry.fileContentBase64.trim().length > 0
+          ? { fileContentBase64: entry.fileContentBase64.trim() }
+          : {})
+      });
+    } else {
+      const normalizedValue =
+        typeof entry.value === "string" && entry.value.length <= REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH
+          ? entry.value
+          : undefined;
+      secrets.push({
+        key,
+        type: "text",
+        ...(normalizedValue !== undefined ? { value: normalizedValue } : {})
+      });
+    }
+
+    seen.add(key);
+    if (secrets.length >= REPOSITORY_ENV_SECRET_MAX_COUNT) {
+      break;
+    }
+  }
+
+  return secrets;
+};
+
+interface RepositoryEnvResolutionResult {
+  entries: StoredRepositoryEnvValue[];
+  staleFileIds: string[];
+  createdFileIds: string[];
+}
+
+const resolveNextRepositoryEnvVars = async (
+  fileStore: RepositoryEnvFileStore,
+  current: StoredRepositoryEnvValue[],
+  input: RepositoryEnvVarInput[] | undefined
+): Promise<RepositoryEnvResolutionResult> => {
+  if (input === undefined) {
+    return { entries: current, staleFileIds: [], createdFileIds: [] };
+  }
+
+  const normalizedInput = normalizeRepositoryEnvVarInputs(input);
+  const currentByKey = new Map(current.map((entry) => [entry.key, entry] as const));
+  const next: StoredRepositoryEnvValue[] = [];
+  const staleFileIds = new Set<string>();
+  const createdFileIds: string[] = [];
+
+  for (const envVar of normalizedInput) {
+    const existing = currentByKey.get(envVar.key);
+    if (envVar.type === "text") {
+      if (existing?.type === "file") {
+        staleFileIds.add(existing.fileId);
+      }
+      next.push({ key: envVar.key, type: "text", value: envVar.value });
+      continue;
+    }
+
+    if (typeof envVar.fileContentBase64 === "string" && envVar.fileContentBase64.length > 0) {
+      const content = decodeRepositoryEnvFileContent(envVar.key, envVar.fileContentBase64);
+      const saved = await fileStore.saveFile(content);
+      createdFileIds.push(saved.fileId);
+      if (existing?.type === "file") {
+        staleFileIds.add(existing.fileId);
+      }
+      next.push({
+        key: envVar.key,
+        type: "file",
+        fileId: saved.fileId,
+        fileName: envVar.fileName ?? (existing?.type === "file" ? existing.fileName : `${envVar.key}.bin`),
+        sizeBytes: saved.sizeBytes
+      });
+      continue;
+    }
+
+    if (existing?.type === "file") {
+      next.push({
+        ...existing,
+        fileName: envVar.fileName ?? existing.fileName
+      });
+      continue;
+    }
+
+    throw new HttpError(400, `File value is required for ${envVar.key}.`);
+  }
+
+  const nextKeys = new Set(next.map((entry) => entry.key));
+  for (const existing of current) {
+    if (existing.type === "file" && !nextKeys.has(existing.key)) {
+      staleFileIds.add(existing.fileId);
+    }
+  }
+
+  return {
+    entries: next,
+    staleFileIds: Array.from(staleFileIds),
+    createdFileIds
+  };
+};
+
+const resolveNextRepositoryEnvSecrets = async (
+  fileStore: RepositoryEnvFileStore,
+  current: StoredRepositoryEnvValue[],
+  input: RepositoryEnvSecretInput[] | undefined
+): Promise<RepositoryEnvResolutionResult> => {
+  if (input === undefined) {
+    return { entries: current, staleFileIds: [], createdFileIds: [] };
+  }
+
+  const normalizedInput = normalizeRepositoryEnvSecretInputs(input);
+  const currentByKey = new Map(current.map((entry) => [entry.key, entry] as const));
+  const next: StoredRepositoryEnvValue[] = [];
+  const staleFileIds = new Set<string>();
+  const createdFileIds: string[] = [];
+
+  for (const secret of normalizedInput) {
+    const existing = currentByKey.get(secret.key);
+
+    if (secret.type === "text") {
+      if (typeof secret.value === "string" && secret.value.length > 0) {
+        if (existing?.type === "file") {
+          staleFileIds.add(existing.fileId);
+        }
+        next.push({ key: secret.key, type: "text", value: secret.value });
+        continue;
+      }
+
+      if (existing?.type === "text") {
+        next.push(existing);
+        continue;
+      }
+
+      throw new HttpError(400, `Secret value is required for ${secret.key}.`);
+    }
+
+    if (typeof secret.fileContentBase64 === "string" && secret.fileContentBase64.length > 0) {
+      const content = decodeRepositoryEnvFileContent(secret.key, secret.fileContentBase64);
+      const saved = await fileStore.saveFile(content);
+      createdFileIds.push(saved.fileId);
+      if (existing?.type === "file") {
+        staleFileIds.add(existing.fileId);
+      }
+      next.push({
+        key: secret.key,
+        type: "file",
+        fileId: saved.fileId,
+        fileName: secret.fileName ?? (existing?.type === "file" ? existing.fileName : `${secret.key}.bin`),
+        sizeBytes: saved.sizeBytes
+      });
+      continue;
+    }
+
+    if (existing?.type === "file") {
+      next.push({
+        ...existing,
+        fileName: secret.fileName ?? existing.fileName
+      });
+      continue;
+    }
+
+    throw new HttpError(400, `Secret value is required for ${secret.key}.`);
+  }
+
+  const nextKeys = new Set(next.map((entry) => entry.key));
+  for (const existing of current) {
+    if (existing.type === "file" && !nextKeys.has(existing.key)) {
+      staleFileIds.add(existing.fileId);
+    }
+  }
+
+  return {
+    entries: next,
+    staleFileIds: Array.from(staleFileIds),
+    createdFileIds
+  };
+};
+
+const toRuntimeRepositoryEnvEntries = (
+  envVars: StoredRepositoryEnvValue[],
+  envSecrets: StoredRepositoryEnvValue[]
+): RepositoryRuntimeEnvEntry[] =>
+  [...envVars, ...envSecrets].map((entry) =>
+    entry.type === "file"
+      ? {
+          key: entry.key,
+          type: "file",
+          fileId: entry.fileId,
+          fileName: entry.fileName
+        }
+      : {
+          key: entry.key,
+          type: "text",
+          value: entry.value
+        }
+  );
+
+const deleteRepositoryEnvFiles = async (fileStore: RepositoryEnvFileStore, fileIds: string[]): Promise<void> => {
+  const unique = Array.from(new Set(fileIds.filter((entry) => REPOSITORY_ENV_FILE_ID_PATTERN.test(entry))));
+  await Promise.all(unique.map((fileId) => fileStore.deleteFile(fileId)));
+};
+
+const collectRepositoryEnvFileIds = (entries: StoredRepositoryEnvValue[]): string[] =>
+  entries.filter((entry): entry is StoredRepositoryEnvFileValue => entry.type === "file").map((entry) => entry.fileId);
+
+const normalizeRepositoryEnvVars = (value: unknown): StoredRepositoryEnvValue[] =>
+  normalizeStoredRepositoryEnvValues(value, { secret: false });
+
+const normalizeRepositoryEnvSecretValues = (value: unknown): StoredRepositoryEnvValue[] =>
+  normalizeStoredRepositoryEnvValues(value, { secret: true });
+
+const normalizeLabels = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const labels = value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+  return Array.from(new Set(labels));
+};
+
+const normalizeStringList = (value: unknown, options?: { lowercase?: boolean }): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const entries = value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => (options?.lowercase ? entry.toLowerCase() : entry));
+  return Array.from(new Set(entries));
+};
+
+const normalizeGitHubAutomations = (value: unknown): GitHubAutomationRule[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const now = nowIso();
+  const rules: GitHubAutomationRule[] = [];
+  const seenIds = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const id = typeof record.id === "string" ? record.id.trim() : "";
+    if (!id || seenIds.has(id)) {
+      continue;
+    }
+    const trigger = record.trigger === "pull_request_opened" ? "pull_request_opened" : "issue_opened";
+    const taskRaw = (record.task && typeof record.task === "object") ? (record.task as Record<string, unknown>) : {};
+    const labelFilterRaw =
+      (record.labelFilter && typeof record.labelFilter === "object") ? (record.labelFilter as Record<string, unknown>) : {};
+    rules.push({
+      id,
+      name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : id,
+      enabled: record.enabled !== false,
+      trigger,
+      syncStatusEnabled: record.syncStatusEnabled === true,
+      automationEnabled: record.automationEnabled === true,
+      allowedTriggers: normalizeStringList(record.allowedTriggers).filter((entry): entry is "emoji_reaction" | "slash_command" | "bot_mention" =>
+        entry === "emoji_reaction" || entry === "slash_command" || entry === "bot_mention"
+      ),
+      allowedReactions: normalizeStringList(record.allowedReactions),
+      allowedCommands: normalizeStringList(record.allowedCommands),
+      allowedActorLogins: normalizeStringList(record.allowedActorLogins, { lowercase: true }),
+      labelFilter: {
+        labelsAny: normalizeLabels(labelFilterRaw.labelsAny),
+        labelsAll: normalizeLabels(labelFilterRaw.labelsAll),
+        labelsNone: normalizeLabels(labelFilterRaw.labelsNone)
+      },
+      task: {
+        assigneeEmail: typeof taskRaw.assigneeEmail === "string" && taskRaw.assigneeEmail.trim() ? taskRaw.assigneeEmail.trim().toLowerCase() : undefined,
+        codexCredentialSource:
+          taskRaw.codexCredentialSource === "profile" || taskRaw.codexCredentialSource === "global" || taskRaw.codexCredentialSource === "auto"
+            ? taskRaw.codexCredentialSource
+            : undefined,
+        taskType: taskRaw.taskType === "ask" ? "ask" : "build",
+        includeComments: taskRaw.includeComments === true,
+        titleTemplate: typeof taskRaw.titleTemplate === "string" ? taskRaw.titleTemplate.trim() : undefined,
+        notes: typeof taskRaw.notes === "string" ? taskRaw.notes : undefined,
+        provider: taskRaw.provider === "claude" ? "claude" : taskRaw.provider === "codex" ? "codex" : undefined,
+        providerProfile:
+          taskRaw.providerProfile === "low" ||
+          taskRaw.providerProfile === "medium" ||
+          taskRaw.providerProfile === "high" ||
+          taskRaw.providerProfile === "max"
+            ? taskRaw.providerProfile
+            : undefined,
+        modelOverride: typeof taskRaw.modelOverride === "string" && taskRaw.modelOverride.trim() ? taskRaw.modelOverride.trim() : undefined,
+        baseBranch: typeof taskRaw.baseBranch === "string" && taskRaw.baseBranch.trim() ? taskRaw.baseBranch.trim() : undefined,
+        branchStrategy:
+          taskRaw.branchStrategy === "work_on_branch" || taskRaw.branchStrategy === "feature_branch"
+            ? taskRaw.branchStrategy
+            : undefined,
+        snippetId: typeof taskRaw.snippetId === "string" && taskRaw.snippetId.trim() ? taskRaw.snippetId.trim() : undefined
+      },
+      createdAt: typeof record.createdAt === "string" ? record.createdAt : now,
+      updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : now
+    });
+    seenIds.add(id);
+  }
+  return rules;
+};
+
+export interface RepositoryWebhookTarget {
+  repository: Repository;
+  webhookUrl: string;
+  webhookSecret: string;
+}
+
+export interface RepositoryStore {
+  createRepository(input: CreateRepositoryInput): Promise<Repository>;
+  listRepositories(): Promise<Repository[]>;
+  getRepository(repositoryId: string): Promise<Repository | null>;
+  getRepositoryRuntimeEnvEntries(repositoryId: string): Promise<RepositoryRuntimeEnvEntry[]>;
+  updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null>;
+  getRepositoryGitHubWebhookSecret(repositoryId: string): Promise<string | null>;
+  getRepositoryWebhookTarget(repositoryId: string): Promise<RepositoryWebhookTarget | null>;
+  recordWebhookDeliveryResult(
+    repositoryId: string,
+    input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
+  ): Promise<Repository | null>;
+  deleteRepository(repositoryId: string): Promise<boolean>;
+}
+
+export class RedisRepositoryStore implements RepositoryStore {
+  constructor(
+    private readonly redis: Redis,
+    private readonly eventBus: EventBus,
+    private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore()
+  ) {}
+
+  private repoKey(repoId: string): string {
+    return `${REPO_KEY_PREFIX}${repoId}`;
+  }
+
+  private userKey(userId: string): string {
+    return `${USER_KEY_PREFIX}${userId}`;
+  }
+
+  private normalizeUserRepositoryIds(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        value
+          .filter((entry): entry is string => typeof entry === "string")
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+      )
+    );
+  }
+
+  private async buildRepositoryRemovalUserUpdates(repositoryId: string): Promise<Array<{ userKey: string; userPayload: string }>> {
+    const userIds = await this.redis.smembers(USER_IDS_KEY);
+    if (userIds.length === 0) {
+      return [];
+    }
+
+    const lookupPipeline = this.redis.pipeline();
+    for (const userId of userIds) {
+      lookupPipeline.get(this.userKey(userId));
+    }
+    const lookupResults = await lookupPipeline.exec();
+
+    const updates: Array<{ userKey: string; userPayload: string }> = [];
+    for (let index = 0; index < userIds.length; index += 1) {
+      const raw = lookupResults?.[index]?.[1];
+      if (typeof raw !== "string") {
+        continue;
+      }
+
+      let parsedUser: Record<string, unknown>;
+      try {
+        parsedUser = JSON.parse(raw) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+
+      const repositoryIds = this.normalizeUserRepositoryIds(parsedUser.repositoryIds);
+      if (!repositoryIds.includes(repositoryId)) {
+        continue;
+      }
+
+      const nextRepositoryIds = repositoryIds.filter((entry) => entry !== repositoryId);
+      updates.push({
+        userKey: this.userKey(userIds[index]!),
+        userPayload: JSON.stringify({
+          ...parsedUser,
+          repositoryIds: nextRepositoryIds,
+          updatedAt: nowIso()
+        })
+      });
+    }
+
+    return updates;
+  }
+
+  private normalizeWebhookUrl(url: string | null | undefined): string | null {
+    const normalized = (url ?? "").trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private normalizeWebhookSecret(secret: string | null | undefined): string | null {
+    const normalized = (secret ?? "").trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private normalizeGitHubWebhookSecret(secret: string | null | undefined): string | null {
+    const normalized = (secret ?? "").trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private assertValidWebhookConfiguration(input: { webhookEnabled: boolean; webhookUrl: string | null; webhookSecret: string | null }): void {
+    if (!input.webhookEnabled) {
+      return;
+    }
+
+    if (!input.webhookUrl) {
+      throw new HttpError(400, "Webhook URL is required when webhooks are enabled.");
+    }
+
+    if (!input.webhookSecret) {
+      throw new HttpError(400, "Webhook secret is required when webhooks are enabled.");
+    }
+  }
+
+  private normalizeStoredRepository(repository: StoredRepository): StoredRepository {
+    const webhookSecret = this.normalizeWebhookSecret(repository.webhookSecret);
+    const githubWebhookSecret = this.normalizeGitHubWebhookSecret(repository.githubWebhookSecret);
+    const webhookUrl = this.normalizeWebhookUrl(repository.webhookUrl as string | null | undefined);
+    const webhookEnabled = repository.webhookEnabled === true;
+    const envVars = normalizeRepositoryEnvVars(repository.envVars);
+    const envSecrets = normalizeRepositoryEnvSecretValues(repository.envSecrets);
+    const githubAutomations = normalizeGitHubAutomations(repository.githubAutomations);
+    return {
+      ...repository,
+      name: String(repository.name ?? "").trim(),
+      url: String(repository.url ?? "").trim(),
+      defaultBranch: String(repository.defaultBranch ?? "").trim() || "develop",
+      syncStatusEnabled: repository.syncStatusEnabled === true,
+      envVars,
+      envSecrets,
+      webhookUrl,
+      webhookEnabled,
+      webhookSecret,
+      githubWebhookSecret,
+      githubAutomations,
+      webhookLastAttemptAt: typeof repository.webhookLastAttemptAt === "string" ? repository.webhookLastAttemptAt : null,
+      webhookLastStatus: repository.webhookLastStatus === "success" || repository.webhookLastStatus === "failed" ? repository.webhookLastStatus : null,
+      webhookLastError: typeof repository.webhookLastError === "string" && repository.webhookLastError.trim().length > 0
+        ? repository.webhookLastError.trim()
+        : null
+    };
+  }
+
+  private normalizeRepository(repository: StoredRepository): Repository {
+    const normalized = this.normalizeStoredRepository(repository);
+    return {
+      id: normalized.id,
+      name: normalized.name,
+      url: normalized.url,
+      defaultBranch: normalized.defaultBranch,
+      syncStatusEnabled: normalized.syncStatusEnabled === true,
+      envVars: toRepositoryEnvVars(normalized.envVars),
+      envSecrets: toConfiguredRepositoryEnvSecrets(normalized.envSecrets),
+      webhookUrl: normalized.webhookUrl,
+      webhookEnabled: normalized.webhookEnabled,
+      webhookSecretConfigured: Boolean(normalized.webhookSecret),
+      githubWebhookSecretConfigured: Boolean(normalized.githubWebhookSecret),
+      githubAutomations: normalizeGitHubAutomations(normalized.githubAutomations),
+      webhookLastAttemptAt: normalized.webhookLastAttemptAt ?? null,
+      webhookLastStatus: normalized.webhookLastStatus ?? null,
+      webhookLastError: normalized.webhookLastError ?? null,
+      createdAt: normalized.createdAt,
+      updatedAt: normalized.updatedAt
+    };
+  }
+
+  private async getStoredRepository(repositoryId: string): Promise<StoredRepository | null> {
+    const raw = await this.redis.get(this.repoKey(repositoryId));
+    if (!raw) {
+      return null;
+    }
+
+    return this.normalizeStoredRepository(JSON.parse(raw) as StoredRepository);
+  }
+
+  async createRepository(input: CreateRepositoryInput): Promise<Repository> {
+    const timestamp = nowIso();
+    const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
+    const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
+    const githubWebhookSecret = this.normalizeGitHubWebhookSecret(input.githubWebhookSecret);
+    const webhookEnabled = input.webhookEnabled === true;
+    const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
+    const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
+    const githubAutomations = normalizeGitHubAutomations(input.githubAutomations);
+    this.assertValidWebhookConfiguration({
+      webhookEnabled,
+      webhookUrl,
+      webhookSecret
+    });
+
+    const stored: StoredRepository = {
+      id: nanoid(),
+      name: input.name.trim(),
+      url: input.url.trim(),
+      defaultBranch: input.defaultBranch?.trim() || "develop",
+      syncStatusEnabled: input.syncStatusEnabled === true,
+      envVars: resolvedEnvVars.entries,
+      envSecrets: resolvedEnvSecrets.entries,
+      webhookUrl,
+      webhookEnabled,
+      webhookSecret,
+      githubWebhookSecret,
+      githubAutomations,
+      webhookLastAttemptAt: null,
+      webhookLastStatus: null,
+      webhookLastError: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    const repository = this.normalizeRepository(stored);
+    const createdFileIds = [...resolvedEnvVars.createdFileIds, ...resolvedEnvSecrets.createdFileIds];
+    const staleFileIds = [...resolvedEnvVars.staleFileIds, ...resolvedEnvSecrets.staleFileIds];
+
+    try {
+      await this.redis
+        .multi()
+        .set(this.repoKey(repository.id), JSON.stringify(stored))
+        .sadd(REPO_IDS_KEY, repository.id)
+        .exec();
+      await this.eventBus.publish({ type: "repository:created", payload: repository });
+    } catch (error) {
+      await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, createdFileIds);
+      throw error;
+    }
+
+    await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, staleFileIds);
+    return repository;
+  }
+
+  async listRepositories(): Promise<Repository[]> {
+    const ids = await this.redis.smembers(REPO_IDS_KEY);
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const pipeline = this.redis.pipeline();
+    for (const id of ids) {
+      pipeline.get(this.repoKey(id));
+    }
+
+    const result = await pipeline.exec();
+    const repositories: Repository[] = [];
+    for (const row of result ?? []) {
+      const raw = row[1];
+      if (typeof raw === "string") {
+        repositories.push(this.normalizeRepository(JSON.parse(raw) as StoredRepository));
+      }
+    }
+
+    return repositories.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async getRepository(repositoryId: string): Promise<Repository | null> {
+    const stored = await this.getStoredRepository(repositoryId);
+    if (!stored) {
+      return null;
+    }
+
+    return this.normalizeRepository(stored);
+  }
+
+  async getRepositoryRuntimeEnvEntries(repositoryId: string): Promise<RepositoryRuntimeEnvEntry[]> {
+    const stored = await this.getStoredRepository(repositoryId);
+    if (!stored) {
+      return [];
+    }
+
+    return toRuntimeRepositoryEnvEntries(stored.envVars, stored.envSecrets);
+  }
+
+  async getRepositoryGitHubWebhookSecret(repositoryId: string): Promise<string | null> {
+    const stored = await this.getStoredRepository(repositoryId);
+    return stored?.githubWebhookSecret ?? null;
+  }
+
+  async updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null> {
+    const current = await this.getStoredRepository(repositoryId);
+    if (!current) {
+      return null;
+    }
+
+    const nextWebhookSecret =
+      input.clearWebhookSecret === true
+        ? null
+        : input.webhookSecret !== undefined
+          ? this.normalizeWebhookSecret(input.webhookSecret)
+          : current.webhookSecret;
+    const nextGitHubWebhookSecret =
+      input.clearGithubWebhookSecret === true
+        ? null
+        : input.githubWebhookSecret !== undefined
+          ? this.normalizeGitHubWebhookSecret(input.githubWebhookSecret)
+          : current.githubWebhookSecret;
+    const nextWebhookUrl =
+      input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
+    const nextWebhookEnabled =
+      input.webhookEnabled !== undefined ? input.webhookEnabled === true : current.webhookEnabled;
+    const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, current.envVars, input.envVars);
+    const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(
+      this.repositoryEnvFileStore,
+      current.envSecrets,
+      input.envSecrets
+    );
+    const nextGitHubAutomations =
+      input.githubAutomations !== undefined ? normalizeGitHubAutomations(input.githubAutomations) : normalizeGitHubAutomations(current.githubAutomations);
+
+    this.assertValidWebhookConfiguration({
+      webhookEnabled: nextWebhookEnabled,
+      webhookUrl: nextWebhookUrl,
+      webhookSecret: nextWebhookSecret
+    });
+
+    const nextStored: StoredRepository = {
+      ...current,
+      name: input.name?.trim() || current.name,
+      url: input.url?.trim() || current.url,
+      defaultBranch: input.defaultBranch?.trim() || current.defaultBranch,
+      syncStatusEnabled: input.syncStatusEnabled !== undefined ? input.syncStatusEnabled === true : current.syncStatusEnabled === true,
+      envVars: resolvedEnvVars.entries,
+      envSecrets: resolvedEnvSecrets.entries,
+      webhookUrl: nextWebhookUrl,
+      webhookEnabled: nextWebhookEnabled,
+      webhookSecret: nextWebhookSecret,
+      githubWebhookSecret: nextGitHubWebhookSecret,
+      githubAutomations: nextGitHubAutomations,
+      updatedAt: nowIso()
+    };
+    const next = this.normalizeRepository(nextStored);
+    const createdFileIds = [...resolvedEnvVars.createdFileIds, ...resolvedEnvSecrets.createdFileIds];
+    const staleFileIds = [...resolvedEnvVars.staleFileIds, ...resolvedEnvSecrets.staleFileIds];
+
+    try {
+      await this.redis.set(this.repoKey(repositoryId), JSON.stringify(nextStored));
+      await this.eventBus.publish({ type: "repository:updated", payload: next });
+    } catch (error) {
+      await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, createdFileIds);
+      throw error;
+    }
+
+    await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, staleFileIds);
+    return next;
+  }
+
+  async getRepositoryWebhookTarget(repositoryId: string): Promise<RepositoryWebhookTarget | null> {
+    const stored = await this.getStoredRepository(repositoryId);
+    if (!stored) {
+      return null;
+    }
+
+    if (!stored.webhookEnabled || !stored.webhookUrl || !stored.webhookSecret) {
+      return null;
+    }
+
+    return {
+      repository: this.normalizeRepository(stored),
+      webhookUrl: stored.webhookUrl,
+      webhookSecret: stored.webhookSecret
+    };
+  }
+
+  async recordWebhookDeliveryResult(
+    repositoryId: string,
+    input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
+  ): Promise<Repository | null> {
+    const stored = await this.getStoredRepository(repositoryId);
+    if (!stored) {
+      return null;
+    }
+
+    const nextStored: StoredRepository = {
+      ...stored,
+      webhookLastAttemptAt: input.attemptedAt,
+      webhookLastStatus: input.status,
+      webhookLastError: input.status === "failed" ? input.errorMessage?.trim() || "Webhook delivery failed." : null,
+      updatedAt: nowIso()
+    };
+    const next = this.normalizeRepository(nextStored);
+
+    await this.redis.set(this.repoKey(repositoryId), JSON.stringify(nextStored));
+    await this.eventBus.publish({ type: "repository:updated", payload: next });
+    return next;
+  }
+
+  async deleteRepository(repositoryId: string): Promise<boolean> {
+    const stored = await this.getStoredRepository(repositoryId);
+    if (!stored) {
+      return false;
+    }
+
+    const userUpdates = await this.buildRepositoryRemovalUserUpdates(repositoryId);
+    const transaction = this.redis.multi();
+    for (const userUpdate of userUpdates) {
+      transaction.set(userUpdate.userKey, userUpdate.userPayload);
+    }
+    await transaction.del(this.repoKey(repositoryId)).srem(REPO_IDS_KEY, repositoryId).exec();
+    await deleteRepositoryEnvFiles(
+      this.repositoryEnvFileStore,
+      [...collectRepositoryEnvFileIds(stored.envVars), ...collectRepositoryEnvFileIds(stored.envSecrets)]
+    );
+    await this.eventBus.publish({ type: "repository:deleted", payload: { id: repositoryId } });
+    return true;
+  }
+}
+
+export class PostgresRepositoryStore implements RepositoryStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly eventBus: EventBus,
+    private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore()
+  ) {}
+
+  private normalizeWebhookUrl(url: string | null | undefined): string | null {
+    const normalized = (url ?? "").trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private normalizeWebhookSecret(secret: string | null | undefined): string | null {
+    const normalized = (secret ?? "").trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private normalizeGitHubWebhookSecret(secret: string | null | undefined): string | null {
+    const normalized = (secret ?? "").trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private assertValidWebhookConfiguration(input: { webhookEnabled: boolean; webhookUrl: string | null; webhookSecret: string | null }): void {
+    if (!input.webhookEnabled) {
+      return;
+    }
+
+    if (!input.webhookUrl) {
+      throw new HttpError(400, "Webhook URL is required when webhooks are enabled.");
+    }
+
+    if (!input.webhookSecret) {
+      throw new HttpError(400, "Webhook secret is required when webhooks are enabled.");
+    }
+  }
+
+  private mapRepositoryRow(row: Record<string, unknown>): Repository {
+    const envSecrets = normalizeRepositoryEnvSecretValues(row.env_secrets);
+    const envVars = normalizeRepositoryEnvVars(row.env_vars);
+    return {
+      id: String(row.id),
+      name: String(row.name ?? "").trim(),
+      url: String(row.url ?? "").trim(),
+      defaultBranch: String(row.default_branch ?? "").trim() || "develop",
+      syncStatusEnabled: row.sync_status_enabled === true,
+      envVars: toRepositoryEnvVars(envVars),
+      envSecrets: toConfiguredRepositoryEnvSecrets(envSecrets),
+      webhookUrl: typeof row.webhook_url === "string" && row.webhook_url.trim().length > 0 ? row.webhook_url.trim() : null,
+      webhookEnabled: row.webhook_enabled === true,
+      webhookSecretConfigured: typeof row.webhook_secret === "string" && row.webhook_secret.trim().length > 0,
+      githubWebhookSecretConfigured:
+        typeof row.github_webhook_secret === "string" && row.github_webhook_secret.trim().length > 0,
+      githubAutomations: normalizeGitHubAutomations(row.github_automations),
+      webhookLastAttemptAt: typeof row.webhook_last_attempt_at === "string" ? row.webhook_last_attempt_at : null,
+      webhookLastStatus:
+        row.webhook_last_status === "success" || row.webhook_last_status === "failed" ? row.webhook_last_status : null,
+      webhookLastError:
+        typeof row.webhook_last_error === "string" && row.webhook_last_error.trim().length > 0 ? row.webhook_last_error.trim() : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    };
+  }
+
+  private async getStoredRepositoryRow(repositoryId: string): Promise<Record<string, unknown> | null> {
+    const result = await this.pool.query("SELECT * FROM repositories WHERE id = $1", [repositoryId]);
+    return result.rows[0] ?? null;
+  }
+
+  async createRepository(input: CreateRepositoryInput): Promise<Repository> {
+    const timestamp = nowIso();
+    const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
+    const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
+    const githubWebhookSecret = this.normalizeGitHubWebhookSecret(input.githubWebhookSecret);
+    const webhookEnabled = input.webhookEnabled === true;
+    const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
+    const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
+    const githubAutomations = normalizeGitHubAutomations(input.githubAutomations);
+    this.assertValidWebhookConfiguration({
+      webhookEnabled,
+      webhookUrl,
+      webhookSecret
+    });
+
+    const repository = {
+      id: nanoid(),
+      name: input.name.trim(),
+      url: input.url.trim(),
+      defaultBranch: input.defaultBranch?.trim() || "develop",
+      syncStatusEnabled: input.syncStatusEnabled === true,
+      envVars: toRepositoryEnvVars(resolvedEnvVars.entries),
+      envSecrets: toConfiguredRepositoryEnvSecrets(resolvedEnvSecrets.entries),
+      webhookUrl,
+      webhookEnabled,
+      webhookSecretConfigured: Boolean(webhookSecret),
+      githubWebhookSecretConfigured: Boolean(githubWebhookSecret),
+      githubAutomations,
+      webhookLastAttemptAt: null,
+      webhookLastStatus: null,
+      webhookLastError: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    } satisfies Repository;
+
+    const createdFileIds = [...resolvedEnvVars.createdFileIds, ...resolvedEnvSecrets.createdFileIds];
+    const staleFileIds = [...resolvedEnvVars.staleFileIds, ...resolvedEnvSecrets.staleFileIds];
+
+    try {
+      await this.pool.query(
+        `
+          INSERT INTO repositories (
+            id,
+            name,
+            url,
+            default_branch,
+            sync_status_enabled,
+            env_vars,
+            env_secrets,
+            webhook_url,
+            webhook_enabled,
+            webhook_secret,
+            github_webhook_secret,
+            github_automations,
+            webhook_last_attempt_at,
+            webhook_last_status,
+            webhook_last_error,
+            created_at,
+            updated_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17)
+        `,
+        [
+          repository.id,
+          repository.name,
+          repository.url,
+          repository.defaultBranch,
+          repository.syncStatusEnabled === true,
+          JSON.stringify(resolvedEnvVars.entries),
+          JSON.stringify(resolvedEnvSecrets.entries),
+          repository.webhookUrl,
+          repository.webhookEnabled,
+          webhookSecret,
+          githubWebhookSecret,
+          JSON.stringify(repository.githubAutomations ?? []),
+          repository.webhookLastAttemptAt,
+          repository.webhookLastStatus,
+          repository.webhookLastError,
+          repository.createdAt,
+          repository.updatedAt
+        ]
+      );
+      await this.eventBus.publish({ type: "repository:created", payload: repository });
+    } catch (error) {
+      await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, createdFileIds);
+      throw error;
+    }
+
+    await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, staleFileIds);
+    return repository;
+  }
+
+  async listRepositories(): Promise<Repository[]> {
+    const result = await this.pool.query("SELECT * FROM repositories ORDER BY name ASC");
+    return result.rows.map((row) => this.mapRepositoryRow(row));
+  }
+
+  async getRepository(repositoryId: string): Promise<Repository | null> {
+    const row = await this.getStoredRepositoryRow(repositoryId);
+    return row ? this.mapRepositoryRow(row) : null;
+  }
+
+  async getRepositoryRuntimeEnvEntries(repositoryId: string): Promise<RepositoryRuntimeEnvEntry[]> {
+    const row = await this.getStoredRepositoryRow(repositoryId);
+    if (!row) {
+      return [];
+    }
+    return toRuntimeRepositoryEnvEntries(
+      normalizeRepositoryEnvVars(row.env_vars),
+      normalizeRepositoryEnvSecretValues(row.env_secrets)
+    );
+  }
+
+  async getRepositoryGitHubWebhookSecret(repositoryId: string): Promise<string | null> {
+    const row = await this.getStoredRepositoryRow(repositoryId);
+    if (!row) {
+      return null;
+    }
+    const value = row.github_webhook_secret;
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  async updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null> {
+    const currentRow = await this.getStoredRepositoryRow(repositoryId);
+    if (!currentRow) {
+      return null;
+    }
+
+    const current = this.mapRepositoryRow(currentRow);
+    const currentWebhookSecret =
+      typeof currentRow.webhook_secret === "string" && currentRow.webhook_secret.trim().length > 0 ? currentRow.webhook_secret.trim() : null;
+    const currentGitHubWebhookSecret =
+      typeof currentRow.github_webhook_secret === "string" && currentRow.github_webhook_secret.trim().length > 0
+        ? currentRow.github_webhook_secret.trim()
+        : null;
+    const currentEnvVars = normalizeRepositoryEnvVars(currentRow.env_vars);
+    const currentEnvSecrets = normalizeRepositoryEnvSecretValues(currentRow.env_secrets);
+    const nextWebhookSecret =
+      input.clearWebhookSecret === true
+        ? null
+        : input.webhookSecret !== undefined
+          ? this.normalizeWebhookSecret(input.webhookSecret)
+          : currentWebhookSecret;
+    const nextGitHubWebhookSecret =
+      input.clearGithubWebhookSecret === true
+        ? null
+        : input.githubWebhookSecret !== undefined
+          ? this.normalizeGitHubWebhookSecret(input.githubWebhookSecret)
+          : currentGitHubWebhookSecret;
+    const nextWebhookUrl =
+      input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
+    const nextWebhookEnabled =
+      input.webhookEnabled !== undefined ? input.webhookEnabled === true : current.webhookEnabled;
+    const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, currentEnvVars, input.envVars);
+    const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(
+      this.repositoryEnvFileStore,
+      currentEnvSecrets,
+      input.envSecrets
+    );
+    const nextGitHubAutomations =
+      input.githubAutomations !== undefined ? normalizeGitHubAutomations(input.githubAutomations) : normalizeGitHubAutomations(current.githubAutomations);
+
+    this.assertValidWebhookConfiguration({
+      webhookEnabled: nextWebhookEnabled,
+      webhookUrl: nextWebhookUrl,
+      webhookSecret: nextWebhookSecret
+    });
+
+    const next: Repository = {
+      ...current,
+      name: input.name?.trim() || current.name,
+      url: input.url?.trim() || current.url,
+      defaultBranch: input.defaultBranch?.trim() || current.defaultBranch,
+      syncStatusEnabled: input.syncStatusEnabled !== undefined ? input.syncStatusEnabled === true : current.syncStatusEnabled === true,
+      envVars: toRepositoryEnvVars(resolvedEnvVars.entries),
+      envSecrets: toConfiguredRepositoryEnvSecrets(resolvedEnvSecrets.entries),
+      webhookUrl: nextWebhookUrl,
+      webhookEnabled: nextWebhookEnabled,
+      webhookSecretConfigured: Boolean(nextWebhookSecret),
+      githubWebhookSecretConfigured: Boolean(nextGitHubWebhookSecret),
+      githubAutomations: nextGitHubAutomations,
+      updatedAt: nowIso()
+    };
+
+    const createdFileIds = [...resolvedEnvVars.createdFileIds, ...resolvedEnvSecrets.createdFileIds];
+    const staleFileIds = [...resolvedEnvVars.staleFileIds, ...resolvedEnvSecrets.staleFileIds];
+
+    try {
+      await this.pool.query(
+        `
+          UPDATE repositories
+          SET
+            name = $2,
+            url = $3,
+            default_branch = $4,
+            sync_status_enabled = $5,
+            env_vars = $6::jsonb,
+            env_secrets = $7::jsonb,
+            webhook_url = $8,
+            webhook_enabled = $9,
+            webhook_secret = $10,
+            github_webhook_secret = $11,
+            github_automations = $12::jsonb,
+            webhook_last_attempt_at = $13,
+            webhook_last_status = $14,
+            webhook_last_error = $15,
+            created_at = $16,
+            updated_at = $17
+          WHERE id = $1
+        `,
+        [
+          repositoryId,
+          next.name,
+          next.url,
+          next.defaultBranch,
+          next.syncStatusEnabled === true,
+          JSON.stringify(resolvedEnvVars.entries),
+          JSON.stringify(resolvedEnvSecrets.entries),
+          next.webhookUrl,
+          next.webhookEnabled,
+          nextWebhookSecret,
+          nextGitHubWebhookSecret,
+          JSON.stringify(next.githubAutomations ?? []),
+          next.webhookLastAttemptAt,
+          next.webhookLastStatus,
+          next.webhookLastError,
+          next.createdAt,
+          next.updatedAt
+        ]
+      );
+      await this.eventBus.publish({ type: "repository:updated", payload: next });
+    } catch (error) {
+      await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, createdFileIds);
+      throw error;
+    }
+
+    await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, staleFileIds);
+    return next;
+  }
+
+  async getRepositoryWebhookTarget(repositoryId: string): Promise<RepositoryWebhookTarget | null> {
+    const row = await this.getStoredRepositoryRow(repositoryId);
+    if (!row) {
+      return null;
+    }
+
+    const repository = this.mapRepositoryRow(row);
+    const webhookSecret =
+      typeof row.webhook_secret === "string" && row.webhook_secret.trim().length > 0 ? row.webhook_secret.trim() : null;
+
+    if (!repository.webhookEnabled || !repository.webhookUrl || !webhookSecret) {
+      return null;
+    }
+
+    return {
+      repository,
+      webhookUrl: repository.webhookUrl,
+      webhookSecret
+    };
+  }
+
+  async recordWebhookDeliveryResult(
+    repositoryId: string,
+    input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
+  ): Promise<Repository | null> {
+    const row = await this.getStoredRepositoryRow(repositoryId);
+    if (!row) {
+      return null;
+    }
+
+    const current = this.mapRepositoryRow(row);
+    const webhookSecret =
+      typeof row.webhook_secret === "string" && row.webhook_secret.trim().length > 0 ? row.webhook_secret.trim() : null;
+    const githubWebhookSecret =
+      typeof row.github_webhook_secret === "string" && row.github_webhook_secret.trim().length > 0
+        ? row.github_webhook_secret.trim()
+        : null;
+    const envVars = normalizeRepositoryEnvVars(row.env_vars);
+    const envSecrets = normalizeRepositoryEnvSecretValues(row.env_secrets);
+    const next: Repository = {
+      ...current,
+      webhookLastAttemptAt: input.attemptedAt,
+      webhookLastStatus: input.status,
+      webhookLastError: input.status === "failed" ? input.errorMessage?.trim() || "Webhook delivery failed." : null,
+      updatedAt: nowIso()
+    };
+
+    await this.pool.query(
+      `
+        UPDATE repositories
+        SET
+          name = $2,
+          url = $3,
+          default_branch = $4,
+          sync_status_enabled = $5,
+          env_vars = $6::jsonb,
+          env_secrets = $7::jsonb,
+          webhook_url = $8,
+          webhook_enabled = $9,
+          webhook_secret = $10,
+          github_webhook_secret = $11,
+          github_automations = $12::jsonb,
+          webhook_last_attempt_at = $13,
+          webhook_last_status = $14,
+          webhook_last_error = $15,
+          created_at = $16,
+          updated_at = $17
+        WHERE id = $1
+      `,
+      [
+        repositoryId,
+        next.name,
+        next.url,
+        next.defaultBranch,
+        next.syncStatusEnabled === true,
+        JSON.stringify(envVars),
+        JSON.stringify(envSecrets),
+        next.webhookUrl,
+        next.webhookEnabled,
+        webhookSecret,
+        githubWebhookSecret,
+        JSON.stringify(next.githubAutomations ?? []),
+        next.webhookLastAttemptAt,
+        next.webhookLastStatus,
+        next.webhookLastError,
+        next.createdAt,
+        next.updatedAt
+      ]
+    );
+    await this.eventBus.publish({ type: "repository:updated", payload: next });
+    return next;
+  }
+
+  async deleteRepository(repositoryId: string): Promise<boolean> {
+    const row = await this.getStoredRepositoryRow(repositoryId);
+    if (!row) {
+      return false;
+    }
+
+    const result = await this.pool.query("DELETE FROM repositories WHERE id = $1", [repositoryId]);
+    if (result.rowCount === 0) {
+      return false;
+    }
+    await deleteRepositoryEnvFiles(
+      this.repositoryEnvFileStore,
+      [
+        ...collectRepositoryEnvFileIds(normalizeRepositoryEnvVars(row.env_vars)),
+        ...collectRepositoryEnvFileIds(normalizeRepositoryEnvSecretValues(row.env_secrets))
+      ]
+    );
+    await this.eventBus.publish({ type: "repository:deleted", payload: { id: repositoryId } });
+    return true;
+  }
 }
 ````
 
@@ -36013,1451 +37458,6 @@ describe("GitHubStatusSyncService", () => {
 });
 ````
 
-## File: apps/server/src/services/repository-store.ts
-````typescript
-import { nanoid } from "nanoid";
-import type Redis from "ioredis";
-import type { Pool } from "pg";
-import type {
-  CreateRepositoryInput,
-  GitHubAutomationRule,
-  Repository,
-  RepositoryEnvVarInput,
-  RepositoryEnvSecret,
-  RepositoryEnvSecretInput,
-  UpdateRepositoryInput
-} from "@agentswarm/shared-types";
-import { EventBus } from "../lib/events.js";
-import { HttpError } from "../lib/http-error.js";
-import { RepositoryEnvFileStore } from "./repository-env-file-store.js";
-
-const REPO_KEY_PREFIX = "agentswarm:repo:";
-const REPO_IDS_KEY = "agentswarm:repo_ids";
-const USER_KEY_PREFIX = "agentswarm:user:";
-const USER_IDS_KEY = "agentswarm:user_ids";
-const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
-const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
-const REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH = 8192;
-const REPOSITORY_ENV_FILE_NAME_MAX_LENGTH = 255;
-const REPOSITORY_ENV_FILE_MAX_BYTES = 256 * 1024;
-const REPOSITORY_ENV_FILE_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/;
-const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
-const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
-const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
-const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
-
-const nowIso = (): string => new Date().toISOString();
-export type RepositoryRuntimeEnvEntry =
-  | {
-      key: string;
-      type: "text";
-      value: string;
-    }
-  | {
-      key: string;
-      type: "file";
-      fileId: string;
-      fileName: string;
-    };
-
-interface StoredRepositoryEnvTextValue {
-  key: string;
-  type: "text";
-  value: string;
-}
-
-interface StoredRepositoryEnvFileValue {
-  key: string;
-  type: "file";
-  fileId: string;
-  fileName: string;
-  sizeBytes: number;
-}
-
-type StoredRepositoryEnvValue = StoredRepositoryEnvTextValue | StoredRepositoryEnvFileValue;
-
-type StoredRepository = Omit<Repository, "webhookSecretConfigured" | "githubWebhookSecretConfigured" | "envVars" | "envSecrets"> & {
-  envVars: StoredRepositoryEnvValue[];
-  envSecrets: StoredRepositoryEnvValue[];
-  webhookSecret: string | null;
-  githubWebhookSecret: string | null;
-  webhookSecretConfigured?: boolean;
-  githubWebhookSecretConfigured?: boolean;
-} & Record<string, unknown>;
-
-const normalizeRepositoryEnvFileName = (value: unknown): string | null => {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const normalized = value.trim().replace(/[\\/\x00]/g, "_");
-  if (normalized.length === 0 || normalized.length > REPOSITORY_ENV_FILE_NAME_MAX_LENGTH) {
-    return null;
-  }
-  return normalized;
-};
-
-const decodeRepositoryEnvFileContent = (key: string, contentBase64: string): Buffer => {
-  const normalized = contentBase64.trim().replace(/\s+/g, "");
-  if (!normalized) {
-    throw new HttpError(400, `File content is required for ${key}.`);
-  }
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(normalized) || normalized.length % 4 !== 0) {
-    throw new HttpError(400, `File content for ${key} is not valid Base64.`);
-  }
-
-  const decoded = Buffer.from(normalized, "base64");
-  if (decoded.byteLength === 0) {
-    throw new HttpError(400, `File content is required for ${key}.`);
-  }
-  if (decoded.byteLength > REPOSITORY_ENV_FILE_MAX_BYTES) {
-    throw new HttpError(400, `File content for ${key} exceeds ${REPOSITORY_ENV_FILE_MAX_BYTES} bytes.`);
-  }
-  return decoded;
-};
-
-const normalizeStoredRepositoryEnvValues = (
-  value: unknown,
-  options: { secret: boolean }
-): StoredRepositoryEnvValue[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const entries: StoredRepositoryEnvValue[] = [];
-  const seen = new Set<string>();
-  for (const rawEntry of value) {
-    if (!rawEntry || typeof rawEntry !== "object") {
-      continue;
-    }
-
-    const entry = rawEntry as Record<string, unknown>;
-    const rawKey = entry.key;
-    const key = typeof rawKey === "string" ? rawKey.trim() : "";
-    if (
-      !key ||
-      key.length > REPOSITORY_ENV_VAR_KEY_MAX_LENGTH ||
-      !REPOSITORY_ENV_VAR_KEY_PATTERN.test(key) ||
-      seen.has(key)
-    ) {
-      continue;
-    }
-
-    const type = entry.type === "file" ? "file" : "text";
-    if (type === "file") {
-      const fileId = typeof entry.fileId === "string" ? entry.fileId.trim() : "";
-      if (!REPOSITORY_ENV_FILE_ID_PATTERN.test(fileId)) {
-        continue;
-      }
-      const fileName = normalizeRepositoryEnvFileName(entry.fileName) ?? `${key}.bin`;
-      const sizeBytes =
-        typeof entry.sizeBytes === "number" && Number.isFinite(entry.sizeBytes) && entry.sizeBytes > 0
-          ? Math.floor(entry.sizeBytes)
-          : 0;
-      entries.push({
-        key,
-        type: "file",
-        fileId,
-        fileName,
-        sizeBytes
-      });
-      seen.add(key);
-      if (entries.length >= REPOSITORY_ENV_VAR_MAX_COUNT) {
-        break;
-      }
-      continue;
-    }
-
-    const normalizedValue = typeof entry.value === "string" ? entry.value : String(entry.value ?? "");
-    if (normalizedValue.length > REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH) {
-      continue;
-    }
-    if (options.secret && normalizedValue.length === 0) {
-      continue;
-    }
-
-    entries.push({ key, type: "text", value: normalizedValue });
-    seen.add(key);
-    if (entries.length >= REPOSITORY_ENV_VAR_MAX_COUNT) {
-      break;
-    }
-  }
-
-  return entries;
-};
-
-const toRepositoryEnvVars = (value: StoredRepositoryEnvValue[]): Repository["envVars"] =>
-  value.map((entry) =>
-    entry.type === "file"
-      ? {
-          key: entry.key,
-          type: "file",
-          configured: true,
-          fileName: entry.fileName
-        }
-      : {
-          key: entry.key,
-          type: "text",
-          value: entry.value
-        }
-  );
-
-const toConfiguredRepositoryEnvSecrets = (value: StoredRepositoryEnvValue[]): RepositoryEnvSecret[] =>
-  value.map((entry) => ({
-    key: entry.key,
-    configured: true,
-    type: entry.type,
-    ...(entry.type === "file" ? { fileName: entry.fileName } : {})
-  }));
-
-type NormalizedRepositoryEnvVarInput =
-  | {
-      key: string;
-      type: "text";
-      value: string;
-    }
-  | {
-      key: string;
-      type: "file";
-      fileName?: string;
-      fileContentBase64?: string;
-    };
-
-type NormalizedRepositoryEnvSecretInput =
-  | {
-      key: string;
-      type: "text";
-      value?: string;
-    }
-  | {
-      key: string;
-      type: "file";
-      fileName?: string;
-      fileContentBase64?: string;
-    };
-
-const normalizeRepositoryEnvVarInputs = (value: unknown): NormalizedRepositoryEnvVarInput[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const envVars: NormalizedRepositoryEnvVarInput[] = [];
-  const seen = new Set<string>();
-  for (const rawEntry of value) {
-    if (!rawEntry || typeof rawEntry !== "object") {
-      continue;
-    }
-
-    const entry = rawEntry as Record<string, unknown>;
-    const rawKey = entry.key;
-    const key = typeof rawKey === "string" ? rawKey.trim() : "";
-    if (
-      !key ||
-      key.length > REPOSITORY_ENV_VAR_KEY_MAX_LENGTH ||
-      !REPOSITORY_ENV_VAR_KEY_PATTERN.test(key) ||
-      seen.has(key)
-    ) {
-      continue;
-    }
-
-    const type = entry.type === "file" ? "file" : "text";
-    if (type === "file") {
-      envVars.push({
-        key,
-        type: "file",
-        ...(normalizeRepositoryEnvFileName(entry.fileName) ? { fileName: normalizeRepositoryEnvFileName(entry.fileName)! } : {}),
-        ...(typeof entry.fileContentBase64 === "string" && entry.fileContentBase64.trim().length > 0
-          ? { fileContentBase64: entry.fileContentBase64.trim() }
-          : {})
-      });
-    } else {
-      const normalizedValue = typeof entry.value === "string" ? entry.value : String(entry.value ?? "");
-      if (normalizedValue.length > REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH) {
-        continue;
-      }
-      envVars.push({ key, type: "text", value: normalizedValue });
-    }
-
-    seen.add(key);
-    if (envVars.length >= REPOSITORY_ENV_VAR_MAX_COUNT) {
-      break;
-    }
-  }
-  return envVars;
-};
-
-const normalizeRepositoryEnvSecretInputs = (value: unknown): NormalizedRepositoryEnvSecretInput[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const secrets: NormalizedRepositoryEnvSecretInput[] = [];
-  const seen = new Set<string>();
-  for (const rawEntry of value) {
-    if (!rawEntry || typeof rawEntry !== "object") {
-      continue;
-    }
-
-    const entry = rawEntry as Record<string, unknown>;
-    const rawKey = entry.key;
-    const key = typeof rawKey === "string" ? rawKey.trim() : "";
-    if (
-      !key ||
-      key.length > REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH ||
-      !REPOSITORY_ENV_SECRET_KEY_PATTERN.test(key) ||
-      seen.has(key)
-    ) {
-      continue;
-    }
-
-    const type = entry.type === "file" ? "file" : "text";
-    if (type === "file") {
-      secrets.push({
-        key,
-        type: "file",
-        ...(normalizeRepositoryEnvFileName(entry.fileName) ? { fileName: normalizeRepositoryEnvFileName(entry.fileName)! } : {}),
-        ...(typeof entry.fileContentBase64 === "string" && entry.fileContentBase64.trim().length > 0
-          ? { fileContentBase64: entry.fileContentBase64.trim() }
-          : {})
-      });
-    } else {
-      const normalizedValue =
-        typeof entry.value === "string" && entry.value.length <= REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH
-          ? entry.value
-          : undefined;
-      secrets.push({
-        key,
-        type: "text",
-        ...(normalizedValue !== undefined ? { value: normalizedValue } : {})
-      });
-    }
-
-    seen.add(key);
-    if (secrets.length >= REPOSITORY_ENV_SECRET_MAX_COUNT) {
-      break;
-    }
-  }
-
-  return secrets;
-};
-
-interface RepositoryEnvResolutionResult {
-  entries: StoredRepositoryEnvValue[];
-  staleFileIds: string[];
-  createdFileIds: string[];
-}
-
-const resolveNextRepositoryEnvVars = async (
-  fileStore: RepositoryEnvFileStore,
-  current: StoredRepositoryEnvValue[],
-  input: RepositoryEnvVarInput[] | undefined
-): Promise<RepositoryEnvResolutionResult> => {
-  if (input === undefined) {
-    return { entries: current, staleFileIds: [], createdFileIds: [] };
-  }
-
-  const normalizedInput = normalizeRepositoryEnvVarInputs(input);
-  const currentByKey = new Map(current.map((entry) => [entry.key, entry] as const));
-  const next: StoredRepositoryEnvValue[] = [];
-  const staleFileIds = new Set<string>();
-  const createdFileIds: string[] = [];
-
-  for (const envVar of normalizedInput) {
-    const existing = currentByKey.get(envVar.key);
-    if (envVar.type === "text") {
-      if (existing?.type === "file") {
-        staleFileIds.add(existing.fileId);
-      }
-      next.push({ key: envVar.key, type: "text", value: envVar.value });
-      continue;
-    }
-
-    if (typeof envVar.fileContentBase64 === "string" && envVar.fileContentBase64.length > 0) {
-      const content = decodeRepositoryEnvFileContent(envVar.key, envVar.fileContentBase64);
-      const saved = await fileStore.saveFile(content);
-      createdFileIds.push(saved.fileId);
-      if (existing?.type === "file") {
-        staleFileIds.add(existing.fileId);
-      }
-      next.push({
-        key: envVar.key,
-        type: "file",
-        fileId: saved.fileId,
-        fileName: envVar.fileName ?? (existing?.type === "file" ? existing.fileName : `${envVar.key}.bin`),
-        sizeBytes: saved.sizeBytes
-      });
-      continue;
-    }
-
-    if (existing?.type === "file") {
-      next.push({
-        ...existing,
-        fileName: envVar.fileName ?? existing.fileName
-      });
-      continue;
-    }
-
-    throw new HttpError(400, `File value is required for ${envVar.key}.`);
-  }
-
-  const nextKeys = new Set(next.map((entry) => entry.key));
-  for (const existing of current) {
-    if (existing.type === "file" && !nextKeys.has(existing.key)) {
-      staleFileIds.add(existing.fileId);
-    }
-  }
-
-  return {
-    entries: next,
-    staleFileIds: Array.from(staleFileIds),
-    createdFileIds
-  };
-};
-
-const resolveNextRepositoryEnvSecrets = async (
-  fileStore: RepositoryEnvFileStore,
-  current: StoredRepositoryEnvValue[],
-  input: RepositoryEnvSecretInput[] | undefined
-): Promise<RepositoryEnvResolutionResult> => {
-  if (input === undefined) {
-    return { entries: current, staleFileIds: [], createdFileIds: [] };
-  }
-
-  const normalizedInput = normalizeRepositoryEnvSecretInputs(input);
-  const currentByKey = new Map(current.map((entry) => [entry.key, entry] as const));
-  const next: StoredRepositoryEnvValue[] = [];
-  const staleFileIds = new Set<string>();
-  const createdFileIds: string[] = [];
-
-  for (const secret of normalizedInput) {
-    const existing = currentByKey.get(secret.key);
-
-    if (secret.type === "text") {
-      if (typeof secret.value === "string" && secret.value.length > 0) {
-        if (existing?.type === "file") {
-          staleFileIds.add(existing.fileId);
-        }
-        next.push({ key: secret.key, type: "text", value: secret.value });
-        continue;
-      }
-
-      if (existing?.type === "text") {
-        next.push(existing);
-        continue;
-      }
-
-      throw new HttpError(400, `Secret value is required for ${secret.key}.`);
-    }
-
-    if (typeof secret.fileContentBase64 === "string" && secret.fileContentBase64.length > 0) {
-      const content = decodeRepositoryEnvFileContent(secret.key, secret.fileContentBase64);
-      const saved = await fileStore.saveFile(content);
-      createdFileIds.push(saved.fileId);
-      if (existing?.type === "file") {
-        staleFileIds.add(existing.fileId);
-      }
-      next.push({
-        key: secret.key,
-        type: "file",
-        fileId: saved.fileId,
-        fileName: secret.fileName ?? (existing?.type === "file" ? existing.fileName : `${secret.key}.bin`),
-        sizeBytes: saved.sizeBytes
-      });
-      continue;
-    }
-
-    if (existing?.type === "file") {
-      next.push({
-        ...existing,
-        fileName: secret.fileName ?? existing.fileName
-      });
-      continue;
-    }
-
-    throw new HttpError(400, `Secret value is required for ${secret.key}.`);
-  }
-
-  const nextKeys = new Set(next.map((entry) => entry.key));
-  for (const existing of current) {
-    if (existing.type === "file" && !nextKeys.has(existing.key)) {
-      staleFileIds.add(existing.fileId);
-    }
-  }
-
-  return {
-    entries: next,
-    staleFileIds: Array.from(staleFileIds),
-    createdFileIds
-  };
-};
-
-const toRuntimeRepositoryEnvEntries = (
-  envVars: StoredRepositoryEnvValue[],
-  envSecrets: StoredRepositoryEnvValue[]
-): RepositoryRuntimeEnvEntry[] =>
-  [...envVars, ...envSecrets].map((entry) =>
-    entry.type === "file"
-      ? {
-          key: entry.key,
-          type: "file",
-          fileId: entry.fileId,
-          fileName: entry.fileName
-        }
-      : {
-          key: entry.key,
-          type: "text",
-          value: entry.value
-        }
-  );
-
-const deleteRepositoryEnvFiles = async (fileStore: RepositoryEnvFileStore, fileIds: string[]): Promise<void> => {
-  const unique = Array.from(new Set(fileIds.filter((entry) => REPOSITORY_ENV_FILE_ID_PATTERN.test(entry))));
-  await Promise.all(unique.map((fileId) => fileStore.deleteFile(fileId)));
-};
-
-const collectRepositoryEnvFileIds = (entries: StoredRepositoryEnvValue[]): string[] =>
-  entries.filter((entry): entry is StoredRepositoryEnvFileValue => entry.type === "file").map((entry) => entry.fileId);
-
-const normalizeRepositoryEnvVars = (value: unknown): StoredRepositoryEnvValue[] =>
-  normalizeStoredRepositoryEnvValues(value, { secret: false });
-
-const normalizeRepositoryEnvSecretValues = (value: unknown): StoredRepositoryEnvValue[] =>
-  normalizeStoredRepositoryEnvValues(value, { secret: true });
-
-const normalizeLabels = (value: unknown): string[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  const labels = value
-    .filter((entry): entry is string => typeof entry === "string")
-    .map((entry) => entry.trim().toLowerCase())
-    .filter(Boolean);
-  return Array.from(new Set(labels));
-};
-
-const normalizeStringList = (value: unknown, options?: { lowercase?: boolean }): string[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  const entries = value
-    .filter((entry): entry is string => typeof entry === "string")
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .map((entry) => (options?.lowercase ? entry.toLowerCase() : entry));
-  return Array.from(new Set(entries));
-};
-
-const normalizeGitHubAutomations = (value: unknown): GitHubAutomationRule[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  const now = nowIso();
-  const rules: GitHubAutomationRule[] = [];
-  const seenIds = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-    const record = entry as Record<string, unknown>;
-    const id = typeof record.id === "string" ? record.id.trim() : "";
-    if (!id || seenIds.has(id)) {
-      continue;
-    }
-    const trigger = record.trigger === "pull_request_opened" ? "pull_request_opened" : "issue_opened";
-    const taskRaw = (record.task && typeof record.task === "object") ? (record.task as Record<string, unknown>) : {};
-    const labelFilterRaw =
-      (record.labelFilter && typeof record.labelFilter === "object") ? (record.labelFilter as Record<string, unknown>) : {};
-    rules.push({
-      id,
-      name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : id,
-      enabled: record.enabled !== false,
-      trigger,
-      syncStatusEnabled: record.syncStatusEnabled === true,
-      automationEnabled: record.automationEnabled === true,
-      allowedTriggers: normalizeStringList(record.allowedTriggers).filter((entry): entry is "emoji_reaction" | "slash_command" | "bot_mention" =>
-        entry === "emoji_reaction" || entry === "slash_command" || entry === "bot_mention"
-      ),
-      allowedReactions: normalizeStringList(record.allowedReactions),
-      allowedCommands: normalizeStringList(record.allowedCommands),
-      allowedActorLogins: normalizeStringList(record.allowedActorLogins, { lowercase: true }),
-      labelFilter: {
-        labelsAny: normalizeLabels(labelFilterRaw.labelsAny),
-        labelsAll: normalizeLabels(labelFilterRaw.labelsAll),
-        labelsNone: normalizeLabels(labelFilterRaw.labelsNone)
-      },
-      task: {
-        assigneeEmail: typeof taskRaw.assigneeEmail === "string" && taskRaw.assigneeEmail.trim() ? taskRaw.assigneeEmail.trim().toLowerCase() : undefined,
-        codexCredentialSource:
-          taskRaw.codexCredentialSource === "profile" || taskRaw.codexCredentialSource === "global" || taskRaw.codexCredentialSource === "auto"
-            ? taskRaw.codexCredentialSource
-            : undefined,
-        taskType: taskRaw.taskType === "ask" ? "ask" : "build",
-        includeComments: taskRaw.includeComments === true,
-        titleTemplate: typeof taskRaw.titleTemplate === "string" ? taskRaw.titleTemplate.trim() : undefined,
-        notes: typeof taskRaw.notes === "string" ? taskRaw.notes : undefined,
-        provider: taskRaw.provider === "claude" ? "claude" : taskRaw.provider === "codex" ? "codex" : undefined,
-        providerProfile:
-          taskRaw.providerProfile === "low" ||
-          taskRaw.providerProfile === "medium" ||
-          taskRaw.providerProfile === "high" ||
-          taskRaw.providerProfile === "max"
-            ? taskRaw.providerProfile
-            : undefined,
-        modelOverride: typeof taskRaw.modelOverride === "string" && taskRaw.modelOverride.trim() ? taskRaw.modelOverride.trim() : undefined,
-        baseBranch: typeof taskRaw.baseBranch === "string" && taskRaw.baseBranch.trim() ? taskRaw.baseBranch.trim() : undefined,
-        branchStrategy:
-          taskRaw.branchStrategy === "work_on_branch" || taskRaw.branchStrategy === "feature_branch"
-            ? taskRaw.branchStrategy
-            : undefined,
-        snippetId: typeof taskRaw.snippetId === "string" && taskRaw.snippetId.trim() ? taskRaw.snippetId.trim() : undefined
-      },
-      createdAt: typeof record.createdAt === "string" ? record.createdAt : now,
-      updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : now
-    });
-    seenIds.add(id);
-  }
-  return rules;
-};
-
-export interface RepositoryWebhookTarget {
-  repository: Repository;
-  webhookUrl: string;
-  webhookSecret: string;
-}
-
-export interface RepositoryStore {
-  createRepository(input: CreateRepositoryInput): Promise<Repository>;
-  listRepositories(): Promise<Repository[]>;
-  getRepository(repositoryId: string): Promise<Repository | null>;
-  getRepositoryRuntimeEnvEntries(repositoryId: string): Promise<RepositoryRuntimeEnvEntry[]>;
-  updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null>;
-  getRepositoryGitHubWebhookSecret(repositoryId: string): Promise<string | null>;
-  getRepositoryWebhookTarget(repositoryId: string): Promise<RepositoryWebhookTarget | null>;
-  recordWebhookDeliveryResult(
-    repositoryId: string,
-    input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
-  ): Promise<Repository | null>;
-  deleteRepository(repositoryId: string): Promise<boolean>;
-}
-
-export class RedisRepositoryStore implements RepositoryStore {
-  constructor(
-    private readonly redis: Redis,
-    private readonly eventBus: EventBus,
-    private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore()
-  ) {}
-
-  private repoKey(repoId: string): string {
-    return `${REPO_KEY_PREFIX}${repoId}`;
-  }
-
-  private userKey(userId: string): string {
-    return `${USER_KEY_PREFIX}${userId}`;
-  }
-
-  private normalizeUserRepositoryIds(value: unknown): string[] {
-    if (!Array.isArray(value)) {
-      return [];
-    }
-
-    return Array.from(
-      new Set(
-        value
-          .filter((entry): entry is string => typeof entry === "string")
-          .map((entry) => entry.trim())
-          .filter(Boolean)
-      )
-    );
-  }
-
-  private async buildRepositoryRemovalUserUpdates(repositoryId: string): Promise<Array<{ userKey: string; userPayload: string }>> {
-    const userIds = await this.redis.smembers(USER_IDS_KEY);
-    if (userIds.length === 0) {
-      return [];
-    }
-
-    const lookupPipeline = this.redis.pipeline();
-    for (const userId of userIds) {
-      lookupPipeline.get(this.userKey(userId));
-    }
-    const lookupResults = await lookupPipeline.exec();
-
-    const updates: Array<{ userKey: string; userPayload: string }> = [];
-    for (let index = 0; index < userIds.length; index += 1) {
-      const raw = lookupResults?.[index]?.[1];
-      if (typeof raw !== "string") {
-        continue;
-      }
-
-      let parsedUser: Record<string, unknown>;
-      try {
-        parsedUser = JSON.parse(raw) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
-
-      const repositoryIds = this.normalizeUserRepositoryIds(parsedUser.repositoryIds);
-      if (!repositoryIds.includes(repositoryId)) {
-        continue;
-      }
-
-      const nextRepositoryIds = repositoryIds.filter((entry) => entry !== repositoryId);
-      updates.push({
-        userKey: this.userKey(userIds[index]!),
-        userPayload: JSON.stringify({
-          ...parsedUser,
-          repositoryIds: nextRepositoryIds,
-          updatedAt: nowIso()
-        })
-      });
-    }
-
-    return updates;
-  }
-
-  private normalizeWebhookUrl(url: string | null | undefined): string | null {
-    const normalized = (url ?? "").trim();
-    return normalized.length > 0 ? normalized : null;
-  }
-
-  private normalizeWebhookSecret(secret: string | null | undefined): string | null {
-    const normalized = (secret ?? "").trim();
-    return normalized.length > 0 ? normalized : null;
-  }
-
-  private normalizeGitHubWebhookSecret(secret: string | null | undefined): string | null {
-    const normalized = (secret ?? "").trim();
-    return normalized.length > 0 ? normalized : null;
-  }
-
-  private assertValidWebhookConfiguration(input: { webhookEnabled: boolean; webhookUrl: string | null; webhookSecret: string | null }): void {
-    if (!input.webhookEnabled) {
-      return;
-    }
-
-    if (!input.webhookUrl) {
-      throw new HttpError(400, "Webhook URL is required when webhooks are enabled.");
-    }
-
-    if (!input.webhookSecret) {
-      throw new HttpError(400, "Webhook secret is required when webhooks are enabled.");
-    }
-  }
-
-  private normalizeStoredRepository(repository: StoredRepository): StoredRepository {
-    const webhookSecret = this.normalizeWebhookSecret(repository.webhookSecret);
-    const githubWebhookSecret = this.normalizeGitHubWebhookSecret(repository.githubWebhookSecret);
-    const webhookUrl = this.normalizeWebhookUrl(repository.webhookUrl as string | null | undefined);
-    const webhookEnabled = repository.webhookEnabled === true;
-    const envVars = normalizeRepositoryEnvVars(repository.envVars);
-    const envSecrets = normalizeRepositoryEnvSecretValues(repository.envSecrets);
-    const githubAutomations = normalizeGitHubAutomations(repository.githubAutomations);
-    return {
-      ...repository,
-      name: String(repository.name ?? "").trim(),
-      url: String(repository.url ?? "").trim(),
-      defaultBranch: String(repository.defaultBranch ?? "").trim() || "develop",
-      syncStatusEnabled: repository.syncStatusEnabled === true,
-      envVars,
-      envSecrets,
-      webhookUrl,
-      webhookEnabled,
-      webhookSecret,
-      githubWebhookSecret,
-      githubAutomations,
-      webhookLastAttemptAt: typeof repository.webhookLastAttemptAt === "string" ? repository.webhookLastAttemptAt : null,
-      webhookLastStatus: repository.webhookLastStatus === "success" || repository.webhookLastStatus === "failed" ? repository.webhookLastStatus : null,
-      webhookLastError: typeof repository.webhookLastError === "string" && repository.webhookLastError.trim().length > 0
-        ? repository.webhookLastError.trim()
-        : null
-    };
-  }
-
-  private normalizeRepository(repository: StoredRepository): Repository {
-    const normalized = this.normalizeStoredRepository(repository);
-    return {
-      id: normalized.id,
-      name: normalized.name,
-      url: normalized.url,
-      defaultBranch: normalized.defaultBranch,
-      syncStatusEnabled: normalized.syncStatusEnabled === true,
-      envVars: toRepositoryEnvVars(normalized.envVars),
-      envSecrets: toConfiguredRepositoryEnvSecrets(normalized.envSecrets),
-      webhookUrl: normalized.webhookUrl,
-      webhookEnabled: normalized.webhookEnabled,
-      webhookSecretConfigured: Boolean(normalized.webhookSecret),
-      githubWebhookSecretConfigured: Boolean(normalized.githubWebhookSecret),
-      githubAutomations: normalizeGitHubAutomations(normalized.githubAutomations),
-      webhookLastAttemptAt: normalized.webhookLastAttemptAt ?? null,
-      webhookLastStatus: normalized.webhookLastStatus ?? null,
-      webhookLastError: normalized.webhookLastError ?? null,
-      createdAt: normalized.createdAt,
-      updatedAt: normalized.updatedAt
-    };
-  }
-
-  private async getStoredRepository(repositoryId: string): Promise<StoredRepository | null> {
-    const raw = await this.redis.get(this.repoKey(repositoryId));
-    if (!raw) {
-      return null;
-    }
-
-    return this.normalizeStoredRepository(JSON.parse(raw) as StoredRepository);
-  }
-
-  async createRepository(input: CreateRepositoryInput): Promise<Repository> {
-    const timestamp = nowIso();
-    const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
-    const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
-    const githubWebhookSecret = this.normalizeGitHubWebhookSecret(input.githubWebhookSecret);
-    const webhookEnabled = input.webhookEnabled === true;
-    const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
-    const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
-    const githubAutomations = normalizeGitHubAutomations(input.githubAutomations);
-    this.assertValidWebhookConfiguration({
-      webhookEnabled,
-      webhookUrl,
-      webhookSecret
-    });
-
-    const stored: StoredRepository = {
-      id: nanoid(),
-      name: input.name.trim(),
-      url: input.url.trim(),
-      defaultBranch: input.defaultBranch?.trim() || "develop",
-      syncStatusEnabled: input.syncStatusEnabled === true,
-      envVars: resolvedEnvVars.entries,
-      envSecrets: resolvedEnvSecrets.entries,
-      webhookUrl,
-      webhookEnabled,
-      webhookSecret,
-      githubWebhookSecret,
-      githubAutomations,
-      webhookLastAttemptAt: null,
-      webhookLastStatus: null,
-      webhookLastError: null,
-      createdAt: timestamp,
-      updatedAt: timestamp
-    };
-    const repository = this.normalizeRepository(stored);
-    const createdFileIds = [...resolvedEnvVars.createdFileIds, ...resolvedEnvSecrets.createdFileIds];
-    const staleFileIds = [...resolvedEnvVars.staleFileIds, ...resolvedEnvSecrets.staleFileIds];
-
-    try {
-      await this.redis
-        .multi()
-        .set(this.repoKey(repository.id), JSON.stringify(stored))
-        .sadd(REPO_IDS_KEY, repository.id)
-        .exec();
-      await this.eventBus.publish({ type: "repository:created", payload: repository });
-    } catch (error) {
-      await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, createdFileIds);
-      throw error;
-    }
-
-    await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, staleFileIds);
-    return repository;
-  }
-
-  async listRepositories(): Promise<Repository[]> {
-    const ids = await this.redis.smembers(REPO_IDS_KEY);
-    if (ids.length === 0) {
-      return [];
-    }
-
-    const pipeline = this.redis.pipeline();
-    for (const id of ids) {
-      pipeline.get(this.repoKey(id));
-    }
-
-    const result = await pipeline.exec();
-    const repositories: Repository[] = [];
-    for (const row of result ?? []) {
-      const raw = row[1];
-      if (typeof raw === "string") {
-        repositories.push(this.normalizeRepository(JSON.parse(raw) as StoredRepository));
-      }
-    }
-
-    return repositories.sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  async getRepository(repositoryId: string): Promise<Repository | null> {
-    const stored = await this.getStoredRepository(repositoryId);
-    if (!stored) {
-      return null;
-    }
-
-    return this.normalizeRepository(stored);
-  }
-
-  async getRepositoryRuntimeEnvEntries(repositoryId: string): Promise<RepositoryRuntimeEnvEntry[]> {
-    const stored = await this.getStoredRepository(repositoryId);
-    if (!stored) {
-      return [];
-    }
-
-    return toRuntimeRepositoryEnvEntries(stored.envVars, stored.envSecrets);
-  }
-
-  async getRepositoryGitHubWebhookSecret(repositoryId: string): Promise<string | null> {
-    const stored = await this.getStoredRepository(repositoryId);
-    return stored?.githubWebhookSecret ?? null;
-  }
-
-  async updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null> {
-    const current = await this.getStoredRepository(repositoryId);
-    if (!current) {
-      return null;
-    }
-
-    const nextWebhookSecret =
-      input.clearWebhookSecret === true
-        ? null
-        : input.webhookSecret !== undefined
-          ? this.normalizeWebhookSecret(input.webhookSecret)
-          : current.webhookSecret;
-    const nextGitHubWebhookSecret =
-      input.clearGithubWebhookSecret === true
-        ? null
-        : input.githubWebhookSecret !== undefined
-          ? this.normalizeGitHubWebhookSecret(input.githubWebhookSecret)
-          : current.githubWebhookSecret;
-    const nextWebhookUrl =
-      input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
-    const nextWebhookEnabled =
-      input.webhookEnabled !== undefined ? input.webhookEnabled === true : current.webhookEnabled;
-    const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, current.envVars, input.envVars);
-    const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(
-      this.repositoryEnvFileStore,
-      current.envSecrets,
-      input.envSecrets
-    );
-    const nextGitHubAutomations =
-      input.githubAutomations !== undefined ? normalizeGitHubAutomations(input.githubAutomations) : normalizeGitHubAutomations(current.githubAutomations);
-
-    this.assertValidWebhookConfiguration({
-      webhookEnabled: nextWebhookEnabled,
-      webhookUrl: nextWebhookUrl,
-      webhookSecret: nextWebhookSecret
-    });
-
-    const nextStored: StoredRepository = {
-      ...current,
-      name: input.name?.trim() || current.name,
-      url: input.url?.trim() || current.url,
-      defaultBranch: input.defaultBranch?.trim() || current.defaultBranch,
-      syncStatusEnabled: input.syncStatusEnabled !== undefined ? input.syncStatusEnabled === true : current.syncStatusEnabled === true,
-      envVars: resolvedEnvVars.entries,
-      envSecrets: resolvedEnvSecrets.entries,
-      webhookUrl: nextWebhookUrl,
-      webhookEnabled: nextWebhookEnabled,
-      webhookSecret: nextWebhookSecret,
-      githubWebhookSecret: nextGitHubWebhookSecret,
-      githubAutomations: nextGitHubAutomations,
-      updatedAt: nowIso()
-    };
-    const next = this.normalizeRepository(nextStored);
-    const createdFileIds = [...resolvedEnvVars.createdFileIds, ...resolvedEnvSecrets.createdFileIds];
-    const staleFileIds = [...resolvedEnvVars.staleFileIds, ...resolvedEnvSecrets.staleFileIds];
-
-    try {
-      await this.redis.set(this.repoKey(repositoryId), JSON.stringify(nextStored));
-      await this.eventBus.publish({ type: "repository:updated", payload: next });
-    } catch (error) {
-      await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, createdFileIds);
-      throw error;
-    }
-
-    await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, staleFileIds);
-    return next;
-  }
-
-  async getRepositoryWebhookTarget(repositoryId: string): Promise<RepositoryWebhookTarget | null> {
-    const stored = await this.getStoredRepository(repositoryId);
-    if (!stored) {
-      return null;
-    }
-
-    if (!stored.webhookEnabled || !stored.webhookUrl || !stored.webhookSecret) {
-      return null;
-    }
-
-    return {
-      repository: this.normalizeRepository(stored),
-      webhookUrl: stored.webhookUrl,
-      webhookSecret: stored.webhookSecret
-    };
-  }
-
-  async recordWebhookDeliveryResult(
-    repositoryId: string,
-    input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
-  ): Promise<Repository | null> {
-    const stored = await this.getStoredRepository(repositoryId);
-    if (!stored) {
-      return null;
-    }
-
-    const nextStored: StoredRepository = {
-      ...stored,
-      webhookLastAttemptAt: input.attemptedAt,
-      webhookLastStatus: input.status,
-      webhookLastError: input.status === "failed" ? input.errorMessage?.trim() || "Webhook delivery failed." : null,
-      updatedAt: nowIso()
-    };
-    const next = this.normalizeRepository(nextStored);
-
-    await this.redis.set(this.repoKey(repositoryId), JSON.stringify(nextStored));
-    await this.eventBus.publish({ type: "repository:updated", payload: next });
-    return next;
-  }
-
-  async deleteRepository(repositoryId: string): Promise<boolean> {
-    const stored = await this.getStoredRepository(repositoryId);
-    if (!stored) {
-      return false;
-    }
-
-    const userUpdates = await this.buildRepositoryRemovalUserUpdates(repositoryId);
-    const transaction = this.redis.multi();
-    for (const userUpdate of userUpdates) {
-      transaction.set(userUpdate.userKey, userUpdate.userPayload);
-    }
-    await transaction.del(this.repoKey(repositoryId)).srem(REPO_IDS_KEY, repositoryId).exec();
-    await deleteRepositoryEnvFiles(
-      this.repositoryEnvFileStore,
-      [...collectRepositoryEnvFileIds(stored.envVars), ...collectRepositoryEnvFileIds(stored.envSecrets)]
-    );
-    await this.eventBus.publish({ type: "repository:deleted", payload: { id: repositoryId } });
-    return true;
-  }
-}
-
-export class PostgresRepositoryStore implements RepositoryStore {
-  constructor(
-    private readonly pool: Pool,
-    private readonly eventBus: EventBus,
-    private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore()
-  ) {}
-
-  private normalizeWebhookUrl(url: string | null | undefined): string | null {
-    const normalized = (url ?? "").trim();
-    return normalized.length > 0 ? normalized : null;
-  }
-
-  private normalizeWebhookSecret(secret: string | null | undefined): string | null {
-    const normalized = (secret ?? "").trim();
-    return normalized.length > 0 ? normalized : null;
-  }
-
-  private normalizeGitHubWebhookSecret(secret: string | null | undefined): string | null {
-    const normalized = (secret ?? "").trim();
-    return normalized.length > 0 ? normalized : null;
-  }
-
-  private assertValidWebhookConfiguration(input: { webhookEnabled: boolean; webhookUrl: string | null; webhookSecret: string | null }): void {
-    if (!input.webhookEnabled) {
-      return;
-    }
-
-    if (!input.webhookUrl) {
-      throw new HttpError(400, "Webhook URL is required when webhooks are enabled.");
-    }
-
-    if (!input.webhookSecret) {
-      throw new HttpError(400, "Webhook secret is required when webhooks are enabled.");
-    }
-  }
-
-  private mapRepositoryRow(row: Record<string, unknown>): Repository {
-    const envSecrets = normalizeRepositoryEnvSecretValues(row.env_secrets);
-    const envVars = normalizeRepositoryEnvVars(row.env_vars);
-    return {
-      id: String(row.id),
-      name: String(row.name ?? "").trim(),
-      url: String(row.url ?? "").trim(),
-      defaultBranch: String(row.default_branch ?? "").trim() || "develop",
-      syncStatusEnabled: row.sync_status_enabled === true,
-      envVars: toRepositoryEnvVars(envVars),
-      envSecrets: toConfiguredRepositoryEnvSecrets(envSecrets),
-      webhookUrl: typeof row.webhook_url === "string" && row.webhook_url.trim().length > 0 ? row.webhook_url.trim() : null,
-      webhookEnabled: row.webhook_enabled === true,
-      webhookSecretConfigured: typeof row.webhook_secret === "string" && row.webhook_secret.trim().length > 0,
-      githubWebhookSecretConfigured:
-        typeof row.github_webhook_secret === "string" && row.github_webhook_secret.trim().length > 0,
-      githubAutomations: normalizeGitHubAutomations(row.github_automations),
-      webhookLastAttemptAt: typeof row.webhook_last_attempt_at === "string" ? row.webhook_last_attempt_at : null,
-      webhookLastStatus:
-        row.webhook_last_status === "success" || row.webhook_last_status === "failed" ? row.webhook_last_status : null,
-      webhookLastError:
-        typeof row.webhook_last_error === "string" && row.webhook_last_error.trim().length > 0 ? row.webhook_last_error.trim() : null,
-      createdAt: String(row.created_at),
-      updatedAt: String(row.updated_at)
-    };
-  }
-
-  private async getStoredRepositoryRow(repositoryId: string): Promise<Record<string, unknown> | null> {
-    const result = await this.pool.query("SELECT * FROM repositories WHERE id = $1", [repositoryId]);
-    return result.rows[0] ?? null;
-  }
-
-  async createRepository(input: CreateRepositoryInput): Promise<Repository> {
-    const timestamp = nowIso();
-    const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
-    const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
-    const githubWebhookSecret = this.normalizeGitHubWebhookSecret(input.githubWebhookSecret);
-    const webhookEnabled = input.webhookEnabled === true;
-    const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
-    const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
-    const githubAutomations = normalizeGitHubAutomations(input.githubAutomations);
-    this.assertValidWebhookConfiguration({
-      webhookEnabled,
-      webhookUrl,
-      webhookSecret
-    });
-
-    const repository = {
-      id: nanoid(),
-      name: input.name.trim(),
-      url: input.url.trim(),
-      defaultBranch: input.defaultBranch?.trim() || "develop",
-      syncStatusEnabled: input.syncStatusEnabled === true,
-      envVars: toRepositoryEnvVars(resolvedEnvVars.entries),
-      envSecrets: toConfiguredRepositoryEnvSecrets(resolvedEnvSecrets.entries),
-      webhookUrl,
-      webhookEnabled,
-      webhookSecretConfigured: Boolean(webhookSecret),
-      githubWebhookSecretConfigured: Boolean(githubWebhookSecret),
-      githubAutomations,
-      webhookLastAttemptAt: null,
-      webhookLastStatus: null,
-      webhookLastError: null,
-      createdAt: timestamp,
-      updatedAt: timestamp
-    } satisfies Repository;
-
-    const createdFileIds = [...resolvedEnvVars.createdFileIds, ...resolvedEnvSecrets.createdFileIds];
-    const staleFileIds = [...resolvedEnvVars.staleFileIds, ...resolvedEnvSecrets.staleFileIds];
-
-    try {
-      await this.pool.query(
-        `
-          INSERT INTO repositories (
-            id,
-            name,
-            url,
-            default_branch,
-            sync_status_enabled,
-            env_vars,
-            env_secrets,
-            webhook_url,
-            webhook_enabled,
-            webhook_secret,
-            github_webhook_secret,
-            github_automations,
-            webhook_last_attempt_at,
-            webhook_last_status,
-            webhook_last_error,
-            created_at,
-            updated_at
-          )
-          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17)
-        `,
-        [
-          repository.id,
-          repository.name,
-          repository.url,
-          repository.defaultBranch,
-          repository.syncStatusEnabled === true,
-          JSON.stringify(resolvedEnvVars.entries),
-          JSON.stringify(resolvedEnvSecrets.entries),
-          repository.webhookUrl,
-          repository.webhookEnabled,
-          webhookSecret,
-          githubWebhookSecret,
-          JSON.stringify(repository.githubAutomations ?? []),
-          repository.webhookLastAttemptAt,
-          repository.webhookLastStatus,
-          repository.webhookLastError,
-          repository.createdAt,
-          repository.updatedAt
-        ]
-      );
-      await this.eventBus.publish({ type: "repository:created", payload: repository });
-    } catch (error) {
-      await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, createdFileIds);
-      throw error;
-    }
-
-    await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, staleFileIds);
-    return repository;
-  }
-
-  async listRepositories(): Promise<Repository[]> {
-    const result = await this.pool.query("SELECT * FROM repositories ORDER BY name ASC");
-    return result.rows.map((row) => this.mapRepositoryRow(row));
-  }
-
-  async getRepository(repositoryId: string): Promise<Repository | null> {
-    const row = await this.getStoredRepositoryRow(repositoryId);
-    return row ? this.mapRepositoryRow(row) : null;
-  }
-
-  async getRepositoryRuntimeEnvEntries(repositoryId: string): Promise<RepositoryRuntimeEnvEntry[]> {
-    const row = await this.getStoredRepositoryRow(repositoryId);
-    if (!row) {
-      return [];
-    }
-    return toRuntimeRepositoryEnvEntries(
-      normalizeRepositoryEnvVars(row.env_vars),
-      normalizeRepositoryEnvSecretValues(row.env_secrets)
-    );
-  }
-
-  async getRepositoryGitHubWebhookSecret(repositoryId: string): Promise<string | null> {
-    const row = await this.getStoredRepositoryRow(repositoryId);
-    if (!row) {
-      return null;
-    }
-    const value = row.github_webhook_secret;
-    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-  }
-
-  async updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null> {
-    const currentRow = await this.getStoredRepositoryRow(repositoryId);
-    if (!currentRow) {
-      return null;
-    }
-
-    const current = this.mapRepositoryRow(currentRow);
-    const currentWebhookSecret =
-      typeof currentRow.webhook_secret === "string" && currentRow.webhook_secret.trim().length > 0 ? currentRow.webhook_secret.trim() : null;
-    const currentGitHubWebhookSecret =
-      typeof currentRow.github_webhook_secret === "string" && currentRow.github_webhook_secret.trim().length > 0
-        ? currentRow.github_webhook_secret.trim()
-        : null;
-    const currentEnvVars = normalizeRepositoryEnvVars(currentRow.env_vars);
-    const currentEnvSecrets = normalizeRepositoryEnvSecretValues(currentRow.env_secrets);
-    const nextWebhookSecret =
-      input.clearWebhookSecret === true
-        ? null
-        : input.webhookSecret !== undefined
-          ? this.normalizeWebhookSecret(input.webhookSecret)
-          : currentWebhookSecret;
-    const nextGitHubWebhookSecret =
-      input.clearGithubWebhookSecret === true
-        ? null
-        : input.githubWebhookSecret !== undefined
-          ? this.normalizeGitHubWebhookSecret(input.githubWebhookSecret)
-          : currentGitHubWebhookSecret;
-    const nextWebhookUrl =
-      input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
-    const nextWebhookEnabled =
-      input.webhookEnabled !== undefined ? input.webhookEnabled === true : current.webhookEnabled;
-    const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, currentEnvVars, input.envVars);
-    const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(
-      this.repositoryEnvFileStore,
-      currentEnvSecrets,
-      input.envSecrets
-    );
-    const nextGitHubAutomations =
-      input.githubAutomations !== undefined ? normalizeGitHubAutomations(input.githubAutomations) : normalizeGitHubAutomations(current.githubAutomations);
-
-    this.assertValidWebhookConfiguration({
-      webhookEnabled: nextWebhookEnabled,
-      webhookUrl: nextWebhookUrl,
-      webhookSecret: nextWebhookSecret
-    });
-
-    const next: Repository = {
-      ...current,
-      name: input.name?.trim() || current.name,
-      url: input.url?.trim() || current.url,
-      defaultBranch: input.defaultBranch?.trim() || current.defaultBranch,
-      syncStatusEnabled: input.syncStatusEnabled !== undefined ? input.syncStatusEnabled === true : current.syncStatusEnabled === true,
-      envVars: toRepositoryEnvVars(resolvedEnvVars.entries),
-      envSecrets: toConfiguredRepositoryEnvSecrets(resolvedEnvSecrets.entries),
-      webhookUrl: nextWebhookUrl,
-      webhookEnabled: nextWebhookEnabled,
-      webhookSecretConfigured: Boolean(nextWebhookSecret),
-      githubWebhookSecretConfigured: Boolean(nextGitHubWebhookSecret),
-      githubAutomations: nextGitHubAutomations,
-      updatedAt: nowIso()
-    };
-
-    const createdFileIds = [...resolvedEnvVars.createdFileIds, ...resolvedEnvSecrets.createdFileIds];
-    const staleFileIds = [...resolvedEnvVars.staleFileIds, ...resolvedEnvSecrets.staleFileIds];
-
-    try {
-      await this.pool.query(
-        `
-          UPDATE repositories
-          SET
-            name = $2,
-            url = $3,
-            default_branch = $4,
-            sync_status_enabled = $5,
-            env_vars = $6::jsonb,
-            env_secrets = $7::jsonb,
-            webhook_url = $8,
-            webhook_enabled = $9,
-            webhook_secret = $10,
-            github_webhook_secret = $11,
-            github_automations = $12::jsonb,
-            webhook_last_attempt_at = $13,
-            webhook_last_status = $14,
-            webhook_last_error = $15,
-            created_at = $16,
-            updated_at = $17
-          WHERE id = $1
-        `,
-        [
-          repositoryId,
-          next.name,
-          next.url,
-          next.defaultBranch,
-          next.syncStatusEnabled === true,
-          JSON.stringify(resolvedEnvVars.entries),
-          JSON.stringify(resolvedEnvSecrets.entries),
-          next.webhookUrl,
-          next.webhookEnabled,
-          nextWebhookSecret,
-          nextGitHubWebhookSecret,
-          JSON.stringify(next.githubAutomations ?? []),
-          next.webhookLastAttemptAt,
-          next.webhookLastStatus,
-          next.webhookLastError,
-          next.createdAt,
-          next.updatedAt
-        ]
-      );
-      await this.eventBus.publish({ type: "repository:updated", payload: next });
-    } catch (error) {
-      await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, createdFileIds);
-      throw error;
-    }
-
-    await deleteRepositoryEnvFiles(this.repositoryEnvFileStore, staleFileIds);
-    return next;
-  }
-
-  async getRepositoryWebhookTarget(repositoryId: string): Promise<RepositoryWebhookTarget | null> {
-    const row = await this.getStoredRepositoryRow(repositoryId);
-    if (!row) {
-      return null;
-    }
-
-    const repository = this.mapRepositoryRow(row);
-    const webhookSecret =
-      typeof row.webhook_secret === "string" && row.webhook_secret.trim().length > 0 ? row.webhook_secret.trim() : null;
-
-    if (!repository.webhookEnabled || !repository.webhookUrl || !webhookSecret) {
-      return null;
-    }
-
-    return {
-      repository,
-      webhookUrl: repository.webhookUrl,
-      webhookSecret
-    };
-  }
-
-  async recordWebhookDeliveryResult(
-    repositoryId: string,
-    input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
-  ): Promise<Repository | null> {
-    const row = await this.getStoredRepositoryRow(repositoryId);
-    if (!row) {
-      return null;
-    }
-
-    const current = this.mapRepositoryRow(row);
-    const webhookSecret =
-      typeof row.webhook_secret === "string" && row.webhook_secret.trim().length > 0 ? row.webhook_secret.trim() : null;
-    const githubWebhookSecret =
-      typeof row.github_webhook_secret === "string" && row.github_webhook_secret.trim().length > 0
-        ? row.github_webhook_secret.trim()
-        : null;
-    const envVars = normalizeRepositoryEnvVars(row.env_vars);
-    const envSecrets = normalizeRepositoryEnvSecretValues(row.env_secrets);
-    const next: Repository = {
-      ...current,
-      webhookLastAttemptAt: input.attemptedAt,
-      webhookLastStatus: input.status,
-      webhookLastError: input.status === "failed" ? input.errorMessage?.trim() || "Webhook delivery failed." : null,
-      updatedAt: nowIso()
-    };
-
-    await this.pool.query(
-      `
-        UPDATE repositories
-        SET
-          name = $2,
-          url = $3,
-          default_branch = $4,
-          sync_status_enabled = $5,
-          env_vars = $6::jsonb,
-          env_secrets = $7::jsonb,
-          webhook_url = $8,
-          webhook_enabled = $9,
-          webhook_secret = $10,
-          github_webhook_secret = $11,
-          github_automations = $12::jsonb,
-          webhook_last_attempt_at = $13,
-          webhook_last_status = $14,
-          webhook_last_error = $15,
-          created_at = $16,
-          updated_at = $17
-        WHERE id = $1
-      `,
-      [
-        repositoryId,
-        next.name,
-        next.url,
-        next.defaultBranch,
-        next.syncStatusEnabled === true,
-        JSON.stringify(envVars),
-        JSON.stringify(envSecrets),
-        next.webhookUrl,
-        next.webhookEnabled,
-        webhookSecret,
-        githubWebhookSecret,
-        JSON.stringify(next.githubAutomations ?? []),
-        next.webhookLastAttemptAt,
-        next.webhookLastStatus,
-        next.webhookLastError,
-        next.createdAt,
-        next.updatedAt
-      ]
-    );
-    await this.eventBus.publish({ type: "repository:updated", payload: next });
-    return next;
-  }
-
-  async deleteRepository(repositoryId: string): Promise<boolean> {
-    const row = await this.getStoredRepositoryRow(repositoryId);
-    if (!row) {
-      return false;
-    }
-
-    const result = await this.pool.query("DELETE FROM repositories WHERE id = $1", [repositoryId]);
-    if (result.rowCount === 0) {
-      return false;
-    }
-    await deleteRepositoryEnvFiles(
-      this.repositoryEnvFileStore,
-      [
-        ...collectRepositoryEnvFileIds(normalizeRepositoryEnvVars(row.env_vars)),
-        ...collectRepositoryEnvFileIds(normalizeRepositoryEnvSecretValues(row.env_secrets))
-      ]
-    );
-    await this.eventBus.publish({ type: "repository:deleted", payload: { id: repositoryId } });
-    return true;
-  }
-}
-````
-
 ## File: apps/server/src/services/settings-store.ts
 ````typescript
 import { randomUUID } from "node:crypto";
@@ -39042,6 +39042,372 @@ export const getSelectedNavigationKey = (pathname: string): string => {
 };
 ````
 
+## File: README.md
+````markdown
+<p align="center">
+  <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
+</p>
+
+# AgentSwarm
+
+AgentSwarm is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
+
+The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
+
+## Features
+
+- Create build or ask tasks from a blank prompt, reusable snippet, GitHub issue, or pull request.
+- Run Codex and Claude tasks in isolated Docker runtime containers.
+- Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
+- Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
+- Open task workspaces in an interactive browser terminal.
+- Configure repositories, credentials, roles, users, provider defaults, snippets, and prompt sequences.
+- Automate task creation from GitHub webhooks and repository automation rules.
+- Add repository-local postflight checks with `.agentswarm/postflight.yml`.
+
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| Docker | Required for the main app stack and agent runtime containers. |
+| Docker Compose | `docker compose` is preferred; `docker-compose` is also supported. |
+| Bash | Required by the helper and harness scripts. |
+| Node.js 20+ and npm | Required for local development, checks, tests, and builds. |
+| Python 3 | Required when installing local npm dependencies because native modules such as `node-pty` may build from source. |
+
+## Installation
+
+Clone the repository:
+
+```bash
+git clone git@github.com:coretracker/agentswarm.git
+cd agentswarm
+```
+
+Create a local environment file:
+
+```bash
+cp .env.example .env
+```
+
+Initialize the Docker stack and runtime images:
+
+```bash
+./agentswarm.sh init
+```
+
+For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
+
+```bash
+HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+```
+
+## Quick Start
+
+Start the app:
+
+```bash
+./agentswarm.sh start
+```
+
+Open the UI:
+
+```text
+http://localhost:3217/login
+```
+
+Bootstrap credentials come from `.env.example` and are used only when the first admin user is created. Review and change them before exposing the app outside a local development environment.
+
+After signing in:
+
+1. Open **Settings** and add provider credentials for OpenAI/Codex and/or Anthropic/Claude.
+2. Open **Repositories** and add a Git repository.
+3. Open **Tasks** and create a build or ask task.
+4. Review task output, logs, diffs, and checkpoints from the task detail page.
+
+Stop the app:
+
+```bash
+./agentswarm.sh stop
+```
+
+## Usage
+
+### Common Commands
+
+| Command | Description |
+| --- | --- |
+| `./agentswarm.sh init` | Build runtime images, rebuild compose images, and start the stack. |
+| `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
+| `./agentswarm.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
+| `./agentswarm.sh stop` | Stop the Docker Compose stack. |
+| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
+
+The health endpoint is available at:
+
+```bash
+curl -fsS http://localhost:3217/api/health
+```
+
+### Creating Tasks
+
+Tasks are the main unit of work in AgentSwarm.
+
+- **Build tasks** ask an agent to make repository changes.
+- **Ask tasks** ask an agent to inspect and answer without changing code.
+- **Snippet tasks** start from reusable prompt templates and variables.
+- **GitHub-imported tasks** can be created from issues, pull requests, review comments, and automation rules.
+
+Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
+
+### GitHub Webhooks
+
+AgentSwarm supports repository-scoped GitHub webhooks that can create tasks automatically.
+
+For each repository, configure this webhook URL in GitHub:
+
+```text
+https://<your-host>/api/webhooks/github/<repositoryId>
+```
+
+Use content type `application/json` and subscribe to the events you want to automate, such as Issues, Pull requests, Pull request review comments, Issue comments, and Reactions.
+
+Example repository automation rule:
+
+```json
+[
+  {
+    "id": "ai-issue-opened",
+    "name": "AI issue to build task",
+    "enabled": true,
+    "trigger": "issue_opened",
+    "syncStatusEnabled": true,
+    "labelFilter": {
+      "labelsAny": ["ai"],
+      "labelsNone": ["wip"]
+    },
+    "task": {
+      "assigneeEmail": "dev@example.com",
+      "taskType": "build",
+      "provider": "codex",
+      "providerProfile": "high",
+      "modelOverride": "gpt-5.4",
+      "codexCredentialSource": "profile"
+    }
+  }
+]
+```
+
+Supported automation triggers include:
+
+- `issue_opened`
+- `pull_request_opened`
+- comment or reaction triggers when rule-level comment automation is enabled
+
+### Postflight Checks
+
+Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
+
+Example:
+
+```yaml
+version: 1
+enabled: true
+
+when:
+  task_types: ["build"]
+  providers: ["codex", "claude"]
+
+runner:
+  image: "mcr.microsoft.com/playwright:v1.52.0-jammy"
+  timeout_seconds: 1800
+
+steps:
+  - run: "npm ci"
+  - run: "npx playwright test tests/mobile-screenshots.spec.ts --project=mobile-web --update-snapshots"
+
+on_failure: "fail_task"
+```
+
+## Configuration
+
+Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the AgentSwarm Settings UI, not in `.env`.
+
+### Core Environment Variables
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
+| `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
+| `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
+| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
+| `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
+| `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
+| `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
+| `APP_ENVIRONMENT` | Runtime environment label. | `local` |
+
+### Storage
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `DATABASE_URL` | Postgres connection string. | see `.env.example` |
+| `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start. | `true` |
+| `REDIS_HOST_PORT` | Host port for Redis in local Docker setups. | `6379` |
+| `POSTGRES_HOST_PORT` | Host port for Postgres in local Docker setups. | `5432` |
+
+Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub.
+
+### Git and Workspaces
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `GIT_USER_NAME` | Git author name used by the server. | `AgentSwarm Bot` |
+| `GIT_USER_EMAIL` | Git author email used by the server. | `agentswarm@local.dev` |
+| `TASK_WORKSPACE_HOST_ROOT` | Absolute host path for task workspaces. | unset |
+| `LOCAL_PLANS_HOST_ROOT` | Absolute host path for local plan storage. | unset |
+
+`TASK_WORKSPACE_HOST_ROOT` is important in Docker setups because the server and runtime containers must mount the same host workspace directory.
+
+### Frontend API Routing
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_URL` | Explicit public API base URL. | empty |
+| `NEXT_PUBLIC_SOCKET_URL` | Explicit public Socket.IO URL. | empty |
+
+Leave these empty to use the bundled same-origin `/api` proxy.
+
+### Runtime Images
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
+| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
+| `GIT_TERMINAL_IMAGE` | Restricted Git terminal image. | `local/git-terminal:latest` |
+| `CODEX_INTERACTIVE_IMAGE` | Interactive Codex terminal image. | `local/codex-interactive:latest` |
+| `CLAUDE_INTERACTIVE_IMAGE` | Interactive Claude terminal image. | `local/claude-interactive:latest` |
+
+### Docker Socket Access
+
+Docker socket access is disabled by default and should stay disabled unless a runtime must start nested containers.
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into Codex/Claude runtime containers. | `false` |
+| `DOCKER_SOCKET_HOST_PATH` | Host Docker socket path. | `/var/run/docker.sock` |
+| `DOCKER_SOCKET_CONTAINER_PATH_CODEX` | In-container socket path for Codex runtimes. | `/var/run/docker.sock` |
+| `DOCKER_SOCKET_CONTAINER_PATH_CLAUDE` | In-container socket path for Claude runtimes. | `/var/run/docker.sock` |
+
+Mounting `docker.sock` is highly privileged and can effectively grant host-level control from inside the runtime container.
+
+## Project Structure
+
+```text
+.
++-- apps/
+|   +-- server/          # Backend API, orchestration, stores, routes, schedulers
+|   +-- web/             # Next.js web app
++-- packages/
+|   +-- shared-types/    # Shared TypeScript types used by server and web
++-- agent-runtime-codex/ # Automated Codex task runtime
++-- agent-runtime-claude/# Automated Claude task runtime
++-- tools/               # Supporting runtime and terminal tooling
++-- docs/                # Architecture, development, product, and quality docs
++-- scripts/harness/     # Canonical setup, check, test, and PR scripts
++-- task-workspaces/     # Runtime task workspaces; do not commit
++-- docker-compose.yml   # Local Docker stack
++-- agentswarm.sh        # Main stack helper script
+```
+
+## Development
+
+Install dependencies on a clean checkout:
+
+```bash
+HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+```
+
+Useful development commands:
+
+| Command | Description |
+| --- | --- |
+| `./scripts/harness/doctor.sh` | Verify required tooling and harness availability. |
+| `./scripts/harness/setup.sh` | Initialize the Docker stack and runtime folders. |
+| `./scripts/harness/check.sh` | Run docs checks, boundary checks, lint, and build. |
+| `./scripts/harness/test.sh` | Run the canonical test suite. |
+| `./scripts/harness/pr-ready.sh` | Run pull request readiness checks. |
+| `npm run dev` | Run server and web dev processes together. |
+| `npm run lint` | Run TypeScript no-emit checks for server and web. |
+| `npm run build` | Build shared types, server, and web. |
+| `npm run test` | Run `./scripts/harness/test.sh`. |
+
+Workspace-specific commands:
+
+```bash
+npm run dev -w @agentswarm/server
+npm run dev -w @agentswarm/web
+npm run build -w @agentswarm/shared-types
+```
+
+Before opening a pull request, run:
+
+```bash
+./scripts/harness/pr-ready.sh
+```
+
+The repository uses execution-plan and human-gated-flow checks for non-trivial changes. Useful references:
+
+- `docs/development/setup.md`
+- `docs/development/commands.md`
+- `docs/development/testing.md`
+- `docs/development/pr-workflow.md`
+- `docs/development/agent-review.md`
+
+After any agent-generated repository edit, refresh the Repomix context bundle:
+
+```bash
+npx repomix --style markdown --output docs/repomix.md
+```
+
+## FAQ
+
+### Where do I configure API keys?
+
+Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings UI. Credentials are write-only from the UI and are not returned by the API.
+
+### Can I run without Docker?
+
+The documented and supported path is Docker-based. Some server and web commands can run locally with Node.js, but the full task execution flow depends on Docker runtime containers.
+
+### What does a `202` response from a GitHub webhook mean?
+
+It means AgentSwarm accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
+
+### How do I reset local data?
+
+Run setup with a database reset:
+
+```bash
+HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
+```
+
+## Contributing
+
+1. Read the relevant docs in `docs/index.md`.
+2. Keep changes scoped and update docs when behavior changes.
+3. Run the canonical checks before opening a pull request:
+
+   ```bash
+   ./scripts/harness/pr-ready.sh
+   ```
+
+4. Use the pull request template in `.github/pull_request_template.md`.
+
+## License
+
+No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.
+````
+
 ## File: apps/server/src/routes/imports.ts
 ````typescript
 import { z } from "zod";
@@ -39347,6 +39713,314 @@ export const registerImportRoutes = (
 
       throw error;
     }
+  });
+};
+````
+
+## File: apps/server/src/routes/repositories.ts
+````typescript
+import { z } from "zod";
+import type { FastifyInstance } from "fastify";
+import type { CreateRepositoryInput, GitHubAutomationRule, UpdateRepositoryInput } from "@agentswarm/shared-types";
+import type { AuthService } from "../lib/auth.js";
+import { sendHttpError } from "../lib/http-error.js";
+import { canUserAccessRepository } from "../lib/task-ownership.js";
+import type { RepositoryStore } from "../services/repository-store.js";
+import type { UserStore } from "../services/user-store.js";
+
+const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
+const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
+const REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH = 8192;
+const REPOSITORY_ENV_FILE_NAME_MAX_LENGTH = 255;
+const REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH = 350_000;
+const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
+const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
+const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
+const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
+
+const repositoryEnvKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(REPOSITORY_ENV_VAR_KEY_MAX_LENGTH)
+  .regex(REPOSITORY_ENV_VAR_KEY_PATTERN, "Names must match /^[A-Za-z_][A-Za-z0-9_]*$/.");
+
+const repositoryEnvVarsSchema = z
+  .array(
+    z.union([
+      z.object({
+        key: repositoryEnvKeySchema,
+        type: z.literal("text").optional(),
+        value: z.string().max(REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH)
+      }),
+      z.object({
+        key: repositoryEnvKeySchema,
+        type: z.literal("file"),
+        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
+        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
+      })
+    ])
+  )
+  .max(REPOSITORY_ENV_VAR_MAX_COUNT)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const key = entries[index]?.key;
+      if (!key) {
+        continue;
+      }
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "key"],
+          message: `Duplicate variable name: ${key}`
+        });
+      } else {
+        seen.add(key);
+      }
+    }
+  });
+
+const repositoryEnvSecretsSchema = z
+  .array(
+    z.union([
+      z.object({
+        key: repositoryEnvKeySchema
+          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
+          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
+        type: z.literal("text").optional(),
+        value: z.string().max(REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH).optional()
+      }),
+      z.object({
+        key: repositoryEnvKeySchema
+          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
+          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
+        type: z.literal("file"),
+        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
+        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
+      })
+    ])
+  )
+  .max(REPOSITORY_ENV_SECRET_MAX_COUNT)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const key = entries[index]?.key;
+      if (!key) {
+        continue;
+      }
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "key"],
+          message: `Duplicate secret name: ${key}`
+        });
+      } else {
+        seen.add(key);
+      }
+    }
+  });
+
+const createRepositorySchema = z.object({
+  name: z.string().min(1),
+  url: z.string().min(1),
+  defaultBranch: z.string().min(1).optional(),
+  syncStatusEnabled: z.boolean().optional(),
+  envVars: repositoryEnvVarsSchema.optional(),
+  envSecrets: repositoryEnvSecretsSchema.optional(),
+  webhookUrl: z.string().trim().url().nullable().optional(),
+  webhookEnabled: z.boolean().optional(),
+  webhookSecret: z.string().trim().min(1).optional(),
+  githubWebhookSecret: z.string().trim().min(1).optional(),
+  githubAutomations: z
+    .array(
+      z.object({
+        id: z.string().trim().min(1),
+        name: z.string().trim().min(1).max(160),
+        enabled: z.boolean().optional(),
+        trigger: z.enum(["issue_opened", "pull_request_opened"]),
+        syncStatusEnabled: z.boolean().optional(),
+        automationEnabled: z.boolean().optional(),
+        allowedTriggers: z.array(z.enum(["emoji_reaction", "slash_command", "bot_mention"])).optional(),
+        allowedReactions: z.array(z.string().trim().min(1)).optional(),
+        allowedCommands: z.array(z.string().trim().min(1)).optional(),
+        allowedActorLogins: z.array(z.string().trim().min(1)).optional(),
+        labelFilter: z
+          .object({
+            labelsAny: z.array(z.string().trim().min(1)).optional(),
+            labelsAll: z.array(z.string().trim().min(1)).optional(),
+            labelsNone: z.array(z.string().trim().min(1)).optional()
+          })
+          .optional(),
+        task: z
+          .object({
+            assigneeEmail: z.string().trim().email().optional(),
+            codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+            taskType: z.enum(["build", "ask"]).optional(),
+            includeComments: z.boolean().optional(),
+            titleTemplate: z.string().optional(),
+            notes: z.string().optional(),
+            provider: z.enum(["codex", "claude"]).optional(),
+            providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+            modelOverride: z.string().nullable().optional(),
+            baseBranch: z.string().optional(),
+            branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+            snippetId: z.string().optional()
+          })
+          .strict()
+      })
+    )
+    .optional()
+});
+
+const updateRepositorySchema = createRepositorySchema.partial().extend({
+  clearWebhookSecret: z.boolean().optional(),
+  clearGithubWebhookSecret: z.boolean().optional()
+});
+
+type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;
+type ParsedRepositoryUpdateInput = z.infer<typeof updateRepositorySchema>;
+type ParsedGitHubAutomationRule = NonNullable<ParsedRepositoryInput["githubAutomations"]>[number];
+
+const nowIso = (): string => new Date().toISOString();
+
+const toGitHubAutomationRule = (rule: ParsedGitHubAutomationRule, now: string): GitHubAutomationRule => ({
+  id: rule.id,
+  name: rule.name,
+  enabled: rule.enabled ?? true,
+  trigger: rule.trigger,
+  syncStatusEnabled: rule.syncStatusEnabled,
+  automationEnabled: rule.automationEnabled,
+  allowedTriggers: rule.allowedTriggers,
+  allowedReactions: rule.allowedReactions,
+  allowedCommands: rule.allowedCommands,
+  allowedActorLogins: rule.allowedActorLogins,
+  labelFilter: rule.labelFilter,
+  task: rule.task,
+  createdAt: now,
+  updatedAt: now
+});
+
+const normalizeGitHubAutomations = (
+  rules: ParsedRepositoryInput["githubAutomations"] | ParsedRepositoryUpdateInput["githubAutomations"]
+): GitHubAutomationRule[] | undefined => {
+  if (!rules) {
+    return undefined;
+  }
+  const now = nowIso();
+  return rules.map((rule) => toGitHubAutomationRule(rule, now));
+};
+
+const toCreateRepositoryInput = (input: ParsedRepositoryInput): CreateRepositoryInput => ({
+  ...input,
+  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
+});
+
+const toUpdateRepositoryInput = (input: ParsedRepositoryUpdateInput): UpdateRepositoryInput => ({
+  ...input,
+  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
+});
+
+export const registerRepositoryRoutes = (
+  app: FastifyInstance,
+  deps: {
+    repositoryStore: RepositoryStore;
+    auth: AuthService;
+    userStore: UserStore;
+  }
+): void => {
+  app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async (request) => {
+    const repositories = await deps.repositoryStore.listRepositories();
+    return repositories.filter((repository) => canUserAccessRepository(request.auth?.user, repository.id));
+  });
+
+  app.get<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repository = await deps.repositoryStore.getRepository(request.params.id);
+    if (!repository || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    return reply.send(repository);
+  });
+
+  app.post("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:create"]) }, async (request, reply) => {
+    const parsed = createRepositorySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    try {
+      const createInput: CreateRepositoryInput = toCreateRepositoryInput(parsed.data);
+      const repository = await deps.repositoryStore.createRepository(createInput);
+      const authUser = request.auth?.user;
+      if (authUser) {
+        const creator = await deps.userStore.getUser(authUser.id);
+        if (creator) {
+          const resolvedRepositoryIds = await Promise.all(
+            creator.repositoryIds.map(async (repositoryId) =>
+              (await deps.repositoryStore.getRepository(repositoryId)) ? repositoryId : null
+            )
+          );
+          const nextRepositoryIds = resolvedRepositoryIds.filter((repositoryId): repositoryId is string => Boolean(repositoryId));
+          if (!nextRepositoryIds.includes(repository.id)) {
+            nextRepositoryIds.push(repository.id);
+          }
+          await deps.userStore.updateUser(creator.id, {
+            repositoryIds: nextRepositoryIds
+          });
+        }
+      }
+      return reply.status(201).send(repository);
+    } catch (error) {
+      const sent = sendHttpError(reply, error);
+      if (sent) {
+        return sent;
+      }
+      throw error;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:edit"]) }, async (request, reply) => {
+    const parsed = updateRepositorySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    try {
+      const current = await deps.repositoryStore.getRepository(request.params.id);
+      if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+        return reply.status(404).send({ message: "Repository not found" });
+      }
+
+      const updateInput: UpdateRepositoryInput = toUpdateRepositoryInput(parsed.data);
+      const updated = await deps.repositoryStore.updateRepository(request.params.id, updateInput);
+      if (!updated) {
+        return reply.status(404).send({ message: "Repository not found" });
+      }
+
+      return reply.send(updated);
+    } catch (error) {
+      const sent = sendHttpError(reply, error);
+      if (sent) {
+        return sent;
+      }
+      throw error;
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:delete"]) }, async (request, reply) => {
+    const current = await deps.repositoryStore.getRepository(request.params.id);
+    if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    const deleted = await deps.repositoryStore.deleteRepository(request.params.id);
+    if (!deleted) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    return reply.status(204).send();
   });
 };
 ````
@@ -40920,680 +41594,6 @@ describe("buildTaskLifecycleViewModel", () => {
 });
 ````
 
-## File: README.md
-````markdown
-<p align="center">
-  <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
-</p>
-
-# AgentSwarm
-
-AgentSwarm is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
-
-The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
-
-## Features
-
-- Create build or ask tasks from a blank prompt, reusable snippet, GitHub issue, or pull request.
-- Run Codex and Claude tasks in isolated Docker runtime containers.
-- Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
-- Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
-- Open task workspaces in an interactive browser terminal.
-- Configure repositories, credentials, roles, users, provider defaults, snippets, and prompt sequences.
-- Automate task creation from GitHub webhooks and repository automation rules.
-- Add repository-local postflight checks with `.agentswarm/postflight.yml`.
-
-## Requirements
-
-| Requirement | Notes |
-| --- | --- |
-| Docker | Required for the main app stack and agent runtime containers. |
-| Docker Compose | `docker compose` is preferred; `docker-compose` is also supported. |
-| Bash | Required by the helper and harness scripts. |
-| Node.js 20+ and npm | Required for local development, checks, tests, and builds. |
-| Python 3 | Required when installing local npm dependencies because native modules such as `node-pty` may build from source. |
-
-## Installation
-
-Clone the repository:
-
-```bash
-git clone git@github.com:coretracker/agentswarm.git
-cd agentswarm
-```
-
-Create a local environment file:
-
-```bash
-cp .env.example .env
-```
-
-Initialize the Docker stack and runtime images:
-
-```bash
-./agentswarm.sh init
-```
-
-For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
-
-```bash
-HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-```
-
-## Quick Start
-
-Start the app:
-
-```bash
-./agentswarm.sh start
-```
-
-Open the UI:
-
-```text
-http://localhost:3217/login
-```
-
-Bootstrap credentials come from `.env.example` and are used only when the first admin user is created. Review and change them before exposing the app outside a local development environment.
-
-After signing in:
-
-1. Open **Settings** and add provider credentials for OpenAI/Codex and/or Anthropic/Claude.
-2. Open **Repositories** and add a Git repository.
-3. Open **Tasks** and create a build or ask task.
-4. Review task output, logs, diffs, and checkpoints from the task detail page.
-
-Stop the app:
-
-```bash
-./agentswarm.sh stop
-```
-
-## Usage
-
-### Common Commands
-
-| Command | Description |
-| --- | --- |
-| `./agentswarm.sh init` | Build runtime images, rebuild compose images, and start the stack. |
-| `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
-| `./agentswarm.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
-| `./agentswarm.sh stop` | Stop the Docker Compose stack. |
-| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
-
-The health endpoint is available at:
-
-```bash
-curl -fsS http://localhost:3217/api/health
-```
-
-### Creating Tasks
-
-Tasks are the main unit of work in AgentSwarm.
-
-- **Build tasks** ask an agent to make repository changes.
-- **Ask tasks** ask an agent to inspect and answer without changing code.
-- **Snippet tasks** start from reusable prompt templates and variables.
-- **GitHub-imported tasks** can be created from issues, pull requests, review comments, and automation rules.
-
-Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
-
-### GitHub Webhooks
-
-AgentSwarm supports repository-scoped GitHub webhooks that can create tasks automatically.
-
-For each repository, configure this webhook URL in GitHub:
-
-```text
-https://<your-host>/api/webhooks/github/<repositoryId>
-```
-
-Use content type `application/json` and subscribe to the events you want to automate, such as Issues, Pull requests, Pull request review comments, Issue comments, and Reactions.
-
-Example repository automation rule:
-
-```json
-[
-  {
-    "id": "ai-issue-opened",
-    "name": "AI issue to build task",
-    "enabled": true,
-    "trigger": "issue_opened",
-    "syncStatusEnabled": true,
-    "labelFilter": {
-      "labelsAny": ["ai"],
-      "labelsNone": ["wip"]
-    },
-    "task": {
-      "assigneeEmail": "dev@example.com",
-      "taskType": "build",
-      "provider": "codex",
-      "providerProfile": "high",
-      "modelOverride": "gpt-5.4",
-      "codexCredentialSource": "profile"
-    }
-  }
-]
-```
-
-Supported automation triggers include:
-
-- `issue_opened`
-- `pull_request_opened`
-- comment or reaction triggers when rule-level comment automation is enabled
-
-### Postflight Checks
-
-Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
-
-Example:
-
-```yaml
-version: 1
-enabled: true
-
-when:
-  task_types: ["build"]
-  providers: ["codex", "claude"]
-
-runner:
-  image: "mcr.microsoft.com/playwright:v1.52.0-jammy"
-  timeout_seconds: 1800
-
-steps:
-  - run: "npm ci"
-  - run: "npx playwright test tests/mobile-screenshots.spec.ts --project=mobile-web --update-snapshots"
-
-on_failure: "fail_task"
-```
-
-## Configuration
-
-Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the AgentSwarm Settings UI, not in `.env`.
-
-### Core Environment Variables
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
-| `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
-| `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
-| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
-| `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
-| `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
-| `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
-| `APP_ENVIRONMENT` | Runtime environment label. | `local` |
-
-### Storage
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `DATABASE_URL` | Postgres connection string. | see `.env.example` |
-| `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start. | `true` |
-| `REDIS_HOST_PORT` | Host port for Redis in local Docker setups. | `6379` |
-| `POSTGRES_HOST_PORT` | Host port for Postgres in local Docker setups. | `5432` |
-
-Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub.
-
-### Git and Workspaces
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `GIT_USER_NAME` | Git author name used by the server. | `AgentSwarm Bot` |
-| `GIT_USER_EMAIL` | Git author email used by the server. | `agentswarm@local.dev` |
-| `TASK_WORKSPACE_HOST_ROOT` | Absolute host path for task workspaces. | unset |
-| `LOCAL_PLANS_HOST_ROOT` | Absolute host path for local plan storage. | unset |
-
-`TASK_WORKSPACE_HOST_ROOT` is important in Docker setups because the server and runtime containers must mount the same host workspace directory.
-
-### Frontend API Routing
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `NEXT_PUBLIC_API_URL` | Explicit public API base URL. | empty |
-| `NEXT_PUBLIC_SOCKET_URL` | Explicit public Socket.IO URL. | empty |
-
-Leave these empty to use the bundled same-origin `/api` proxy.
-
-### Runtime Images
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
-| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
-| `GIT_TERMINAL_IMAGE` | Restricted Git terminal image. | `local/git-terminal:latest` |
-| `CODEX_INTERACTIVE_IMAGE` | Interactive Codex terminal image. | `local/codex-interactive:latest` |
-| `CLAUDE_INTERACTIVE_IMAGE` | Interactive Claude terminal image. | `local/claude-interactive:latest` |
-
-### Docker Socket Access
-
-Docker socket access is disabled by default and should stay disabled unless a runtime must start nested containers.
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into Codex/Claude runtime containers. | `false` |
-| `DOCKER_SOCKET_HOST_PATH` | Host Docker socket path. | `/var/run/docker.sock` |
-| `DOCKER_SOCKET_CONTAINER_PATH_CODEX` | In-container socket path for Codex runtimes. | `/var/run/docker.sock` |
-| `DOCKER_SOCKET_CONTAINER_PATH_CLAUDE` | In-container socket path for Claude runtimes. | `/var/run/docker.sock` |
-
-Mounting `docker.sock` is highly privileged and can effectively grant host-level control from inside the runtime container.
-
-## Project Structure
-
-```text
-.
-+-- apps/
-|   +-- server/          # Backend API, orchestration, stores, routes, schedulers
-|   +-- web/             # Next.js web app
-+-- packages/
-|   +-- shared-types/    # Shared TypeScript types used by server and web
-+-- agent-runtime-codex/ # Automated Codex task runtime
-+-- agent-runtime-claude/# Automated Claude task runtime
-+-- tools/               # Supporting runtime and terminal tooling
-+-- docs/                # Architecture, development, product, and quality docs
-+-- scripts/harness/     # Canonical setup, check, test, and PR scripts
-+-- task-workspaces/     # Runtime task workspaces; do not commit
-+-- docker-compose.yml   # Local Docker stack
-+-- agentswarm.sh        # Main stack helper script
-```
-
-## Development
-
-Install dependencies on a clean checkout:
-
-```bash
-HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-```
-
-Useful development commands:
-
-| Command | Description |
-| --- | --- |
-| `./scripts/harness/doctor.sh` | Verify required tooling and harness availability. |
-| `./scripts/harness/setup.sh` | Initialize the Docker stack and runtime folders. |
-| `./scripts/harness/check.sh` | Run docs checks, boundary checks, lint, and build. |
-| `./scripts/harness/test.sh` | Run the canonical test suite. |
-| `./scripts/harness/pr-ready.sh` | Run pull request readiness checks. |
-| `npm run dev` | Run server and web dev processes together. |
-| `npm run lint` | Run TypeScript no-emit checks for server and web. |
-| `npm run build` | Build shared types, server, and web. |
-| `npm run test` | Run `./scripts/harness/test.sh`. |
-
-Workspace-specific commands:
-
-```bash
-npm run dev -w @agentswarm/server
-npm run dev -w @agentswarm/web
-npm run build -w @agentswarm/shared-types
-```
-
-Before opening a pull request, run:
-
-```bash
-./scripts/harness/pr-ready.sh
-```
-
-The repository uses execution-plan and human-gated-flow checks for non-trivial changes. Useful references:
-
-- `docs/development/setup.md`
-- `docs/development/commands.md`
-- `docs/development/testing.md`
-- `docs/development/pr-workflow.md`
-- `docs/development/agent-review.md`
-
-After any agent-generated repository edit, refresh the Repomix context bundle:
-
-```bash
-npx repomix --style markdown --output docs/repomix.md
-```
-
-## FAQ
-
-### Where do I configure API keys?
-
-Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings UI. Credentials are write-only from the UI and are not returned by the API.
-
-### Can I run without Docker?
-
-The documented and supported path is Docker-based. Some server and web commands can run locally with Node.js, but the full task execution flow depends on Docker runtime containers.
-
-### What does a `202` response from a GitHub webhook mean?
-
-It means AgentSwarm accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
-
-### How do I reset local data?
-
-Run setup with a database reset:
-
-```bash
-HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
-```
-
-## Contributing
-
-1. Read the relevant docs in `docs/index.md`.
-2. Keep changes scoped and update docs when behavior changes.
-3. Run the canonical checks before opening a pull request:
-
-   ```bash
-   ./scripts/harness/pr-ready.sh
-   ```
-
-4. Use the pull request template in `.github/pull_request_template.md`.
-
-## License
-
-No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.
-````
-
-## File: apps/server/src/routes/repositories.ts
-````typescript
-import { z } from "zod";
-import type { FastifyInstance } from "fastify";
-import type { CreateRepositoryInput, GitHubAutomationRule, UpdateRepositoryInput } from "@agentswarm/shared-types";
-import type { AuthService } from "../lib/auth.js";
-import { sendHttpError } from "../lib/http-error.js";
-import { canUserAccessRepository } from "../lib/task-ownership.js";
-import type { RepositoryStore } from "../services/repository-store.js";
-import type { UserStore } from "../services/user-store.js";
-
-const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
-const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
-const REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH = 8192;
-const REPOSITORY_ENV_FILE_NAME_MAX_LENGTH = 255;
-const REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH = 350_000;
-const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
-const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
-const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
-const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
-
-const repositoryEnvKeySchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(REPOSITORY_ENV_VAR_KEY_MAX_LENGTH)
-  .regex(REPOSITORY_ENV_VAR_KEY_PATTERN, "Names must match /^[A-Za-z_][A-Za-z0-9_]*$/.");
-
-const repositoryEnvVarsSchema = z
-  .array(
-    z.union([
-      z.object({
-        key: repositoryEnvKeySchema,
-        type: z.literal("text").optional(),
-        value: z.string().max(REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH)
-      }),
-      z.object({
-        key: repositoryEnvKeySchema,
-        type: z.literal("file"),
-        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
-        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
-      })
-    ])
-  )
-  .max(REPOSITORY_ENV_VAR_MAX_COUNT)
-  .superRefine((entries, ctx) => {
-    const seen = new Set<string>();
-    for (let index = 0; index < entries.length; index += 1) {
-      const key = entries[index]?.key;
-      if (!key) {
-        continue;
-      }
-      if (seen.has(key)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: [index, "key"],
-          message: `Duplicate variable name: ${key}`
-        });
-      } else {
-        seen.add(key);
-      }
-    }
-  });
-
-const repositoryEnvSecretsSchema = z
-  .array(
-    z.union([
-      z.object({
-        key: repositoryEnvKeySchema
-          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
-          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
-        type: z.literal("text").optional(),
-        value: z.string().max(REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH).optional()
-      }),
-      z.object({
-        key: repositoryEnvKeySchema
-          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
-          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
-        type: z.literal("file"),
-        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
-        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
-      })
-    ])
-  )
-  .max(REPOSITORY_ENV_SECRET_MAX_COUNT)
-  .superRefine((entries, ctx) => {
-    const seen = new Set<string>();
-    for (let index = 0; index < entries.length; index += 1) {
-      const key = entries[index]?.key;
-      if (!key) {
-        continue;
-      }
-      if (seen.has(key)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: [index, "key"],
-          message: `Duplicate secret name: ${key}`
-        });
-      } else {
-        seen.add(key);
-      }
-    }
-  });
-
-const createRepositorySchema = z.object({
-  name: z.string().min(1),
-  url: z.string().min(1),
-  defaultBranch: z.string().min(1).optional(),
-  syncStatusEnabled: z.boolean().optional(),
-  envVars: repositoryEnvVarsSchema.optional(),
-  envSecrets: repositoryEnvSecretsSchema.optional(),
-  webhookUrl: z.string().trim().url().nullable().optional(),
-  webhookEnabled: z.boolean().optional(),
-  webhookSecret: z.string().trim().min(1).optional(),
-  githubWebhookSecret: z.string().trim().min(1).optional(),
-  githubAutomations: z
-    .array(
-      z.object({
-        id: z.string().trim().min(1),
-        name: z.string().trim().min(1).max(160),
-        enabled: z.boolean().optional(),
-        trigger: z.enum(["issue_opened", "pull_request_opened"]),
-        syncStatusEnabled: z.boolean().optional(),
-        automationEnabled: z.boolean().optional(),
-        allowedTriggers: z.array(z.enum(["emoji_reaction", "slash_command", "bot_mention"])).optional(),
-        allowedReactions: z.array(z.string().trim().min(1)).optional(),
-        allowedCommands: z.array(z.string().trim().min(1)).optional(),
-        allowedActorLogins: z.array(z.string().trim().min(1)).optional(),
-        labelFilter: z
-          .object({
-            labelsAny: z.array(z.string().trim().min(1)).optional(),
-            labelsAll: z.array(z.string().trim().min(1)).optional(),
-            labelsNone: z.array(z.string().trim().min(1)).optional()
-          })
-          .optional(),
-        task: z
-          .object({
-            assigneeEmail: z.string().trim().email().optional(),
-            codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-            taskType: z.enum(["build", "ask"]).optional(),
-            includeComments: z.boolean().optional(),
-            titleTemplate: z.string().optional(),
-            notes: z.string().optional(),
-            provider: z.enum(["codex", "claude"]).optional(),
-            providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-            modelOverride: z.string().nullable().optional(),
-            baseBranch: z.string().optional(),
-            branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-            snippetId: z.string().optional()
-          })
-          .strict()
-      })
-    )
-    .optional()
-});
-
-const updateRepositorySchema = createRepositorySchema.partial().extend({
-  clearWebhookSecret: z.boolean().optional(),
-  clearGithubWebhookSecret: z.boolean().optional()
-});
-
-type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;
-type ParsedRepositoryUpdateInput = z.infer<typeof updateRepositorySchema>;
-type ParsedGitHubAutomationRule = NonNullable<ParsedRepositoryInput["githubAutomations"]>[number];
-
-const nowIso = (): string => new Date().toISOString();
-
-const toGitHubAutomationRule = (rule: ParsedGitHubAutomationRule, now: string): GitHubAutomationRule => ({
-  id: rule.id,
-  name: rule.name,
-  enabled: rule.enabled ?? true,
-  trigger: rule.trigger,
-  syncStatusEnabled: rule.syncStatusEnabled,
-  automationEnabled: rule.automationEnabled,
-  allowedTriggers: rule.allowedTriggers,
-  allowedReactions: rule.allowedReactions,
-  allowedCommands: rule.allowedCommands,
-  allowedActorLogins: rule.allowedActorLogins,
-  labelFilter: rule.labelFilter,
-  task: rule.task,
-  createdAt: now,
-  updatedAt: now
-});
-
-const normalizeGitHubAutomations = (
-  rules: ParsedRepositoryInput["githubAutomations"] | ParsedRepositoryUpdateInput["githubAutomations"]
-): GitHubAutomationRule[] | undefined => {
-  if (!rules) {
-    return undefined;
-  }
-  const now = nowIso();
-  return rules.map((rule) => toGitHubAutomationRule(rule, now));
-};
-
-const toCreateRepositoryInput = (input: ParsedRepositoryInput): CreateRepositoryInput => ({
-  ...input,
-  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
-});
-
-const toUpdateRepositoryInput = (input: ParsedRepositoryUpdateInput): UpdateRepositoryInput => ({
-  ...input,
-  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
-});
-
-export const registerRepositoryRoutes = (
-  app: FastifyInstance,
-  deps: {
-    repositoryStore: RepositoryStore;
-    auth: AuthService;
-    userStore: UserStore;
-  }
-): void => {
-  app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async (request) => {
-    const repositories = await deps.repositoryStore.listRepositories();
-    return repositories.filter((repository) => canUserAccessRepository(request.auth?.user, repository.id));
-  });
-
-  app.get<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repository = await deps.repositoryStore.getRepository(request.params.id);
-    if (!repository || !canUserAccessRepository(request.auth?.user, request.params.id)) {
-      return reply.status(404).send({ message: "Repository not found" });
-    }
-
-    return reply.send(repository);
-  });
-
-  app.post("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:create"]) }, async (request, reply) => {
-    const parsed = createRepositorySchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    try {
-      const createInput: CreateRepositoryInput = toCreateRepositoryInput(parsed.data);
-      const repository = await deps.repositoryStore.createRepository(createInput);
-      const authUser = request.auth?.user;
-      if (authUser) {
-        const creator = await deps.userStore.getUser(authUser.id);
-        if (creator) {
-          const resolvedRepositoryIds = await Promise.all(
-            creator.repositoryIds.map(async (repositoryId) =>
-              (await deps.repositoryStore.getRepository(repositoryId)) ? repositoryId : null
-            )
-          );
-          const nextRepositoryIds = resolvedRepositoryIds.filter((repositoryId): repositoryId is string => Boolean(repositoryId));
-          if (!nextRepositoryIds.includes(repository.id)) {
-            nextRepositoryIds.push(repository.id);
-          }
-          await deps.userStore.updateUser(creator.id, {
-            repositoryIds: nextRepositoryIds
-          });
-        }
-      }
-      return reply.status(201).send(repository);
-    } catch (error) {
-      const sent = sendHttpError(reply, error);
-      if (sent) {
-        return sent;
-      }
-      throw error;
-    }
-  });
-
-  app.patch<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:edit"]) }, async (request, reply) => {
-    const parsed = updateRepositorySchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    try {
-      const current = await deps.repositoryStore.getRepository(request.params.id);
-      if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
-        return reply.status(404).send({ message: "Repository not found" });
-      }
-
-      const updateInput: UpdateRepositoryInput = toUpdateRepositoryInput(parsed.data);
-      const updated = await deps.repositoryStore.updateRepository(request.params.id, updateInput);
-      if (!updated) {
-        return reply.status(404).send({ message: "Repository not found" });
-      }
-
-      return reply.send(updated);
-    } catch (error) {
-      const sent = sendHttpError(reply, error);
-      if (sent) {
-        return sent;
-      }
-      throw error;
-    }
-  });
-
-  app.delete<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:delete"]) }, async (request, reply) => {
-    const current = await deps.repositoryStore.getRepository(request.params.id);
-    if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
-      return reply.status(404).send({ message: "Repository not found" });
-    }
-
-    const deleted = await deps.repositoryStore.deleteRepository(request.params.id);
-    if (!deleted) {
-      return reply.status(404).send({ message: "Repository not found" });
-    }
-
-    return reply.status(204).send();
-  });
-};
-````
-
 ## File: apps/server/src/index.ts
 ````typescript
 import Fastify from "fastify";
@@ -43074,6 +43074,579 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
     </Modal>
   );
 }
+````
+
+## File: apps/web/src/api/client.ts
+````typescript
+"use client";
+
+import type {
+  AgentProvider,
+  AuthProfile,
+  AuthSession,
+  CreateRoleInput,
+  CreateSequenceInput,
+  CreateSnippetInput,
+  CreateTaskFromIssueInput,
+  CreateTaskFromPullRequestInput,
+  CreateTaskMessageInput,
+  CreateRepositoryInput,
+  CreateTaskInput,
+  CreateUserInput,
+  GitHubBranchReference,
+  GitHubIssueReference,
+  GitHubPullRequestReference,
+  LoginInput,
+  ProviderModelOption,
+  Repository,
+  Role,
+  Sequence,
+  SequenceRun,
+  Snippet,
+  SystemSettings,
+  Task,
+  OpenAiDiffAssistInput,
+  OpenAiDiffAssistResult,
+  TaskPromptMagicInput,
+  TaskPromptMagicResult,
+  TaskLiveDiff,
+  TaskWorkspaceFileSearchResult,
+  TaskWorkspaceFileTree,
+  TaskWorkspaceFilePreview,
+  TaskWorkspaceCommitLog,
+  TaskPushPreview,
+  TaskMergePreview,
+  TaskMessage,
+  MergeTaskInput,
+  ApplyTaskChangeProposalInput,
+  RevertTaskChangeProposalFileInput,
+  UpdateTaskMessageInput,
+  UpdateTaskWorkspaceFileInput,
+  TaskRun,
+  TaskGitOperation,
+  TaskChangeProposal,
+  TaskInteractiveTerminalTranscript,
+  TaskAction,
+  TaskTerminalSessionMode,
+  UpdateRoleInput,
+  UpdateSequenceInput,
+  UpdateSnippetInput,
+  UpdateTaskPinInput,
+  UpdateTaskNotesInput,
+  UpdateTaskDeadlineInput,
+  UpdateTaskAssigneeInput,
+  UpdateTaskStateInput,
+  UpdateUserNotesInput,
+  UpdateTaskTitleInput,
+  UpdateAuthProfileInput,
+  UpdateCredentialSettingsInput,
+  UpdateTaskConfigInput,
+  UpdateRepositoryInput,
+  UpdateSettingsInput,
+  UpdateUserInput,
+  User,
+  UserNotes
+} from "@agentswarm/shared-types";
+export type { TaskWorkspaceFilePreview } from "@agentswarm/shared-types";
+import { buildApiUrl } from "../lib/public-url";
+
+export interface ProviderModelsResponse {
+  models: ProviderModelOption[];
+  source: "api" | "static";
+}
+
+export interface TaskInteractiveTerminalStatus {
+  available: boolean;
+  reason?: string;
+  /** Server sets this when a terminal WebSocket session is active for the task. */
+  activeInteractiveSession?: boolean;
+  /** Present when an active session exists for this task. */
+  terminalMode?: TaskTerminalSessionMode;
+}
+
+export interface TaskBranchSyncCounts {
+  pullCount: number;
+  pushCount: number;
+}
+
+export interface ListTasksOptions {
+  view?: "all" | "active" | "archived";
+  limit?: number;
+}
+
+export interface HistoryPageOptions {
+  before?: string | null;
+  beforeId?: string | null;
+  limit?: number;
+}
+
+export interface HistoryPageResult<T> {
+  items: T[];
+  hasMore: boolean;
+}
+
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.body !== undefined && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const response = await fetch(buildApiUrl(path), {
+    ...init,
+    headers,
+    cache: "no-store",
+    credentials: "include"
+  });
+
+  if (!response.ok) {
+    const raw = await response.text();
+    let message = raw || response.statusText;
+    try {
+      const parsed = JSON.parse(raw) as { message?: string };
+      message = parsed.message ?? message;
+    } catch {
+      // Keep the raw response body when the server does not return JSON.
+    }
+
+    throw new ApiError(response.status, message);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return response.json() as Promise<T>;
+}
+
+export const api = {
+  login: (input: LoginInput) =>
+    request<AuthSession>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  getProfile: () => request<AuthProfile>("/auth/profile"),
+  updateProfile: (input: UpdateAuthProfileInput) =>
+    request<AuthProfile>("/auth/profile", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  logout: () =>
+    request<void>("/auth/logout", {
+      method: "POST"
+    }),
+  getSession: () => request<AuthSession>("/auth/session"),
+  listUsers: () => request<User[]>("/users"),
+  getUser: (id: string) => request<User>(`/users/${id}`),
+  createUser: (input: CreateUserInput) =>
+    request<User>("/users", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateUser: (id: string, input: UpdateUserInput) =>
+    request<User>(`/users/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteUser: (id: string) =>
+    request<void>(`/users/${id}`, {
+      method: "DELETE"
+    }),
+  listRoles: () => request<Role[]>("/roles"),
+  getRole: (id: string) => request<Role>(`/roles/${id}`),
+  createRole: (input: CreateRoleInput) =>
+    request<Role>("/roles", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateRole: (id: string, input: UpdateRoleInput) =>
+    request<Role>(`/roles/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteRole: (id: string) =>
+    request<void>(`/roles/${id}`, {
+      method: "DELETE"
+    }),
+  listSnippets: () => request<Snippet[]>("/snippets"),
+  getSnippet: (id: string) => request<Snippet>(`/snippets/${id}`),
+  createSnippet: (input: CreateSnippetInput) =>
+    request<Snippet>("/snippets", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateSnippet: (id: string, input: UpdateSnippetInput) =>
+    request<Snippet>(`/snippets/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteSnippet: (id: string) =>
+    request<void>(`/snippets/${id}`, {
+      method: "DELETE"
+    }),
+  duplicateSnippet: (id: string) =>
+    request<Snippet>(`/snippets/${id}/duplicate`, {
+      method: "POST"
+    }),
+  listSequences: () => request<Sequence[]>("/sequences"),
+  getSequence: (id: string) => request<Sequence>(`/sequences/${id}`),
+  createSequence: (input: CreateSequenceInput) =>
+    request<Sequence>("/sequences", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateSequence: (id: string, input: UpdateSequenceInput) =>
+    request<Sequence>(`/sequences/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteSequence: (id: string) =>
+    request<void>(`/sequences/${id}`, {
+      method: "DELETE"
+    }),
+  duplicateSequence: (id: string) =>
+    request<Sequence>(`/sequences/${id}/duplicate`, {
+      method: "POST"
+    }),
+  listTasks: (options?: ListTasksOptions) => {
+    const params = new URLSearchParams();
+    if (options?.view) {
+      params.set("view", options.view);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<Task[]>(`/tasks${query ? `?${query}` : ""}`);
+  },
+  getTask: (id: string) => request<Task>(`/tasks/${id}`),
+  startTask: (id: string) =>
+    request<Task>(`/tasks/${id}/start`, {
+      method: "POST"
+    }),
+  getTaskSequenceRun: (id: string) => request<SequenceRun>(`/tasks/${id}/sequence-run`),
+  approveTaskSequenceRun: (id: string) =>
+    request<SequenceRun>(`/tasks/${id}/sequence-run/approve`, {
+      method: "POST"
+    }),
+  getTaskBranchSyncCounts: (id: string) => request<TaskBranchSyncCounts>(`/tasks/${id}/branch-sync-counts`),
+  getTaskGitOperation: (id: string) => request<TaskGitOperation | null>(`/tasks/${id}/git-operation`),
+  getTaskInteractiveTerminalStatus: (id: string, options?: { mode?: TaskTerminalSessionMode }) => {
+    const params = new URLSearchParams();
+    if (options?.mode) {
+      params.set("mode", options.mode);
+    }
+    const query = params.toString();
+    return request<TaskInteractiveTerminalStatus>(`/tasks/${id}/interactive-terminal/status${query ? `?${query}` : ""}`);
+  },
+  getTaskInteractiveTerminalTranscript: (taskId: string, sessionId: string) =>
+    request<TaskInteractiveTerminalTranscript>(`/tasks/${taskId}/interactive-terminal/sessions/${encodeURIComponent(sessionId)}/transcript`),
+  killTaskInteractiveTerminal: (id: string) =>
+    request<Task>(`/tasks/${id}/interactive-terminal/kill`, {
+      method: "POST"
+    }),
+  resetTaskSession: (id: string) =>
+    request<Task>(`/tasks/${id}/new-session`, {
+      method: "POST"
+    }),
+  getTaskLiveDiff: (
+    id: string,
+    options?: { baseRef?: string | null; diffKind?: "compare" | "working" | "commits"; commitSha?: string | null }
+  ) => {
+    const params = new URLSearchParams();
+    const base = options?.baseRef?.trim();
+    if (base) {
+      params.set("base", base);
+    }
+    if (options?.diffKind === "working") {
+      params.set("kind", "working");
+    } else if (options?.diffKind === "commits") {
+      params.set("kind", "commits");
+    }
+    const commit = options?.commitSha?.trim();
+    if (commit) {
+      params.set("commit", commit);
+    }
+    const query = params.toString();
+    return request<TaskLiveDiff>(`/tasks/${id}/live-diff${query ? `?${query}` : ""}`);
+  },
+  getTaskWorkspaceCommitLog: (id: string, options?: { limit?: number }) => {
+    const params = new URLSearchParams();
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<TaskWorkspaceCommitLog>(`/tasks/${id}/workspace-commit-log${query ? `?${query}` : ""}`);
+  },
+  getTaskWorkspaceFiles: (id: string, options?: { prefix?: string | null; limit?: number }) => {
+    const params = new URLSearchParams();
+    const prefix = options?.prefix?.trim();
+    if (prefix) {
+      params.set("prefix", prefix);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<TaskWorkspaceFileTree>(`/tasks/${id}/workspace-files${query ? `?${query}` : ""}`);
+  },
+  searchTaskWorkspaceFiles: (id: string, options: { query: string; limit?: number }) => {
+    const params = new URLSearchParams({ q: options.query });
+    if (options.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    return request<TaskWorkspaceFileSearchResult>(`/tasks/${id}/workspace-files/search?${params.toString()}`);
+  },
+  getTaskWorkspaceFile: (id: string, filePath: string, options?: { ref?: string | null }) => {
+    const params = new URLSearchParams({ path: filePath });
+    const ref = options?.ref?.trim();
+    if (ref) {
+      params.set("ref", ref);
+    }
+    return request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file?${params.toString()}`);
+  },
+  updateTaskWorkspaceFile: (id: string, input: UpdateTaskWorkspaceFileInput) =>
+    request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file`, {
+      method: "PUT",
+      body: JSON.stringify(input)
+    }),
+  openAiDiffAssist: (taskId: string, input: OpenAiDiffAssistInput) =>
+    request<OpenAiDiffAssistResult>(`/tasks/${taskId}/openai/diff-assist`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  generateTaskPromptMagic: (input: TaskPromptMagicInput) =>
+    request<TaskPromptMagicResult>("/tasks/prompt-magic", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  getTaskMessageAttachmentUrl: (taskId: string, messageId: string, attachmentId: string) =>
+    buildApiUrl(`/tasks/${taskId}/messages/${messageId}/attachments/${attachmentId}`),
+  listTaskMessages: (id: string, options?: HistoryPageOptions) => {
+    const params = new URLSearchParams();
+    const before = options?.before?.trim();
+    if (before) {
+      params.set("before", before);
+    }
+    const beforeId = options?.beforeId?.trim();
+    if (beforeId) {
+      params.set("beforeId", beforeId);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<HistoryPageResult<TaskMessage>>(`/tasks/${id}/messages${query ? `?${query}` : ""}`);
+  },
+  updateTaskMessage: (taskId: string, messageId: string, input: UpdateTaskMessageInput) =>
+    request<TaskMessage>(`/tasks/${taskId}/messages/${messageId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  listTaskRuns: (id: string, options?: HistoryPageOptions) => {
+    const params = new URLSearchParams();
+    const before = options?.before?.trim();
+    if (before) {
+      params.set("before", before);
+    }
+    const beforeId = options?.beforeId?.trim();
+    if (beforeId) {
+      params.set("beforeId", beforeId);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<HistoryPageResult<TaskRun>>(`/tasks/${id}/runs${query ? `?${query}` : ""}`);
+  },
+  getTaskRunRawJsonUrl: (taskId: string, runId: string) =>
+    buildApiUrl(`/tasks/${taskId}/runs/${encodeURIComponent(runId)}/raw-json`),
+  listTaskChangeProposals: (id: string, options?: HistoryPageOptions) => {
+    const params = new URLSearchParams();
+    const before = options?.before?.trim();
+    if (before) {
+      params.set("before", before);
+    }
+    const beforeId = options?.beforeId?.trim();
+    if (beforeId) {
+      params.set("beforeId", beforeId);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<HistoryPageResult<TaskChangeProposal>>(`/tasks/${id}/change-proposals${query ? `?${query}` : ""}`);
+  },
+  applyTaskChangeProposal: (taskId: string, proposalId: string, input?: ApplyTaskChangeProposalInput) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/apply`, {
+      method: "POST",
+      ...(input ? { body: JSON.stringify(input) } : {})
+    }),
+  /** @deprecated Prefer applyTaskChangeProposal */
+  acceptTaskChangeProposal: (taskId: string, proposalId: string, input?: ApplyTaskChangeProposalInput) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/accept`, {
+      method: "POST",
+      ...(input ? { body: JSON.stringify(input) } : {})
+    }),
+  revertTaskChangeProposal: (taskId: string, proposalId: string) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/revert`, { method: "POST" }),
+  revertTaskChangeProposalFile: (
+    taskId: string,
+    proposalId: string,
+    input: RevertTaskChangeProposalFileInput
+  ) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/revert-file`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  rejectTaskChangeProposal: (taskId: string, proposalId: string) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/reject`, { method: "POST" }),
+  createTask: (input: CreateTaskInput) =>
+    request<Task>("/tasks", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  createTaskFromIssue: (input: CreateTaskFromIssueInput) =>
+    request<Task>("/imports/issue", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  createTaskFromPullRequest: (input: CreateTaskFromPullRequestInput) =>
+    request<Task>("/imports/pull-request", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  listGitHubIssues: (repoId: string) =>
+    request<GitHubIssueReference[]>(`/imports/github/issues?repoId=${encodeURIComponent(repoId)}`),
+  listGitHubPullRequests: (repoId: string) =>
+    request<GitHubPullRequestReference[]>(`/imports/github/pull-requests?repoId=${encodeURIComponent(repoId)}`),
+  listGitHubBranches: (repoId: string) =>
+    request<GitHubBranchReference[]>(`/imports/github/branches?repoId=${encodeURIComponent(repoId)}`),
+  triggerTaskAction: (id: string, action: TaskAction) =>
+    request<Task>(`/tasks/${id}/actions`, {
+      method: "POST",
+      body: JSON.stringify({ action })
+    }),
+  runTaskPostflight: (id: string) =>
+    request<Task>(`/tasks/${id}/postflight`, {
+      method: "POST"
+    }),
+  createTaskMessage: (id: string, input: CreateTaskMessageInput) =>
+    request<Task>(`/tasks/${id}/messages`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  cancelTask: (id: string) =>
+    request<Task>(`/tasks/${id}/cancel`, {
+      method: "POST"
+    }),
+  pullTask: (id: string) =>
+    request<Task>(`/tasks/${id}/pull`, {
+      method: "POST"
+    }),
+  getTaskMergePreview: (id: string, targetBranch: string) =>
+    request<TaskMergePreview>(`/tasks/${id}/merge-preview?targetBranch=${encodeURIComponent(targetBranch)}`),
+  getTaskPushPreview: (id: string) => request<TaskPushPreview>(`/tasks/${id}/push-preview`),
+  pushTask: (id: string, input?: { commitMessage?: string }) =>
+    request<Task>(`/tasks/${id}/push`, {
+      method: "POST",
+      body: JSON.stringify(input ?? {})
+    }),
+  mergeTask: (id: string, input: MergeTaskInput) =>
+    request<Task>(`/tasks/${id}/merge`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  archiveTask: (id: string, input?: { deleteRemoteBranch?: boolean }) =>
+    request<Task>(`/tasks/${id}/archive`, {
+      method: "POST",
+      body: JSON.stringify(input ?? {})
+    }),
+  deleteTask: (id: string, input?: { deleteRemoteBranch?: boolean }) =>
+    request<void>(`/tasks/${id}`, {
+      method: "DELETE",
+      body: JSON.stringify(input ?? {})
+    }),
+  updateTaskConfig: (id: string, input: UpdateTaskConfigInput) =>
+    request<Task>(`/tasks/${id}/config`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskPin: (id: string, input: UpdateTaskPinInput) =>
+    request<Task>(`/tasks/${id}/pin`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskTitle: (id: string, input: UpdateTaskTitleInput) =>
+    request<Task>(`/tasks/${id}/title`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskNotes: (id: string, input: UpdateTaskNotesInput) =>
+    request<Task>(`/tasks/${id}/notes`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskDeadline: (id: string, input: UpdateTaskDeadlineInput) =>
+    request<Task>(`/tasks/${id}/deadline`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskState: (id: string, input: UpdateTaskStateInput) =>
+    request<Task>(`/tasks/${id}/state`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskAssignee: (id: string, input: UpdateTaskAssigneeInput) =>
+    request<Task>(`/tasks/${id}/assignee`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  listRepositories: () => request<Repository[]>("/repositories"),
+  getRepository: (id: string) => request<Repository>(`/repositories/${id}`),
+  createRepository: (input: CreateRepositoryInput) =>
+    request<Repository>("/repositories", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateRepository: (id: string, input: UpdateRepositoryInput) =>
+    request<Repository>(`/repositories/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteRepository: (id: string) =>
+    request<void>(`/repositories/${id}`, {
+      method: "DELETE"
+    }),
+  getSettings: () => request<SystemSettings>("/settings"),
+  listModels: (provider: AgentProvider) =>
+    request<ProviderModelsResponse>(`/settings/models?provider=${encodeURIComponent(provider)}`),
+  updateSettings: (input: UpdateSettingsInput) =>
+    request<SystemSettings>("/settings", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateCredentials: (input: UpdateCredentialSettingsInput) =>
+    request<SystemSettings>("/settings/credentials", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  getUserNotes: () => request<UserNotes>("/settings/notes"),
+  updateUserNotes: (input: UpdateUserNotesInput) =>
+    request<UserNotes>("/settings/notes", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    })
+};
 ````
 
 ## File: apps/server/src/services/task-store.ts
@@ -46031,579 +46604,6 @@ export class PostgresTaskStore implements TaskStore {
     return next;
   }
 }
-````
-
-## File: apps/web/src/api/client.ts
-````typescript
-"use client";
-
-import type {
-  AgentProvider,
-  AuthProfile,
-  AuthSession,
-  CreateRoleInput,
-  CreateSequenceInput,
-  CreateSnippetInput,
-  CreateTaskFromIssueInput,
-  CreateTaskFromPullRequestInput,
-  CreateTaskMessageInput,
-  CreateRepositoryInput,
-  CreateTaskInput,
-  CreateUserInput,
-  GitHubBranchReference,
-  GitHubIssueReference,
-  GitHubPullRequestReference,
-  LoginInput,
-  ProviderModelOption,
-  Repository,
-  Role,
-  Sequence,
-  SequenceRun,
-  Snippet,
-  SystemSettings,
-  Task,
-  OpenAiDiffAssistInput,
-  OpenAiDiffAssistResult,
-  TaskPromptMagicInput,
-  TaskPromptMagicResult,
-  TaskLiveDiff,
-  TaskWorkspaceFileSearchResult,
-  TaskWorkspaceFileTree,
-  TaskWorkspaceFilePreview,
-  TaskWorkspaceCommitLog,
-  TaskPushPreview,
-  TaskMergePreview,
-  TaskMessage,
-  MergeTaskInput,
-  ApplyTaskChangeProposalInput,
-  RevertTaskChangeProposalFileInput,
-  UpdateTaskMessageInput,
-  UpdateTaskWorkspaceFileInput,
-  TaskRun,
-  TaskGitOperation,
-  TaskChangeProposal,
-  TaskInteractiveTerminalTranscript,
-  TaskAction,
-  TaskTerminalSessionMode,
-  UpdateRoleInput,
-  UpdateSequenceInput,
-  UpdateSnippetInput,
-  UpdateTaskPinInput,
-  UpdateTaskNotesInput,
-  UpdateTaskDeadlineInput,
-  UpdateTaskAssigneeInput,
-  UpdateTaskStateInput,
-  UpdateUserNotesInput,
-  UpdateTaskTitleInput,
-  UpdateAuthProfileInput,
-  UpdateCredentialSettingsInput,
-  UpdateTaskConfigInput,
-  UpdateRepositoryInput,
-  UpdateSettingsInput,
-  UpdateUserInput,
-  User,
-  UserNotes
-} from "@agentswarm/shared-types";
-export type { TaskWorkspaceFilePreview } from "@agentswarm/shared-types";
-import { buildApiUrl } from "../lib/public-url";
-
-export interface ProviderModelsResponse {
-  models: ProviderModelOption[];
-  source: "api" | "static";
-}
-
-export interface TaskInteractiveTerminalStatus {
-  available: boolean;
-  reason?: string;
-  /** Server sets this when a terminal WebSocket session is active for the task. */
-  activeInteractiveSession?: boolean;
-  /** Present when an active session exists for this task. */
-  terminalMode?: TaskTerminalSessionMode;
-}
-
-export interface TaskBranchSyncCounts {
-  pullCount: number;
-  pushCount: number;
-}
-
-export interface ListTasksOptions {
-  view?: "all" | "active" | "archived";
-  limit?: number;
-}
-
-export interface HistoryPageOptions {
-  before?: string | null;
-  beforeId?: string | null;
-  limit?: number;
-}
-
-export interface HistoryPageResult<T> {
-  items: T[];
-  hasMore: boolean;
-}
-
-export class ApiError extends Error {
-  constructor(
-    public readonly status: number,
-    message: string
-  ) {
-    super(message);
-    this.name = "ApiError";
-  }
-}
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (init?.body !== undefined && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const response = await fetch(buildApiUrl(path), {
-    ...init,
-    headers,
-    cache: "no-store",
-    credentials: "include"
-  });
-
-  if (!response.ok) {
-    const raw = await response.text();
-    let message = raw || response.statusText;
-    try {
-      const parsed = JSON.parse(raw) as { message?: string };
-      message = parsed.message ?? message;
-    } catch {
-      // Keep the raw response body when the server does not return JSON.
-    }
-
-    throw new ApiError(response.status, message);
-  }
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  return response.json() as Promise<T>;
-}
-
-export const api = {
-  login: (input: LoginInput) =>
-    request<AuthSession>("/auth/login", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  getProfile: () => request<AuthProfile>("/auth/profile"),
-  updateProfile: (input: UpdateAuthProfileInput) =>
-    request<AuthProfile>("/auth/profile", {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  logout: () =>
-    request<void>("/auth/logout", {
-      method: "POST"
-    }),
-  getSession: () => request<AuthSession>("/auth/session"),
-  listUsers: () => request<User[]>("/users"),
-  getUser: (id: string) => request<User>(`/users/${id}`),
-  createUser: (input: CreateUserInput) =>
-    request<User>("/users", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateUser: (id: string, input: UpdateUserInput) =>
-    request<User>(`/users/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteUser: (id: string) =>
-    request<void>(`/users/${id}`, {
-      method: "DELETE"
-    }),
-  listRoles: () => request<Role[]>("/roles"),
-  getRole: (id: string) => request<Role>(`/roles/${id}`),
-  createRole: (input: CreateRoleInput) =>
-    request<Role>("/roles", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateRole: (id: string, input: UpdateRoleInput) =>
-    request<Role>(`/roles/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteRole: (id: string) =>
-    request<void>(`/roles/${id}`, {
-      method: "DELETE"
-    }),
-  listSnippets: () => request<Snippet[]>("/snippets"),
-  getSnippet: (id: string) => request<Snippet>(`/snippets/${id}`),
-  createSnippet: (input: CreateSnippetInput) =>
-    request<Snippet>("/snippets", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateSnippet: (id: string, input: UpdateSnippetInput) =>
-    request<Snippet>(`/snippets/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteSnippet: (id: string) =>
-    request<void>(`/snippets/${id}`, {
-      method: "DELETE"
-    }),
-  duplicateSnippet: (id: string) =>
-    request<Snippet>(`/snippets/${id}/duplicate`, {
-      method: "POST"
-    }),
-  listSequences: () => request<Sequence[]>("/sequences"),
-  getSequence: (id: string) => request<Sequence>(`/sequences/${id}`),
-  createSequence: (input: CreateSequenceInput) =>
-    request<Sequence>("/sequences", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateSequence: (id: string, input: UpdateSequenceInput) =>
-    request<Sequence>(`/sequences/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteSequence: (id: string) =>
-    request<void>(`/sequences/${id}`, {
-      method: "DELETE"
-    }),
-  duplicateSequence: (id: string) =>
-    request<Sequence>(`/sequences/${id}/duplicate`, {
-      method: "POST"
-    }),
-  listTasks: (options?: ListTasksOptions) => {
-    const params = new URLSearchParams();
-    if (options?.view) {
-      params.set("view", options.view);
-    }
-    if (options?.limit != null && Number.isFinite(options.limit)) {
-      params.set("limit", String(options.limit));
-    }
-    const query = params.toString();
-    return request<Task[]>(`/tasks${query ? `?${query}` : ""}`);
-  },
-  getTask: (id: string) => request<Task>(`/tasks/${id}`),
-  startTask: (id: string) =>
-    request<Task>(`/tasks/${id}/start`, {
-      method: "POST"
-    }),
-  getTaskSequenceRun: (id: string) => request<SequenceRun>(`/tasks/${id}/sequence-run`),
-  approveTaskSequenceRun: (id: string) =>
-    request<SequenceRun>(`/tasks/${id}/sequence-run/approve`, {
-      method: "POST"
-    }),
-  getTaskBranchSyncCounts: (id: string) => request<TaskBranchSyncCounts>(`/tasks/${id}/branch-sync-counts`),
-  getTaskGitOperation: (id: string) => request<TaskGitOperation | null>(`/tasks/${id}/git-operation`),
-  getTaskInteractiveTerminalStatus: (id: string, options?: { mode?: TaskTerminalSessionMode }) => {
-    const params = new URLSearchParams();
-    if (options?.mode) {
-      params.set("mode", options.mode);
-    }
-    const query = params.toString();
-    return request<TaskInteractiveTerminalStatus>(`/tasks/${id}/interactive-terminal/status${query ? `?${query}` : ""}`);
-  },
-  getTaskInteractiveTerminalTranscript: (taskId: string, sessionId: string) =>
-    request<TaskInteractiveTerminalTranscript>(`/tasks/${taskId}/interactive-terminal/sessions/${encodeURIComponent(sessionId)}/transcript`),
-  killTaskInteractiveTerminal: (id: string) =>
-    request<Task>(`/tasks/${id}/interactive-terminal/kill`, {
-      method: "POST"
-    }),
-  resetTaskSession: (id: string) =>
-    request<Task>(`/tasks/${id}/new-session`, {
-      method: "POST"
-    }),
-  getTaskLiveDiff: (
-    id: string,
-    options?: { baseRef?: string | null; diffKind?: "compare" | "working" | "commits"; commitSha?: string | null }
-  ) => {
-    const params = new URLSearchParams();
-    const base = options?.baseRef?.trim();
-    if (base) {
-      params.set("base", base);
-    }
-    if (options?.diffKind === "working") {
-      params.set("kind", "working");
-    } else if (options?.diffKind === "commits") {
-      params.set("kind", "commits");
-    }
-    const commit = options?.commitSha?.trim();
-    if (commit) {
-      params.set("commit", commit);
-    }
-    const query = params.toString();
-    return request<TaskLiveDiff>(`/tasks/${id}/live-diff${query ? `?${query}` : ""}`);
-  },
-  getTaskWorkspaceCommitLog: (id: string, options?: { limit?: number }) => {
-    const params = new URLSearchParams();
-    if (options?.limit != null && Number.isFinite(options.limit)) {
-      params.set("limit", String(options.limit));
-    }
-    const query = params.toString();
-    return request<TaskWorkspaceCommitLog>(`/tasks/${id}/workspace-commit-log${query ? `?${query}` : ""}`);
-  },
-  getTaskWorkspaceFiles: (id: string, options?: { prefix?: string | null; limit?: number }) => {
-    const params = new URLSearchParams();
-    const prefix = options?.prefix?.trim();
-    if (prefix) {
-      params.set("prefix", prefix);
-    }
-    if (options?.limit != null && Number.isFinite(options.limit)) {
-      params.set("limit", String(options.limit));
-    }
-    const query = params.toString();
-    return request<TaskWorkspaceFileTree>(`/tasks/${id}/workspace-files${query ? `?${query}` : ""}`);
-  },
-  searchTaskWorkspaceFiles: (id: string, options: { query: string; limit?: number }) => {
-    const params = new URLSearchParams({ q: options.query });
-    if (options.limit != null && Number.isFinite(options.limit)) {
-      params.set("limit", String(options.limit));
-    }
-    return request<TaskWorkspaceFileSearchResult>(`/tasks/${id}/workspace-files/search?${params.toString()}`);
-  },
-  getTaskWorkspaceFile: (id: string, filePath: string, options?: { ref?: string | null }) => {
-    const params = new URLSearchParams({ path: filePath });
-    const ref = options?.ref?.trim();
-    if (ref) {
-      params.set("ref", ref);
-    }
-    return request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file?${params.toString()}`);
-  },
-  updateTaskWorkspaceFile: (id: string, input: UpdateTaskWorkspaceFileInput) =>
-    request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file`, {
-      method: "PUT",
-      body: JSON.stringify(input)
-    }),
-  openAiDiffAssist: (taskId: string, input: OpenAiDiffAssistInput) =>
-    request<OpenAiDiffAssistResult>(`/tasks/${taskId}/openai/diff-assist`, {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  generateTaskPromptMagic: (input: TaskPromptMagicInput) =>
-    request<TaskPromptMagicResult>("/tasks/prompt-magic", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  getTaskMessageAttachmentUrl: (taskId: string, messageId: string, attachmentId: string) =>
-    buildApiUrl(`/tasks/${taskId}/messages/${messageId}/attachments/${attachmentId}`),
-  listTaskMessages: (id: string, options?: HistoryPageOptions) => {
-    const params = new URLSearchParams();
-    const before = options?.before?.trim();
-    if (before) {
-      params.set("before", before);
-    }
-    const beforeId = options?.beforeId?.trim();
-    if (beforeId) {
-      params.set("beforeId", beforeId);
-    }
-    if (options?.limit != null && Number.isFinite(options.limit)) {
-      params.set("limit", String(options.limit));
-    }
-    const query = params.toString();
-    return request<HistoryPageResult<TaskMessage>>(`/tasks/${id}/messages${query ? `?${query}` : ""}`);
-  },
-  updateTaskMessage: (taskId: string, messageId: string, input: UpdateTaskMessageInput) =>
-    request<TaskMessage>(`/tasks/${taskId}/messages/${messageId}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  listTaskRuns: (id: string, options?: HistoryPageOptions) => {
-    const params = new URLSearchParams();
-    const before = options?.before?.trim();
-    if (before) {
-      params.set("before", before);
-    }
-    const beforeId = options?.beforeId?.trim();
-    if (beforeId) {
-      params.set("beforeId", beforeId);
-    }
-    if (options?.limit != null && Number.isFinite(options.limit)) {
-      params.set("limit", String(options.limit));
-    }
-    const query = params.toString();
-    return request<HistoryPageResult<TaskRun>>(`/tasks/${id}/runs${query ? `?${query}` : ""}`);
-  },
-  getTaskRunRawJsonUrl: (taskId: string, runId: string) =>
-    buildApiUrl(`/tasks/${taskId}/runs/${encodeURIComponent(runId)}/raw-json`),
-  listTaskChangeProposals: (id: string, options?: HistoryPageOptions) => {
-    const params = new URLSearchParams();
-    const before = options?.before?.trim();
-    if (before) {
-      params.set("before", before);
-    }
-    const beforeId = options?.beforeId?.trim();
-    if (beforeId) {
-      params.set("beforeId", beforeId);
-    }
-    if (options?.limit != null && Number.isFinite(options.limit)) {
-      params.set("limit", String(options.limit));
-    }
-    const query = params.toString();
-    return request<HistoryPageResult<TaskChangeProposal>>(`/tasks/${id}/change-proposals${query ? `?${query}` : ""}`);
-  },
-  applyTaskChangeProposal: (taskId: string, proposalId: string, input?: ApplyTaskChangeProposalInput) =>
-    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/apply`, {
-      method: "POST",
-      ...(input ? { body: JSON.stringify(input) } : {})
-    }),
-  /** @deprecated Prefer applyTaskChangeProposal */
-  acceptTaskChangeProposal: (taskId: string, proposalId: string, input?: ApplyTaskChangeProposalInput) =>
-    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/accept`, {
-      method: "POST",
-      ...(input ? { body: JSON.stringify(input) } : {})
-    }),
-  revertTaskChangeProposal: (taskId: string, proposalId: string) =>
-    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/revert`, { method: "POST" }),
-  revertTaskChangeProposalFile: (
-    taskId: string,
-    proposalId: string,
-    input: RevertTaskChangeProposalFileInput
-  ) =>
-    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/revert-file`, {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  rejectTaskChangeProposal: (taskId: string, proposalId: string) =>
-    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/reject`, { method: "POST" }),
-  createTask: (input: CreateTaskInput) =>
-    request<Task>("/tasks", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  createTaskFromIssue: (input: CreateTaskFromIssueInput) =>
-    request<Task>("/imports/issue", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  createTaskFromPullRequest: (input: CreateTaskFromPullRequestInput) =>
-    request<Task>("/imports/pull-request", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  listGitHubIssues: (repoId: string) =>
-    request<GitHubIssueReference[]>(`/imports/github/issues?repoId=${encodeURIComponent(repoId)}`),
-  listGitHubPullRequests: (repoId: string) =>
-    request<GitHubPullRequestReference[]>(`/imports/github/pull-requests?repoId=${encodeURIComponent(repoId)}`),
-  listGitHubBranches: (repoId: string) =>
-    request<GitHubBranchReference[]>(`/imports/github/branches?repoId=${encodeURIComponent(repoId)}`),
-  triggerTaskAction: (id: string, action: TaskAction) =>
-    request<Task>(`/tasks/${id}/actions`, {
-      method: "POST",
-      body: JSON.stringify({ action })
-    }),
-  runTaskPostflight: (id: string) =>
-    request<Task>(`/tasks/${id}/postflight`, {
-      method: "POST"
-    }),
-  createTaskMessage: (id: string, input: CreateTaskMessageInput) =>
-    request<Task>(`/tasks/${id}/messages`, {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  cancelTask: (id: string) =>
-    request<Task>(`/tasks/${id}/cancel`, {
-      method: "POST"
-    }),
-  pullTask: (id: string) =>
-    request<Task>(`/tasks/${id}/pull`, {
-      method: "POST"
-    }),
-  getTaskMergePreview: (id: string, targetBranch: string) =>
-    request<TaskMergePreview>(`/tasks/${id}/merge-preview?targetBranch=${encodeURIComponent(targetBranch)}`),
-  getTaskPushPreview: (id: string) => request<TaskPushPreview>(`/tasks/${id}/push-preview`),
-  pushTask: (id: string, input?: { commitMessage?: string }) =>
-    request<Task>(`/tasks/${id}/push`, {
-      method: "POST",
-      body: JSON.stringify(input ?? {})
-    }),
-  mergeTask: (id: string, input: MergeTaskInput) =>
-    request<Task>(`/tasks/${id}/merge`, {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  archiveTask: (id: string, input?: { deleteRemoteBranch?: boolean }) =>
-    request<Task>(`/tasks/${id}/archive`, {
-      method: "POST",
-      body: JSON.stringify(input ?? {})
-    }),
-  deleteTask: (id: string, input?: { deleteRemoteBranch?: boolean }) =>
-    request<void>(`/tasks/${id}`, {
-      method: "DELETE",
-      body: JSON.stringify(input ?? {})
-    }),
-  updateTaskConfig: (id: string, input: UpdateTaskConfigInput) =>
-    request<Task>(`/tasks/${id}/config`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskPin: (id: string, input: UpdateTaskPinInput) =>
-    request<Task>(`/tasks/${id}/pin`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskTitle: (id: string, input: UpdateTaskTitleInput) =>
-    request<Task>(`/tasks/${id}/title`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskNotes: (id: string, input: UpdateTaskNotesInput) =>
-    request<Task>(`/tasks/${id}/notes`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskDeadline: (id: string, input: UpdateTaskDeadlineInput) =>
-    request<Task>(`/tasks/${id}/deadline`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskState: (id: string, input: UpdateTaskStateInput) =>
-    request<Task>(`/tasks/${id}/state`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskAssignee: (id: string, input: UpdateTaskAssigneeInput) =>
-    request<Task>(`/tasks/${id}/assignee`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  listRepositories: () => request<Repository[]>("/repositories"),
-  getRepository: (id: string) => request<Repository>(`/repositories/${id}`),
-  createRepository: (input: CreateRepositoryInput) =>
-    request<Repository>("/repositories", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateRepository: (id: string, input: UpdateRepositoryInput) =>
-    request<Repository>(`/repositories/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteRepository: (id: string) =>
-    request<void>(`/repositories/${id}`, {
-      method: "DELETE"
-    }),
-  getSettings: () => request<SystemSettings>("/settings"),
-  listModels: (provider: AgentProvider) =>
-    request<ProviderModelsResponse>(`/settings/models?provider=${encodeURIComponent(provider)}`),
-  updateSettings: (input: UpdateSettingsInput) =>
-    request<SystemSettings>("/settings", {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateCredentials: (input: UpdateCredentialSettingsInput) =>
-    request<SystemSettings>("/settings/credentials", {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  getUserNotes: () => request<UserNotes>("/settings/notes"),
-  updateUserNotes: (input: UpdateUserNotesInput) =>
-    request<UserNotes>("/settings/notes", {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    })
-};
 ````
 
 ## File: apps/server/src/services/spawner.ts
@@ -55027,6 +55027,1584 @@ export const registerTaskRoutes = (
 };
 ````
 
+## File: packages/shared-types/src/index.ts
+````typescript
+export type TaskType = "build" | "ask";
+export type AgentProvider = "codex" | "claude";
+
+/** Native effort values from providers. "max" is Claude-only. */
+export type ProviderProfile = "low" | "medium" | "high" | "max";
+
+export interface ProviderModelOption {
+  label: string;
+  value: string;
+}
+
+export interface ProviderEffortOption {
+  label: string;
+  value: ProviderProfile;
+}
+
+export const CODEX_MODELS: ProviderModelOption[] = [
+  { label: "GPT-5.4", value: "gpt-5.4" },
+  { label: "o3", value: "o3" },
+  { label: "o4-mini", value: "o4-mini" },
+  { label: "o3-mini", value: "o3-mini" },
+  { label: "GPT-4.1", value: "gpt-4.1" },
+  { label: "GPT-4o", value: "gpt-4o" }
+];
+
+export const CLAUDE_MODELS: ProviderModelOption[] = [
+  { label: "Claude Opus 4", value: "claude-opus-4-5" },
+  { label: "Claude Sonnet 4.5", value: "claude-sonnet-4-5" },
+  { label: "Claude Sonnet 4", value: "claude-sonnet-4" },
+  { label: "Claude Haiku 3.5", value: "claude-haiku-3-5" }
+];
+
+/** Codex natively supports low / medium / high reasoning effort. */
+export const CODEX_EFFORT_OPTIONS: ProviderEffortOption[] = [
+  { label: "Low", value: "low" },
+  { label: "Medium", value: "medium" },
+  { label: "High", value: "high" }
+];
+
+/** Claude profiles map to thinking budgets when the resolved model supports it; "max" leaves the budget unset. */
+export const CLAUDE_EFFORT_OPTIONS: ProviderEffortOption[] = [
+  { label: "Low", value: "low" },
+  { label: "Medium", value: "medium" },
+  { label: "High", value: "high" },
+  { label: "Max", value: "max" }
+];
+
+export const getModelsForProvider = (provider: AgentProvider): ProviderModelOption[] =>
+  provider === "claude" ? CLAUDE_MODELS : CODEX_MODELS;
+
+export const getEffortOptionsForProvider = (provider: AgentProvider): ProviderEffortOption[] =>
+  provider === "claude" ? CLAUDE_EFFORT_OPTIONS : CODEX_EFFORT_OPTIONS;
+
+export const getDefaultModelForProvider = (provider: AgentProvider): string =>
+  provider === "claude" ? "claude-sonnet-4-5" : "gpt-5.4";
+export type TaskMessageRole = "user" | "assistant" | "system";
+export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
+
+export type TaskStatus =
+  | "draft"
+  | "scheduled"
+  | "build_queued"
+  | "preparing_workspace"
+  | "building"
+  | "ask_queued"
+  | "asking"
+  | "open"
+  | "in_progress"
+  | "in_review"
+  | "awaiting_review"
+  | "done"
+  | "completed"
+  | "answered"
+  | "accepted"
+  | "archived"
+  | "cancelled"
+  | "failed";
+
+export type TaskWorkflowStatus = "backlog" | "ready" | "in_progress" | "review" | "done" | "archived";
+export type TaskExecutionStatus = "idle" | "scheduled" | "queued" | "preparing" | "running" | "failed" | "cancelled";
+export type TaskReviewReason = "checkpoint" | "answer" | "manual" | "merge" | null;
+export type TaskAction = "build" | "ask";
+export type TaskExecutionAction = TaskAction | "interactive" | "terminal" | null;
+export type TaskMessageAction = TaskAction | "comment";
+export const TASK_PROMPT_ATTACHMENT_MAX_COUNT = 6;
+export const TASK_PROMPT_ATTACHMENT_MAX_SIZE_BYTES = 6 * 1024 * 1024;
+export const TASK_PROMPT_ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
+/** @deprecated Use ProviderProfile instead. Kept for Redis migration in task-store. */
+export type TaskReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+export type TaskComplexity = "trivial" | "normal" | "complex";
+export type TaskBranchStrategy = "feature_branch" | "work_on_branch";
+export type AudienceType = "technical" | "non_technical" | "mixed";
+export type AgentResponseStyle = Extract<AudienceType, "technical" | "non_technical">;
+export type AgentExplanationDepth = "one_line" | "brief" | "standard" | "detailed" | "deep_dive";
+export type AgentJargonLevel = "avoid" | "balanced" | "expert";
+export type AgentCodePreference = "only_when_needed" | "prefer_examples" | "avoid_code";
+export type AgentClarifyBehavior = "ask_when_ambiguous" | "make_reasonable_assumptions";
+export type AgentFormattingStyle = "direct" | "teaching" | "executive" | "step_by_step" | "checklist" | "qa" | "problem_solution";
+
+export interface AgentResponsePolicy {
+  audience?: AudienceType;
+  explanationDepth?: AgentExplanationDepth;
+  jargonLevel?: AgentJargonLevel;
+  codePreference?: AgentCodePreference;
+  clarifyBehavior?: AgentClarifyBehavior;
+  formattingStyle?: AgentFormattingStyle;
+  extraInstructions?: string;
+}
+
+export type AgentResponsePreference = AgentResponsePolicy;
+
+export interface ResponsePreferencePreset {
+  id: string;
+  name: string;
+  description: string;
+  preference: AgentResponsePreference;
+  isSystem: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResponsePreferencePresetInput {
+  id?: string;
+  name: string;
+  description?: string;
+  preference: AgentResponsePolicy;
+}
+
+export type McpServerTransport = "stdio" | "http";
+export type PermissionScope =
+  | "task:list"
+  | "task:create"
+  | "task:read"
+  | "task:edit"
+  | "task:build"
+  | "task:ask"
+  | "task:interactive"
+  | "task:delete"
+  | "snippet:list"
+  | "snippet:create"
+  | "snippet:read"
+  | "snippet:edit"
+  | "snippet:delete"
+  | "sequence:list"
+  | "sequence:create"
+  | "sequence:read"
+  | "sequence:edit"
+  | "sequence:delete"
+  | "repo:list"
+  | "repo:read"
+  | "repo:create"
+  | "repo:edit"
+  | "repo:delete"
+  | "settings:read"
+  | "settings:edit"
+  | "user:list"
+  | "user:create"
+  | "user:read"
+  | "user:edit"
+  | "user:delete";
+
+export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
+  "task:list",
+  "task:create",
+  "task:read",
+  "task:edit",
+  "task:build",
+  "task:ask",
+  "task:interactive",
+  "task:delete",
+  "snippet:list",
+  "snippet:create",
+  "snippet:read",
+  "snippet:edit",
+  "snippet:delete",
+  "sequence:list",
+  "sequence:create",
+  "sequence:read",
+  "sequence:edit",
+  "sequence:delete",
+  "repo:list",
+  "repo:read",
+  "repo:create",
+  "repo:edit",
+  "repo:delete",
+  "settings:read",
+  "settings:edit",
+  "user:list",
+  "user:create",
+  "user:read",
+  "user:edit",
+  "user:delete"
+];
+
+export interface PermissionScopeGroup {
+  label: string;
+  scopes: PermissionScope[];
+}
+
+export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
+  { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:interactive", "task:delete"] },
+  { label: "Snippets", scopes: ["snippet:list", "snippet:create", "snippet:read", "snippet:edit", "snippet:delete"] },
+  { label: "Sequences", scopes: ["sequence:list", "sequence:create", "sequence:read", "sequence:edit", "sequence:delete"] },
+  { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
+  { label: "Settings", scopes: ["settings:read", "settings:edit"] },
+  { label: "Users", scopes: ["user:list", "user:create", "user:read", "user:edit", "user:delete"] }
+];
+
+export type TaskCapabilityScope = Extract<PermissionScope, "task:build" | "task:ask">;
+
+export const getTaskCapabilityScopeForTaskType = (taskType: TaskType): TaskCapabilityScope =>
+  taskType === "ask" ? "task:ask" : "task:build";
+
+export const getTaskCapabilityScopeForTaskAction = (action: TaskAction): TaskCapabilityScope =>
+  action === "ask" ? "task:ask" : "task:build";
+
+export const getRequiredTaskCapabilityScopes = (input: { taskType?: TaskType }): TaskCapabilityScope[] => [
+  getTaskCapabilityScopeForTaskType(input.taskType ?? "build")
+];
+
+export const hasRequiredTaskCapabilities = (
+  grantedScopes: Iterable<PermissionScope>,
+  input: { taskType?: TaskType }
+): boolean => {
+  const granted = new Set(grantedScopes);
+  return getRequiredTaskCapabilityScopes(input).every((scope) => granted.has(scope));
+};
+
+export const getRequiredTaskCapabilityScopesForDefinition = (definition: TaskDefinitionInput): TaskCapabilityScope[] =>
+  definition.sourceType === "pull_request"
+    ? getRequiredTaskCapabilityScopes({ taskType: "build" })
+    : getRequiredTaskCapabilityScopes({
+        taskType: definition.taskType
+      });
+
+export const hasRequiredTaskCapabilitiesForDefinition = (
+  grantedScopes: Iterable<PermissionScope>,
+  definition: TaskDefinitionInput
+): boolean => {
+  const granted = new Set(grantedScopes);
+  return getRequiredTaskCapabilityScopesForDefinition(definition).every((scope) => granted.has(scope));
+};
+
+export interface Role {
+  id: string;
+  name: string;
+  description: string;
+  scopes: PermissionScope[];
+  allowedProviders: AgentProvider[];
+  allowedModels: string[];
+  allowedEfforts: ProviderProfile[];
+  scopeVersion?: number;
+  isSystem: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UserRoleRef {
+  id: string;
+  name: string;
+  isSystem: boolean;
+}
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  active: boolean;
+  agentResponsePreference: AgentResponsePreference;
+  roles: UserRoleRef[];
+  repositoryIds: string[];
+  lastLoginAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuthSessionUser extends User {
+  scopes: PermissionScope[];
+  allowedProviders: AgentProvider[];
+  allowedModels: string[];
+  allowedEfforts: ProviderProfile[];
+  codexAuthJsonConfigured?: boolean;
+}
+
+export interface AuthSession {
+  user: AuthSessionUser;
+  expiresAt: string;
+}
+
+export interface AuthProfile {
+  name: string;
+  email: string;
+  agentResponsePreference: AgentResponsePreference;
+  codexAuthJsonConfigured: boolean;
+}
+
+export interface LoginInput {
+  email: string;
+  password: string;
+}
+
+export interface CreateRoleInput {
+  name: string;
+  description?: string;
+  scopes: PermissionScope[];
+  allowedProviders?: AgentProvider[];
+  allowedModels?: string[];
+  allowedEfforts?: ProviderProfile[];
+}
+
+export interface UpdateRoleInput {
+  name?: string;
+  description?: string;
+  scopes?: PermissionScope[];
+  allowedProviders?: AgentProvider[];
+  allowedModels?: string[];
+  allowedEfforts?: ProviderProfile[];
+}
+
+export interface CreateUserInput {
+  name: string;
+  email: string;
+  password: string;
+  active?: boolean;
+  roleIds?: string[];
+  repositoryIds?: string[];
+  agentResponsePreference?: Partial<AgentResponsePreference>;
+}
+
+export interface UpdateUserInput {
+  name?: string;
+  email?: string;
+  password?: string;
+  active?: boolean;
+  roleIds?: string[];
+  repositoryIds?: string[];
+  agentResponsePreference?: Partial<AgentResponsePreference>;
+}
+
+export interface RepositoryEnvVar {
+  key: string;
+  type?: "text";
+  value: string;
+}
+
+export interface RepositoryEnvFile {
+  key: string;
+  type: "file";
+  configured: boolean;
+  fileName?: string;
+}
+
+export type RepositoryEnvVarValue = RepositoryEnvVar | RepositoryEnvFile;
+
+export interface RepositoryEnvVarInputText {
+  key: string;
+  type?: "text";
+  value: string;
+}
+
+export interface RepositoryEnvVarInputFile {
+  key: string;
+  type: "file";
+  fileName?: string;
+  fileContentBase64?: string;
+}
+
+export type RepositoryEnvVarInput = RepositoryEnvVarInputText | RepositoryEnvVarInputFile;
+
+export interface RepositoryEnvSecret {
+  key: string;
+  configured: boolean;
+  type?: "text" | "file";
+  fileName?: string;
+}
+
+export interface RepositoryEnvSecretInputText {
+  key: string;
+  type?: "text";
+  value?: string;
+}
+
+export interface RepositoryEnvSecretInputFile {
+  key: string;
+  type: "file";
+  fileName?: string;
+  fileContentBase64?: string;
+}
+
+export type RepositoryEnvSecretInput = RepositoryEnvSecretInputText | RepositoryEnvSecretInputFile;
+
+export type GitHubAutomationTrigger = "issue_opened" | "pull_request_opened";
+export type GitHubCommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
+
+export interface GitHubAutomationLabelFilter {
+  labelsAny?: string[];
+  labelsAll?: string[];
+  labelsNone?: string[];
+}
+
+export interface GitHubAutomationTaskConfig {
+  assigneeEmail?: string;
+  codexCredentialSource?: CodexCredentialSource;
+  taskType?: Extract<TaskType, "build" | "ask">;
+  includeComments?: boolean;
+  titleTemplate?: string;
+  notes?: string;
+  provider?: AgentProvider;
+  providerProfile?: ProviderProfile;
+  modelOverride?: string | null;
+  baseBranch?: string;
+  branchStrategy?: TaskBranchStrategy;
+  snippetId?: string;
+}
+
+export interface GitHubAutomationRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  trigger: GitHubAutomationTrigger;
+  syncStatusEnabled?: boolean;
+  automationEnabled?: boolean;
+  allowedTriggers?: GitHubCommentTriggerType[];
+  allowedReactions?: string[];
+  allowedCommands?: string[];
+  allowedActorLogins?: string[];
+  labelFilter?: GitHubAutomationLabelFilter;
+  task: GitHubAutomationTaskConfig;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Repository {
+  id: string;
+  name: string;
+  url: string;
+  defaultBranch: string;
+  syncStatusEnabled?: boolean;
+  envVars: RepositoryEnvVarValue[];
+  envSecrets?: RepositoryEnvSecret[];
+  webhookUrl: string | null;
+  webhookEnabled: boolean;
+  webhookSecretConfigured: boolean;
+  webhookLastAttemptAt: string | null;
+  webhookLastStatus: "success" | "failed" | null;
+  webhookLastError: string | null;
+  githubWebhookSecretConfigured?: boolean;
+  githubAutomations?: GitHubAutomationRule[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type TaskTerminalSessionMode = "interactive" | "git";
+export type CodexCredentialSource = "auto" | "profile" | "global";
+
+export interface Task {
+  id: string;
+  title: string;
+  deadline: string | null;
+  pinned: boolean;
+  hasPendingCheckpoint: boolean;
+  activeInteractiveSession?: boolean;
+  activeTerminalSessionMode?: TaskTerminalSessionMode | null;
+  ownerUserId: string | null;
+  creatorName?: string | null;
+  repoId: string;
+  repoName: string;
+  repoUrl: string;
+  repoDefaultBranch: string;
+  taskType: TaskType;
+  provider: AgentProvider;
+  providerProfile: ProviderProfile;
+  modelOverride: string | null;
+  codexCredentialSource?: CodexCredentialSource;
+  taskSource?: Extract<TaskSourceType, "blank" | "snippet" | "sequence">;
+  snippetId?: string;
+  sequenceId?: string;
+  sequenceRunId?: string | null;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+  complexity: TaskComplexity;
+  branchName: string | null;
+  workspaceBaseRef: string | null;
+  prompt: string;
+  notes?: string;
+  resultMarkdown: string | null;
+  executionSummary: string;
+  branchDiff: string | null;
+  pullCount?: number;
+  pushCount?: number;
+  lastAction: TaskAction | null;
+  status: TaskStatus;
+  workflowStatus: TaskWorkflowStatus;
+  executionStatus: TaskExecutionStatus;
+  executionAction: TaskExecutionAction;
+  reviewReason: TaskReviewReason;
+  logs: string[];
+  enqueued: boolean;
+  scheduledStartAt?: string | null;
+  scheduledEndAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  errorMessage: string | null;
+}
+
+export interface OpenAiDiffAssistInput {
+  model: string;
+  providerProfile: ProviderProfile;
+  userPrompt: string;
+  /** Repository-relative path (optional `a/` or `b/` prefixes are stripped server-side). */
+  filePath: string;
+  selectedSnippet: string;
+}
+
+export interface OpenAiDiffAssistResult {
+  text: string;
+}
+
+export interface TaskPromptMagicInput {
+  prompt: string;
+}
+
+export interface TaskPromptMagicResult {
+  prompt: string;
+}
+
+export interface TaskLiveDiff {
+  diff: string | null;
+  live: boolean;
+  fetchedAt: string;
+  message: string | null;
+  /** Current workspace HEAD branch (or "HEAD" when detached). */
+  headBranch: string | null;
+  /** Short SHA for HEAD. */
+  headShaShort: string | null;
+  /** Ref used as the compare base for this diff (e.g. origin/main). */
+  baseRef: string | null;
+  /** Auto-resolved base when no override was requested; mirrors baseRef when using default. */
+  defaultBaseRef: string | null;
+}
+
+/** One commit on the task workspace’s current branch (from `git log`). */
+export interface TaskWorkspaceCommit {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  /** ISO 8601 timestamp from `git log` (%cI). */
+  committedAt: string;
+  authorName: string;
+}
+
+export interface TaskWorkspaceCommitLog {
+  commits: TaskWorkspaceCommit[];
+  fetchedAt: string;
+  message: string | null;
+}
+
+export type TaskWorkspaceFileTreeEntryKind = "file" | "directory";
+
+export interface TaskWorkspaceFileTreeEntry {
+  path: string;
+  name: string;
+  kind: TaskWorkspaceFileTreeEntryKind;
+}
+
+export interface TaskWorkspaceFileTree {
+  /** Directory prefix that was listed; null means workspace root. */
+  prefix: string | null;
+  entries: TaskWorkspaceFileTreeEntry[];
+  fetchedAt: string;
+  truncated: boolean;
+  totalCount: number;
+}
+
+export interface TaskWorkspaceFileSearchResult {
+  query: string;
+  results: string[];
+  fetchedAt: string;
+  truncated: boolean;
+  totalCount: number;
+}
+
+export type TaskWorkspaceFilePreviewKind = "text" | "image" | "binary";
+
+export interface TaskWorkspaceFilePreview {
+  path: string;
+  /** Git ref used for the preview, or null when reading the live workspace file. */
+  ref: string | null;
+  kind: TaskWorkspaceFilePreviewKind;
+  mimeType: string | null;
+  encoding: "utf8" | "base64";
+  content: string;
+  sizeBytes: number;
+}
+
+/** Snapshot for the Push UI before staging/commit (working tree + index vs HEAD). */
+export interface TaskPushPreview {
+  branchName: string;
+  changedFiles: string[];
+  /** Unified diff vs HEAD; may be truncated for large workspaces. */
+  diff: string;
+  diffTruncated: boolean;
+  /** `git diff HEAD --stat` output (may be truncated). */
+  diffStat: string;
+  hasUncommittedChanges: boolean;
+  unpushedCommitSubjects: string[];
+  /** Suggested first line if a new commit is created from current changes. */
+  suggestedCommitMessage: string;
+}
+
+export interface TaskMergePreview {
+  sourceBranch: string;
+  targetBranch: string;
+  mergeable: boolean;
+  message: string;
+  suggestedCommitMessage: string;
+}
+
+export interface TaskPromptAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  relativePath: string;
+}
+
+export interface CreateTaskPromptAttachmentInput {
+  name: string;
+  mimeType: string;
+  dataBase64: string;
+}
+
+export interface TaskMessage {
+  id: string;
+  taskId: string;
+  role: TaskMessageRole;
+  content: string;
+  action: TaskMessageAction | null;
+  /** Optional saved image attachments that were attached when the user submitted this message. */
+  attachments?: TaskPromptAttachment[];
+  /** Present for interactive terminal lifecycle messages so history can address the terminal session. */
+  sessionId?: string | null;
+  createdAt: string;
+}
+
+export interface TaskExecutionInput {
+  content: string;
+  attachments?: TaskPromptAttachment[];
+}
+
+export type NormalizedAgentEventKind =
+  | "run.started"
+  | "run.status"
+  | "run.completed"
+  | "run.failed"
+  | "turn.started"
+  | "turn.completed"
+  | "assistant.message"
+  | "assistant.message.delta"
+  | "tool.started"
+  | "tool.completed"
+  | "tool.failed"
+  | "file.changed"
+  | "subtask.started"
+  | "subtask.progress"
+  | "subtask.completed"
+  | "usage.reported"
+  | "unknown";
+
+export interface NormalizedAgentEvent {
+  id: string;
+  provider: AgentProvider;
+  kind: NormalizedAgentEventKind;
+  rawEventIndex: number;
+  title: string;
+  detail?: string;
+  message?: string;
+  status?: string;
+  sessionId?: string;
+  messageId?: string;
+  toolCallId?: string;
+  parentToolCallId?: string | null;
+  toolName?: string;
+  filePath?: string;
+  fileChangeKind?: string;
+  exitCode?: number | null;
+  usage?: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+}
+
+export interface TaskRun {
+  id: string;
+  taskId: string;
+  action: TaskAction;
+  provider: AgentProvider;
+  providerProfile: ProviderProfile;
+  modelOverride: string | null;
+  branchName: string | null;
+  status: TaskRunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  summary: string | null;
+  /** Build-only outcome. Null for ask runs and legacy runs. */
+  changeOutcome?: "changed" | "no_change" | null;
+  errorMessage: string | null;
+  /** Git HEAD ref captured before the agent container runs; used for change proposals. */
+  changeProposalCheckpointRef?: string | null;
+  /** Untracked paths (repo-relative) at checkpoint; used so reject does not wipe pre-existing untracked files. */
+  changeProposalUntrackedPaths?: string[] | null;
+  /** True when the provider's native JSONL stream has been captured for this run. */
+  hasRawJson?: boolean;
+  timelineEvents?: NormalizedAgentEvent[];
+  logs: string[];
+}
+
+export type TaskGitOperationType = "clone_for_task" | "pull_task_branch" | "push_task_branch";
+export type TaskGitOperationStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type TaskGitOperationFailureCode =
+  | "auth_failed"
+  | "network_error"
+  | "branch_missing"
+  | "conflict"
+  | "nothing_to_push"
+  | "workspace_missing"
+  | "unknown";
+
+export interface TaskGitOperation {
+  operationId: string;
+  taskId: string;
+  operationType: TaskGitOperationType;
+  status: TaskGitOperationStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  errorCode: TaskGitOperationFailureCode | null;
+  errorMessage: string | null;
+  attemptCount: number;
+}
+
+export type TaskChangeProposalSourceType = "build_run" | "interactive_session";
+
+export type TaskChangeProposalStatus = "pending" | "applied" | "rejected" | "reverted";
+
+export interface TaskChangeProposal {
+  id: string;
+  taskId: string;
+  sourceType: TaskChangeProposalSourceType;
+  /** `TaskRun.id` for build_run; session id for interactive_session */
+  sourceId: string;
+  status: TaskChangeProposalStatus;
+  fromRef: string;
+  toRef: string;
+  /** Persisted unified diff for preview and revert (when not truncated). */
+  diff: string;
+  diffStat: string;
+  changedFiles: string[];
+  diffTruncated: boolean;
+  /** Untracked paths at proposal start; on reject only *new* untracked files (not in this list) are removed. */
+  untrackedPathsAtCheckpoint: string[];
+  createdAt: string;
+  /** Set when leaving pending (apply or reject). */
+  resolvedAt: string | null;
+  /** Set when an applied checkpoint is reverted via stored diff. */
+  revertedAt: string | null;
+}
+
+export interface ApplyTaskChangeProposalInput {
+  commitMessage?: string;
+}
+
+export interface RevertTaskChangeProposalFileInput {
+  path: string;
+}
+
+export interface TaskInteractiveTerminalTranscript {
+  taskId: string;
+  sessionId: string;
+  content: string;
+  truncated: boolean;
+}
+
+export interface McpServerConfig {
+  name: string;
+  enabled: boolean;
+  transport: McpServerTransport;
+  command?: string | null;
+  args?: string[];
+  url?: string | null;
+  bearerTokenEnvVar?: string | null;
+}
+
+export interface GitHubIssueReference {
+  number: number;
+  title: string;
+  url: string;
+}
+
+export interface GitHubPullRequestReference {
+  number: number;
+  title: string;
+  url: string;
+  headBranch: string;
+  baseBranch: string;
+}
+
+export interface GitHubBranchReference {
+  name: string;
+  isDefault: boolean;
+}
+
+export type DataStoreBackend = "redis" | "postgres";
+export type WorkspaceProvisioningMode = "clone_only" | "hybrid";
+
+export interface SystemDataStores {
+  taskStore: "postgres";
+  snippetStore: "postgres";
+  sequenceStore: "postgres";
+  repositoryStore: "postgres";
+  credentialStore: "postgres";
+  roleStore: "postgres";
+  userStore: "postgres";
+  settingsStore: "postgres";
+  taskQueueStore: "redis";
+  webhookDeliveryStore: "redis";
+  sessionStore: "redis";
+  eventBus: "redis";
+}
+
+export interface SystemSettings {
+  defaultProvider: AgentProvider;
+  maxAgents: number;
+  branchPrefix: string;
+  workspaceProvisioningMode: WorkspaceProvisioningMode;
+  gitUsername: string;
+  mcpServers: McpServerConfig[];
+  openaiBaseUrl: string | null;
+  taskPromptMagicModel: string;
+  taskPromptMagicTemplate: string;
+  githubTokenConfigured: boolean;
+  openaiApiKeyConfigured: boolean;
+  anthropicApiKeyConfigured: boolean;
+  codexDefaultModel: string;
+  codexDefaultEffort: ProviderProfile;
+  claudeDefaultModel: string;
+  claudeDefaultEffort: ProviderProfile;
+  responsePreferencePresets: ResponsePreferencePreset[];
+  dataStores?: SystemDataStores;
+}
+
+export interface UserNotes {
+  notes: string;
+  updatedAt: string;
+}
+
+export interface CreateRepositoryInput {
+  name: string;
+  url: string;
+  defaultBranch?: string;
+  syncStatusEnabled?: boolean;
+  envVars?: RepositoryEnvVarInput[];
+  envSecrets?: RepositoryEnvSecretInput[];
+  webhookUrl?: string | null;
+  webhookEnabled?: boolean;
+  webhookSecret?: string;
+  githubWebhookSecret?: string;
+  githubAutomations?: GitHubAutomationRule[];
+}
+
+export interface UpdateRepositoryInput {
+  name?: string;
+  url?: string;
+  defaultBranch?: string;
+  syncStatusEnabled?: boolean;
+  envVars?: RepositoryEnvVarInput[];
+  envSecrets?: RepositoryEnvSecretInput[];
+  webhookUrl?: string | null;
+  webhookEnabled?: boolean;
+  webhookSecret?: string;
+  clearWebhookSecret?: boolean;
+  githubWebhookSecret?: string;
+  clearGithubWebhookSecret?: boolean;
+  githubAutomations?: GitHubAutomationRule[];
+}
+
+export interface CreateTaskInput {
+  title: string;
+  draft?: boolean;
+  deadline?: string | null;
+  repoId: string;
+  prompt: string;
+  notes?: string;
+  attachments?: CreateTaskPromptAttachmentInput[];
+  taskType?: TaskType;
+  provider?: AgentProvider;
+  providerProfile?: ProviderProfile;
+  modelOverride?: string;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch?: string;
+  branchStrategy?: TaskBranchStrategy;
+  model?: string;
+  reasoningEffort?: TaskReasoningEffort;
+  task_source?: "blank" | "snippet" | "sequence";
+  snippet_id?: string;
+  sequence_id?: string;
+  sequence_variables?: Record<string, string>;
+}
+
+export type TaskSourceType = "blank" | "snippet" | "sequence" | "issue" | "pull_request";
+
+export interface BlankTaskDefinitionInput {
+  sourceType: "blank";
+  title: string;
+  deadline?: string | null;
+  repoId: string;
+  prompt: string;
+  notes?: string;
+  attachments?: CreateTaskPromptAttachmentInput[];
+  taskType: TaskType;
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+}
+
+export interface IssueTaskDefinitionInput {
+  sourceType: "issue";
+  title?: string;
+  deadline?: string | null;
+  notes?: string;
+  repoId: string;
+  issueNumber: number;
+  includeComments: boolean;
+  taskType: Extract<TaskType, "build" | "ask">;
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+}
+
+export interface PullRequestTaskDefinitionInput {
+  sourceType: "pull_request";
+  title?: string;
+  deadline?: string | null;
+  notes?: string;
+  repoId: string;
+  pullRequestNumber: number;
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
+}
+
+export interface SnippetTaskDefinitionInput {
+  sourceType: "snippet";
+  title: string;
+  deadline?: string | null;
+  repoId: string;
+  snippetId: string;
+  prompt: string;
+  notes?: string;
+  attachments?: CreateTaskPromptAttachmentInput[];
+  taskType: TaskType;
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+}
+
+export interface SequenceTaskDefinitionInput {
+  sourceType: "sequence";
+  title: string;
+  deadline?: string | null;
+  repoId: string;
+  sequenceId: string;
+  sequenceVariables?: Record<string, string>;
+  notes?: string;
+  attachments?: CreateTaskPromptAttachmentInput[];
+  taskType: TaskType;
+  provider: AgentProvider;
+  model: string;
+  providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+}
+
+export type TaskDefinitionInput =
+  | BlankTaskDefinitionInput
+  | SnippetTaskDefinitionInput
+  | SequenceTaskDefinitionInput
+  | IssueTaskDefinitionInput
+  | PullRequestTaskDefinitionInput;
+
+export interface Snippet {
+  id: string;
+  name: string;
+  content: string;
+  variables: SnippetVariable[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type SnippetVariableType = "text" | "multiline";
+
+export interface SnippetVariable {
+  name: string;
+  type: SnippetVariableType;
+  title: string;
+  description: string;
+  defaultValue: string;
+}
+
+export interface CreateSnippetInput {
+  name: string;
+  content: string;
+  variables?: SnippetVariable[];
+}
+
+export interface UpdateSnippetInput {
+  name: string;
+  content: string;
+  variables?: SnippetVariable[];
+}
+
+export type SequenceStepType = "inline" | "snippet";
+export type SequenceStepState = "pending" | "running" | "succeeded" | "failed" | "skipped";
+export type SequenceExecutionMode = "auto_apply_changes" | "approve_before_continuing";
+export type SequenceRunStatus = "running" | "waiting_for_approval" | "waiting_for_checkpoint_resolution" | "succeeded" | "failed";
+
+export interface SequenceStep {
+  id: string;
+  type: SequenceStepType;
+  prompt: string;
+  snippetId?: string;
+}
+
+export interface Sequence {
+  id: string;
+  name: string;
+  executionMode: SequenceExecutionMode;
+  steps: SequenceStep[];
+  variables: SnippetVariable[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateSequenceInput {
+  name: string;
+  executionMode?: SequenceExecutionMode;
+  steps: SequenceStep[];
+  variables?: SnippetVariable[];
+}
+
+export interface UpdateSequenceInput {
+  name: string;
+  executionMode?: SequenceExecutionMode;
+  steps: SequenceStep[];
+  variables?: SnippetVariable[];
+}
+
+export interface SequenceRunStep {
+  index: number;
+  prompt: string;
+  state: SequenceStepState;
+  taskRunId: string | null;
+  errorMessage: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface SequenceRun {
+  id: string;
+  sequenceId: string;
+  taskId: string;
+  status: SequenceRunStatus;
+  executionMode: SequenceExecutionMode;
+  failPolicy: "fail_fast";
+  stepCount: number;
+  waitingForApprovalAfterStepIndex: number | null;
+  failedStepIndex: number | null;
+  startedAt: string;
+  finishedAt: string | null;
+  steps: SequenceRunStep[];
+}
+
+export interface CreateTaskFromIssueInput {
+  repoId: string;
+  draft?: boolean;
+  issueNumber: number;
+  includeComments?: boolean;
+  notes?: string;
+  deadline?: string | null;
+  taskType?: Extract<TaskType, "build" | "ask">;
+  title?: string;
+  provider?: AgentProvider;
+  providerProfile?: ProviderProfile;
+  modelOverride?: string;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch?: string;
+  branchStrategy?: TaskBranchStrategy;
+  model?: string;
+  reasoningEffort?: TaskReasoningEffort;
+}
+
+export interface CreateTaskFromPullRequestInput {
+  repoId: string;
+  draft?: boolean;
+  pullRequestNumber: number;
+  title?: string;
+  notes?: string;
+  deadline?: string | null;
+  provider?: AgentProvider;
+  providerProfile?: ProviderProfile;
+  modelOverride?: string;
+  codexCredentialSource?: CodexCredentialSource;
+  model?: string;
+  reasoningEffort?: TaskReasoningEffort;
+}
+
+export interface TriggerTaskActionInput {
+  action: TaskAction;
+}
+
+export interface UpdateTaskConfigInput {
+  provider: AgentProvider;
+  providerProfile: ProviderProfile;
+  modelOverride?: string | null;
+  codexCredentialSource?: CodexCredentialSource;
+  branchStrategy?: TaskBranchStrategy;
+}
+
+export interface UpdateTaskPinInput {
+  pinned: boolean;
+}
+
+export interface UpdateTaskTitleInput {
+  title: string;
+}
+
+export interface UpdateTaskNotesInput {
+  notes: string;
+}
+
+export interface UpdateTaskDeadlineInput {
+  deadline: string | null;
+}
+
+export interface UpdateUserNotesInput {
+  notes: string;
+}
+
+export interface UpdateTaskStateInput {
+  status: Extract<TaskStatus, "open" | "in_progress" | "in_review" | "awaiting_review" | "done">;
+}
+
+export interface UpdateTaskAssigneeInput {
+  ownerUserId: string;
+}
+
+export interface CreateTaskMessageInput {
+  content: string;
+  attachments?: CreateTaskPromptAttachmentInput[];
+  action?: TaskMessageAction;
+}
+
+export interface UpdateTaskMessageInput {
+  content: string;
+}
+
+export interface UpdateTaskWorkspaceFileInput {
+  path: string;
+  content: string;
+}
+
+export interface MergeTaskInput {
+  targetBranch: string;
+  commitMessage?: string;
+  deleteRemoteBranch?: boolean;
+}
+
+export const getTaskBranchStrategyLabel = (strategy: TaskBranchStrategy): string =>
+  ({
+    feature_branch: "Create Feature Branch",
+    work_on_branch: "Work On Existing Branch"
+  })[strategy];
+
+export const getAgentProviderLabel = (provider: AgentProvider): string =>
+  ({
+    codex: "Codex",
+    claude: "Claude Code (experimental)"
+  })[provider];
+
+export const getProviderProfileLabel = (profile: ProviderProfile): string =>
+  ({
+    low: "Low",
+    medium: "Medium",
+    high: "High",
+    max: "Max"
+  })[profile];
+
+export const getTaskTypeLabel = (taskType: TaskType): string =>
+  ({
+    build: "Build",
+    ask: "Ask"
+  })[taskType];
+
+const queuedStatusByAction: Record<TaskAction, TaskStatus> = {
+  build: "build_queued",
+  ask: "ask_queued"
+};
+
+const activeStatusByAction: Record<TaskAction, TaskStatus> = {
+  build: "building",
+  ask: "asking"
+};
+
+const successfulStatusByAction: Record<TaskAction, TaskStatus> = {
+  build: "completed",
+  ask: "answered"
+};
+
+export const getQueuedStatusForAction = (action: TaskAction): TaskStatus => queuedStatusByAction[action];
+export const getActiveStatusForAction = (action: TaskAction): TaskStatus => activeStatusByAction[action];
+export const getSuccessfulStatusForAction = (action: TaskAction): TaskStatus => successfulStatusByAction[action];
+
+export const isQueuedTaskStatus = (status: TaskStatus): boolean =>
+  status === "build_queued" ||
+  status === "ask_queued";
+
+export const isActiveTaskStatus = (status: TaskStatus): boolean =>
+  status === "preparing_workspace" ||
+  status === "building" ||
+  status === "asking";
+
+export const isTaskWorking = (task: Pick<Task, "status" | "activeInteractiveSession"> & { executionStatus?: TaskExecutionStatus }): boolean =>
+  task.executionStatus === "queued" ||
+  task.executionStatus === "preparing" ||
+  task.executionStatus === "running" ||
+  isActiveTaskStatus(task.status) ||
+  task.activeInteractiveSession === true;
+
+export const getTaskExecutionStatus = (
+  task: Pick<Task, "status" | "activeInteractiveSession"> & { executionStatus?: TaskExecutionStatus }
+): TaskExecutionStatus => {
+  if (task.activeInteractiveSession === true) {
+    return "running";
+  }
+
+  if (
+    task.executionStatus === "idle" ||
+    task.executionStatus === "scheduled" ||
+    task.executionStatus === "queued" ||
+    task.executionStatus === "preparing" ||
+    task.executionStatus === "running" ||
+    task.executionStatus === "failed" ||
+    task.executionStatus === "cancelled"
+  ) {
+    return task.executionStatus;
+  }
+
+  if (task.status === "scheduled") {
+    return "scheduled";
+  }
+
+  if (isQueuedTaskStatus(task.status)) {
+    return "queued";
+  }
+
+  if (task.status === "preparing_workspace") {
+    return "preparing";
+  }
+
+  if (isActiveTaskStatus(task.status)) {
+    return "running";
+  }
+
+  if (task.status === "failed") {
+    return "failed";
+  }
+
+  if (task.status === "cancelled") {
+    return "cancelled";
+  }
+
+  return "idle";
+};
+
+export const getTaskExecutionAction = (
+  task: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode"> & { executionAction?: TaskExecutionAction }
+): TaskExecutionAction => {
+  if (task.activeInteractiveSession === true) {
+    return task.activeTerminalSessionMode === "git" ? "terminal" : "interactive";
+  }
+
+  if (task.status === "draft") {
+    return null;
+  }
+
+  if (task.executionAction === "build" || task.executionAction === "ask" || task.executionAction === "interactive" || task.executionAction === "terminal") {
+    return task.executionAction;
+  }
+
+  if (task.status === "build_queued" || task.status === "preparing_workspace" || task.status === "building") {
+    return "build";
+  }
+
+  if (task.status === "ask_queued" || task.status === "asking") {
+    return "ask";
+  }
+
+  return task.lastAction ?? null;
+};
+
+export const getTaskReviewReason = (task: Pick<Task, "status" | "hasPendingCheckpoint" | "taskType">): TaskReviewReason => {
+  if (task.hasPendingCheckpoint || task.status === "awaiting_review") {
+    return "checkpoint";
+  }
+
+  if (task.status === "in_review") {
+    return task.taskType === "ask" ? "answer" : "manual";
+  }
+
+  return null;
+};
+
+export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingCheckpoint" | "taskType">): TaskWorkflowStatus => {
+  if (task.status === "archived") {
+    return "archived";
+  }
+
+  if (task.status === "done" || task.status === "accepted") {
+    return "done";
+  }
+
+  if (task.status === "in_progress") {
+    return "in_progress";
+  }
+
+  if (task.status === "awaiting_review" || task.status === "in_review") {
+    return "review";
+  }
+
+  if (task.status === "draft" || task.status === "scheduled") {
+    return "backlog";
+  }
+
+  return "ready";
+};
+
+export const getTaskTerminalSessionLabel = (mode: TaskTerminalSessionMode): string =>
+  mode === "git" ? "Git Terminal" : "Interactive Terminal";
+
+export const getTaskTerminalSessionSentenceLabel = (mode: TaskTerminalSessionMode): string =>
+  mode === "git" ? "Git terminal" : "Interactive terminal";
+
+export const getTaskTerminalSessionStartMessage = (mode: TaskTerminalSessionMode): string =>
+  mode === "git" ? "Terminal session started." : `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
+
+export const getTaskTerminalSessionEndMessage = (mode: TaskTerminalSessionMode): string =>
+  `${getTaskTerminalSessionSentenceLabel(mode)} session ended.`;
+
+export const getTaskTerminalSessionNoChangesMessage = (mode: TaskTerminalSessionMode): string =>
+  `${getTaskTerminalSessionSentenceLabel(mode)} session ended. No workspace changes were detected.`;
+
+export const getTaskTerminalSessionReviewMessage = (mode: TaskTerminalSessionMode): string =>
+  `${getTaskTerminalSessionSentenceLabel(mode)} session ended. Review proposed changes below.`;
+
+/** When set, checkpoint apply / reject / revert must be refused (agent run queued or in progress). */
+export function getCheckpointMutationBlockedReason(status: TaskStatus): string | null {
+  if (isQueuedTaskStatus(status) || isActiveTaskStatus(status)) {
+    return `Checkpoint actions are unavailable while the task is “${getTaskStatusLabel(status)}”.`;
+  }
+  return null;
+}
+
+export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
+  status === "archived";
+
+export const getTaskStatusLabel = (status: TaskStatus): string =>
+  ({
+    draft: "Draft",
+    scheduled: "Scheduled",
+    build_queued: "Build Queued",
+    preparing_workspace: "Preparing Workspace",
+    building: "Building",
+    ask_queued: "Ask Queued",
+    asking: "Answering",
+    open: "Open",
+    in_progress: "In Progress",
+    in_review: "In Review",
+    awaiting_review: "Awaiting Review",
+    done: "Done",
+    completed: "Completed",
+    answered: "Answered",
+    accepted: "Accepted",
+    archived: "Archived",
+    cancelled: "Cancelled",
+    failed: "Failed"
+  })[status];
+
+export const getTaskWorkflowStatusLabel = (status: TaskWorkflowStatus): string =>
+  ({
+    backlog: "Backlog",
+    ready: "Ready",
+    in_progress: "In Progress",
+    review: "Review",
+    done: "Done",
+    archived: "Archived"
+  })[status];
+
+export const getTaskExecutionStatusLabel = (status: TaskExecutionStatus): string =>
+  ({
+    idle: "Idle",
+    scheduled: "Scheduled",
+    queued: "Queued",
+    preparing: "Preparing",
+    running: "Running",
+    failed: "Failed",
+    cancelled: "Cancelled"
+  })[status];
+
+export interface UpdateSettingsInput {
+  defaultProvider?: AgentProvider;
+  maxAgents?: number;
+  branchPrefix?: string;
+  workspaceProvisioningMode?: WorkspaceProvisioningMode;
+  gitUsername?: string;
+  mcpServers?: McpServerConfig[];
+  openaiBaseUrl?: string | null;
+  taskPromptMagicModel?: string;
+  taskPromptMagicTemplate?: string;
+  codexDefaultModel?: string;
+  codexDefaultEffort?: ProviderProfile;
+  claudeDefaultModel?: string;
+  claudeDefaultEffort?: ProviderProfile;
+  responsePreferencePresets?: ResponsePreferencePresetInput[];
+}
+
+export interface UpdateCredentialSettingsInput {
+  githubToken?: string;
+  openaiApiKey?: string;
+  anthropicApiKey?: string;
+  clearGithubToken?: boolean;
+  clearOpenAiApiKey?: boolean;
+  clearAnthropicApiKey?: boolean;
+}
+
+export interface UpdateAuthProfileInput {
+  name?: string;
+  codexAuthJson?: string;
+  clearCodexAuthJson?: boolean;
+  agentResponsePreference?: Partial<AgentResponsePreference>;
+}
+
+export interface TaskEvent {
+  type: "task:created" | "task:updated";
+  payload: Task;
+}
+
+export interface TaskDeletedEvent {
+  type: "task:deleted";
+  payload: {
+    id: string;
+    repoId: string;
+    ownerUserId: string | null;
+  };
+}
+
+export interface TaskLogEvent {
+  type: "task:log";
+  payload: {
+    taskId: string;
+    runId?: string | null;
+    line: string;
+    timestamp: string;
+  };
+}
+
+export interface TaskMessageEvent {
+  type: "task:message";
+  payload: TaskMessage;
+}
+
+export interface TaskMessageUpdatedEvent {
+  type: "task:message_updated";
+  payload: TaskMessage;
+}
+
+export interface TaskRunEvent {
+  type: "task:run_updated";
+  payload: TaskRun;
+}
+
+export interface TaskGitOperationEvent {
+  type: "task:git_operation";
+  payload: TaskGitOperation;
+}
+
+export interface TaskChangeProposalEvent {
+  type: "task:change_proposal";
+  payload: TaskChangeProposal;
+}
+
+export interface TaskPushedEvent {
+  type: "task:pushed";
+  payload: {
+    taskId: string;
+    repoId: string;
+    branchName: string;
+    commitMessage: string | null;
+    triggeredAt: string;
+  };
+}
+
+export interface TaskMergedEvent {
+  type: "task:merged";
+  payload: {
+    taskId: string;
+    repoId: string;
+    sourceBranch: string;
+    targetBranch: string;
+    commitMessage: string | null;
+    triggeredAt: string;
+  };
+}
+
+export interface SettingsEvent {
+  type: "settings:updated";
+  payload: SystemSettings;
+}
+
+export interface RepositoryEvent {
+  type: "repository:created" | "repository:updated" | "repository:deleted";
+  payload: Repository | { id: string };
+}
+
+export interface SnippetEvent {
+  type: "snippet:created" | "snippet:updated" | "snippet:deleted";
+  payload: Snippet | { id: string };
+}
+
+export interface SequenceEvent {
+  type: "sequence:created" | "sequence:updated" | "sequence:deleted";
+  payload: Sequence | { id: string };
+}
+
+export interface SequenceRunEvent {
+  type: "sequence:run_updated";
+  payload: SequenceRun;
+}
+
+export type RealtimeEvent =
+  | TaskEvent
+  | TaskDeletedEvent
+  | TaskLogEvent
+  | TaskMessageEvent
+  | TaskMessageUpdatedEvent
+  | TaskRunEvent
+  | TaskGitOperationEvent
+  | TaskChangeProposalEvent
+  | TaskPushedEvent
+  | TaskMergedEvent
+  | SettingsEvent
+  | RepositoryEvent
+  | SnippetEvent
+  | SequenceEvent
+  | SequenceRunEvent;
+````
+
 ## File: apps/web/components/task-detail-page.tsx
 ````typescript
 "use client";
@@ -55097,11 +56675,27 @@ import {
   Tag,
   Tabs,
   Tooltip,
+  Timeline,
   Typography,
   message,
   theme as antTheme
 } from "antd";
-import { ArrowRightOutlined, CopyOutlined, DownloadOutlined, EditOutlined, LoadingOutlined, MoreOutlined, RobotOutlined, RollbackOutlined } from "@ant-design/icons";
+import {
+  ArrowRightOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  CodeOutlined,
+  CopyOutlined,
+  DownloadOutlined,
+  EditOutlined,
+  FileTextOutlined,
+  InfoCircleOutlined,
+  LoadingOutlined,
+  MessageOutlined,
+  MoreOutlined,
+  RobotOutlined,
+  RollbackOutlined
+} from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -59307,6 +60901,107 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
       .join(" ");
 
+  type TimelineEvent = NonNullable<TaskRun["timelineEvents"]>[number];
+
+  const getTimelineEventColor = (event: TimelineEvent): string => {
+    if (event.kind.includes("failed") || (event.exitCode != null && event.exitCode !== 0)) {
+      return "red";
+    }
+    if (event.kind.includes("completed") || event.kind === "file.changed") {
+      return "green";
+    }
+    if (event.kind.includes("started") || event.status === "in_progress") {
+      return "blue";
+    }
+    if (event.kind.startsWith("assistant")) {
+      return "purple";
+    }
+    if (event.kind.startsWith("tool")) {
+      return "cyan";
+    }
+    return "gray";
+  };
+
+  const getTimelineEventIcon = (event: TimelineEvent): ReactNode => {
+    if (event.kind.includes("failed") || (event.exitCode != null && event.exitCode !== 0)) {
+      return <CloseCircleOutlined />;
+    }
+    if (event.status === "in_progress" || event.kind.endsWith(".started")) {
+      return <LoadingOutlined spin />;
+    }
+    if (event.kind.startsWith("assistant")) {
+      return <MessageOutlined />;
+    }
+    if (event.kind.startsWith("tool")) {
+      return <CodeOutlined />;
+    }
+    if (event.kind === "file.changed") {
+      return <FileTextOutlined />;
+    }
+    if (event.kind.includes("completed")) {
+      return <CheckCircleOutlined />;
+    }
+    if (event.kind.startsWith("run")) {
+      return <RobotOutlined />;
+    }
+    return <InfoCircleOutlined />;
+  };
+
+  const renderTimelineEventContent = (event: TimelineEvent): ReactNode => {
+    const showDetail = event.detail && event.detail !== event.filePath;
+    return (
+      <Space direction="vertical" size={6} style={{ width: "100%" }}>
+        <Flex align="flex-start" justify="space-between" gap={8} wrap="wrap">
+          <Space size={6} wrap>
+            <Typography.Text strong>{event.title}</Typography.Text>
+            {event.toolName ? <Tag color="blue">{event.toolName}</Tag> : null}
+            {event.status ? <Tag>{event.status}</Tag> : null}
+            {event.exitCode != null ? <Tag color={event.exitCode === 0 ? "green" : "red"}>exit {event.exitCode}</Tag> : null}
+          </Space>
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            #{event.rawEventIndex + 1}
+          </Typography.Text>
+        </Flex>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {formatTimelineEventKind(event.kind)}
+        </Typography.Text>
+        {event.filePath ? (
+          <Typography.Text code style={{ width: "fit-content", maxWidth: "100%", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {event.filePath}
+          </Typography.Text>
+        ) : null}
+        {showDetail ? (
+          <Typography.Text
+            code
+            style={{
+              display: "block",
+              padding: "6px 8px",
+              background: token.colorFillAlter,
+              borderRadius: 6,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word"
+            }}
+          >
+            {event.detail}
+          </Typography.Text>
+        ) : null}
+        {event.message ? (
+          <Typography.Paragraph
+            style={{
+              margin: 0,
+              maxHeight: 180,
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word"
+            }}
+          >
+            {event.message}
+          </Typography.Paragraph>
+        ) : null}
+      </Space>
+    );
+  };
+
   const renderRunTimelinePanel = (run: TaskRun) => {
     const events = run.timelineEvents ?? [];
     if (events.length === 0) {
@@ -59314,33 +61009,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     return (
-      <List
-        size="small"
-        dataSource={events}
-        renderItem={(event) => (
-          <List.Item style={{ alignItems: "flex-start", paddingLeft: 0, paddingRight: 0 }}>
-            <Space direction="vertical" size={2} style={{ width: "100%" }}>
-              <Space size={8} wrap>
-                <Tag>{formatTimelineEventKind(event.kind)}</Tag>
-                {event.status ? <Tag color={event.kind.includes("failed") ? "red" : undefined}>{event.status}</Tag> : null}
-                {event.toolName ? <Tag color="blue">{event.toolName}</Tag> : null}
-                {event.exitCode != null ? <Tag color={event.exitCode === 0 ? "green" : "red"}>exit {event.exitCode}</Tag> : null}
-              </Space>
-              <Typography.Text strong>{event.title}</Typography.Text>
-              {event.detail ? (
-                <Typography.Text code style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                  {event.detail}
-                </Typography.Text>
-              ) : null}
-              {event.message ? (
-                <Typography.Paragraph style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                  {event.message}
-                </Typography.Paragraph>
-              ) : null}
-              {event.filePath ? <Typography.Text type="secondary">{event.filePath}</Typography.Text> : null}
-            </Space>
-          </List.Item>
-        )}
+      <Timeline
+        mode="left"
+        items={events.map((event) => ({
+          key: event.id,
+          color: getTimelineEventColor(event),
+          icon: getTimelineEventIcon(event),
+          content: renderTimelineEventContent(event)
+        }))}
       />
     );
   };
@@ -60782,1582 +62458,4 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     </>
   );
 }
-````
-
-## File: packages/shared-types/src/index.ts
-````typescript
-export type TaskType = "build" | "ask";
-export type AgentProvider = "codex" | "claude";
-
-/** Native effort values from providers. "max" is Claude-only. */
-export type ProviderProfile = "low" | "medium" | "high" | "max";
-
-export interface ProviderModelOption {
-  label: string;
-  value: string;
-}
-
-export interface ProviderEffortOption {
-  label: string;
-  value: ProviderProfile;
-}
-
-export const CODEX_MODELS: ProviderModelOption[] = [
-  { label: "GPT-5.4", value: "gpt-5.4" },
-  { label: "o3", value: "o3" },
-  { label: "o4-mini", value: "o4-mini" },
-  { label: "o3-mini", value: "o3-mini" },
-  { label: "GPT-4.1", value: "gpt-4.1" },
-  { label: "GPT-4o", value: "gpt-4o" }
-];
-
-export const CLAUDE_MODELS: ProviderModelOption[] = [
-  { label: "Claude Opus 4", value: "claude-opus-4-5" },
-  { label: "Claude Sonnet 4.5", value: "claude-sonnet-4-5" },
-  { label: "Claude Sonnet 4", value: "claude-sonnet-4" },
-  { label: "Claude Haiku 3.5", value: "claude-haiku-3-5" }
-];
-
-/** Codex natively supports low / medium / high reasoning effort. */
-export const CODEX_EFFORT_OPTIONS: ProviderEffortOption[] = [
-  { label: "Low", value: "low" },
-  { label: "Medium", value: "medium" },
-  { label: "High", value: "high" }
-];
-
-/** Claude profiles map to thinking budgets when the resolved model supports it; "max" leaves the budget unset. */
-export const CLAUDE_EFFORT_OPTIONS: ProviderEffortOption[] = [
-  { label: "Low", value: "low" },
-  { label: "Medium", value: "medium" },
-  { label: "High", value: "high" },
-  { label: "Max", value: "max" }
-];
-
-export const getModelsForProvider = (provider: AgentProvider): ProviderModelOption[] =>
-  provider === "claude" ? CLAUDE_MODELS : CODEX_MODELS;
-
-export const getEffortOptionsForProvider = (provider: AgentProvider): ProviderEffortOption[] =>
-  provider === "claude" ? CLAUDE_EFFORT_OPTIONS : CODEX_EFFORT_OPTIONS;
-
-export const getDefaultModelForProvider = (provider: AgentProvider): string =>
-  provider === "claude" ? "claude-sonnet-4-5" : "gpt-5.4";
-export type TaskMessageRole = "user" | "assistant" | "system";
-export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
-
-export type TaskStatus =
-  | "draft"
-  | "scheduled"
-  | "build_queued"
-  | "preparing_workspace"
-  | "building"
-  | "ask_queued"
-  | "asking"
-  | "open"
-  | "in_progress"
-  | "in_review"
-  | "awaiting_review"
-  | "done"
-  | "completed"
-  | "answered"
-  | "accepted"
-  | "archived"
-  | "cancelled"
-  | "failed";
-
-export type TaskWorkflowStatus = "backlog" | "ready" | "in_progress" | "review" | "done" | "archived";
-export type TaskExecutionStatus = "idle" | "scheduled" | "queued" | "preparing" | "running" | "failed" | "cancelled";
-export type TaskReviewReason = "checkpoint" | "answer" | "manual" | "merge" | null;
-export type TaskAction = "build" | "ask";
-export type TaskExecutionAction = TaskAction | "interactive" | "terminal" | null;
-export type TaskMessageAction = TaskAction | "comment";
-export const TASK_PROMPT_ATTACHMENT_MAX_COUNT = 6;
-export const TASK_PROMPT_ATTACHMENT_MAX_SIZE_BYTES = 6 * 1024 * 1024;
-export const TASK_PROMPT_ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
-/** @deprecated Use ProviderProfile instead. Kept for Redis migration in task-store. */
-export type TaskReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
-export type TaskComplexity = "trivial" | "normal" | "complex";
-export type TaskBranchStrategy = "feature_branch" | "work_on_branch";
-export type AudienceType = "technical" | "non_technical" | "mixed";
-export type AgentResponseStyle = Extract<AudienceType, "technical" | "non_technical">;
-export type AgentExplanationDepth = "one_line" | "brief" | "standard" | "detailed" | "deep_dive";
-export type AgentJargonLevel = "avoid" | "balanced" | "expert";
-export type AgentCodePreference = "only_when_needed" | "prefer_examples" | "avoid_code";
-export type AgentClarifyBehavior = "ask_when_ambiguous" | "make_reasonable_assumptions";
-export type AgentFormattingStyle = "direct" | "teaching" | "executive" | "step_by_step" | "checklist" | "qa" | "problem_solution";
-
-export interface AgentResponsePolicy {
-  audience?: AudienceType;
-  explanationDepth?: AgentExplanationDepth;
-  jargonLevel?: AgentJargonLevel;
-  codePreference?: AgentCodePreference;
-  clarifyBehavior?: AgentClarifyBehavior;
-  formattingStyle?: AgentFormattingStyle;
-  extraInstructions?: string;
-}
-
-export type AgentResponsePreference = AgentResponsePolicy;
-
-export interface ResponsePreferencePreset {
-  id: string;
-  name: string;
-  description: string;
-  preference: AgentResponsePreference;
-  isSystem: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ResponsePreferencePresetInput {
-  id?: string;
-  name: string;
-  description?: string;
-  preference: AgentResponsePolicy;
-}
-
-export type McpServerTransport = "stdio" | "http";
-export type PermissionScope =
-  | "task:list"
-  | "task:create"
-  | "task:read"
-  | "task:edit"
-  | "task:build"
-  | "task:ask"
-  | "task:interactive"
-  | "task:delete"
-  | "snippet:list"
-  | "snippet:create"
-  | "snippet:read"
-  | "snippet:edit"
-  | "snippet:delete"
-  | "sequence:list"
-  | "sequence:create"
-  | "sequence:read"
-  | "sequence:edit"
-  | "sequence:delete"
-  | "repo:list"
-  | "repo:read"
-  | "repo:create"
-  | "repo:edit"
-  | "repo:delete"
-  | "settings:read"
-  | "settings:edit"
-  | "user:list"
-  | "user:create"
-  | "user:read"
-  | "user:edit"
-  | "user:delete";
-
-export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
-  "task:list",
-  "task:create",
-  "task:read",
-  "task:edit",
-  "task:build",
-  "task:ask",
-  "task:interactive",
-  "task:delete",
-  "snippet:list",
-  "snippet:create",
-  "snippet:read",
-  "snippet:edit",
-  "snippet:delete",
-  "sequence:list",
-  "sequence:create",
-  "sequence:read",
-  "sequence:edit",
-  "sequence:delete",
-  "repo:list",
-  "repo:read",
-  "repo:create",
-  "repo:edit",
-  "repo:delete",
-  "settings:read",
-  "settings:edit",
-  "user:list",
-  "user:create",
-  "user:read",
-  "user:edit",
-  "user:delete"
-];
-
-export interface PermissionScopeGroup {
-  label: string;
-  scopes: PermissionScope[];
-}
-
-export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
-  { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:interactive", "task:delete"] },
-  { label: "Snippets", scopes: ["snippet:list", "snippet:create", "snippet:read", "snippet:edit", "snippet:delete"] },
-  { label: "Sequences", scopes: ["sequence:list", "sequence:create", "sequence:read", "sequence:edit", "sequence:delete"] },
-  { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
-  { label: "Settings", scopes: ["settings:read", "settings:edit"] },
-  { label: "Users", scopes: ["user:list", "user:create", "user:read", "user:edit", "user:delete"] }
-];
-
-export type TaskCapabilityScope = Extract<PermissionScope, "task:build" | "task:ask">;
-
-export const getTaskCapabilityScopeForTaskType = (taskType: TaskType): TaskCapabilityScope =>
-  taskType === "ask" ? "task:ask" : "task:build";
-
-export const getTaskCapabilityScopeForTaskAction = (action: TaskAction): TaskCapabilityScope =>
-  action === "ask" ? "task:ask" : "task:build";
-
-export const getRequiredTaskCapabilityScopes = (input: { taskType?: TaskType }): TaskCapabilityScope[] => [
-  getTaskCapabilityScopeForTaskType(input.taskType ?? "build")
-];
-
-export const hasRequiredTaskCapabilities = (
-  grantedScopes: Iterable<PermissionScope>,
-  input: { taskType?: TaskType }
-): boolean => {
-  const granted = new Set(grantedScopes);
-  return getRequiredTaskCapabilityScopes(input).every((scope) => granted.has(scope));
-};
-
-export const getRequiredTaskCapabilityScopesForDefinition = (definition: TaskDefinitionInput): TaskCapabilityScope[] =>
-  definition.sourceType === "pull_request"
-    ? getRequiredTaskCapabilityScopes({ taskType: "build" })
-    : getRequiredTaskCapabilityScopes({
-        taskType: definition.taskType
-      });
-
-export const hasRequiredTaskCapabilitiesForDefinition = (
-  grantedScopes: Iterable<PermissionScope>,
-  definition: TaskDefinitionInput
-): boolean => {
-  const granted = new Set(grantedScopes);
-  return getRequiredTaskCapabilityScopesForDefinition(definition).every((scope) => granted.has(scope));
-};
-
-export interface Role {
-  id: string;
-  name: string;
-  description: string;
-  scopes: PermissionScope[];
-  allowedProviders: AgentProvider[];
-  allowedModels: string[];
-  allowedEfforts: ProviderProfile[];
-  scopeVersion?: number;
-  isSystem: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface UserRoleRef {
-  id: string;
-  name: string;
-  isSystem: boolean;
-}
-
-export interface User {
-  id: string;
-  name: string;
-  email: string;
-  active: boolean;
-  agentResponsePreference: AgentResponsePreference;
-  roles: UserRoleRef[];
-  repositoryIds: string[];
-  lastLoginAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface AuthSessionUser extends User {
-  scopes: PermissionScope[];
-  allowedProviders: AgentProvider[];
-  allowedModels: string[];
-  allowedEfforts: ProviderProfile[];
-  codexAuthJsonConfigured?: boolean;
-}
-
-export interface AuthSession {
-  user: AuthSessionUser;
-  expiresAt: string;
-}
-
-export interface AuthProfile {
-  name: string;
-  email: string;
-  agentResponsePreference: AgentResponsePreference;
-  codexAuthJsonConfigured: boolean;
-}
-
-export interface LoginInput {
-  email: string;
-  password: string;
-}
-
-export interface CreateRoleInput {
-  name: string;
-  description?: string;
-  scopes: PermissionScope[];
-  allowedProviders?: AgentProvider[];
-  allowedModels?: string[];
-  allowedEfforts?: ProviderProfile[];
-}
-
-export interface UpdateRoleInput {
-  name?: string;
-  description?: string;
-  scopes?: PermissionScope[];
-  allowedProviders?: AgentProvider[];
-  allowedModels?: string[];
-  allowedEfforts?: ProviderProfile[];
-}
-
-export interface CreateUserInput {
-  name: string;
-  email: string;
-  password: string;
-  active?: boolean;
-  roleIds?: string[];
-  repositoryIds?: string[];
-  agentResponsePreference?: Partial<AgentResponsePreference>;
-}
-
-export interface UpdateUserInput {
-  name?: string;
-  email?: string;
-  password?: string;
-  active?: boolean;
-  roleIds?: string[];
-  repositoryIds?: string[];
-  agentResponsePreference?: Partial<AgentResponsePreference>;
-}
-
-export interface RepositoryEnvVar {
-  key: string;
-  type?: "text";
-  value: string;
-}
-
-export interface RepositoryEnvFile {
-  key: string;
-  type: "file";
-  configured: boolean;
-  fileName?: string;
-}
-
-export type RepositoryEnvVarValue = RepositoryEnvVar | RepositoryEnvFile;
-
-export interface RepositoryEnvVarInputText {
-  key: string;
-  type?: "text";
-  value: string;
-}
-
-export interface RepositoryEnvVarInputFile {
-  key: string;
-  type: "file";
-  fileName?: string;
-  fileContentBase64?: string;
-}
-
-export type RepositoryEnvVarInput = RepositoryEnvVarInputText | RepositoryEnvVarInputFile;
-
-export interface RepositoryEnvSecret {
-  key: string;
-  configured: boolean;
-  type?: "text" | "file";
-  fileName?: string;
-}
-
-export interface RepositoryEnvSecretInputText {
-  key: string;
-  type?: "text";
-  value?: string;
-}
-
-export interface RepositoryEnvSecretInputFile {
-  key: string;
-  type: "file";
-  fileName?: string;
-  fileContentBase64?: string;
-}
-
-export type RepositoryEnvSecretInput = RepositoryEnvSecretInputText | RepositoryEnvSecretInputFile;
-
-export type GitHubAutomationTrigger = "issue_opened" | "pull_request_opened";
-export type GitHubCommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
-
-export interface GitHubAutomationLabelFilter {
-  labelsAny?: string[];
-  labelsAll?: string[];
-  labelsNone?: string[];
-}
-
-export interface GitHubAutomationTaskConfig {
-  assigneeEmail?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  taskType?: Extract<TaskType, "build" | "ask">;
-  includeComments?: boolean;
-  titleTemplate?: string;
-  notes?: string;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string | null;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  snippetId?: string;
-}
-
-export interface GitHubAutomationRule {
-  id: string;
-  name: string;
-  enabled: boolean;
-  trigger: GitHubAutomationTrigger;
-  syncStatusEnabled?: boolean;
-  automationEnabled?: boolean;
-  allowedTriggers?: GitHubCommentTriggerType[];
-  allowedReactions?: string[];
-  allowedCommands?: string[];
-  allowedActorLogins?: string[];
-  labelFilter?: GitHubAutomationLabelFilter;
-  task: GitHubAutomationTaskConfig;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface Repository {
-  id: string;
-  name: string;
-  url: string;
-  defaultBranch: string;
-  syncStatusEnabled?: boolean;
-  envVars: RepositoryEnvVarValue[];
-  envSecrets?: RepositoryEnvSecret[];
-  webhookUrl: string | null;
-  webhookEnabled: boolean;
-  webhookSecretConfigured: boolean;
-  webhookLastAttemptAt: string | null;
-  webhookLastStatus: "success" | "failed" | null;
-  webhookLastError: string | null;
-  githubWebhookSecretConfigured?: boolean;
-  githubAutomations?: GitHubAutomationRule[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export type TaskTerminalSessionMode = "interactive" | "git";
-export type CodexCredentialSource = "auto" | "profile" | "global";
-
-export interface Task {
-  id: string;
-  title: string;
-  deadline: string | null;
-  pinned: boolean;
-  hasPendingCheckpoint: boolean;
-  activeInteractiveSession?: boolean;
-  activeTerminalSessionMode?: TaskTerminalSessionMode | null;
-  ownerUserId: string | null;
-  creatorName?: string | null;
-  repoId: string;
-  repoName: string;
-  repoUrl: string;
-  repoDefaultBranch: string;
-  taskType: TaskType;
-  provider: AgentProvider;
-  providerProfile: ProviderProfile;
-  modelOverride: string | null;
-  codexCredentialSource?: CodexCredentialSource;
-  taskSource?: Extract<TaskSourceType, "blank" | "snippet" | "sequence">;
-  snippetId?: string;
-  sequenceId?: string;
-  sequenceRunId?: string | null;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-  complexity: TaskComplexity;
-  branchName: string | null;
-  workspaceBaseRef: string | null;
-  prompt: string;
-  notes?: string;
-  resultMarkdown: string | null;
-  executionSummary: string;
-  branchDiff: string | null;
-  pullCount?: number;
-  pushCount?: number;
-  lastAction: TaskAction | null;
-  status: TaskStatus;
-  workflowStatus: TaskWorkflowStatus;
-  executionStatus: TaskExecutionStatus;
-  executionAction: TaskExecutionAction;
-  reviewReason: TaskReviewReason;
-  logs: string[];
-  enqueued: boolean;
-  scheduledStartAt?: string | null;
-  scheduledEndAt?: string | null;
-  createdAt: string;
-  updatedAt: string;
-  startedAt: string | null;
-  finishedAt: string | null;
-  errorMessage: string | null;
-}
-
-export interface OpenAiDiffAssistInput {
-  model: string;
-  providerProfile: ProviderProfile;
-  userPrompt: string;
-  /** Repository-relative path (optional `a/` or `b/` prefixes are stripped server-side). */
-  filePath: string;
-  selectedSnippet: string;
-}
-
-export interface OpenAiDiffAssistResult {
-  text: string;
-}
-
-export interface TaskPromptMagicInput {
-  prompt: string;
-}
-
-export interface TaskPromptMagicResult {
-  prompt: string;
-}
-
-export interface TaskLiveDiff {
-  diff: string | null;
-  live: boolean;
-  fetchedAt: string;
-  message: string | null;
-  /** Current workspace HEAD branch (or "HEAD" when detached). */
-  headBranch: string | null;
-  /** Short SHA for HEAD. */
-  headShaShort: string | null;
-  /** Ref used as the compare base for this diff (e.g. origin/main). */
-  baseRef: string | null;
-  /** Auto-resolved base when no override was requested; mirrors baseRef when using default. */
-  defaultBaseRef: string | null;
-}
-
-/** One commit on the task workspace’s current branch (from `git log`). */
-export interface TaskWorkspaceCommit {
-  sha: string;
-  shortSha: string;
-  subject: string;
-  /** ISO 8601 timestamp from `git log` (%cI). */
-  committedAt: string;
-  authorName: string;
-}
-
-export interface TaskWorkspaceCommitLog {
-  commits: TaskWorkspaceCommit[];
-  fetchedAt: string;
-  message: string | null;
-}
-
-export type TaskWorkspaceFileTreeEntryKind = "file" | "directory";
-
-export interface TaskWorkspaceFileTreeEntry {
-  path: string;
-  name: string;
-  kind: TaskWorkspaceFileTreeEntryKind;
-}
-
-export interface TaskWorkspaceFileTree {
-  /** Directory prefix that was listed; null means workspace root. */
-  prefix: string | null;
-  entries: TaskWorkspaceFileTreeEntry[];
-  fetchedAt: string;
-  truncated: boolean;
-  totalCount: number;
-}
-
-export interface TaskWorkspaceFileSearchResult {
-  query: string;
-  results: string[];
-  fetchedAt: string;
-  truncated: boolean;
-  totalCount: number;
-}
-
-export type TaskWorkspaceFilePreviewKind = "text" | "image" | "binary";
-
-export interface TaskWorkspaceFilePreview {
-  path: string;
-  /** Git ref used for the preview, or null when reading the live workspace file. */
-  ref: string | null;
-  kind: TaskWorkspaceFilePreviewKind;
-  mimeType: string | null;
-  encoding: "utf8" | "base64";
-  content: string;
-  sizeBytes: number;
-}
-
-/** Snapshot for the Push UI before staging/commit (working tree + index vs HEAD). */
-export interface TaskPushPreview {
-  branchName: string;
-  changedFiles: string[];
-  /** Unified diff vs HEAD; may be truncated for large workspaces. */
-  diff: string;
-  diffTruncated: boolean;
-  /** `git diff HEAD --stat` output (may be truncated). */
-  diffStat: string;
-  hasUncommittedChanges: boolean;
-  unpushedCommitSubjects: string[];
-  /** Suggested first line if a new commit is created from current changes. */
-  suggestedCommitMessage: string;
-}
-
-export interface TaskMergePreview {
-  sourceBranch: string;
-  targetBranch: string;
-  mergeable: boolean;
-  message: string;
-  suggestedCommitMessage: string;
-}
-
-export interface TaskPromptAttachment {
-  id: string;
-  name: string;
-  mimeType: string;
-  sizeBytes: number;
-  relativePath: string;
-}
-
-export interface CreateTaskPromptAttachmentInput {
-  name: string;
-  mimeType: string;
-  dataBase64: string;
-}
-
-export interface TaskMessage {
-  id: string;
-  taskId: string;
-  role: TaskMessageRole;
-  content: string;
-  action: TaskMessageAction | null;
-  /** Optional saved image attachments that were attached when the user submitted this message. */
-  attachments?: TaskPromptAttachment[];
-  /** Present for interactive terminal lifecycle messages so history can address the terminal session. */
-  sessionId?: string | null;
-  createdAt: string;
-}
-
-export interface TaskExecutionInput {
-  content: string;
-  attachments?: TaskPromptAttachment[];
-}
-
-export type NormalizedAgentEventKind =
-  | "run.started"
-  | "run.status"
-  | "run.completed"
-  | "run.failed"
-  | "turn.started"
-  | "turn.completed"
-  | "assistant.message"
-  | "assistant.message.delta"
-  | "tool.started"
-  | "tool.completed"
-  | "tool.failed"
-  | "file.changed"
-  | "subtask.started"
-  | "subtask.progress"
-  | "subtask.completed"
-  | "usage.reported"
-  | "unknown";
-
-export interface NormalizedAgentEvent {
-  id: string;
-  provider: AgentProvider;
-  kind: NormalizedAgentEventKind;
-  rawEventIndex: number;
-  title: string;
-  detail?: string;
-  message?: string;
-  status?: string;
-  sessionId?: string;
-  messageId?: string;
-  toolCallId?: string;
-  parentToolCallId?: string | null;
-  toolName?: string;
-  filePath?: string;
-  fileChangeKind?: string;
-  exitCode?: number | null;
-  usage?: Record<string, unknown>;
-  metrics?: Record<string, unknown>;
-}
-
-export interface TaskRun {
-  id: string;
-  taskId: string;
-  action: TaskAction;
-  provider: AgentProvider;
-  providerProfile: ProviderProfile;
-  modelOverride: string | null;
-  branchName: string | null;
-  status: TaskRunStatus;
-  startedAt: string;
-  finishedAt: string | null;
-  summary: string | null;
-  /** Build-only outcome. Null for ask runs and legacy runs. */
-  changeOutcome?: "changed" | "no_change" | null;
-  errorMessage: string | null;
-  /** Git HEAD ref captured before the agent container runs; used for change proposals. */
-  changeProposalCheckpointRef?: string | null;
-  /** Untracked paths (repo-relative) at checkpoint; used so reject does not wipe pre-existing untracked files. */
-  changeProposalUntrackedPaths?: string[] | null;
-  /** True when the provider's native JSONL stream has been captured for this run. */
-  hasRawJson?: boolean;
-  timelineEvents?: NormalizedAgentEvent[];
-  logs: string[];
-}
-
-export type TaskGitOperationType = "clone_for_task" | "pull_task_branch" | "push_task_branch";
-export type TaskGitOperationStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
-export type TaskGitOperationFailureCode =
-  | "auth_failed"
-  | "network_error"
-  | "branch_missing"
-  | "conflict"
-  | "nothing_to_push"
-  | "workspace_missing"
-  | "unknown";
-
-export interface TaskGitOperation {
-  operationId: string;
-  taskId: string;
-  operationType: TaskGitOperationType;
-  status: TaskGitOperationStatus;
-  startedAt: string;
-  finishedAt: string | null;
-  errorCode: TaskGitOperationFailureCode | null;
-  errorMessage: string | null;
-  attemptCount: number;
-}
-
-export type TaskChangeProposalSourceType = "build_run" | "interactive_session";
-
-export type TaskChangeProposalStatus = "pending" | "applied" | "rejected" | "reverted";
-
-export interface TaskChangeProposal {
-  id: string;
-  taskId: string;
-  sourceType: TaskChangeProposalSourceType;
-  /** `TaskRun.id` for build_run; session id for interactive_session */
-  sourceId: string;
-  status: TaskChangeProposalStatus;
-  fromRef: string;
-  toRef: string;
-  /** Persisted unified diff for preview and revert (when not truncated). */
-  diff: string;
-  diffStat: string;
-  changedFiles: string[];
-  diffTruncated: boolean;
-  /** Untracked paths at proposal start; on reject only *new* untracked files (not in this list) are removed. */
-  untrackedPathsAtCheckpoint: string[];
-  createdAt: string;
-  /** Set when leaving pending (apply or reject). */
-  resolvedAt: string | null;
-  /** Set when an applied checkpoint is reverted via stored diff. */
-  revertedAt: string | null;
-}
-
-export interface ApplyTaskChangeProposalInput {
-  commitMessage?: string;
-}
-
-export interface RevertTaskChangeProposalFileInput {
-  path: string;
-}
-
-export interface TaskInteractiveTerminalTranscript {
-  taskId: string;
-  sessionId: string;
-  content: string;
-  truncated: boolean;
-}
-
-export interface McpServerConfig {
-  name: string;
-  enabled: boolean;
-  transport: McpServerTransport;
-  command?: string | null;
-  args?: string[];
-  url?: string | null;
-  bearerTokenEnvVar?: string | null;
-}
-
-export interface GitHubIssueReference {
-  number: number;
-  title: string;
-  url: string;
-}
-
-export interface GitHubPullRequestReference {
-  number: number;
-  title: string;
-  url: string;
-  headBranch: string;
-  baseBranch: string;
-}
-
-export interface GitHubBranchReference {
-  name: string;
-  isDefault: boolean;
-}
-
-export type DataStoreBackend = "redis" | "postgres";
-export type WorkspaceProvisioningMode = "clone_only" | "hybrid";
-
-export interface SystemDataStores {
-  taskStore: "postgres";
-  snippetStore: "postgres";
-  sequenceStore: "postgres";
-  repositoryStore: "postgres";
-  credentialStore: "postgres";
-  roleStore: "postgres";
-  userStore: "postgres";
-  settingsStore: "postgres";
-  taskQueueStore: "redis";
-  webhookDeliveryStore: "redis";
-  sessionStore: "redis";
-  eventBus: "redis";
-}
-
-export interface SystemSettings {
-  defaultProvider: AgentProvider;
-  maxAgents: number;
-  branchPrefix: string;
-  workspaceProvisioningMode: WorkspaceProvisioningMode;
-  gitUsername: string;
-  mcpServers: McpServerConfig[];
-  openaiBaseUrl: string | null;
-  taskPromptMagicModel: string;
-  taskPromptMagicTemplate: string;
-  githubTokenConfigured: boolean;
-  openaiApiKeyConfigured: boolean;
-  anthropicApiKeyConfigured: boolean;
-  codexDefaultModel: string;
-  codexDefaultEffort: ProviderProfile;
-  claudeDefaultModel: string;
-  claudeDefaultEffort: ProviderProfile;
-  responsePreferencePresets: ResponsePreferencePreset[];
-  dataStores?: SystemDataStores;
-}
-
-export interface UserNotes {
-  notes: string;
-  updatedAt: string;
-}
-
-export interface CreateRepositoryInput {
-  name: string;
-  url: string;
-  defaultBranch?: string;
-  syncStatusEnabled?: boolean;
-  envVars?: RepositoryEnvVarInput[];
-  envSecrets?: RepositoryEnvSecretInput[];
-  webhookUrl?: string | null;
-  webhookEnabled?: boolean;
-  webhookSecret?: string;
-  githubWebhookSecret?: string;
-  githubAutomations?: GitHubAutomationRule[];
-}
-
-export interface UpdateRepositoryInput {
-  name?: string;
-  url?: string;
-  defaultBranch?: string;
-  syncStatusEnabled?: boolean;
-  envVars?: RepositoryEnvVarInput[];
-  envSecrets?: RepositoryEnvSecretInput[];
-  webhookUrl?: string | null;
-  webhookEnabled?: boolean;
-  webhookSecret?: string;
-  clearWebhookSecret?: boolean;
-  githubWebhookSecret?: string;
-  clearGithubWebhookSecret?: boolean;
-  githubAutomations?: GitHubAutomationRule[];
-}
-
-export interface CreateTaskInput {
-  title: string;
-  draft?: boolean;
-  deadline?: string | null;
-  repoId: string;
-  prompt: string;
-  notes?: string;
-  attachments?: CreateTaskPromptAttachmentInput[];
-  taskType?: TaskType;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  model?: string;
-  reasoningEffort?: TaskReasoningEffort;
-  task_source?: "blank" | "snippet" | "sequence";
-  snippet_id?: string;
-  sequence_id?: string;
-  sequence_variables?: Record<string, string>;
-}
-
-export type TaskSourceType = "blank" | "snippet" | "sequence" | "issue" | "pull_request";
-
-export interface BlankTaskDefinitionInput {
-  sourceType: "blank";
-  title: string;
-  deadline?: string | null;
-  repoId: string;
-  prompt: string;
-  notes?: string;
-  attachments?: CreateTaskPromptAttachmentInput[];
-  taskType: TaskType;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
-export interface IssueTaskDefinitionInput {
-  sourceType: "issue";
-  title?: string;
-  deadline?: string | null;
-  notes?: string;
-  repoId: string;
-  issueNumber: number;
-  includeComments: boolean;
-  taskType: Extract<TaskType, "build" | "ask">;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
-export interface PullRequestTaskDefinitionInput {
-  sourceType: "pull_request";
-  title?: string;
-  deadline?: string | null;
-  notes?: string;
-  repoId: string;
-  pullRequestNumber: number;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-}
-
-export interface SnippetTaskDefinitionInput {
-  sourceType: "snippet";
-  title: string;
-  deadline?: string | null;
-  repoId: string;
-  snippetId: string;
-  prompt: string;
-  notes?: string;
-  attachments?: CreateTaskPromptAttachmentInput[];
-  taskType: TaskType;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
-export interface SequenceTaskDefinitionInput {
-  sourceType: "sequence";
-  title: string;
-  deadline?: string | null;
-  repoId: string;
-  sequenceId: string;
-  sequenceVariables?: Record<string, string>;
-  notes?: string;
-  attachments?: CreateTaskPromptAttachmentInput[];
-  taskType: TaskType;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
-export type TaskDefinitionInput =
-  | BlankTaskDefinitionInput
-  | SnippetTaskDefinitionInput
-  | SequenceTaskDefinitionInput
-  | IssueTaskDefinitionInput
-  | PullRequestTaskDefinitionInput;
-
-export interface Snippet {
-  id: string;
-  name: string;
-  content: string;
-  variables: SnippetVariable[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export type SnippetVariableType = "text" | "multiline";
-
-export interface SnippetVariable {
-  name: string;
-  type: SnippetVariableType;
-  title: string;
-  description: string;
-  defaultValue: string;
-}
-
-export interface CreateSnippetInput {
-  name: string;
-  content: string;
-  variables?: SnippetVariable[];
-}
-
-export interface UpdateSnippetInput {
-  name: string;
-  content: string;
-  variables?: SnippetVariable[];
-}
-
-export type SequenceStepType = "inline" | "snippet";
-export type SequenceStepState = "pending" | "running" | "succeeded" | "failed" | "skipped";
-export type SequenceExecutionMode = "auto_apply_changes" | "approve_before_continuing";
-export type SequenceRunStatus = "running" | "waiting_for_approval" | "waiting_for_checkpoint_resolution" | "succeeded" | "failed";
-
-export interface SequenceStep {
-  id: string;
-  type: SequenceStepType;
-  prompt: string;
-  snippetId?: string;
-}
-
-export interface Sequence {
-  id: string;
-  name: string;
-  executionMode: SequenceExecutionMode;
-  steps: SequenceStep[];
-  variables: SnippetVariable[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface CreateSequenceInput {
-  name: string;
-  executionMode?: SequenceExecutionMode;
-  steps: SequenceStep[];
-  variables?: SnippetVariable[];
-}
-
-export interface UpdateSequenceInput {
-  name: string;
-  executionMode?: SequenceExecutionMode;
-  steps: SequenceStep[];
-  variables?: SnippetVariable[];
-}
-
-export interface SequenceRunStep {
-  index: number;
-  prompt: string;
-  state: SequenceStepState;
-  taskRunId: string | null;
-  errorMessage: string | null;
-  startedAt: string | null;
-  finishedAt: string | null;
-}
-
-export interface SequenceRun {
-  id: string;
-  sequenceId: string;
-  taskId: string;
-  status: SequenceRunStatus;
-  executionMode: SequenceExecutionMode;
-  failPolicy: "fail_fast";
-  stepCount: number;
-  waitingForApprovalAfterStepIndex: number | null;
-  failedStepIndex: number | null;
-  startedAt: string;
-  finishedAt: string | null;
-  steps: SequenceRunStep[];
-}
-
-export interface CreateTaskFromIssueInput {
-  repoId: string;
-  draft?: boolean;
-  issueNumber: number;
-  includeComments?: boolean;
-  notes?: string;
-  deadline?: string | null;
-  taskType?: Extract<TaskType, "build" | "ask">;
-  title?: string;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  model?: string;
-  reasoningEffort?: TaskReasoningEffort;
-}
-
-export interface CreateTaskFromPullRequestInput {
-  repoId: string;
-  draft?: boolean;
-  pullRequestNumber: number;
-  title?: string;
-  notes?: string;
-  deadline?: string | null;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  model?: string;
-  reasoningEffort?: TaskReasoningEffort;
-}
-
-export interface TriggerTaskActionInput {
-  action: TaskAction;
-}
-
-export interface UpdateTaskConfigInput {
-  provider: AgentProvider;
-  providerProfile: ProviderProfile;
-  modelOverride?: string | null;
-  codexCredentialSource?: CodexCredentialSource;
-  branchStrategy?: TaskBranchStrategy;
-}
-
-export interface UpdateTaskPinInput {
-  pinned: boolean;
-}
-
-export interface UpdateTaskTitleInput {
-  title: string;
-}
-
-export interface UpdateTaskNotesInput {
-  notes: string;
-}
-
-export interface UpdateTaskDeadlineInput {
-  deadline: string | null;
-}
-
-export interface UpdateUserNotesInput {
-  notes: string;
-}
-
-export interface UpdateTaskStateInput {
-  status: Extract<TaskStatus, "open" | "in_progress" | "in_review" | "awaiting_review" | "done">;
-}
-
-export interface UpdateTaskAssigneeInput {
-  ownerUserId: string;
-}
-
-export interface CreateTaskMessageInput {
-  content: string;
-  attachments?: CreateTaskPromptAttachmentInput[];
-  action?: TaskMessageAction;
-}
-
-export interface UpdateTaskMessageInput {
-  content: string;
-}
-
-export interface UpdateTaskWorkspaceFileInput {
-  path: string;
-  content: string;
-}
-
-export interface MergeTaskInput {
-  targetBranch: string;
-  commitMessage?: string;
-  deleteRemoteBranch?: boolean;
-}
-
-export const getTaskBranchStrategyLabel = (strategy: TaskBranchStrategy): string =>
-  ({
-    feature_branch: "Create Feature Branch",
-    work_on_branch: "Work On Existing Branch"
-  })[strategy];
-
-export const getAgentProviderLabel = (provider: AgentProvider): string =>
-  ({
-    codex: "Codex",
-    claude: "Claude Code (experimental)"
-  })[provider];
-
-export const getProviderProfileLabel = (profile: ProviderProfile): string =>
-  ({
-    low: "Low",
-    medium: "Medium",
-    high: "High",
-    max: "Max"
-  })[profile];
-
-export const getTaskTypeLabel = (taskType: TaskType): string =>
-  ({
-    build: "Build",
-    ask: "Ask"
-  })[taskType];
-
-const queuedStatusByAction: Record<TaskAction, TaskStatus> = {
-  build: "build_queued",
-  ask: "ask_queued"
-};
-
-const activeStatusByAction: Record<TaskAction, TaskStatus> = {
-  build: "building",
-  ask: "asking"
-};
-
-const successfulStatusByAction: Record<TaskAction, TaskStatus> = {
-  build: "completed",
-  ask: "answered"
-};
-
-export const getQueuedStatusForAction = (action: TaskAction): TaskStatus => queuedStatusByAction[action];
-export const getActiveStatusForAction = (action: TaskAction): TaskStatus => activeStatusByAction[action];
-export const getSuccessfulStatusForAction = (action: TaskAction): TaskStatus => successfulStatusByAction[action];
-
-export const isQueuedTaskStatus = (status: TaskStatus): boolean =>
-  status === "build_queued" ||
-  status === "ask_queued";
-
-export const isActiveTaskStatus = (status: TaskStatus): boolean =>
-  status === "preparing_workspace" ||
-  status === "building" ||
-  status === "asking";
-
-export const isTaskWorking = (task: Pick<Task, "status" | "activeInteractiveSession"> & { executionStatus?: TaskExecutionStatus }): boolean =>
-  task.executionStatus === "queued" ||
-  task.executionStatus === "preparing" ||
-  task.executionStatus === "running" ||
-  isActiveTaskStatus(task.status) ||
-  task.activeInteractiveSession === true;
-
-export const getTaskExecutionStatus = (
-  task: Pick<Task, "status" | "activeInteractiveSession"> & { executionStatus?: TaskExecutionStatus }
-): TaskExecutionStatus => {
-  if (task.activeInteractiveSession === true) {
-    return "running";
-  }
-
-  if (
-    task.executionStatus === "idle" ||
-    task.executionStatus === "scheduled" ||
-    task.executionStatus === "queued" ||
-    task.executionStatus === "preparing" ||
-    task.executionStatus === "running" ||
-    task.executionStatus === "failed" ||
-    task.executionStatus === "cancelled"
-  ) {
-    return task.executionStatus;
-  }
-
-  if (task.status === "scheduled") {
-    return "scheduled";
-  }
-
-  if (isQueuedTaskStatus(task.status)) {
-    return "queued";
-  }
-
-  if (task.status === "preparing_workspace") {
-    return "preparing";
-  }
-
-  if (isActiveTaskStatus(task.status)) {
-    return "running";
-  }
-
-  if (task.status === "failed") {
-    return "failed";
-  }
-
-  if (task.status === "cancelled") {
-    return "cancelled";
-  }
-
-  return "idle";
-};
-
-export const getTaskExecutionAction = (
-  task: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode"> & { executionAction?: TaskExecutionAction }
-): TaskExecutionAction => {
-  if (task.activeInteractiveSession === true) {
-    return task.activeTerminalSessionMode === "git" ? "terminal" : "interactive";
-  }
-
-  if (task.status === "draft") {
-    return null;
-  }
-
-  if (task.executionAction === "build" || task.executionAction === "ask" || task.executionAction === "interactive" || task.executionAction === "terminal") {
-    return task.executionAction;
-  }
-
-  if (task.status === "build_queued" || task.status === "preparing_workspace" || task.status === "building") {
-    return "build";
-  }
-
-  if (task.status === "ask_queued" || task.status === "asking") {
-    return "ask";
-  }
-
-  return task.lastAction ?? null;
-};
-
-export const getTaskReviewReason = (task: Pick<Task, "status" | "hasPendingCheckpoint" | "taskType">): TaskReviewReason => {
-  if (task.hasPendingCheckpoint || task.status === "awaiting_review") {
-    return "checkpoint";
-  }
-
-  if (task.status === "in_review") {
-    return task.taskType === "ask" ? "answer" : "manual";
-  }
-
-  return null;
-};
-
-export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingCheckpoint" | "taskType">): TaskWorkflowStatus => {
-  if (task.status === "archived") {
-    return "archived";
-  }
-
-  if (task.status === "done" || task.status === "accepted") {
-    return "done";
-  }
-
-  if (task.status === "in_progress") {
-    return "in_progress";
-  }
-
-  if (task.status === "awaiting_review" || task.status === "in_review") {
-    return "review";
-  }
-
-  if (task.status === "draft" || task.status === "scheduled") {
-    return "backlog";
-  }
-
-  return "ready";
-};
-
-export const getTaskTerminalSessionLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Git Terminal" : "Interactive Terminal";
-
-export const getTaskTerminalSessionSentenceLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Git terminal" : "Interactive terminal";
-
-export const getTaskTerminalSessionStartMessage = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Terminal session started." : `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
-
-export const getTaskTerminalSessionEndMessage = (mode: TaskTerminalSessionMode): string =>
-  `${getTaskTerminalSessionSentenceLabel(mode)} session ended.`;
-
-export const getTaskTerminalSessionNoChangesMessage = (mode: TaskTerminalSessionMode): string =>
-  `${getTaskTerminalSessionSentenceLabel(mode)} session ended. No workspace changes were detected.`;
-
-export const getTaskTerminalSessionReviewMessage = (mode: TaskTerminalSessionMode): string =>
-  `${getTaskTerminalSessionSentenceLabel(mode)} session ended. Review proposed changes below.`;
-
-/** When set, checkpoint apply / reject / revert must be refused (agent run queued or in progress). */
-export function getCheckpointMutationBlockedReason(status: TaskStatus): string | null {
-  if (isQueuedTaskStatus(status) || isActiveTaskStatus(status)) {
-    return `Checkpoint actions are unavailable while the task is “${getTaskStatusLabel(status)}”.`;
-  }
-  return null;
-}
-
-export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
-  status === "archived";
-
-export const getTaskStatusLabel = (status: TaskStatus): string =>
-  ({
-    draft: "Draft",
-    scheduled: "Scheduled",
-    build_queued: "Build Queued",
-    preparing_workspace: "Preparing Workspace",
-    building: "Building",
-    ask_queued: "Ask Queued",
-    asking: "Answering",
-    open: "Open",
-    in_progress: "In Progress",
-    in_review: "In Review",
-    awaiting_review: "Awaiting Review",
-    done: "Done",
-    completed: "Completed",
-    answered: "Answered",
-    accepted: "Accepted",
-    archived: "Archived",
-    cancelled: "Cancelled",
-    failed: "Failed"
-  })[status];
-
-export const getTaskWorkflowStatusLabel = (status: TaskWorkflowStatus): string =>
-  ({
-    backlog: "Backlog",
-    ready: "Ready",
-    in_progress: "In Progress",
-    review: "Review",
-    done: "Done",
-    archived: "Archived"
-  })[status];
-
-export const getTaskExecutionStatusLabel = (status: TaskExecutionStatus): string =>
-  ({
-    idle: "Idle",
-    scheduled: "Scheduled",
-    queued: "Queued",
-    preparing: "Preparing",
-    running: "Running",
-    failed: "Failed",
-    cancelled: "Cancelled"
-  })[status];
-
-export interface UpdateSettingsInput {
-  defaultProvider?: AgentProvider;
-  maxAgents?: number;
-  branchPrefix?: string;
-  workspaceProvisioningMode?: WorkspaceProvisioningMode;
-  gitUsername?: string;
-  mcpServers?: McpServerConfig[];
-  openaiBaseUrl?: string | null;
-  taskPromptMagicModel?: string;
-  taskPromptMagicTemplate?: string;
-  codexDefaultModel?: string;
-  codexDefaultEffort?: ProviderProfile;
-  claudeDefaultModel?: string;
-  claudeDefaultEffort?: ProviderProfile;
-  responsePreferencePresets?: ResponsePreferencePresetInput[];
-}
-
-export interface UpdateCredentialSettingsInput {
-  githubToken?: string;
-  openaiApiKey?: string;
-  anthropicApiKey?: string;
-  clearGithubToken?: boolean;
-  clearOpenAiApiKey?: boolean;
-  clearAnthropicApiKey?: boolean;
-}
-
-export interface UpdateAuthProfileInput {
-  name?: string;
-  codexAuthJson?: string;
-  clearCodexAuthJson?: boolean;
-  agentResponsePreference?: Partial<AgentResponsePreference>;
-}
-
-export interface TaskEvent {
-  type: "task:created" | "task:updated";
-  payload: Task;
-}
-
-export interface TaskDeletedEvent {
-  type: "task:deleted";
-  payload: {
-    id: string;
-    repoId: string;
-    ownerUserId: string | null;
-  };
-}
-
-export interface TaskLogEvent {
-  type: "task:log";
-  payload: {
-    taskId: string;
-    runId?: string | null;
-    line: string;
-    timestamp: string;
-  };
-}
-
-export interface TaskMessageEvent {
-  type: "task:message";
-  payload: TaskMessage;
-}
-
-export interface TaskMessageUpdatedEvent {
-  type: "task:message_updated";
-  payload: TaskMessage;
-}
-
-export interface TaskRunEvent {
-  type: "task:run_updated";
-  payload: TaskRun;
-}
-
-export interface TaskGitOperationEvent {
-  type: "task:git_operation";
-  payload: TaskGitOperation;
-}
-
-export interface TaskChangeProposalEvent {
-  type: "task:change_proposal";
-  payload: TaskChangeProposal;
-}
-
-export interface TaskPushedEvent {
-  type: "task:pushed";
-  payload: {
-    taskId: string;
-    repoId: string;
-    branchName: string;
-    commitMessage: string | null;
-    triggeredAt: string;
-  };
-}
-
-export interface TaskMergedEvent {
-  type: "task:merged";
-  payload: {
-    taskId: string;
-    repoId: string;
-    sourceBranch: string;
-    targetBranch: string;
-    commitMessage: string | null;
-    triggeredAt: string;
-  };
-}
-
-export interface SettingsEvent {
-  type: "settings:updated";
-  payload: SystemSettings;
-}
-
-export interface RepositoryEvent {
-  type: "repository:created" | "repository:updated" | "repository:deleted";
-  payload: Repository | { id: string };
-}
-
-export interface SnippetEvent {
-  type: "snippet:created" | "snippet:updated" | "snippet:deleted";
-  payload: Snippet | { id: string };
-}
-
-export interface SequenceEvent {
-  type: "sequence:created" | "sequence:updated" | "sequence:deleted";
-  payload: Sequence | { id: string };
-}
-
-export interface SequenceRunEvent {
-  type: "sequence:run_updated";
-  payload: SequenceRun;
-}
-
-export type RealtimeEvent =
-  | TaskEvent
-  | TaskDeletedEvent
-  | TaskLogEvent
-  | TaskMessageEvent
-  | TaskMessageUpdatedEvent
-  | TaskRunEvent
-  | TaskGitOperationEvent
-  | TaskChangeProposalEvent
-  | TaskPushedEvent
-  | TaskMergedEvent
-  | SettingsEvent
-  | RepositoryEvent
-  | SnippetEvent
-  | SequenceEvent
-  | SequenceRunEvent;
 ````

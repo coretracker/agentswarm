@@ -66,11 +66,27 @@ import {
   Tag,
   Tabs,
   Tooltip,
+  Timeline,
   Typography,
   message,
   theme as antTheme
 } from "antd";
-import { ArrowRightOutlined, CopyOutlined, DownloadOutlined, EditOutlined, LoadingOutlined, MoreOutlined, RobotOutlined, RollbackOutlined } from "@ant-design/icons";
+import {
+  ArrowRightOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  CodeOutlined,
+  CopyOutlined,
+  DownloadOutlined,
+  EditOutlined,
+  FileTextOutlined,
+  InfoCircleOutlined,
+  LoadingOutlined,
+  MessageOutlined,
+  MoreOutlined,
+  RobotOutlined,
+  RollbackOutlined
+} from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -4276,6 +4292,107 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
       .join(" ");
 
+  type TimelineEvent = NonNullable<TaskRun["timelineEvents"]>[number];
+
+  const getTimelineEventColor = (event: TimelineEvent): string => {
+    if (event.kind.includes("failed") || (event.exitCode != null && event.exitCode !== 0)) {
+      return "red";
+    }
+    if (event.kind.includes("completed") || event.kind === "file.changed") {
+      return "green";
+    }
+    if (event.kind.includes("started") || event.status === "in_progress") {
+      return "blue";
+    }
+    if (event.kind.startsWith("assistant")) {
+      return "purple";
+    }
+    if (event.kind.startsWith("tool")) {
+      return "cyan";
+    }
+    return "gray";
+  };
+
+  const getTimelineEventIcon = (event: TimelineEvent): ReactNode => {
+    if (event.kind.includes("failed") || (event.exitCode != null && event.exitCode !== 0)) {
+      return <CloseCircleOutlined />;
+    }
+    if (event.status === "in_progress" || event.kind.endsWith(".started")) {
+      return <LoadingOutlined spin />;
+    }
+    if (event.kind.startsWith("assistant")) {
+      return <MessageOutlined />;
+    }
+    if (event.kind.startsWith("tool")) {
+      return <CodeOutlined />;
+    }
+    if (event.kind === "file.changed") {
+      return <FileTextOutlined />;
+    }
+    if (event.kind.includes("completed")) {
+      return <CheckCircleOutlined />;
+    }
+    if (event.kind.startsWith("run")) {
+      return <RobotOutlined />;
+    }
+    return <InfoCircleOutlined />;
+  };
+
+  const renderTimelineEventContent = (event: TimelineEvent): ReactNode => {
+    const showDetail = event.detail && event.detail !== event.filePath;
+    return (
+      <Space direction="vertical" size={6} style={{ width: "100%" }}>
+        <Flex align="flex-start" justify="space-between" gap={8} wrap="wrap">
+          <Space size={6} wrap>
+            <Typography.Text strong>{event.title}</Typography.Text>
+            {event.toolName ? <Tag color="blue">{event.toolName}</Tag> : null}
+            {event.status ? <Tag>{event.status}</Tag> : null}
+            {event.exitCode != null ? <Tag color={event.exitCode === 0 ? "green" : "red"}>exit {event.exitCode}</Tag> : null}
+          </Space>
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            #{event.rawEventIndex + 1}
+          </Typography.Text>
+        </Flex>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {formatTimelineEventKind(event.kind)}
+        </Typography.Text>
+        {event.filePath ? (
+          <Typography.Text code style={{ width: "fit-content", maxWidth: "100%", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {event.filePath}
+          </Typography.Text>
+        ) : null}
+        {showDetail ? (
+          <Typography.Text
+            code
+            style={{
+              display: "block",
+              padding: "6px 8px",
+              background: token.colorFillAlter,
+              borderRadius: 6,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word"
+            }}
+          >
+            {event.detail}
+          </Typography.Text>
+        ) : null}
+        {event.message ? (
+          <Typography.Paragraph
+            style={{
+              margin: 0,
+              maxHeight: 180,
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word"
+            }}
+          >
+            {event.message}
+          </Typography.Paragraph>
+        ) : null}
+      </Space>
+    );
+  };
+
   const renderRunTimelinePanel = (run: TaskRun) => {
     const events = run.timelineEvents ?? [];
     if (events.length === 0) {
@@ -4283,33 +4400,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     return (
-      <List
-        size="small"
-        dataSource={events}
-        renderItem={(event) => (
-          <List.Item style={{ alignItems: "flex-start", paddingLeft: 0, paddingRight: 0 }}>
-            <Space direction="vertical" size={2} style={{ width: "100%" }}>
-              <Space size={8} wrap>
-                <Tag>{formatTimelineEventKind(event.kind)}</Tag>
-                {event.status ? <Tag color={event.kind.includes("failed") ? "red" : undefined}>{event.status}</Tag> : null}
-                {event.toolName ? <Tag color="blue">{event.toolName}</Tag> : null}
-                {event.exitCode != null ? <Tag color={event.exitCode === 0 ? "green" : "red"}>exit {event.exitCode}</Tag> : null}
-              </Space>
-              <Typography.Text strong>{event.title}</Typography.Text>
-              {event.detail ? (
-                <Typography.Text code style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                  {event.detail}
-                </Typography.Text>
-              ) : null}
-              {event.message ? (
-                <Typography.Paragraph style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                  {event.message}
-                </Typography.Paragraph>
-              ) : null}
-              {event.filePath ? <Typography.Text type="secondary">{event.filePath}</Typography.Text> : null}
-            </Space>
-          </List.Item>
-        )}
+      <Timeline
+        mode="left"
+        items={events.map((event) => ({
+          key: event.id,
+          color: getTimelineEventColor(event),
+          icon: getTimelineEventIcon(event),
+          content: renderTimelineEventContent(event)
+        }))}
       />
     );
   };
