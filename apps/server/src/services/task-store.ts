@@ -24,6 +24,7 @@ import {
   type TaskGitOperationFailureCode,
   type TaskGitOperationStatus,
   type TaskGitOperationType,
+  type TaskWorkflowStatus,
   type TaskStatus,
   type TaskChangeProposal,
   type TaskChangeProposalStatus,
@@ -208,9 +209,24 @@ const normalizeTaskExecutionAction = (
   return getTaskExecutionAction(fallbackTask);
 };
 
+const normalizeTaskWorkflowStatus = (
+  value: unknown,
+  fallbackTask: Pick<Task, "status" | "hasPendingCheckpoint" | "taskType">
+): TaskWorkflowStatus => {
+  if (fallbackTask.status === "archived") {
+    return "archived";
+  }
+
+  if (value === "backlog" || value === "ready" || value === "in_progress" || value === "review" || value === "done") {
+    return value;
+  }
+
+  return getTaskWorkflowStatus(fallbackTask);
+};
+
 const withDerivedTaskState = (task: Task): Task => ({
   ...task,
-  workflowStatus: getTaskWorkflowStatus(task),
+  workflowStatus: normalizeTaskWorkflowStatus(task.workflowStatus, task),
   executionStatus: normalizeTaskExecutionStatus(task.executionStatus, task),
   executionAction: normalizeTaskExecutionAction(task.executionAction, task),
   reviewReason: getTaskReviewReason(task)

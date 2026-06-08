@@ -1171,7 +1171,7 @@ export interface UpdateUserNotesInput {
 }
 
 export interface UpdateTaskStateInput {
-  status: Extract<TaskStatus, "draft" | "open" | "in_progress" | "in_review" | "done">;
+  status: Extract<TaskWorkflowStatus, "backlog" | "ready" | "in_progress" | "review" | "done">;
 }
 
 export interface UpdateTaskAssigneeInput {

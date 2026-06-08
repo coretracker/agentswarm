@@ -153,7 +153,7 @@ const updateTaskDraftSchema = z.object({
 });
 
 const updateTaskStateSchema = z.object({
-  status: z.enum(["draft", "open", "in_progress", "in_review", "done"])
+  status: z.enum(["backlog", "ready", "in_progress", "review", "done"])
 });
 
 const updateTaskAssigneeSchema = z.object({
@@ -1822,11 +1822,13 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
     }
 
-    if (task.status === parsed.data.status) {
+    if (task.workflowStatus === parsed.data.status) {
       return reply.send(await withBranchSyncCounts(deps.spawner, task));
     }
 
-    const updated = await deps.taskStore.setStatus(task.id, parsed.data.status);
+    const updated = await deps.taskStore.patchTask(task.id, {
+      workflowStatus: parsed.data.status
+    });
     if (!updated) {
       return reply.status(404).send({ message: "Task not found" });
     }

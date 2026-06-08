@@ -11,6 +11,7 @@ import {
   getTaskTerminalSessionLabel,
   getTaskTerminalSessionSentenceLabel,
   getTaskTypeLabel,
+  getTaskWorkflowStatusLabel,
   getModelsForProvider,
   isActiveTaskStatus,
   type Task,
@@ -33,6 +34,7 @@ import {
   type TaskChangeProposal,
   type TaskInteractiveTerminalTranscript,
   type TaskTerminalSessionMode,
+  type TaskWorkflowStatus,
   type TaskWorkspaceCommit,
   type TaskWorkspaceFilePreview,
   type TaskGitOperation,
@@ -573,12 +575,12 @@ function getGitHubDiffTarget(task: Task, existingPullRequest?: GitHubPullRequest
 }
 
 type FollowUpMode = "continue" | null;
-type EditableTaskState = Extract<Task["status"], "draft" | "open" | "in_progress" | "in_review" | "done">;
+type EditableTaskState = Extract<TaskWorkflowStatus, "backlog" | "ready" | "in_progress" | "review" | "done">;
 const taskStateOptions: Array<{ value: EditableTaskState; label: string }> = [
-  { value: "draft", label: "Backlog" },
-  { value: "open", label: "Open" },
+  { value: "backlog", label: "Backlog" },
+  { value: "ready", label: "Open" },
   { value: "in_progress", label: "In Progress" },
-  { value: "in_review", label: "In Review" },
+  { value: "review", label: "In Review" },
   { value: "done", label: "Done" }
 ];
 
@@ -942,7 +944,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
   const [draftEditModalOpen, setDraftEditModalOpen] = useState(false);
   const [taskStateModalOpen, setTaskStateModalOpen] = useState(false);
-  const [taskStateDraft, setTaskStateDraft] = useState<EditableTaskState>("open");
+  const [taskStateDraft, setTaskStateDraft] = useState<EditableTaskState>("ready");
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
   const [applyCheckpointModalProposal, setApplyCheckpointModalProposal] = useState<TaskChangeProposal | null>(null);
@@ -1031,7 +1033,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     workspaceFilePreviewRequestIdRef.current += 1;
     setWorkspaceFilePreview((current) => ({ ...current, open: false }));
     setTaskStateModalOpen(false);
-    setTaskStateDraft("open");
+    setTaskStateDraft("ready");
     setHistoryPage(1);
     fileMentionSearchRequestIdRef.current += 1;
     if (fileMentionSearchTimerRef.current !== null) {
@@ -2780,9 +2782,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     const currentState: EditableTaskState =
-      task.status === "draft" || task.status === "in_progress" || task.status === "in_review" || task.status === "done"
-        ? task.status
-        : "open";
+      task.workflowStatus === "backlog" ||
+      task.workflowStatus === "ready" ||
+      task.workflowStatus === "in_progress" ||
+      task.workflowStatus === "review" ||
+      task.workflowStatus === "done"
+        ? task.workflowStatus
+        : "ready";
     setTaskStateDraft(currentState);
     setTaskStateModalOpen(true);
   };
@@ -2802,7 +2808,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       const updatedTask = await api.updateTaskState(task.id, { status: taskStateDraft });
       applyUpdatedTask(updatedTask);
       setTaskStateModalOpen(false);
-      messageApi.success(`Task set to ${getTaskStatusLabel(updatedTask.status)}`);
+      messageApi.success(`Task set to ${getTaskWorkflowStatusLabel(updatedTask.workflowStatus)}`);
     } catch (error) {
       showTaskActionError(error, "Failed to update task state");
     } finally {

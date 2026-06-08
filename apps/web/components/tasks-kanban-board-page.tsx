@@ -24,15 +24,15 @@ type BoardTaskStatus = UpdateTaskStateInput["status"];
 type BoardItem = { id: string; task: Task; column: BoardColumnId };
 
 const columns: Array<{ id: BoardColumnId; title: string; taskStatus: BoardTaskStatus; acceptsTasks: boolean }> = [
-  { id: "backlog", title: "Backlog", taskStatus: "draft", acceptsTasks: true },
-  { id: "ready", title: getTaskWorkflowStatusLabel("ready"), taskStatus: "open", acceptsTasks: true },
+  { id: "backlog", title: "Backlog", taskStatus: "backlog", acceptsTasks: true },
+  { id: "ready", title: getTaskWorkflowStatusLabel("ready"), taskStatus: "ready", acceptsTasks: true },
   { id: "in_progress", title: getTaskWorkflowStatusLabel("in_progress"), taskStatus: "in_progress", acceptsTasks: true },
-  { id: "review", title: getTaskWorkflowStatusLabel("review"), taskStatus: "in_review", acceptsTasks: true },
+  { id: "review", title: getTaskWorkflowStatusLabel("review"), taskStatus: "review", acceptsTasks: true },
   { id: "done", title: getTaskWorkflowStatusLabel("done"), taskStatus: "done", acceptsTasks: true }
 ];
 
 const taskColumn = (task: Task): BoardColumnId => {
-  if (task.status === "draft") {
+  if (task.workflowStatus === "backlog") {
     return "backlog";
   }
   if (task.workflowStatus === "done") {
