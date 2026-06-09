@@ -5428,6 +5428,65 @@ export function CheckpointFileEditorModal({
 }
 ````
 
+## File: apps/web/components/notes-markdown-editor.tsx
+````typescript
+"use client";
+
+import {
+  BoldItalicUnderlineToggles,
+  CreateLink,
+  ListsToggle,
+  MDXEditor,
+  headingsPlugin,
+  linkDialogPlugin,
+  linkPlugin,
+  listsPlugin,
+  markdownShortcutPlugin,
+  quotePlugin,
+  thematicBreakPlugin,
+  toolbarPlugin
+} from "@mdxeditor/editor";
+
+interface NotesMarkdownEditorProps {
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}
+
+const notesEditorPlugins = [
+  headingsPlugin(),
+  quotePlugin(),
+  listsPlugin(),
+  thematicBreakPlugin(),
+  linkPlugin(),
+  linkDialogPlugin(),
+  markdownShortcutPlugin(),
+  toolbarPlugin({
+    toolbarContents: () => (
+      <>
+        <BoldItalicUnderlineToggles />
+        <ListsToggle />
+        <CreateLink />
+      </>
+    )
+  })
+];
+
+export function NotesMarkdownEditor({ value, onChange, disabled = false }: NotesMarkdownEditorProps) {
+  return (
+    <div style={disabled ? { pointerEvents: "none", opacity: 0.64 } : undefined}>
+      <MDXEditor
+        markdown={value}
+        onChange={onChange}
+        className="task-notes-mdx-editor"
+        contentEditableClassName="task-notes-mdx-editor-content"
+        plugins={notesEditorPlugins}
+      />
+    </div>
+  );
+}
+````
+
 ## File: apps/web/components/response-policy-fields.tsx
 ````typescript
 "use client";
@@ -13837,192 +13896,6 @@ export const registerUserRoutes = (
 };
 ````
 
-## File: apps/server/src/services/codex-utility-service.ts
-````typescript
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import path from "node:path";
-import type { ProviderProfile } from "@agentswarm/shared-types";
-import { env } from "../config/env.js";
-import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
-import type { SettingsRuntimeCredentials } from "./settings-store.js";
-
-const DEFAULT_TIMEOUT_MS = 60_000;
-const DEFAULT_OUTPUT_MAX_CHARS = 12_000;
-const CODEX_UTILITY_DIR_NAME = "codex-utility";
-
-export class CodexUtilityUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "CodexUtilityUnavailableError";
-  }
-}
-
-export class CodexUtilityError extends Error {
-  constructor(
-    message: string,
-    readonly statusCode = 502
-  ) {
-    super(message);
-    this.name = "CodexUtilityError";
-  }
-}
-
-const codexUtilityScript = `
-set -eu
-mkdir -p "$HOME/.codex"
-cat > "$HOME/.codex/config.toml" <<'EOF'
-sandbox_mode = "read-only"
-approval_policy = "never"
-
-[notice]
-hide_rate_limit_model_nudge = true
-hide_gpt5_1_migration_prompt = true
-"hide_gpt-5.1-codex-max_migration_prompt" = true
-EOF
-if [ -n "\${CODEX_AUTH_JSON_B64:-}" ]; then
-  printf %s "$CODEX_AUTH_JSON_B64" | base64 -d > "$HOME/.codex/auth.json"
-elif [ -n "\${OPENAI_API_KEY:-}" ]; then
-  printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file
-else
-  echo "Codex credentials are not configured." >&2
-  exit 64
-fi
-codex exec \\
-  --ephemeral \\
-  --skip-git-repo-check \\
-  --ignore-rules \\
-  --sandbox read-only \\
-  -C "$CODEX_UTILITY_WORKDIR" \\
-  -m "$CODEX_MODEL" \\
-  -c cli_auth_credentials_store=file \\
-  -c "model_reasoning_effort=\\"$CODEX_REASONING_EFFORT\\"" \\
-  -o "$CODEX_UTILITY_WORKDIR/output.txt" \\
-  - < "$CODEX_UTILITY_WORKDIR/prompt.txt"
-`;
-
-const trimProcessOutput = (value: string, maxChars = 4000): string => {
-  const trimmed = value.trim();
-  return trimmed.length > maxChars ? `${trimmed.slice(0, maxChars)}...` : trimmed;
-};
-
-const isDockerRunnerUnavailable = (code: number | null, output: string): boolean => {
-  const normalized = output.toLowerCase();
-  return (
-    code === 125 ||
-    normalized.includes("cannot connect to the docker daemon") ||
-    normalized.includes("unable to find image") ||
-    normalized.includes("pull access denied") ||
-    normalized.includes("no such image") ||
-    normalized.includes("manifest unknown")
-  );
-};
-
-export async function executeCodexUtility(input: {
-  prompt: string;
-  model: string;
-  providerProfile: ProviderProfile;
-  credentials: SettingsRuntimeCredentials;
-  timeoutMs?: number;
-  outputMaxChars?: number;
-}): Promise<string> {
-  const image = env.CODEX_INTERACTIVE_IMAGE?.trim();
-  if (!image) {
-    throw new CodexUtilityUnavailableError("Codex utility runner is not configured (set CODEX_INTERACTIVE_IMAGE).");
-  }
-  if (!input.credentials.openaiApiKey && !input.credentials.codexAuthJson) {
-    throw new CodexUtilityUnavailableError("Codex credentials are not configured.");
-  }
-
-  const tempDir = path.join(env.RUNTIME_PAYLOAD_ROOT, CODEX_UTILITY_DIR_NAME, randomUUID());
-  await mkdir(tempDir, { recursive: true });
-  await writeFile(path.join(tempDir, "prompt.txt"), input.prompt, "utf8");
-
-  const args = [
-    "run",
-    "--rm",
-    "-e",
-    "HOME=/root",
-    "-e",
-    `CODEX_MODEL=${input.model}`,
-    "-e",
-    `CODEX_REASONING_EFFORT=${codexReasoningEffortForProfile(input.providerProfile)}`,
-    "-e",
-    `CODEX_UTILITY_WORKDIR=${tempDir}`,
-    ...(input.credentials.openaiApiKey ? ["-e", `OPENAI_API_KEY=${input.credentials.openaiApiKey}`] : []),
-    ...(input.credentials.codexAuthJson
-      ? ["-e", `CODEX_AUTH_JSON_B64=${Buffer.from(input.credentials.codexAuthJson, "utf8").toString("base64")}`]
-      : []),
-    ...(input.credentials.openaiBaseUrl ? ["-e", `OPENAI_BASE_URL=${input.credentials.openaiBaseUrl}`] : []),
-    "-v",
-    `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
-    "-w",
-    tempDir,
-    image,
-    "sh",
-    "-lc",
-    codexUtilityScript
-  ];
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
-      let stdout = "";
-      let stderr = "";
-      let settled = false;
-      const timeout = setTimeout(() => {
-        settled = true;
-        child.kill("SIGKILL");
-        reject(new CodexUtilityError("Codex utility run timed out.", 504));
-      }, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (chunk) => {
-        stdout += String(chunk);
-      });
-      child.stderr.on("data", (chunk) => {
-        stderr += String(chunk);
-      });
-      child.on("error", (error) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        reject(new CodexUtilityUnavailableError(`Failed to start Codex utility runner: ${error.message}`));
-      });
-      child.on("close", (code) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        if (code === 0) {
-          resolve();
-          return;
-        }
-        const details = trimProcessOutput(stderr || stdout);
-        if (isDockerRunnerUnavailable(code, details)) {
-          reject(new CodexUtilityUnavailableError(details || "Codex utility runner Docker image is unavailable."));
-          return;
-        }
-        reject(new CodexUtilityError(details || `Codex utility run failed with exit code ${code ?? "unknown"}.`));
-      });
-    });
-
-    const output = (await readFile(path.join(tempDir, "output.txt"), "utf8")).trim();
-    if (!output) {
-      throw new CodexUtilityError("Codex utility run returned empty output.");
-    }
-    return output.slice(0, input.outputMaxChars ?? DEFAULT_OUTPUT_MAX_CHARS);
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
-}
-````
-
 ## File: apps/server/src/services/credential-store.ts
 ````typescript
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
@@ -17765,65 +17638,6 @@ export function LoginPage() {
         <AppFooterNote />
       </div>
     </Flex>
-  );
-}
-````
-
-## File: apps/web/components/notes-markdown-editor.tsx
-````typescript
-"use client";
-
-import {
-  BoldItalicUnderlineToggles,
-  CreateLink,
-  ListsToggle,
-  MDXEditor,
-  headingsPlugin,
-  linkDialogPlugin,
-  linkPlugin,
-  listsPlugin,
-  markdownShortcutPlugin,
-  quotePlugin,
-  thematicBreakPlugin,
-  toolbarPlugin
-} from "@mdxeditor/editor";
-
-interface NotesMarkdownEditorProps {
-  value: string;
-  onChange: (value: string) => void;
-  disabled?: boolean;
-}
-
-const notesEditorPlugins = [
-  headingsPlugin(),
-  quotePlugin(),
-  listsPlugin(),
-  thematicBreakPlugin(),
-  linkPlugin(),
-  linkDialogPlugin(),
-  markdownShortcutPlugin(),
-  toolbarPlugin({
-    toolbarContents: () => (
-      <>
-        <BoldItalicUnderlineToggles />
-        <ListsToggle />
-        <CreateLink />
-      </>
-    )
-  })
-];
-
-export function NotesMarkdownEditor({ value, onChange, disabled = false }: NotesMarkdownEditorProps) {
-  return (
-    <div style={disabled ? { pointerEvents: "none", opacity: 0.64 } : undefined}>
-      <MDXEditor
-        markdown={value}
-        onChange={onChange}
-        className="task-notes-mdx-editor"
-        contentEditableClassName="task-notes-mdx-editor-content"
-        plugins={notesEditorPlugins}
-      />
-    </div>
   );
 }
 ````
@@ -22613,6 +22427,192 @@ export function buildGitTerminalDockerEnvEntries(options: {
     ...options.runtimeEnvEntries,
     ...(options.repositoryEnvEntries ?? [])
   ];
+}
+````
+
+## File: apps/server/src/services/codex-utility-service.ts
+````typescript
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import type { ProviderProfile } from "@agentswarm/shared-types";
+import { env } from "../config/env.js";
+import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
+import type { SettingsRuntimeCredentials } from "./settings-store.js";
+
+const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_OUTPUT_MAX_CHARS = 12_000;
+const CODEX_UTILITY_DIR_NAME = "codex-utility";
+
+export class CodexUtilityUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CodexUtilityUnavailableError";
+  }
+}
+
+export class CodexUtilityError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode = 502
+  ) {
+    super(message);
+    this.name = "CodexUtilityError";
+  }
+}
+
+const codexUtilityScript = `
+set -eu
+mkdir -p "$HOME/.codex"
+cat > "$HOME/.codex/config.toml" <<'EOF'
+sandbox_mode = "read-only"
+approval_policy = "never"
+
+[notice]
+hide_rate_limit_model_nudge = true
+hide_gpt5_1_migration_prompt = true
+"hide_gpt-5.1-codex-max_migration_prompt" = true
+EOF
+if [ -n "\${CODEX_AUTH_JSON_B64:-}" ]; then
+  printf %s "$CODEX_AUTH_JSON_B64" | base64 -d > "$HOME/.codex/auth.json"
+elif [ -n "\${OPENAI_API_KEY:-}" ]; then
+  printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file
+else
+  echo "Codex credentials are not configured." >&2
+  exit 64
+fi
+codex exec \\
+  --ephemeral \\
+  --skip-git-repo-check \\
+  --ignore-rules \\
+  --sandbox read-only \\
+  -C "$CODEX_UTILITY_WORKDIR" \\
+  -m "$CODEX_MODEL" \\
+  -c cli_auth_credentials_store=file \\
+  -c "model_reasoning_effort=\\"$CODEX_REASONING_EFFORT\\"" \\
+  -o "$CODEX_UTILITY_WORKDIR/output.txt" \\
+  - < "$CODEX_UTILITY_WORKDIR/prompt.txt"
+`;
+
+const trimProcessOutput = (value: string, maxChars = 4000): string => {
+  const trimmed = value.trim();
+  return trimmed.length > maxChars ? `${trimmed.slice(0, maxChars)}...` : trimmed;
+};
+
+const isDockerRunnerUnavailable = (code: number | null, output: string): boolean => {
+  const normalized = output.toLowerCase();
+  return (
+    code === 125 ||
+    normalized.includes("cannot connect to the docker daemon") ||
+    normalized.includes("unable to find image") ||
+    normalized.includes("pull access denied") ||
+    normalized.includes("no such image") ||
+    normalized.includes("manifest unknown")
+  );
+};
+
+export async function executeCodexUtility(input: {
+  prompt: string;
+  model: string;
+  providerProfile: ProviderProfile;
+  credentials: SettingsRuntimeCredentials;
+  timeoutMs?: number;
+  outputMaxChars?: number;
+}): Promise<string> {
+  const image = env.CODEX_INTERACTIVE_IMAGE?.trim();
+  if (!image) {
+    throw new CodexUtilityUnavailableError("Codex utility runner is not configured (set CODEX_INTERACTIVE_IMAGE).");
+  }
+  if (!input.credentials.openaiApiKey && !input.credentials.codexAuthJson) {
+    throw new CodexUtilityUnavailableError("Codex credentials are not configured.");
+  }
+
+  const tempDir = path.join(env.RUNTIME_PAYLOAD_ROOT, CODEX_UTILITY_DIR_NAME, randomUUID());
+  await mkdir(tempDir, { recursive: true });
+  await writeFile(path.join(tempDir, "prompt.txt"), input.prompt, "utf8");
+
+  const args = [
+    "run",
+    "--rm",
+    "-e",
+    "HOME=/root",
+    "-e",
+    `CODEX_MODEL=${input.model}`,
+    "-e",
+    `CODEX_REASONING_EFFORT=${codexReasoningEffortForProfile(input.providerProfile)}`,
+    "-e",
+    `CODEX_UTILITY_WORKDIR=${tempDir}`,
+    ...(input.credentials.openaiApiKey ? ["-e", `OPENAI_API_KEY=${input.credentials.openaiApiKey}`] : []),
+    ...(input.credentials.codexAuthJson
+      ? ["-e", `CODEX_AUTH_JSON_B64=${Buffer.from(input.credentials.codexAuthJson, "utf8").toString("base64")}`]
+      : []),
+    ...(input.credentials.openaiBaseUrl ? ["-e", `OPENAI_BASE_URL=${input.credentials.openaiBaseUrl}`] : []),
+    "-v",
+    `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
+    "-w",
+    tempDir,
+    image,
+    "sh",
+    "-lc",
+    codexUtilityScript
+  ];
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const timeout = setTimeout(() => {
+        settled = true;
+        child.kill("SIGKILL");
+        reject(new CodexUtilityError("Codex utility run timed out.", 504));
+      }, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        stdout += String(chunk);
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += String(chunk);
+      });
+      child.on("error", (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        reject(new CodexUtilityUnavailableError(`Failed to start Codex utility runner: ${error.message}`));
+      });
+      child.on("close", (code) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        const details = trimProcessOutput(stderr || stdout);
+        if (isDockerRunnerUnavailable(code, details)) {
+          reject(new CodexUtilityUnavailableError(details || "Codex utility runner Docker image is unavailable."));
+          return;
+        }
+        reject(new CodexUtilityError(details || `Codex utility run failed with exit code ${code ?? "unknown"}.`));
+      });
+    });
+
+    const output = (await readFile(path.join(tempDir, "output.txt"), "utf8")).trim();
+    if (!output) {
+      throw new CodexUtilityError("Codex utility run returned empty output.");
+    }
+    return output.slice(0, input.outputMaxChars ?? DEFAULT_OUTPUT_MAX_CHARS);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 }
 ````
 
@@ -30446,6 +30446,760 @@ describe("TaskStore.createTask", () => {
 });
 ````
 
+## File: apps/web/app/globals.css
+````css
+@import "@mdxeditor/editor/style.css";
+
+:root {
+  color-scheme: light;
+  --app-body-bg: #f4f8f5;
+  --app-body-text: #5a675d;
+  --diff-background-color: #fcfefd;
+  --diff-text-color: #415046;
+  --diff-selection-background-color: rgba(28, 128, 87, 0.12);
+  --diff-selection-text-color: var(--diff-text-color);
+  --diff-gutter-insert-background-color: #dff5e4;
+  --diff-gutter-insert-text-color: #2e6a48;
+  --diff-gutter-delete-background-color: #f5dde0;
+  --diff-gutter-delete-text-color: #8d4a53;
+  --diff-gutter-selected-background-color: #efe7c8;
+  --diff-gutter-selected-text-color: #5b5538;
+  --diff-code-insert-background-color: #ebf9ee;
+  --diff-code-insert-text-color: #274b35;
+  --diff-code-delete-background-color: #faecee;
+  --diff-code-delete-text-color: #6d3c43;
+  --diff-code-insert-edit-background-color: #c8e8d1;
+  --diff-code-insert-edit-text-color: #1f402c;
+  --diff-code-delete-edit-background-color: #efc0c7;
+  --diff-code-delete-edit-text-color: #5e2f36;
+  --diff-code-selected-background-color: #f3edcf;
+  --diff-code-selected-text-color: #4e4731;
+  --diff-omit-gutter-line-color: #c95c5c;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --app-body-bg: #0e1411;
+  --app-body-text: #d8e2d9;
+  --diff-background-color: #141c18;
+  --diff-text-color: #d7e3d8;
+  --diff-selection-background-color: rgba(103, 196, 150, 0.18);
+  --diff-selection-text-color: #f4f8f5;
+  --diff-gutter-insert-background-color: #173624;
+  --diff-gutter-insert-text-color: #8fd9ae;
+  --diff-gutter-delete-background-color: #3a1f25;
+  --diff-gutter-delete-text-color: #e2a2ab;
+  --diff-gutter-selected-background-color: #3a3723;
+  --diff-gutter-selected-text-color: #efe2a0;
+  --diff-code-insert-background-color: #10251a;
+  --diff-code-insert-text-color: #cfeedd;
+  --diff-code-delete-background-color: #2c171c;
+  --diff-code-delete-text-color: #f2c4ca;
+  --diff-code-insert-edit-background-color: #27543e;
+  --diff-code-insert-edit-text-color: #e8fff1;
+  --diff-code-delete-edit-background-color: #7a3a47;
+  --diff-code-delete-edit-text-color: #fff0f2;
+  --diff-code-selected-background-color: #33311f;
+  --diff-code-selected-text-color: #f2e8b7;
+  --diff-omit-gutter-line-color: #d46c6c;
+}
+
+html[data-theme="cyber"] {
+  color-scheme: dark;
+  --app-body-bg: #181825;
+  --app-body-text: rgba(200, 182, 255, 0.9);
+  --diff-background-color: #1e1e2e;
+  --diff-text-color: #c8b6ff;
+  --diff-selection-background-color: rgba(157, 78, 221, 0.18);
+  --diff-selection-text-color: #f4eeff;
+  --diff-gutter-insert-background-color: #17353a;
+  --diff-gutter-insert-text-color: #72efdd;
+  --diff-gutter-delete-background-color: #3a1028;
+  --diff-gutter-delete-text-color: #ff8ab5;
+  --diff-gutter-selected-background-color: #3a3111;
+  --diff-gutter-selected-text-color: #ffd60a;
+  --diff-code-insert-background-color: #11272a;
+  --diff-code-insert-text-color: #d2fffb;
+  --diff-code-delete-background-color: #2a0c1b;
+  --diff-code-delete-text-color: #ffd1e4;
+  --diff-code-insert-edit-background-color: #1c4f56;
+  --diff-code-insert-edit-text-color: #effffd;
+  --diff-code-delete-edit-background-color: #6d1240;
+  --diff-code-delete-edit-text-color: #fff0f7;
+  --diff-code-selected-background-color: #3a3111;
+  --diff-code-selected-text-color: #ffe98a;
+  --diff-omit-gutter-line-color: #ff006e;
+}
+
+html[data-theme="forge"] {
+  color-scheme: dark;
+  --app-body-bg: #0d1117;
+  --app-body-text: rgba(201, 209, 217, 0.88);
+  --diff-background-color: #161b22;
+  --diff-text-color: #c9d1d9;
+  --diff-selection-background-color: rgba(255, 107, 53, 0.16);
+  --diff-selection-text-color: #f6f8fa;
+  --diff-gutter-insert-background-color: #0f302e;
+  --diff-gutter-insert-text-color: #59e1ce;
+  --diff-gutter-delete-background-color: #34191d;
+  --diff-gutter-delete-text-color: #ff9b9b;
+  --diff-gutter-selected-background-color: #3a2c16;
+  --diff-gutter-selected-text-color: #ffbf66;
+  --diff-code-insert-background-color: #0d2625;
+  --diff-code-insert-text-color: #d3fff8;
+  --diff-code-delete-background-color: #281316;
+  --diff-code-delete-text-color: #ffd7d7;
+  --diff-code-insert-edit-background-color: #13524d;
+  --diff-code-insert-edit-text-color: #effffb;
+  --diff-code-delete-edit-background-color: #7b2b31;
+  --diff-code-delete-edit-text-color: #fff1f1;
+  --diff-code-selected-background-color: #352915;
+  --diff-code-selected-text-color: #ffdca0;
+  --diff-omit-gutter-line-color: #ff5252;
+}
+
+html[data-theme="forge-light"] {
+  color-scheme: light;
+  --app-body-bg: #fff3eb;
+  --app-body-text: rgba(51, 40, 33, 0.92);
+  --diff-background-color: #ffffff;
+  --diff-text-color: #332821;
+  --diff-selection-background-color: rgba(255, 107, 53, 0.12);
+  --diff-selection-text-color: #332821;
+  --diff-gutter-insert-background-color: #e3f7f2;
+  --diff-gutter-insert-text-color: #0b7c69;
+  --diff-gutter-delete-background-color: #fff0ef;
+  --diff-gutter-delete-text-color: #dc2626;
+  --diff-gutter-selected-background-color: #fff0d8;
+  --diff-gutter-selected-text-color: #b96b00;
+  --diff-code-insert-background-color: #f0fffb;
+  --diff-code-insert-text-color: #0a5c4e;
+  --diff-code-delete-background-color: #fff5f4;
+  --diff-code-delete-text-color: #b91c1c;
+  --diff-code-insert-edit-background-color: #c7efe5;
+  --diff-code-insert-edit-text-color: #09483e;
+  --diff-code-delete-edit-background-color: #ffd6d1;
+  --diff-code-delete-edit-text-color: #991b1b;
+  --diff-code-selected-background-color: #ffe7c2;
+  --diff-code-selected-text-color: #9a5600;
+  --diff-omit-gutter-line-color: #dc2626;
+}
+
+html[data-theme="github"] {
+  color-scheme: dark;
+  --app-body-bg: #0d1117;
+  --app-body-text: #c9d1d9;
+  --diff-background-color: #161b22;
+  --diff-text-color: #c9d1d9;
+  --diff-selection-background-color: rgba(31, 111, 235, 0.18);
+  --diff-selection-text-color: #f0f6fc;
+  --diff-gutter-insert-background-color: #0f2419;
+  --diff-gutter-insert-text-color: #56d364;
+  --diff-gutter-delete-background-color: #2d1517;
+  --diff-gutter-delete-text-color: #ff7b72;
+  --diff-gutter-selected-background-color: #2b2415;
+  --diff-gutter-selected-text-color: #ffa657;
+  --diff-code-insert-background-color: #0d1f14;
+  --diff-code-insert-text-color: #aff5b4;
+  --diff-code-delete-background-color: #231417;
+  --diff-code-delete-text-color: #ffdcd7;
+  --diff-code-insert-edit-background-color: #1a3a24;
+  --diff-code-insert-edit-text-color: #d2ffd8;
+  --diff-code-delete-edit-background-color: #5d2023;
+  --diff-code-delete-edit-text-color: #fff1ee;
+  --diff-code-selected-background-color: #2b2415;
+  --diff-code-selected-text-color: #ffddb0;
+  --diff-omit-gutter-line-color: #f85149;
+}
+
+html[data-theme="github-light"] {
+  color-scheme: light;
+  --app-body-bg: #f6f8fa;
+  --app-body-text: #1f2328;
+  --diff-background-color: #ffffff;
+  --diff-text-color: #1f2328;
+  --diff-selection-background-color: rgba(9, 105, 218, 0.12);
+  --diff-selection-text-color: #1f2328;
+  --diff-gutter-insert-background-color: #dafbe1;
+  --diff-gutter-insert-text-color: #1a7f37;
+  --diff-gutter-delete-background-color: #ffebe9;
+  --diff-gutter-delete-text-color: #cf222e;
+  --diff-gutter-selected-background-color: #fff8c5;
+  --diff-gutter-selected-text-color: #9a6700;
+  --diff-code-insert-background-color: #ebfff0;
+  --diff-code-insert-text-color: #116329;
+  --diff-code-delete-background-color: #fff1f0;
+  --diff-code-delete-text-color: #a40e26;
+  --diff-code-insert-edit-background-color: #aceebb;
+  --diff-code-insert-edit-text-color: #0f5323;
+  --diff-code-delete-edit-background-color: #ffcecb;
+  --diff-code-delete-edit-text-color: #82071e;
+  --diff-code-selected-background-color: #fff1b8;
+  --diff-code-selected-text-color: #7d4e00;
+  --diff-omit-gutter-line-color: #cf222e;
+}
+
+html[data-theme="nord"] {
+  color-scheme: dark;
+  --app-body-bg: #2b303b;
+  --app-body-text: #e5e9f0;
+  --diff-background-color: #3b4252;
+  --diff-text-color: #e5e9f0;
+  --diff-selection-background-color: rgba(136, 192, 208, 0.18);
+  --diff-selection-text-color: #f7fafc;
+  --diff-gutter-insert-background-color: #334038;
+  --diff-gutter-insert-text-color: #a3be8c;
+  --diff-gutter-delete-background-color: #43343a;
+  --diff-gutter-delete-text-color: #d08770;
+  --diff-gutter-selected-background-color: #4a4437;
+  --diff-gutter-selected-text-color: #ebcb8b;
+  --diff-code-insert-background-color: #2f3933;
+  --diff-code-insert-text-color: #d8e7cb;
+  --diff-code-delete-background-color: #3a2f33;
+  --diff-code-delete-text-color: #f1c2b6;
+  --diff-code-insert-edit-background-color: #425046;
+  --diff-code-insert-edit-text-color: #f3faeb;
+  --diff-code-delete-edit-background-color: #6c4a52;
+  --diff-code-delete-edit-text-color: #fff1ef;
+  --diff-code-selected-background-color: #4a4437;
+  --diff-code-selected-text-color: #f5ddb0;
+  --diff-omit-gutter-line-color: #bf616a;
+}
+
+html[data-theme="solarized-light"] {
+  color-scheme: light;
+  --app-body-bg: #f4edd8;
+  --app-body-text: #586e75;
+  --diff-background-color: #fdf6e3;
+  --diff-text-color: #586e75;
+  --diff-selection-background-color: rgba(38, 139, 210, 0.12);
+  --diff-selection-text-color: #586e75;
+  --diff-gutter-insert-background-color: #eef6d2;
+  --diff-gutter-insert-text-color: #657b00;
+  --diff-gutter-delete-background-color: #f8e1dc;
+  --diff-gutter-delete-text-color: #c0392b;
+  --diff-gutter-selected-background-color: #f8efc8;
+  --diff-gutter-selected-text-color: #9a7400;
+  --diff-code-insert-background-color: #f5f9e7;
+  --diff-code-insert-text-color: #4e6400;
+  --diff-code-delete-background-color: #fbebe7;
+  --diff-code-delete-text-color: #a92b26;
+  --diff-code-insert-edit-background-color: #dfeab2;
+  --diff-code-insert-edit-text-color: #425300;
+  --diff-code-delete-edit-background-color: #f2c4ba;
+  --diff-code-delete-edit-text-color: #86211e;
+  --diff-code-selected-background-color: #f5e7a8;
+  --diff-code-selected-text-color: #7f5c00;
+  --diff-omit-gutter-line-color: #dc322f;
+}
+
+html[data-theme="gruvbox-dark"] {
+  color-scheme: dark;
+  --app-body-bg: #1d2021;
+  --app-body-text: #ebdbb2;
+  --diff-background-color: #32302f;
+  --diff-text-color: #ebdbb2;
+  --diff-selection-background-color: rgba(215, 153, 33, 0.18);
+  --diff-selection-text-color: #fbf1c7;
+  --diff-gutter-insert-background-color: #30361d;
+  --diff-gutter-insert-text-color: #b8bb26;
+  --diff-gutter-delete-background-color: #442726;
+  --diff-gutter-delete-text-color: #fb7c6d;
+  --diff-gutter-selected-background-color: #47341c;
+  --diff-gutter-selected-text-color: #fabd2f;
+  --diff-code-insert-background-color: #2a2f19;
+  --diff-code-insert-text-color: #dde79b;
+  --diff-code-delete-background-color: #3a2221;
+  --diff-code-delete-text-color: #ffd2cb;
+  --diff-code-insert-edit-background-color: #46511d;
+  --diff-code-insert-edit-text-color: #f4ffd1;
+  --diff-code-delete-edit-background-color: #7d3b34;
+  --diff-code-delete-edit-text-color: #fff0ed;
+  --diff-code-selected-background-color: #47341c;
+  --diff-code-selected-text-color: #ffd88a;
+  --diff-omit-gutter-line-color: #fb4934;
+}
+
+html[data-theme="high-contrast"] {
+  color-scheme: dark;
+  --app-body-bg: #000000;
+  --app-body-text: #ffffff;
+  --diff-background-color: #0f0f0f;
+  --diff-text-color: #ffffff;
+  --diff-selection-background-color: rgba(77, 163, 255, 0.26);
+  --diff-selection-text-color: #ffffff;
+  --diff-gutter-insert-background-color: #001d0d;
+  --diff-gutter-insert-text-color: #43f090;
+  --diff-gutter-delete-background-color: #2a0000;
+  --diff-gutter-delete-text-color: #ffb0b0;
+  --diff-gutter-selected-background-color: #241f00;
+  --diff-gutter-selected-text-color: #ffe14d;
+  --diff-code-insert-background-color: #002813;
+  --diff-code-insert-text-color: #b3ffd2;
+  --diff-code-delete-background-color: #300000;
+  --diff-code-delete-text-color: #ffe0e0;
+  --diff-code-insert-edit-background-color: #004d25;
+  --diff-code-insert-edit-text-color: #ecfff3;
+  --diff-code-delete-edit-background-color: #6b0000;
+  --diff-code-delete-edit-text-color: #fff5f5;
+  --diff-code-selected-background-color: #3d3500;
+  --diff-code-selected-text-color: #fff4a3;
+  --diff-omit-gutter-line-color: #ff5c5c;
+}
+
+html[data-theme="tokyo-night"] {
+  color-scheme: dark;
+  --app-body-bg: #16161e;
+  --app-body-text: #c0caf5;
+  --diff-background-color: #1f2335;
+  --diff-text-color: #c0caf5;
+  --diff-selection-background-color: rgba(122, 162, 247, 0.18);
+  --diff-selection-text-color: #eef2ff;
+  --diff-gutter-insert-background-color: #223126;
+  --diff-gutter-insert-text-color: #9ece6a;
+  --diff-gutter-delete-background-color: #3b2532;
+  --diff-gutter-delete-text-color: #f7768e;
+  --diff-gutter-selected-background-color: #393324;
+  --diff-gutter-selected-text-color: #e0af68;
+  --diff-code-insert-background-color: #1d2b22;
+  --diff-code-insert-text-color: #d8f2bc;
+  --diff-code-delete-background-color: #301f29;
+  --diff-code-delete-text-color: #ffc3ce;
+  --diff-code-insert-edit-background-color: #35503f;
+  --diff-code-insert-edit-text-color: #f0ffe5;
+  --diff-code-delete-edit-background-color: #6e4251;
+  --diff-code-delete-edit-text-color: #fff0f4;
+  --diff-code-selected-background-color: #393324;
+  --diff-code-selected-text-color: #f3d5a5;
+  --diff-omit-gutter-line-color: #f7768e;
+}
+
+html[data-theme="solarized-dark"] {
+  color-scheme: dark;
+  --app-body-bg: #001f27;
+  --app-body-text: #93a1a1;
+  --diff-background-color: #073642;
+  --diff-text-color: #93a1a1;
+  --diff-selection-background-color: rgba(38, 139, 210, 0.2);
+  --diff-selection-text-color: #eee8d5;
+  --diff-gutter-insert-background-color: #1b3314;
+  --diff-gutter-insert-text-color: #859900;
+  --diff-gutter-delete-background-color: #3b1712;
+  --diff-gutter-delete-text-color: #dc322f;
+  --diff-gutter-selected-background-color: #3a2d09;
+  --diff-gutter-selected-text-color: #b58900;
+  --diff-code-insert-background-color: #153016;
+  --diff-code-insert-text-color: #c3d269;
+  --diff-code-delete-background-color: #31130f;
+  --diff-code-delete-text-color: #ff9b94;
+  --diff-code-insert-edit-background-color: #31511d;
+  --diff-code-insert-edit-text-color: #eef7b3;
+  --diff-code-delete-edit-background-color: #723127;
+  --diff-code-delete-edit-text-color: #ffe5df;
+  --diff-code-selected-background-color: #3a2d09;
+  --diff-code-selected-text-color: #e8c65a;
+  --diff-omit-gutter-line-color: #dc322f;
+}
+
+html[data-theme="paper"] {
+  color-scheme: light;
+  --app-body-bg: #efe8d5;
+  --app-body-text: #4b463c;
+  --diff-background-color: #fffaf0;
+  --diff-text-color: #4b463c;
+  --diff-selection-background-color: rgba(70, 124, 138, 0.12);
+  --diff-selection-text-color: #4b463c;
+  --diff-gutter-insert-background-color: #edf2e3;
+  --diff-gutter-insert-text-color: #567038;
+  --diff-gutter-delete-background-color: #f5e3e1;
+  --diff-gutter-delete-text-color: #9d4f4f;
+  --diff-gutter-selected-background-color: #f6ead7;
+  --diff-gutter-selected-text-color: #9b6d2b;
+  --diff-code-insert-background-color: #f4f7eb;
+  --diff-code-insert-text-color: #445a2b;
+  --diff-code-delete-background-color: #faecea;
+  --diff-code-delete-text-color: #884646;
+  --diff-code-insert-edit-background-color: #dfe8d2;
+  --diff-code-insert-edit-text-color: #394b24;
+  --diff-code-delete-edit-background-color: #edd1ce;
+  --diff-code-delete-edit-text-color: #723b3b;
+  --diff-code-selected-background-color: #efddc0;
+  --diff-code-selected-text-color: #7f5b22;
+  --diff-omit-gutter-line-color: #b55d5d;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--app-body-bg);
+  color: var(--app-body-text);
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "SFMono-Regular", "Consolas", monospace;
+}
+
+.xterm .xterm-screen {
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.diff {
+  background: var(--diff-background-color);
+  color: var(--diff-text-color);
+}
+
+.diff-hunk + .diff-hunk .diff-line:first-child td,
+.diff-hunk + .diff-hunk .diff-widget:first-child td,
+.diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.diff-gutter {
+  color: rgba(90, 103, 93, 0.72);
+  background: rgba(0, 0, 0, 0.015);
+  border-right: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.diff-code-normal {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.diff-code,
+.diff-decoration-content,
+.diff-widget-content {
+  color: var(--diff-text-color);
+}
+
+.diff-decoration-content,
+.diff-widget-content {
+  background: rgba(0, 0, 0, 0.025);
+}
+
+html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="github"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="github"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="github"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme="dark"] .diff-gutter,
+html[data-theme="cyber"] .diff-gutter,
+html[data-theme="forge"] .diff-gutter,
+html[data-theme="github"] .diff-gutter,
+html[data-theme="nord"] .diff-gutter,
+html[data-theme="gruvbox-dark"] .diff-gutter,
+html[data-theme="high-contrast"] .diff-gutter,
+html[data-theme="tokyo-night"] .diff-gutter,
+html[data-theme="solarized-dark"] .diff-gutter {
+  color: #8ea394;
+  background: rgba(255, 255, 255, 0.02);
+  border-right-color: rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme="dark"] .diff-code-normal,
+html[data-theme="cyber"] .diff-code-normal,
+html[data-theme="forge"] .diff-code-normal,
+html[data-theme="github"] .diff-code-normal,
+html[data-theme="nord"] .diff-code-normal,
+html[data-theme="gruvbox-dark"] .diff-code-normal,
+html[data-theme="high-contrast"] .diff-code-normal,
+html[data-theme="tokyo-night"] .diff-code-normal,
+html[data-theme="solarized-dark"] .diff-code-normal {
+  background: rgba(255, 255, 255, 0.01);
+}
+
+html[data-theme="dark"] .diff-decoration-content,
+html[data-theme="dark"] .diff-widget-content,
+html[data-theme="cyber"] .diff-decoration-content,
+html[data-theme="cyber"] .diff-widget-content,
+html[data-theme="forge"] .diff-decoration-content,
+html[data-theme="forge"] .diff-widget-content,
+html[data-theme="github"] .diff-decoration-content,
+html[data-theme="github"] .diff-widget-content,
+html[data-theme="nord"] .diff-decoration-content,
+html[data-theme="nord"] .diff-widget-content,
+html[data-theme="gruvbox-dark"] .diff-decoration-content,
+html[data-theme="gruvbox-dark"] .diff-widget-content,
+html[data-theme="high-contrast"] .diff-decoration-content,
+html[data-theme="high-contrast"] .diff-widget-content,
+html[data-theme="tokyo-night"] .diff-decoration-content,
+html[data-theme="tokyo-night"] .diff-widget-content,
+html[data-theme="solarized-dark"] .diff-decoration-content,
+html[data-theme="solarized-dark"] .diff-widget-content {
+  background: rgba(255, 255, 255, 0.03);
+  color: #9fb3a5;
+}
+
+html[data-theme="cyber"] .diff-gutter {
+  color: rgba(200, 182, 255, 0.65);
+  background: rgba(255, 255, 255, 0.025);
+  border-right-color: rgba(200, 182, 255, 0.08);
+}
+
+html[data-theme="cyber"] .diff-decoration-content,
+html[data-theme="cyber"] .diff-widget-content {
+  color: rgba(200, 182, 255, 0.72);
+}
+
+html[data-theme="forge"] .diff-gutter {
+  color: rgba(201, 209, 217, 0.62);
+  background: rgba(255, 255, 255, 0.02);
+  border-right-color: rgba(201, 209, 217, 0.07);
+}
+
+html[data-theme="forge"] .diff-decoration-content,
+html[data-theme="forge"] .diff-widget-content {
+  color: rgba(201, 209, 217, 0.72);
+}
+
+html[data-theme="github"] .diff-gutter {
+  color: #8b949e;
+  background: rgba(255, 255, 255, 0.02);
+  border-right-color: rgba(201, 209, 217, 0.08);
+}
+
+html[data-theme="github"] .diff-decoration-content,
+html[data-theme="github"] .diff-widget-content {
+  color: #8b949e;
+}
+
+html[data-theme="nord"] .diff-gutter {
+  color: #c2cad6;
+  background: rgba(236, 239, 244, 0.03);
+  border-right-color: rgba(236, 239, 244, 0.08);
+}
+
+html[data-theme="nord"] .diff-decoration-content,
+html[data-theme="nord"] .diff-widget-content {
+  color: #c2cad6;
+}
+
+html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(208, 215, 222, 0.7);
+}
+
+html[data-theme="github-light"] .diff-gutter {
+  color: #57606a;
+  background: rgba(246, 248, 250, 0.9);
+  border-right-color: rgba(208, 215, 222, 0.9);
+}
+
+html[data-theme="github-light"] .diff-code-normal {
+  background: rgba(246, 248, 250, 0.65);
+}
+
+html[data-theme="github-light"] .diff-decoration-content,
+html[data-theme="github-light"] .diff-widget-content {
+  background: rgba(246, 248, 250, 0.85);
+  color: #57606a;
+}
+
+html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(131, 148, 150, 0.35);
+}
+
+html[data-theme="solarized-light"] .diff-gutter {
+  color: #6b7f86;
+  background: rgba(253, 246, 227, 0.9);
+  border-right-color: rgba(215, 206, 181, 0.9);
+}
+
+html[data-theme="solarized-light"] .diff-code-normal {
+  background: rgba(255, 249, 233, 0.72);
+}
+
+html[data-theme="solarized-light"] .diff-decoration-content,
+html[data-theme="solarized-light"] .diff-widget-content {
+  background: rgba(255, 249, 233, 0.88);
+  color: #6b7f86;
+}
+
+html[data-theme="gruvbox-dark"] .diff-gutter {
+  color: #bdae93;
+  background: rgba(235, 219, 178, 0.03);
+  border-right-color: rgba(235, 219, 178, 0.08);
+}
+
+html[data-theme="gruvbox-dark"] .diff-decoration-content,
+html[data-theme="gruvbox-dark"] .diff-widget-content {
+  color: #bdae93;
+}
+
+html[data-theme="high-contrast"] .diff-gutter {
+  color: #d9d9d9;
+  background: rgba(255, 255, 255, 0.04);
+  border-right-color: rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="high-contrast"] .diff-code-normal {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+html[data-theme="high-contrast"] .diff-decoration-content,
+html[data-theme="high-contrast"] .diff-widget-content {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+
+html[data-theme="tokyo-night"] .diff-gutter {
+  color: #a9b1d6;
+  background: rgba(192, 202, 245, 0.03);
+  border-right-color: rgba(192, 202, 245, 0.08);
+}
+
+html[data-theme="tokyo-night"] .diff-decoration-content,
+html[data-theme="tokyo-night"] .diff-widget-content {
+  color: #a9b1d6;
+}
+
+html[data-theme="solarized-dark"] .diff-gutter {
+  color: #839496;
+  background: rgba(147, 161, 161, 0.03);
+  border-right-color: rgba(147, 161, 161, 0.08);
+}
+
+html[data-theme="solarized-dark"] .diff-decoration-content,
+html[data-theme="solarized-dark"] .diff-widget-content {
+  color: #839496;
+}
+
+html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(216, 205, 182, 0.72);
+}
+
+html[data-theme="paper"] .diff-gutter {
+  color: #6a665c;
+  background: rgba(255, 250, 240, 0.86);
+  border-right-color: rgba(216, 205, 182, 0.92);
+}
+
+html[data-theme="paper"] .diff-code-normal {
+  background: rgba(255, 253, 247, 0.75);
+}
+
+html[data-theme="paper"] .diff-decoration-content,
+html[data-theme="paper"] .diff-widget-content {
+  background: rgba(255, 253, 247, 0.9);
+  color: #6a665c;
+}
+
+html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(231, 216, 205, 0.9);
+}
+
+html[data-theme="forge-light"] .diff-gutter {
+  color: #6d584b;
+  background: rgba(255, 250, 246, 0.92);
+  border-right-color: rgba(231, 216, 205, 0.96);
+}
+
+html[data-theme="forge-light"] .diff-code-normal {
+  background: rgba(255, 252, 249, 0.82);
+}
+
+html[data-theme="forge-light"] .diff-decoration-content,
+html[data-theme="forge-light"] .diff-widget-content {
+  background: rgba(255, 252, 249, 0.94);
+  color: #6d584b;
+}
+
+.task-notes-mdx-editor {
+  border: 0;
+  overflow: hidden;
+  color: var(--ant-colorText, inherit);
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar {
+  background: transparent !important;
+  border: 0;
+  color: var(--ant-colorTextSecondary, inherit);
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button,
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] {
+  background: transparent !important;
+  border: 0;
+  color: var(--ant-colorTextSecondary, inherit) !important;
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button:hover,
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"]:hover {
+  background: transparent !important;
+  color: var(--ant-colorText, inherit) !important;
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button[aria-pressed="true"],
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"][aria-pressed="true"] {
+  color: var(--ant-colorPrimary, inherit) !important;
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button svg,
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] svg {
+  color: inherit !important;
+  fill: currentColor !important;
+  stroke: none !important;
+}
+
+.task-notes-mdx-editor-content {
+  min-height: 380px;
+  color: var(--ant-colorText, inherit);
+  background: transparent;
+}
+
+.task-notes-mdx-editor-content ul,
+.task-notes-mdx-editor-content ol {
+  margin-inline-start: 0;
+  padding-inline-start: 15px;
+}
+````
+
 ## File: apps/web/components/repository-editor-page.tsx
 ````typescript
 "use client";
@@ -34924,760 +35678,6 @@ export const registerRepositoryRoutes = (
     return reply.status(204).send();
   });
 };
-````
-
-## File: apps/web/app/globals.css
-````css
-@import "@mdxeditor/editor/style.css";
-
-:root {
-  color-scheme: light;
-  --app-body-bg: #f4f8f5;
-  --app-body-text: #5a675d;
-  --diff-background-color: #fcfefd;
-  --diff-text-color: #415046;
-  --diff-selection-background-color: rgba(28, 128, 87, 0.12);
-  --diff-selection-text-color: var(--diff-text-color);
-  --diff-gutter-insert-background-color: #dff5e4;
-  --diff-gutter-insert-text-color: #2e6a48;
-  --diff-gutter-delete-background-color: #f5dde0;
-  --diff-gutter-delete-text-color: #8d4a53;
-  --diff-gutter-selected-background-color: #efe7c8;
-  --diff-gutter-selected-text-color: #5b5538;
-  --diff-code-insert-background-color: #ebf9ee;
-  --diff-code-insert-text-color: #274b35;
-  --diff-code-delete-background-color: #faecee;
-  --diff-code-delete-text-color: #6d3c43;
-  --diff-code-insert-edit-background-color: #c8e8d1;
-  --diff-code-insert-edit-text-color: #1f402c;
-  --diff-code-delete-edit-background-color: #efc0c7;
-  --diff-code-delete-edit-text-color: #5e2f36;
-  --diff-code-selected-background-color: #f3edcf;
-  --diff-code-selected-text-color: #4e4731;
-  --diff-omit-gutter-line-color: #c95c5c;
-}
-
-html[data-theme="dark"] {
-  color-scheme: dark;
-  --app-body-bg: #0e1411;
-  --app-body-text: #d8e2d9;
-  --diff-background-color: #141c18;
-  --diff-text-color: #d7e3d8;
-  --diff-selection-background-color: rgba(103, 196, 150, 0.18);
-  --diff-selection-text-color: #f4f8f5;
-  --diff-gutter-insert-background-color: #173624;
-  --diff-gutter-insert-text-color: #8fd9ae;
-  --diff-gutter-delete-background-color: #3a1f25;
-  --diff-gutter-delete-text-color: #e2a2ab;
-  --diff-gutter-selected-background-color: #3a3723;
-  --diff-gutter-selected-text-color: #efe2a0;
-  --diff-code-insert-background-color: #10251a;
-  --diff-code-insert-text-color: #cfeedd;
-  --diff-code-delete-background-color: #2c171c;
-  --diff-code-delete-text-color: #f2c4ca;
-  --diff-code-insert-edit-background-color: #27543e;
-  --diff-code-insert-edit-text-color: #e8fff1;
-  --diff-code-delete-edit-background-color: #7a3a47;
-  --diff-code-delete-edit-text-color: #fff0f2;
-  --diff-code-selected-background-color: #33311f;
-  --diff-code-selected-text-color: #f2e8b7;
-  --diff-omit-gutter-line-color: #d46c6c;
-}
-
-html[data-theme="cyber"] {
-  color-scheme: dark;
-  --app-body-bg: #181825;
-  --app-body-text: rgba(200, 182, 255, 0.9);
-  --diff-background-color: #1e1e2e;
-  --diff-text-color: #c8b6ff;
-  --diff-selection-background-color: rgba(157, 78, 221, 0.18);
-  --diff-selection-text-color: #f4eeff;
-  --diff-gutter-insert-background-color: #17353a;
-  --diff-gutter-insert-text-color: #72efdd;
-  --diff-gutter-delete-background-color: #3a1028;
-  --diff-gutter-delete-text-color: #ff8ab5;
-  --diff-gutter-selected-background-color: #3a3111;
-  --diff-gutter-selected-text-color: #ffd60a;
-  --diff-code-insert-background-color: #11272a;
-  --diff-code-insert-text-color: #d2fffb;
-  --diff-code-delete-background-color: #2a0c1b;
-  --diff-code-delete-text-color: #ffd1e4;
-  --diff-code-insert-edit-background-color: #1c4f56;
-  --diff-code-insert-edit-text-color: #effffd;
-  --diff-code-delete-edit-background-color: #6d1240;
-  --diff-code-delete-edit-text-color: #fff0f7;
-  --diff-code-selected-background-color: #3a3111;
-  --diff-code-selected-text-color: #ffe98a;
-  --diff-omit-gutter-line-color: #ff006e;
-}
-
-html[data-theme="forge"] {
-  color-scheme: dark;
-  --app-body-bg: #0d1117;
-  --app-body-text: rgba(201, 209, 217, 0.88);
-  --diff-background-color: #161b22;
-  --diff-text-color: #c9d1d9;
-  --diff-selection-background-color: rgba(255, 107, 53, 0.16);
-  --diff-selection-text-color: #f6f8fa;
-  --diff-gutter-insert-background-color: #0f302e;
-  --diff-gutter-insert-text-color: #59e1ce;
-  --diff-gutter-delete-background-color: #34191d;
-  --diff-gutter-delete-text-color: #ff9b9b;
-  --diff-gutter-selected-background-color: #3a2c16;
-  --diff-gutter-selected-text-color: #ffbf66;
-  --diff-code-insert-background-color: #0d2625;
-  --diff-code-insert-text-color: #d3fff8;
-  --diff-code-delete-background-color: #281316;
-  --diff-code-delete-text-color: #ffd7d7;
-  --diff-code-insert-edit-background-color: #13524d;
-  --diff-code-insert-edit-text-color: #effffb;
-  --diff-code-delete-edit-background-color: #7b2b31;
-  --diff-code-delete-edit-text-color: #fff1f1;
-  --diff-code-selected-background-color: #352915;
-  --diff-code-selected-text-color: #ffdca0;
-  --diff-omit-gutter-line-color: #ff5252;
-}
-
-html[data-theme="forge-light"] {
-  color-scheme: light;
-  --app-body-bg: #fff3eb;
-  --app-body-text: rgba(51, 40, 33, 0.92);
-  --diff-background-color: #ffffff;
-  --diff-text-color: #332821;
-  --diff-selection-background-color: rgba(255, 107, 53, 0.12);
-  --diff-selection-text-color: #332821;
-  --diff-gutter-insert-background-color: #e3f7f2;
-  --diff-gutter-insert-text-color: #0b7c69;
-  --diff-gutter-delete-background-color: #fff0ef;
-  --diff-gutter-delete-text-color: #dc2626;
-  --diff-gutter-selected-background-color: #fff0d8;
-  --diff-gutter-selected-text-color: #b96b00;
-  --diff-code-insert-background-color: #f0fffb;
-  --diff-code-insert-text-color: #0a5c4e;
-  --diff-code-delete-background-color: #fff5f4;
-  --diff-code-delete-text-color: #b91c1c;
-  --diff-code-insert-edit-background-color: #c7efe5;
-  --diff-code-insert-edit-text-color: #09483e;
-  --diff-code-delete-edit-background-color: #ffd6d1;
-  --diff-code-delete-edit-text-color: #991b1b;
-  --diff-code-selected-background-color: #ffe7c2;
-  --diff-code-selected-text-color: #9a5600;
-  --diff-omit-gutter-line-color: #dc2626;
-}
-
-html[data-theme="github"] {
-  color-scheme: dark;
-  --app-body-bg: #0d1117;
-  --app-body-text: #c9d1d9;
-  --diff-background-color: #161b22;
-  --diff-text-color: #c9d1d9;
-  --diff-selection-background-color: rgba(31, 111, 235, 0.18);
-  --diff-selection-text-color: #f0f6fc;
-  --diff-gutter-insert-background-color: #0f2419;
-  --diff-gutter-insert-text-color: #56d364;
-  --diff-gutter-delete-background-color: #2d1517;
-  --diff-gutter-delete-text-color: #ff7b72;
-  --diff-gutter-selected-background-color: #2b2415;
-  --diff-gutter-selected-text-color: #ffa657;
-  --diff-code-insert-background-color: #0d1f14;
-  --diff-code-insert-text-color: #aff5b4;
-  --diff-code-delete-background-color: #231417;
-  --diff-code-delete-text-color: #ffdcd7;
-  --diff-code-insert-edit-background-color: #1a3a24;
-  --diff-code-insert-edit-text-color: #d2ffd8;
-  --diff-code-delete-edit-background-color: #5d2023;
-  --diff-code-delete-edit-text-color: #fff1ee;
-  --diff-code-selected-background-color: #2b2415;
-  --diff-code-selected-text-color: #ffddb0;
-  --diff-omit-gutter-line-color: #f85149;
-}
-
-html[data-theme="github-light"] {
-  color-scheme: light;
-  --app-body-bg: #f6f8fa;
-  --app-body-text: #1f2328;
-  --diff-background-color: #ffffff;
-  --diff-text-color: #1f2328;
-  --diff-selection-background-color: rgba(9, 105, 218, 0.12);
-  --diff-selection-text-color: #1f2328;
-  --diff-gutter-insert-background-color: #dafbe1;
-  --diff-gutter-insert-text-color: #1a7f37;
-  --diff-gutter-delete-background-color: #ffebe9;
-  --diff-gutter-delete-text-color: #cf222e;
-  --diff-gutter-selected-background-color: #fff8c5;
-  --diff-gutter-selected-text-color: #9a6700;
-  --diff-code-insert-background-color: #ebfff0;
-  --diff-code-insert-text-color: #116329;
-  --diff-code-delete-background-color: #fff1f0;
-  --diff-code-delete-text-color: #a40e26;
-  --diff-code-insert-edit-background-color: #aceebb;
-  --diff-code-insert-edit-text-color: #0f5323;
-  --diff-code-delete-edit-background-color: #ffcecb;
-  --diff-code-delete-edit-text-color: #82071e;
-  --diff-code-selected-background-color: #fff1b8;
-  --diff-code-selected-text-color: #7d4e00;
-  --diff-omit-gutter-line-color: #cf222e;
-}
-
-html[data-theme="nord"] {
-  color-scheme: dark;
-  --app-body-bg: #2b303b;
-  --app-body-text: #e5e9f0;
-  --diff-background-color: #3b4252;
-  --diff-text-color: #e5e9f0;
-  --diff-selection-background-color: rgba(136, 192, 208, 0.18);
-  --diff-selection-text-color: #f7fafc;
-  --diff-gutter-insert-background-color: #334038;
-  --diff-gutter-insert-text-color: #a3be8c;
-  --diff-gutter-delete-background-color: #43343a;
-  --diff-gutter-delete-text-color: #d08770;
-  --diff-gutter-selected-background-color: #4a4437;
-  --diff-gutter-selected-text-color: #ebcb8b;
-  --diff-code-insert-background-color: #2f3933;
-  --diff-code-insert-text-color: #d8e7cb;
-  --diff-code-delete-background-color: #3a2f33;
-  --diff-code-delete-text-color: #f1c2b6;
-  --diff-code-insert-edit-background-color: #425046;
-  --diff-code-insert-edit-text-color: #f3faeb;
-  --diff-code-delete-edit-background-color: #6c4a52;
-  --diff-code-delete-edit-text-color: #fff1ef;
-  --diff-code-selected-background-color: #4a4437;
-  --diff-code-selected-text-color: #f5ddb0;
-  --diff-omit-gutter-line-color: #bf616a;
-}
-
-html[data-theme="solarized-light"] {
-  color-scheme: light;
-  --app-body-bg: #f4edd8;
-  --app-body-text: #586e75;
-  --diff-background-color: #fdf6e3;
-  --diff-text-color: #586e75;
-  --diff-selection-background-color: rgba(38, 139, 210, 0.12);
-  --diff-selection-text-color: #586e75;
-  --diff-gutter-insert-background-color: #eef6d2;
-  --diff-gutter-insert-text-color: #657b00;
-  --diff-gutter-delete-background-color: #f8e1dc;
-  --diff-gutter-delete-text-color: #c0392b;
-  --diff-gutter-selected-background-color: #f8efc8;
-  --diff-gutter-selected-text-color: #9a7400;
-  --diff-code-insert-background-color: #f5f9e7;
-  --diff-code-insert-text-color: #4e6400;
-  --diff-code-delete-background-color: #fbebe7;
-  --diff-code-delete-text-color: #a92b26;
-  --diff-code-insert-edit-background-color: #dfeab2;
-  --diff-code-insert-edit-text-color: #425300;
-  --diff-code-delete-edit-background-color: #f2c4ba;
-  --diff-code-delete-edit-text-color: #86211e;
-  --diff-code-selected-background-color: #f5e7a8;
-  --diff-code-selected-text-color: #7f5c00;
-  --diff-omit-gutter-line-color: #dc322f;
-}
-
-html[data-theme="gruvbox-dark"] {
-  color-scheme: dark;
-  --app-body-bg: #1d2021;
-  --app-body-text: #ebdbb2;
-  --diff-background-color: #32302f;
-  --diff-text-color: #ebdbb2;
-  --diff-selection-background-color: rgba(215, 153, 33, 0.18);
-  --diff-selection-text-color: #fbf1c7;
-  --diff-gutter-insert-background-color: #30361d;
-  --diff-gutter-insert-text-color: #b8bb26;
-  --diff-gutter-delete-background-color: #442726;
-  --diff-gutter-delete-text-color: #fb7c6d;
-  --diff-gutter-selected-background-color: #47341c;
-  --diff-gutter-selected-text-color: #fabd2f;
-  --diff-code-insert-background-color: #2a2f19;
-  --diff-code-insert-text-color: #dde79b;
-  --diff-code-delete-background-color: #3a2221;
-  --diff-code-delete-text-color: #ffd2cb;
-  --diff-code-insert-edit-background-color: #46511d;
-  --diff-code-insert-edit-text-color: #f4ffd1;
-  --diff-code-delete-edit-background-color: #7d3b34;
-  --diff-code-delete-edit-text-color: #fff0ed;
-  --diff-code-selected-background-color: #47341c;
-  --diff-code-selected-text-color: #ffd88a;
-  --diff-omit-gutter-line-color: #fb4934;
-}
-
-html[data-theme="high-contrast"] {
-  color-scheme: dark;
-  --app-body-bg: #000000;
-  --app-body-text: #ffffff;
-  --diff-background-color: #0f0f0f;
-  --diff-text-color: #ffffff;
-  --diff-selection-background-color: rgba(77, 163, 255, 0.26);
-  --diff-selection-text-color: #ffffff;
-  --diff-gutter-insert-background-color: #001d0d;
-  --diff-gutter-insert-text-color: #43f090;
-  --diff-gutter-delete-background-color: #2a0000;
-  --diff-gutter-delete-text-color: #ffb0b0;
-  --diff-gutter-selected-background-color: #241f00;
-  --diff-gutter-selected-text-color: #ffe14d;
-  --diff-code-insert-background-color: #002813;
-  --diff-code-insert-text-color: #b3ffd2;
-  --diff-code-delete-background-color: #300000;
-  --diff-code-delete-text-color: #ffe0e0;
-  --diff-code-insert-edit-background-color: #004d25;
-  --diff-code-insert-edit-text-color: #ecfff3;
-  --diff-code-delete-edit-background-color: #6b0000;
-  --diff-code-delete-edit-text-color: #fff5f5;
-  --diff-code-selected-background-color: #3d3500;
-  --diff-code-selected-text-color: #fff4a3;
-  --diff-omit-gutter-line-color: #ff5c5c;
-}
-
-html[data-theme="tokyo-night"] {
-  color-scheme: dark;
-  --app-body-bg: #16161e;
-  --app-body-text: #c0caf5;
-  --diff-background-color: #1f2335;
-  --diff-text-color: #c0caf5;
-  --diff-selection-background-color: rgba(122, 162, 247, 0.18);
-  --diff-selection-text-color: #eef2ff;
-  --diff-gutter-insert-background-color: #223126;
-  --diff-gutter-insert-text-color: #9ece6a;
-  --diff-gutter-delete-background-color: #3b2532;
-  --diff-gutter-delete-text-color: #f7768e;
-  --diff-gutter-selected-background-color: #393324;
-  --diff-gutter-selected-text-color: #e0af68;
-  --diff-code-insert-background-color: #1d2b22;
-  --diff-code-insert-text-color: #d8f2bc;
-  --diff-code-delete-background-color: #301f29;
-  --diff-code-delete-text-color: #ffc3ce;
-  --diff-code-insert-edit-background-color: #35503f;
-  --diff-code-insert-edit-text-color: #f0ffe5;
-  --diff-code-delete-edit-background-color: #6e4251;
-  --diff-code-delete-edit-text-color: #fff0f4;
-  --diff-code-selected-background-color: #393324;
-  --diff-code-selected-text-color: #f3d5a5;
-  --diff-omit-gutter-line-color: #f7768e;
-}
-
-html[data-theme="solarized-dark"] {
-  color-scheme: dark;
-  --app-body-bg: #001f27;
-  --app-body-text: #93a1a1;
-  --diff-background-color: #073642;
-  --diff-text-color: #93a1a1;
-  --diff-selection-background-color: rgba(38, 139, 210, 0.2);
-  --diff-selection-text-color: #eee8d5;
-  --diff-gutter-insert-background-color: #1b3314;
-  --diff-gutter-insert-text-color: #859900;
-  --diff-gutter-delete-background-color: #3b1712;
-  --diff-gutter-delete-text-color: #dc322f;
-  --diff-gutter-selected-background-color: #3a2d09;
-  --diff-gutter-selected-text-color: #b58900;
-  --diff-code-insert-background-color: #153016;
-  --diff-code-insert-text-color: #c3d269;
-  --diff-code-delete-background-color: #31130f;
-  --diff-code-delete-text-color: #ff9b94;
-  --diff-code-insert-edit-background-color: #31511d;
-  --diff-code-insert-edit-text-color: #eef7b3;
-  --diff-code-delete-edit-background-color: #723127;
-  --diff-code-delete-edit-text-color: #ffe5df;
-  --diff-code-selected-background-color: #3a2d09;
-  --diff-code-selected-text-color: #e8c65a;
-  --diff-omit-gutter-line-color: #dc322f;
-}
-
-html[data-theme="paper"] {
-  color-scheme: light;
-  --app-body-bg: #efe8d5;
-  --app-body-text: #4b463c;
-  --diff-background-color: #fffaf0;
-  --diff-text-color: #4b463c;
-  --diff-selection-background-color: rgba(70, 124, 138, 0.12);
-  --diff-selection-text-color: #4b463c;
-  --diff-gutter-insert-background-color: #edf2e3;
-  --diff-gutter-insert-text-color: #567038;
-  --diff-gutter-delete-background-color: #f5e3e1;
-  --diff-gutter-delete-text-color: #9d4f4f;
-  --diff-gutter-selected-background-color: #f6ead7;
-  --diff-gutter-selected-text-color: #9b6d2b;
-  --diff-code-insert-background-color: #f4f7eb;
-  --diff-code-insert-text-color: #445a2b;
-  --diff-code-delete-background-color: #faecea;
-  --diff-code-delete-text-color: #884646;
-  --diff-code-insert-edit-background-color: #dfe8d2;
-  --diff-code-insert-edit-text-color: #394b24;
-  --diff-code-delete-edit-background-color: #edd1ce;
-  --diff-code-delete-edit-text-color: #723b3b;
-  --diff-code-selected-background-color: #efddc0;
-  --diff-code-selected-text-color: #7f5b22;
-  --diff-omit-gutter-line-color: #b55d5d;
-}
-
-html,
-body {
-  margin: 0;
-  min-height: 100%;
-}
-
-body {
-  background: var(--app-body-bg);
-  color: var(--app-body-text);
-  transition:
-    background-color 160ms ease,
-    color 160ms ease;
-}
-
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: "SFMono-Regular", "Consolas", monospace;
-}
-
-.xterm .xterm-screen {
-  padding: 0;
-  box-sizing: border-box;
-}
-
-.diff {
-  background: var(--diff-background-color);
-  color: var(--diff-text-color);
-}
-
-.diff-hunk + .diff-hunk .diff-line:first-child td,
-.diff-hunk + .diff-hunk .diff-widget:first-child td,
-.diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
-}
-
-.diff-gutter {
-  color: rgba(90, 103, 93, 0.72);
-  background: rgba(0, 0, 0, 0.015);
-  border-right: 1px solid rgba(0, 0, 0, 0.05);
-}
-
-.diff-code-normal {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.diff-code,
-.diff-decoration-content,
-.diff-widget-content {
-  color: var(--diff-text-color);
-}
-
-.diff-decoration-content,
-.diff-widget-content {
-  background: rgba(0, 0, 0, 0.025);
-}
-
-html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="github"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="github"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="github"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(255, 255, 255, 0.06);
-}
-
-html[data-theme="dark"] .diff-gutter,
-html[data-theme="cyber"] .diff-gutter,
-html[data-theme="forge"] .diff-gutter,
-html[data-theme="github"] .diff-gutter,
-html[data-theme="nord"] .diff-gutter,
-html[data-theme="gruvbox-dark"] .diff-gutter,
-html[data-theme="high-contrast"] .diff-gutter,
-html[data-theme="tokyo-night"] .diff-gutter,
-html[data-theme="solarized-dark"] .diff-gutter {
-  color: #8ea394;
-  background: rgba(255, 255, 255, 0.02);
-  border-right-color: rgba(255, 255, 255, 0.06);
-}
-
-html[data-theme="dark"] .diff-code-normal,
-html[data-theme="cyber"] .diff-code-normal,
-html[data-theme="forge"] .diff-code-normal,
-html[data-theme="github"] .diff-code-normal,
-html[data-theme="nord"] .diff-code-normal,
-html[data-theme="gruvbox-dark"] .diff-code-normal,
-html[data-theme="high-contrast"] .diff-code-normal,
-html[data-theme="tokyo-night"] .diff-code-normal,
-html[data-theme="solarized-dark"] .diff-code-normal {
-  background: rgba(255, 255, 255, 0.01);
-}
-
-html[data-theme="dark"] .diff-decoration-content,
-html[data-theme="dark"] .diff-widget-content,
-html[data-theme="cyber"] .diff-decoration-content,
-html[data-theme="cyber"] .diff-widget-content,
-html[data-theme="forge"] .diff-decoration-content,
-html[data-theme="forge"] .diff-widget-content,
-html[data-theme="github"] .diff-decoration-content,
-html[data-theme="github"] .diff-widget-content,
-html[data-theme="nord"] .diff-decoration-content,
-html[data-theme="nord"] .diff-widget-content,
-html[data-theme="gruvbox-dark"] .diff-decoration-content,
-html[data-theme="gruvbox-dark"] .diff-widget-content,
-html[data-theme="high-contrast"] .diff-decoration-content,
-html[data-theme="high-contrast"] .diff-widget-content,
-html[data-theme="tokyo-night"] .diff-decoration-content,
-html[data-theme="tokyo-night"] .diff-widget-content,
-html[data-theme="solarized-dark"] .diff-decoration-content,
-html[data-theme="solarized-dark"] .diff-widget-content {
-  background: rgba(255, 255, 255, 0.03);
-  color: #9fb3a5;
-}
-
-html[data-theme="cyber"] .diff-gutter {
-  color: rgba(200, 182, 255, 0.65);
-  background: rgba(255, 255, 255, 0.025);
-  border-right-color: rgba(200, 182, 255, 0.08);
-}
-
-html[data-theme="cyber"] .diff-decoration-content,
-html[data-theme="cyber"] .diff-widget-content {
-  color: rgba(200, 182, 255, 0.72);
-}
-
-html[data-theme="forge"] .diff-gutter {
-  color: rgba(201, 209, 217, 0.62);
-  background: rgba(255, 255, 255, 0.02);
-  border-right-color: rgba(201, 209, 217, 0.07);
-}
-
-html[data-theme="forge"] .diff-decoration-content,
-html[data-theme="forge"] .diff-widget-content {
-  color: rgba(201, 209, 217, 0.72);
-}
-
-html[data-theme="github"] .diff-gutter {
-  color: #8b949e;
-  background: rgba(255, 255, 255, 0.02);
-  border-right-color: rgba(201, 209, 217, 0.08);
-}
-
-html[data-theme="github"] .diff-decoration-content,
-html[data-theme="github"] .diff-widget-content {
-  color: #8b949e;
-}
-
-html[data-theme="nord"] .diff-gutter {
-  color: #c2cad6;
-  background: rgba(236, 239, 244, 0.03);
-  border-right-color: rgba(236, 239, 244, 0.08);
-}
-
-html[data-theme="nord"] .diff-decoration-content,
-html[data-theme="nord"] .diff-widget-content {
-  color: #c2cad6;
-}
-
-html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(208, 215, 222, 0.7);
-}
-
-html[data-theme="github-light"] .diff-gutter {
-  color: #57606a;
-  background: rgba(246, 248, 250, 0.9);
-  border-right-color: rgba(208, 215, 222, 0.9);
-}
-
-html[data-theme="github-light"] .diff-code-normal {
-  background: rgba(246, 248, 250, 0.65);
-}
-
-html[data-theme="github-light"] .diff-decoration-content,
-html[data-theme="github-light"] .diff-widget-content {
-  background: rgba(246, 248, 250, 0.85);
-  color: #57606a;
-}
-
-html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(131, 148, 150, 0.35);
-}
-
-html[data-theme="solarized-light"] .diff-gutter {
-  color: #6b7f86;
-  background: rgba(253, 246, 227, 0.9);
-  border-right-color: rgba(215, 206, 181, 0.9);
-}
-
-html[data-theme="solarized-light"] .diff-code-normal {
-  background: rgba(255, 249, 233, 0.72);
-}
-
-html[data-theme="solarized-light"] .diff-decoration-content,
-html[data-theme="solarized-light"] .diff-widget-content {
-  background: rgba(255, 249, 233, 0.88);
-  color: #6b7f86;
-}
-
-html[data-theme="gruvbox-dark"] .diff-gutter {
-  color: #bdae93;
-  background: rgba(235, 219, 178, 0.03);
-  border-right-color: rgba(235, 219, 178, 0.08);
-}
-
-html[data-theme="gruvbox-dark"] .diff-decoration-content,
-html[data-theme="gruvbox-dark"] .diff-widget-content {
-  color: #bdae93;
-}
-
-html[data-theme="high-contrast"] .diff-gutter {
-  color: #d9d9d9;
-  background: rgba(255, 255, 255, 0.04);
-  border-right-color: rgba(255, 255, 255, 0.2);
-}
-
-html[data-theme="high-contrast"] .diff-code-normal {
-  background: rgba(255, 255, 255, 0.03);
-}
-
-html[data-theme="high-contrast"] .diff-decoration-content,
-html[data-theme="high-contrast"] .diff-widget-content {
-  background: rgba(255, 255, 255, 0.06);
-  color: #ffffff;
-}
-
-html[data-theme="tokyo-night"] .diff-gutter {
-  color: #a9b1d6;
-  background: rgba(192, 202, 245, 0.03);
-  border-right-color: rgba(192, 202, 245, 0.08);
-}
-
-html[data-theme="tokyo-night"] .diff-decoration-content,
-html[data-theme="tokyo-night"] .diff-widget-content {
-  color: #a9b1d6;
-}
-
-html[data-theme="solarized-dark"] .diff-gutter {
-  color: #839496;
-  background: rgba(147, 161, 161, 0.03);
-  border-right-color: rgba(147, 161, 161, 0.08);
-}
-
-html[data-theme="solarized-dark"] .diff-decoration-content,
-html[data-theme="solarized-dark"] .diff-widget-content {
-  color: #839496;
-}
-
-html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(216, 205, 182, 0.72);
-}
-
-html[data-theme="paper"] .diff-gutter {
-  color: #6a665c;
-  background: rgba(255, 250, 240, 0.86);
-  border-right-color: rgba(216, 205, 182, 0.92);
-}
-
-html[data-theme="paper"] .diff-code-normal {
-  background: rgba(255, 253, 247, 0.75);
-}
-
-html[data-theme="paper"] .diff-decoration-content,
-html[data-theme="paper"] .diff-widget-content {
-  background: rgba(255, 253, 247, 0.9);
-  color: #6a665c;
-}
-
-html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(231, 216, 205, 0.9);
-}
-
-html[data-theme="forge-light"] .diff-gutter {
-  color: #6d584b;
-  background: rgba(255, 250, 246, 0.92);
-  border-right-color: rgba(231, 216, 205, 0.96);
-}
-
-html[data-theme="forge-light"] .diff-code-normal {
-  background: rgba(255, 252, 249, 0.82);
-}
-
-html[data-theme="forge-light"] .diff-decoration-content,
-html[data-theme="forge-light"] .diff-widget-content {
-  background: rgba(255, 252, 249, 0.94);
-  color: #6d584b;
-}
-
-.task-notes-mdx-editor {
-  border: 0;
-  overflow: hidden;
-  color: var(--ant-colorText, inherit);
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar {
-  background: transparent !important;
-  border: 0;
-  color: var(--ant-colorTextSecondary, inherit);
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar button,
-.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] {
-  background: transparent !important;
-  border: 0;
-  color: var(--ant-colorTextSecondary, inherit) !important;
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar button:hover,
-.task-notes-mdx-editor .mdxeditor-toolbar [role="button"]:hover {
-  background: transparent !important;
-  color: var(--ant-colorText, inherit) !important;
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar button[aria-pressed="true"],
-.task-notes-mdx-editor .mdxeditor-toolbar [role="button"][aria-pressed="true"] {
-  color: var(--ant-colorPrimary, inherit) !important;
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar button svg,
-.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] svg {
-  color: inherit !important;
-  fill: currentColor !important;
-  stroke: none !important;
-}
-
-.task-notes-mdx-editor-content {
-  min-height: 380px;
-  color: var(--ant-colorText, inherit);
-  background: transparent;
-}
-
-.task-notes-mdx-editor-content ul,
-.task-notes-mdx-editor-content ol {
-  margin-inline-start: 0;
-  padding-inline-start: 15px;
-}
 ````
 
 ## File: apps/web/src/utils/task-history.test.ts
