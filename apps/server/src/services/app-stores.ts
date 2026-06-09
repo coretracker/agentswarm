@@ -8,22 +8,12 @@ import type { TaskQueueStore } from "./task-queue-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { UserStore } from "./user-store.js";
 import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
-
-export type SupportedStoreBackend = "redis" | "postgres";
-
-export interface DurableStoreBackends {
-  taskStore: SupportedStoreBackend;
-  snippetStore: SupportedStoreBackend;
-  repositoryStore: SupportedStoreBackend;
-  credentialStore: SupportedStoreBackend;
-  roleStore: SupportedStoreBackend;
-  userStore: SupportedStoreBackend;
-  settingsStore: SupportedStoreBackend;
-}
+import type { GitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
 
 export interface AppStores {
   taskStore: TaskStore;
   taskQueueStore: TaskQueueStore;
+  githubOutboundQueueStore: GitHubOutboundQueueStore;
   webhookDeliveryStore: WebhookDeliveryStore;
   snippetStore: SnippetStore;
   repositoryStore: RepositoryStore;
@@ -33,6 +23,3 @@ export interface AppStores {
   sessionStore: SessionStore;
   settingsStore: SettingsStore;
 }
-
-export const usesPostgresBackends = (backends: DurableStoreBackends): boolean =>
-  Object.values(backends).some((backend) => backend === "postgres");

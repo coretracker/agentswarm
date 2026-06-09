@@ -1,6 +1,6 @@
 FROM alpine:latest
 
-RUN apk add --no-cache bash git vim diffutils ca-certificates
+RUN apk add --no-cache bash git vim neovim diffutils ca-certificates
 
 COPY git-terminal-shell.sh /usr/local/bin/git-terminal-shell
 COPY git-terminal-bin/ /usr/local/git-terminal-bin/

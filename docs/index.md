@@ -1,0 +1,27 @@
+# Documentation Index
+
+## Getting Started
+- [Development setup](development/setup.md)
+- [Development commands](development/commands.md)
+- [Human-gated taskwise delivery flow](development/human-gated-taskwise-delivery-flow.md)
+- [Testing](development/testing.md)
+- [Debugging](development/debugging.md)
+
+## Architecture
+- [Architecture index](architecture/index.md)
+- [Domains](architecture/domains.md)
+- [Boundaries](architecture/boundaries.md)
+- [GitHub sync ownership model](github-sync-ownership-model.md)
+
+## Product
+- [Product index](product/index.md)
+- [Terminology](product/terminology.md)
+
+## Quality
+- [Scorecard](quality/scorecard.md)
+- [Known issues](quality/known-issues.md)
+- [Tech debt](quality/tech-debt.md)
+
+## Execution Plans
+- Active plans: `docs/exec-plans/active/`
+- Completed plans: `docs/exec-plans/completed/`

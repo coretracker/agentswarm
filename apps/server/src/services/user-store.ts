@@ -6,6 +6,8 @@ import type { Pool } from "pg";
 import {
   ALL_PERMISSION_SCOPES,
   type AgentProvider,
+  type AgentResponsePreference,
+  type AudienceType,
   type AuthSessionUser,
   type CreateUserInput,
   type PermissionScope,
@@ -17,6 +19,7 @@ import {
 } from "@agentswarm/shared-types";
 import { HttpError } from "../lib/http-error.js";
 import { type PostgresQueryable, withPostgresTransaction } from "../lib/postgres.js";
+import type { RepositoryStore } from "./repository-store.js";
 import { SYSTEM_ADMIN_ROLE_ID, type RoleStore } from "./role-store.js";
 
 const USER_KEY_PREFIX = "agentswarm:user:";
@@ -38,8 +41,12 @@ export interface StoredUserRecord {
   id: string;
   name: string;
   email: string;
+  gitAuthorName: string | null;
+  gitAuthorEmail: string | null;
   active: boolean;
+  agentResponsePreference: AgentResponsePreference;
   roleIds: string[];
+  repositoryIds: string[];
   passwordHash: string;
   passwordSalt: string;
   lastLoginAt: string | null;
@@ -49,6 +56,65 @@ export interface StoredUserRecord {
 
 const normalizeUserName = (value: string | undefined): string => (value ?? "").trim().replace(/\s+/g, " ");
 const normalizeUserEmail = (value: string | undefined): string => (value ?? "").trim().toLowerCase();
+const normalizeOptionalGitAuthorName = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim().replace(/\s+/g, " ");
+  return normalized || null;
+};
+const normalizeOptionalGitAuthorEmail = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  return normalized || null;
+};
+const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
+const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
+const RESPONSE_EXPLANATION_DEPTH = new Set(["one_line", "brief", "standard", "detailed", "deep_dive"]);
+const RESPONSE_JARGON_LEVEL = new Set(["avoid", "balanced", "expert"]);
+const RESPONSE_CODE_PREFERENCE = new Set(["only_when_needed", "prefer_examples", "avoid_code"]);
+const RESPONSE_CLARIFY_BEHAVIOR = new Set(["ask_when_ambiguous", "make_reasonable_assumptions"]);
+const RESPONSE_FORMATTING_STYLE = new Set(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]);
+
+const normalizeAgentResponsePreference = (
+  value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined,
+  fallback: AgentResponsePreference = DEFAULT_AGENT_RESPONSE_PREFERENCE
+): AgentResponsePreference => ({
+  audience:
+    (() => {
+      const nextAudience = value?.audience ?? fallback.audience;
+      if (typeof nextAudience === "string" && RESPONSE_AUDIENCES.has(nextAudience as AudienceType)) {
+        return nextAudience as AudienceType;
+      }
+      const legacyStyle = (value as { style?: string } | undefined)?.style ?? (fallback as { style?: string } | undefined)?.style;
+      if (legacyStyle === "technical" || legacyStyle === "non_technical") {
+        return legacyStyle;
+      }
+      return undefined;
+    })(),
+  explanationDepth:
+    typeof (value?.explanationDepth ?? fallback.explanationDepth) === "string" &&
+    RESPONSE_EXPLANATION_DEPTH.has((value?.explanationDepth ?? fallback.explanationDepth) as string)
+      ? (value?.explanationDepth ?? fallback.explanationDepth)
+      : undefined,
+  jargonLevel:
+    typeof (value?.jargonLevel ?? fallback.jargonLevel) === "string" &&
+    RESPONSE_JARGON_LEVEL.has((value?.jargonLevel ?? fallback.jargonLevel) as string)
+      ? (value?.jargonLevel ?? fallback.jargonLevel)
+      : undefined,
+  codePreference:
+    typeof (value?.codePreference ?? fallback.codePreference) === "string" &&
+    RESPONSE_CODE_PREFERENCE.has((value?.codePreference ?? fallback.codePreference) as string)
+      ? (value?.codePreference ?? fallback.codePreference)
+      : undefined,
+  clarifyBehavior:
+    typeof (value?.clarifyBehavior ?? fallback.clarifyBehavior) === "string" &&
+    RESPONSE_CLARIFY_BEHAVIOR.has((value?.clarifyBehavior ?? fallback.clarifyBehavior) as string)
+      ? (value?.clarifyBehavior ?? fallback.clarifyBehavior)
+      : undefined,
+  formattingStyle:
+    typeof (value?.formattingStyle ?? fallback.formattingStyle) === "string" &&
+    RESPONSE_FORMATTING_STYLE.has((value?.formattingStyle ?? fallback.formattingStyle) as string)
+      ? (value?.formattingStyle ?? fallback.formattingStyle)
+      : undefined,
+  extraInstructions: (value?.extraInstructions ?? fallback.extraInstructions)?.trim() || undefined
+});
 
 const sortScopes = (scopes: PermissionScope[]): PermissionScope[] =>
   Array.from(new Set(scopes)).sort((left, right) => (scopeOrder.get(left) ?? 0) - (scopeOrder.get(right) ?? 0));
@@ -101,7 +167,8 @@ export interface UserStore {
 export class RedisUserStore implements UserStore {
   constructor(
     private readonly redis: Redis,
-    private readonly roleStore: RoleStore
+    private readonly roleStore: RoleStore,
+    private readonly repositoryStore: RepositoryStore
   ) {}
 
   private userKey(userId: string): string {
@@ -117,8 +184,12 @@ export class RedisUserStore implements UserStore {
       ...user,
       name: normalizeUserName(user.name),
       email: normalizeUserEmail(user.email),
+      gitAuthorName: normalizeOptionalGitAuthorName(user.gitAuthorName),
+      gitAuthorEmail: normalizeOptionalGitAuthorEmail(user.gitAuthorEmail),
       active: user.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
+      repositoryIds: Array.from(new Set((user.repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean))),
       lastLoginAt: user.lastLoginAt ?? null
     };
   }
@@ -169,6 +240,21 @@ export class RedisUserStore implements UserStore {
     return uniqueRoleIds;
   }
 
+  private async normalizeRepositoryIds(repositoryIds: string[] | undefined): Promise<string[]> {
+    const uniqueRepositoryIds = Array.from(new Set((repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean)));
+    if (uniqueRepositoryIds.length === 0) {
+      return [];
+    }
+
+    const repositories = await Promise.all(uniqueRepositoryIds.map((repositoryId) => this.repositoryStore.getRepository(repositoryId)));
+    const missingRepositoryId = uniqueRepositoryIds.find((repositoryId, index) => !repositories[index]);
+    if (missingRepositoryId) {
+      throw new HttpError(400, `Unknown repository: ${missingRepositoryId}`);
+    }
+
+    return uniqueRepositoryIds;
+  }
+
   private buildRoleRefs(roles: Role[]): UserRoleRef[] {
     return roles.map((role) => ({
       id: role.id,
@@ -183,8 +269,12 @@ export class RedisUserStore implements UserStore {
       id: user.id,
       name: user.name,
       email: user.email,
+      gitAuthorName: user.gitAuthorName,
+      gitAuthorEmail: user.gitAuthorEmail,
       active: user.active,
+      agentResponsePreference: user.agentResponsePreference,
       roles: this.buildRoleRefs(roles),
+      repositoryIds: user.repositoryIds,
       lastLoginAt: user.lastLoginAt,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt
@@ -317,7 +407,8 @@ export class RedisUserStore implements UserStore {
       scopes,
       allowedProviders,
       allowedModels,
-      allowedEfforts
+      allowedEfforts,
+      agentResponsePreference: user.agentResponsePreference
     };
   }
 
@@ -354,6 +445,8 @@ export class RedisUserStore implements UserStore {
   async createUser(input: CreateUserInput): Promise<User> {
     const name = normalizeUserName(input.name);
     const email = normalizeUserEmail(input.email);
+    const gitAuthorName = normalizeOptionalGitAuthorName(input.gitAuthorName);
+    const gitAuthorEmail = normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
     const password = input.password.trim();
 
     if (!name) {
@@ -373,15 +466,22 @@ export class RedisUserStore implements UserStore {
       throw new HttpError(409, "A user with that email already exists");
     }
 
-    const roleIds = await this.normalizeRoleIds(input.roleIds);
+    const [roleIds, repositoryIds] = await Promise.all([
+      this.normalizeRoleIds(input.roleIds),
+      this.normalizeRepositoryIds(input.repositoryIds)
+    ]);
     const timestamp = nowIso();
     const passwordState = await hashPassword(password);
     const user: StoredUserRecord = {
       id: nanoid(),
       name,
       email,
+      gitAuthorName,
+      gitAuthorEmail,
       active: input.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
       roleIds,
+      repositoryIds,
       passwordHash: passwordState.passwordHash,
       passwordSalt: passwordState.passwordSalt,
       lastLoginAt: null,
@@ -401,6 +501,10 @@ export class RedisUserStore implements UserStore {
 
     const nextName = input.name === undefined ? current.name : normalizeUserName(input.name);
     const nextEmail = input.email === undefined ? current.email : normalizeUserEmail(input.email);
+    const nextGitAuthorName =
+      input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName);
+    const nextGitAuthorEmail =
+      input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
     if (!nextName) {
       throw new HttpError(400, "User name is required");
     }
@@ -416,7 +520,10 @@ export class RedisUserStore implements UserStore {
       }
     }
 
-    const nextRoleIds = input.roleIds === undefined ? current.roleIds : await this.normalizeRoleIds(input.roleIds);
+    const [nextRoleIds, nextRepositoryIds] = await Promise.all([
+      input.roleIds === undefined ? Promise.resolve(current.roleIds) : this.normalizeRoleIds(input.roleIds),
+      input.repositoryIds === undefined ? Promise.resolve(current.repositoryIds) : this.normalizeRepositoryIds(input.repositoryIds)
+    ]);
     const nextActive = input.active ?? current.active;
     await this.assertAdminUserStillExists(current, nextRoleIds, nextActive);
 
@@ -437,8 +544,15 @@ export class RedisUserStore implements UserStore {
       ...current,
       name: nextName,
       email: nextEmail,
+      gitAuthorName: nextGitAuthorName,
+      gitAuthorEmail: nextGitAuthorEmail,
       active: nextActive,
+      agentResponsePreference:
+        input.agentResponsePreference === undefined
+          ? current.agentResponsePreference
+          : normalizeAgentResponsePreference(input.agentResponsePreference, current.agentResponsePreference),
       roleIds: nextRoleIds,
+      repositoryIds: nextRepositoryIds,
       passwordHash,
       passwordSalt,
       updatedAt: nowIso()
@@ -487,16 +601,25 @@ export class RedisUserStore implements UserStore {
 export class PostgresUserStore implements UserStore {
   constructor(
     private readonly pool: Pool,
-    private readonly roleStore: RoleStore
+    private readonly roleStore: RoleStore,
+    private readonly repositoryStore: RepositoryStore
   ) {}
 
-  private mapUserRow(row: Record<string, unknown>, roleIds: string[]): StoredUserRecord {
+  private mapUserRow(row: Record<string, unknown>, roleIds: string[], repositoryIds: string[]): StoredUserRecord {
     return this.normalizeStoredUser({
       id: String(row.id),
       name: String(row.name ?? ""),
       email: String(row.email ?? ""),
+      gitAuthorName: typeof row.git_author_name === "string" ? row.git_author_name : null,
+      gitAuthorEmail: typeof row.git_author_email === "string" ? row.git_author_email : null,
       active: row.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(
+        row.agent_response_preference && typeof row.agent_response_preference === "object"
+          ? (row.agent_response_preference as Partial<AgentResponsePreference>)
+          : undefined
+      ),
       roleIds,
+      repositoryIds,
       passwordHash: String(row.password_hash ?? ""),
       passwordSalt: String(row.password_salt ?? ""),
       lastLoginAt: typeof row.last_login_at === "string" ? row.last_login_at : null,
@@ -510,8 +633,12 @@ export class PostgresUserStore implements UserStore {
       ...user,
       name: normalizeUserName(user.name),
       email: normalizeUserEmail(user.email),
+      gitAuthorName: normalizeOptionalGitAuthorName(user.gitAuthorName),
+      gitAuthorEmail: normalizeOptionalGitAuthorEmail(user.gitAuthorEmail),
       active: user.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
+      repositoryIds: Array.from(new Set((user.repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean))),
       lastLoginAt: user.lastLoginAt ?? null
     };
   }
@@ -537,6 +664,27 @@ export class PostgresUserStore implements UserStore {
     return roleIdsByUser;
   }
 
+  private async getRepositoryIdsForUsers(
+    userIds: string[],
+    db: PostgresQueryable = this.pool
+  ): Promise<Map<string, string[]>> {
+    if (userIds.length === 0) {
+      return new Map();
+    }
+
+    const result = await db.query<{ user_id: string; repository_id: string }>(
+      "SELECT user_id, repository_id FROM user_repositories WHERE user_id = ANY($1::text[]) ORDER BY repository_id ASC",
+      [userIds]
+    );
+    const repositoryIdsByUser = new Map<string, string[]>();
+    for (const row of result.rows) {
+      const repositoryIds = repositoryIdsByUser.get(row.user_id) ?? [];
+      repositoryIds.push(row.repository_id);
+      repositoryIdsByUser.set(row.user_id, repositoryIds);
+    }
+    return repositoryIdsByUser;
+  }
+
   private async getStoredUsers(userIds: string[], db: PostgresQueryable = this.pool): Promise<StoredUserRecord[]> {
     if (userIds.length === 0) {
       return [];
@@ -544,10 +692,11 @@ export class PostgresUserStore implements UserStore {
 
     const result = await db.query("SELECT * FROM users WHERE id = ANY($1::text[])", [userIds]);
     const roleIdsByUser = await this.getRoleIdsForUsers(userIds, db);
+    const repositoryIdsByUser = await this.getRepositoryIdsForUsers(userIds, db);
     const usersById = new Map<string, StoredUserRecord>();
     for (const row of result.rows) {
       const userId = String(row.id);
-      usersById.set(userId, this.mapUserRow(row, roleIdsByUser.get(userId) ?? []));
+      usersById.set(userId, this.mapUserRow(row, roleIdsByUser.get(userId) ?? [], repositoryIdsByUser.get(userId) ?? []));
     }
 
     return userIds.flatMap((userId) => {
@@ -576,6 +725,21 @@ export class PostgresUserStore implements UserStore {
     return uniqueRoleIds;
   }
 
+  private async normalizeRepositoryIds(repositoryIds: string[] | undefined): Promise<string[]> {
+    const uniqueRepositoryIds = Array.from(new Set((repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean)));
+    if (uniqueRepositoryIds.length === 0) {
+      return [];
+    }
+
+    const repositories = await Promise.all(uniqueRepositoryIds.map((repositoryId) => this.repositoryStore.getRepository(repositoryId)));
+    const missingRepositoryId = uniqueRepositoryIds.find((repositoryId, index) => !repositories[index]);
+    if (missingRepositoryId) {
+      throw new HttpError(400, `Unknown repository: ${missingRepositoryId}`);
+    }
+
+    return uniqueRepositoryIds;
+  }
+
   private buildRoleRefs(roles: Role[]): UserRoleRef[] {
     return roles.map((role) => ({
       id: role.id,
@@ -590,8 +754,12 @@ export class PostgresUserStore implements UserStore {
       id: user.id,
       name: user.name,
       email: user.email,
+      gitAuthorName: user.gitAuthorName,
+      gitAuthorEmail: user.gitAuthorEmail,
       active: user.active,
+      agentResponsePreference: user.agentResponsePreference,
       roles: this.buildRoleRefs(roles),
+      repositoryIds: user.repositoryIds,
       lastLoginAt: user.lastLoginAt,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt
@@ -641,19 +809,25 @@ export class PostgresUserStore implements UserStore {
           id,
           name,
           email,
+          git_author_name,
+          git_author_email,
           active,
+          agent_response_preference,
           password_hash,
           password_salt,
           last_login_at,
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
         ON CONFLICT (id) DO UPDATE
         SET
           name = EXCLUDED.name,
           email = EXCLUDED.email,
+          git_author_name = EXCLUDED.git_author_name,
+          git_author_email = EXCLUDED.git_author_email,
           active = EXCLUDED.active,
+          agent_response_preference = EXCLUDED.agent_response_preference,
           password_hash = EXCLUDED.password_hash,
           password_salt = EXCLUDED.password_salt,
           last_login_at = EXCLUDED.last_login_at,
@@ -664,7 +838,10 @@ export class PostgresUserStore implements UserStore {
         nextUser.id,
         nextUser.name,
         nextUser.email,
+        nextUser.gitAuthorName,
+        nextUser.gitAuthorEmail,
         nextUser.active,
+        JSON.stringify(nextUser.agentResponsePreference),
         nextUser.passwordHash,
         nextUser.passwordSalt,
         nextUser.lastLoginAt,
@@ -673,6 +850,7 @@ export class PostgresUserStore implements UserStore {
       ]
     );
     await db.query("DELETE FROM user_roles WHERE user_id = $1", [nextUser.id]);
+    await db.query("DELETE FROM user_repositories WHERE user_id = $1", [nextUser.id]);
     if (nextUser.roleIds.length > 0) {
       await db.query(
         `
@@ -682,6 +860,17 @@ export class PostgresUserStore implements UserStore {
           ON CONFLICT DO NOTHING
         `,
         [nextUser.id, nextUser.roleIds]
+      );
+    }
+    if (nextUser.repositoryIds.length > 0) {
+      await db.query(
+        `
+          INSERT INTO user_repositories (user_id, repository_id)
+          SELECT $1, repository_id
+          FROM unnest($2::text[]) AS repository_id
+          ON CONFLICT DO NOTHING
+        `,
+        [nextUser.id, nextUser.repositoryIds]
       );
     }
   }
@@ -794,7 +983,8 @@ export class PostgresUserStore implements UserStore {
       scopes,
       allowedProviders,
       allowedModels,
-      allowedEfforts
+      allowedEfforts,
+      agentResponsePreference: user.agentResponsePreference
     };
   }
 
@@ -834,6 +1024,8 @@ export class PostgresUserStore implements UserStore {
   async createUser(input: CreateUserInput): Promise<User> {
     const name = normalizeUserName(input.name);
     const email = normalizeUserEmail(input.email);
+    const gitAuthorName = normalizeOptionalGitAuthorName(input.gitAuthorName);
+    const gitAuthorEmail = normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
     const password = input.password.trim();
 
     if (!name) {
@@ -853,15 +1045,22 @@ export class PostgresUserStore implements UserStore {
       throw new HttpError(409, "A user with that email already exists");
     }
 
-    const roleIds = await this.normalizeRoleIds(input.roleIds);
+    const [roleIds, repositoryIds] = await Promise.all([
+      this.normalizeRoleIds(input.roleIds),
+      this.normalizeRepositoryIds(input.repositoryIds)
+    ]);
     const timestamp = nowIso();
     const passwordState = await hashPassword(password);
     const user: StoredUserRecord = {
       id: nanoid(),
       name,
       email,
+      gitAuthorName,
+      gitAuthorEmail,
       active: input.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
       roleIds,
+      repositoryIds,
       passwordHash: passwordState.passwordHash,
       passwordSalt: passwordState.passwordSalt,
       lastLoginAt: null,
@@ -883,6 +1082,10 @@ export class PostgresUserStore implements UserStore {
 
     const nextName = input.name === undefined ? current.name : normalizeUserName(input.name);
     const nextEmail = input.email === undefined ? current.email : normalizeUserEmail(input.email);
+    const nextGitAuthorName =
+      input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName);
+    const nextGitAuthorEmail =
+      input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
     if (!nextName) {
       throw new HttpError(400, "User name is required");
     }
@@ -899,7 +1102,10 @@ export class PostgresUserStore implements UserStore {
       }
     }
 
-    const nextRoleIds = input.roleIds === undefined ? current.roleIds : await this.normalizeRoleIds(input.roleIds);
+    const [nextRoleIds, nextRepositoryIds] = await Promise.all([
+      input.roleIds === undefined ? Promise.resolve(current.roleIds) : this.normalizeRoleIds(input.roleIds),
+      input.repositoryIds === undefined ? Promise.resolve(current.repositoryIds) : this.normalizeRepositoryIds(input.repositoryIds)
+    ]);
     const nextActive = input.active ?? current.active;
     await this.assertAdminUserStillExists(current, nextRoleIds, nextActive);
 
@@ -920,8 +1126,15 @@ export class PostgresUserStore implements UserStore {
       ...current,
       name: nextName,
       email: nextEmail,
+      gitAuthorName: nextGitAuthorName,
+      gitAuthorEmail: nextGitAuthorEmail,
       active: nextActive,
+      agentResponsePreference:
+        input.agentResponsePreference === undefined
+          ? current.agentResponsePreference
+          : normalizeAgentResponsePreference(input.agentResponsePreference, current.agentResponsePreference),
       roleIds: nextRoleIds,
+      repositoryIds: nextRepositoryIds,
       passwordHash,
       passwordSalt,
       updatedAt: nowIso()

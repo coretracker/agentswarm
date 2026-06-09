@@ -38,6 +38,22 @@ export const encodeTaskPromptImageFiles = async (
     })
   );
 
+export const taskPromptAttachmentInputsToSelectedFiles = (
+  attachments: CreateTaskPromptAttachmentInput[] | null | undefined
+): SelectedTaskPromptImageFile[] =>
+  (attachments ?? []).map((attachment, index) => {
+    const binary = atob(attachment.dataBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let byteIndex = 0; byteIndex < binary.length; byteIndex += 1) {
+      bytes[byteIndex] = binary.charCodeAt(byteIndex);
+    }
+    const file = new File([bytes], attachment.name, { type: attachment.mimeType });
+    return {
+      id: typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${attachment.name}-${index}`,
+      file
+    };
+  });
+
 export const formatAttachmentSize = (sizeBytes: number): string => {
   if (sizeBytes < 1024) {
     return `${sizeBytes} B`;

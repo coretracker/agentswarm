@@ -1,50 +1,65 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { getMutationBlockedReason } from "./task-mutation-guards.js";
+import { getMutationBlocked, getMutationBlockedReason } from "./task-mutation-guards.js";
+
+const createStore = (input: { hasPending: boolean; hasSession: boolean }) =>
+  ({
+    hasPendingChangeProposal: async () => input.hasPending,
+    getActiveInteractiveSession: async () =>
+      input.hasSession
+        ? {
+            sessionId: "s",
+            checkpointRef: "abc",
+            startedAt: "x",
+            untrackedPathsAtCheckpoint: []
+          }
+        : null
+  }) as const;
+
+describe("getMutationBlocked", () => {
+  it("returns null when no pending proposal and no interactive session", async () => {
+    assert.equal(await getMutationBlocked(createStore({ hasPending: false, hasSession: false }) as never, "t1"), null);
+  });
+
+  it("returns pending checkpoint code when pending proposal exists", async () => {
+    assert.deepEqual(await getMutationBlocked(createStore({ hasPending: true, hasSession: false }) as never, "t1"), {
+      code: "pending_checkpoint",
+      message: "Apply or reject the pending checkpoint before continuing."
+    });
+  });
+
+  it("returns active terminal code when interactive session is active", async () => {
+    assert.deepEqual(await getMutationBlocked(createStore({ hasPending: false, hasSession: true }) as never, "t1"), {
+      code: "active_terminal_session",
+      message: "Close the terminal session before continuing."
+    });
+  });
+
+  it("prefers pending checkpoint when both blockers exist", async () => {
+    assert.deepEqual(await getMutationBlocked(createStore({ hasPending: true, hasSession: true }) as never, "t1"), {
+      code: "pending_checkpoint",
+      message: "Apply or reject the pending checkpoint before continuing."
+    });
+  });
+});
 
 describe("getMutationBlockedReason", () => {
   it("returns null when no pending proposal and no interactive session", async () => {
-    const store = {
-      hasPendingChangeProposal: async () => false,
-      getActiveInteractiveSession: async () => null
-    };
-    assert.equal(await getMutationBlockedReason(store as never, "t1"), null);
+    assert.equal(await getMutationBlockedReason(createStore({ hasPending: false, hasSession: false }) as never, "t1"), null);
   });
 
   it("returns message when pending proposal exists", async () => {
-    const store = {
-      hasPendingChangeProposal: async () => true,
-      getActiveInteractiveSession: async () => null
-    };
-    const msg = await getMutationBlockedReason(store as never, "t1");
+    const msg = await getMutationBlockedReason(createStore({ hasPending: true, hasSession: false }) as never, "t1");
     assert.ok(msg && msg.includes("pending"));
   });
 
   it("returns message when interactive session is active", async () => {
-    const store = {
-      hasPendingChangeProposal: async () => false,
-      getActiveInteractiveSession: async () => ({
-        sessionId: "s",
-        checkpointRef: "abc",
-        startedAt: "x",
-        untrackedPathsAtCheckpoint: []
-      })
-    };
-    const msg = await getMutationBlockedReason(store as never, "t1");
+    const msg = await getMutationBlockedReason(createStore({ hasPending: false, hasSession: true }) as never, "t1");
     assert.ok(msg && msg.includes("terminal"));
   });
 
   it("prefers pending proposal over interactive session", async () => {
-    const store = {
-      hasPendingChangeProposal: async () => true,
-      getActiveInteractiveSession: async () => ({
-        sessionId: "s",
-        checkpointRef: "abc",
-        startedAt: "x",
-        untrackedPathsAtCheckpoint: []
-      })
-    };
-    const msg = await getMutationBlockedReason(store as never, "t1");
+    const msg = await getMutationBlockedReason(createStore({ hasPending: true, hasSession: true }) as never, "t1");
     assert.ok(msg && msg.includes("checkpoint"));
   });
 });

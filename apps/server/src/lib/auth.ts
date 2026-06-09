@@ -2,10 +2,11 @@ import type { IncomingHttpHeaders } from "node:http";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AuthSession, PermissionScope, RealtimeEvent } from "@agentswarm/shared-types";
 import type { Server as SocketIOServer, Socket } from "socket.io";
+import type { CredentialStore } from "../services/credential-store.js";
 import type { SessionStore } from "../services/session-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { UserStore } from "../services/user-store.js";
-import { canUserAccessTask } from "./task-ownership.js";
+import { canUserAccessRepository, canUserAccessTask } from "./task-ownership.js";
 
 const realtimeScopesByEventType: Record<RealtimeEvent["type"], PermissionScope[]> = {
   "task:created": ["task:list", "task:read"],
@@ -15,6 +16,7 @@ const realtimeScopesByEventType: Record<RealtimeEvent["type"], PermissionScope[]
   "task:message": ["task:read"],
   "task:message_updated": ["task:read"],
   "task:run_updated": ["task:read"],
+  "task:git_operation": ["task:read"],
   "task:change_proposal": ["task:read"],
   "task:pushed": [],
   "task:merged": [],
@@ -77,12 +79,14 @@ export const createAuthService = ({
   cookieName,
   sessionStore,
   userStore,
-  taskStore
+  taskStore,
+  credentialStore
 }: {
   cookieName: string;
   sessionStore: SessionStore;
   userStore: UserStore;
   taskStore: TaskStore;
+  credentialStore: CredentialStore;
 }): AuthService => {
   const getRequestToken = (request: FastifyRequest): string | null => {
     const token = request.cookies?.[cookieName];
@@ -104,14 +108,19 @@ export const createAuthService = ({
       await sessionStore.deleteSession(token);
       return null;
     }
+    const codexAuthJsonConfigured = await credentialStore.hasCodexAuthJsonForUser(user.id);
+    const sessionUser = {
+      ...user,
+      codexAuthJsonConfigured
+    };
 
     return {
-      user,
-      scopes: new Set(user.scopes),
+      user: sessionUser,
+      scopes: new Set(sessionUser.scopes),
       sessionToken: token,
       expiresAt: session.expiresAt,
       session: {
-        user,
+        user: sessionUser,
         expiresAt: session.expiresAt
       }
     };
@@ -169,25 +178,80 @@ export const createAuthService = ({
       case "task:deleted":
         return event.payload.ownerUserId ?? null;
       case "task:log": {
-        const task = await taskStore.getTask(event.payload.taskId);
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
         return task?.ownerUserId ?? null;
       }
       case "task:message":
       case "task:message_updated": {
-        const task = await taskStore.getTask(event.payload.taskId);
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
         return task?.ownerUserId ?? null;
       }
       case "task:run_updated": {
-        const task = await taskStore.getTask(event.payload.taskId);
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
+        return task?.ownerUserId ?? null;
+      }
+      case "task:git_operation": {
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
         return task?.ownerUserId ?? null;
       }
       case "task:change_proposal": {
-        const task = await taskStore.getTask(event.payload.taskId);
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
         return task?.ownerUserId ?? null;
       }
       default:
         return null;
     }
+  };
+
+  const resolveRepositoryId = (event: RealtimeEvent): string | null => {
+    switch (event.type) {
+      case "repository:created":
+      case "repository:updated":
+      case "repository:deleted":
+        return typeof event.payload.id === "string" ? event.payload.id : null;
+      default:
+        return null;
+    }
+  };
+
+  const getSocketSessionToken = (socket: Socket): string | null => {
+    if (typeof socket.data.sessionToken === "string" && socket.data.sessionToken.trim().length > 0) {
+      return socket.data.sessionToken.trim();
+    }
+
+    const auth = socket.data.auth as RequestAuthContext | undefined;
+    if (typeof auth?.sessionToken === "string" && auth.sessionToken.trim().length > 0) {
+      return auth.sessionToken.trim();
+    }
+
+    return null;
+  };
+
+  const revalidateSocketAuth = async (
+    socket: Socket,
+    authCache: Map<string, Promise<RequestAuthContext | null>>
+  ): Promise<RequestAuthContext | null> => {
+    const sessionToken = getSocketSessionToken(socket);
+    if (!sessionToken) {
+      socket.disconnect(true);
+      return null;
+    }
+
+    let authPromise = authCache.get(sessionToken);
+    if (!authPromise) {
+      authPromise = buildAuthContext(sessionToken);
+      authCache.set(sessionToken, authPromise);
+    }
+
+    const auth = await authPromise;
+    if (!auth) {
+      socket.disconnect(true);
+      return null;
+    }
+
+    socket.data.sessionToken = sessionToken;
+    socket.data.auth = auth;
+    return auth;
   };
 
   return {
@@ -230,9 +294,13 @@ export const createAuthService = ({
       if (!user) {
         throw new Error("Active session user not found");
       }
+      const codexAuthJsonConfigured = await credentialStore.hasCodexAuthJsonForUser(user.id);
 
       return {
-        user,
+        user: {
+          ...user,
+          codexAuthJsonConfigured
+        },
         expiresAt
       };
     },
@@ -245,6 +313,7 @@ export const createAuthService = ({
             return next(new Error("Unauthorized"));
           }
 
+          socket.data.sessionToken = auth.sessionToken;
           socket.data.auth = auth;
           return next();
         } catch (error) {
@@ -269,29 +338,29 @@ export const createAuthService = ({
         return;
       }
 
-      if (event.type.startsWith("task:")) {
-        const ownerUserId = await resolveTaskOwnerUserId(event);
-        for (const socket of io.sockets.sockets.values()) {
-          const auth = socket.data.auth as RequestAuthContext | undefined;
-          if (!auth || !hasAllScopes(auth.scopes, requiredScopes)) {
-            continue;
-          }
-
-          if (!canUserAccessTask(auth.user, { ownerUserId })) {
-            continue;
-          }
-
-          socket.emit(event.type, event.payload);
-        }
+      const taskOwnerUserId = event.type.startsWith("task:") ? await resolveTaskOwnerUserId(event) : null;
+      const repositoryId = event.type.startsWith("repository:") ? resolveRepositoryId(event) : null;
+      if (event.type.startsWith("repository:") && !repositoryId) {
         return;
       }
 
-      let emitter = io.to(scopeRoom(requiredScopes[0]));
-      for (const scope of requiredScopes.slice(1)) {
-        emitter = emitter.to(scopeRoom(scope));
-      }
+      const authCache = new Map<string, Promise<RequestAuthContext | null>>();
+      for (const socket of io.sockets.sockets.values()) {
+        const auth = await revalidateSocketAuth(socket, authCache);
+        if (!auth || !hasAllScopes(auth.scopes, requiredScopes)) {
+          continue;
+        }
 
-      emitter.emit(event.type, event.payload);
+        if (event.type.startsWith("task:") && !canUserAccessTask(auth.user, { ownerUserId: taskOwnerUserId })) {
+          continue;
+        }
+
+        if (repositoryId && !canUserAccessRepository(auth.user, repositoryId)) {
+          continue;
+        }
+
+        socket.emit(event.type, event.payload);
+      }
     }
   };
 };

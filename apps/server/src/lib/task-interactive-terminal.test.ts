@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { buildGitTerminalEnvEntries } from "./task-interactive-terminal-git-env.js";
+import { buildGitTerminalDockerEnvEntries, buildGitTerminalEnvEntries } from "./task-interactive-terminal-git-env.js";
 import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
@@ -30,7 +30,7 @@ describe("buildGitTerminalStartScript", () => {
 
     assert.equal(result.status, 0, result.stderr || "expected sh -n to accept git terminal shell wrapper");
     assert.match(shellScript, /exec \/bin\/bash --noprofile --norc --restricted -i/);
-    assert.match(dockerfile, /\bapk add --no-cache bash git vim diffutils ca-certificates\b/);
+    assert.match(dockerfile, /\bapk add --no-cache bash git vim( neovim)? diffutils ca-certificates\b/);
   });
 });
 
@@ -77,5 +77,29 @@ describe("buildGitTerminalEnvEntries", () => {
     assert.equal(env.GIT_AUTHOR_EMAIL, undefined);
     assert.equal(env.GIT_COMMITTER_NAME, undefined);
     assert.equal(env.GIT_COMMITTER_EMAIL, undefined);
+  });
+});
+
+describe("buildGitTerminalDockerEnvEntries", () => {
+  it("appends repository runtime env entries to git terminal runtime env entries", () => {
+    const envEntries = buildGitTerminalDockerEnvEntries({
+      runtimeEnvEntries: [
+        ["TERM", "xterm-256color"],
+        ["TASK_INTERACTIVE_WORKSPACE", "/workspace"]
+      ],
+      repositoryEnvEntries: [
+        ["FOO", "bar"],
+        ["EMPTY_OK", ""],
+        ["API_TOKEN", "token-123"]
+      ]
+    });
+
+    assert.deepEqual(envEntries, [
+      ["TERM", "xterm-256color"],
+      ["TASK_INTERACTIVE_WORKSPACE", "/workspace"],
+      ["FOO", "bar"],
+      ["EMPTY_OK", ""],
+      ["API_TOKEN", "token-123"]
+    ]);
   });
 });

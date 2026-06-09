@@ -1,6 +1,8 @@
 import Fastify from "fastify";
+import { randomUUID } from "node:crypto";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
+import * as Sentry from "@sentry/node";
 import { Server as SocketIOServer } from "socket.io";
 import type { RealtimeEvent } from "@agentswarm/shared-types";
 import { env } from "./config/env.js";
@@ -8,13 +10,14 @@ import { createAuthService } from "./lib/auth.js";
 import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
 import { createRedisClients } from "./lib/redis.js";
 import { EventBus } from "./lib/events.js";
-import { usesPostgresBackends } from "./services/app-stores.js";
-import { createAppStores } from "./services/create-app-stores.js";
+import { createPostgresStores } from "./services/create-postgres-stores.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { SpawnerService } from "./services/spawner.js";
 import { SchedulerService } from "./services/scheduler.js";
 import { GitHubImportService } from "./services/github-import-service.js";
 import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
+import { GitHubOutboundService } from "./services/github-outbound-service.js";
+import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
 import { registerRoleRoutes } from "./routes/roles.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerUserRoutes } from "./routes/users.js";
@@ -22,27 +25,109 @@ import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerImportRoutes } from "./routes/imports.js";
 import { registerSnippetRoutes } from "./routes/snippets.js";
+import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
 
+const readHeaderValue = (value: string | string[] | undefined): string | null => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (Array.isArray(value) && value.length > 0) {
+    const first = value[0]?.trim();
+    return first && first.length > 0 ? first : null;
+  }
+  return null;
+};
+
+const getOperationIdFromHeaders = (headers: Record<string, string | string[] | undefined>): string | null =>
+  readHeaderValue(headers["x-operation-id"]) ?? readHeaderValue(headers["x-agent-operation-id"]);
+
 const bootstrap = async (): Promise<void> => {
-  const app = Fastify({ logger: true, bodyLimit: 35 * 1024 * 1024 });
+  const sentryEnabled = env.SENTRY_ENABLED && env.SENTRY_DSN.trim().length > 0;
+  if (sentryEnabled) {
+    Sentry.init({
+      dsn: env.SENTRY_DSN,
+      tracesSampleRate: 1
+    });
+  }
+
+  const app = Fastify({
+    logger: {
+      level: process.env.LOG_LEVEL ?? "info",
+      base: { service: "agentswarm-server" }
+    },
+    disableRequestLogging: true,
+    requestIdHeader: "x-request-id",
+    genReqId: (rawRequest) => readHeaderValue(rawRequest.headers["x-request-id"]) ?? randomUUID(),
+    bodyLimit: 35 * 1024 * 1024
+  });
   await app.register(cookie);
   app.decorateRequest("auth", null);
   await app.register(cors, {
     origin: env.CORS_ORIGIN,
     credentials: true
   });
+  app.addHook("onRequest", async (request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    reply.header("x-request-id", request.id);
+    if (operationId) {
+      reply.header("x-operation-id", operationId);
+    }
+    request.log.info(
+      {
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url
+      },
+      "request.started"
+    );
+  });
+  app.addHook("onResponse", async (request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    request.log.info(
+      {
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url,
+        statusCode: reply.statusCode,
+        durationMs: reply.elapsedTime
+      },
+      "request.completed"
+    );
+  });
+  app.log.info(
+    {
+      event: "startup.config",
+      port: env.PORT,
+      corsOrigin: env.CORS_ORIGIN,
+      durableStores: "postgres",
+      runtimeServices: "redis",
+      postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
+      sentryEnabled,
+      taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
+      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
+    },
+    "Server configuration loaded"
+  );
 
   const redisClients = createRedisClients(env.REDIS_URL);
   const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
-  const postgresPool = usesPostgresBackends(env.STORE_BACKENDS) ? createPostgresPool(env.DATABASE_URL) : null;
-  if (postgresPool && env.POSTGRES_AUTO_MIGRATE) {
+  const postgresPool = createPostgresPool(env.DATABASE_URL);
+  if (env.POSTGRES_AUTO_MIGRATE) {
+    app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
     await runPostgresMigrations(postgresPool);
+    app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
+  } else {
+    app.log.info({ event: "startup.migrations", mode: "manual" }, "Skipping auto-migrations");
   }
 
   const {
     taskStore,
     taskQueueStore,
+    githubOutboundQueueStore,
     webhookDeliveryStore,
     snippetStore,
     repositoryStore,
@@ -51,23 +136,25 @@ const bootstrap = async (): Promise<void> => {
     userStore,
     sessionStore,
     settingsStore
-  } = createAppStores({
-    pool: postgresPool,
+  } = createPostgresStores(
+    postgresPool,
     redisClients,
     eventBus,
-    sessionTtlDays: env.AUTH_SESSION_TTL_DAYS,
-    backends: env.STORE_BACKENDS
-  });
+    env.AUTH_SESSION_TTL_DAYS
+  );
   const auth = createAuthService({
     userStore,
     sessionStore,
     cookieName: env.AUTH_COOKIE_NAME,
-    taskStore
+    taskStore,
+    credentialStore
   });
-  const spawner = new SpawnerService(taskStore, settingsStore, userStore);
+  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
   const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
   const githubImportService = new GitHubImportService(settingsStore);
   const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
+  const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
+  const githubStatusSyncService = new GitHubStatusSyncService(repositoryStore, githubOutboundService);
 
   await roleStore.ensureDefaultAdminRole();
   await userStore.ensureDefaultAdminUser({
@@ -76,16 +163,63 @@ const bootstrap = async (): Promise<void> => {
     password: env.DEFAULT_ADMIN_PASSWORD
   });
 
-  registerAuthRoutes(app, { auth, userStore, sessionStore });
+  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore });
   registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
   registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
-  registerTaskRoutes(app, { taskStore, taskQueueStore, repositoryStore, scheduler, spawner, settingsStore, auth });
+  registerTaskRoutes(app, {
+    taskStore,
+    taskQueueStore,
+    repositoryStore,
+    userStore,
+    scheduler,
+    spawner,
+    settingsStore,
+    snippetStore,
+    auth
+  });
   registerSnippetRoutes(app, { snippetStore, auth });
-  registerRepositoryRoutes(app, { repositoryStore, auth });
+  registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
-  registerImportRoutes(app, { githubImportService, repositoryStore, taskStore, scheduler, spawner, auth });
+  registerImportRoutes(app, { githubImportService, repositoryStore, auth });
+  registerGitHubWebhookRoutes(app, {
+    repositoryStore,
+    githubImportService,
+    taskStore,
+    userStore,
+    scheduler,
+    spawner,
+    snippetStore
+  });
 
   app.get("/health", async () => ({ ok: true }));
+
+  app.setErrorHandler((error, request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    request.log.error(
+      {
+        err: error,
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url
+      },
+      "request.failed"
+    );
+    if (sentryEnabled) {
+      Sentry.captureException(error, {
+        tags: {
+          route: request.routeOptions.url
+        },
+        extra: {
+          requestId: request.id,
+          operationId,
+          method: request.method,
+          url: request.url
+        }
+      });
+    }
+    void reply.send(error);
+  });
 
   await app.ready();
   attachTaskInteractiveTerminalUpgrade(app.server, {
@@ -93,7 +227,8 @@ const bootstrap = async (): Promise<void> => {
     taskStore,
     settingsStore,
     spawner,
-    userStore
+    userStore,
+    repositoryStore
   });
 
   const io = new SocketIOServer(app.server, {
@@ -114,6 +249,7 @@ const bootstrap = async (): Promise<void> => {
     try {
       const event = JSON.parse(message) as RealtimeEvent;
       void webhookDeliveryService.handleRealtimeEvent(event);
+      void githubStatusSyncService.handleRealtimeEvent(event);
       void auth.emitScopedRealtimeEvent(io, event);
     } catch (error) {
       app.log.error({ error }, "Failed to parse event message");
@@ -121,11 +257,18 @@ const bootstrap = async (): Promise<void> => {
   });
 
   webhookDeliveryService.start();
+  githubOutboundService.start();
   await scheduler.bootstrap();
 
+  let closeStarted = false;
   const close = async (): Promise<void> => {
+    if (closeStarted) {
+      return;
+    }
+    closeStarted = true;
     scheduler.stop();
     webhookDeliveryService.stop();
+    githubOutboundService.stop();
     io.close();
     await Promise.all([
       ...(postgresPool ? [postgresPool.end()] : []),
@@ -134,20 +277,59 @@ const bootstrap = async (): Promise<void> => {
       redisClients.sub.quit()
     ]);
     await app.close();
+    if (sentryEnabled) {
+      await Sentry.close(2_000);
+    }
   };
 
   process.on("SIGINT", () => {
+    app.log.warn({ signal: "SIGINT" }, "Shutdown signal received");
     void close();
   });
   process.on("SIGTERM", () => {
+    app.log.warn({ signal: "SIGTERM" }, "Shutdown signal received");
     void close();
   });
 
-  await app.listen({ port: env.PORT, host: "0.0.0.0" });
+  process.on("uncaughtException", (error) => {
+    app.log.fatal({ err: error }, "Unhandled exception");
+    if (sentryEnabled) {
+      Sentry.captureException(error);
+    }
+    void close().finally(() => process.exit(1));
+  });
+  process.on("unhandledRejection", (reason) => {
+    app.log.fatal({ reason }, "Unhandled promise rejection");
+    if (sentryEnabled) {
+      Sentry.captureException(reason);
+    }
+    void close().finally(() => process.exit(1));
+  });
+
+  const listenAddress = await app.listen({ port: env.PORT, host: "0.0.0.0" });
+  app.log.info(
+    {
+      event: "startup.ready",
+      listenAddress,
+      healthPath: "/health",
+      proxyHealthPath: "/api/health"
+    },
+    "Server started"
+  );
 };
 
 void bootstrap().catch((error) => {
   // Startup errors should stop the process so Docker restart policies can react.
-  console.error(error);
+  const errorForLog =
+    error instanceof Error
+      ? { name: error.name, message: error.message, stack: error.stack }
+      : { message: String(error) };
+  console.error(
+    JSON.stringify({
+      level: "fatal",
+      event: "startup.bootstrap_failed",
+      error: errorForLog
+    })
+  );
   process.exit(1);
 });

@@ -39,6 +39,8 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         id text PRIMARY KEY,
         name text NOT NULL,
         email text NOT NULL UNIQUE,
+        git_author_name text NULL,
+        git_author_email text NULL,
         active boolean NOT NULL,
         password_hash text NOT NULL,
         password_salt text NOT NULL,
@@ -76,6 +78,7 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         id text PRIMARY KEY,
         name text NOT NULL,
         content text NOT NULL,
+        variables jsonb NOT NULL DEFAULT '[]'::jsonb,
         created_at text NOT NULL,
         updated_at text NOT NULL
       );
@@ -87,13 +90,17 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         default_provider text NOT NULL,
         max_agents integer NOT NULL,
         branch_prefix text NOT NULL,
+        workspace_provisioning_mode text NOT NULL DEFAULT 'clone_only',
         git_username text NOT NULL,
         mcp_servers jsonb NOT NULL,
         openai_base_url text NULL,
+        task_prompt_magic_model text NOT NULL DEFAULT 'gpt-5.4-mini',
+        task_prompt_magic_template text NOT NULL DEFAULT '',
         codex_default_model text NOT NULL,
         codex_default_effort text NOT NULL,
         claude_default_model text NOT NULL,
-        claude_default_effort text NOT NULL
+        claude_default_effort text NOT NULL,
+        response_preference_presets jsonb NOT NULL DEFAULT '[]'::jsonb
       );
 
       CREATE TABLE IF NOT EXISTS credentials (
@@ -174,6 +181,226 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
         transcript_data jsonb NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS task_drafts (
+        id text PRIMARY KEY,
+        owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title text NOT NULL,
+        definition jsonb NOT NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_drafts_owner_updated_at_idx ON task_drafts(owner_user_id, updated_at DESC);
+    `
+  },
+  {
+    id: "20260424_01_repository_env_vars",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS env_vars jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260427_01_user_repository_assignments",
+    sql: `
+      CREATE TABLE IF NOT EXISTS user_repositories (
+        user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        repository_id text NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+        PRIMARY KEY (user_id, repository_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS user_repositories_repository_id_idx ON user_repositories(repository_id);
+    `
+  },
+  {
+    id: "20260507_01_user_agent_response_preference",
+    sql: `
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS agent_response_preference jsonb NOT NULL DEFAULT '{"enabled": false, "style": null}'::jsonb;
+    `
+  },
+  {
+    id: "20260507_02_settings_response_preference_presets",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS response_preference_presets jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260509_01_user_git_author_identity",
+    sql: `
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS git_author_name text NULL;
+
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS git_author_email text NULL;
+    `
+  },
+  {
+    id: "20260513_01_cleanup_legacy_flow_data",
+    sql: `
+      UPDATE roles AS r
+      SET scopes = COALESCE(
+        (
+          SELECT jsonb_agg(value ORDER BY value)
+          FROM (
+            SELECT DISTINCT value
+            FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+            WHERE value !~ '^flow:'
+          ) AS deduped
+        ),
+        '[]'::jsonb
+      )
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+        WHERE value ~ '^flow:'
+      );
+
+      UPDATE tasks
+      SET task_data = task_data - 'taskMode' - 'flowId'
+      WHERE task_data ? 'taskMode' OR task_data ? 'flowId';
+
+      UPDATE task_runs
+      SET run_data = run_data - 'flow'
+      WHERE run_data ? 'flow';
+
+      DROP TABLE IF EXISTS flows;
+    `
+  },
+  {
+    id: "20260513_02_cleanup_legacy_preset_scopes",
+    sql: `
+      UPDATE roles AS r
+      SET scopes = COALESCE(
+        (
+          SELECT jsonb_agg(value ORDER BY value)
+          FROM (
+            SELECT DISTINCT
+              CASE value
+                WHEN 'preset:list' THEN 'snippet:list'
+                WHEN 'preset:create' THEN 'snippet:create'
+                WHEN 'preset:read' THEN 'snippet:read'
+                WHEN 'preset:edit' THEN 'snippet:edit'
+                WHEN 'preset:delete' THEN 'snippet:delete'
+                ELSE value
+              END AS value
+            FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+            WHERE value !~ '^preset:' OR value IN ('preset:list', 'preset:create', 'preset:read', 'preset:edit', 'preset:delete')
+          ) AS deduped
+        ),
+        '[]'::jsonb
+      )
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+        WHERE value ~ '^preset:'
+      );
+    `
+  },
+  {
+    id: "20260521_01_snippet_variables",
+    sql: `
+      ALTER TABLE snippets
+      ADD COLUMN IF NOT EXISTS variables jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260520_01_repository_github_automations",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_webhook_secret text NULL;
+
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_automations jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260524_01_workspace_provisioning_mode",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS workspace_provisioning_mode text NOT NULL DEFAULT 'clone_only';
+    `
+  },
+  {
+    id: "20260522_01_repository_sync_status_enabled",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS sync_status_enabled boolean NOT NULL DEFAULT false;
+    `
+  },
+  {
+    id: "20260601_01_repository_env_secrets",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS env_secrets jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260522_02_workspace_notes",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS workspace_notes text NOT NULL DEFAULT '';
+
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS workspace_notes_updated_at text NOT NULL DEFAULT '';
+    `
+  },
+  {
+    id: "20260522_03_user_notes",
+    sql: `
+      CREATE TABLE IF NOT EXISTS user_notes (
+        user_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        notes text NOT NULL,
+        updated_at text NOT NULL
+      );
+    `
+  },
+  {
+    id: "20260526_02_task_git_operations",
+    sql: `
+      CREATE TABLE IF NOT EXISTS task_git_operations (
+        id text PRIMARY KEY,
+        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        started_at text NOT NULL,
+        operation_data jsonb NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_git_operations_task_id_started_at_idx
+        ON task_git_operations(task_id, started_at DESC, id DESC);
+    `
+  },
+  {
+    id: "20260527_01_task_prompt_magic_settings",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS task_prompt_magic_model text NOT NULL DEFAULT 'gpt-5.4-mini';
+
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS task_prompt_magic_template text NOT NULL DEFAULT '';
+    `
+  },
+  {
+    id: "20260603_01_task_drafts",
+    sql: `
+      CREATE TABLE IF NOT EXISTS task_drafts (
+        id text PRIMARY KEY,
+        owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title text NOT NULL,
+        definition jsonb NOT NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_drafts_owner_updated_at_idx ON task_drafts(owner_user_id, updated_at DESC);
+    `
+  },
+  {
+    id: "20260609_01_remove_sequences",
+    sql: `
+      DROP TABLE IF EXISTS sequence_runs;
+      DROP TABLE IF EXISTS sequences;
     `
   }
 ];

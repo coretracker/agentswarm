@@ -1,3 +1,4 @@
+import { createWriteStream } from "node:fs";
 import { access, constants, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -21,10 +22,31 @@ if (!anthropicApiKey) {
 
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
+const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
+  ? manifest.rawEventsJsonlPath.trim()
+  : path.join(path.dirname(manifest.resultJsonPath), "raw-events.jsonl");
+await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
 process.env.ANTHROPIC_API_KEY = anthropicApiKey;
 process.env.GIT_OPTIONAL_LOCKS = "0";
 const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
 const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const isSessionId = (value) => typeof value === "string" && SESSION_ID_PATTERN.test(value.trim());
+
+const readPersistedSessionId = async (sessionIdPath) => {
+  const raw = await readFile(sessionIdPath, "utf8").catch(() => "");
+  const candidate = raw.trim();
+  return isSessionId(candidate) ? candidate : null;
+};
+
+const writePersistedSessionId = async (sessionIdPath, sessionId) => {
+  if (!isSessionId(sessionId)) {
+    return;
+  }
+
+  await writeFile(sessionIdPath, `${sessionId.trim()}\n`, "utf8");
+};
 
 const runCommand = (command, args, options = {}) =>
   new Promise((resolve, reject) => {
@@ -75,21 +97,51 @@ const resolveClaudeBinary = async (runtimeHome) => {
   return homeBinary;
 };
 
+const buildResponsePreferencePreamble = () => {
+  const preference = manifest.agentResponsePreference;
+  if (!preference || typeof preference !== "object") {
+    return "";
+  }
+
+  const lines = ["Response style:"];
+  if (preference.audience === "technical") {
+    lines.push("- Audience: technical.");
+  } else if (preference.audience === "non_technical") {
+    lines.push("- Audience: non-technical.");
+  } else if (preference.audience === "mixed") {
+    lines.push("- Audience: mixed.");
+  }
+
+  if (preference.explanationDepth) {
+    lines.push(`- Explanation depth: ${preference.explanationDepth}.`);
+  }
+  if (preference.jargonLevel) {
+    lines.push(`- Jargon level: ${preference.jargonLevel}.`);
+  }
+  if (preference.codePreference) {
+    lines.push(`- Code preference: ${preference.codePreference}.`);
+  }
+  if (preference.clarifyBehavior) {
+    lines.push(`- Clarification behavior: ${preference.clarifyBehavior}.`);
+  }
+  if (preference.formattingStyle) {
+    lines.push(`- Formatting style: ${preference.formattingStyle}.`);
+  }
+  if (typeof preference.extraInstructions === "string" && preference.extraInstructions.trim()) {
+    lines.push(`- Extra instructions: ${preference.extraInstructions.trim()}`);
+  }
+
+  if (lines.length === 1) {
+    return "";
+  }
+
+  return lines.join("\n");
+};
+
 const buildPrompt = () => {
   const rawContent = typeof manifest.content === "string" && manifest.content.trim().length > 0
     ? manifest.content.trim()
     : (typeof manifest.prompt === "string" ? manifest.prompt.trim() : "");
-  const contextEntries = Array.isArray(manifest.contextEntries)
-    ? manifest.contextEntries.filter(
-        (entry) =>
-          entry &&
-          typeof entry === "object" &&
-          typeof entry.label === "string" &&
-          typeof entry.content === "string" &&
-          entry.label.trim().length > 0 &&
-          entry.content.trim().length > 0
-      )
-    : [];
   const attachments = Array.isArray(manifest.attachments)
     ? manifest.attachments.filter(
         (attachment) =>
@@ -107,23 +159,16 @@ const buildPrompt = () => {
   }
 
   const promptSections = [];
-  if (contextEntries.length > 0) {
-    promptSections.push(
-      "Selected task history context:",
-      "",
-      ...contextEntries.flatMap((entry, index) => [
-        `[Context ${index + 1}] ${entry.label.trim()}`,
-        entry.content.trim(),
-        ""
-      ])
-    );
-  }
   if (attachments.length > 0) {
     promptSections.push(
       "Reference Images:",
       ...attachments.map((attachment) => `- ${attachment.absolutePath.trim()} (${attachment.name.trim()})`),
       ""
     );
+  }
+  const responsePreferencePreamble = buildResponsePreferencePreamble();
+  if (responsePreferencePreamble) {
+    promptSections.push(responsePreferencePreamble, "");
   }
   promptSections.push("Current user request:", "", rawContent);
   return promptSections.join("\n");
@@ -145,12 +190,16 @@ const args = [
   "stream-json",
   "--include-partial-messages",
   "--verbose",
-  "--dangerously-skip-permissions",
   "--allowedTools",
   allowedTools,
   "--mcp-config",
   providerConfigPath
 ];
+if (isAsk) {
+  args.push("--permission-mode", "plan");
+} else {
+  args.push("--dangerously-skip-permissions");
+}
 if (manifest.resolvedModel) {
   args.push("--model", manifest.resolvedModel);
 }
@@ -165,9 +214,16 @@ const providerStatePath = configuredStatePath && configuredStatePath.length > 0
   : path.join(runtimeHome, ".claude");
 await mkdir(runtimeHome, { recursive: true });
 await mkdir(providerStatePath, { recursive: true });
+const sessionIdFilePath = path.join(providerStatePath, "agentswarm-session-id.txt");
+const persistedSessionId = await readPersistedSessionId(sessionIdFilePath);
+if (persistedSessionId) {
+  args.push("--resume", persistedSessionId);
+}
 const claudeBinary = await resolveClaudeBinary(runtimeHome);
 
-console.log(`[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only tools)" : ""}`);
+console.log(
+  `[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only tools)" : ""} session=${persistedSessionId ?? "new"}`
+);
 console.log(`[runtime] claude thinking_budget_tokens=${manifest.resolvedThinkingBudgetTokens ?? "default"}`);
 await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(manifest.resultJsonPath)]);
 console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);
@@ -175,6 +231,7 @@ console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);
 let finalMarkdown = "";
 let resultSubtype = null;
 let resultDetails = null;
+let resolvedSessionId = persistedSessionId;
 const assistantLines = [];
 const toolBlocks = new Map();
 let sawPartialAssistantText = false;
@@ -194,6 +251,7 @@ const proc = spawn("su-exec", [runtimeIdentity, claudeBinary, ...args], {
   stdio: ["ignore", "pipe", "pipe"]
 });
 let stdoutBuffer = "";
+const rawEventsStream = createWriteStream(rawEventsJsonlPath, { flags: "a" });
 
 const truncateForLog = (value, maxLength = 320) => {
   if (typeof value !== "string") {
@@ -389,6 +447,7 @@ const handleRawStreamEvent = (rawEvent) => {
 };
 
 proc.stdout.on("data", (chunk) => {
+  rawEventsStream.write(chunk);
   stdoutBuffer += chunk.toString();
   const lines = stdoutBuffer.split("\n");
   stdoutBuffer = lines.pop() ?? "";
@@ -400,8 +459,16 @@ proc.stdout.on("data", (chunk) => {
 
     try {
       const event = JSON.parse(line);
+      const sessionIdCandidate = [event.session_id, event.sessionId, event.event?.session_id, event.event?.sessionId]
+        .find((value) => isSessionId(value));
+      if (sessionIdCandidate) {
+        resolvedSessionId = sessionIdCandidate.trim();
+      }
+
       if (event.type === "system" && event.subtype === "init") {
-        console.log(`[runtime] claude init model=${event.model} permissionMode=${event.permissionMode}`);
+        console.log(
+          `[runtime] claude init model=${event.model} permissionMode=${event.permissionMode} session_id=${resolvedSessionId ?? "unknown"}`
+        );
       } else if (event.type === "stream_event" && event.event) {
         handleRawStreamEvent(event.event);
       } else if (event.type === "assistant") {
@@ -423,10 +490,20 @@ proc.stdout.on("data", (chunk) => {
   }
 });
 proc.stderr.on("data", (chunk) => process.stderr.write(chunk));
+let claudeProcessError = null;
 await new Promise((resolve, reject) => {
   proc.on("error", reject);
   proc.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`claude exited with code ${code ?? "unknown"}`))));
+}).catch((error) => {
+  claudeProcessError = error;
 });
+await new Promise((resolve, reject) => {
+  rawEventsStream.end(() => resolve());
+  rawEventsStream.on("error", reject);
+});
+if (claudeProcessError) {
+  throw claudeProcessError;
+}
 flushPartialTextBuffer();
 
 const resultError = buildResultError();
@@ -441,6 +518,11 @@ if (!finalMarkdown) {
   throw new Error("Claude completed without producing final markdown output.");
 }
 
+if (resolvedSessionId) {
+  await writePersistedSessionId(sessionIdFilePath, resolvedSessionId);
+  console.log(`[runtime] claude session_id=${resolvedSessionId}`);
+}
+
 await writeFile(manifest.resultMarkdownPath, `${finalMarkdown}\n`, "utf8");
 await writeFile(
   manifest.resultJsonPath,
@@ -452,7 +534,8 @@ await writeFile(
       changedFiles: [],
       metadata: {
         provider: manifest.provider,
-        action: manifest.action
+        action: manifest.action,
+        ...(resolvedSessionId ? { sessionId: resolvedSessionId } : {})
       }
     },
     null,

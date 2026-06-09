@@ -6,20 +6,39 @@ import type { RoleStore } from "../services/role-store.js";
 import type { SessionStore } from "../services/session-store.js";
 import type { UserStore } from "../services/user-store.js";
 
+const responsePreferenceSchema = z
+  .object({
+    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
+    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
+    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
+    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
+    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
+    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
+    extraInstructions: z.string().trim().max(2000).optional()
+  });
+
 const createUserSchema = z.object({
   name: z.string().trim().min(1),
   email: z.string().trim().email(),
+  gitAuthorName: z.string().trim().max(120).nullable().optional(),
+  gitAuthorEmail: z.string().trim().email().nullable().optional(),
   password: z.string().min(1),
   active: z.boolean().optional(),
-  roleIds: z.array(z.string().trim().min(1)).optional()
+  roleIds: z.array(z.string().trim().min(1)).optional(),
+  repositoryIds: z.array(z.string().trim().min(1)).optional(),
+  agentResponsePreference: responsePreferenceSchema.optional()
 });
 
 const updateUserSchema = z.object({
   name: z.string().trim().min(1).optional(),
   email: z.string().trim().email().optional(),
+  gitAuthorName: z.string().trim().max(120).nullable().optional(),
+  gitAuthorEmail: z.string().trim().email().nullable().optional(),
   password: z.string().min(1).optional(),
   active: z.boolean().optional(),
-  roleIds: z.array(z.string().trim().min(1)).optional()
+  roleIds: z.array(z.string().trim().min(1)).optional(),
+  repositoryIds: z.array(z.string().trim().min(1)).optional(),
+  agentResponsePreference: responsePreferenceSchema.optional()
 });
 
 export const registerUserRoutes = (
@@ -55,8 +74,11 @@ export const registerUserRoutes = (
         return reply.status(400).send({ message: parsed.error.message });
       }
 
-      if (parsed.data.roleIds !== undefined && !request.auth!.scopes.has("settings:edit")) {
-        return reply.status(403).send({ message: "Role assignment requires settings:edit" });
+      if (
+        (parsed.data.roleIds !== undefined || parsed.data.repositoryIds !== undefined) &&
+        !request.auth!.scopes.has("settings:edit")
+      ) {
+        return reply.status(403).send({ message: "Role or repository assignment requires settings:edit" });
       }
 
       try {
@@ -82,8 +104,11 @@ export const registerUserRoutes = (
         return reply.status(400).send({ message: parsed.error.message });
       }
 
-      if (parsed.data.roleIds !== undefined && !request.auth!.scopes.has("settings:edit")) {
-        return reply.status(403).send({ message: "Role assignment requires settings:edit" });
+      if (
+        (parsed.data.roleIds !== undefined || parsed.data.repositoryIds !== undefined) &&
+        !request.auth!.scopes.has("settings:edit")
+      ) {
+        return reply.status(403).send({ message: "Role or repository assignment requires settings:edit" });
       }
 
       if (parsed.data.active === false && request.params.id === request.auth!.user.id) {
@@ -96,7 +121,12 @@ export const registerUserRoutes = (
           return reply.status(404).send({ message: "User not found" });
         }
 
-        if (parsed.data.active === false || parsed.data.roleIds !== undefined) {
+        if (
+          parsed.data.active === false ||
+          parsed.data.roleIds !== undefined ||
+          parsed.data.repositoryIds !== undefined ||
+          parsed.data.agentResponsePreference !== undefined
+        ) {
           await deps.sessionStore.deleteSessionsForUser(user.id);
         }
 

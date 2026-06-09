@@ -1,7 +1,4 @@
 export type TaskType = "build" | "ask";
-
-/** What happens immediately after a task row is created. */
-export type TaskStartMode = "run_now" | "prepare_workspace" | "idle";
 export type AgentProvider = "codex" | "claude";
 
 /** Native effort values from providers. "max" is Claude-only. */
@@ -60,13 +57,18 @@ export type TaskMessageRole = "user" | "assistant" | "system";
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 
 export type TaskStatus =
+  | "draft"
+  | "scheduled"
   | "build_queued"
   | "preparing_workspace"
   | "building"
   | "ask_queued"
   | "asking"
   | "open"
+  | "in_progress"
+  | "in_review"
   | "awaiting_review"
+  | "done"
   | "completed"
   | "answered"
   | "accepted"
@@ -74,13 +76,12 @@ export type TaskStatus =
   | "cancelled"
   | "failed";
 
+export type TaskWorkflowStatus = "backlog" | "ready" | "in_progress" | "review" | "done" | "archived";
+export type TaskExecutionStatus = "idle" | "scheduled" | "queued" | "preparing" | "running" | "failed" | "cancelled";
+export type TaskReviewReason = "checkpoint" | "answer" | "manual" | "merge" | null;
 export type TaskAction = "build" | "ask";
+export type TaskExecutionAction = TaskAction | "interactive" | "terminal" | null;
 export type TaskMessageAction = TaskAction | "comment";
-export type TaskContextEntryKind = "message" | "run" | "proposal" | "terminal_session";
-export const TASK_CONTEXT_ENTRY_MAX_COUNT = 8;
-export const TASK_CONTEXT_ENTRY_MAX_LABEL_LENGTH = 160;
-export const TASK_CONTEXT_ENTRY_MAX_CONTENT_LENGTH = 2_500;
-export const TASK_CONTEXT_TOTAL_MAX_CHARS = 12_000;
 export const TASK_PROMPT_ATTACHMENT_MAX_COUNT = 6;
 export const TASK_PROMPT_ATTACHMENT_MAX_SIZE_BYTES = 6 * 1024 * 1024;
 export const TASK_PROMPT_ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
@@ -88,6 +89,43 @@ export const TASK_PROMPT_ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
 export type TaskReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type TaskComplexity = "trivial" | "normal" | "complex";
 export type TaskBranchStrategy = "feature_branch" | "work_on_branch";
+export type AudienceType = "technical" | "non_technical" | "mixed";
+export type AgentResponseStyle = Extract<AudienceType, "technical" | "non_technical">;
+export type AgentExplanationDepth = "one_line" | "brief" | "standard" | "detailed" | "deep_dive";
+export type AgentJargonLevel = "avoid" | "balanced" | "expert";
+export type AgentCodePreference = "only_when_needed" | "prefer_examples" | "avoid_code";
+export type AgentClarifyBehavior = "ask_when_ambiguous" | "make_reasonable_assumptions";
+export type AgentFormattingStyle = "direct" | "teaching" | "executive" | "step_by_step" | "checklist" | "qa" | "problem_solution";
+
+export interface AgentResponsePolicy {
+  audience?: AudienceType;
+  explanationDepth?: AgentExplanationDepth;
+  jargonLevel?: AgentJargonLevel;
+  codePreference?: AgentCodePreference;
+  clarifyBehavior?: AgentClarifyBehavior;
+  formattingStyle?: AgentFormattingStyle;
+  extraInstructions?: string;
+}
+
+export type AgentResponsePreference = AgentResponsePolicy;
+
+export interface ResponsePreferencePreset {
+  id: string;
+  name: string;
+  description: string;
+  preference: AgentResponsePreference;
+  isSystem: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResponsePreferencePresetInput {
+  id?: string;
+  name: string;
+  description?: string;
+  preference: AgentResponsePolicy;
+}
+
 export type McpServerTransport = "stdio" | "http";
 export type PermissionScope =
   | "task:list"
@@ -157,7 +195,7 @@ export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
   { label: "Users", scopes: ["user:list", "user:create", "user:read", "user:edit", "user:delete"] }
 ];
 
-export type TaskCapabilityScope = Extract<PermissionScope, "task:build" | "task:ask" | "task:interactive">;
+export type TaskCapabilityScope = Extract<PermissionScope, "task:build" | "task:ask">;
 
 export const getTaskCapabilityScopeForTaskType = (taskType: TaskType): TaskCapabilityScope =>
   taskType === "ask" ? "task:ask" : "task:build";
@@ -165,24 +203,22 @@ export const getTaskCapabilityScopeForTaskType = (taskType: TaskType): TaskCapab
 export const getTaskCapabilityScopeForTaskAction = (action: TaskAction): TaskCapabilityScope =>
   action === "ask" ? "task:ask" : "task:build";
 
-export const getRequiredTaskCapabilityScopes = (input: { taskType?: TaskType; startMode?: TaskStartMode }): TaskCapabilityScope[] =>
-  input.startMode === "prepare_workspace" ? ["task:interactive"] : [getTaskCapabilityScopeForTaskType(input.taskType ?? "build")];
+export const getRequiredTaskCapabilityScopes = (input: { taskType?: TaskType }): TaskCapabilityScope[] => [
+  getTaskCapabilityScopeForTaskType(input.taskType ?? "build")
+];
 
 export const hasRequiredTaskCapabilities = (
   grantedScopes: Iterable<PermissionScope>,
-  input: { taskType?: TaskType; startMode?: TaskStartMode }
+  input: { taskType?: TaskType }
 ): boolean => {
   const granted = new Set(grantedScopes);
   return getRequiredTaskCapabilityScopes(input).every((scope) => granted.has(scope));
 };
 
 export const getRequiredTaskCapabilityScopesForDefinition = (definition: TaskDefinitionInput): TaskCapabilityScope[] =>
-  definition.sourceType === "pull_request"
-    ? getRequiredTaskCapabilityScopes({ taskType: "build", startMode: "run_now" })
-    : getRequiredTaskCapabilityScopes({
-        taskType: definition.taskType,
-        startMode: definition.startMode
-      });
+  getRequiredTaskCapabilityScopes({
+    taskType: definition.taskType
+  });
 
 export const hasRequiredTaskCapabilitiesForDefinition = (
   grantedScopes: Iterable<PermissionScope>,
@@ -216,8 +252,12 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  gitAuthorName: string | null;
+  gitAuthorEmail: string | null;
   active: boolean;
+  agentResponsePreference: AgentResponsePreference;
   roles: UserRoleRef[];
+  repositoryIds: string[];
   lastLoginAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -228,11 +268,21 @@ export interface AuthSessionUser extends User {
   allowedProviders: AgentProvider[];
   allowedModels: string[];
   allowedEfforts: ProviderProfile[];
+  codexAuthJsonConfigured?: boolean;
 }
 
 export interface AuthSession {
   user: AuthSessionUser;
   expiresAt: string;
+}
+
+export interface AuthProfile {
+  name: string;
+  email: string;
+  gitAuthorName: string | null;
+  gitAuthorEmail: string | null;
+  agentResponsePreference: AgentResponsePreference;
+  codexAuthJsonConfigured: boolean;
 }
 
 export interface LoginInput {
@@ -261,17 +311,118 @@ export interface UpdateRoleInput {
 export interface CreateUserInput {
   name: string;
   email: string;
+  gitAuthorName?: string | null;
+  gitAuthorEmail?: string | null;
   password: string;
   active?: boolean;
   roleIds?: string[];
+  repositoryIds?: string[];
+  agentResponsePreference?: Partial<AgentResponsePreference>;
 }
 
 export interface UpdateUserInput {
   name?: string;
   email?: string;
+  gitAuthorName?: string | null;
+  gitAuthorEmail?: string | null;
   password?: string;
   active?: boolean;
   roleIds?: string[];
+  repositoryIds?: string[];
+  agentResponsePreference?: Partial<AgentResponsePreference>;
+}
+
+export interface RepositoryEnvVar {
+  key: string;
+  type?: "text";
+  value: string;
+}
+
+export interface RepositoryEnvFile {
+  key: string;
+  type: "file";
+  configured: boolean;
+  fileName?: string;
+}
+
+export type RepositoryEnvVarValue = RepositoryEnvVar | RepositoryEnvFile;
+
+export interface RepositoryEnvVarInputText {
+  key: string;
+  type?: "text";
+  value: string;
+}
+
+export interface RepositoryEnvVarInputFile {
+  key: string;
+  type: "file";
+  fileName?: string;
+  fileContentBase64?: string;
+}
+
+export type RepositoryEnvVarInput = RepositoryEnvVarInputText | RepositoryEnvVarInputFile;
+
+export interface RepositoryEnvSecret {
+  key: string;
+  configured: boolean;
+  type?: "text" | "file";
+  fileName?: string;
+}
+
+export interface RepositoryEnvSecretInputText {
+  key: string;
+  type?: "text";
+  value?: string;
+}
+
+export interface RepositoryEnvSecretInputFile {
+  key: string;
+  type: "file";
+  fileName?: string;
+  fileContentBase64?: string;
+}
+
+export type RepositoryEnvSecretInput = RepositoryEnvSecretInputText | RepositoryEnvSecretInputFile;
+
+export type GitHubAutomationTrigger = "issue_opened" | "pull_request_opened";
+export type GitHubCommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
+
+export interface GitHubAutomationLabelFilter {
+  labelsAny?: string[];
+  labelsAll?: string[];
+  labelsNone?: string[];
+}
+
+export interface GitHubAutomationTaskConfig {
+  assigneeEmail?: string;
+  codexCredentialSource?: CodexCredentialSource;
+  taskType?: Extract<TaskType, "build" | "ask">;
+  includeComments?: boolean;
+  titleTemplate?: string;
+  notes?: string;
+  provider?: AgentProvider;
+  providerProfile?: ProviderProfile;
+  modelOverride?: string | null;
+  baseBranch?: string;
+  branchStrategy?: TaskBranchStrategy;
+  snippetId?: string;
+}
+
+export interface GitHubAutomationRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  trigger: GitHubAutomationTrigger;
+  syncStatusEnabled?: boolean;
+  automationEnabled?: boolean;
+  allowedTriggers?: GitHubCommentTriggerType[];
+  allowedReactions?: string[];
+  allowedCommands?: string[];
+  allowedActorLogins?: string[];
+  labelFilter?: GitHubAutomationLabelFilter;
+  task: GitHubAutomationTaskConfig;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Repository {
@@ -279,26 +430,34 @@ export interface Repository {
   name: string;
   url: string;
   defaultBranch: string;
+  syncStatusEnabled?: boolean;
+  envVars: RepositoryEnvVarValue[];
+  envSecrets?: RepositoryEnvSecret[];
   webhookUrl: string | null;
   webhookEnabled: boolean;
   webhookSecretConfigured: boolean;
   webhookLastAttemptAt: string | null;
   webhookLastStatus: "success" | "failed" | null;
   webhookLastError: string | null;
+  githubWebhookSecretConfigured?: boolean;
+  githubAutomations?: GitHubAutomationRule[];
   createdAt: string;
   updatedAt: string;
 }
 
 export type TaskTerminalSessionMode = "interactive" | "git";
+export type CodexCredentialSource = "auto" | "profile" | "global";
 
 export interface Task {
   id: string;
   title: string;
+  deadline: string | null;
   pinned: boolean;
   hasPendingCheckpoint: boolean;
   activeInteractiveSession?: boolean;
   activeTerminalSessionMode?: TaskTerminalSessionMode | null;
   ownerUserId: string | null;
+  creatorName?: string | null;
   repoId: string;
   repoName: string;
   repoUrl: string;
@@ -307,12 +466,16 @@ export interface Task {
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride: string | null;
+  codexCredentialSource?: CodexCredentialSource;
+  taskSource?: "blank" | "snippet";
+  snippetId?: string;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
   complexity: TaskComplexity;
   branchName: string | null;
   workspaceBaseRef: string | null;
   prompt: string;
+  notes?: string;
   resultMarkdown: string | null;
   executionSummary: string;
   branchDiff: string | null;
@@ -320,8 +483,14 @@ export interface Task {
   pushCount?: number;
   lastAction: TaskAction | null;
   status: TaskStatus;
+  workflowStatus: TaskWorkflowStatus;
+  executionStatus: TaskExecutionStatus;
+  executionAction: TaskExecutionAction;
+  reviewReason: TaskReviewReason;
   logs: string[];
   enqueued: boolean;
+  scheduledStartAt?: string | null;
+  scheduledEndAt?: string | null;
   createdAt: string;
   updatedAt: string;
   startedAt: string | null;
@@ -340,6 +509,14 @@ export interface OpenAiDiffAssistInput {
 
 export interface OpenAiDiffAssistResult {
   text: string;
+}
+
+export interface TaskPromptMagicInput {
+  prompt: string;
+}
+
+export interface TaskPromptMagicResult {
+  prompt: string;
 }
 
 export interface TaskLiveDiff {
@@ -371,6 +548,31 @@ export interface TaskWorkspaceCommitLog {
   commits: TaskWorkspaceCommit[];
   fetchedAt: string;
   message: string | null;
+}
+
+export type TaskWorkspaceFileTreeEntryKind = "file" | "directory";
+
+export interface TaskWorkspaceFileTreeEntry {
+  path: string;
+  name: string;
+  kind: TaskWorkspaceFileTreeEntryKind;
+}
+
+export interface TaskWorkspaceFileTree {
+  /** Directory prefix that was listed; null means workspace root. */
+  prefix: string | null;
+  entries: TaskWorkspaceFileTreeEntry[];
+  fetchedAt: string;
+  truncated: boolean;
+  totalCount: number;
+}
+
+export interface TaskWorkspaceFileSearchResult {
+  query: string;
+  results: string[];
+  fetchedAt: string;
+  truncated: boolean;
+  totalCount: number;
 }
 
 export type TaskWorkspaceFilePreviewKind = "text" | "image" | "binary";
@@ -429,8 +631,6 @@ export interface TaskMessage {
   role: TaskMessageRole;
   content: string;
   action: TaskMessageAction | null;
-  /** Optional saved context entries that were attached when the user submitted this message. */
-  contextEntries?: TaskContextEntry[];
   /** Optional saved image attachments that were attached when the user submitted this message. */
   attachments?: TaskPromptAttachment[];
   /** Present for interactive terminal lifecycle messages so history can address the terminal session. */
@@ -438,16 +638,49 @@ export interface TaskMessage {
   createdAt: string;
 }
 
-export interface TaskContextEntry {
-  kind: TaskContextEntryKind;
-  label: string;
-  content: string;
-}
-
 export interface TaskExecutionInput {
   content: string;
-  contextEntries?: TaskContextEntry[];
   attachments?: TaskPromptAttachment[];
+}
+
+export type NormalizedAgentEventKind =
+  | "run.started"
+  | "run.status"
+  | "run.completed"
+  | "run.failed"
+  | "turn.started"
+  | "turn.completed"
+  | "assistant.message"
+  | "assistant.message.delta"
+  | "tool.started"
+  | "tool.completed"
+  | "tool.failed"
+  | "file.changed"
+  | "subtask.started"
+  | "subtask.progress"
+  | "subtask.completed"
+  | "usage.reported"
+  | "unknown";
+
+export interface NormalizedAgentEvent {
+  id: string;
+  provider: AgentProvider;
+  kind: NormalizedAgentEventKind;
+  rawEventIndex: number;
+  title: string;
+  detail?: string;
+  message?: string;
+  status?: string;
+  sessionId?: string;
+  messageId?: string;
+  toolCallId?: string;
+  parentToolCallId?: string | null;
+  toolName?: string;
+  filePath?: string;
+  fileChangeKind?: string;
+  exitCode?: number | null;
+  usage?: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
 }
 
 export interface TaskRun {
@@ -462,12 +695,40 @@ export interface TaskRun {
   startedAt: string;
   finishedAt: string | null;
   summary: string | null;
+  /** Build-only outcome. Null for ask runs and legacy runs. */
+  changeOutcome?: "changed" | "no_change" | null;
   errorMessage: string | null;
   /** Git HEAD ref captured before the agent container runs; used for change proposals. */
   changeProposalCheckpointRef?: string | null;
   /** Untracked paths (repo-relative) at checkpoint; used so reject does not wipe pre-existing untracked files. */
   changeProposalUntrackedPaths?: string[] | null;
+  /** True when the provider's native JSONL stream has been captured for this run. */
+  hasRawJson?: boolean;
+  timelineEvents?: NormalizedAgentEvent[];
   logs: string[];
+}
+
+export type TaskGitOperationType = "clone_for_task" | "pull_task_branch" | "push_task_branch";
+export type TaskGitOperationStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type TaskGitOperationFailureCode =
+  | "auth_failed"
+  | "network_error"
+  | "branch_missing"
+  | "conflict"
+  | "nothing_to_push"
+  | "workspace_missing"
+  | "unknown";
+
+export interface TaskGitOperation {
+  operationId: string;
+  taskId: string;
+  operationType: TaskGitOperationType;
+  status: TaskGitOperationStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  errorCode: TaskGitOperationFailureCode | null;
+  errorMessage: string | null;
+  attemptCount: number;
 }
 
 export type TaskChangeProposalSourceType = "build_run" | "interactive_session";
@@ -499,6 +760,10 @@ export interface TaskChangeProposal {
 
 export interface ApplyTaskChangeProposalInput {
   commitMessage?: string;
+}
+
+export interface RevertTaskChangeProposalFileInput {
+  path: string;
 }
 
 export interface TaskInteractiveTerminalTranscript {
@@ -538,15 +803,16 @@ export interface GitHubBranchReference {
 }
 
 export type DataStoreBackend = "redis" | "postgres";
+export type WorkspaceProvisioningMode = "clone_only" | "hybrid";
 
 export interface SystemDataStores {
-  taskStore: DataStoreBackend;
-  snippetStore: DataStoreBackend;
-  repositoryStore: DataStoreBackend;
-  credentialStore: DataStoreBackend;
-  roleStore: DataStoreBackend;
-  userStore: DataStoreBackend;
-  settingsStore: DataStoreBackend;
+  taskStore: "postgres";
+  snippetStore: "postgres";
+  repositoryStore: "postgres";
+  credentialStore: "postgres";
+  roleStore: "postgres";
+  userStore: "postgres";
+  settingsStore: "postgres";
   taskQueueStore: "redis";
   webhookDeliveryStore: "redis";
   sessionStore: "redis";
@@ -557,127 +823,138 @@ export interface SystemSettings {
   defaultProvider: AgentProvider;
   maxAgents: number;
   branchPrefix: string;
+  workspaceProvisioningMode: WorkspaceProvisioningMode;
   gitUsername: string;
   mcpServers: McpServerConfig[];
   openaiBaseUrl: string | null;
+  taskPromptMagicModel: string;
+  taskPromptMagicTemplate: string;
   githubTokenConfigured: boolean;
   openaiApiKeyConfigured: boolean;
+  codexAuthJsonConfigured: boolean;
   anthropicApiKeyConfigured: boolean;
   codexDefaultModel: string;
   codexDefaultEffort: ProviderProfile;
   claudeDefaultModel: string;
   claudeDefaultEffort: ProviderProfile;
+  responsePreferencePresets: ResponsePreferencePreset[];
   dataStores?: SystemDataStores;
+}
+
+export interface UserNotes {
+  notes: string;
+  updatedAt: string;
 }
 
 export interface CreateRepositoryInput {
   name: string;
   url: string;
   defaultBranch?: string;
+  syncStatusEnabled?: boolean;
+  envVars?: RepositoryEnvVarInput[];
+  envSecrets?: RepositoryEnvSecretInput[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
+  githubWebhookSecret?: string;
+  githubAutomations?: GitHubAutomationRule[];
 }
 
 export interface UpdateRepositoryInput {
   name?: string;
   url?: string;
   defaultBranch?: string;
+  syncStatusEnabled?: boolean;
+  envVars?: RepositoryEnvVarInput[];
+  envSecrets?: RepositoryEnvSecretInput[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
   clearWebhookSecret?: boolean;
+  githubWebhookSecret?: string;
+  clearGithubWebhookSecret?: boolean;
+  githubAutomations?: GitHubAutomationRule[];
 }
 
 export interface CreateTaskInput {
   title: string;
+  draft?: boolean;
+  deadline?: string | null;
   repoId: string;
   prompt: string;
+  notes?: string;
   attachments?: CreateTaskPromptAttachmentInput[];
   taskType?: TaskType;
-  /** Default `run_now`. `prepare_workspace` clones/checks out only (no agent run). `idle` is accepted for API compatibility but not offered in the UI. */
-  startMode?: TaskStartMode;
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
+  codexCredentialSource?: CodexCredentialSource;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
 }
 
-export type TaskSourceType = "blank" | "issue" | "pull_request";
-
-export interface BlankTaskDefinitionInput {
-  sourceType: "blank";
+export interface TaskDefinitionInput {
   title: string;
+  deadline?: string | null;
   repoId: string;
   prompt: string;
+  notes?: string;
   attachments?: CreateTaskPromptAttachmentInput[];
   taskType: TaskType;
-  startMode?: TaskStartMode;
   provider: AgentProvider;
   model: string;
   providerProfile: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
 }
-
-export interface IssueTaskDefinitionInput {
-  sourceType: "issue";
-  title?: string;
-  repoId: string;
-  issueNumber: number;
-  includeComments: boolean;
-  taskType: Extract<TaskType, "build" | "ask">;
-  startMode?: TaskStartMode;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
-export interface PullRequestTaskDefinitionInput {
-  sourceType: "pull_request";
-  title?: string;
-  repoId: string;
-  pullRequestNumber: number;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-}
-
-export type TaskDefinitionInput = BlankTaskDefinitionInput | IssueTaskDefinitionInput | PullRequestTaskDefinitionInput;
 
 export interface Snippet {
   id: string;
   name: string;
   content: string;
+  variables: SnippetVariable[];
   createdAt: string;
   updatedAt: string;
+}
+
+export type SnippetVariableType = "text" | "multiline";
+
+export interface SnippetVariable {
+  name: string;
+  type: SnippetVariableType;
+  title: string;
+  description: string;
+  defaultValue: string;
 }
 
 export interface CreateSnippetInput {
   name: string;
   content: string;
+  variables?: SnippetVariable[];
 }
 
 export interface UpdateSnippetInput {
   name: string;
   content: string;
+  variables?: SnippetVariable[];
 }
 
 export interface CreateTaskFromIssueInput {
   repoId: string;
+  draft?: boolean;
   issueNumber: number;
   includeComments?: boolean;
+  notes?: string;
+  deadline?: string | null;
   taskType?: Extract<TaskType, "build" | "ask">;
-  startMode?: TaskStartMode;
   title?: string;
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
+  codexCredentialSource?: CodexCredentialSource;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
   model?: string;
@@ -686,11 +963,15 @@ export interface CreateTaskFromIssueInput {
 
 export interface CreateTaskFromPullRequestInput {
   repoId: string;
+  draft?: boolean;
   pullRequestNumber: number;
   title?: string;
+  notes?: string;
+  deadline?: string | null;
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
+  codexCredentialSource?: CodexCredentialSource;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
 }
@@ -703,6 +984,7 @@ export interface UpdateTaskConfigInput {
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride?: string | null;
+  codexCredentialSource?: CodexCredentialSource;
   branchStrategy?: TaskBranchStrategy;
 }
 
@@ -714,9 +996,42 @@ export interface UpdateTaskTitleInput {
   title: string;
 }
 
+export interface UpdateTaskNotesInput {
+  notes: string;
+}
+
+export interface UpdateTaskDeadlineInput {
+  deadline: string | null;
+}
+
+export interface UpdateTaskDraftInput {
+  title: string;
+  deadline: string | null;
+  prompt: string;
+  notes?: string;
+  taskType: TaskType;
+  provider: AgentProvider;
+  providerProfile: ProviderProfile;
+  modelOverride?: string | null;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch: string;
+  branchStrategy: TaskBranchStrategy;
+}
+
+export interface UpdateUserNotesInput {
+  notes: string;
+}
+
+export interface UpdateTaskStateInput {
+  status: Extract<TaskWorkflowStatus, "backlog" | "ready" | "in_progress" | "review" | "done">;
+}
+
+export interface UpdateTaskAssigneeInput {
+  ownerUserId: string;
+}
+
 export interface CreateTaskMessageInput {
   content: string;
-  contextEntries?: TaskContextEntry[];
   attachments?: CreateTaskPromptAttachmentInput[];
   action?: TaskMessageAction;
 }
@@ -725,9 +1040,15 @@ export interface UpdateTaskMessageInput {
   content: string;
 }
 
+export interface UpdateTaskWorkspaceFileInput {
+  path: string;
+  content: string;
+}
+
 export interface MergeTaskInput {
   targetBranch: string;
   commitMessage?: string;
+  deleteRemoteBranch?: boolean;
 }
 
 export const getTaskBranchStrategyLabel = (strategy: TaskBranchStrategy): string =>
@@ -784,17 +1105,129 @@ export const isActiveTaskStatus = (status: TaskStatus): boolean =>
   status === "building" ||
   status === "asking";
 
-export const isTaskWorking = (task: Pick<Task, "status" | "activeInteractiveSession">): boolean =>
-  isActiveTaskStatus(task.status) || task.activeInteractiveSession === true;
+export const isTaskWorking = (task: Pick<Task, "status" | "activeInteractiveSession"> & { executionStatus?: TaskExecutionStatus }): boolean =>
+  task.executionStatus === "queued" ||
+  task.executionStatus === "preparing" ||
+  task.executionStatus === "running" ||
+  isActiveTaskStatus(task.status) ||
+  task.activeInteractiveSession === true;
+
+export const getTaskExecutionStatus = (
+  task: Pick<Task, "status" | "activeInteractiveSession"> & { executionStatus?: TaskExecutionStatus }
+): TaskExecutionStatus => {
+  if (task.activeInteractiveSession === true) {
+    return "running";
+  }
+
+  if (
+    task.executionStatus === "idle" ||
+    task.executionStatus === "scheduled" ||
+    task.executionStatus === "queued" ||
+    task.executionStatus === "preparing" ||
+    task.executionStatus === "running" ||
+    task.executionStatus === "failed" ||
+    task.executionStatus === "cancelled"
+  ) {
+    return task.executionStatus;
+  }
+
+  if (task.status === "scheduled") {
+    return "scheduled";
+  }
+
+  if (isQueuedTaskStatus(task.status)) {
+    return "queued";
+  }
+
+  if (task.status === "preparing_workspace") {
+    return "preparing";
+  }
+
+  if (isActiveTaskStatus(task.status)) {
+    return "running";
+  }
+
+  if (task.status === "failed") {
+    return "failed";
+  }
+
+  if (task.status === "cancelled") {
+    return "cancelled";
+  }
+
+  return "idle";
+};
+
+export const getTaskExecutionAction = (
+  task: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode"> & { executionAction?: TaskExecutionAction }
+): TaskExecutionAction => {
+  if (task.activeInteractiveSession === true) {
+    return task.activeTerminalSessionMode === "git" ? "terminal" : "interactive";
+  }
+
+  if (task.status === "draft") {
+    return null;
+  }
+
+  if (task.executionAction === "build" || task.executionAction === "ask" || task.executionAction === "interactive" || task.executionAction === "terminal") {
+    return task.executionAction;
+  }
+
+  if (task.status === "build_queued" || task.status === "preparing_workspace" || task.status === "building") {
+    return "build";
+  }
+
+  if (task.status === "ask_queued" || task.status === "asking") {
+    return "ask";
+  }
+
+  return task.lastAction ?? null;
+};
+
+export const getTaskReviewReason = (task: Pick<Task, "status" | "hasPendingCheckpoint" | "taskType">): TaskReviewReason => {
+  if (task.hasPendingCheckpoint || task.status === "awaiting_review") {
+    return "checkpoint";
+  }
+
+  if (task.status === "in_review") {
+    return task.taskType === "ask" ? "answer" : "manual";
+  }
+
+  return null;
+};
+
+export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingCheckpoint" | "taskType">): TaskWorkflowStatus => {
+  if (task.status === "archived") {
+    return "archived";
+  }
+
+  if (task.status === "done" || task.status === "accepted") {
+    return "done";
+  }
+
+  if (task.status === "in_progress") {
+    return "in_progress";
+  }
+
+  if (task.status === "awaiting_review" || task.status === "in_review") {
+    return "review";
+  }
+
+  if (task.status === "draft" || task.status === "scheduled") {
+    return "backlog";
+  }
+
+  return "ready";
+};
 
 export const getTaskTerminalSessionLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Git Terminal" : "Interactive Terminal";
+  mode === "git" ? "Terminal" : "Interactive Terminal";
 
 export const getTaskTerminalSessionSentenceLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Git terminal" : "Interactive terminal";
+  mode === "git" ? "Terminal" : "Interactive terminal";
 
 export const getTaskTerminalSessionStartMessage = (mode: TaskTerminalSessionMode): string =>
-  `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
+  mode === "git" ? "Terminal session started." : `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
 
 export const getTaskTerminalSessionEndMessage = (mode: TaskTerminalSessionMode): string =>
   `${getTaskTerminalSessionSentenceLabel(mode)} session ended.`;
@@ -815,15 +1248,21 @@ export function getCheckpointMutationBlockedReason(status: TaskStatus): string |
 
 export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
   status === "archived";
+
 export const getTaskStatusLabel = (status: TaskStatus): string =>
   ({
+    draft: "Draft",
+    scheduled: "Scheduled",
     build_queued: "Build Queued",
     preparing_workspace: "Preparing Workspace",
     building: "Building",
     ask_queued: "Ask Queued",
     asking: "Answering",
     open: "Open",
+    in_progress: "In Progress",
+    in_review: "In Review",
     awaiting_review: "Awaiting Review",
+    done: "Done",
     completed: "Completed",
     answered: "Answered",
     accepted: "Accepted",
@@ -832,26 +1271,62 @@ export const getTaskStatusLabel = (status: TaskStatus): string =>
     failed: "Failed"
   })[status];
 
+export const getTaskWorkflowStatusLabel = (status: TaskWorkflowStatus): string =>
+  ({
+    backlog: "Backlog",
+    ready: "Ready",
+    in_progress: "In Progress",
+    review: "Review",
+    done: "Done",
+    archived: "Archived"
+  })[status];
+
+export const getTaskExecutionStatusLabel = (status: TaskExecutionStatus): string =>
+  ({
+    idle: "Idle",
+    scheduled: "Scheduled",
+    queued: "Queued",
+    preparing: "Preparing",
+    running: "Running",
+    failed: "Failed",
+    cancelled: "Cancelled"
+  })[status];
+
 export interface UpdateSettingsInput {
   defaultProvider?: AgentProvider;
   maxAgents?: number;
   branchPrefix?: string;
+  workspaceProvisioningMode?: WorkspaceProvisioningMode;
   gitUsername?: string;
   mcpServers?: McpServerConfig[];
   openaiBaseUrl?: string | null;
+  taskPromptMagicModel?: string;
+  taskPromptMagicTemplate?: string;
   codexDefaultModel?: string;
   codexDefaultEffort?: ProviderProfile;
   claudeDefaultModel?: string;
   claudeDefaultEffort?: ProviderProfile;
+  responsePreferencePresets?: ResponsePreferencePresetInput[];
 }
 
 export interface UpdateCredentialSettingsInput {
   githubToken?: string;
   openaiApiKey?: string;
+  codexAuthJson?: string;
   anthropicApiKey?: string;
   clearGithubToken?: boolean;
   clearOpenAiApiKey?: boolean;
+  clearCodexAuthJson?: boolean;
   clearAnthropicApiKey?: boolean;
+}
+
+export interface UpdateAuthProfileInput {
+  name?: string;
+  gitAuthorName?: string | null;
+  gitAuthorEmail?: string | null;
+  codexAuthJson?: string;
+  clearCodexAuthJson?: boolean;
+  agentResponsePreference?: Partial<AgentResponsePreference>;
 }
 
 export interface TaskEvent {
@@ -891,6 +1366,11 @@ export interface TaskMessageUpdatedEvent {
 export interface TaskRunEvent {
   type: "task:run_updated";
   payload: TaskRun;
+}
+
+export interface TaskGitOperationEvent {
+  type: "task:git_operation";
+  payload: TaskGitOperation;
 }
 
 export interface TaskChangeProposalEvent {
@@ -943,6 +1423,7 @@ export type RealtimeEvent =
   | TaskMessageEvent
   | TaskMessageUpdatedEvent
   | TaskRunEvent
+  | TaskGitOperationEvent
   | TaskChangeProposalEvent
   | TaskPushedEvent
   | TaskMergedEvent

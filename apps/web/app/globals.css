@@ -1,3 +1,5 @@
+@import "@mdxeditor/editor/style.css";
+
 :root {
   color-scheme: light;
   --app-body-bg: #f4f8f5;
@@ -696,4 +698,53 @@ html[data-theme="forge-light"] .diff-decoration-content,
 html[data-theme="forge-light"] .diff-widget-content {
   background: rgba(255, 252, 249, 0.94);
   color: #6d584b;
+}
+
+.task-notes-mdx-editor {
+  border: 0;
+  overflow: hidden;
+  color: var(--ant-colorText, inherit);
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar {
+  background: transparent !important;
+  border: 0;
+  color: var(--ant-colorTextSecondary, inherit);
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button,
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] {
+  background: transparent !important;
+  border: 0;
+  color: var(--ant-colorTextSecondary, inherit) !important;
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button:hover,
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"]:hover {
+  background: transparent !important;
+  color: var(--ant-colorText, inherit) !important;
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button[aria-pressed="true"],
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"][aria-pressed="true"] {
+  color: var(--ant-colorPrimary, inherit) !important;
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button svg,
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] svg {
+  color: inherit !important;
+  fill: currentColor !important;
+  stroke: none !important;
+}
+
+.task-notes-mdx-editor-content {
+  min-height: 380px;
+  color: var(--ant-colorText, inherit);
+  background: transparent;
+}
+
+.task-notes-mdx-editor-content ul,
+.task-notes-mdx-editor-content ol {
+  margin-inline-start: 0;
+  padding-inline-start: 15px;
 }

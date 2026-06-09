@@ -1,22 +1,7 @@
 import { z } from "zod";
-import type { DurableStoreBackends } from "../services/app-stores.js";
-
-const storeBackendSchema = z.enum(["redis", "postgres"]);
-const optionalStoreBackendSchema = z.preprocess(
-  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
-  storeBackendSchema.optional()
-);
 
 const envSchema = z.object({
   PORT: z.coerce.number().default(4000),
-  STORE_BACKEND: storeBackendSchema.default("redis"),
-  TASK_STORE_BACKEND: optionalStoreBackendSchema,
-  SNIPPET_STORE_BACKEND: optionalStoreBackendSchema,
-  REPOSITORY_STORE_BACKEND: optionalStoreBackendSchema,
-  CREDENTIAL_STORE_BACKEND: optionalStoreBackendSchema,
-  ROLE_STORE_BACKEND: optionalStoreBackendSchema,
-  USER_STORE_BACKEND: optionalStoreBackendSchema,
-  SETTINGS_STORE_BACKEND: optionalStoreBackendSchema,
   REDIS_URL: z.string().default("redis://localhost:6379"),
   DATABASE_URL: z.string().default("postgres://postgres:postgres@localhost:5432/agentswarm"),
   POSTGRES_AUTO_MIGRATE: z.coerce.boolean().default(true),
@@ -28,6 +13,7 @@ const envSchema = z.object({
   REPO_CACHE_VOLUME: z.string().default("agentswarm_repo_cache"),
   RUNTIME_PAYLOAD_ROOT: z.string().default("/runtime-payloads"),
   RUNTIME_PAYLOAD_VOLUME: z.string().default("agentswarm_runtime_payloads"),
+  REPOSITORY_ENV_FILE_STORE_ROOT: z.string().default("/secrets/repository-env-files"),
   TASK_WORKSPACE_ROOT: z.string().default("/task-workspaces"),
   TASK_WORKSPACE_HOST_ROOT: z.string().default("/tmp/agentswarm-task-workspaces"),
   SECRET_KEY_PATH: z.string().default("/secrets/agentswarm.key"),
@@ -37,6 +23,18 @@ const envSchema = z.object({
   DEFAULT_ADMIN_PASSWORD: z.string().min(8).default("admin123!"),
   AUTH_COOKIE_NAME: z.string().default("agentswarm_session"),
   AUTH_SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(7),
+  SENTRY_ENABLED: z.coerce.boolean().default(true),
+  SENTRY_DSN: z.string().default("https://464566b3787dde0e2da9f69760ef8f40@o4511433840525312.ingest.de.sentry.io/4511433841901649"),
+  /** Logical deployment environment label for runtime logs/analytics (for example: local, staging, production). */
+  APP_ENVIRONMENT: z.string().default("local"),
+  /** Opt-in flag: when true, Codex/Claude runtime containers can receive Docker socket access. */
+  DOCKER_SOCKET_ACCESS_ENABLED: z.coerce.boolean().default(false),
+  /** Host path for docker.sock mount source. */
+  DOCKER_SOCKET_HOST_PATH: z.string().default("/var/run/docker.sock"),
+  /** Container path for docker.sock mount target in Codex runtime containers. */
+  DOCKER_SOCKET_CONTAINER_PATH_CODEX: z.string().default("/var/run/docker.sock"),
+  /** Container path for docker.sock mount target in Claude runtime containers. */
+  DOCKER_SOCKET_CONTAINER_PATH_CLAUDE: z.string().default("/var/run/docker.sock"),
   /** Docker image for the restricted in-browser Git terminal (see tools/codex-web-terminal/Dockerfile.git). Empty disables Git terminals. */
   GIT_TERMINAL_IMAGE: z.string().default(""),
   /** Docker image for in-browser interactive Codex (see tools/codex-web-terminal/Dockerfile.codex). Empty disables Codex interactive terminals. */
@@ -60,14 +58,4 @@ const taskWorkspaceHostRoot =
   process.env.TASK_WORKSPACE_HOST_ROOT?.trim() ||
   (parsed.TASK_WORKSPACE_ROOT !== "/task-workspaces" ? parsed.TASK_WORKSPACE_ROOT : parsed.TASK_WORKSPACE_HOST_ROOT);
 
-const storeBackends: DurableStoreBackends = {
-  taskStore: parsed.TASK_STORE_BACKEND ?? parsed.STORE_BACKEND,
-  snippetStore: parsed.SNIPPET_STORE_BACKEND ?? parsed.STORE_BACKEND,
-  repositoryStore: parsed.REPOSITORY_STORE_BACKEND ?? parsed.STORE_BACKEND,
-  credentialStore: parsed.CREDENTIAL_STORE_BACKEND ?? parsed.STORE_BACKEND,
-  roleStore: parsed.ROLE_STORE_BACKEND ?? parsed.STORE_BACKEND,
-  userStore: parsed.USER_STORE_BACKEND ?? parsed.STORE_BACKEND,
-  settingsStore: parsed.SETTINGS_STORE_BACKEND ?? parsed.STORE_BACKEND
-};
-
-export const env = { ...parsed, TASK_WORKSPACE_HOST_ROOT: taskWorkspaceHostRoot, STORE_BACKENDS: storeBackends };
+export const env = { ...parsed, TASK_WORKSPACE_HOST_ROOT: taskWorkspaceHostRoot };

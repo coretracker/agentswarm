@@ -34,6 +34,7 @@ export type GroupedAutoRunHistoryEntry = {
   kind: "grouped_auto_run";
   timestamp: string;
   run: TaskRun;
+  promptText: string;
   promptMessage: TaskMessage | null;
   summaryMessage: TaskMessage | null;
   proposal: TaskChangeProposal | null;
@@ -61,6 +62,7 @@ export const INTERACTIVE_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMes
 export const INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("interactive");
 export const INTERACTIVE_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("interactive").replace(/\.$/, "");
 export const GIT_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("git");
+export const LEGACY_GIT_TERMINAL_START_MESSAGE = "Git terminal session started.";
 export const GIT_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("git");
 export const GIT_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("git").replace(/\.$/, "");
 
@@ -89,7 +91,11 @@ function isAssistantSummaryMessage(message: TaskMessage): message is TaskMessage
 function isInteractiveTerminalStartMessage(message: TaskMessage): boolean {
   return (
     message.role === "system" &&
-    (message.content === INTERACTIVE_TERMINAL_START_MESSAGE || message.content === GIT_TERMINAL_START_MESSAGE)
+    (
+      message.content === INTERACTIVE_TERMINAL_START_MESSAGE ||
+      message.content === GIT_TERMINAL_START_MESSAGE ||
+      message.content === LEGACY_GIT_TERMINAL_START_MESSAGE
+    )
   );
 }
 
@@ -134,7 +140,6 @@ export function buildTaskHistoryEntries(input: {
       buildProposalByRunId.set(proposal.sourceId, proposal);
     }
   }
-
   for (const run of sortedRuns) {
     if (!isAutoRunAction(run.action)) {
       continue;
@@ -152,6 +157,7 @@ export function buildTaskHistoryEntries(input: {
     if (promptMessage) {
       consumedMessageIds.add(promptMessage.id);
     }
+    const promptText = promptMessage?.content ?? "No matched user prompt was found for this run.";
 
     let summaryMessage: TaskMessage | null = null;
     const normalizedRunSummary = run.summary?.trim() ?? "";
@@ -182,6 +188,7 @@ export function buildTaskHistoryEntries(input: {
       kind: "grouped_auto_run",
       timestamp: run.startedAt,
       run,
+      promptText,
       promptMessage,
       summaryMessage,
       proposal
@@ -314,7 +321,7 @@ export function buildTaskHistoryEntries(input: {
   });
   const rawProposals = sortedProposals.filter((proposal) => !consumedProposalIds.has(proposal.id));
 
-  return [
+  const entries = [
     ...groupedAutoEntries,
     ...groupedTerminalEntries,
     ...rawMessages.map(
@@ -341,5 +348,7 @@ export function buildTaskHistoryEntries(input: {
         proposal
       })
     )
-  ].sort((left, right) => compareIso(left.timestamp, right.timestamp, left.key, right.key));
+  ];
+
+  return entries.sort((left, right) => compareIso(left.timestamp, right.timestamp, left.key, right.key));
 }

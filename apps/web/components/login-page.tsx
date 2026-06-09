@@ -136,6 +136,7 @@ export function LoginPage() {
           <Form
             form={form}
             layout="vertical"
+            data-testid="login-form"
             onFinish={async (values) => {
               setSubmitting(true);
               setErrorMessage(null);
@@ -155,16 +156,33 @@ export function LoginPage() {
               label="Email"
               rules={[{ required: true, message: "Enter your email address" }]}
             >
-              <Input autoComplete="username" placeholder="admin@localhost" size="large" />
+              <Input
+                autoComplete="username"
+                placeholder="admin@localhost"
+                size="large"
+                data-testid="login-email-input"
+              />
             </Form.Item>
             <Form.Item
               name="password"
               label="Password"
               rules={[{ required: true, message: "Enter your password" }]}
             >
-              <Input.Password autoComplete="current-password" placeholder="Password" size="large" />
+              <Input.Password
+                autoComplete="current-password"
+                placeholder="Password"
+                size="large"
+                data-testid="login-password-input"
+              />
             </Form.Item>
-            <Button type="primary" htmlType="submit" loading={submitting || loading} block size="large">
+            <Button
+              type="primary"
+              htmlType="submit"
+              loading={submitting || loading}
+              block
+              size="large"
+              data-testid="login-submit-button"
+            >
               Sign in
             </Button>
           </Form>

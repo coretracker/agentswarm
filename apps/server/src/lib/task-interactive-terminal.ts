@@ -1,6 +1,6 @@
 import { spawn as spawnChild } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, constants } from "node:fs/promises";
+import { access, constants, rm } from "node:fs/promises";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import path from "node:path";
 import type { Duplex } from "node:stream";
@@ -23,20 +23,40 @@ import { env } from "../config/env.js";
 import type { AuthService } from "./auth.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
-import type { TaskStore } from "../services/task-store.js";
+import type { TaskMetadata, TaskStore } from "../services/task-store.js";
+import type { RepositoryStore } from "../services/repository-store.js";
 import { canUserAccessTask } from "./task-ownership.js";
 import { resolveWorkspaceGitRuntimeMounts } from "./git-runtime-mounts.js";
+import { materializeRepositoryRuntimeEnvEntries } from "./repository-runtime-env.js";
 import {
   claudeModelSupportsThinkingBudget,
   claudeThinkingBudgetTokensForProfile,
   codexReasoningEffortForProfile,
   defaultModelForProvider
 } from "./provider-config.js";
+import {
+  collectMcpServerEnvEntries,
+  collectMissingMcpServerBearerTokenEnvVars,
+  serializeClaudeMcpConfig,
+  serializeCodexMcpConfig
+} from "./mcp-config.js";
 import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
 import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
 import { resolveTaskGitCommitIdentity, type GitCommitIdentity } from "./task-git-identity.js";
-import { buildGitTerminalEnvEntries, buildInteractiveWorkspaceGitEnvEntries } from "./task-interactive-terminal-git-env.js";
+import {
+  buildGitTerminalDockerEnvEntries,
+  buildGitTerminalEnvEntries,
+  buildInteractiveWorkspaceGitEnvEntries
+} from "./task-interactive-terminal-git-env.js";
+import {
+  emitDockerSocketEnabledEventOnce,
+  emitNestedContainerSpawnedEvent,
+  resolveDockerSocketAccessPolicy,
+  resolveDockerSocketEnvEntries,
+  resolveDockerSocketMountArgs
+} from "./docker-socket-access.js";
 import type { UserStore } from "../services/user-store.js";
+import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
 const INTERACTIVE_WORKSPACE_PATH = "/workspace";
@@ -44,12 +64,14 @@ const INTERACTIVE_WS_PING_INTERVAL_MS = 25_000;
 const INTERACTIVE_TRANSCRIPT_LIMIT = 2_000_000;
 const INTERACTIVE_EXIT_WAIT_MS = 1_500;
 const INTERACTIVE_TERMINAL_CLOSE_CODE = 1012;
+const PROVIDER_SESSION_ID_FILE = "agentswarm-session-id.txt";
+const repositoryEnvFileStore = new RepositoryEnvFileStore();
 
 function normalizeTerminalSessionMode(value: string | null | undefined): TaskTerminalSessionMode {
   return value === "git" ? "git" : "interactive";
 }
 
-function buildCodexUserConfigToml(workspacePath: string, model: string): string {
+function buildCodexUserConfigToml(workspacePath: string, model: string, mcpConfig: string): string {
   const pathSafe = workspacePath.replace(/"/g, "");
   const modelSafe = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   const modelTomlKey = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
@@ -70,31 +92,52 @@ show_tooltips = false
 
 [tui.model_availability_nux]
 "${modelTomlKey}" = 1
-`;
+
+${mcpConfig}`;
 }
 
 function shellSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
-function buildCodexStartScript(configB64: string, model: string, reasoningEffort: string): string {
+function buildCodexStartScript(
+  configB64: string,
+  model: string,
+  reasoningEffort: string,
+  preferAuthJson: boolean,
+  missingMcpBearerEnvVars: string[]
+): string {
   const codexArgs = [
-    "exec codex",
     "--dangerously-bypass-approvals-and-sandbox",
     '-C "$TASK_INTERACTIVE_WORKSPACE"',
     "-m",
     shellSingleQuote(model),
     "-c cli_auth_credentials_store=file",
-    "-c forced_login_method=api",
+    ...(preferAuthJson ? [] : ["-c forced_login_method=api"]),
     "-c",
     shellSingleQuote(`model_reasoning_effort="${reasoningEffort}"`)
   ];
 
+  const authBootstrap = preferAuthJson
+    ? 'printf %s "$CODEX_AUTH_JSON_B64" | base64 -d > ~/.codex/auth.json'
+    : 'printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file';
+
   return [
+    ...(missingMcpBearerEnvVars.length > 0
+      ? [
+          `echo ${shellSingleQuote(
+            `[agentswarm] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
+          )} >&2`
+        ]
+      : []),
     "mkdir -p ~/.codex",
     `printf '%s' ${shellSingleQuote(configB64)} | base64 -d > ~/.codex/config.toml`,
-    'printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file',
-    codexArgs.join(" "),
+    authBootstrap,
+    `SESSION_FILE="$HOME/.codex/${PROVIDER_SESSION_ID_FILE}"`,
+    'SESSION_ID=""',
+    'if [ -f "$SESSION_FILE" ]; then IFS= read -r SESSION_ID < "$SESSION_FILE" || true; fi',
+    `if [ -n "$SESSION_ID" ]; then exec codex resume ${codexArgs.join(" ")} "$SESSION_ID"; fi`,
+    `exec codex ${codexArgs.join(" ")}`,
   ].join(" && ");
 }
 
@@ -105,23 +148,42 @@ function buildClaudeSettingsJson(): string {
   });
 }
 
-function buildClaudeStartScript(model: string, settingsJson: string): string {
+function buildClaudeStartScript(
+  model: string,
+  settingsJson: string,
+  mcpConfigB64: string,
+  missingMcpBearerEnvVars: string[]
+): string {
   const claudeArgs = [
     "--model",
     shellSingleQuote(model),
     "--settings",
-    shellSingleQuote(settingsJson)
+    shellSingleQuote(settingsJson),
+    "--mcp-config",
+    '"$HOME/.claude/mcp-config.json"'
   ];
 
   return [
+    ...(missingMcpBearerEnvVars.length > 0
+      ? [
+          `echo ${shellSingleQuote(
+            `[agentswarm] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
+          )} >&2`
+        ]
+      : []),
     'mkdir -p "$HOME/.claude" "$HOME/.local/bin"',
     'if [ ! -x "$HOME/.local/bin/claude" ] && [ -x "/opt/claude-code/.local/bin/claude" ]; then ln -sf "/opt/claude-code/.local/bin/claude" "$HOME/.local/bin/claude"; fi',
     'CLAUDE_BIN="$HOME/.local/bin/claude"',
     'if [ ! -x "$CLAUDE_BIN" ] && [ -x "/opt/claude-code/.local/bin/claude" ]; then CLAUDE_BIN="/opt/claude-code/.local/bin/claude"; fi',
     'if [ ! -x "$CLAUDE_BIN" ]; then CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"; fi',
     'if [ -z "$CLAUDE_BIN" ] || [ ! -x "$CLAUDE_BIN" ]; then echo "Claude CLI not found in image." >&2; exit 127; fi',
+    `printf '%s' ${shellSingleQuote(mcpConfigB64)} | base64 -d > "$HOME/.claude/mcp-config.json"`,
     'cd "$TASK_INTERACTIVE_WORKSPACE"',
+    `SESSION_FILE="$HOME/.claude/${PROVIDER_SESSION_ID_FILE}"`,
+    'SESSION_ID=""',
+    'if [ -f "$SESSION_FILE" ]; then IFS= read -r SESSION_ID < "$SESSION_FILE" || true; fi',
     "sleep 1",
+    `if [ -n "$SESSION_ID" ]; then exec "$CLAUDE_BIN" --resume "$SESSION_ID" ${claudeArgs.join(" ")}; fi`,
     `exec "$CLAUDE_BIN" ${claudeArgs.join(" ")}`
   ].join(" && ");
 }
@@ -165,7 +227,7 @@ function resolveGitTerminalRuntimeConfig(
     } {
   const image = env.GIT_TERMINAL_IMAGE?.trim();
   if (!image) {
-    return { ok: false, reason: "Git terminal is not configured (set GIT_TERMINAL_IMAGE on the server)." };
+    return { ok: false, reason: "Terminal is not configured (set GIT_TERMINAL_IMAGE on the server)." };
   }
 
   return {
@@ -181,7 +243,7 @@ function resolveGitTerminalRuntimeConfig(
   };
 }
 
-function resolveInteractiveTerminalModel(task: Task): string {
+function resolveInteractiveTerminalModel(task: Pick<TaskMetadata, "provider" | "providerProfile" | "modelOverride">): string {
   const configured = task.modelOverride?.trim();
   if (configured) {
     return configured;
@@ -191,11 +253,12 @@ function resolveInteractiveTerminalModel(task: Task): string {
 }
 
 function resolveInteractiveTerminalRuntimeConfig(
-  task: Task,
+  task: Pick<TaskMetadata, "provider" | "providerProfile" | "modelOverride">,
   settings: InteractiveRuntimeSettings,
   credentials: InteractiveRuntimeCredentials
 ): InteractiveTerminalRuntimeConfig {
   const model = resolveInteractiveTerminalModel(task);
+  const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(settings.mcpServers);
 
   if (task.provider === "claude") {
     const image = env.CLAUDE_INTERACTIVE_IMAGE?.trim();
@@ -227,9 +290,15 @@ function resolveInteractiveTerminalRuntimeConfig(
         ["HOME", "/home/claude"],
         ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
         ...(typeof thinkingBudgetTokens === "number" ? [["MAX_THINKING_TOKENS", String(thinkingBudgetTokens)] as [string, string]] : []),
+        ...collectMcpServerEnvEntries(settings.mcpServers),
         ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
       ],
-      startScript: buildClaudeStartScript(model, buildClaudeSettingsJson())
+      startScript: buildClaudeStartScript(
+        model,
+        buildClaudeSettingsJson(),
+        Buffer.from(serializeClaudeMcpConfig(settings.mcpServers), "utf8").toString("base64"),
+        missingMcpBearerEnvVars
+      )
     };
   }
 
@@ -237,16 +306,21 @@ function resolveInteractiveTerminalRuntimeConfig(
   if (!image) {
     return { ok: false, reason: "Interactive Codex is not configured (set CODEX_INTERACTIVE_IMAGE on the server)." };
   }
-  if (!credentials.openaiApiKey) {
-    return { ok: false, reason: "OpenAI API key is not configured in Settings." };
+  if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
+    return { ok: false, reason: "OpenAI API key or Codex auth.json is not configured." };
   }
+  const useCodexAuthJson = Boolean(credentials.codexAuthJson);
 
   const envEntries: Array<[string, string]> = [
-    ["OPENAI_API_KEY", credentials.openaiApiKey],
+    ...(credentials.openaiApiKey ? [["OPENAI_API_KEY", credentials.openaiApiKey] as [string, string]] : []),
+    ...(credentials.codexAuthJson
+      ? [["CODEX_AUTH_JSON_B64", Buffer.from(credentials.codexAuthJson, "utf8").toString("base64")] as [string, string]]
+      : []),
     ["TERM", "xterm-256color"],
     ["HOME", "/root"],
     ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
     ["CODEX_TRUST_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
+    ...collectMcpServerEnvEntries(settings.mcpServers),
     ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
   ];
   if (settings.openaiBaseUrl?.trim()) {
@@ -265,9 +339,18 @@ function resolveInteractiveTerminalRuntimeConfig(
     },
     envEntries,
     startScript: buildCodexStartScript(
-      Buffer.from(buildCodexUserConfigToml(INTERACTIVE_WORKSPACE_PATH, model), "utf8").toString("base64"),
+      Buffer.from(
+        buildCodexUserConfigToml(
+          INTERACTIVE_WORKSPACE_PATH,
+          model,
+          serializeCodexMcpConfig(settings.mcpServers)
+        ),
+        "utf8"
+      ).toString("base64"),
       model,
-      codexReasoningEffortForProfile(task.providerProfile)
+      codexReasoningEffortForProfile(task.providerProfile),
+      useCodexAuthJson,
+      missingMcpBearerEnvVars
     )
   };
 }
@@ -311,6 +394,7 @@ export interface TaskInteractiveTerminalDeps {
   settingsStore: SettingsStore;
   spawner: SpawnerService;
   userStore: Pick<UserStore, "getUser">;
+  repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries">;
 }
 
 interface ActiveInteractiveTerminalController {
@@ -388,9 +472,10 @@ export async function getTaskInteractiveTerminalStatus(
   taskStore: TaskStore,
   settingsStore: SettingsStore,
   taskId: string,
-  mode: TaskTerminalSessionMode = "interactive"
+  mode: TaskTerminalSessionMode = "interactive",
+  userId?: string | null
 ): Promise<TaskInteractiveTerminalStatusPayload> {
-  const task = await taskStore.getTask(taskId);
+  const task = await taskStore.getTaskMetadata(taskId);
   if (!task) {
     return { available: false, reason: "Task not found." };
   }
@@ -399,10 +484,10 @@ export async function getTaskInteractiveTerminalStatus(
     return { available: false, reason: "Archived tasks are read-only." };
   }
 
-  if (isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {
+  if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
     return {
       available: false,
-      reason: `Terminal unavailable while the task is “${getTaskStatusLabel(task.status)}”. Finish or cancel that run first (one action at a time).`
+      reason: "Terminal unavailable while the task is queued or running. Finish or cancel that run first (one action at a time)."
     };
   }
 
@@ -442,7 +527,7 @@ export async function getTaskInteractiveTerminalStatus(
     };
   }
 
-  if (await taskStore.hasPendingChangeProposal(taskId)) {
+  if (mode !== "git" && await taskStore.hasPendingChangeProposal(taskId)) {
     return { available: false, reason: "Apply or reject the pending checkpoint before opening a terminal." };
   }
 
@@ -454,7 +539,7 @@ export async function getTaskInteractiveTerminalStatus(
   }
 
   if (mode === "git") {
-    const credentials = await settingsStore.getRuntimeCredentials();
+    const credentials = await settingsStore.getRuntimeCredentials(userId);
     const runtime = resolveGitTerminalRuntimeConfig(credentials);
     if (!runtime.ok) {
       return { available: false, reason: runtime.reason };
@@ -462,7 +547,7 @@ export async function getTaskInteractiveTerminalStatus(
     if (!(await dockerImageExists(runtime.image))) {
       return {
         available: false,
-        reason: `Git terminal image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("git", task.provider, runtime.image)}`
+        reason: `Terminal image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("git", task.provider, runtime.image)}`
       };
     }
     return { available: true };
@@ -470,7 +555,7 @@ export async function getTaskInteractiveTerminalStatus(
 
   const [settings, credentials] = await Promise.all([
     settingsStore.getSettings(),
-    settingsStore.getRuntimeCredentials()
+    settingsStore.getRuntimeCredentials(userId)
   ]);
   const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
   if (!runtime.ok) {
@@ -529,7 +614,7 @@ export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, dep
         return;
       }
       wss.handleUpgrade(request, socket, head, (ws) => {
-        void initializeTaskInteractiveTerminalWebSocket(ws, task, deps, terminalMode).catch(() => {
+        void initializeTaskInteractiveTerminalWebSocket(ws, task, deps, terminalMode, auth.user.id).catch(() => {
           sendInteractiveTerminalError(ws, `${getTaskTerminalSessionLabel(terminalMode)} initialization failed.`);
         });
       });
@@ -547,7 +632,8 @@ async function initializeTaskInteractiveTerminalWebSocket(
   ws: WebSocket,
   task: Task,
   deps: TaskInteractiveTerminalDeps,
-  mode: TaskTerminalSessionMode
+  mode: TaskTerminalSessionMode,
+  userId?: string | null
 ): Promise<void> {
   const taskId = task.id;
   const activeInteractiveSession = await deps.taskStore.getActiveInteractiveSession(taskId);
@@ -579,13 +665,14 @@ async function initializeTaskInteractiveTerminalWebSocket(
     return;
   }
 
-  const status = await getTaskInteractiveTerminalStatus(deps.taskStore, deps.settingsStore, taskId, mode);
+  const status = await getTaskInteractiveTerminalStatus(deps.taskStore, deps.settingsStore, taskId, mode, userId);
   if (!status.available) {
     sendInteractiveTerminalError(ws, status.reason ?? `${getTaskTerminalSessionLabel(mode)} is unavailable`);
     return;
   }
 
   let interactiveSessionId: string | null = null;
+  let sessionRepositoryEnvDir: string | null = null;
 
   try {
     const started = await deps.spawner.beginInteractiveTerminalSession(taskId, mode);
@@ -594,12 +681,13 @@ async function initializeTaskInteractiveTerminalWebSocket(
     const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
     if (mode === "git") {
-      const [credentials, gitIdentity] = await Promise.all([
-        deps.settingsStore.getRuntimeCredentials(),
+      const [credentials, gitIdentity, repositoryRuntimeEnvEntries] = await Promise.all([
+        deps.settingsStore.getRuntimeCredentials(userId),
         resolveTaskGitCommitIdentity(task, deps.userStore, {
           name: env.GIT_USER_NAME,
           email: env.GIT_USER_EMAIL
-        })
+        }),
+        deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
       ]);
       const runtime = resolveGitTerminalRuntimeConfig(credentials, gitIdentity);
       if (!runtime.ok) {
@@ -607,8 +695,18 @@ async function initializeTaskInteractiveTerminalWebSocket(
       }
 
       const sessionName = `aswgit-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
+      const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "interactive-env", taskId, interactiveSessionId);
+      sessionRepositoryEnvDir = repositoryEnvDir;
+      const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
+        destinationDir: repositoryEnvDir,
+        entries: repositoryRuntimeEnvEntries,
+        fileStore: repositoryEnvFileStore
+      });
       const dockerEnv: string[] = [];
-      for (const [name, value] of runtime.envEntries) {
+      for (const [name, value] of buildGitTerminalDockerEnvEntries({
+        runtimeEnvEntries: runtime.envEntries,
+        repositoryEnvEntries: repositoryRuntimeEnv
+      })) {
         dockerEnv.push("-e", `${name}=${value}`);
       }
       dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
@@ -620,6 +718,8 @@ async function initializeTaskInteractiveTerminalWebSocket(
         "--rm",
         "--name",
         sessionName,
+        "-v",
+        `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         "-v",
         `${dockerBindSource}:/workspace:rw`,
         ...gitRuntimeMounts,
@@ -644,23 +744,37 @@ async function initializeTaskInteractiveTerminalWebSocket(
         spawner: deps.spawner,
         taskStore: deps.taskStore,
         mode,
-        forceCleanup: () => {
+        cleanup: async () => {
           forceRemoveDockerSession(sessionName);
+          await rm(repositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
         }
       });
       return;
     }
 
-    const [credentials, settings] = await Promise.all([
-      deps.settingsStore.getRuntimeCredentials(),
-      deps.settingsStore.getSettings()
+    const [credentials, settings, repositoryRuntimeEnvEntries] = await Promise.all([
+      deps.settingsStore.getRuntimeCredentials(userId),
+      deps.settingsStore.getSettings(),
+      deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
     ]);
     const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
     if (!runtime.ok) {
       throw new Error(runtime.reason);
     }
+    const dockerSocketPolicy = resolveDockerSocketAccessPolicy(runtime.provider);
+    const dockerSocketMountArgs = resolveDockerSocketMountArgs(dockerSocketPolicy);
+    if (dockerSocketPolicy.enabled) {
+      emitDockerSocketEnabledEventOnce({ provider: runtime.provider, policy: dockerSocketPolicy });
+    }
 
     const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
+    const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "interactive-env", taskId, interactiveSessionId);
+    sessionRepositoryEnvDir = repositoryEnvDir;
+    const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
+      destinationDir: repositoryEnvDir,
+      entries: repositoryRuntimeEnvEntries,
+      fileStore: repositoryEnvFileStore
+    });
     const statePaths = runtime.persistentState
       ? await ensureTaskProviderStatePaths(task.id, runtime.provider, {
           uid: runtime.persistentState.uid,
@@ -669,6 +783,12 @@ async function initializeTaskInteractiveTerminalWebSocket(
       : null;
     const dockerEnv: string[] = [];
     for (const [name, value] of runtime.envEntries) {
+      dockerEnv.push("-e", `${name}=${value}`);
+    }
+    for (const [name, value] of repositoryRuntimeEnv) {
+      dockerEnv.push("-e", `${name}=${value}`);
+    }
+    for (const [name, value] of resolveDockerSocketEnvEntries(dockerSocketPolicy)) {
       dockerEnv.push("-e", `${name}=${value}`);
     }
     dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
@@ -681,7 +801,10 @@ async function initializeTaskInteractiveTerminalWebSocket(
       "--name",
       sessionName,
       "-v",
+      `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
+      "-v",
       `${dockerBindSource}:/workspace:rw`,
+      ...dockerSocketMountArgs,
       ...gitRuntimeMounts,
       ...(statePaths && runtime.persistentState
         ? ["-v", `${statePaths.hostPath}:${runtime.persistentState.containerPath}:rw`]
@@ -695,6 +818,12 @@ async function initializeTaskInteractiveTerminalWebSocket(
       "-lc",
       runtime.startScript,
     ];
+    emitNestedContainerSpawnedEvent({
+      source: "interactive_terminal",
+      taskId,
+      provider: runtime.provider,
+      policy: dockerSocketPolicy
+    });
 
     const child = pty.spawn("docker", dockerArgs, {
       name: "xterm-256color",
@@ -710,11 +839,15 @@ async function initializeTaskInteractiveTerminalWebSocket(
       spawner: deps.spawner,
       taskStore: deps.taskStore,
       mode,
-      forceCleanup: () => {
+      cleanup: async () => {
         forceRemoveDockerSession(sessionName);
+        await rm(repositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
       }
     });
   } catch (error) {
+    if (sessionRepositoryEnvDir) {
+      await rm(sessionRepositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
+    }
     if (interactiveSessionId) {
       await deps.spawner.endInteractiveTerminalSession(taskId, interactiveSessionId).catch(() => undefined);
     }
@@ -732,7 +865,7 @@ function wireTerminalWebSocket(
     spawner: SpawnerService;
     taskStore: TaskStore;
     mode: TaskTerminalSessionMode;
-    forceCleanup?: () => void;
+    cleanup?: () => Promise<void> | void;
   }
 ): void {
   let sawTerminalOutput = false;
@@ -817,7 +950,7 @@ function wireTerminalWebSocket(
       } catch {
         /* ignore */
       }
-      proposalCtx.forceCleanup?.();
+      await proposalCtx.cleanup?.();
       await Promise.race([
         childExitPromise,
         new Promise<void>((resolve) => setTimeout(resolve, INTERACTIVE_EXIT_WAIT_MS))

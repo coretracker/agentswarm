@@ -205,7 +205,7 @@ export class GitHubImportService {
     const issue = await this.fetchGitHubJson<GitHubIssue>(`/repos/${owner}/${repo}/issues/${input.issueNumber}`);
 
     if (issue.pull_request) {
-      throw new GitHubImportError("That number belongs to a pull request. Use the PR import flow instead.");
+      throw new GitHubImportError("That number belongs to a pull request. Use the PR import path instead.");
     }
 
     const comments = input.includeComments
@@ -219,11 +219,7 @@ export class GitHubImportService {
           return null;
         }
 
-        return [
-          `### @${comment.user?.login ?? "unknown"} (${comment.created_at})`,
-          body,
-          `Source: ${comment.html_url}`
-        ].join("\n");
+        return [`### @${comment.user?.login ?? "unknown"} (${comment.created_at})`, body, `Source: ${comment.html_url}`].join("\n");
       })
       .filter((value): value is string => Boolean(value));
 
@@ -245,11 +241,13 @@ export class GitHubImportService {
       title,
       repoId: repository.id,
       prompt,
+      notes: input.notes?.trim() ?? "",
+      deadline: input.deadline ?? null,
       taskType,
-      startMode: input.startMode,
       provider: input.provider,
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,
+      codexCredentialSource: input.codexCredentialSource,
       baseBranch: input.baseBranch?.trim() || repository.defaultBranch,
       branchStrategy: taskType === "build" ? input.branchStrategy ?? "feature_branch" : "feature_branch",
       model: input.model,
@@ -314,11 +312,7 @@ export class GitHubImportService {
               return null;
             }
 
-            const parts = [
-              `- @${comment.author?.login ?? "unknown"} (${comment.createdAt})`,
-              `  ${body.replace(/\n/g, "\n  ")}`,
-              `  Source: ${comment.url}`
-            ];
+            const parts = [`- @${comment.author?.login ?? "unknown"} (${comment.createdAt})`, `  ${body.replace(/\n/g, "\n  ")}`, `  Source: ${comment.url}`];
 
             const diffHunk = cleanMarkdownBlock(comment.diffHunk, 1200);
             if (diffHunk) {
@@ -350,10 +344,13 @@ export class GitHubImportService {
       title,
       repoId: repository.id,
       prompt,
+      notes: input.notes?.trim() ?? "",
+      deadline: input.deadline ?? null,
       taskType: "build",
       provider: input.provider,
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,
+      codexCredentialSource: input.codexCredentialSource,
       baseBranch: pullRequest.head.ref,
       branchStrategy: "work_on_branch",
       model: input.model,

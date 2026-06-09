@@ -2,122 +2,165 @@
   <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
 </p>
 
-<h1 align="center">AgentSwarm</h1>
+# AgentSwarm
 
-AgentSwarm is a multi-agent orchestration web app for managing AI coding work on real repositories.
+AgentSwarm is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
 
-Instead of juggling prompts, terminals, and branch management by hand, you can use one UI to:
+The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
 
-- lets you connect repositories and create tasks from scratch, from GitHub issues, or from pull requests
-- runs automated Codex or Claude tasks inside Docker containers
-- prepares per-task workspaces you can later open in an interactive browser terminal
-- keeps task history, logs, diffs, checkpoints, and Git actions in one place
+## Features
 
-It is built for teams or individuals who want agent runs, interactive workspaces, task history, and Git state in one place without giving up control of the repo.
+- Create build or ask tasks from a blank prompt, reusable snippet, GitHub issue, or pull request.
+- Run Codex and Claude tasks in isolated Docker runtime containers.
+- Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
+- Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
+- Open task workspaces in an interactive browser terminal.
+- Configure repositories, credentials, roles, users, provider defaults, and snippets.
+- Automate task creation from GitHub webhooks and repository automation rules.
+- Add repository-local postflight checks with `.agentswarm/postflight.yml`.
 
-## Prerequisites
+## Requirements
 
-Docker and Docker Compose.
+| Requirement | Notes |
+| --- | --- |
+| Docker | Required for the main app stack and agent runtime containers. |
+| Docker Compose | `docker compose` is preferred; `docker-compose` is also supported. |
+| Bash | Required by the helper and harness scripts. |
+| Node.js 20+ and npm | Required for local development, checks, tests, and builds. |
+| Python 3 | Required when installing local npm dependencies because native modules such as `node-pty` may build from source. |
 
-Node 20+ is optional if you want to run the web/server in host dev mode.
+## Installation
 
-## Start
+Clone the repository:
 
-Before the first run, initialize the stack and runtime images:
+```bash
+git clone git@github.com:coretracker/agentswarm.git
+cd agentswarm
+```
+
+Create a local environment file:
+
+```bash
+cp .env.example .env
+```
+
+Initialize the Docker stack and runtime images:
 
 ```bash
 ./agentswarm.sh init
 ```
 
-After that, use the normal commands:
+For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
+
+```bash
+HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+```
+
+## Quick Start
+
+Start the app:
 
 ```bash
 ./agentswarm.sh start
-./agentswarm.sh rebuild
+```
+
+Open the UI:
+
+```text
+http://localhost:3217/login
+```
+
+Bootstrap credentials come from `.env.example` and are used only when the first admin user is created. Review and change them before exposing the app outside a local development environment.
+
+After signing in:
+
+1. Open **Settings** and add provider credentials for OpenAI/Codex and/or Anthropic/Claude.
+2. Open **Repositories** and add a Git repository.
+3. Open **Tasks** and create a build or ask task.
+4. Review task output, logs, diffs, and checkpoints from the task detail page.
+
+Stop the app:
+
+```bash
 ./agentswarm.sh stop
 ```
 
-What they do:
+## Usage
 
-- `init`: same as `rebuild`; useful for first-time setup
-- `start`: starts the Docker Compose stack in the background
-- `rebuild`: rebuilds the compose images, automated runtime images, and interactive terminal images, then restarts the stack
-- `stop`: stops the stack
+### Common Commands
 
-By default the app is available at `http://localhost:3217/login`.
+| Command | Description |
+| --- | --- |
+| `./agentswarm.sh init` | Build runtime images, rebuild compose images, and start the stack. |
+| `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
+| `./agentswarm.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
+| `./agentswarm.sh stop` | Stop the Docker Compose stack. |
+| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
 
-The seeded admin defaults come from `.env.example`:
+The health endpoint is available at:
 
-- email: `admin@agentswarm.local`
-- password: `admin123!`
+```bash
+curl -fsS http://localhost:3217/api/health
+```
 
-Those values are only used when the admin user is created for the first time.
+### Creating Tasks
 
-## Environment Variables
+Tasks are the main unit of work in AgentSwarm.
 
-Copy `.env.example` to `.env` and adjust it if needed.
+- **Build tasks** ask an agent to make repository changes.
+- **Ask tasks** ask an agent to inspect and answer without changing code.
+- **Snippet tasks** start from reusable prompt templates and variables.
+- **GitHub-imported tasks** can be created from issues, pull requests, review comments, and automation rules.
 
-### Core
+Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
 
-| Variable | Purpose | Default |
-|---|---|---|
-| `PUBLIC_PORT` | Public port exposed by the nginx proxy | `3217` |
-| `CORS_ORIGIN` | Allowed web origin for the API | `http://localhost:3217` |
-| `DEFAULT_ADMIN_NAME` | Bootstrap admin display name | `Administrator` |
-| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email | `admin@agentswarm.local` |
-| `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password | `admin123!` |
-| `AUTH_COOKIE_NAME` | Session cookie name | `agentswarm_session` |
-| `AUTH_SESSION_TTL_DAYS` | Session lifetime in days | `7` |
+### GitHub Webhooks
 
-### Storage
+AgentSwarm supports repository-scoped GitHub webhooks that can create tasks automatically.
 
-| Variable | Purpose | Default |
-|---|---|---|
-| `STORE_BACKEND` | Default durable store backend | `redis` |
-| `DATABASE_URL` | Postgres connection string | `postgres://postgres:postgres@localhost:5432/agentswarm` |
-| `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start | `true` |
-| `TASK_STORE_BACKEND` | Override backend for task data only | inherit |
-| `SNIPPET_STORE_BACKEND` | Override backend for snippets | inherit |
-| `REPOSITORY_STORE_BACKEND` | Override backend for repositories | inherit |
-| `CREDENTIAL_STORE_BACKEND` | Override backend for encrypted credentials | inherit |
-| `ROLE_STORE_BACKEND` | Override backend for roles | inherit |
-| `USER_STORE_BACKEND` | Override backend for users | inherit |
-| `SETTINGS_STORE_BACKEND` | Override backend for settings | inherit |
+For each repository, configure this webhook URL in GitHub:
 
-### Git / Workspace
+```text
+https://<your-host>/api/webhooks/github/<repositoryId>
+```
 
-| Variable | Purpose | Default |
-|---|---|---|
-| `GIT_USER_NAME` | Git author name used by the server | `AgentSwarm Bot` |
-| `GIT_USER_EMAIL` | Git author email used by the server | `agentswarm@local.dev` |
-| `TASK_WORKSPACE_HOST_ROOT` | Absolute host path where task workspaces live | unset in `.env.example` |
+Use content type `application/json` and subscribe to the events you want to automate, such as Issues, Pull requests, Pull request review comments, Issue comments, and Reactions.
 
-`TASK_WORKSPACE_HOST_ROOT` matters in Docker setups because the server and runtime containers need to mount the same host workspace directory.
+Example repository automation rule:
 
-### Frontend API routing
+```json
+[
+  {
+    "id": "ai-issue-opened",
+    "name": "AI issue to build task",
+    "enabled": true,
+    "trigger": "issue_opened",
+    "syncStatusEnabled": true,
+    "labelFilter": {
+      "labelsAny": ["ai"],
+      "labelsNone": ["wip"]
+    },
+    "task": {
+      "assigneeEmail": "dev@example.com",
+      "taskType": "build",
+      "provider": "codex",
+      "providerProfile": "high",
+      "modelOverride": "gpt-5.4",
+      "codexCredentialSource": "profile"
+    }
+  }
+]
+```
 
-| Variable | Purpose | Default |
-|---|---|---|
-| `NEXT_PUBLIC_API_URL` | Explicit public API base URL | empty |
-| `NEXT_PUBLIC_SOCKET_URL` | Explicit public Socket.IO URL | empty |
+Supported automation triggers include:
 
-Leave both empty if you want to use the bundled same-origin `/api` proxy.
+- `issue_opened`
+- `pull_request_opened`
+- comment or reaction triggers when rule-level comment automation is enabled
 
-### Interactive terminal images
+### Postflight Checks
 
-| Variable | Purpose | Default |
-|---|---|---|
-| `GIT_TERMINAL_IMAGE` | Image for the restricted Git terminal | `local/git-terminal:latest` |
-| `CODEX_INTERACTIVE_IMAGE` | Image for the interactive Codex terminal | `local/codex-interactive:latest` |
-| `CLAUDE_INTERACTIVE_IMAGE` | Image for the interactive Claude terminal | `local/claude-interactive:latest` |
-
-These images are used only for in-browser terminal sessions. Automated agent runs use the runtime images built by `./agentswarm.sh rebuild`.
-
-## Postflight
-
-You can add repo-local post-build automation with `.agentswarm/postflight.yml`.
-
-AgentSwarm runs postflight after a successful build task, before the final checkpoint is created. Any files written into the task workspace, including binary files like screenshots, become part of the pending checkpoint and can be reviewed in task detail.
+Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
 
 Example:
 
@@ -140,19 +183,174 @@ steps:
 on_failure: "fail_task"
 ```
 
-Supported v1 fields:
+## Configuration
 
-- `version`
-- `enabled`
-- `when.task_types`
-- `when.providers`
-- `runner.image`
-- `runner.timeout_seconds` with a default of `1800`
-- `steps[].run`
-- `on_failure` as `fail_task` or `ignore`
+Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the AgentSwarm Settings UI, not in `.env`.
 
-## Notes
+### Core Environment Variables
 
-- API credentials such as GitHub, OpenAI, and Anthropic are configured in the AgentSwarm Settings UI, not in `.env`.
-- Task workspaces and local plans are runtime data and should not be committed.
-- If you are using Postgres, run the server with a valid `DATABASE_URL` and either keep `POSTGRES_AUTO_MIGRATE=true` or run migrations manually.
+| Variable | Description | Default |
+| --- | --- | --- |
+| `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
+| `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
+| `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
+| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
+| `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
+| `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
+| `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
+| `APP_ENVIRONMENT` | Runtime environment label. | `local` |
+
+### Storage
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `DATABASE_URL` | Postgres connection string. | see `.env.example` |
+| `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start. | `true` |
+| `REDIS_HOST_PORT` | Host port for Redis in local Docker setups. | `6379` |
+| `POSTGRES_HOST_PORT` | Host port for Postgres in local Docker setups. | `5432` |
+
+Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub.
+
+### Git and Workspaces
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `GIT_USER_NAME` | Git author name used by the server. | `AgentSwarm Bot` |
+| `GIT_USER_EMAIL` | Git author email used by the server. | `agentswarm@local.dev` |
+| `TASK_WORKSPACE_HOST_ROOT` | Absolute host path for task workspaces. | unset |
+| `LOCAL_PLANS_HOST_ROOT` | Absolute host path for local plan storage. | unset |
+
+`TASK_WORKSPACE_HOST_ROOT` is important in Docker setups because the server and runtime containers must mount the same host workspace directory.
+
+### Frontend API Routing
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_URL` | Explicit public API base URL. | empty |
+| `NEXT_PUBLIC_SOCKET_URL` | Explicit public Socket.IO URL. | empty |
+
+Leave these empty to use the bundled same-origin `/api` proxy.
+
+### Runtime Images
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
+| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
+| `GIT_TERMINAL_IMAGE` | Restricted Git terminal image. | `local/git-terminal:latest` |
+| `CODEX_INTERACTIVE_IMAGE` | Interactive Codex terminal image. | `local/codex-interactive:latest` |
+| `CLAUDE_INTERACTIVE_IMAGE` | Interactive Claude terminal image. | `local/claude-interactive:latest` |
+
+### Docker Socket Access
+
+Docker socket access is disabled by default and should stay disabled unless a runtime must start nested containers.
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into Codex/Claude runtime containers. | `false` |
+| `DOCKER_SOCKET_HOST_PATH` | Host Docker socket path. | `/var/run/docker.sock` |
+| `DOCKER_SOCKET_CONTAINER_PATH_CODEX` | In-container socket path for Codex runtimes. | `/var/run/docker.sock` |
+| `DOCKER_SOCKET_CONTAINER_PATH_CLAUDE` | In-container socket path for Claude runtimes. | `/var/run/docker.sock` |
+
+Mounting `docker.sock` is highly privileged and can effectively grant host-level control from inside the runtime container.
+
+## Project Structure
+
+```text
+.
++-- apps/
+|   +-- server/          # Backend API, orchestration, stores, routes, schedulers
+|   +-- web/             # Next.js web app
++-- packages/
+|   +-- shared-types/    # Shared TypeScript types used by server and web
++-- agent-runtime-codex/ # Automated Codex task runtime
++-- agent-runtime-claude/# Automated Claude task runtime
++-- tools/               # Supporting runtime and terminal tooling
++-- docs/                # Architecture, development, product, and quality docs
++-- scripts/harness/     # Canonical setup, check, test, and PR scripts
++-- task-workspaces/     # Runtime task workspaces; do not commit
++-- docker-compose.yml   # Local Docker stack
++-- agentswarm.sh        # Main stack helper script
+```
+
+## Development
+
+Install dependencies on a clean checkout:
+
+```bash
+HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+```
+
+Useful development commands:
+
+| Command | Description |
+| --- | --- |
+| `./scripts/harness/doctor.sh` | Verify required tooling and harness availability. |
+| `./scripts/harness/setup.sh` | Initialize the Docker stack and runtime folders. |
+| `./scripts/harness/check.sh` | Run docs checks, boundary checks, lint, and build. |
+| `./scripts/harness/test.sh` | Run the canonical test suite. |
+| `./scripts/harness/pr-ready.sh` | Run pull request readiness checks. |
+| `npm run dev` | Run server and web dev processes together. |
+| `npm run lint` | Run TypeScript no-emit checks for server and web. |
+| `npm run build` | Build shared types, server, and web. |
+| `npm run test` | Run `./scripts/harness/test.sh`. |
+
+Workspace-specific commands:
+
+```bash
+npm run dev -w @agentswarm/server
+npm run dev -w @agentswarm/web
+npm run build -w @agentswarm/shared-types
+```
+
+Before opening a pull request, run:
+
+```bash
+./scripts/harness/pr-ready.sh
+```
+
+The repository uses execution-plan and human-gated-flow checks for non-trivial changes. Useful references:
+
+- `docs/development/setup.md`
+- `docs/development/commands.md`
+- `docs/development/testing.md`
+- `docs/development/pr-workflow.md`
+- `docs/development/agent-review.md`
+
+## FAQ
+
+### Where do I configure API keys?
+
+Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings UI. Credentials are write-only from the UI and are not returned by the API.
+
+### Can I run without Docker?
+
+The documented and supported path is Docker-based. Some server and web commands can run locally with Node.js, but the full task execution flow depends on Docker runtime containers.
+
+### What does a `202` response from a GitHub webhook mean?
+
+It means AgentSwarm accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
+
+### How do I reset local data?
+
+Run setup with a database reset:
+
+```bash
+HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
+```
+
+## Contributing
+
+1. Read the relevant docs in `docs/index.md`.
+2. Keep changes scoped and update docs when behavior changes.
+3. Run the canonical checks before opening a pull request:
+
+   ```bash
+   ./scripts/harness/pr-ready.sh
+   ```
+
+4. Use the pull request template in `.github/pull_request_template.md`.
+
+## License
+
+No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.

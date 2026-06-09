@@ -2,17 +2,15 @@
 
 import type {
   AgentProvider,
+  AuthProfile,
   AuthSession,
   CreateRoleInput,
   CreateSnippetInput,
-  CreateTaskFromIssueInput,
-  CreateTaskFromPullRequestInput,
   CreateTaskMessageInput,
   CreateRepositoryInput,
   CreateTaskInput,
   CreateUserInput,
   GitHubBranchReference,
-  GitHubIssueReference,
   GitHubPullRequestReference,
   LoginInput,
   ProviderModelOption,
@@ -23,7 +21,11 @@ import type {
   Task,
   OpenAiDiffAssistInput,
   OpenAiDiffAssistResult,
+  TaskPromptMagicInput,
+  TaskPromptMagicResult,
   TaskLiveDiff,
+  TaskWorkspaceFileSearchResult,
+  TaskWorkspaceFileTree,
   TaskWorkspaceFilePreview,
   TaskWorkspaceCommitLog,
   TaskPushPreview,
@@ -31,8 +33,11 @@ import type {
   TaskMessage,
   MergeTaskInput,
   ApplyTaskChangeProposalInput,
+  RevertTaskChangeProposalFileInput,
   UpdateTaskMessageInput,
+  UpdateTaskWorkspaceFileInput,
   TaskRun,
+  TaskGitOperation,
   TaskChangeProposal,
   TaskInteractiveTerminalTranscript,
   TaskAction,
@@ -40,13 +45,21 @@ import type {
   UpdateRoleInput,
   UpdateSnippetInput,
   UpdateTaskPinInput,
+  UpdateTaskNotesInput,
+  UpdateTaskDeadlineInput,
+  UpdateTaskDraftInput,
+  UpdateTaskAssigneeInput,
+  UpdateTaskStateInput,
+  UpdateUserNotesInput,
   UpdateTaskTitleInput,
+  UpdateAuthProfileInput,
   UpdateCredentialSettingsInput,
   UpdateTaskConfigInput,
   UpdateRepositoryInput,
   UpdateSettingsInput,
   UpdateUserInput,
-  User
+  User,
+  UserNotes
 } from "@agentswarm/shared-types";
 export type { TaskWorkspaceFilePreview } from "@agentswarm/shared-types";
 import { buildApiUrl } from "../lib/public-url";
@@ -73,6 +86,17 @@ export interface TaskBranchSyncCounts {
 export interface ListTasksOptions {
   view?: "all" | "active" | "archived";
   limit?: number;
+}
+
+export interface HistoryPageOptions {
+  before?: string | null;
+  beforeId?: string | null;
+  limit?: number;
+}
+
+export interface HistoryPageResult<T> {
+  items: T[];
+  hasMore: boolean;
 }
 
 export class ApiError extends Error {
@@ -122,6 +146,12 @@ export const api = {
   login: (input: LoginInput) =>
     request<AuthSession>("/auth/login", {
       method: "POST",
+      body: JSON.stringify(input)
+    }),
+  getProfile: () => request<AuthProfile>("/auth/profile"),
+  updateProfile: (input: UpdateAuthProfileInput) =>
+    request<AuthProfile>("/auth/profile", {
+      method: "PATCH",
       body: JSON.stringify(input)
     }),
   logout: () =>
@@ -177,6 +207,10 @@ export const api = {
     request<void>(`/snippets/${id}`, {
       method: "DELETE"
     }),
+  duplicateSnippet: (id: string) =>
+    request<Snippet>(`/snippets/${id}/duplicate`, {
+      method: "POST"
+    }),
   listTasks: (options?: ListTasksOptions) => {
     const params = new URLSearchParams();
     if (options?.view) {
@@ -189,7 +223,12 @@ export const api = {
     return request<Task[]>(`/tasks${query ? `?${query}` : ""}`);
   },
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
+  startTask: (id: string) =>
+    request<Task>(`/tasks/${id}/start`, {
+      method: "POST"
+    }),
   getTaskBranchSyncCounts: (id: string) => request<TaskBranchSyncCounts>(`/tasks/${id}/branch-sync-counts`),
+  getTaskGitOperation: (id: string) => request<TaskGitOperation | null>(`/tasks/${id}/git-operation`),
   getTaskInteractiveTerminalStatus: (id: string, options?: { mode?: TaskTerminalSessionMode }) => {
     const params = new URLSearchParams();
     if (options?.mode) {
@@ -202,6 +241,10 @@ export const api = {
     request<TaskInteractiveTerminalTranscript>(`/tasks/${taskId}/interactive-terminal/sessions/${encodeURIComponent(sessionId)}/transcript`),
   killTaskInteractiveTerminal: (id: string) =>
     request<Task>(`/tasks/${id}/interactive-terminal/kill`, {
+      method: "POST"
+    }),
+  resetTaskSession: (id: string) =>
+    request<Task>(`/tasks/${id}/new-session`, {
       method: "POST"
     }),
   getTaskLiveDiff: (
@@ -233,33 +276,105 @@ export const api = {
     const query = params.toString();
     return request<TaskWorkspaceCommitLog>(`/tasks/${id}/workspace-commit-log${query ? `?${query}` : ""}`);
   },
-  getTaskWorkspaceFile: (id: string, filePath: string, options?: { ref?: string | null; executionId?: string | null }) => {
+  getTaskWorkspaceFiles: (id: string, options?: { prefix?: string | null; limit?: number }) => {
+    const params = new URLSearchParams();
+    const prefix = options?.prefix?.trim();
+    if (prefix) {
+      params.set("prefix", prefix);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<TaskWorkspaceFileTree>(`/tasks/${id}/workspace-files${query ? `?${query}` : ""}`);
+  },
+  searchTaskWorkspaceFiles: (id: string, options: { query: string; limit?: number }) => {
+    const params = new URLSearchParams({ q: options.query });
+    if (options.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    return request<TaskWorkspaceFileSearchResult>(`/tasks/${id}/workspace-files/search?${params.toString()}`);
+  },
+  getTaskWorkspaceFile: (id: string, filePath: string, options?: { ref?: string | null }) => {
     const params = new URLSearchParams({ path: filePath });
     const ref = options?.ref?.trim();
     if (ref) {
       params.set("ref", ref);
     }
-    const executionId = options?.executionId?.trim();
-    if (executionId) {
-      params.set("executionId", executionId);
-    }
     return request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file?${params.toString()}`);
   },
+  updateTaskWorkspaceFile: (id: string, input: UpdateTaskWorkspaceFileInput) =>
+    request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file`, {
+      method: "PUT",
+      body: JSON.stringify(input)
+    }),
   openAiDiffAssist: (taskId: string, input: OpenAiDiffAssistInput) =>
     request<OpenAiDiffAssistResult>(`/tasks/${taskId}/openai/diff-assist`, {
       method: "POST",
       body: JSON.stringify(input)
     }),
+  generateTaskPromptMagic: (input: TaskPromptMagicInput) =>
+    request<TaskPromptMagicResult>("/tasks/prompt-magic", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
   getTaskMessageAttachmentUrl: (taskId: string, messageId: string, attachmentId: string) =>
     buildApiUrl(`/tasks/${taskId}/messages/${messageId}/attachments/${attachmentId}`),
-  listTaskMessages: (id: string) => request<TaskMessage[]>(`/tasks/${id}/messages`),
+  listTaskMessages: (id: string, options?: HistoryPageOptions) => {
+    const params = new URLSearchParams();
+    const before = options?.before?.trim();
+    if (before) {
+      params.set("before", before);
+    }
+    const beforeId = options?.beforeId?.trim();
+    if (beforeId) {
+      params.set("beforeId", beforeId);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<HistoryPageResult<TaskMessage>>(`/tasks/${id}/messages${query ? `?${query}` : ""}`);
+  },
   updateTaskMessage: (taskId: string, messageId: string, input: UpdateTaskMessageInput) =>
     request<TaskMessage>(`/tasks/${taskId}/messages/${messageId}`, {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
-  listTaskRuns: (id: string) => request<TaskRun[]>(`/tasks/${id}/runs`),
-  listTaskChangeProposals: (id: string) => request<TaskChangeProposal[]>(`/tasks/${id}/change-proposals`),
+  listTaskRuns: (id: string, options?: HistoryPageOptions) => {
+    const params = new URLSearchParams();
+    const before = options?.before?.trim();
+    if (before) {
+      params.set("before", before);
+    }
+    const beforeId = options?.beforeId?.trim();
+    if (beforeId) {
+      params.set("beforeId", beforeId);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<HistoryPageResult<TaskRun>>(`/tasks/${id}/runs${query ? `?${query}` : ""}`);
+  },
+  getTaskRunRawJsonUrl: (taskId: string, runId: string) =>
+    buildApiUrl(`/tasks/${taskId}/runs/${encodeURIComponent(runId)}/raw-json`),
+  listTaskChangeProposals: (id: string, options?: HistoryPageOptions) => {
+    const params = new URLSearchParams();
+    const before = options?.before?.trim();
+    if (before) {
+      params.set("before", before);
+    }
+    const beforeId = options?.beforeId?.trim();
+    if (beforeId) {
+      params.set("beforeId", beforeId);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<HistoryPageResult<TaskChangeProposal>>(`/tasks/${id}/change-proposals${query ? `?${query}` : ""}`);
+  },
   applyTaskChangeProposal: (taskId: string, proposalId: string, input?: ApplyTaskChangeProposalInput) =>
     request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/apply`, {
       method: "POST",
@@ -273,6 +388,15 @@ export const api = {
     }),
   revertTaskChangeProposal: (taskId: string, proposalId: string) =>
     request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/revert`, { method: "POST" }),
+  revertTaskChangeProposalFile: (
+    taskId: string,
+    proposalId: string,
+    input: RevertTaskChangeProposalFileInput
+  ) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/revert-file`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
   rejectTaskChangeProposal: (taskId: string, proposalId: string) =>
     request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/reject`, { method: "POST" }),
   createTask: (input: CreateTaskInput) =>
@@ -280,18 +404,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  createTaskFromIssue: (input: CreateTaskFromIssueInput) =>
-    request<Task>("/imports/issue", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  createTaskFromPullRequest: (input: CreateTaskFromPullRequestInput) =>
-    request<Task>("/imports/pull-request", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  listGitHubIssues: (repoId: string) =>
-    request<GitHubIssueReference[]>(`/imports/github/issues?repoId=${encodeURIComponent(repoId)}`),
   listGitHubPullRequests: (repoId: string) =>
     request<GitHubPullRequestReference[]>(`/imports/github/pull-requests?repoId=${encodeURIComponent(repoId)}`),
   listGitHubBranches: (repoId: string) =>
@@ -331,13 +443,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  archiveTask: (id: string) =>
+  archiveTask: (id: string, input?: { deleteRemoteBranch?: boolean }) =>
     request<Task>(`/tasks/${id}/archive`, {
-      method: "POST"
+      method: "POST",
+      body: JSON.stringify(input ?? {})
     }),
-  deleteTask: (id: string) =>
+  deleteTask: (id: string, input?: { deleteRemoteBranch?: boolean }) =>
     request<void>(`/tasks/${id}`, {
-      method: "DELETE"
+      method: "DELETE",
+      body: JSON.stringify(input ?? {})
     }),
   updateTaskConfig: (id: string, input: UpdateTaskConfigInput) =>
     request<Task>(`/tasks/${id}/config`, {
@@ -354,7 +468,33 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
+  updateTaskNotes: (id: string, input: UpdateTaskNotesInput) =>
+    request<Task>(`/tasks/${id}/notes`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskDeadline: (id: string, input: UpdateTaskDeadlineInput) =>
+    request<Task>(`/tasks/${id}/deadline`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskDraft: (id: string, input: UpdateTaskDraftInput) =>
+    request<Task>(`/tasks/${id}/draft`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskState: (id: string, input: UpdateTaskStateInput) =>
+    request<Task>(`/tasks/${id}/state`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskAssignee: (id: string, input: UpdateTaskAssigneeInput) =>
+    request<Task>(`/tasks/${id}/assignee`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
   listRepositories: () => request<Repository[]>("/repositories"),
+  getRepository: (id: string) => request<Repository>(`/repositories/${id}`),
   createRepository: (input: CreateRepositoryInput) =>
     request<Repository>("/repositories", {
       method: "POST",
@@ -379,6 +519,12 @@ export const api = {
     }),
   updateCredentials: (input: UpdateCredentialSettingsInput) =>
     request<SystemSettings>("/settings/credentials", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  getUserNotes: () => request<UserNotes>("/settings/notes"),
+  updateUserNotes: (input: UpdateUserNotesInput) =>
+    request<UserNotes>("/settings/notes", {
       method: "PATCH",
       body: JSON.stringify(input)
     })

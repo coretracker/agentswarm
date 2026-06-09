@@ -58,32 +58,65 @@ const mcpServerSchema = z.discriminatedUnion("transport", [
     enabled: z.boolean(),
     transport: z.literal("http"),
     url: z.string().trim().url(),
-    bearerTokenEnvVar: z.string().trim().min(1).max(120).nullable().optional()
+    bearerTokenEnvVar: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
+      .nullable()
+      .optional()
   })
 ]);
 
 const providerProfileEnum = z.enum(["low", "medium", "high", "max"]);
+const responsePreferenceSchema = z
+  .object({
+    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
+    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
+    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
+    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
+    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
+    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
+    extraInstructions: z.string().trim().max(2000).optional()
+  });
+const responsePreferencePresetSchema = z.object({
+  id: z.string().trim().min(1).max(120).optional(),
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).optional(),
+  preference: responsePreferenceSchema
+});
 
 const updateSettingsSchema = z.object({
   defaultProvider: z.enum(["codex", "claude"]).optional(),
   maxAgents: z.coerce.number().int().min(1).max(20).optional(),
   branchPrefix: z.string().trim().min(1).max(80).optional(),
+  workspaceProvisioningMode: z.enum(["clone_only", "hybrid"]).optional(),
   gitUsername: z.string().trim().min(1).max(120).optional(),
   mcpServers: z.array(mcpServerSchema).max(25).optional(),
   openaiBaseUrl: z.string().trim().url().nullable().optional(),
+  taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
+  taskPromptMagicTemplate: z.string().trim().min(1).max(12_000).optional(),
   codexDefaultModel: z.string().trim().min(1).max(120).optional(),
   codexDefaultEffort: providerProfileEnum.optional(),
   claudeDefaultModel: z.string().trim().min(1).max(120).optional(),
-  claudeDefaultEffort: providerProfileEnum.optional()
+  claudeDefaultEffort: providerProfileEnum.optional(),
+  responsePreferencePresets: z.array(responsePreferencePresetSchema).max(50).optional()
 });
 
 const updateCredentialsSchema = z.object({
   githubToken: z.string().trim().min(1).optional(),
   openaiApiKey: z.string().trim().min(1).optional(),
+  codexAuthJson: z.string().trim().min(1).optional(),
   anthropicApiKey: z.string().trim().min(1).optional(),
   clearGithubToken: z.boolean().optional(),
   clearOpenAiApiKey: z.boolean().optional(),
+  clearCodexAuthJson: z.boolean().optional(),
   clearAnthropicApiKey: z.boolean().optional()
+});
+
+const updateUserNotesSchema = z.object({
+  notes: z.string().max(200_000)
 });
 
 export const registerSettingsRoutes = (
@@ -140,7 +173,32 @@ export const registerSettingsRoutes = (
       return reply.status(400).send({ message: parsed.error.message });
     }
 
+    if (parsed.data.codexAuthJson !== undefined && !parsed.data.clearCodexAuthJson) {
+      try {
+        const parsedJson = JSON.parse(parsed.data.codexAuthJson) as unknown;
+        if (!parsedJson || typeof parsedJson !== "object" || Array.isArray(parsedJson)) {
+          return reply.status(400).send({ message: "Codex auth.json must be a JSON object" });
+        }
+      } catch {
+        return reply.status(400).send({ message: "Codex auth.json must be valid JSON" });
+      }
+    }
+
     const settings = await deps.settingsStore.updateCredentials(parsed.data);
     return reply.send(settings);
+  });
+
+  app.get("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request) =>
+    deps.settingsStore.getUserNotes(request.auth!.user.id)
+  );
+
+  app.patch("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateUserNotesSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const next = await deps.settingsStore.updateUserNotes(request.auth!.user.id, parsed.data.notes);
+    return reply.send(next);
   });
 };

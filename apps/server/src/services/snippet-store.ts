@@ -1,13 +1,57 @@
 import { nanoid } from "nanoid";
 import type Redis from "ioredis";
 import type { Pool } from "pg";
-import type { CreateSnippetInput, Snippet, UpdateSnippetInput } from "@agentswarm/shared-types";
+import type { CreateSnippetInput, Snippet, SnippetVariable, UpdateSnippetInput } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
 
 const SNIPPET_KEY_PREFIX = "agentswarm:snippet:";
 const SNIPPET_IDS_KEY = "agentswarm:snippet_ids";
+const SNIPPET_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SNIPPET_VARIABLE_MAX_COUNT = 100;
+const SNIPPET_VARIABLE_NAME_MAX_LENGTH = 128;
+const SNIPPET_VARIABLE_TEXT_MAX_LENGTH = 200;
+const SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH = 2000;
+const NEWLINE_PATTERN = /\r?\n/u;
 
 const nowIso = (): string => new Date().toISOString();
+const normalizeSnippetVariables = (value: unknown): SnippetVariable[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const variables: SnippetVariable[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+
+    const record = entry as Record<string, unknown>;
+    const name = typeof record.name === "string" ? record.name.trim() : "";
+    if (!name || name.length > SNIPPET_VARIABLE_NAME_MAX_LENGTH || !SNIPPET_VARIABLE_NAME_PATTERN.test(name) || seen.has(name)) {
+      continue;
+    }
+
+    const type = record.type === "multiline" ? "multiline" : "text";
+    const title = typeof record.title === "string" ? record.title.trim() : "";
+    const description = typeof record.description === "string" ? record.description.trim() : "";
+    const defaultValue = typeof record.defaultValue === "string" ? record.defaultValue : "";
+    const normalizedDefaultValue = type === "text" ? (defaultValue.split(NEWLINE_PATTERN)[0] ?? "") : defaultValue;
+    variables.push({
+      name,
+      type,
+      title: title.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH),
+      description: description.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH),
+      defaultValue: normalizedDefaultValue.slice(0, SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH)
+    });
+    seen.add(name);
+    if (variables.length >= SNIPPET_VARIABLE_MAX_COUNT) {
+      break;
+    }
+  }
+
+  return variables;
+};
 
 export interface SnippetStore {
   createSnippet(input: CreateSnippetInput): Promise<Snippet>;
@@ -36,6 +80,7 @@ export class RedisSnippetStore implements SnippetStore {
       id: current?.id ?? nanoid(),
       name: input.name.trim(),
       content: input.content.trim(),
+      variables: normalizeSnippetVariables(input.variables),
       createdAt: current?.createdAt ?? timestamp,
       updatedAt: timestamp
     };
@@ -68,7 +113,8 @@ export class RedisSnippetStore implements SnippetStore {
     for (const row of result ?? []) {
       const raw = row[1];
       if (typeof raw === "string") {
-        snippets.push(JSON.parse(raw) as Snippet);
+        const parsed = JSON.parse(raw) as Snippet;
+        snippets.push({ ...parsed, variables: normalizeSnippetVariables(parsed.variables) });
       }
     }
 
@@ -81,7 +127,8 @@ export class RedisSnippetStore implements SnippetStore {
       return null;
     }
 
-    return JSON.parse(raw) as Snippet;
+    const parsed = JSON.parse(raw) as Snippet;
+    return { ...parsed, variables: normalizeSnippetVariables(parsed.variables) };
   }
 
   async updateSnippet(snippetId: string, input: UpdateSnippetInput): Promise<Snippet | null> {
@@ -123,6 +170,7 @@ export class PostgresSnippetStore implements SnippetStore {
       id: current?.id ?? nanoid(),
       name: input.name.trim(),
       content: input.content.trim(),
+      variables: normalizeSnippetVariables(input.variables),
       createdAt: current?.createdAt ?? timestamp,
       updatedAt: timestamp
     };
@@ -132,10 +180,10 @@ export class PostgresSnippetStore implements SnippetStore {
     const snippet = this.buildSnippet(input);
     await this.pool.query(
       `
-        INSERT INTO snippets (id, name, content, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO snippets (id, name, content, created_at, updated_at, variables)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
       `,
-      [snippet.id, snippet.name, snippet.content, snippet.createdAt, snippet.updatedAt]
+      [snippet.id, snippet.name, snippet.content, snippet.createdAt, snippet.updatedAt, JSON.stringify(snippet.variables)]
     );
     await this.eventBus.publish({ type: "snippet:created", payload: snippet });
     return snippet;
@@ -143,12 +191,13 @@ export class PostgresSnippetStore implements SnippetStore {
 
   async listSnippets(): Promise<Snippet[]> {
     const result = await this.pool.query(
-      "SELECT id, name, content, created_at, updated_at FROM snippets ORDER BY updated_at DESC"
+      "SELECT id, name, content, variables, created_at, updated_at FROM snippets ORDER BY updated_at DESC"
     );
     return result.rows.map((row) => ({
       id: String(row.id),
       name: String(row.name),
       content: String(row.content),
+      variables: normalizeSnippetVariables(row.variables),
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at)
     }));
@@ -156,7 +205,7 @@ export class PostgresSnippetStore implements SnippetStore {
 
   async getSnippet(snippetId: string): Promise<Snippet | null> {
     const result = await this.pool.query(
-      "SELECT id, name, content, created_at, updated_at FROM snippets WHERE id = $1",
+      "SELECT id, name, content, variables, created_at, updated_at FROM snippets WHERE id = $1",
       [snippetId]
     );
     const row = result.rows[0];
@@ -165,6 +214,7 @@ export class PostgresSnippetStore implements SnippetStore {
           id: String(row.id),
           name: String(row.name),
           content: String(row.content),
+          variables: normalizeSnippetVariables(row.variables),
           createdAt: String(row.created_at),
           updatedAt: String(row.updated_at)
         }
@@ -181,10 +231,10 @@ export class PostgresSnippetStore implements SnippetStore {
     await this.pool.query(
       `
         UPDATE snippets
-        SET name = $2, content = $3, updated_at = $4
+        SET name = $2, content = $3, updated_at = $4, variables = $5::jsonb
         WHERE id = $1
       `,
-      [snippetId, next.name, next.content, next.updatedAt]
+      [snippetId, next.name, next.content, next.updatedAt, JSON.stringify(next.variables)]
     );
     await this.eventBus.publish({ type: "snippet:updated", payload: next });
     return next;

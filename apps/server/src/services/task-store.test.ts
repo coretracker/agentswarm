@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { CreateTaskInput, Repository, TaskContextEntry } from "@agentswarm/shared-types";
+import type { CreateTaskInput, Repository } from "@agentswarm/shared-types";
 import { RedisTaskStore } from "./task-store.js";
 
 class FakeRedis {
@@ -160,6 +160,7 @@ const repository: Repository = {
   name: "Repo",
   url: "https://github.com/example/repo.git",
   defaultBranch: "main",
+  envVars: [],
   webhookUrl: null,
   webhookEnabled: false,
   webhookSecretConfigured: false,
@@ -178,7 +179,7 @@ const createTaskInput: CreateTaskInput = {
 };
 
 describe("TaskStore.appendMessage", () => {
-  it("persists context entries on user messages", async () => {
+  it("persists user messages", async () => {
     const redis = new FakeRedis();
     const publishedEvents: unknown[] = [];
     const taskStore = new RedisTaskStore(redis as never, {
@@ -187,25 +188,65 @@ describe("TaskStore.appendMessage", () => {
       }
     } as never);
     const task = await taskStore.createTask(createTaskInput, repository, "user-1");
-    const contextEntries: TaskContextEntry[] = [
-      {
-        kind: "run",
-        label: "Build run · Succeeded · 2026-04-08 10:00:00 UTC",
-        content: "Summary:\nApplied the previous change."
-      }
-    ];
-
     await taskStore.appendMessage(task.id, {
       role: "user",
       action: "ask",
-      content: "What changed?",
-      contextEntries
+      content: "What changed?"
     });
 
     const messages = await taskStore.listMessages(task.id);
     assert.equal(messages.length, 2);
-    assert.deepEqual(messages[1]?.contextEntries, contextEntries);
-    assert.equal((messages[1]?.contextEntries ?? []).length, 1);
+    assert.equal(messages[1]?.content, "What changed?");
+    assert.equal(messages[1]?.action, "ask");
     assert.equal(publishedEvents.length, 3);
+  });
+});
+
+describe("TaskStore.createTask", () => {
+  it("creates new build tasks in the build queue", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
+
+    assert.equal(task.status, "open");
+    assert.equal(task.executionStatus, "queued");
+    assert.equal(task.executionAction, "build");
+    assert.equal(task.startedAt, null);
+    assert.equal(task.deadline, null);
+  });
+
+  it("creates draft tasks without queueing execution", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask({ ...createTaskInput, draft: true }, repository, "user-1");
+
+    assert.equal(task.status, "draft");
+    assert.equal(task.workflowStatus, "backlog");
+    assert.equal(task.executionStatus, "idle");
+    assert.equal(task.executionAction, null);
+    assert.equal(task.startedAt, null);
+    assert.equal(task.finishedAt, null);
+    assert.deepEqual(await taskStore.listMessages(task.id), []);
+  });
+
+  it("normalizes task deadlines", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(
+      {
+        ...createTaskInput,
+        deadline: "2026-06-15T10:30:00+02:00"
+      },
+      repository,
+      "user-1"
+    );
+
+    assert.equal(task.deadline, "2026-06-15T08:30:00.000Z");
   });
 });

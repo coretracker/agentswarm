@@ -9,48 +9,76 @@ interface TaskDeletedPayload {
   id: string;
 }
 
+const HISTORY_PAGE_SIZE = 25;
+const sortProposals = (items: TaskChangeProposal[]): TaskChangeProposal[] => [...items].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+const mergeProposals = (base: TaskChangeProposal[], incoming: TaskChangeProposal[]): TaskChangeProposal[] => {
+  const merged = new Map<string, TaskChangeProposal>();
+  for (const proposal of base) {
+    merged.set(proposal.id, proposal);
+  }
+  for (const proposal of incoming) {
+    merged.set(proposal.id, proposal);
+  }
+  return sortProposals([...merged.values()]);
+};
+
 export const useTaskChangeProposals = (taskId: string) => {
   const socket = useSocket();
   const [proposals, setProposals] = useState<TaskChangeProposal[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
 
-  const refetch = useCallback(() => {
-    void api
-      .listTaskChangeProposals(taskId)
-      .then((items) => {
-        setProposals(items.sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
-        setLoading(false);
-      })
-      .catch(() => {
-        setProposals([]);
-        setLoading(false);
-      });
+  const refetch = useCallback(async ({ showLoading = false }: { showLoading?: boolean } = {}): Promise<TaskChangeProposal[]> => {
+    if (showLoading) {
+      setLoading(true);
+    }
+
+    try {
+      const page = await api.listTaskChangeProposals(taskId, { limit: HISTORY_PAGE_SIZE });
+      setProposals(sortProposals(page.items));
+      setHasMore(page.hasMore);
+      setLoading(false);
+      return page.items;
+    } catch {
+      setProposals([]);
+      setHasMore(false);
+      setLoading(false);
+      return [];
+    }
   }, [taskId]);
 
   useEffect(() => {
-    let active = true;
-    setLoading(true);
-    void api
-      .listTaskChangeProposals(taskId)
-      .then((items) => {
-        if (!active) {
-          return;
-        }
-        setProposals(items.sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
-        setLoading(false);
-      })
-      .catch(() => {
-        if (!active) {
-          return;
-        }
-        setProposals([]);
-        setLoading(false);
-      });
+    void refetch({ showLoading: true });
+  }, [refetch]);
 
-    return () => {
-      active = false;
-    };
-  }, [taskId]);
+  const loadMore = useCallback(async (): Promise<TaskChangeProposal[]> => {
+    if (loadingMore || !hasMore) {
+      return [];
+    }
+
+    const oldest = proposals[0] ?? null;
+    if (!oldest) {
+      return [];
+    }
+
+    setLoadingMore(true);
+    try {
+      const page = await api.listTaskChangeProposals(taskId, {
+        limit: HISTORY_PAGE_SIZE,
+        before: oldest.createdAt,
+        beforeId: oldest.id
+      });
+      setProposals((current) => mergeProposals(current, page.items));
+      setHasMore(page.hasMore);
+      return page.items;
+    } catch {
+      return [];
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [hasMore, loadingMore, proposals, taskId]);
 
   useEffect(() => {
     if (!socket) {
@@ -65,15 +93,7 @@ export const useTaskChangeProposals = (taskId: string) => {
       if (payload.taskId !== taskId) {
         return;
       }
-      setProposals((current) => {
-        const idx = current.findIndex((p) => p.id === payload.id);
-        if (idx === -1) {
-          return [...current, payload].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-        }
-        const next = [...current];
-        next[idx] = payload;
-        return next;
-      });
+      setProposals((current) => mergeProposals(current, [payload]));
     };
 
     const onTaskDelete = (payload: TaskDeletedPayload) => {
@@ -81,6 +101,7 @@ export const useTaskChangeProposals = (taskId: string) => {
         return;
       }
       setProposals([]);
+      setHasMore(false);
     };
 
     socket.on("connect", onConnect);
@@ -94,5 +115,5 @@ export const useTaskChangeProposals = (taskId: string) => {
     };
   }, [refetch, socket, taskId]);
 
-  return { proposals, loading, refetch };
+  return { proposals, loading, loadingMore, hasMore, refetch, loadMore };
 };

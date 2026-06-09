@@ -59,7 +59,7 @@ const readSeenTaskVersions = (): SeenTaskVersions => {
 
 export const getSeenTaskVersions = (): SeenTaskVersions => readSeenTaskVersions();
 
-export const isTaskSeen = (task: Pick<Task, "id" | "status" | "updatedAt">, seenTaskVersions: SeenTaskVersions): boolean => {
+export const isTaskSeen = (task: Pick<Task, "id" | "status" | "updatedAt"> & { executionStatus?: Task["executionStatus"] }, seenTaskVersions: SeenTaskVersions): boolean => {
   const version = seenTaskVersions[task.id];
   if (!version) {
     return false;
@@ -69,7 +69,7 @@ export const isTaskSeen = (task: Pick<Task, "id" | "status" | "updatedAt">, seen
     return true;
   }
 
-  if (isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {
+  if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running" || isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {
     return true;
   }
 

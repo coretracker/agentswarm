@@ -20,10 +20,11 @@ const ROLE_NAME_KEY_PREFIX = "agentswarm:role_name:";
 export const SYSTEM_ADMIN_ROLE_ID = "admin";
 const SYSTEM_ADMIN_ROLE_NAME = "Admin";
 const SYSTEM_ADMIN_ROLE_DESCRIPTION = "Built-in superuser role with every available permission.";
-const ROLE_SCOPE_VERSION = 4;
+const ROLE_SCOPE_VERSION = 5;
 
 const nowIso = (): string => new Date().toISOString();
 const scopeOrder = new Map(ALL_PERMISSION_SCOPES.map((scope, index) => [scope, index]));
+const deprecatedPermissionScopes = new Set(["sequence:list", "sequence:create", "sequence:read", "sequence:edit", "sequence:delete"]);
 
 const normalizeRoleName = (value: string | undefined): string => (value ?? "").trim().replace(/\s+/g, " ");
 const normalizeRoleNameKey = (value: string | undefined): string => normalizeRoleName(value).toLowerCase();
@@ -57,14 +58,6 @@ const normalizeAllowedEfforts = (efforts: ProviderProfile[] | string[] | undefin
 const normalizeAllowedModels = (models: string[] | undefined): string[] =>
   Array.from(new Set((models ?? []).map((model) => model.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right));
 
-const LEGACY_SCOPE_ALIASES: Record<string, PermissionScope> = {
-  "preset:list": "snippet:list",
-  "preset:create": "snippet:create",
-  "preset:read": "snippet:read",
-  "preset:edit": "snippet:edit",
-  "preset:delete": "snippet:delete"
-};
-
 const expandLegacyTaskModeScopes = (scopes: string[]): string[] => {
   const expanded = new Set(scopes);
   if (expanded.has("task:create") || expanded.has("task:edit")) {
@@ -84,11 +77,14 @@ const normalizeScopes = (
       (scopes ?? [])
         .map((scope) => String(scope).trim())
         .filter(Boolean)
-        .map((scope) => LEGACY_SCOPE_ALIASES[scope] ?? scope)
     )
   );
-  const uniqueScopes = options?.legacyTaskModes ? expandLegacyTaskModeScopes(uniqueScopesRaw) : uniqueScopesRaw;
+  const expandedScopes = options?.legacyTaskModes ? expandLegacyTaskModeScopes(uniqueScopesRaw) : uniqueScopesRaw;
+  const uniqueScopes = options?.legacyTaskModes ? expandedScopes.filter((scope) => !deprecatedPermissionScopes.has(scope)) : expandedScopes;
   if (uniqueScopes.length === 0) {
+    if (options?.legacyTaskModes && uniqueScopesRaw.some((scope) => deprecatedPermissionScopes.has(scope))) {
+      return [];
+    }
     throw new HttpError(400, "At least one permission scope is required");
   }
 

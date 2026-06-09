@@ -16,12 +16,27 @@ interface TaskDeletedPayload {
 }
 
 const MAX_LOG_LINES = 400;
+const HISTORY_PAGE_SIZE = 25;
 const sortRuns = (items: TaskRun[]): TaskRun[] => [...items].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+
+const mergeRuns = (base: TaskRun[], incoming: TaskRun[]): TaskRun[] => {
+  const merged = new Map<string, TaskRun>();
+  for (const run of base) {
+    merged.set(run.id, run);
+  }
+  for (const run of incoming) {
+    const existing = merged.get(run.id);
+    merged.set(run.id, existing ? { ...existing, ...run, logs: run.logs.length > 0 ? run.logs : existing.logs } : run);
+  }
+  return sortRuns([...merged.values()]);
+};
 
 export const useTaskRuns = (taskId: string) => {
   const socket = useSocket();
   const [runs, setRuns] = useState<TaskRun[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
 
   const refetch = useCallback(
     async ({ showLoading = false }: { showLoading?: boolean } = {}): Promise<TaskRun[]> => {
@@ -30,18 +45,47 @@ export const useTaskRuns = (taskId: string) => {
       }
 
       try {
-        const items = await api.listTaskRuns(taskId);
-        setRuns(sortRuns(items));
+        const page = await api.listTaskRuns(taskId, { limit: HISTORY_PAGE_SIZE });
+        setRuns(sortRuns(page.items));
+        setHasMore(page.hasMore);
         setLoading(false);
-        return items;
+        return page.items;
       } catch {
         setRuns([]);
+        setHasMore(false);
         setLoading(false);
         return [];
       }
     },
     [taskId]
   );
+
+  const loadMore = useCallback(async (): Promise<TaskRun[]> => {
+    if (loadingMore || !hasMore) {
+      return [];
+    }
+
+    const oldest = runs[0] ?? null;
+    if (!oldest) {
+      return [];
+    }
+
+    setLoadingMore(true);
+    try {
+      const page = await api.listTaskRuns(taskId, {
+        limit: HISTORY_PAGE_SIZE,
+        before: oldest.startedAt,
+        beforeId: oldest.id
+      });
+      setRuns((current) => mergeRuns(current, page.items));
+      setHasMore(page.hasMore);
+      return page.items;
+    } catch {
+      return [];
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [hasMore, loadingMore, runs, taskId]);
 
   useEffect(() => {
     void refetch({ showLoading: true });
@@ -61,20 +105,7 @@ export const useTaskRuns = (taskId: string) => {
         return;
       }
 
-      setRuns((current) => {
-        const existingIndex = current.findIndex((item) => item.id === run.id);
-        if (existingIndex === -1) {
-          return sortRuns([...current, run]);
-        }
-
-        const next = [...current];
-        next[existingIndex] = {
-          ...next[existingIndex],
-          ...run,
-          logs: run.logs.length > 0 ? run.logs : next[existingIndex].logs
-        };
-        return sortRuns(next);
-      });
+      setRuns((current) => mergeRuns(current, [run]));
     };
 
     const onTaskLog = (payload: TaskLogPayload) => {
@@ -100,6 +131,7 @@ export const useTaskRuns = (taskId: string) => {
       }
 
       setRuns([]);
+      setHasMore(false);
     };
 
     socket.on("connect", onConnect);
@@ -115,5 +147,5 @@ export const useTaskRuns = (taskId: string) => {
     };
   }, [refetch, socket, taskId]);
 
-  return { runs, loading, refetch };
+  return { runs, loading, loadingMore, hasMore, refetch, loadMore };
 };

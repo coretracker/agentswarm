@@ -1,25 +1,21 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   getAgentProviderLabel,
   getDefaultModelForProvider,
   getEffortOptionsForProvider,
   getProviderProfileLabel,
-  getCheckpointMutationBlockedReason,
   getTaskBranchStrategyLabel,
   getTaskStatusLabel,
   getTaskTerminalSessionLabel,
   getTaskTerminalSessionSentenceLabel,
   getTaskTypeLabel,
+  getTaskWorkflowStatusLabel,
   getModelsForProvider,
   isActiveTaskStatus,
-  isTaskWorking,
-  TASK_CONTEXT_ENTRY_MAX_COUNT,
-  TASK_CONTEXT_TOTAL_MAX_CHARS,
   type Task,
   type TaskAction,
-  type TaskContextEntry,
   type TaskMessageAction,
   type TaskMessage,
   type TaskPromptAttachment,
@@ -29,6 +25,7 @@ import {
   type TaskBranchStrategy,
   type ProviderProfile,
   type SystemSettings,
+  type Snippet,
   type GitHubBranchReference,
   type GitHubPullRequestReference,
   type TaskMergePreview,
@@ -36,23 +33,32 @@ import {
   type TaskChangeProposal,
   type TaskInteractiveTerminalTranscript,
   type TaskTerminalSessionMode,
+  type TaskWorkflowStatus,
   type TaskWorkspaceCommit,
-  type TaskWorkspaceFilePreview
+  type TaskWorkspaceFilePreview,
+  type TaskGitOperation,
+  type CodexCredentialSource,
+  type User
 } from "@agentswarm/shared-types";
 import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Collapse,
+  DatePicker,
   Descriptions,
   Divider,
   Dropdown,
   Empty,
   Flex,
   Form,
+  Grid,
   Input,
+  Mentions,
   List,
   Modal,
+  Pagination,
   Popconfirm,
   Segmented,
   Skeleton,
@@ -62,14 +68,25 @@ import {
   Tag,
   Tabs,
   Tooltip,
+  Timeline,
   Typography,
   message,
   theme as antTheme
 } from "antd";
-import { ArrowRightOutlined, CopyOutlined, EditOutlined, LoadingOutlined, MoreOutlined, PushpinOutlined } from "@ant-design/icons";
-import dayjs from "dayjs";
+import {
+  ArrowRightOutlined,
+  CopyOutlined,
+  DownloadOutlined,
+  EditOutlined,
+  LoadingOutlined,
+  MoreOutlined,
+  RobotOutlined,
+  RollbackOutlined
+} from "@ant-design/icons";
+import dayjs, { type Dayjs } from "dayjs";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
+import { Highlight, type Language } from "prism-react-renderer";
 import { Diff, Hunk, type FileData } from "react-diff-view";
 import remarkGfm from "remark-gfm";
 import { api, ApiError, type TaskInteractiveTerminalStatus } from "../src/api/client";
@@ -80,22 +97,29 @@ import { useTaskMessages } from "../src/hooks/useTaskMessages";
 import { useTaskRuns } from "../src/hooks/useTaskRuns";
 import { useTaskChangeProposals } from "../src/hooks/useTaskChangeProposals";
 import { useSettings } from "../src/hooks/useSettings";
+import { useSocket } from "../src/hooks/useSocket";
 import { isImageDiffPath, normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
 import {
   encodeTaskPromptImageFiles,
   formatAttachmentSize,
   type SelectedTaskPromptImageFile
 } from "../src/utils/task-prompt-attachments";
-import { insertSnippetContent } from "../src/utils/snippets";
-import { serializeTaskHistoryContextEntry } from "../src/utils/task-history-context";
+import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
 import { buildTaskHistoryEntries } from "../src/utils/task-history";
+import { buildTaskLifecycleViewModel } from "../src/utils/task-lifecycle-view-model";
+import { trackEvent } from "../src/utils/analytics";
 import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
 import { TaskDiffOpenAiPanel } from "./task-diff-openai-panel";
 import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
 import { TaskTerminalTranscriptView } from "./task-terminal-transcript-view";
+import { CheckpointFileEditorModal } from "./checkpoint-file-editor-modal";
+import { TaskFilesTab } from "./task-files-tab";
 import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
+import { TaskCreateModal } from "./task-create-modal";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
+import { useThemeMode } from "./theme-provider";
+import { getPrismTheme } from "../src/theme/code-highlighting";
 
 const runStatusColor: Record<TaskRun["status"], string> = {
   running: "processing",
@@ -104,28 +128,41 @@ const runStatusColor: Record<TaskRun["status"], string> = {
   cancelled: "default"
 };
 
-type ComposerAction = TaskMessageAction | "interactive" | "postflight";
+type ComposerAction = TaskMessageAction | "interactive" | "terminal";
+type SnippetVariableFormValues = Record<string, string>;
+
+const OPENAI_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
+const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
+const OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS = 48_000;
+const SYSTEM_ADMIN_ROLE_ID = "admin";
+const HISTORY_PAGE_SIZE = 5;
+const getComposerDraftStorageKey = (taskId: string): string => `agentswarm:task:${taskId}:composerDraft`;
+
+function normalizeAiCommitSubject(raw: string): string {
+  const firstLine = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) {
+    return "";
+  }
+  const cleaned = firstLine
+    .replace(/^[-*]\s+/, "")
+    .replace(/^`+|`+$/g, "")
+    .replace(/^"+|"+$/g, "")
+    .replace(/^'+|'+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const withoutConventionalPrefix = cleaned.replace(/^[a-z]+(?:\([^)]+\))?!?:\s*/i, "").trim();
+  return (withoutConventionalPrefix || cleaned).slice(0, 200);
+}
 
 const taskActionLabel: Record<ComposerAction | TaskAction, string> = {
   build: "Build",
   ask: "Ask",
   comment: "Comment",
   interactive: "Interactive",
-  postflight: "Postflight"
-};
-
-const taskContextKindLabel: Record<TaskContextEntry["kind"], string> = {
-  message: "Message",
-  run: "Run",
-  proposal: "Checkpoint",
-  terminal_session: "Terminal"
-};
-
-const taskContextKindColor: Record<TaskContextEntry["kind"], string> = {
-  message: "default",
-  run: "blue",
-  proposal: "gold",
-  terminal_session: "green"
+  terminal: "Terminal"
 };
 
 function getAllowedComposerActions(
@@ -136,20 +173,20 @@ function getAllowedComposerActions(
   const actions: ComposerAction[] = [];
   if (canBuildTasks) {
     actions.push("build");
-    actions.push("postflight");
   }
   if (canAskTasks) {
     actions.push("ask");
   }
   if (canUseInteractiveTerminal) {
     actions.push("interactive");
+    actions.push("terminal");
   }
   actions.push("comment");
   return actions;
 }
 
 function getDefaultComposerAction(task: Task | null, allowedActions: ComposerAction[]): ComposerAction {
-  const defaultAction = allowedActions.find((action) => action !== "comment" && action !== "interactive" && action !== "postflight") ?? "comment";
+  const defaultAction = allowedActions.find((action) => action !== "comment" && action !== "interactive" && action !== "terminal") ?? "comment";
 
   if (!task) {
     return defaultAction;
@@ -187,11 +224,21 @@ const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: getAgentProviderLabel("claude"), value: "claude" }
 ];
 
+const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
+  { label: "Auto (Profile then Global)", value: "auto" },
+  { label: "Profile auth.json only", value: "profile" },
+  { label: "Global OpenAI key or auth.json", value: "global" }
+];
+
+const branchStrategyOptions: Array<{ label: string; value: TaskBranchStrategy }> = [
+  { label: getTaskBranchStrategyLabel("feature_branch"), value: "feature_branch" },
+  { label: getTaskBranchStrategyLabel("work_on_branch"), value: "work_on_branch" }
+];
+
 interface WorkspaceFilePreviewState {
   open: boolean;
   loading: boolean;
   taskId: string;
-  executionId: string | null;
   filePath: string;
   kind: TaskWorkspaceFilePreview["kind"];
   mimeType: string | null;
@@ -201,6 +248,13 @@ interface WorkspaceFilePreviewState {
   line: number | null;
   error: string | null;
 }
+
+interface CheckpointEditorModalState {
+  proposal: TaskChangeProposal;
+  initialFilePath: string | null;
+}
+
+interface TaskGitOperationPayload extends TaskGitOperation {}
 
 function checkpointStatusLabel(status: TaskChangeProposal["status"]): string {
   switch (status) {
@@ -237,7 +291,9 @@ function changeProposalSourceLabel(sourceType: TaskChangeProposal["sourceType"])
 }
 
 function getTerminalSessionModeFromMessage(message: Pick<TaskMessage, "content">): TaskTerminalSessionMode {
-  return message.content.startsWith("Git terminal") ? "git" : "interactive";
+  return message.content.startsWith("Git terminal") || message.content.startsWith("Terminal session")
+    ? "git"
+    : "interactive";
 }
 
 function getTaskWorkingLabel(task: Pick<Task, "status" | "activeInteractiveSession" | "activeTerminalSessionMode">): string {
@@ -298,6 +354,20 @@ interface ParsedDiffRenderOptions {
   taskId?: string;
   previewRefs?: TaskDiffPreviewRefs | null;
   previewUnavailableMessage?: string;
+  renderFileActions?: (file: FileData) => ReactNode;
+}
+
+function renderDiffFileActions(file: FileData, renderFileActions?: (file: FileData) => ReactNode): ReactNode {
+  if (!renderFileActions) {
+    return null;
+  }
+
+  const actions = renderFileActions(file);
+  if (!actions) {
+    return null;
+  }
+
+  return <span onClick={(event) => event.stopPropagation()}>{actions}</span>;
 }
 
 function renderParsedDiff(diffText: string, emptyMessage: string, options?: ParsedDiffRenderOptions): ReactNode {
@@ -332,6 +402,7 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: Pars
                 {
                   key: "file",
                   label: file.newPath || file.oldPath || "Changed file",
+                  extra: renderDiffFileActions(file, options?.renderFileActions),
                   children: file.hunks.length > 0 ? (
                     <Diff viewType="unified" diffType={file.type} hunks={file.hunks}>
                       {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
@@ -370,6 +441,7 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: Pars
               key={`${file.oldRevision}-${file.newRevision}-${file.oldPath}-${file.newPath}`}
               size="small"
               title={file.newPath || file.oldPath || "Changed file"}
+              extra={renderDiffFileActions(file, options?.renderFileActions)}
             >
               <Diff viewType="unified" diffType={file.type} hunks={file.hunks}>
                 {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
@@ -405,6 +477,20 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: Pars
   }
 }
 
+function resolveCheckpointEditableFilePath(file: FileData, changedFiles: string[]): string | null {
+  const candidates = [file.newPath, file.oldPath].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  return candidates.find((candidate) => changedFiles.includes(candidate)) ?? null;
+}
+
+function getFirstDiffFilePath(diffText: string): string | null {
+  try {
+    const file = parseRenderableDiff(diffText).find((item) => item.newPath || item.oldPath);
+    return file?.newPath || file?.oldPath || null;
+  } catch {
+    return null;
+  }
+}
+
 function getGitHubRepositoryBaseUrl(repoUrl: string): string | null {
   const httpsMatch = repoUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
   if (httpsMatch) {
@@ -425,6 +511,16 @@ function getTaskGitHubTargetBranch(task: Task): string | null {
   }
 
   return task.branchName ?? task.baseBranch ?? null;
+}
+
+function canOfferRemoteBranchDeletion(task: Task): boolean {
+  const branchName = task.branchName?.trim();
+  return Boolean(
+    task.branchStrategy === "feature_branch" &&
+      branchName &&
+      branchName !== task.repoDefaultBranch &&
+      branchName !== task.baseBranch
+  );
 }
 
 function getGitHubDiffTarget(task: Task, existingPullRequest?: GitHubPullRequestReference | null): { href: string; label: string } | null {
@@ -459,6 +555,14 @@ function getGitHubDiffTarget(task: Task, existingPullRequest?: GitHubPullRequest
 }
 
 type FollowUpMode = "continue" | null;
+type EditableTaskState = Extract<TaskWorkflowStatus, "backlog" | "ready" | "in_progress" | "review" | "done">;
+const taskStateOptions: Array<{ value: EditableTaskState; label: string }> = [
+  { value: "backlog", label: "Backlog" },
+  { value: "ready", label: "Open" },
+  { value: "in_progress", label: "In Progress" },
+  { value: "review", label: "In Review" },
+  { value: "done", label: "Done" }
+];
 
 function ExpandableMessageContent({ children, fadeColor }: { children: ReactNode; fadeColor: string }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -514,21 +618,126 @@ function ExpandableMessageContent({ children, fadeColor }: { children: ReactNode
   );
 }
 
+function MermaidDiagram({ chart }: { chart: string }) {
+  const [svg, setSvg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const sanitizeMermaid = (raw: string): string => {
+    const withLineBreaks = raw.replace(/\\n/g, "<br/>");
+    return withLineBreaks.replace(/(\b[A-Za-z0-9_]+)\[([^\]]+)\]/g, (_match, nodeId: string, label: string) => {
+      const escapedLabel = label.replace(/"/g, '\\"');
+      return `${nodeId}["${escapedLabel}"]`;
+    });
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const render = async () => {
+      try {
+        const mermaidModule = await import("mermaid");
+        const mermaid = mermaidModule.default;
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict"
+        });
+        try {
+          const graphId = `mermaid-${Math.random().toString(36).slice(2, 10)}`;
+          const rendered = await mermaid.render(graphId, chart);
+          if (!cancelled) {
+            setSvg(rendered.svg);
+            setError(null);
+          }
+          return;
+        } catch {
+          const fallbackSource = sanitizeMermaid(chart);
+          const graphId = `mermaid-sanitized-${Math.random().toString(36).slice(2, 10)}`;
+          const rendered = await mermaid.render(graphId, fallbackSource);
+          if (!cancelled) {
+            setSvg(rendered.svg);
+            setError(null);
+          }
+        }
+      } catch (renderError) {
+        if (!cancelled) {
+          setSvg(null);
+          setError(renderError instanceof Error ? renderError.message : "Failed to render Mermaid diagram.");
+        }
+      }
+    };
+
+    void render();
+    return () => {
+      cancelled = true;
+    };
+  }, [chart]);
+
+  if (error) {
+    return (
+      <Space direction="vertical" style={{ width: "100%" }}>
+        <Alert type="warning" showIcon message="Could not render Mermaid diagram" description={error} />
+        <pre style={{ margin: 0, padding: 12, borderRadius: 8, background: "rgba(0,0,0,0.02)", overflow: "auto" }}>{chart}</pre>
+      </Space>
+    );
+  }
+
+  if (!svg) {
+    return (
+      <Flex justify="center" style={{ padding: "12px 0" }}>
+        <Spin size="small" />
+      </Flex>
+    );
+  }
+
+  return (
+    <div
+      style={{ width: "100%", overflowX: "auto", padding: 8, borderRadius: 8, background: "rgba(0,0,0,0.02)" }}
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  );
+}
+
 export function TaskDetailPage({ taskId }: { taskId: string }) {
   const router = useRouter();
+  const socket = useSocket();
   const { token } = antTheme.useToken();
+  const screens = Grid.useBreakpoint();
+  const isDesktopWorkspaceLayout = screens.lg ?? false;
+  const { mode } = useThemeMode();
+  const prismTheme = useMemo(() => getPrismTheme(mode, token), [mode, token]);
+  const historyCardHeadStyle: CSSProperties = {
+    background: token.colorFillSecondary,
+    borderBottom: `1px solid ${token.colorBorderSecondary}`
+  };
   const { can, canAll, session } = useAuth();
   const { settings } = useSettings();
   const { task, setTask, loading, refetch: refetchTask } = useTask(taskId);
   const hadLoadedTaskRef = useRef(false);
+  const trackedBuildOutcomeRunIdsRef = useRef<Set<string>>(new Set());
+  const trackedBuildSummaryViewedRunIdsRef = useRef<Set<string>>(new Set());
   const {
     messages: taskMessages,
     setMessages: setTaskMessages,
     loading: messagesLoading,
-    refetch: refetchTaskMessages
+    loadingMore: messagesLoadingMore,
+    hasMore: messagesHasMore,
+    refetch: refetchTaskMessages,
+    loadMore: loadMoreMessages
   } = useTaskMessages(taskId);
-  const { runs: taskRuns, loading: runsLoading, refetch: refetchTaskRuns } = useTaskRuns(taskId);
-  const { proposals: changeProposals, refetch: refetchChangeProposals } = useTaskChangeProposals(taskId);
+  const {
+    runs: taskRuns,
+    loading: runsLoading,
+    loadingMore: runsLoadingMore,
+    hasMore: runsHasMore,
+    refetch: refetchTaskRuns,
+    loadMore: loadMoreRuns
+  } = useTaskRuns(taskId);
+  const {
+    proposals: changeProposals,
+    loading: proposalsLoading,
+    loadingMore: proposalsLoadingMore,
+    hasMore: proposalsHasMore,
+    refetch: refetchChangeProposals,
+    loadMore: loadMoreProposals
+  } = useTaskChangeProposals(taskId);
   const canUseSnippets = can("snippet:list");
   const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
   const [liveDiff, setLiveDiff] = useState<TaskLiveDiff | null>(null);
@@ -545,41 +754,174 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [selectedCommitSha, setSelectedCommitSha] = useState<string | null>(null);
   const [diffBranches, setDiffBranches] = useState<GitHubBranchReference[]>([]);
   const [diffBranchesLoading, setDiffBranchesLoading] = useState(false);
+  const [assignableUsers, setAssignableUsers] = useState<User[]>([]);
+  const [assignableUsersLoading, setAssignableUsersLoading] = useState(false);
   const [followUpForm] = Form.useForm();
   const [chatInput, setChatInput] = useState("");
-  const [selectedContextEntryKeys, setSelectedContextEntryKeys] = useState<string[]>([]);
+  const [chatInputDraftReady, setChatInputDraftReady] = useState(false);
+  const [taskPromptMagicLoading, setTaskPromptMagicLoading] = useState(false);
   const [providerInput, setProviderInput] = useState<AgentProvider>("codex");
   const [providerProfileInput, setProviderProfileInput] = useState<ProviderProfile>("high");
   const [modelInput, setModelInput] = useState<string>("gpt-5.4");
+  const [codexCredentialSourceInput, setCodexCredentialSourceInput] = useState<CodexCredentialSource>("auto");
   const [branchStrategyInput, setBranchStrategyInput] = useState<TaskBranchStrategy>("feature_branch");
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(providerInput);
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>(null);
-  const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "diff">("chat");
+  const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "diff" | "files">("chat");
   const [expandedRunKeys, setExpandedRunKeys] = useState<string[]>([]);
+  const [expandedRunTimelineKeys, setExpandedRunTimelineKeys] = useState<string[]>([]);
   const [selectedChatAction, setSelectedChatAction] = useState<ComposerAction>("build");
   const [submitting, setSubmitting] = useState<
     | null
     | "build"
     | "ask"
     | "cancel"
+    | "startDraft"
     | "config"
     | "pull"
     | "push"
     | "merge"
     | "archive"
+    | "newSession"
     | "killTerminal"
     | "delete"
     | "continue"
     | "message"
     | "pin"
+    | "assign"
+    | "deadline"
+    | "state"
     | "renameTitle"
     | "editComment"
   >(null);
-  const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" } | null>(null);
+  const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
+  const viewedGitOperationIdsRef = useRef<Set<string>>(new Set());
+  const runTimelineScrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const runTimelineEventCountsRef = useRef<Record<string, number>>({});
+  const [gitOperation, setGitOperation] = useState<TaskGitOperation | null>(null);
+
+  const scrollRunTimelineToBottom = useCallback((runId: string) => {
+    const container = runTimelineScrollRefs.current[runId];
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    for (const run of taskRuns) {
+      const nextCount = run.timelineEvents?.length ?? 0;
+      const previousCount = runTimelineEventCountsRef.current[run.id] ?? 0;
+      runTimelineEventCountsRef.current[run.id] = nextCount;
+
+      if (nextCount > previousCount) {
+        scrollRunTimelineToBottom(run.id);
+      }
+    }
+  }, [scrollRunTimelineToBottom, taskRuns]);
+
+  useEffect(() => {
+    for (const run of taskRuns) {
+      if (run.action !== "build" || run.status !== "succeeded") {
+        continue;
+      }
+
+      if (!trackedBuildOutcomeRunIdsRef.current.has(run.id)) {
+        trackEvent(run.changeOutcome === "no_change" ? "build_completed_no_changes" : "build_completed_with_changes", {
+          taskId: run.taskId,
+          runId: run.id
+        });
+        trackedBuildOutcomeRunIdsRef.current.add(run.id);
+      }
+
+      if ((run.summary?.trim() ?? "").length > 0 && !trackedBuildSummaryViewedRunIdsRef.current.has(run.id)) {
+        trackEvent("build_summary_viewed", {
+          taskId: run.taskId,
+          runId: run.id
+        });
+        trackedBuildSummaryViewedRunIdsRef.current.add(run.id);
+      }
+    }
+  }, [taskRuns]);
+
+  useEffect(() => {
+    if (!task?.id) {
+      setGitOperation(null);
+      return;
+    }
+
+    let cancelled = false;
+    void api
+      .getTaskGitOperation(task.id)
+      .then((nextOperation) => {
+        if (!cancelled) {
+          setGitOperation(nextOperation ?? null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setGitOperation(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [task?.id]);
+
+  useEffect(() => {
+    if (!socket || !task?.id) {
+      return;
+    }
+
+    const onTaskGitOperation = (payload: TaskGitOperationPayload) => {
+      if (payload.taskId !== task.id) {
+        return;
+      }
+      setGitOperation(payload);
+    };
+
+    socket.on("task:git_operation", onTaskGitOperation);
+    return () => {
+      socket.off("task:git_operation", onTaskGitOperation);
+    };
+  }, [socket, task?.id]);
+
+  useEffect(() => {
+    if (!gitOperation?.operationId) {
+      return;
+    }
+    if (viewedGitOperationIdsRef.current.has(gitOperation.operationId)) {
+      return;
+    }
+    viewedGitOperationIdsRef.current.add(gitOperation.operationId);
+    trackEvent("git_op_status_viewed", {
+      task_id: gitOperation.taskId,
+      operation_type: gitOperation.operationType,
+      status: gitOperation.status,
+      failure_code: gitOperation.errorCode,
+      source_surface: "task_detail"
+    });
+  }, [gitOperation]);
+
+  const showTaskActionError = useCallback(
+    (error: unknown, fallback: string): void => {
+      const nextMessage = error instanceof Error ? error.message : fallback;
+      if (nextMessage === "Close the terminal session before continuing.") {
+        return;
+      }
+      messageApi.error(nextMessage);
+    },
+    [messageApi]
+  );
   const selectedChatActionRef = useRef(false);
   const diffCompareBaseSyncedTaskIdRef = useRef<string | null>(null);
+  const applyCheckpointAutoMagicProposalIdRef = useRef<string | null>(null);
+  const mergeAutoMagicTargetRef = useRef<string | null>(null);
   const [selectedSnippetId, setSelectedSnippetId] = useState<string | null>(null);
+  const [snippetVariableModalOpen, setSnippetVariableModalOpen] = useState(false);
+  const [pendingSnippetForInsert, setPendingSnippetForInsert] = useState<Snippet | null>(null);
+  const [snippetVariableForm] = Form.useForm<SnippetVariableFormValues>();
   const [selectedPromptImageFiles, setSelectedPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const [pushPreview, setPushPreview] = useState<TaskPushPreview | null>(null);
   const [pushPreviewLoading, setPushPreviewLoading] = useState(false);
@@ -592,11 +934,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [mergePreviewLoading, setMergePreviewLoading] = useState(false);
   const [mergePreviewError, setMergePreviewError] = useState<string | null>(null);
   const [mergeCommitMessage, setMergeCommitMessage] = useState("");
+  const [mergeCommitMessageGenerating, setMergeCommitMessageGenerating] = useState(false);
+  const [deleteRemoteBranchAfterMerge, setDeleteRemoteBranchAfterMerge] = useState(false);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
+  const [draftEditModalOpen, setDraftEditModalOpen] = useState(false);
+  const [taskStateModalOpen, setTaskStateModalOpen] = useState(false);
+  const [taskStateDraft, setTaskStateDraft] = useState<EditableTaskState>("ready");
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTitleDraft, setRenameTitleDraft] = useState("");
   const [applyCheckpointModalProposal, setApplyCheckpointModalProposal] = useState<TaskChangeProposal | null>(null);
   const [applyCheckpointCommitMessage, setApplyCheckpointCommitMessage] = useState("");
+  const [applyCheckpointCommitMessageGenerating, setApplyCheckpointCommitMessageGenerating] = useState(false);
+  const [editCheckpointModalState, setEditCheckpointModalState] = useState<CheckpointEditorModalState | null>(null);
   const [killTerminalConfirmOpen, setKillTerminalConfirmOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [commentEditModalOpen, setCommentEditModalOpen] = useState(false);
@@ -616,13 +965,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       }
     >
   >({});
+  const [isDeletingTask, setIsDeletingTask] = useState(false);
   const [redirectingToTaskList, setRedirectingToTaskList] = useState(false);
   const [taskPageVisible, setTaskPageVisible] = useState(false);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [fileMentionOptions, setFileMentionOptions] = useState<Array<{ value: string; label: string }>>([]);
+  const [fileMentionLoading, setFileMentionLoading] = useState(false);
   const [workspaceFilePreview, setWorkspaceFilePreview] = useState<WorkspaceFilePreviewState>({
     open: false,
     loading: false,
     taskId: "",
-    executionId: null,
     filePath: "",
     kind: "text",
     mimeType: null,
@@ -633,11 +985,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     error: null
   });
   const workspaceFilePreviewRequestIdRef = useRef(0);
+  const [filesTabOpenTarget, setFilesTabOpenTarget] = useState<WorkspaceFileLinkTarget | null>(null);
   const executionConfigAutosaveTimeoutRef = useRef<number | null>(null);
   const executionConfigSaveRequestIdRef = useRef(0);
+  const fileMentionSearchRequestIdRef = useRef(0);
+  const fileMentionSearchTimerRef = useRef<number | null>(null);
   const bottomScrollAnchorRef = useRef<HTMLDivElement | null>(null);
   const initialBottomScrollStateRef = useRef<{ taskId: string; scrolledWithTerminal: boolean } | null>(null);
-
   useEffect(() => {
     if (task) {
       hadLoadedTaskRef.current = true;
@@ -658,8 +1012,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
-    window.location.replace("/tasks");
-  }, [redirectingToTaskList]);
+    router.replace("/tasks");
+  }, [redirectingToTaskList, router]);
 
   useEffect(() => {
     setInteractiveTerminalTranscripts({});
@@ -669,28 +1023,93 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setSelectedPromptImageFiles([]);
     setApplyCheckpointModalProposal(null);
     setApplyCheckpointCommitMessage("");
+    setApplyCheckpointCommitMessageGenerating(false);
+    setEditCheckpointModalState(null);
+    workspaceFilePreviewRequestIdRef.current += 1;
+    setWorkspaceFilePreview((current) => ({ ...current, open: false }));
+    setTaskStateModalOpen(false);
+    setTaskStateDraft("ready");
+    setHistoryPage(1);
+    fileMentionSearchRequestIdRef.current += 1;
+    if (fileMentionSearchTimerRef.current !== null) {
+      window.clearTimeout(fileMentionSearchTimerRef.current);
+      fileMentionSearchTimerRef.current = null;
+    }
+    setFileMentionOptions([]);
+    setFileMentionLoading(false);
     setTaskPageVisible(false);
+    setFilesTabOpenTarget(null);
     initialBottomScrollStateRef.current = null;
   }, [taskId]);
+
+  useEffect(() => {
+    return () => {
+      if (fileMentionSearchTimerRef.current !== null) {
+        window.clearTimeout(fileMentionSearchTimerRef.current);
+        fileMentionSearchTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setChatInputDraftReady(false);
+
+    if (typeof window === "undefined") {
+      setChatInput("");
+      setChatInputDraftReady(true);
+      return;
+    }
+
+    try {
+      const storedDraft = window.localStorage.getItem(getComposerDraftStorageKey(taskId));
+      setChatInput(storedDraft ?? "");
+    } catch {
+      setChatInput("");
+    } finally {
+      setChatInputDraftReady(true);
+    }
+  }, [taskId]);
+
+  useEffect(() => {
+    if (!chatInputDraftReady || typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      if (chatInput.length === 0) {
+        window.localStorage.removeItem(getComposerDraftStorageKey(taskId));
+      } else {
+        window.localStorage.setItem(getComposerDraftStorageKey(taskId), chatInput);
+      }
+    } catch {
+      // Ignore localStorage write errors.
+    }
+  }, [chatInput, chatInputDraftReady, taskId]);
 
   const taskType = task?.taskType ?? "build";
   const isBuildTask = taskType === "build";
   const isAskTask = taskType === "ask";
   const isImplementationTask = isBuildTask;
   const isArchived = task?.status === "archived";
+  const isDraft = task?.status === "draft";
   const canEditTask = can("task:edit");
+  const canCreateTask = can("task:create");
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
   const canUseInteractiveTerminal = can("task:interactive");
   const canDeleteTask = can("task:delete");
+  const canListUsers = can("user:list");
+  const isAdminTaskUser = Boolean(session?.user.roles.some((role) => role.id === SYSTEM_ADMIN_ROLE_ID));
   const canCreateFollowUp = canAll(["task:create", "repo:list"]) && canBuildTasks;
-  const isQueued = task?.status === "build_queued" || task?.status === "ask_queued";
-  const isActive = task ? isActiveTaskStatus(task.status) : false;
-  const hasTaskWorkingState = task ? isTaskWorking(task) : false;
-  const checkpointDiffActionsBlockedReason = task ? getCheckpointMutationBlockedReason(task.status) : null;
-  const checkpointDiffActionsBlocked = checkpointDiffActionsBlockedReason !== null;
-  const isPreparingWorkspace = task?.status === "preparing_workspace";
+  const lifecycle = buildTaskLifecycleViewModel(task);
+  const isQueued = lifecycle.isQueued;
+  const isActive = lifecycle.isActive;
+  const hasTaskWorkingState = lifecycle.hasTaskWorkingState;
+  const checkpointDiffActionsBlockedReason = lifecycle.checkpointDiffActionsBlockedReason;
+  const checkpointDiffActionsBlocked = lifecycle.checkpointDiffActionsBlocked;
+  const isPreparingWorkspace = lifecycle.isPreparingWorkspace;
   const canCancel = canEditTask && (isQueued || isActive);
+  const canStartDraft = canEditTask && !!task && isDraft && !isQueued && !isActive;
   const hasBranchForSync = isBuildTask || isAskTask;
   const canPull = canEditTask && hasBranchForSync && !!task?.branchName && !isArchived && !isActive;
   const canPush = canPull;
@@ -705,6 +1124,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const pushCount = task?.pushCount ?? 0;
   const canDelete = canDeleteTask && !!task && !isActive;
   const canArchive = canEditTask && !!task && !isActive && !isArchived;
+  const canChangeTaskState = canEditTask && !!task && !isArchived;
+  const canAssignTask = canEditTask && canListUsers && isAdminTaskUser && !!task && !isArchived;
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
   const roleAllowedModels = session?.user.allowedModels ?? [];
   const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
@@ -717,37 +1138,25 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const allowedEffortOptions = getEffortOptionsForProvider(providerInput).filter(
     (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
   );
-  const canContinueOnBranch =
-    canCreateFollowUp &&
-    !isArchived &&
-    isImplementationTask &&
-    !!task?.branchName &&
-    (task.status === "awaiting_review" || task.status === "open");
   const currentTaskProvider = task?.provider ?? "codex";
   const currentTaskProviderProfile = task?.providerProfile ?? "high";
   const currentTaskModelOverride = task?.modelOverride ?? "";
+  const currentTaskCodexCredentialSource = task?.codexCredentialSource ?? "auto";
   const interactiveTerminalConfigDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider));
+    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)) ||
+    (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource);
   const currentTaskBranchStrategy = task?.branchStrategy ?? "feature_branch";
   const hasExecutionContext = Boolean(task?.executionSummary?.trim());
   const configDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
     modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)) ||
+    (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource) ||
     (isImplementationTask && branchStrategyInput !== currentTaskBranchStrategy);
 
-  const resultStatusText =
-    task?.status === "preparing_workspace"
-      ? "Preparing workspace"
-      : isBuildTask
-        ? task?.status === "build_queued"
-          ? "Build queued"
-          : "Build in progress"
-        : task?.status === "ask_queued"
-          ? "Question queued"
-          : "Answer in progress";
+  const resultStatusText = lifecycle.resultStatusText;
 
   const codeTextStyle: CSSProperties = {
     marginBottom: 0,
@@ -758,6 +1167,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setProviderInput(nextTask.provider ?? "codex");
     setProviderProfileInput(nextTask.providerProfile ?? "high");
     setModelInput(nextTask.modelOverride ?? getDefaultModelForProvider(nextTask.provider ?? "codex"));
+    setCodexCredentialSourceInput(nextTask.codexCredentialSource ?? "auto");
     setBranchStrategyInput(nextTask.branchStrategy ?? "feature_branch");
   };
   const applyUpdatedTask = (updatedTask: Task): void => {
@@ -771,17 +1181,120 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         : updatedTask
     );
   };
-  const showTaskActionError = (error: unknown, fallback: string): void => {
-    const nextMessage = error instanceof Error ? error.message : fallback;
-    if (nextMessage === "Close the terminal session before continuing.") {
+  const refreshBranchSyncCounts = useCallback(async (taskIdOverride?: string): Promise<void> => {
+    const targetTaskId = taskIdOverride ?? task?.id;
+    if (!targetTaskId) {
       return;
     }
-    messageApi.error(nextMessage);
+
+    try {
+      const counts = await api.getTaskBranchSyncCounts(targetTaskId);
+      setTask((current) => (current && current.id === targetTaskId ? { ...current, ...counts } : current));
+    } catch {
+      // Ignore refresh failures; user actions can still proceed with explicit pull/push operations.
+    }
+  }, [setTask, task?.id]);
+  const triggerGitRefresh = useCallback((): void => {
+    setLiveDiffRefreshKey((k) => k + 1);
+    void refreshBranchSyncCounts();
+  }, [refreshBranchSyncCounts]);
+  useEffect(() => {
+    if (!task?.id || !gitOperation) {
+      return;
+    }
+    if (gitOperation.taskId !== task.id) {
+      return;
+    }
+    if (gitOperation.status !== "succeeded" || (gitOperation.operationType !== "pull_task_branch" && gitOperation.operationType !== "push_task_branch")) {
+      return;
+    }
+    void refreshBranchSyncCounts(task.id);
+  }, [gitOperation, refreshBranchSyncCounts, task?.id]);
+  const assigneeNameById = useMemo(() => {
+    return new Map(assignableUsers.map((user) => [user.id, user.name]));
+  }, [assignableUsers]);
+  useEffect(() => {
+    if (!canAssignTask) {
+      setAssignableUsers([]);
+      setAssignableUsersLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setAssignableUsersLoading(true);
+    void api
+      .listUsers()
+      .then((users) => {
+        if (cancelled) {
+          return;
+        }
+        const activeUsers = users
+          .filter((user) => user.active)
+          .sort((left, right) => left.name.localeCompare(right.name));
+        setAssignableUsers(activeUsers);
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setAssignableUsers([]);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAssignableUsersLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canAssignTask]);
+  const handleAssignTask = async (nextOwnerUserId: string): Promise<void> => {
+    if (!task || !canAssignTask) {
+      return;
+    }
+
+    if (nextOwnerUserId === task.ownerUserId) {
+      return;
+    }
+
+    setSubmitting("assign");
+    try {
+      const updatedTask = await api.updateTaskAssignee(task.id, { ownerUserId: nextOwnerUserId });
+      applyUpdatedTask(updatedTask);
+      messageApi.success(`Task assigned to ${assigneeNameById.get(nextOwnerUserId) ?? "selected user"}`);
+    } catch (error) {
+      showTaskActionError(error, "Failed to assign task");
+    } finally {
+      setSubmitting((current) => (current === "assign" ? null : current));
+    }
+  };
+  const handleUpdateDeadline = async (nextDeadline: string | null): Promise<void> => {
+    if (!task || !canEditTask || isArchived) {
+      return;
+    }
+
+    const currentDeadline = task.deadline ? dayjs(task.deadline).toISOString() : null;
+    if (nextDeadline === currentDeadline) {
+      return;
+    }
+
+    setSubmitting("deadline");
+    try {
+      const updatedTask = await api.updateTaskDeadline(task.id, { deadline: nextDeadline });
+      applyUpdatedTask(updatedTask);
+      messageApi.success(updatedTask.deadline ? "Deadline updated" : "Deadline cleared");
+    } catch (error) {
+      showTaskActionError(error, "Failed to update deadline");
+    } finally {
+      setSubmitting((current) => (current === "deadline" ? null : current));
+    }
   };
   const persistTaskConfig = async ({
     provider,
     providerProfile,
     modelOverride,
+    codexCredentialSource,
     branchStrategy,
     notify = true,
     refreshTaskOnFailure = false
@@ -789,6 +1302,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     provider: AgentProvider;
     providerProfile: ProviderProfile;
     modelOverride: string;
+    codexCredentialSource: CodexCredentialSource;
     branchStrategy?: TaskBranchStrategy;
     notify?: boolean;
     refreshTaskOnFailure?: boolean;
@@ -806,6 +1320,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         provider,
         providerProfile,
         modelOverride: modelOverride || null,
+        codexCredentialSource,
         branchStrategy
       });
 
@@ -918,48 +1433,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   }, [task?.id, task?.repoDefaultBranch]);
 
   useEffect(() => {
-    if (activeMainTab !== "diff" || !hasDiffTab || !task?.id) {
+    if (!task?.id || !hasBranchForSync) {
       return;
     }
 
-    let cancelled = false;
-    const refreshBranchSyncCounts = () => {
-      if (cancelled || document.visibilityState === "hidden") {
-        return;
-      }
-
-      void api
-        .getTaskBranchSyncCounts(task.id)
-        .then((counts) => {
-          if (cancelled) {
-            return;
-          }
-
-          setTask((current) => (current && current.id === task.id ? { ...current, ...counts } : current));
-        })
-        .catch(() => undefined);
-    };
-
-    refreshBranchSyncCounts();
-    const intervalId = window.setInterval(refreshBranchSyncCounts, 5000);
-    const onFocus = () => {
-      refreshBranchSyncCounts();
-    };
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        refreshBranchSyncCounts();
-      }
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [activeMainTab, hasDiffTab, liveDiffRefreshKey, setTask, task?.activeInteractiveSession, task?.id, task?.status, task?.updatedAt]);
+    void refreshBranchSyncCounts(task.id);
+  }, [hasBranchForSync, refreshBranchSyncCounts, task?.id, task?.updatedAt]);
 
   useEffect(() => {
     if (providerInputOptions.some((option) => option.value === providerInput)) {
@@ -1046,6 +1525,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         provider: providerInput,
         providerProfile: providerProfileInput,
         modelOverride: modelInput,
+        codexCredentialSource: codexCredentialSourceInput,
         branchStrategy: isImplementationTask ? branchStrategyInput : undefined,
         notify: false,
         refreshTaskOnFailure: true
@@ -1068,6 +1548,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     providerInput,
     providerProfileInput,
     modelInput,
+    codexCredentialSourceInput,
     isImplementationTask,
     branchStrategyInput,
     messageApi
@@ -1103,7 +1584,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             ? gitResult.value
             : {
                 available: false,
-                reason: "Could not load git terminal status."
+                reason: "Could not load terminal status."
               }
         );
       });
@@ -1132,7 +1613,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   ]);
 
   useEffect(() => {
-    if (!task?.id || (!isActiveTaskStatus(task.status) && !task.activeInteractiveSession)) {
+    if (
+      !task?.id ||
+      (task.executionStatus !== "queued" &&
+        task.executionStatus !== "preparing" &&
+        task.executionStatus !== "running" &&
+        !task.activeInteractiveSession)
+    ) {
       return;
     }
 
@@ -1452,11 +1939,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     };
 
     void loadLiveDiff();
-    const timer = window.setInterval(() => void loadLiveDiff(), 5000);
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
     };
   }, [
     activeMainTab,
@@ -1547,18 +2032,50 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       );
     },
     code: ({ children, className }: { children?: React.ReactNode; className?: string }) => {
-      const language = className?.replace("language-", "").trim().toLowerCase();
+      const language = className ? className.replace("language-", "").trim().toLowerCase() : undefined;
       const codeValue = (Array.isArray(children) ? children.join("") : String(children ?? "")).replace(/\n$/, "");
 
       if (language === "diff" || codeValue.startsWith("diff --git")) {
         return renderParsedDiff(codeValue, "No diff preview available.");
       }
 
+      if (language === "mermaid") {
+        return <MermaidDiagram chart={codeValue} />;
+      }
+
       if (className) {
         return (
-          <pre style={{ margin: 0, padding: 12, overflow: "auto", background: "rgba(0,0,0,0.02)", borderRadius: 8 }}>
-            <code className={className}>{children}</code>
-          </pre>
+          <Highlight
+            code={codeValue}
+            language={(language ?? "text") as Language}
+            theme={prismTheme}
+          >
+            {({ className: highlightClassName, style, tokens, getLineProps, getTokenProps }) => {
+              const combinedClassName = [highlightClassName, className].filter(Boolean).join(" ").trim();
+
+              return (
+                <pre
+                  className={combinedClassName || undefined}
+                  style={{
+                    ...(style ?? {}),
+                    margin: 0,
+                    padding: 12,
+                    overflow: "auto",
+                    borderRadius: 8,
+                    background: style?.backgroundColor ?? "rgba(0,0,0,0.02)"
+                  }}
+                >
+                  {tokens.map((line, i) => (
+                    <div key={i} {...getLineProps({ line, key: i })}>
+                      {line.map((token, key) => (
+                        <span key={key} {...getTokenProps({ token, key })} />
+                      ))}
+                    </div>
+                  ))}
+                </pre>
+              );
+            }}
+          </Highlight>
         );
       }
 
@@ -1589,7 +2106,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   );
   const githubDiffTarget =
     task && !githubPullRequestLookupPending ? getGitHubDiffTarget(task, existingGitHubPullRequest) : null;
-  const chatActionLabel = taskActionLabel[selectedChatAction];
   const hasReadOnlyTaskAccess = !canEditTask;
   const pendingChangeProposal = useMemo(
     () => changeProposals.find((p) => p.status === "pending") ?? null,
@@ -1635,14 +2151,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     : "Working";
   const canKillInteractiveTerminal = canEditTask && canUseInteractiveTerminal && !!task && !isArchived && interactiveTerminalRunning;
   const interactiveComposerSelected = selectedChatAction === "interactive";
-  const postflightComposerSelected = selectedChatAction === "postflight";
-  const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive" && selectedChatAction !== "postflight";
-  const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived";
-  const parallelAskAllowed = selectedChatAction === "ask" && (task?.status === "building" || task?.status === "asking");
+  const terminalComposerSelected = selectedChatAction === "terminal";
+  const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive" && selectedChatAction !== "terminal";
+  const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived" || task.status === "draft";
+  const promptMagicVisible = (selectedChatAction === "build" || selectedChatAction === "ask") && canCreateTask;
+  const parallelAskAllowed =
+    selectedChatAction === "ask" &&
+    task?.executionStatus === "running" &&
+    (task.executionAction === "build" || task.executionAction === "ask");
   const autoRunStartBlocked =
     selectedChatAction !== "comment" && (!!pendingChangeProposal || ((isQueued || isActive) && !parallelAskAllowed));
   const chatDisabled = chatClosed || interactiveTerminalRunning || autoRunStartBlocked;
-  const chatInputDisabled = chatClosed || interactiveTerminalRunning || interactiveComposerSelected || postflightComposerSelected;
+  const chatInputDisabled = chatClosed || interactiveTerminalRunning || interactiveComposerSelected || terminalComposerSelected;
+  const canUsePromptMagic = promptMagicVisible && !chatInputDisabled;
+  const promptMagicDisabled = !canUsePromptMagic || chatInput.trim().length === 0 || taskPromptMagicLoading;
   const canAttachPromptImages = selectedChatAction === "build" || selectedChatAction === "ask";
   const promptImageAttachmentDisabled = chatClosed || interactiveTerminalRunning || !canAttachPromptImages;
   const draftActionLabel = taskActionLabel[selectedChatAction].toLowerCase();
@@ -1661,8 +2183,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (selectedChatAction === "interactive") {
       return "Interactive terminal does not need a prompt. Press Start to open the live session in a new window.";
     }
-    if (selectedChatAction === "postflight") {
-      return "Postflight does not need a prompt. Press Run Postflight to execute .agentswarm/postflight.yml in the current workspace.";
+    if (selectedChatAction === "terminal") {
+      return "Terminal does not need a prompt. Press Start to open the task workspace terminal in a new window.";
     }
     if (selectedChatAction === "comment") {
       return "Add a comment to the task history";
@@ -1714,29 +2236,41 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     () => chatTimeline,
     [chatTimeline]
   );
-  const serializedContextEntriesByKey = useMemo(
-    () => new Map(historicalChatTimeline.map((entry) => {
-      const serialized = serializeTaskHistoryContextEntry(entry);
-      return [serialized.key, serialized] as const;
-    })),
-    [historicalChatTimeline]
-  );
-  const selectedContextEntries = useMemo(
-    () =>
-      selectedContextEntryKeys
-        .map((key) => serializedContextEntriesByKey.get(key) ?? null)
-        .filter((entry): entry is NonNullable<typeof entry> => entry !== null),
-    [selectedContextEntryKeys, serializedContextEntriesByKey]
-  );
-  const selectedContextSize = useMemo(
-    () => selectedContextEntries.reduce((sum, entry) => sum + entry.size, 0),
-    [selectedContextEntries]
-  );
+  const historyTotalCount = historicalChatTimeline.length;
+  const loadedHistoryPageCount = Math.max(1, Math.ceil(Math.max(0, historyTotalCount) / HISTORY_PAGE_SIZE));
   const hasActiveTerminalHistoryEntry = activeTerminalHistoryEntry !== null;
+  const hasMoreHistory = messagesHasMore || runsHasMore || proposalsHasMore;
+  const historyLoadingMore = messagesLoadingMore || runsLoadingMore || proposalsLoadingMore;
+  const historyPageCount = hasMoreHistory ? loadedHistoryPageCount + 1 : loadedHistoryPageCount;
+  const normalizedHistoryPage = Math.max(1, Math.min(historyPage, historyPageCount));
+  const visibleHistoryEndIndex = Math.max(0, historyTotalCount - (normalizedHistoryPage - 1) * HISTORY_PAGE_SIZE);
+  const visibleHistoryStartIndex = Math.max(0, visibleHistoryEndIndex - HISTORY_PAGE_SIZE);
+  const visibleChatHistoryTimeline = historicalChatTimeline.slice(visibleHistoryStartIndex, visibleHistoryEndIndex);
+  const loadMoreHistoryFromNetwork = useCallback(async () => {
+    const [moreMessages, moreRuns, moreProposals] = await Promise.all([
+      messagesHasMore ? loadMoreMessages() : Promise.resolve([]),
+      runsHasMore ? loadMoreRuns() : Promise.resolve([]),
+      proposalsHasMore ? loadMoreProposals() : Promise.resolve([])
+    ]);
+    return moreMessages.length + moreRuns.length + moreProposals.length;
+  }, [loadMoreMessages, loadMoreProposals, loadMoreRuns, messagesHasMore, proposalsHasMore, runsHasMore]);
 
   useEffect(() => {
-    setSelectedContextEntryKeys((current) => current.filter((key) => serializedContextEntriesByKey.has(key)));
-  }, [serializedContextEntriesByKey]);
+    const neededCount = normalizedHistoryPage * HISTORY_PAGE_SIZE;
+    if (neededCount <= historicalChatTimeline.length || !hasMoreHistory || historyLoadingMore) {
+      return;
+    }
+
+    void loadMoreHistoryFromNetwork();
+  }, [hasMoreHistory, historicalChatTimeline.length, historyLoadingMore, loadMoreHistoryFromNetwork, normalizedHistoryPage]);
+
+  useEffect(() => {
+    if (historyPage === normalizedHistoryPage) {
+      return;
+    }
+
+    setHistoryPage(normalizedHistoryPage);
+  }, [historyPage, normalizedHistoryPage]);
 
   useEffect(() => {
     if (interactiveTerminalRunning) {
@@ -1745,7 +2279,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   }, [interactiveTerminalRunning]);
 
   useLayoutEffect(() => {
-    if (!task?.id || loading || messagesLoading || runsLoading) {
+    if (!task?.id || loading || messagesLoading || runsLoading || proposalsLoading) {
       return;
     }
 
@@ -1793,37 +2327,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       window.clearTimeout(timeoutId);
       window.clearTimeout(revealTimeoutId);
     };
-  }, [hasActiveTerminalHistoryEntry, loading, messagesLoading, runsLoading, task?.id]);
+  }, [hasActiveTerminalHistoryEntry, loading, messagesLoading, proposalsLoading, runsLoading, task?.id]);
 
-  const openFollowUp = (mode: FollowUpMode) => {
-    followUpForm.setFieldsValue({ title: "", prompt: "" });
-    setFollowUpMode(mode);
-  };
-  const handleToggleHistoryContext = (entryKey: string) => {
-    const serialized = serializedContextEntriesByKey.get(entryKey);
-    if (!serialized) {
-      return;
-    }
-
-    setSelectedContextEntryKeys((current) => {
-      if (current.includes(entryKey)) {
-        return current.filter((key) => key !== entryKey);
-      }
-
-      if (current.length >= TASK_CONTEXT_ENTRY_MAX_COUNT) {
-        messageApi.error(`You can add up to ${TASK_CONTEXT_ENTRY_MAX_COUNT} history items to context.`);
-        return current;
-      }
-
-      const nextSize = current.reduce((sum, key) => sum + (serializedContextEntriesByKey.get(key)?.size ?? 0), 0) + serialized.size;
-      if (nextSize > TASK_CONTEXT_TOTAL_MAX_CHARS) {
-        messageApi.error(`Selected context is full. Keep it under ${TASK_CONTEXT_TOTAL_MAX_CHARS.toLocaleString()} characters.`);
-        return current;
-      }
-
-      return [...current, entryKey];
-    });
-  };
   const handleInsertSelectedSnippet = () => {
     if (!selectedSnippetId) {
       return;
@@ -1835,7 +2340,41 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
+    if ((snippet.variables ?? []).length > 0) {
+      setPendingSnippetForInsert(snippet);
+      snippetVariableForm.resetFields();
+      const defaultValues = Object.fromEntries(
+        (snippet.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""])
+      );
+      snippetVariableForm.setFieldsValue(defaultValues);
+      setSnippetVariableModalOpen(true);
+      return;
+    }
+
     setChatInput((current) => insertSnippetContent(current, snippet.content));
+    setSelectedSnippetId(null);
+  };
+  const handleConfirmSnippetVariableInsert = async () => {
+    if (!pendingSnippetForInsert) {
+      return;
+    }
+
+    try {
+      const values = await snippetVariableForm.validateFields();
+      const rendered = applySnippetVariables(pendingSnippetForInsert.content, pendingSnippetForInsert.variables, values);
+      setChatInput((current) => insertSnippetContent(current, rendered));
+      setSnippetVariableModalOpen(false);
+      setPendingSnippetForInsert(null);
+      snippetVariableForm.resetFields();
+      setSelectedSnippetId(null);
+    } catch {
+      // Form-level validation messages are shown inline.
+    }
+  };
+  const handleCloseSnippetVariableModal = () => {
+    setSnippetVariableModalOpen(false);
+    setPendingSnippetForInsert(null);
+    snippetVariableForm.resetFields();
     setSelectedSnippetId(null);
   };
   const handleProviderInputChange = (value: AgentProvider) => {
@@ -1856,31 +2395,37 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const composerHasChangesToClear =
     !!selectedSnippetId ||
     selectedPromptImageFiles.length > 0 ||
-    selectedContextEntryKeys.length > 0 ||
     !!chatInput.trim() ||
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider));
+    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)) ||
+    (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource);
   const composerClearDisabled = interactiveTerminalRunning || !composerHasChangesToClear;
+  const terminalSubmitDisabled =
+    chatClosed ||
+    interactiveTerminalRunning ||
+    interactiveTerminalLaunchPending ||
+    !gitTerminalAvailable;
   const chatSubmitDisabled =
-    chatDisabled ||
-    (selectedChatActionRequiresPrompt && chatInput.trim().length === 0) ||
-    (selectedPromptImageFiles.length > 0 && !canAttachPromptImages);
-  const chatSubmitLabel =
-    selectedChatAction === "comment" ? "Add Comment" : selectedChatAction === "postflight" ? "Run Postflight" : "Start";
-  const handleClearSelectedContext = () => {
-    setSelectedContextEntryKeys([]);
-  };
+    selectedChatAction === "terminal"
+      ? terminalSubmitDisabled
+      : chatDisabled ||
+          (selectedChatActionRequiresPrompt && chatInput.trim().length === 0) ||
+          (selectedPromptImageFiles.length > 0 && !canAttachPromptImages);
+  const chatSubmitLabel = selectedChatAction === "comment" ? "Add Comment" : "Start";
   const handleConfirmClearComposer = () => {
     setSelectedSnippetId(null);
+    setSnippetVariableModalOpen(false);
+    setPendingSnippetForInsert(null);
+    snippetVariableForm.resetFields();
     setSelectedPromptImageFiles([]);
     setChatInput("");
-    handleClearSelectedContext();
     if (task) {
       const nextProvider = currentTaskProvider;
       setProviderInput(nextProvider);
       setModelInput(currentTaskModelOverride || getDefaultModelForProvider(nextProvider));
       setProviderProfileInput(currentTaskProviderProfile);
+      setCodexCredentialSourceInput(currentTaskCodexCredentialSource);
     }
   };
   const handleSubmitComposer = async () => {
@@ -1898,31 +2443,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
-    if (selectedChatAction === "postflight") {
-      if (configDirty && canEditTask && !isArchived) {
-        try {
-          await handleSaveConfig({ notify: false });
-        } catch (error) {
-          showTaskActionError(error, "Execution config could not be updated");
-          return;
-        }
-      }
-
+    if (selectedChatAction === "terminal") {
       setSubmitting("message");
       try {
-        const updatedTask = await api.runTaskPostflight(task.id);
-        setTask((current) =>
-          current
-            ? {
-                ...current,
-                ...updatedTask,
-                logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
-              }
-            : updatedTask
-        );
-        messageApi.success("Postflight started");
-      } catch (error) {
-        showTaskActionError(error, "Postflight could not be started");
+        await handleStartInteractiveTerminalWindow("git");
       } finally {
         setSubmitting(null);
       }
@@ -1944,12 +2468,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setSubmitting("message");
     try {
       const encodedAttachments = canAttachPromptImages ? await encodeTaskPromptImageFiles(selectedPromptImageFiles) : [];
-      const contextEntries =
-        selectedChatAction === "comment" ? undefined : selectedContextEntries.map((entry) => entry.entry);
       const updatedTask = await api.createTaskMessage(task.id, {
         content: chatInput.trim(),
         action: selectedChatAction,
-        contextEntries,
         ...(encodedAttachments.length > 0 ? { attachments: encodedAttachments } : {})
       });
       setTask((current) =>
@@ -1963,6 +2484,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       );
       setChatInput("");
       setSelectedPromptImageFiles([]);
+      setHistoryPage(1);
+      window.requestAnimationFrame(() => {
+        bottomScrollAnchorRef.current?.scrollIntoView({
+          block: "end",
+          inline: "nearest",
+          behavior: "auto"
+        });
+      });
       messageApi.success(
         selectedChatAction === "comment"
           ? "Comment added to history"
@@ -1976,18 +2505,55 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
+  const handleGeneratePromptMagic = async (): Promise<void> => {
+    const prompt = chatInput.trim();
+    if (!prompt || promptMagicDisabled) {
+      return;
+    }
+
+    setTaskPromptMagicLoading(true);
+    try {
+      const response = await api.generateTaskPromptMagic({ prompt });
+      const nextPrompt = response.prompt ?? "";
+      setChatInput(nextPrompt);
+      trackEvent("task_prompt_magic_used", {
+        source: "task_detail",
+        task_id: task?.id ?? taskId,
+        action: selectedChatAction,
+        input_length: prompt.length,
+        output_length: nextPrompt.length
+      });
+      if (nextPrompt.trim() === prompt) {
+        void messageApi.info("Magic prompt returned a similar result.");
+      } else {
+        void messageApi.success("Prompt improved.");
+      }
+    } catch (error) {
+      const fallback = "Failed to generate prompt.";
+      const errorMessage = error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
+      void messageApi.error(errorMessage);
+    } finally {
+      setTaskPromptMagicLoading(false);
+    }
+  };
   const handleDeleteTask = async () => {
     if (!task) {
       return;
     }
 
     setSubmitting("delete");
+    setDeleteConfirmOpen(false);
+    setIsDeletingTask(true);
     try {
       await api.deleteTask(task.id);
-      setDeleteConfirmOpen(false);
-      setRedirectingToTaskList(true);
-      messageApi.success("Task deleted");
+      router.replace("/tasks");
     } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        router.replace("/tasks");
+        return;
+      }
+      setIsDeletingTask(false);
+      setRedirectingToTaskList(false);
       showTaskActionError(error, "Failed to delete task");
     } finally {
       setSubmitting(null);
@@ -2001,7 +2567,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       open: true,
       loading: true,
       taskId: target.taskId,
-      executionId: target.executionId,
       filePath: target.filePath,
       kind: "text",
       mimeType: null,
@@ -2013,7 +2578,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     });
 
     void api
-      .getTaskWorkspaceFile(target.taskId, target.filePath, { executionId: target.executionId })
+      .getTaskWorkspaceFile(target.taskId, target.filePath)
       .then((result: TaskWorkspaceFilePreview) => {
         if (workspaceFilePreviewRequestIdRef.current !== requestId) {
           return;
@@ -2059,6 +2624,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       provider: providerInput,
       providerProfile: providerProfileInput,
       modelOverride: modelInput,
+      codexCredentialSource: codexCredentialSourceInput,
       branchStrategy: isImplementationTask ? branchStrategyInput : undefined,
       notify,
       refreshTaskOnFailure: true
@@ -2091,9 +2657,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
+    let deleteRemoteBranch = false;
+    const showBranchCleanup = canOfferRemoteBranchDeletion(task);
+
+    Modal.confirm({
+      title: "Archive task",
+      content: (
+        <Space direction="vertical" size={12}>
+          <Typography.Text>{`Archive "${task.title}"?`}</Typography.Text>
+          {showBranchCleanup ? (
+            <Checkbox onChange={(event) => {
+              deleteRemoteBranch = event.target.checked;
+            }}>
+              Delete remote branch <Typography.Text code>{task.branchName}</Typography.Text>
+            </Checkbox>
+          ) : null}
+        </Space>
+      ),
+      okText: "Archive",
+      onOk: async () => {
     setSubmitting("archive");
     try {
-      const updatedTask = await api.archiveTask(task.id);
+      const updatedTask = await api.archiveTask(task.id, { deleteRemoteBranch });
       setTask((current) =>
         current
           ? {
@@ -2110,6 +2695,57 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     } finally {
       setSubmitting(null);
     }
+      }
+    });
+  };
+  const openTaskStateModal = () => {
+    if (!task) {
+      return;
+    }
+
+    const currentState: EditableTaskState =
+      task.workflowStatus === "backlog" ||
+      task.workflowStatus === "ready" ||
+      task.workflowStatus === "in_progress" ||
+      task.workflowStatus === "review" ||
+      task.workflowStatus === "done"
+        ? task.workflowStatus
+        : "ready";
+    setTaskStateDraft(currentState);
+    setTaskStateModalOpen(true);
+  };
+  const closeTaskStateModal = () => {
+    if (submitting === "state") {
+      return;
+    }
+    setTaskStateModalOpen(false);
+  };
+  const confirmTaskStateChange = async () => {
+    if (!task || !canChangeTaskState) {
+      return;
+    }
+
+    setSubmitting("state");
+    try {
+      const updatedTask = await api.updateTaskState(task.id, { status: taskStateDraft });
+      applyUpdatedTask(updatedTask);
+      setTaskStateModalOpen(false);
+      messageApi.success(`Task set to ${getTaskWorkflowStatusLabel(updatedTask.workflowStatus)}`);
+    } catch (error) {
+      showTaskActionError(error, "Failed to update task state");
+    } finally {
+      setSubmitting((current) => (current === "state" ? null : current));
+    }
+  };
+  const openDraftEditModal = () => {
+    if (!task || task.status !== "draft") {
+      return;
+    }
+
+    setDraftEditModalOpen(true);
+  };
+  const closeDraftEditModal = () => {
+    setDraftEditModalOpen(false);
   };
   const loadPushPreview = async () => {
     if (!task) {
@@ -2217,6 +2853,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     setSubmitting("push");
+    trackEvent("git_op_started", {
+      task_id: task.id,
+      operation_type: "push_task_branch",
+      source_surface: "task_detail"
+    });
     try {
       const updatedTask = await api.pushTask(task.id, {
         commitMessage: pushCommitMessage.trim() || undefined
@@ -2231,9 +2872,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : updatedTask
       );
       messageApi.success("Changes pushed");
+      trackEvent("git_op_succeeded", {
+        task_id: task.id,
+        operation_type: "push_task_branch",
+        source_surface: "task_detail"
+      });
       void loadPushPreview();
       setLiveDiffRefreshKey((k) => k + 1);
     } catch (error) {
+      trackEvent("git_op_failed", {
+        task_id: task.id,
+        operation_type: "push_task_branch",
+        failure_code: "unknown",
+        source_surface: "task_detail"
+      });
       showTaskActionError(error, "Failed to push changes");
     } finally {
       setSubmitting(null);
@@ -2246,14 +2898,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
     Modal.confirm({
       title: `Squash merge into ${mergeTargetBranch}?`,
-      content: `This will squash merge ${task.branchName} into ${mergeTargetBranch}, create one commit with your chosen message, and archive the task.`,
+      content: deleteRemoteBranchAfterMerge
+        ? `This will squash merge ${task.branchName} into ${mergeTargetBranch}, delete the remote task branch, create one commit with your chosen message, and archive the task.`
+        : `This will squash merge ${task.branchName} into ${mergeTargetBranch}, create one commit with your chosen message, and archive the task.`,
       okText: "Squash Merge and Archive",
       onOk: async () => {
         setSubmitting("merge");
         try {
           const updatedTask = await api.mergeTask(task.id, {
             targetBranch: mergeTargetBranch,
-            commitMessage: mergeCommitMessage.trim() || undefined
+            commitMessage: mergeCommitMessage.trim() || undefined,
+            deleteRemoteBranch: deleteRemoteBranchAfterMerge
           });
           setTask((current) =>
             current
@@ -2270,6 +2925,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           setMergePreview(null);
           setMergePreviewError(null);
           setMergeCommitMessage("");
+          setDeleteRemoteBranchAfterMerge(false);
           messageApi.success(`Squash merged into ${mergeTargetBranch}`);
         } catch (error) {
           showTaskActionError(error, "Failed to merge task branch");
@@ -2279,12 +2935,76 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       }
     });
   };
+  const handleGenerateMergeCommitMessage = async () => {
+    if (!task || !mergeTargetBranch || !mergePreview?.mergeable) {
+      return;
+    }
+
+    const diffSnippetSource = (task.branchDiff?.trim() ? task.branchDiff : renderedDiff).trim();
+    if (!diffSnippetSource || diffSnippetSource === "(no changes)") {
+      messageApi.warning("No diff content is available for this merge.");
+      return;
+    }
+
+    const filePath = getFirstDiffFilePath(diffSnippetSource);
+    if (!filePath) {
+      messageApi.warning("No changed file is available for this merge.");
+      return;
+    }
+
+    setMergeCommitMessageGenerating(true);
+    try {
+      const response = await api.openAiDiffAssist(task.id, {
+        model: OPENAI_COMMIT_MESSAGE_MODEL,
+        providerProfile: OPENAI_COMMIT_MESSAGE_PROFILE,
+        filePath,
+        selectedSnippet: diffSnippetSource.slice(0, OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS),
+        userPrompt:
+          `Generate one git squash merge commit subject line for merging ${mergePreview.sourceBranch} into ${mergePreview.targetBranch} based on these changes. Do not use conventional commit prefixes (for example: feat:, feat(scope):, fix:, chore:). Return only a plain subject line with no quotes, bullets, markdown, or explanation.`
+      });
+      const candidate = normalizeAiCommitSubject(response.text);
+      if (!candidate) {
+        messageApi.warning("Model returned an empty commit message.");
+        return;
+      }
+      setMergeCommitMessage(candidate.slice(0, 72));
+    } catch (error) {
+      showTaskActionError(error, "Could not generate merge commit message");
+    } finally {
+      setMergeCommitMessageGenerating(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!mergeModalOpen) {
+      mergeAutoMagicTargetRef.current = null;
+      return;
+    }
+
+    if (!task?.id || !mergeTargetBranch || !mergePreview?.mergeable || mergePreviewLoading) {
+      return;
+    }
+
+    const autoMagicKey = `${task.id}:${mergeTargetBranch}`;
+    if (mergeAutoMagicTargetRef.current === autoMagicKey) {
+      return;
+    }
+
+    mergeAutoMagicTargetRef.current = autoMagicKey;
+    void handleGenerateMergeCommitMessage();
+  }, [mergeModalOpen, mergePreview?.mergeable, mergePreviewLoading, mergeTargetBranch, task?.id]);
+
   const handlePullTask = async () => {
     if (!task) {
       return;
     }
 
     setSubmitting("pull");
+    trackEvent("git_op_started", {
+      task_id: task.id,
+      operation_type: "pull_task_branch",
+      source_surface: "task_detail"
+    });
     try {
       const updatedTask = await api.pullTask(task.id);
       setTask((current) =>
@@ -2297,14 +3017,44 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : updatedTask
       );
       messageApi.success("Changes pulled");
+      trackEvent("git_op_succeeded", {
+        task_id: task.id,
+        operation_type: "pull_task_branch",
+        source_surface: "task_detail"
+      });
       setLiveDiffRefreshKey((k) => k + 1);
       void loadPushPreview();
     } catch (error) {
+      trackEvent("git_op_failed", {
+        task_id: task.id,
+        operation_type: "pull_task_branch",
+        failure_code: "unknown",
+        source_surface: "task_detail"
+      });
       showTaskActionError(error, "Failed to pull changes");
     } finally {
       setSubmitting(null);
     }
   };
+
+  const handleRetryLatestGitOperation = async () => {
+    if (!gitOperation || gitOperation.status !== "failed") {
+      return;
+    }
+    trackEvent("git_op_retried", {
+      task_id: gitOperation.taskId,
+      operation_type: gitOperation.operationType,
+      source_surface: "task_detail"
+    });
+    if (gitOperation.operationType === "pull_task_branch") {
+      await handlePullTask();
+      return;
+    }
+    if (gitOperation.operationType === "push_task_branch") {
+      await confirmPushTask();
+    }
+  };
+
   const handleKillInteractiveTerminal = async () => {
     if (!task) {
       return;
@@ -2344,12 +3094,36 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             ? gitResult.value
             : {
                 available: false,
-                reason: "Could not load git terminal status."
+                reason: "Could not load terminal status."
               }
         );
       });
     } catch (error) {
       showTaskActionError(error, "Failed to stop terminal session");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+  const handleNewSession = async () => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("newSession");
+    try {
+      const updatedTask = await api.resetTaskSession(task.id);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success("New session will be used on the next run");
+    } catch (error) {
+      showTaskActionError(error, "Failed to start a new session");
     } finally {
       setSubmitting(null);
     }
@@ -2465,51 +3239,75 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     void loadPushPreview();
   }, [canPush, task?.id, task?.updatedAt]);
 
-  if (redirectingToTaskList) {
-    return (
-      <Flex justify="center" align="center" style={{ minHeight: 240 }}>
-        <Spin size="large" tip="Returning to tasks..." />
-      </Flex>
-    );
-  }
-
-  if (!loading && !task) {
-    return (
-      <Alert
-        type="error"
-        message="Task not found"
-        description="The task may have been deleted or the page was opened before task state loaded."
-      />
-    );
-  }
-
   const moreActionItems = task
     ? [
-        canRequestLiveDiff ? { key: "refreshDiff", label: "Refresh Diff" } : null,
+        hasBranchForSync ? { key: "refreshGitStatus", label: "Refresh Git Status" } : null,
+        canEditTask && !isArchived ? { key: "newSession", label: "New Session" } : null,
         canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Session", danger: true } : null,
+        canChangeTaskState ? { key: "changeState", label: "Change State" } : null,
         canEditTask && !isArchived ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
-        canContinueOnBranch ? { key: "continue", label: "Continue On Branch" } : null,
         canArchive ? { key: "archive", label: "Archive Task", danger: true } : null,
         canDelete ? { key: "delete", label: "Delete Task", danger: true } : null
       ].filter(Boolean)
     : [];
-  const hasMoreActions = moreActionItems.length > 0;
-  const hasExecutionButtons = canCancel;
+  const hasExecutionButtons = canCancel || canStartDraft;
   const hasGitHubDiffTargetAction = githubPullRequestLookupPending || Boolean(githubDiffTarget);
-  const hasManagementButtons = hasMoreActions;
+  const assigneeLabel = task?.ownerUserId ? (assigneeNameById.get(task.ownerUserId) ?? task.ownerUserId) : "Unassigned";
   const contextContent = (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Card size="small">
         <Descriptions column={2} size="small">
           <Descriptions.Item label="Repository">{task?.repoName}</Descriptions.Item>
+          <Descriptions.Item label="Creator">{task?.creatorName ?? (task?.ownerUserId ? task.ownerUserId : "System")}</Descriptions.Item>
+          <Descriptions.Item label="Assignee">
+            {canAssignTask ? (
+              <Select
+                value={task?.ownerUserId ?? undefined}
+                placeholder={assignableUsersLoading ? "Loading users..." : "Select user"}
+                options={assignableUsers.map((user) => ({
+                  label: user.name,
+                  value: user.id
+                }))}
+                loading={assignableUsersLoading}
+                disabled={assignableUsersLoading || submitting === "assign"}
+                onChange={(value) => void handleAssignTask(value)}
+                style={{ minWidth: 220 }}
+              />
+            ) : (
+              assigneeLabel
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label={baseBranchLabel}>{task?.baseBranch}</Descriptions.Item>
           {hasBranch ? <Descriptions.Item label="Branch Strategy">{task ? getTaskBranchStrategyLabel(task.branchStrategy) : ""}</Descriptions.Item> : null}
           {hasBranch ? <Descriptions.Item label="Target Branch">{task?.branchName ?? "(pending)"}</Descriptions.Item> : null}
           <Descriptions.Item label="Created">{task ? dayjs(task.createdAt).format("YYYY-MM-DD HH:mm") : ""}</Descriptions.Item>
+          <Descriptions.Item label="Deadline">
+            {canEditTask && !isArchived ? (
+              <DatePicker
+                value={task?.deadline ? dayjs(task.deadline) : null}
+                showTime={{ format: "HH:mm" }}
+                format="YYYY-MM-DD HH:mm"
+                placeholder="No deadline"
+                allowClear
+                disabled={submitting === "deadline"}
+                onChange={(value) => void handleUpdateDeadline(value ? value.toISOString() : null)}
+                style={{ minWidth: 220 }}
+              />
+            ) : task?.deadline ? (
+              dayjs(task.deadline).format("YYYY-MM-DD HH:mm")
+            ) : (
+              "None"
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label="Provider">{getAgentProviderLabel(currentTaskProvider)}</Descriptions.Item>
           <Descriptions.Item label="Effort">{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
           <Descriptions.Item label="Last Action">{task?.lastAction ?? "draft"}</Descriptions.Item>
           <Descriptions.Item label="Model">{currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)}</Descriptions.Item>
+          {currentTaskProvider === "codex" ? (
+            <Descriptions.Item label="Codex Credential Source">
+              {codexCredentialSourceOptions.find((option) => option.value === currentTaskCodexCredentialSource)?.label ?? "Auto"}
+            </Descriptions.Item>
+          ) : null}
           <Descriptions.Item label="Status">
             {task ? (
               showWorkingIndicator ? (
@@ -2528,7 +3326,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </Card>
     </Space>
   );
-
   const diffHeadLabel = liveDiffLoading && !liveDiff
     ? "Loading…"
     : liveDiff?.headBranch
@@ -2539,8 +3336,45 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     pushPreview &&
       (pushPreview.hasUncommittedChanges || pushPreview.unpushedCommitSubjects.length > 0)
   );
+  const gitOperationBusy = gitOperation?.status === "queued" || gitOperation?.status === "running";
+  const gitOperationStatusLabel =
+    gitOperation?.status === "queued"
+      ? "Queued"
+      : gitOperation?.status === "running"
+        ? "Running"
+        : gitOperation?.status === "succeeded"
+          ? "Succeeded"
+          : gitOperation?.status === "failed"
+            ? "Failed"
+            : gitOperation?.status === "cancelled"
+              ? "Cancelled"
+              : null;
+  const gitOperationActionLabel =
+    gitOperation?.operationType === "clone_for_task"
+      ? "Clone task workspace"
+      : gitOperation?.operationType === "pull_task_branch"
+        ? "Pull branch"
+        : gitOperation?.operationType === "push_task_branch"
+          ? "Push branch"
+          : null;
+  const gitOperationStatusTone: "info" | "success" | "warning" | "error" =
+    gitOperation?.status === "failed"
+      ? "error"
+      : gitOperation?.status === "succeeded"
+        ? "success"
+        : gitOperation?.status === "cancelled"
+          ? "warning"
+          : "info";
+  const gitOperationRetryAllowed = gitOperation?.status === "failed" && (gitOperation.operationType === "pull_task_branch" || gitOperation.operationType === "push_task_branch");
+  const applyCheckpointApplying =
+    applyCheckpointModalProposal !== null &&
+    proposalBusy?.id === applyCheckpointModalProposal.id &&
+    proposalBusy.kind === "apply";
+  const applyCheckpointApplyingOrPushing = applyCheckpointApplying || submitting === "push";
+  const applyCheckpointFooterBusy = applyCheckpointApplyingOrPushing || applyCheckpointCommitMessageGenerating;
+  const mergeFooterBusy = submitting === "merge" || mergeCommitMessageGenerating;
   const pushNothingToPush = Boolean(pushPreview) && pushCount === 0 && !pushPreviewHasPushableChanges;
-  const pushPrimaryDisabled = submitting === "push" || pushPreviewLoading || pushNothingToPush;
+  const pushPrimaryDisabled = submitting === "push" || pushPreviewLoading || pushNothingToPush || gitOperationBusy;
   const mergeBlockedReason =
     pendingChangeProposal
       ? "Apply or reject the pending checkpoint before merging."
@@ -2553,11 +3387,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         title={
           pendingChangeProposal
             ? "Apply or reject the pending checkpoint before pulling."
+            : gitOperationBusy
+              ? "Another Git operation is already running."
             : undefined
         }
       >
         <span style={{ display: "inline-block" }}>
-          <Button onClick={handlePullTask} loading={submitting === "pull"} disabled={!!pendingChangeProposal || submitting === "push"}>
+          <Button onClick={handlePullTask} loading={submitting === "pull"} disabled={!!pendingChangeProposal || submitting === "push" || gitOperationBusy}>
             {`Pull (${pullCount})`}
           </Button>
         </span>
@@ -2569,24 +3405,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         title={
           pendingChangeProposal
             ? "Apply or reject the pending checkpoint before pushing."
+            : gitOperationBusy
+              ? "Another Git operation is already running."
             : pushNothingToPush
-              ? "Nothing to push — commit local changes or wait for the status refresh."
+              ? "Nothing to push — commit local changes or refresh Git status."
               : undefined
         }
       >
         <span style={{ display: "inline-block" }}>
           <Button type="primary" onClick={() => void confirmPushTask()} loading={submitting === "push"} disabled={!!pendingChangeProposal || pushPrimaryDisabled}>
             {`Push (${pushCount})`}
-          </Button>
-        </span>
-      </Tooltip>
-    ) : null;
-  const renderMergeTaskButton = () =>
-    canMerge ? (
-      <Tooltip title={mergeBlockedReason}>
-        <span style={{ display: "inline-block" }}>
-          <Button onClick={() => setMergeModalOpen(true)} loading={submitting === "merge"} disabled={!!mergeBlockedReason}>
-            Merge
           </Button>
         </span>
       </Tooltip>
@@ -2610,55 +3438,87 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </Button>
     );
   };
+  const dropdownMoreActionItems = [
+    ...(canMerge
+      ? [
+          {
+            key: "merge",
+            label: "Merge",
+            disabled: !!mergeBlockedReason
+          }
+        ]
+      : []),
+    ...moreActionItems
+  ];
+  const hasDropdownMoreActions = dropdownMoreActionItems.length > 0;
+  const renderMoreActionsButton = () =>
+    hasDropdownMoreActions ? (
+      <Dropdown
+        menu={{
+          items: dropdownMoreActionItems,
+          onClick: ({ key }) => {
+            if (key === "merge") {
+              setMergeModalOpen(true);
+              return;
+            }
+
+            if (key === "refreshGitStatus") {
+              void refreshBranchSyncCounts();
+              return;
+            }
+
+            if (key === "killInteractiveTerminal") {
+              setKillTerminalConfirmOpen(true);
+              return;
+            }
+
+            if (key === "newSession") {
+              Modal.confirm({
+                title: "Start a new session?",
+                content: "This clears saved conversation memory for this task. The next build/ask starts fresh.",
+                okText: "New Session",
+                onOk: handleNewSession
+              });
+              return;
+            }
+
+            if (key === "changeState") {
+              openTaskStateModal();
+              return;
+            }
+
+            if (key === "pin") {
+              void handleTogglePin();
+              return;
+            }
+
+            if (key === "archive") {
+              Modal.confirm({
+                title: "Archive task?",
+                content: "Archived tasks become read-only and cannot be restarted.",
+                okText: "Archive",
+                onOk: handleArchiveTask
+              });
+              return;
+            }
+
+            if (key === "delete") {
+              setDeleteConfirmOpen(true);
+            }
+          }
+        }}
+        trigger={["click"]}
+      >
+        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "killTerminal" || submitting === "merge" || submitting === "state"}>
+          More
+        </Button>
+      </Dropdown>
+    ) : null;
 
   const diffContent = hasDiffTab ? (
-    <Space direction="vertical" size={16} style={{ width: "100%" }}>
+    <Flex vertical gap={16} style={{ width: "100%", height: "71vh", maxHeight: "71vh", minHeight: 0 }}>
       {task ? (
-        <Card size="small" title="Git Session">
-          <Flex vertical gap={12}>
-            <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-              Open a popup terminal in this task workspace for manual git commands like status, commit, pull, push, and merge.
-            </Typography.Paragraph>
-            {gitTerminalStatus?.reason ? (
-              <Alert
-                type={gitTerminalAvailable ? "info" : "warning"}
-                showIcon
-                message={
-                  activeTerminalMode === "git"
-                    ? "Git session is active"
-                    : "Git session status"
-                }
-                description={gitTerminalStatus.reason}
-              />
-            ) : null}
-            <Space wrap>
-              <Button
-                type="primary"
-                onClick={() => void handleStartInteractiveTerminalWindow("git")}
-                disabled={
-                  !canEditTask ||
-                  isArchived ||
-                  interactiveTerminalLaunchPending ||
-                  !gitTerminalAvailable
-                }
-              >
-                Start Git Session
-              </Button>
-              {canKillInteractiveTerminal ? (
-                <Button danger onClick={() => setKillTerminalConfirmOpen(true)}>
-                  Stop Session
-                </Button>
-              ) : null}
-              {renderPullTaskButton()}
-              {renderPushTaskButton()}
-              {renderMergeTaskButton()}
-              {renderGitHubDiffTargetButton()}
-            </Space>
-          </Flex>
-        </Card>
-      ) : null}
-      {task ? (
-        <Card size="small" styles={{ body: { paddingBottom: 12 } }}>
+        <Card size="small" style={{ flexShrink: 0 }} styles={{ body: { paddingBottom: 12 } }}>
           <Segmented
             value={diffLiveKind}
             onChange={(value) => setDiffLiveKind(value as "compare" | "commits")}
@@ -2742,18 +3602,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         />
       ) : null}
       {task ? (
-        <Flex gap={16} align="flex-start" style={{ width: "100%" }} wrap="wrap">
+        <Flex gap={16} align="stretch" style={{ width: "100%", flex: 1, minHeight: 0 }}>
           {diffLiveKind === "commits" ? (
             <Card
               size="small"
               title="Commits"
               extra={
-                <Button type="link" size="small" onClick={() => setLiveDiffRefreshKey((k) => k + 1)} style={{ padding: 0 }}>
+                <Button type="link" size="small" onClick={triggerGitRefresh} style={{ padding: 0 }}>
                   Refresh
                 </Button>
               }
-              style={{ width: "100%", maxWidth: 360, flex: "0 1 320px" }}
-              styles={{ body: { padding: 0, maxHeight: 480, overflow: "auto" } }}
+              style={{ width: "100%", maxWidth: 360, flex: "0 0 320px", height: "100%", minHeight: 0, display: "flex", flexDirection: "column" }}
+              styles={{ body: { padding: 0, flex: 1, minHeight: 0, overflow: "auto" } }}
             >
               {commitLogLoading ? (
                 <div style={{ padding: 24, textAlign: "center" }}>
@@ -2796,7 +3656,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               )}
             </Card>
           ) : null}
-          <div style={{ flex: "1 1 400px", minWidth: 0 }}>
+          <div style={{ flex: "1 1 400px", minWidth: 0, height: "100%", minHeight: 0, overflow: "auto" }}>
             <TaskDiffOpenAiPanel
               diffText={renderedDiff}
               emptyMessage={
@@ -2825,80 +3685,107 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </div>
         </Flex>
       ) : null}
-    </Space>
+    </Flex>
   ) : null;
 
-  const selectedContextPanel = selectedContextEntries.length > 0 ? (
-    <Card
-      size="small"
-      bodyStyle={{ padding: "12px 14px" }}
-      style={{ background: token.colorInfoBg, borderColor: token.colorInfoBorder }}
-    >
-      <Flex vertical gap={10}>
-        <Flex justify="space-between" align="center" gap={12} wrap="wrap">
-          <Typography.Text strong>Selected context</Typography.Text>
-          <Space size={8} wrap>
-            <Typography.Text type="secondary">
-              {selectedContextEntries.length}/{TASK_CONTEXT_ENTRY_MAX_COUNT} items · {selectedContextSize.toLocaleString()}/
-              {TASK_CONTEXT_TOTAL_MAX_CHARS.toLocaleString()} chars
-            </Typography.Text>
-            <Button size="small" onClick={handleClearSelectedContext}>
-              Clear
-            </Button>
-          </Space>
-        </Flex>
-        <Space direction="vertical" size={8} style={{ width: "100%" }}>
-          {selectedContextEntries.map((contextEntry) => (
-            <Flex
-              key={contextEntry.key}
-              justify="space-between"
-              align="flex-start"
-              gap={12}
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                borderRadius: 8,
-                border: `1px solid ${token.colorBorderSecondary}`,
-                background: token.colorBgContainer
-              }}
-            >
-              <Flex vertical gap={2} style={{ minWidth: 0 }}>
-                <Typography.Text strong ellipsis={{ tooltip: contextEntry.label }}>
-                  {contextEntry.label}
-                </Typography.Text>
-                <Typography.Text type="secondary" style={{ whiteSpace: "pre-wrap" }}>
-                  {contextEntry.preview}
-                </Typography.Text>
-              </Flex>
-              <Button size="small" type="text" onClick={() => handleToggleHistoryContext(contextEntry.key)}>
-                Remove
-              </Button>
-            </Flex>
-          ))}
-        </Space>
-      </Flex>
-    </Card>
-  ) : null;
-
+  const aiSettingsSummary = [
+    providerOptions.find((option) => option.value === providerInput)?.label ?? getAgentProviderLabel(providerInput),
+    allowedProviderModels.find((option) => option.value === modelInput)?.label ?? modelInput,
+    getProviderProfileLabel(providerProfileInput),
+    providerInput === "codex"
+      ? `Credential: ${codexCredentialSourceOptions.find((option) => option.value === codexCredentialSourceInput)?.label ?? "Auto"}`
+      : null
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
   const chatComposer = (
     <Flex vertical gap={12}>
-      <Input.TextArea
-        autoSize={{ minRows: 4, maxRows: 14 }}
-        value={chatInput}
-        onChange={(event) => setChatInput(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.nativeEvent.isComposing || event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
-            return;
-          }
+      <div style={{ position: "relative" }}>
+        {promptMagicVisible ? (
+          <Button
+            size="small"
+            type="default"
+            icon={<RobotOutlined />}
+            title="Magic Wand"
+            aria-label="Magic Wand"
+            loading={taskPromptMagicLoading}
+            disabled={promptMagicDisabled}
+            onClick={() => void handleGeneratePromptMagic()}
+            style={{
+              position: "absolute",
+              right: 10,
+              bottom: 10,
+              zIndex: 1
+            }}
+          />
+        ) : null}
+        <Mentions
+          autoSize={{ minRows: 4, maxRows: 14 }}
+          prefix="@"
+          value={chatInput}
+          onChange={(value) => setChatInput(value)}
+          options={fileMentionOptions}
+          filterOption={false}
+          notFoundContent={fileMentionLoading ? <Spin size="small" /> : "No files found"}
+          onSearch={(searchText, mentionPrefix) => {
+            if (mentionPrefix !== "@") {
+              return;
+            }
 
-          event.preventDefault();
-          void handleSubmitComposer();
-        }}
-        placeholder={chatPlaceholder}
-        disabled={chatInputDisabled}
-        style={{ resize: "none" }}
-      />
-      {selectedContextPanel}
+            const query = searchText.trim();
+            if (fileMentionSearchTimerRef.current !== null) {
+              window.clearTimeout(fileMentionSearchTimerRef.current);
+              fileMentionSearchTimerRef.current = null;
+            }
+
+            if (query.length === 0) {
+              fileMentionSearchRequestIdRef.current += 1;
+              setFileMentionOptions([]);
+              setFileMentionLoading(false);
+              return;
+            }
+
+            const requestId = fileMentionSearchRequestIdRef.current + 1;
+            fileMentionSearchRequestIdRef.current = requestId;
+            setFileMentionLoading(true);
+
+            fileMentionSearchTimerRef.current = window.setTimeout(() => {
+              void api
+                .searchTaskWorkspaceFiles(taskId, { query, limit: 40 })
+                .then((result) => {
+                  if (fileMentionSearchRequestIdRef.current !== requestId) {
+                    return;
+                  }
+
+                  setFileMentionOptions(result.results.map((path) => ({ value: path, label: path })));
+                })
+                .catch(() => {
+                  if (fileMentionSearchRequestIdRef.current !== requestId) {
+                    return;
+                  }
+                  setFileMentionOptions([]);
+                })
+                .finally(() => {
+                  if (fileMentionSearchRequestIdRef.current !== requestId) {
+                    return;
+                  }
+                  setFileMentionLoading(false);
+                });
+            }, 180);
+          }}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
+              return;
+            }
+
+            event.preventDefault();
+            void handleSubmitComposer();
+          }}
+          placeholder={chatPlaceholder}
+          disabled={chatInputDisabled}
+          style={{ resize: "none", paddingRight: 44, paddingBottom: 38 }}
+        />
+      </div>
       {canAttachPromptImages || selectedPromptImageFiles.length > 0 ? (
         <>
           <Divider style={{ margin: 0 }} />
@@ -2912,31 +3799,31 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Divider style={{ margin: 0 }} />
         </>
       ) : null}
-	      <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
-	        <Flex align="flex-end" gap={12} wrap="wrap" style={{ flex: "1 1 0", minWidth: 0 }}>
-	          <div
-	            style={{
-	              display: "flex",
-	              flexDirection: "column"
-	            }}
-	          >
-	            <Button style={{ alignSelf: "flex-start" }} onClick={() => setAiSettingsModalOpen(true)}>
-	              AI Settings
-	            </Button>
-	          </div>
-	          {!interactiveComposerSelected ? (
-	            <div
+      <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
+        <Flex align="flex-end" gap={12} wrap="wrap" style={{ flex: "1 1 0", minWidth: 0 }}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column"
+            }}
+          >
+            <Button style={{ alignSelf: "flex-start" }} onClick={() => setAiSettingsModalOpen(true)}>
+              AI Settings
+            </Button>
+          </div>
+          {!interactiveComposerSelected && !terminalComposerSelected ? (
+            <div
               style={{
                 minWidth: 260,
                 maxWidth: 420,
-	                display: "flex",
-	                flexDirection: "column"
-	              }}
-	            >
-	              <Flex gap={8}>
-	                <Select
-	                  showSearch
-	                  style={{ minWidth: 180, flex: 1 }}
+                display: "flex",
+                flexDirection: "column"
+              }}
+            >
+              <Flex gap={8}>
+                <Select
+                  showSearch
+                  style={{ minWidth: 180, flex: 1 }}
                   placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
                   value={selectedSnippetId}
                   onChange={(value) => setSelectedSnippetId(value)}
@@ -2948,8 +3835,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                     snippets.length === 0 ||
                     !canEditTask ||
                     isArchived ||
-                    interactiveTerminalRunning ||
-                    postflightComposerSelected
+                    interactiveTerminalRunning
                   }
                   options={snippets.map((snippet) => ({
                     label: snippet.name,
@@ -2958,7 +3844,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 />
                 <Button
                   onClick={handleInsertSelectedSnippet}
-                  disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning || postflightComposerSelected}
+                  disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning}
                 >
                   Insert
                 </Button>
@@ -2967,7 +3853,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           ) : null}
         </Flex>
         <Flex align="center" gap={12} wrap="wrap" style={{ flexShrink: 0 }}>
-          <Typography.Text type="secondary">Next run: {chatActionLabel}</Typography.Text>
           <Flex align="center" gap={12} wrap="wrap">
             <Space.Compact size="middle">
               <Select
@@ -2991,11 +3876,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               >
                 {chatSubmitLabel}
               </Button>
-	              <Popconfirm
-	                title="Clear composer?"
-	                description="This will clear the message input, selected context, selected reference images, and reset the AI settings to this task's defaults."
-	                okText="Clear"
-	                cancelText="Cancel"
+              <Popconfirm
+                title="Clear composer?"
+                description="This will clear the message input, selected reference images, and reset the AI settings to this task's defaults."
+                okText="Clear"
+                cancelText="Cancel"
                 okButtonProps={{ danger: true }}
                 placement="top"
                 disabled={composerClearDisabled}
@@ -3004,7 +3889,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 <Button disabled={composerClearDisabled}>Clear</Button>
               </Popconfirm>
             </Space.Compact>
-            {canPull || canPush || canMerge || hasGitHubDiffTargetAction ? (
+            {canPull || canPush || hasGitHubDiffTargetAction || hasDropdownMoreActions ? (
               <Space
                 size={8}
                 wrap
@@ -3016,14 +3901,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               >
                 {renderPullTaskButton()}
                 {renderPushTaskButton()}
-                {renderMergeTaskButton()}
                 {renderGitHubDiffTargetButton()}
+                {renderMoreActionsButton()}
               </Space>
             ) : null}
           </Flex>
         </Flex>
       </Flex>
-      {isActive ? <Typography.Text type="secondary">Changes apply to the next run.</Typography.Text> : null}
+      <Divider style={{ margin: "8px 0 0" }} />
+      <Typography.Text type="secondary" style={{ display: "block", textAlign: "left" }}>
+        {`Current: ${aiSettingsSummary}`}
+        {isActive ? " Settings will be applied on next run." : ""}
+      </Typography.Text>
     </Flex>
   );
 
@@ -3038,6 +3927,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   ) : null;
 
   const syncTaskAfterCheckpointMutation = (updatedTask: Task) => {
+    setEditCheckpointModalState(null);
     setTask((current) =>
       current
         ? {
@@ -3051,6 +3941,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const openApplyCheckpointModal = (proposal: TaskChangeProposal) => {
     setApplyCheckpointModalProposal(proposal);
     setApplyCheckpointCommitMessage("");
+    setApplyCheckpointCommitMessageGenerating(false);
+  };
+
+  const openCheckpointFileEditorModal = (proposal: TaskChangeProposal, initialFilePath?: string | null) => {
+    setEditCheckpointModalState({
+      proposal,
+      initialFilePath: initialFilePath && proposal.changedFiles.includes(initialFilePath) ? initialFilePath : null
+    });
   };
 
   const closeApplyCheckpointModal = () => {
@@ -3060,6 +3958,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
     setApplyCheckpointModalProposal(null);
     setApplyCheckpointCommitMessage("");
+    setApplyCheckpointCommitMessageGenerating(false);
+  };
+
+  const closeCheckpointFileEditorModal = () => {
+    setEditCheckpointModalState(null);
+  };
+
+  const handleCheckpointFileSaved = () => {
+    refetchChangeProposals();
+    setLiveDiffRefreshKey((current) => current + 1);
   };
 
   const handleApplyCheckpoint = async () => {
@@ -3087,6 +3995,107 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setProposalBusy(null);
     }
   };
+
+  const handleApplyCheckpointAndPush = async () => {
+    const proposal = applyCheckpointModalProposal;
+    if (!task) {
+      return;
+    }
+    if (!proposal) {
+      return;
+    }
+
+    const canReapplyReverted = proposal.status === "reverted";
+    let applied = false;
+    setProposalBusy({ id: proposal.id, kind: "apply" });
+    setSubmitting("push");
+    try {
+      const commitMessage = applyCheckpointCommitMessage.trim();
+      const updatedAfterApply = await api.applyTaskChangeProposal(task.id, proposal.id, commitMessage ? { commitMessage } : undefined);
+      applied = true;
+      syncTaskAfterCheckpointMutation(updatedAfterApply);
+      setApplyCheckpointModalProposal(null);
+      setApplyCheckpointCommitMessage("");
+      setLiveDiffRefreshKey((k) => k + 1);
+      refetchChangeProposals();
+
+      const updatedAfterPush = await api.pushTask(task.id);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedAfterPush,
+              logs: updatedAfterPush.logs.length > 0 ? updatedAfterPush.logs : current.logs
+            }
+          : updatedAfterPush
+      );
+      messageApi.success(canReapplyReverted ? "Checkpoint re-applied and pushed" : "Checkpoint applied and pushed");
+      void loadPushPreview();
+      setLiveDiffRefreshKey((k) => k + 1);
+    } catch (error) {
+      if (applied) {
+        showTaskActionError(error, "Checkpoint applied but push failed");
+      } else {
+        showTaskActionError(error, "Could not apply checkpoint");
+      }
+    } finally {
+      setProposalBusy(null);
+      setSubmitting((current) => (current === "push" ? null : current));
+    }
+  };
+
+  const handleGenerateApplyCheckpointCommitMessage = async () => {
+    const proposal = applyCheckpointModalProposal;
+    if (!task || !proposal) {
+      return;
+    }
+    const filePath = proposal.changedFiles[0];
+    if (!filePath) {
+      messageApi.warning("No changed file is available for this checkpoint.");
+      return;
+    }
+    const diffSnippet = proposal.diff.slice(0, OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS);
+    if (!diffSnippet.trim() || diffSnippet.trim() === "(no changes)") {
+      messageApi.warning("No diff content is available for this checkpoint.");
+      return;
+    }
+
+    setApplyCheckpointCommitMessageGenerating(true);
+    try {
+      const response = await api.openAiDiffAssist(task.id, {
+        model: OPENAI_COMMIT_MESSAGE_MODEL,
+        providerProfile: OPENAI_COMMIT_MESSAGE_PROFILE,
+        filePath,
+        selectedSnippet: diffSnippet,
+        userPrompt:
+          "Generate one git commit subject line based on these changes. Do not use conventional commit prefixes (for example: feat:, feat(scope):, fix:, chore:). Return only a plain subject line with no quotes, bullets, markdown, or explanation."
+      });
+      const candidate = normalizeAiCommitSubject(response.text);
+      if (!candidate) {
+        messageApi.warning("Model returned an empty commit message.");
+        return;
+      }
+      setApplyCheckpointCommitMessage(candidate);
+    } catch (error) {
+      showTaskActionError(error, "Could not generate commit message");
+    } finally {
+      setApplyCheckpointCommitMessageGenerating(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!applyCheckpointModalProposal) {
+      applyCheckpointAutoMagicProposalIdRef.current = null;
+      return;
+    }
+
+    if (applyCheckpointAutoMagicProposalIdRef.current === applyCheckpointModalProposal.id) {
+      return;
+    }
+
+    applyCheckpointAutoMagicProposalIdRef.current = applyCheckpointModalProposal.id;
+    void handleGenerateApplyCheckpointCommitMessage();
+  }, [applyCheckpointModalProposal?.id]);
 
   const handleRejectCheckpoint = (proposal: TaskChangeProposal) => {
     if (!task) {
@@ -3144,6 +4153,37 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     });
   };
 
+  const handleRevertCheckpointFile = (proposal: TaskChangeProposal, filePath: string) => {
+    if (!task) {
+      return;
+    }
+
+    Modal.confirm({
+      title: "Revert this file from the checkpoint?",
+      content: (
+        <span>
+          This restores <Typography.Text code>{filePath}</Typography.Text> to the checkpoint base and keeps other files unchanged.
+        </span>
+      ),
+      okText: "Revert file",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setProposalBusy({ id: proposal.id, kind: "revert_file" });
+        try {
+          const updated = await api.revertTaskChangeProposalFile(task.id, proposal.id, { path: filePath });
+          syncTaskAfterCheckpointMutation(updated);
+          messageApi.success(`Reverted ${filePath}`);
+          setLiveDiffRefreshKey((k) => k + 1);
+          refetchChangeProposals();
+        } catch (error) {
+          showTaskActionError(error, "Could not revert file");
+        } finally {
+          setProposalBusy(null);
+        }
+      }
+    });
+  };
+
   const getNormalizedRunSummary = (run: TaskRun): string | null =>
     run.status === "failed" && run.errorMessage
       ? (() => {
@@ -3159,12 +4199,21 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         })()
       : run.summary?.trim() || null;
 
+  const renderRunNoChangeNotice = (run: TaskRun) =>
+    run.action === "build" && run.status === "succeeded" && run.changeOutcome === "no_change" ? (
+      <Typography.Paragraph type="secondary" style={{ margin: "8px 0 0" }}>
+        No code changes were needed for this run.
+      </Typography.Paragraph>
+    ) : null;
+
   const renderRunLogsPanel = (run: TaskRun) => (
     <div
       style={{
         padding: "14px 16px",
         background: "#0b0f14",
-        borderRadius: 8
+        borderRadius: 8,
+        maxHeight: 600,
+        overflow: "scroll"
       }}
     >
       <pre
@@ -3183,6 +4232,143 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     </div>
   );
 
+  const formatTimelineEventKind = (kind: string): string =>
+    kind
+      .split(".")
+      .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+      .join(" ");
+
+  type TimelineEvent = NonNullable<TaskRun["timelineEvents"]>[number];
+
+  const getTimelineEventColor = (event: TimelineEvent): string => {
+    if (event.kind.includes("failed") || (event.exitCode != null && event.exitCode !== 0)) {
+      return "red";
+    }
+    if (event.kind.includes("completed") || event.kind === "file.changed") {
+      return "green";
+    }
+    if (event.kind.includes("started") || event.status === "in_progress") {
+      return "blue";
+    }
+    if (event.kind.startsWith("assistant")) {
+      return "purple";
+    }
+    if (event.kind.startsWith("tool")) {
+      return "cyan";
+    }
+    return "gray";
+  };
+
+  const renderTimelineEventContent = (event: TimelineEvent): ReactNode => {
+    const showDetail = event.detail && event.detail !== event.filePath;
+    return (
+      <Space direction="vertical" size={6} style={{ width: "100%" }}>
+        <Flex align="flex-start" justify="space-between" gap={8} wrap="wrap">
+          <Space size={6} wrap>
+            <Typography.Text strong>{event.title}</Typography.Text>
+            {event.toolName ? <Tag color="blue">{event.toolName}</Tag> : null}
+            {event.status ? <Tag>{event.status}</Tag> : null}
+            {event.exitCode != null ? <Tag color={event.exitCode === 0 ? "green" : "red"}>exit {event.exitCode}</Tag> : null}
+          </Space>
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            #{event.rawEventIndex + 1}
+          </Typography.Text>
+        </Flex>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {formatTimelineEventKind(event.kind)}
+        </Typography.Text>
+        {event.filePath ? (
+          <Typography.Text code style={{ width: "fit-content", maxWidth: "100%", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {event.filePath}
+          </Typography.Text>
+        ) : null}
+        {showDetail ? (
+          <Typography.Text
+            code
+            style={{
+              display: "block",
+              padding: "6px 8px",
+              background: token.colorFillAlter,
+              borderRadius: 6,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word"
+            }}
+          >
+            {event.detail}
+          </Typography.Text>
+        ) : null}
+        {event.message ? (
+          <Typography.Paragraph
+            style={{
+              margin: 0,
+              maxHeight: 180,
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word"
+            }}
+          >
+            {event.message}
+          </Typography.Paragraph>
+        ) : null}
+      </Space>
+    );
+  };
+
+  const renderRunTimelinePanel = (run: TaskRun) => {
+    const events = run.timelineEvents ?? [];
+    if (events.length === 0) {
+      return <Typography.Text type="secondary">No parsed timeline events captured for this run.</Typography.Text>;
+    }
+
+    return (
+      <div
+        ref={(element) => {
+          runTimelineScrollRefs.current[run.id] = element;
+        }}
+        style={{
+          maxHeight: 420,
+          overflowY: "auto",
+          paddingRight: 8
+        }}
+      >
+        <Timeline
+          mode="left"
+          items={events.map((event) => ({
+            key: event.id,
+            color: getTimelineEventColor(event),
+            children: renderTimelineEventContent(event)
+          }))}
+        />
+      </div>
+    );
+  };
+
+  const renderRunTimelineCollapse = (run: TaskRun) => {
+    const count = run.timelineEvents?.length ?? 0;
+    return (
+      <Collapse
+        size="small"
+        activeKey={expandedRunTimelineKeys.includes(run.id) ? [run.id] : []}
+        onChange={(keys) => {
+          const isOpen = Array.isArray(keys) ? keys.length > 0 : Boolean(keys);
+          if (isOpen) {
+            window.requestAnimationFrame(() => scrollRunTimelineToBottom(run.id));
+          }
+          setExpandedRunTimelineKeys((current) => {
+            return isOpen ? (current.includes(run.id) ? current : [...current, run.id]) : current.filter((key) => key !== run.id);
+          });
+        }}
+        items={[
+          {
+            key: run.id,
+            label: `Timeline${count > 0 ? ` (${count})` : ""}`,
+            children: renderRunTimelinePanel(run)
+          }
+        ]}
+      />
+    );
+  };
+
   const renderRunLogsCollapse = (run: TaskRun) => (
     <Collapse
       size="small"
@@ -3197,6 +4383,19 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         {
           key: run.id,
           label: `Logs${run.logs.length > 0 ? ` (${run.logs.length})` : ""}`,
+          extra: run.hasRawJson ? (
+            <Tooltip title="Download raw provider JSONL">
+              <Button
+                size="small"
+                type="text"
+                icon={<DownloadOutlined />}
+                href={api.getTaskRunRawJsonUrl(taskId, run.id)}
+                onClick={(event) => event.stopPropagation()}
+              >
+                Raw JSON
+              </Button>
+            </Tooltip>
+          ) : null,
           children: renderRunLogsPanel(run)
         }
       ]}
@@ -3233,6 +4432,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       diffTrimmed.length > 0 &&
       diffTrimmed !== "(no changes)";
     const showCheckpointApply = (proposal.status === "pending" || canReapplyReverted) && canEditTask && task && !isArchived;
+    const showCheckpointEditor = proposal.status === "pending" && canEditTask && task && !isArchived && proposal.changedFiles.length > 0;
     const blockOlderCheckpointWhilePending = !!pendingChangeProposal && proposal.id !== pendingChangeProposal.id;
     const olderCheckpointPendingTooltip = "Apply or reject the current pending checkpoint first.";
 
@@ -3341,7 +4541,37 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                       proposal.status !== "reverted" &&
                       (proposal.sourceType === "interactive_session" ||
                         (proposal.sourceType === "build_run" && proposal.status === "pending"))
-                  }
+                  },
+                  renderFileActions:
+                    showCheckpointEditor && !checkpointDiffActionsBlocked && !blockOlderCheckpointWhilePending
+                      ? (file) => {
+                          const editableFilePath = resolveCheckpointEditableFilePath(file, proposal.changedFiles);
+                          if (!editableFilePath) {
+                            return null;
+                          }
+
+                          return (
+                            <Space size={6}>
+                              <Button
+                                size="small"
+                                icon={<EditOutlined />}
+                                onClick={() => openCheckpointFileEditorModal(proposal, editableFilePath)}
+                              >
+                                Edit
+                              </Button>
+                              <Button
+                                size="small"
+                                danger
+                                icon={<RollbackOutlined />}
+                                loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "revert_file"}
+                                onClick={() => handleRevertCheckpointFile(proposal, editableFilePath)}
+                              >
+                                Revert
+                              </Button>
+                            </Space>
+                          );
+                        }
+                      : undefined
                 })}
               </Space>
             )
@@ -3373,64 +4603,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     </span>
   );
 
-  const renderHistoryContextToggleButton = (entryKey: string) => {
-    const selected = selectedContextEntryKeys.includes(entryKey);
-    return (
-      <span onClick={(event) => event.stopPropagation()}>
-        <Button size="small" disabled={!canEditTask || isArchived} onClick={() => handleToggleHistoryContext(entryKey)}>
-          {selected ? "Remove from context" : "Add to context"}
-        </Button>
-      </span>
-    );
-  };
-
-  const getHistoryContextCardStyle = (entryKey: string, baseStyle?: CSSProperties): CSSProperties => {
-    const selected = selectedContextEntryKeys.includes(entryKey);
-    return {
-      ...baseStyle,
-      borderInlineStart: selected ? `4px solid ${token.colorInfo}` : baseStyle?.borderInlineStart,
-      transition: "border-color 0.2s ease, border-inline-start-color 0.2s ease"
-    };
-  };
-
-  const renderPersistedMessageContext = (message: TaskMessage, collapseKey: string) => {
-    const contextEntries = message.contextEntries ?? [];
-    if (message.role !== "user" || contextEntries.length === 0) {
-      return null;
-    }
-
-    const contextCollapseItems = contextEntries.map((contextEntry, index) => ({
-      key: `${collapseKey}-context-${index}`,
-      label: (
-        <Space wrap size={8}>
-          <Tag color={taskContextKindColor[contextEntry.kind]} style={{ marginInlineEnd: 0 }}>
-            {taskContextKindLabel[contextEntry.kind]}
-          </Tag>
-          <Typography.Text strong>{contextEntry.label}</Typography.Text>
-        </Space>
-      ),
-      children: (
-        <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}>
-          {contextEntry.content}
-        </Typography.Paragraph>
-      )
-    }));
-
-    return (
-      <Collapse
-        size="small"
-        items={[
-          {
-            key: `${collapseKey}-context`,
-            label: `Additional context (${contextEntries.length})`,
-            children: (
-              <Collapse size="small" defaultActiveKey={[]} items={contextCollapseItems} />
-            )
-          }
-        ]}
-      />
-    );
-  };
+  const getHistoryContextCardStyle = (_entryKey: string, baseStyle?: CSSProperties): CSSProperties => ({
+    ...baseStyle
+  });
 
   const renderPersistedMessageAttachments = (message: TaskMessage, collapseKey: string) => {
     const attachments = message.attachments ?? [];
@@ -3514,7 +4689,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   <Tag color="default" style={{ marginInlineEnd: 0 }}>
                     system
                   </Tag>
-                  {renderHistoryContextToggleButton(entryKey)}
                   <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
                 </Space>
               </Flex>
@@ -3552,7 +4726,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                     {entryMessage.role}
                   </Tag>
                   {entryMessage.action ? <Tag style={{ marginInlineEnd: 0 }}>{taskActionLabel[entryMessage.action]}</Tag> : null}
-                  {renderHistoryContextToggleButton(entryKey)}
                   <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
                 </Space>
                 {canEditCommentMessage ? (
@@ -3567,7 +4740,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 </ReactMarkdown>
               </div>
               {renderPersistedMessageAttachments(entryMessage, entryKey)}
-              {renderPersistedMessageContext(entryMessage, entryKey)}
             </Flex>
           ) : (
             <>
@@ -3575,7 +4747,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 <Space wrap size={8}>
                   <Tag color="blue">assistant</Tag>
                   {entryMessage.action ? <Tag>{taskActionLabel[entryMessage.action]}</Tag> : null}
-                  {renderHistoryContextToggleButton(entryKey)}
                 </Space>
                 <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
               </Flex>
@@ -3608,7 +4779,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Tag>{changeProposalSourceLabel(proposal.sourceType)}</Tag>
               <Tag color={checkpointStatusColor(proposal.status)}>{checkpointStatusLabel(proposal.status)}</Tag>
               {proposal.diffTruncated ? <Tag>Truncated preview</Tag> : null}
-              {renderHistoryContextToggleButton(entryKey)}
             </Space>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {dayjs(proposal.createdAt).format("YYYY-MM-DD HH:mm:ss")}
@@ -3645,8 +4815,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Space wrap size={8}>
               <Tag color={runStatusColor[run.status]}>{run.status}</Tag>
               <Tag>{taskActionLabel[run.action]}</Tag>
+              {run.action === "build" && run.changeOutcome === "no_change" ? <Tag color="default">No code changes</Tag> : null}
               <Tag>{getAgentProviderLabel(run.provider)}</Tag>
-              {renderHistoryContextToggleButton(entryKey)}
             </Space>
             <Typography.Text type="secondary">
               {dayjs(run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(run.startedAt, run.finishedAt)}
@@ -3656,7 +4826,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             Branch: <Typography.Text code>{run.branchName ?? "(pending)"}</Typography.Text>
           </Typography.Paragraph>
           {renderRunErrorNotice(run)}
+          {renderRunTimelineCollapse(run)}
           {renderRunLogsCollapse(run)}
+          {renderRunNoChangeNotice(run)}
           {normalizedRunSummary ? (
             isCollapsibleSummaryRun ? (
               <Collapse
@@ -3681,21 +4853,24 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const renderGroupedAutoRunEntry = (entryKey: string, entry: Extract<(typeof chatTimeline)[number], { kind: "grouped_auto_run" }>) => {
     const normalizedRunSummary = getNormalizedRunSummary(entry.run);
     const summaryTitle = entry.run.action === "build" ? "Implementation Summary" : "Summary";
-    const promptText = entry.promptMessage?.content ?? "No matched user prompt was found for this run.";
+    const promptText = entry.promptText;
+    const runStatusLabel = entry.run.status;
+    const runStatusTagColor = runStatusColor[entry.run.status];
 
     return (
       <Card
         key={entryKey}
         size="small"
         style={getHistoryContextCardStyle(entryKey)}
+        headStyle={historyCardHeadStyle}
         title={
           <Space wrap>
-            <Tag color={runStatusColor[entry.run.status]}>{entry.run.status}</Tag>
+            <Tag color={runStatusTagColor}>{runStatusLabel}</Tag>
             <Tag>{taskActionLabel[entry.run.action]}</Tag>
+            {entry.run.action === "build" && entry.run.changeOutcome === "no_change" ? <Tag color="default">No code changes</Tag> : null}
             <Tag>{getAgentProviderLabel(entry.run.provider)}</Tag>
             {entry.proposal ? <Tag color={checkpointStatusColor(entry.proposal.status)}>{checkpointStatusLabel(entry.proposal.status)}</Tag> : null}
             {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
-            {renderHistoryContextToggleButton(entryKey)}
           </Space>
         }
         extra={
@@ -3710,8 +4885,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               {promptText}
             </ReactMarkdown>
           </div>
-          {entry.promptMessage ? renderPersistedMessageContext(entry.promptMessage, entryKey) : null}
           {renderRunErrorNotice(entry.run)}
+          {renderRunTimelineCollapse(entry.run)}
           {renderRunLogsCollapse(entry.run)}
           <Collapse
             size="small"
@@ -3729,6 +4904,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   <Typography.Text type="secondary">
                     {entry.run.status === "running"
                       ? "Summary will appear when the run finishes."
+                      : entry.run.action === "build" && entry.run.changeOutcome === "no_change"
+                        ? "No code changes were needed for this run."
                       : "No summary was captured for this run."}
                   </Typography.Text>
                 )
@@ -3764,12 +4941,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         key={entryKey}
         size="small"
         style={getHistoryContextCardStyle(entryKey)}
+        headStyle={historyCardHeadStyle}
         title={
           <Space wrap>
             <Tag color="green">{terminalLabel}</Tag>
             {terminalStatusTag ? <Tag color={terminalStatusTag.color}>{terminalStatusTag.label}</Tag> : null}
             {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
-            {renderHistoryContextToggleButton(entryKey)}
           </Space>
         }
         extra={
@@ -3844,9 +5021,27 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </Card>
     );
   };
+  const renderHistoryPaginationControl = () =>
+    historyTotalCount > 0 || hasMoreHistory ? (
+      <Flex justify="center">
+        <Pagination
+          size="small"
+          current={normalizedHistoryPage}
+          pageSize={HISTORY_PAGE_SIZE}
+          total={historyPageCount * HISTORY_PAGE_SIZE}
+          showSizeChanger={false}
+          showQuickJumper={false}
+          disabled={historyLoadingMore}
+          onChange={(page) => {
+            setHistoryPage(page);
+          }}
+        />
+      </Flex>
+    ) : null;
+
   const chatTimelineBlock = historicalChatTimeline.length > 0 ? (
     <Flex vertical gap={12} style={{ width: "100%" }}>
-      {historicalChatTimeline.map((entry) => {
+      {visibleChatHistoryTimeline.map((entry) => {
         if (entry.kind === "message") {
           return renderRawMessageEntry(entry.key, entry.message);
         }
@@ -3870,7 +5065,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const chatHistoryEmptyState =
     !isPreparingWorkspace && historicalChatTimeline.length === 0 ? (
-      <Empty description={messagesLoading || runsLoading ? "Loading history..." : "No history yet."} image={Empty.PRESENTED_IMAGE_SIMPLE} />
+      <Empty
+        description={messagesLoading || runsLoading || proposalsLoading ? "Loading history..." : "No history yet."}
+        image={Empty.PRESENTED_IMAGE_SIMPLE}
+      />
     ) : null;
 
   const taskRevealStyle: CSSProperties = {
@@ -3906,17 +5104,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       label: "History",
       children: (
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
-          {chatPreparingNotice}
           {pendingChangeProposal && canEditTask && task && !isArchived ? (
             <Alert
               type="warning"
               showIcon
               message="Pending checkpoint"
-              description="Apply or reject the workspace changes from this run before starting a new build, opening a terminal, or using Git push/pull. Use the Git tab to commit and push after you apply."
+              description="Apply or reject the workspace changes from this run before starting a new build or using Git push/pull. You can still open Terminal to inspect the workspace."
             />
           ) : null}
-          {chatTimelineBlock}
-          {chatHistoryEmptyState}
+          {!isPreparingWorkspace ? chatTimelineBlock : null}
+          {!isPreparingWorkspace ? renderHistoryPaginationControl() : null}
+          {!isPreparingWorkspace ? chatHistoryEmptyState : null}
           {!isPreparingWorkspace ? chatComposer : null}
         </Space>
       )
@@ -3931,15 +5129,64 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         ]
       : []),
     {
+      key: "files",
+      label: "Files",
+      children: (
+        <TaskFilesTab
+          taskId={taskId}
+          active={activeMainTab === "files"}
+          openTarget={filesTabOpenTarget}
+          onOpenTargetHandled={() => setFilesTabOpenTarget(null)}
+        />
+      )
+    },
+    {
       key: "context",
       label: "Info",
       children: contextContent
     }
   ];
 
+  if (isDeletingTask) {
+    return (
+      <Flex justify="center" align="center" style={{ minHeight: 240 }}>
+        <Spin size="large" tip="Deleting task..." />
+      </Flex>
+    );
+  }
+
+  if (redirectingToTaskList || (!loading && !task && hadLoadedTaskRef.current)) {
+    return (
+      <Flex justify="center" align="center" style={{ minHeight: 240 }}>
+        <Spin size="large" tip="Returning to tasks..." />
+      </Flex>
+    );
+  }
+
+  if (!loading && !task) {
+    return (
+      <Alert
+        type="error"
+        message="Task not found"
+        description="The task may have been deleted or the page was opened before task state loaded."
+      />
+    );
+  }
+
   return (
     <>
       {contextHolder}
+      <TaskCreateModal
+        open={draftEditModalOpen}
+        onClose={closeDraftEditModal}
+        draftTask={task?.status === "draft" ? task : null}
+        onUpdated={(updatedTask) => {
+          applyUpdatedTask(updatedTask);
+          syncExecutionConfigInputs(updatedTask);
+          setDraftEditModalOpen(false);
+          void refetchTaskMessages();
+        }}
+      />
       <Modal
         title="AI Settings"
         open={aiSettingsModalOpen}
@@ -3988,7 +5235,66 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               disabled={!canEditTask || isArchived || interactiveTerminalRunning}
             />
           </div>
+          <div>
+            <Typography.Text type="secondary">Codex Credential Source</Typography.Text>
+            <Select
+              value={codexCredentialSourceInput}
+              options={codexCredentialSourceOptions}
+              onChange={(value) => setCodexCredentialSourceInput(value)}
+              style={{ width: "100%", marginTop: 6 }}
+              disabled={!canEditTask || isArchived || interactiveTerminalRunning || providerInput !== "codex"}
+            />
+          </div>
         </Flex>
+      </Modal>
+      <Modal
+        title={pendingSnippetForInsert ? `Insert Snippet: ${pendingSnippetForInsert.name}` : "Insert Snippet"}
+        open={snippetVariableModalOpen}
+        onCancel={handleCloseSnippetVariableModal}
+        destroyOnClose
+        onOk={() => void handleConfirmSnippetVariableInsert()}
+        okText="Insert"
+      >
+        <Form form={snippetVariableForm} layout="vertical">
+          {(pendingSnippetForInsert?.variables ?? []).map((variable) => (
+            <Form.Item
+              key={variable.name}
+              name={variable.name}
+              label={variable.title.trim() || variable.name}
+              tooltip={variable.description.trim() || undefined}
+              rules={[{ required: true, message: `Enter ${variable.title.trim() || variable.name}` }]}
+            >
+              {variable.type === "multiline" ? (
+                <Input.TextArea rows={4} placeholder={variable.description.trim() || variable.name} />
+              ) : (
+                <Input placeholder={variable.description.trim() || variable.name} />
+              )}
+            </Form.Item>
+          ))}
+        </Form>
+      </Modal>
+      <Modal
+        title="Change State"
+        open={taskStateModalOpen}
+        onCancel={closeTaskStateModal}
+        destroyOnClose
+        onOk={() => void confirmTaskStateChange()}
+        okText="Save"
+        confirmLoading={submitting === "state"}
+        okButtonProps={{ disabled: !canChangeTaskState }}
+      >
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            Pick the state shown for this task. This does not archive it.
+          </Typography.Paragraph>
+          <Select
+            value={taskStateDraft}
+            options={taskStateOptions}
+            style={{ width: "100%" }}
+            onChange={(value) => setTaskStateDraft(value as EditableTaskState)}
+            disabled={submitting === "state" || !canChangeTaskState}
+          />
+        </Space>
       </Modal>
       <Modal
         title="Rename task"
@@ -4039,17 +5345,26 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         open={applyCheckpointModalProposal !== null}
         onCancel={closeApplyCheckpointModal}
         destroyOnClose
-        onOk={() => void handleApplyCheckpoint()}
-        okText={applyCheckpointModalProposal?.status === "reverted" ? "Apply Again" : "Apply"}
-        confirmLoading={
-          applyCheckpointModalProposal !== null &&
-          proposalBusy?.id === applyCheckpointModalProposal.id &&
-          proposalBusy.kind === "apply"
+        footer={
+          <Flex justify="flex-end" gap={12}>
+            <Button onClick={closeApplyCheckpointModal} disabled={applyCheckpointFooterBusy}>
+              Cancel
+            </Button>
+            <Button onClick={() => void handleGenerateApplyCheckpointCommitMessage()} loading={applyCheckpointCommitMessageGenerating} disabled={applyCheckpointApplyingOrPushing}>
+              Magic
+            </Button>
+            <Button onClick={() => void handleApplyCheckpointAndPush()} loading={submitting === "push"} disabled={applyCheckpointApplying || applyCheckpointCommitMessageGenerating}>
+              {applyCheckpointModalProposal?.status === "reverted" ? "Apply Again & Push" : "Apply & Push"}
+            </Button>
+            <Button type="primary" onClick={() => void handleApplyCheckpoint()} loading={applyCheckpointApplying} disabled={applyCheckpointCommitMessageGenerating}>
+              {applyCheckpointModalProposal?.status === "reverted" ? "Apply Again" : "Apply"}
+            </Button>
+          </Flex>
         }
       >
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            Optional commit message. AgentSwarm uses it whenever this apply action creates a local commit. Leave it blank to use the generated subject.
+            Optional commit message. Click Magic to draft one with {OPENAI_COMMIT_MESSAGE_MODEL}, or leave blank to use AgentSwarm's generated subject on apply.
           </Typography.Paragraph>
           <Input.TextArea
             autoFocus
@@ -4059,9 +5374,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             value={applyCheckpointCommitMessage}
             onChange={(event) => setApplyCheckpointCommitMessage(event.target.value)}
             disabled={
-              applyCheckpointModalProposal !== null &&
-              proposalBusy?.id === applyCheckpointModalProposal.id &&
-              proposalBusy.kind === "apply"
+              (applyCheckpointModalProposal !== null &&
+                proposalBusy?.id === applyCheckpointModalProposal.id &&
+                proposalBusy.kind === "apply") ||
+              applyCheckpointCommitMessageGenerating
             }
           />
         </Space>
@@ -4070,7 +5386,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         title="Squash Merge Branch"
         open={mergeModalOpen}
         onCancel={() => {
-          if (submitting === "merge") {
+          if (mergeFooterBusy) {
             return;
           }
 
@@ -4080,13 +5396,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           setMergePreview(null);
           setMergePreviewError(null);
           setMergeCommitMessage("");
+          setDeleteRemoteBranchAfterMerge(false);
         }}
         destroyOnClose
         footer={
           <Flex justify="flex-end" gap={12}>
             <Button
               onClick={() => {
-                if (submitting === "merge") {
+                if (mergeFooterBusy) {
                   return;
                 }
 
@@ -4096,15 +5413,23 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 setMergePreview(null);
                 setMergePreviewError(null);
                 setMergeCommitMessage("");
+                setDeleteRemoteBranchAfterMerge(false);
               }}
             >
               Cancel
             </Button>
             <Button
+              onClick={() => void handleGenerateMergeCommitMessage()}
+              loading={mergeCommitMessageGenerating}
+              disabled={!mergePreview?.mergeable || mergePreviewLoading || submitting === "merge" || !mergeTargetBranch}
+            >
+              Magic
+            </Button>
+            <Button
               type="primary"
               onClick={() => void handleMergeTask()}
               loading={submitting === "merge"}
-              disabled={!mergePreview?.mergeable || mergePreviewLoading || !mergeTargetBranch || !mergeCommitMessage.trim()}
+              disabled={!mergePreview?.mergeable || mergePreviewLoading || mergeCommitMessageGenerating || !mergeTargetBranch || !mergeCommitMessage.trim()}
             >
               Squash Merge
             </Button>
@@ -4123,6 +5448,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 loading={mergeBranchesLoading}
                 value={mergeTargetBranch}
                 onChange={(value) => setMergeTargetBranch(value ?? undefined)}
+                disabled={mergeFooterBusy}
                 optionFilterProp="label"
                 options={mergeBranches.map((branch) => ({
                   label: branch.isDefault ? `${branch.name} (repo default)` : branch.name,
@@ -4136,8 +5462,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 onChange={(event) => setMergeCommitMessage(event.target.value)}
                 placeholder="feat(agentswarm): update files"
                 maxLength={72}
+                disabled={mergeFooterBusy}
               />
             </Form.Item>
+            {task && canOfferRemoteBranchDeletion(task) ? (
+              <Form.Item style={{ marginBottom: 0 }}>
+                <Checkbox
+                  checked={deleteRemoteBranchAfterMerge}
+                  onChange={(event) => setDeleteRemoteBranchAfterMerge(event.target.checked)}
+                  disabled={mergeFooterBusy}
+                >
+                  Delete remote branch <Typography.Text code>{task.branchName}</Typography.Text> after merge
+                </Checkbox>
+              </Form.Item>
+            ) : null}
           </Form>
           {!mergeBranchesLoading && mergeBranches.length === 0 ? (
             <Alert type="info" showIcon message="No target branches available for merging." />
@@ -4175,11 +5513,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           setWorkspaceFilePreview((current) => ({ ...current, open: false }));
         }}
       />
-      <Flex vertical gap={16} style={{ width: "100%", paddingBottom: 16 }}>
-        {loading ? (
-          taskDetailPlaceholder
-        ) : task ? (
-          <div style={{ position: "relative" }}>
+      <CheckpointFileEditorModal
+        open={editCheckpointModalState !== null}
+        taskId={taskId}
+        filePaths={
+          editCheckpointModalState?.initialFilePath
+            ? [editCheckpointModalState.initialFilePath]
+            : (editCheckpointModalState?.proposal.changedFiles ?? [])
+        }
+        initialFilePath={editCheckpointModalState?.initialFilePath ?? null}
+        onCancel={closeCheckpointFileEditorModal}
+        onSaved={handleCheckpointFileSaved}
+      />
+      <Flex
+        align="flex-start"
+        gap={16}
+        style={{ width: "100%", paddingBottom: 16 }}
+      >
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {loading ? (
+            taskDetailPlaceholder
+          ) : task ? (
+            <div style={{ position: "relative" }}>
             {!taskPageVisible ? (
               <div
                 style={{
@@ -4225,6 +5580,39 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
                       {hasExecutionButtons ? (
                         <Space wrap size={8}>
+                          {isDraft && canEditTask && !isArchived ? (
+                            <Button onClick={openDraftEditModal}>
+                              Edit Draft
+                            </Button>
+                          ) : null}
+                          {canStartDraft ? (
+                            <Button
+                              type="primary"
+                              onClick={async () => {
+                                setSubmitting("startDraft");
+                                try {
+                                  const updatedTask = await api.startTask(task.id);
+                                  setTask((current) =>
+                                    current
+                                      ? {
+                                          ...current,
+                                          ...updatedTask,
+                                          logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+                                        }
+                                      : updatedTask
+                                  );
+                                  messageApi.success("Task started");
+                                } catch (error) {
+                                  showTaskActionError(error, "Task could not be started");
+                                } finally {
+                                  setSubmitting(null);
+                                }
+                              }}
+                              loading={submitting === "startDraft"}
+                            >
+                              Start Task
+                            </Button>
+                          ) : null}
                           {canCancel ? (
                             <Button
                               danger
@@ -4246,59 +5634,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                         </Space>
                       ) : null}
 
-                      {hasExecutionButtons && hasManagementButtons ? <Divider type="vertical" style={{ marginInline: 2 }} /> : null}
-
-                      {hasManagementButtons ? (
-                        <Space wrap size={8}>
-                          {hasMoreActions ? (
-                            <Dropdown
-                              menu={{
-                                items: moreActionItems,
-                                onClick: ({ key }) => {
-                                  if (key === "refreshDiff") {
-                                    setLiveDiffRefreshKey((k) => k + 1);
-                                    return;
-                                  }
-
-                                  if (key === "killInteractiveTerminal") {
-                                    setKillTerminalConfirmOpen(true);
-                                    return;
-                                  }
-
-                                  if (key === "continue") {
-                                    openFollowUp("continue");
-                                    return;
-                                  }
-
-                                  if (key === "pin") {
-                                    void handleTogglePin();
-                                    return;
-                                  }
-
-                                  if (key === "archive") {
-                                    Modal.confirm({
-                                      title: "Archive task?",
-                                      content: "Archived tasks become read-only and cannot be restarted.",
-                                      okText: "Archive",
-                                      onOk: handleArchiveTask
-                                    });
-                                    return;
-                                  }
-
-                                  if (key === "delete") {
-                                    setDeleteConfirmOpen(true);
-                                  }
-                                }
-                              }}
-                              trigger={["click"]}
-                            >
-                              <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "killTerminal"}>
-                                More
-                              </Button>
-                            </Dropdown>
-                          ) : null}
-                        </Space>
-                      ) : null}
                     </Space>
                   </Flex>
                   {isArchived ? (
@@ -4307,6 +5642,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                       showIcon
                       message="Archived task"
                       description="Archived tasks are read-only for task changes. You can still inspect history, output, diffs, and delete the task."
+                    />
+                  ) : isDraft ? (
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="Draft task"
+                      description="This task is saved but has not started. Start the task when it is ready for agent work."
                     />
                   ) : !canEditTask ? (
                     <Alert
@@ -4319,17 +5661,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 </Flex>
 
                 <Flex vertical gap={16}>
+                  {chatPreparingNotice}
                   <Card bordered={false}>
-                    <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff")} items={mainTabItems} />
+                    <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff" | "files")} items={mainTabItems} />
                   </Card>
-                  <div ref={bottomScrollAnchorRef} style={{ height: 40, width: "100%", flexShrink: 0 }} />
+                  <div ref={bottomScrollAnchorRef} aria-hidden="true" style={{ height: 0, width: "100%", flexShrink: 0 }} />
                 </Flex>
               </Flex>
             </div>
-          </div>
-        ) : null}
+            </div>
+          ) : null}
+        </div>
       </Flex>
-
       <Modal
         open={killTerminalConfirmOpen}
         title={`Stop ${activeTerminalSentenceLabel.toLowerCase()} session?`}
@@ -4381,20 +5724,23 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Form
             form={followUpForm}
             layout="vertical"
-            onFinish={async (values: { title: string; prompt: string }) => {
+            onFinish={async (values: { title: string; prompt: string; notes?: string }) => {
               setSubmitting("continue");
               try {
                 const normalizedPrompt = values.prompt.trim();
+                const normalizedNotes = values.notes?.trim() ?? "";
                 const nextTask = await api.createTask({
                   title: values.title.trim(),
                   prompt: normalizedPrompt,
+                  notes: normalizedNotes,
                   taskType: "build",
                   repoId: task.repoId,
                   baseBranch: followUpBranch,
                   branchStrategy: "work_on_branch",
                   provider: task.provider,
                   providerProfile: task.providerProfile,
-                  modelOverride: task.modelOverride ?? undefined
+                  modelOverride: task.modelOverride ?? undefined,
+                  codexCredentialSource: task.codexCredentialSource
                 });
                 followUpForm.resetFields();
                 setFollowUpMode(null);
@@ -4428,6 +5774,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 <Input.TextArea
                   autoSize={{ minRows: 6, maxRows: 18 }}
                   placeholder="Describe the new problem to solve on this branch."
+                  style={{ resize: "none" }}
+                />
+              </Form.Item>
+              <Form.Item name="notes" label="Notes (Markdown)">
+                <Input.TextArea
+                  autoSize={{ minRows: 4, maxRows: 12 }}
+                  placeholder="Optional markdown notes for this follow-up task."
                   style={{ resize: "none" }}
                 />
               </Form.Item>

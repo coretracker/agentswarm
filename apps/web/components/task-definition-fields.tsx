@@ -2,56 +2,64 @@
 
 import { useEffect, useState } from "react";
 import type { FormInstance } from "antd";
+import dayjs, { type Dayjs } from "dayjs";
 import type {
   AgentProvider,
+  CodexCredentialSource,
   CreateTaskPromptAttachmentInput,
   GitHubBranchReference,
-  GitHubIssueReference,
-  GitHubPullRequestReference,
   ProviderProfile,
   Repository,
+  Snippet,
   SystemSettings,
   TaskBranchStrategy,
   TaskDefinitionInput,
-  TaskSourceType,
-  TaskStartMode,
   TaskType
 } from "@agentswarm/shared-types";
-import { getAgentProviderLabel, getDefaultModelForProvider, getEffortOptionsForProvider, getModelsForProvider } from "@agentswarm/shared-types";
-import { Alert, Button, Card, Checkbox, Col, Flex, Form, Input, Row, Select, Space, Typography, message } from "antd";
+import {
+  getAgentProviderLabel,
+  getDefaultModelForProvider,
+  getEffortOptionsForProvider,
+  getModelsForProvider
+} from "@agentswarm/shared-types";
+import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Typography, message } from "antd";
+import { RobotOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useSettings } from "../src/hooks/useSettings";
 import { useSnippets } from "../src/hooks/useSnippets";
+import { trackEvent } from "../src/utils/analytics";
+import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
 import { type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
-import { insertSnippetContent } from "../src/utils/snippets";
 import { useAuth } from "./auth-provider";
 import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
 
 export type TaskDefinitionFormValues = {
-  sourceType?: TaskSourceType;
   title?: string;
+  deadline?: string | null | Dayjs;
   repoId?: string;
   prompt?: string;
-  startMode?: TaskStartMode;
+  notes?: string;
   taskType?: TaskType;
   provider?: AgentProvider;
   model?: string;
   providerProfile?: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
-  issueNumber?: number;
-  includeComments?: boolean;
-  pullRequestNumber?: number;
 };
 
 export interface TaskDefinitionFieldsProps {
   form: FormInstance<TaskDefinitionFormValues>;
   syncSettingsDefaults?: boolean;
+  lockRepository?: boolean;
+  allowPromptAttachments?: boolean;
   promptImageFiles?: SelectedTaskPromptImageFile[];
   onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
 }
+
+type SnippetVariableFormValues = Record<string, string>;
 
 const providerOptions = (
   hasOpenAi: boolean,
@@ -59,6 +67,12 @@ const providerOptions = (
 ): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
   { label: "Codex (OpenAI)", value: "codex", disabled: !hasOpenAi },
   { label: getAgentProviderLabel("claude"), value: "claude", disabled: !hasAnthropic }
+];
+
+const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
+  { label: "Auto (Profile then Global)", value: "auto" },
+  { label: "Profile auth.json only", value: "profile" },
+  { label: "Global OpenAI key or auth.json", value: "global" }
 ];
 
 const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSettings | null): string =>
@@ -69,136 +83,117 @@ const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSetti
 const getProviderDefaultProfile = (provider: AgentProvider, settings?: SystemSettings | null): ProviderProfile =>
   provider === "claude" ? settings?.claudeDefaultEffort ?? "high" : settings?.codexDefaultEffort ?? "high";
 
-export const getTaskDefinitionInitialValues = (settings?: SystemSettings | null): Partial<TaskDefinitionFormValues> => {
+const deriveTitleFromPrompt = (prompt: string): string => {
+  const lines = prompt
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) {
+    return "";
+  }
+
+  const heading = lines.find((line) => /^#{1,6}\s+/.test(line));
+  if (heading) {
+    return heading.replace(/^#{1,6}\s+/, "").trim();
+  }
+
+  return lines[0];
+};
+
+export const getTaskDefinitionDeadlineIso = (value: TaskDefinitionFormValues["deadline"]): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = dayjs.isDayjs(value) ? value : dayjs(value);
+  return parsed.isValid() ? parsed.toISOString() : undefined;
+};
+
+export const getTaskDefinitionInitialValues = (
+  settings?: SystemSettings | null
+): Partial<TaskDefinitionFormValues> => {
   const provider = settings?.defaultProvider ?? "codex";
   return {
-    sourceType: "blank",
     taskType: "build",
     provider,
     model: getProviderDefaultModel(provider, settings),
     providerProfile: getProviderDefaultProfile(provider, settings),
-    branchStrategy: "feature_branch",
-    includeComments: true,
-    startMode: "prepare_workspace"
+    codexCredentialSource: "auto",
+    branchStrategy: "feature_branch"
   };
 };
-
-/** Suggested title for blank tasks: "Build · …" or "Interactive · …" — updates until the title field is edited. */
-export function buildBlankAutoTaskTitle(params: {
-  taskType: TaskType;
-  startMode?: TaskStartMode;
-  repoName: string | undefined;
-  branchName: string | undefined;
-  modelLabel: string;
-}): string {
-  const kind =
-    params.startMode === "prepare_workspace"
-      ? "Interactive"
-      : params.taskType === "ask"
-        ? "Ask"
-        : "Build";
-  const repo = params.repoName?.trim() || "Repository";
-  const branch = params.branchName?.trim() || "—";
-  const model = params.modelLabel.trim() || "—";
-  return `${kind} · ${repo} · ${branch} · ${model}`;
-}
 
 export const buildTaskDefinitionInput = (
   values: TaskDefinitionFormValues,
   promptAttachments: CreateTaskPromptAttachmentInput[] = []
 ): TaskDefinitionInput => {
-  if (values.sourceType === "blank") {
-    return {
-      sourceType: "blank",
-      title: values.title?.trim() ?? "",
-      repoId: values.repoId ?? "",
-      prompt: values.prompt?.trim() ?? "",
-      ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
-      startMode: values.startMode ?? "run_now",
-      taskType: values.taskType ?? "build",
-      provider: values.provider ?? "codex",
-      model: values.model?.trim() ?? "",
-      providerProfile: values.providerProfile ?? "high",
-      baseBranch: values.baseBranch?.trim() ?? "",
-      branchStrategy: values.branchStrategy ?? "feature_branch"
-    };
-  }
-
-  if (values.sourceType === "issue") {
-    return {
-      sourceType: "issue",
-      title: values.title?.trim() || undefined,
-      repoId: values.repoId ?? "",
-      issueNumber: values.issueNumber ?? 0,
-      includeComments: values.includeComments ?? true,
-      startMode: values.startMode ?? "run_now",
-      taskType: values.taskType === "build" || values.taskType === "ask" ? values.taskType : "build",
-      provider: values.provider ?? "codex",
-      model: values.model?.trim() ?? "",
-      providerProfile: values.providerProfile ?? "high",
-      baseBranch: values.baseBranch?.trim() ?? "",
-      branchStrategy: values.branchStrategy ?? "feature_branch"
-    };
-  }
+  const provider = values.provider ?? "codex";
+  const codexCredentialSource = provider === "codex" ? (values.codexCredentialSource ?? "auto") : undefined;
 
   return {
-    sourceType: "pull_request",
-    title: values.title?.trim() || undefined,
+    title: values.title?.trim() ?? "",
+    deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
     repoId: values.repoId ?? "",
-    pullRequestNumber: values.pullRequestNumber ?? 0,
-    provider: values.provider ?? "codex",
+    prompt: values.prompt?.trim() ?? "",
+    notes: values.notes?.trim() || undefined,
+    ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
+    taskType: values.taskType ?? "build",
+    provider,
     model: values.model?.trim() ?? "",
-    providerProfile: values.providerProfile ?? "high"
+    providerProfile: values.providerProfile ?? "high",
+    ...(codexCredentialSource ? { codexCredentialSource } : {}),
+    baseBranch: values.baseBranch?.trim() ?? "",
+    branchStrategy: values.branchStrategy ?? "feature_branch"
   };
 };
 
 export function TaskDefinitionFields({
   form,
   syncSettingsDefaults = true,
+  lockRepository = false,
+  allowPromptAttachments = true,
   promptImageFiles = [],
   onPromptImageFilesChange
 }: TaskDefinitionFieldsProps) {
   const { can, session } = useAuth();
   const { repositories } = useRepositories();
   const { settings } = useSettings();
-  const [githubIssues, setGitHubIssues] = useState<GitHubIssueReference[]>([]);
-  const [githubPullRequests, setGitHubPullRequests] = useState<GitHubPullRequestReference[]>([]);
   const [githubBranches, setGitHubBranches] = useState<GitHubBranchReference[]>([]);
   const [githubOptionsLoading, setGitHubOptionsLoading] = useState(false);
+  const [magicPromptLoading, setMagicPromptLoading] = useState(false);
+  const [selectedSnippetToInsertId, setSelectedSnippetToInsertId] = useState<string | null>(null);
+  const [pendingSnippetForInsert, setPendingSnippetForInsert] = useState<Snippet | null>(null);
+  const [snippetVariableModalOpen, setSnippetVariableModalOpen] = useState(false);
+  const [snippetVariableForm] = Form.useForm<SnippetVariableFormValues>();
   const canReadRepositoryMetadata = can("repo:read");
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
-  const canUseInteractiveTerminal = can("task:interactive");
-  const canUseSnippets = can("snippet:list");
   const canRunAutomatedTask = canBuildTasks || canAskTasks;
-  const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
-  const [selectedSnippetId, setSelectedSnippetId] = useState<string | null>(null);
+  const canUseSnippets = can("snippet:list");
 
   const selectedRepoId = Form.useWatch("repoId", form);
   const selectedModel = Form.useWatch("model", form);
-  const selectedBaseBranch = Form.useWatch("baseBranch", form);
-  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
-  const selectedStartMode = (Form.useWatch("startMode", form) as TaskStartMode | undefined) ?? "prepare_workspace";
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
-  const selectedIssueNumber = Form.useWatch("issueNumber", form);
-  const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
+  const selectedPrompt = Form.useWatch("prompt", form);
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(selectedProvider);
+  const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
-  const selectedIssue = githubIssues.find((issue) => issue.number === selectedIssueNumber) ?? null;
-  const selectedPullRequest = githubPullRequests.find((pullRequest) => pullRequest.number === selectedPullRequestNumber) ?? null;
-  const isBlankSource = selectedSourceType === "blank";
-  const isIssueSource = selectedSourceType === "issue";
-  const isPullRequestSource = selectedSourceType === "pull_request";
-  const effectiveTaskType = isPullRequestSource ? "build" : selectedTaskType;
+  const effectiveTaskType = selectedTaskType;
   const isImplementationTask = effectiveTaskType === "build";
-  const baseBranchLabel = isBlankSource || isIssueSource ? "Base Branch" : undefined;
+  const hasGlobalCodexCredentials = Boolean(settings?.openaiApiKeyConfigured || settings?.codexAuthJsonConfigured);
+  const hasAnyCodexCredentials = Boolean(hasGlobalCodexCredentials || session?.user.codexAuthJsonConfigured);
   const providerMissingCredentials =
-    selectedProvider === "codex" ? !settings?.openaiApiKeyConfigured : !settings?.anthropicApiKeyConfigured;
+    selectedProvider === "codex"
+      ? !hasAnyCodexCredentials
+      : !settings?.anthropicApiKeyConfigured;
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
   const roleAllowedModels = session?.user.allowedModels ?? [];
   const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
-  const providerSelectOptions = providerOptions(Boolean(settings?.openaiApiKeyConfigured), Boolean(settings?.anthropicApiKeyConfigured)).map(
+  const providerSelectOptions = providerOptions(
+    hasAnyCodexCredentials,
+    Boolean(settings?.anthropicApiKeyConfigured)
+  ).map(
     (option) => ({
       ...option,
       disabled: Boolean(option.disabled || (roleAllowedProviders.length > 0 && !roleAllowedProviders.includes(option.value)))
@@ -210,37 +205,10 @@ export function TaskDefinitionFields({
   const allowedEffortOptions = getEffortOptionsForProvider(selectedProvider).filter(
     (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
   );
-  const sourceOptions: Array<{ label: string; value: TaskSourceType }> = [
-    { label: "Blank", value: "blank" },
-    ...(canReadRepositoryMetadata
-      ? [
-          { label: "From Issue", value: "issue" as const },
-          ...(canBuildTasks ? [{ label: "From Pull Request", value: "pull_request" as const }] : [])
-        ]
-      : [])
-  ];
-  const startModeOptions: Array<{ label: string; value: TaskStartMode }> = [
-    ...(canRunAutomatedTask ? [{ label: "Run automated agent now", value: "run_now" as const }] : []),
-    ...(canUseInteractiveTerminal ? [{ label: "Prepare workspace only", value: "prepare_workspace" as const }] : [])
-  ];
   const taskTypeOptions: Array<{ label: string; value: TaskType }> = [
     ...(canBuildTasks ? [{ label: "Build", value: "build" as const }] : []),
     ...(canAskTasks ? [{ label: "Ask", value: "ask" as const }] : [])
   ];
-
-  useEffect(() => {
-    if (canReadRepositoryMetadata || selectedSourceType === "blank") {
-      return;
-    }
-
-    form.setFieldValue("sourceType", "blank");
-  }, [canReadRepositoryMetadata, form, selectedSourceType]);
-
-  useEffect(() => {
-    if (selectedSourceType === "pull_request" && !canBuildTasks) {
-      form.setFieldValue("sourceType", canReadRepositoryMetadata ? "issue" : "blank");
-    }
-  }, [canBuildTasks, canReadRepositoryMetadata, form, selectedSourceType]);
 
   useEffect(() => {
     if (!settings || !syncSettingsDefaults) {
@@ -284,6 +252,9 @@ export function TaskDefinitionFields({
   }, [form, providerSelectOptions, selectedProvider]);
 
   useEffect(() => {
+    if (providerModelsLoading) {
+      return;
+    }
     if (allowedModelOptions.length === 0) {
       return;
     }
@@ -291,7 +262,7 @@ export function TaskDefinitionFields({
       return;
     }
     form.setFieldValue("model", allowedModelOptions[0]?.value);
-  }, [allowedModelOptions, form, selectedModel]);
+  }, [allowedModelOptions, form, providerModelsLoading, selectedModel]);
 
   useEffect(() => {
     if (allowedEffortOptions.length === 0) {
@@ -305,41 +276,15 @@ export function TaskDefinitionFields({
   }, [allowedEffortOptions, form]);
 
   useEffect(() => {
-    if (selectedSourceType !== "blank") {
+    if (selectedProvider !== "codex") {
       return;
     }
-    if (form.isFieldTouched("title")) {
+    const current = form.getFieldValue("codexCredentialSource") as CodexCredentialSource | undefined;
+    if (current === "auto" || current === "profile" || current === "global") {
       return;
     }
-    const modelLabel =
-      providerModels.find((option) => option.value === selectedModel)?.label ??
-      (typeof selectedModel === "string" ? selectedModel : "");
-    form.setFieldValue(
-      "title",
-      buildBlankAutoTaskTitle({
-        taskType: selectedTaskType,
-        startMode: selectedStartMode,
-        repoName: selectedRepository?.name,
-        branchName: typeof selectedBaseBranch === "string" ? selectedBaseBranch : undefined,
-        modelLabel
-      })
-    );
-  }, [
-    form,
-    providerModels,
-    selectedBaseBranch,
-    selectedModel,
-    selectedRepository?.name,
-    selectedSourceType,
-    selectedStartMode,
-    selectedTaskType
-  ]);
-
-  useEffect(() => {
-    if ((isBlankSource || isIssueSource) && selectedStartMode === "prepare_workspace" && selectedTaskType !== "build") {
-      form.setFieldValue("taskType", "build");
-    }
-  }, [form, isBlankSource, isIssueSource, selectedStartMode, selectedTaskType]);
+    form.setFieldValue("codexCredentialSource", "auto");
+  }, [form, selectedProvider]);
 
   useEffect(() => {
     if (selectedTaskType === "build" && !canBuildTasks && canAskTasks) {
@@ -353,30 +298,7 @@ export function TaskDefinitionFields({
   }, [canAskTasks, canBuildTasks, form, selectedTaskType]);
 
   useEffect(() => {
-    if (!(isBlankSource || isIssueSource)) {
-      return;
-    }
-
-    if (selectedStartMode === "prepare_workspace" && !canUseInteractiveTerminal) {
-      form.setFieldValue("startMode", "run_now");
-      return;
-    }
-
-    if (selectedStartMode !== "prepare_workspace" && !canRunAutomatedTask && canUseInteractiveTerminal) {
-      form.setFieldValue("startMode", "prepare_workspace");
-    }
-  }, [canRunAutomatedTask, canUseInteractiveTerminal, form, isBlankSource, isIssueSource, selectedStartMode]);
-
-  useEffect(() => {
-    if ((isBlankSource || isIssueSource) && selectedStartMode === "idle") {
-      form.setFieldValue("startMode", "run_now");
-    }
-  }, [form, isBlankSource, isIssueSource, selectedStartMode]);
-
-  useEffect(() => {
     if (!selectedRepoId || !canReadRepositoryMetadata) {
-      setGitHubIssues([]);
-      setGitHubPullRequests([]);
       setGitHubBranches([]);
       return;
     }
@@ -384,18 +306,12 @@ export function TaskDefinitionFields({
     let active = true;
     setGitHubOptionsLoading(true);
 
-    void Promise.all([
-      api.listGitHubBranches(selectedRepoId).catch(() => []),
-      api.listGitHubIssues(selectedRepoId).catch(() => []),
-      api.listGitHubPullRequests(selectedRepoId).catch(() => [])
-    ]).then(([branches, issues, pullRequests]) => {
+    void api.listGitHubBranches(selectedRepoId).catch(() => []).then((branches) => {
       if (!active) {
         return;
       }
 
       setGitHubBranches(branches);
-      setGitHubIssues(issues);
-      setGitHubPullRequests(pullRequests);
       setGitHubOptionsLoading(false);
     });
 
@@ -404,330 +320,296 @@ export function TaskDefinitionFields({
     };
   }, [canReadRepositoryMetadata, selectedRepoId]);
 
-  const promptPanelTitle = isBlankSource ? (effectiveTaskType === "ask" ? "Question" : "Prompt") : "Imported Context";
-  const requirePromptForBlank = selectedStartMode === "run_now";
-  const disableBlankPromptInput = isBlankSource && selectedStartMode === "prepare_workspace";
-  const canAttachPromptImages = isBlankSource && selectedStartMode === "run_now";
+  const promptPanelTitle = effectiveTaskType === "ask" ? "Question" : "Prompt";
+  const canAttachPromptImages = allowPromptAttachments;
+  const canUsePromptMagic = true;
+  const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
 
-  useEffect(() => {
-    if (selectedSourceType === "blank") {
+  const handleGeneratePromptMagic = async (): Promise<void> => {
+    const prompt = (form.getFieldValue("prompt") as string | undefined)?.trim() ?? "";
+    if (!prompt || magicPromptLoading) {
       return;
     }
 
-    if ((promptImageFiles?.length ?? 0) > 0) {
-      onPromptImageFilesChange?.([]);
+    setMagicPromptLoading(true);
+    try {
+      const response = await api.generateTaskPromptMagic({ prompt });
+      const nextPrompt = response.prompt ?? "";
+      const currentTitle = (form.getFieldValue("title") as string | undefined)?.trim() ?? "";
+      const derivedTitle = deriveTitleFromPrompt(nextPrompt);
+      const nextValues: Partial<TaskDefinitionFormValues> = { prompt: nextPrompt };
+      if (!currentTitle && derivedTitle) {
+        nextValues.title = derivedTitle.slice(0, 500);
+      }
+      form.setFieldsValue(nextValues);
+      form.setFields([{ name: "prompt", value: nextPrompt }]);
+      trackEvent("task_prompt_magic_used", {
+        source: "task_create",
+        input_length: prompt.length,
+        output_length: nextPrompt.length
+      });
+      if (nextPrompt.trim() === prompt) {
+        void message.info("Magic prompt returned a similar result.");
+      } else {
+        void message.success("Prompt improved.");
+      }
+    } catch (error) {
+      const fallback = "Failed to generate prompt.";
+      const errorMessage = error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
+      void message.error(errorMessage);
+    } finally {
+      setMagicPromptLoading(false);
     }
-  }, [onPromptImageFilesChange, promptImageFiles?.length, selectedSourceType]);
+  };
 
-  const renderPromptPanel = (repository: Repository | null) => {
-    if (isBlankSource) {
-      const selectedSnippet = snippets.find((snippet) => snippet.id === selectedSnippetId) ?? null;
-      return (
-        <>
-          <Form.Item
-            name="title"
-            label="Title"
-            rules={[{ required: true, message: "Enter a task title" }]}
-            style={{ marginBottom: 16 }}
-            extra={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Suggested from task type, repository, base branch, and model until you edit this field.
-              </Typography.Text>
-            }
-          >
-            <Input placeholder="Build · my-org/my-repo · main · GPT-5.4" size="large" />
-          </Form.Item>
-          <Form.Item
-            name="prompt"
-            label={promptPanelTitle}
-            rules={
-              requirePromptForBlank
-                ? [{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]
-                : []
-            }
-            extra={
-              disableBlankPromptInput ? (
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  Disabled for workspace preparation only. Switch to run now to enter a prompt.
-                </Typography.Text>
-              ) : !requirePromptForBlank ? (
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  Optional for this start mode — you can describe intent later or work only in Interactive.
-                </Typography.Text>
-              ) : undefined
-            }
-            style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
-          >
-            <Flex vertical gap={12} style={{ flex: 1 }}>
-              {canUseSnippets ? (
-                <Flex gap={8} wrap>
-                  <Select
-                    showSearch
-                    style={{ minWidth: 280, flex: 1 }}
-                    placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
-                    value={selectedSnippetId}
-                    onChange={(value) => setSelectedSnippetId(value)}
-                    optionFilterProp="label"
-                    allowClear
-                    loading={snippetsLoading}
-                    disabled={disableBlankPromptInput || snippetsLoading || snippets.length === 0}
-                    options={snippets.map((snippet) => ({
-                      label: snippet.name,
-                      value: snippet.id
-                    }))}
-                  />
-                  <Button
-                    onClick={() => {
-                      if (!selectedSnippet) {
-                        return;
-                      }
-                      form.setFieldValue("prompt", insertSnippetContent(form.getFieldValue("prompt"), selectedSnippet.content));
-                      setSelectedSnippetId(null);
-                    }}
-                    disabled={disableBlankPromptInput || !selectedSnippet}
-                  >
-                    Insert Snippet
-                  </Button>
-                </Flex>
-              ) : null}
+  const insertIntoPrompt = (snippetContent: string | null | undefined): void => {
+    const currentPrompt = form.getFieldValue("prompt") as string | undefined;
+    const nextPrompt = insertSnippetContent(currentPrompt, snippetContent);
+    form.setFieldValue("prompt", nextPrompt);
+    form.setFields([{ name: "prompt", value: nextPrompt }]);
+  };
+
+  const handleInsertSelectedSnippet = (): void => {
+    if (!selectedSnippetToInsertId) {
+      return;
+    }
+
+    const snippet = snippets.find((item) => item.id === selectedSnippetToInsertId);
+    if (!snippet) {
+      void message.error("Selected snippet is no longer available.");
+      return;
+    }
+
+    if ((snippet.variables ?? []).length > 0) {
+      setPendingSnippetForInsert(snippet);
+      snippetVariableForm.resetFields();
+      const defaultValues = Object.fromEntries(
+        (snippet.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""])
+      );
+      snippetVariableForm.setFieldsValue(defaultValues);
+      setSnippetVariableModalOpen(true);
+      return;
+    }
+
+    insertIntoPrompt(snippet.content);
+    setSelectedSnippetToInsertId(null);
+  };
+
+  const handleConfirmSnippetVariableInsert = async (): Promise<void> => {
+    if (!pendingSnippetForInsert) {
+      return;
+    }
+
+    try {
+      const values = await snippetVariableForm.validateFields();
+      const rendered = applySnippetVariables(pendingSnippetForInsert.content, pendingSnippetForInsert.variables, values);
+      insertIntoPrompt(rendered);
+      setSnippetVariableModalOpen(false);
+      setPendingSnippetForInsert(null);
+      snippetVariableForm.resetFields();
+      setSelectedSnippetToInsertId(null);
+    } catch {
+      // Form-level validation messages are shown inline.
+    }
+  };
+
+  const handleCloseSnippetVariableModal = (): void => {
+    setSnippetVariableModalOpen(false);
+    setPendingSnippetForInsert(null);
+    snippetVariableForm.resetFields();
+    setSelectedSnippetToInsertId(null);
+  };
+
+  const renderPromptPanel = () => (
+    <>
+      <Form.Item
+        name="title"
+        label="Title"
+        rules={[{ required: true, message: "Enter a task title" }]}
+        style={{ marginBottom: 16 }}
+        extra={
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Choose a short, descriptive task title.
+          </Typography.Text>
+        }
+      >
+        <Input placeholder="Your Task Title" size="large" />
+      </Form.Item>
+      <Form.Item
+        label={promptPanelTitle}
+        style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
+      >
+        <Flex vertical gap={12} style={{ flex: 1 }}>
+          <div style={{ position: "relative" }}>
+            <Button
+              size="small"
+              type="default"
+              icon={<RobotOutlined />}
+              title="Magic Wand"
+              aria-label="Magic Wand"
+              loading={magicPromptLoading}
+              disabled={!canUsePromptMagic || promptIsEmpty || magicPromptLoading}
+              onClick={() => void handleGeneratePromptMagic()}
+              style={{
+                position: "absolute",
+                right: 10,
+                bottom: 10,
+                zIndex: 1
+              }}
+            />
+            <Form.Item
+              name="prompt"
+              style={{ marginBottom: 0 }}
+              rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]}
+            >
               <Input.TextArea
                 autoSize={{ minRows: 12, maxRows: 28 }}
-                style={{ resize: "none" }}
-                disabled={disableBlankPromptInput}
+                style={{ resize: "none", paddingRight: 44, paddingBottom: 38 }}
                 placeholder={
-                  disableBlankPromptInput
-                    ? "Prompt is disabled while preparing the workspace only."
-                    : effectiveTaskType === "ask"
-                    ? requirePromptForBlank
-                      ? "Ask a repository question."
-                      : "Optional question for the agent when you start a run."
-                    : requirePromptForBlank
-                      ? "Describe the goal, constraints, and expected outcome in your prompt."
-                      : "Optional — add a goal now or open Interactive after the workspace is prepared."
+                  effectiveTaskType === "ask"
+                    ? "Ask a repository question."
+                    : "Describe the goal, constraints, and expected outcome in your prompt."
                 }
               />
-              <TaskPromptAttachmentsInput
-                files={promptImageFiles}
-                onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
-                onError={(errorMessage) => void message.error(errorMessage)}
-                disabled={!canAttachPromptImages || !onPromptImageFilesChange}
+            </Form.Item>
+          </div>
+          {canUseSnippets ? (
+            <Flex gap={8} wrap="wrap">
+              <Select
+                showSearch
+                style={{ minWidth: 220, flex: 1 }}
+                placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
+                value={selectedSnippetToInsertId}
+                onChange={(value) => setSelectedSnippetToInsertId(value)}
+                optionFilterProp="label"
+                allowClear
+                loading={snippetsLoading}
+                disabled={snippetsLoading || snippets.length === 0}
+                options={snippets.map((snippet) => ({
+                  label: snippet.name,
+                  value: snippet.id
+                }))}
               />
+              <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetToInsertId}>
+                Insert
+              </Button>
             </Flex>
-          </Form.Item>
-        </>
-      );
-    }
-
-    if (isIssueSource) {
-      return (
-        <Flex vertical gap={16}>
-          <Alert
-            type="info"
-            showIcon
-            message="Issue content is imported from GitHub"
-            description="The issue title, body, and optional comments become the task prompt. Use the left-side configuration to select the issue and task behavior."
-          />
-          <Form.Item name="title" label="Task Title Override" style={{ marginBottom: 0 }}>
-            <Input placeholder="Optional. Leave blank to use the issue title." size="large" />
-          </Form.Item>
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            Imported against repository <Typography.Text code>{repository?.name ?? "unknown"}</Typography.Text>.
-          </Typography.Paragraph>
-          {selectedIssue ? (
-            <Alert
-              type="success"
-              showIcon
-              message={`Issue #${selectedIssue.number}: ${selectedIssue.title}`}
-              description={
-                <Typography.Link href={selectedIssue.url} target="_blank">
-                  Open issue in GitHub
-                </Typography.Link>
-              }
+          ) : null}
+          {allowPromptAttachments ? (
+            <TaskPromptAttachmentsInput
+              files={promptImageFiles}
+              onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
+              onError={(errorMessage) => void message.error(errorMessage)}
+              disabled={!canAttachPromptImages || !onPromptImageFilesChange}
             />
           ) : null}
         </Flex>
-      );
-    }
-
-    return (
-      <Flex vertical gap={16}>
-        <Alert
-          type="info"
-          showIcon
-          message="Pull request review threads are imported from GitHub"
-          description="AgentSwarm will create a build task from unresolved pull request review threads and continue work on the pull request branch."
+      </Form.Item>
+      <Form.Item
+        name="notes"
+        label="Notes (Markdown)"
+        extra={
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Optional. These notes are shown in the task Info tab below current configuration.
+          </Typography.Text>
+        }
+        style={{ marginTop: 16, marginBottom: 0 }}
+      >
+        <Input.TextArea
+          autoSize={{ minRows: 6, maxRows: 16 }}
+          style={{ resize: "none" }}
+          placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
         />
-        <Form.Item name="title" label="Task Title Override" style={{ marginBottom: 0 }}>
-          <Input placeholder="Optional. Leave blank to use the pull request title." size="large" />
-        </Form.Item>
-        <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-          The task targets the pull request head branch and uses <Typography.Text code>work_on_branch</Typography.Text>.
-        </Typography.Paragraph>
-        {selectedPullRequest ? (
-          <Alert
-            type="success"
-            showIcon
-            message={`PR #${selectedPullRequest.number}: ${selectedPullRequest.title}`}
-            description={
-              <Space wrap>
-                <Typography.Link href={selectedPullRequest.url} target="_blank">
-                  Open pull request in GitHub
-                </Typography.Link>
-                <Typography.Text type="secondary">
-                  {selectedPullRequest.baseBranch} {"->"} {selectedPullRequest.headBranch}
-                </Typography.Text>
-              </Space>
-            }
-          />
-        ) : null}
-      </Flex>
-    );
-  };
+      </Form.Item>
+    </>
+  );
 
   return (
-    <Row gutter={[24, 24]} align="stretch">
-      <Col xs={24} xl={8}>
-        <Card bordered={false} title="Configuration" styles={{ body: { display: "flex", flexDirection: "column", gap: 0 } }}>
-          <Form.Item name="sourceType" label="Source" rules={[{ required: true }]}>
-            <Select
-              options={sourceOptions}
-              onChange={(value: TaskSourceType) => {
-                if (value === "pull_request") {
-                  form.setFieldValue("taskType", "build");
-                  form.setFieldValue("branchStrategy", "work_on_branch");
-                  form.setFieldValue("startMode", "run_now");
-                }
-
-                if (value !== "blank") {
-                  form.setFieldValue("prompt", undefined);
-                }
-
-                if (value === "issue" || value === "pull_request") {
-                  form.setFieldValue("title", undefined);
-                  form.setFields([{ name: "title", touched: false }]);
-                }
-              }}
-            />
-          </Form.Item>
-
-          <Form.Item name="repoId" label="Repository" rules={[{ required: true }]}>
-            <Select
-              options={repositories.map((repository) => ({ label: repository.name, value: repository.id }))}
-              placeholder="Select repository"
-              onChange={(repoId) => {
-                const repository = repositories.find((item) => item.id === repoId);
-                form.setFieldValue("baseBranch", repository?.defaultBranch ?? "");
-                form.setFieldValue("issueNumber", undefined);
-                form.setFieldValue("pullRequestNumber", undefined);
-              }}
-            />
-          </Form.Item>
-
-          {isPullRequestSource ? (
-            <Form.Item name="pullRequestNumber" label="Pull Request" rules={[{ required: true }]}>
+    <>
+      <Row gutter={[24, 24]} align="stretch">
+        <Col xs={24} xl={8}>
+          <Card bordered={false} title="Configuration" styles={{ body: { display: "flex", flexDirection: "column", gap: 0 } }}>
+            <Form.Item name="repoId" label="Repository" rules={[{ required: true }]}>
               <Select
-                showSearch
-                loading={githubOptionsLoading}
-                placeholder={selectedRepoId ? "Select open pull request" : "Select repository first"}
-                optionFilterProp="label"
-                disabled={!selectedRepoId}
-                options={githubPullRequests.map((pullRequest) => ({
-                  label: `#${pullRequest.number} ${pullRequest.title}`,
-                  value: pullRequest.number
-                }))}
+                options={repositories.map((repository) => ({ label: repository.name, value: repository.id }))}
+                placeholder="Select repository"
+                disabled={lockRepository}
+                onChange={(repoId) => {
+                  const repository = repositories.find((item) => item.id === repoId);
+                  form.setFieldValue("baseBranch", repository?.defaultBranch ?? "");
+                }}
               />
             </Form.Item>
-          ) : null}
 
-          {isIssueSource ? (
-            <>
-              <Form.Item name="issueNumber" label="Issue" rules={[{ required: true }]}>
-                <Select
-                  showSearch
-                  loading={githubOptionsLoading}
-                  placeholder={selectedRepoId ? "Select open issue" : "Select repository first"}
-                  optionFilterProp="label"
-                  disabled={!selectedRepoId}
-                  options={githubIssues.map((issue) => ({
-                    label: `#${issue.number} ${issue.title}`,
-                    value: issue.number
-                  }))}
-                />
-              </Form.Item>
-              <Form.Item name="includeComments" valuePropName="checked">
-                <Checkbox>Include issue comments</Checkbox>
-              </Form.Item>
-            </>
-          ) : null}
-
-          {isBlankSource || isIssueSource ? (
-            <Form.Item name="startMode" label="Start mode" rules={[{ required: true }]}>
-              <Select options={startModeOptions} />
+            <Form.Item name="deadline" label="Deadline">
+              <DatePicker
+                showTime={{ format: "HH:mm" }}
+                format="YYYY-MM-DD HH:mm"
+                placeholder="No deadline"
+                style={{ width: "100%" }}
+                allowClear
+              />
             </Form.Item>
-          ) : null}
 
-          {isBlankSource && selectedStartMode !== "prepare_workspace" ? (
             <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
               <Select options={taskTypeOptions} />
             </Form.Item>
-          ) : null}
 
-          {!canRunAutomatedTask && !canUseInteractiveTerminal ? (
-            <Alert
-              type="warning"
-              showIcon
-              style={{ marginBottom: 16 }}
-              message="This role cannot create build, ask, or interactive tasks."
-              description="Ask an administrator to grant task mode permissions in Settings."
-            />
-          ) : null}
+            {!canRunAutomatedTask ? (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message="This role cannot create build or ask tasks."
+                description="Ask an administrator to grant task mode permissions in Settings."
+              />
+            ) : null}
 
-          <Form.Item name="provider" label="Provider" rules={[{ required: true }]}>
-            <Select
-              options={providerSelectOptions}
-              onChange={(value: AgentProvider) => {
-                const nextModels = getModelsForProvider(value).filter(
-                  (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
-                );
-                const nextEfforts = getEffortOptionsForProvider(value).filter(
-                  (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
-                );
-                form.setFieldValue("model", nextModels[0]?.value ?? getProviderDefaultModel(value, settings));
-                form.setFieldValue("providerProfile", nextEfforts[0]?.value ?? getProviderDefaultProfile(value, settings));
-              }}
-            />
-          </Form.Item>
+            <Form.Item name="provider" label="Provider" rules={[{ required: true }]}>
+              <Select
+                options={providerSelectOptions}
+                onChange={(value: AgentProvider) => {
+                  const nextModels = getModelsForProvider(value).filter(
+                    (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
+                  );
+                  const nextEfforts = getEffortOptionsForProvider(value).filter(
+                    (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
+                  );
+                  form.setFieldValue("model", nextModels[0]?.value ?? getProviderDefaultModel(value, settings));
+                  form.setFieldValue("providerProfile", nextEfforts[0]?.value ?? getProviderDefaultProfile(value, settings));
+                }}
+              />
+            </Form.Item>
 
-          <Form.Item name="model" label="Model" rules={[{ required: true }]}>
-            <Select options={allowedModelOptions} loading={providerModelsLoading} showSearch optionFilterProp="label" />
-          </Form.Item>
+            <Form.Item name="model" label="Model" rules={[{ required: true }]}>
+              <Select options={allowedModelOptions} loading={providerModelsLoading} showSearch optionFilterProp="label" />
+            </Form.Item>
 
-          <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
-            <Select options={allowedEffortOptions} />
-          </Form.Item>
+            <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
+              <Select options={allowedEffortOptions} />
+            </Form.Item>
 
-          {providerMissingCredentials ? (
-            <Alert
-              type="warning"
-              showIcon
-              style={{ marginBottom: 16 }}
-              message={`${selectedProvider === "codex" ? "OpenAI" : "Anthropic"} credentials are missing`}
-              description="Configure the provider credential in Settings before running this task."
-            />
-          ) : null}
+            {selectedProvider === "codex" ? (
+              <Form.Item name="codexCredentialSource" label="Codex Credential Source" rules={[{ required: true }]}>
+                <Select options={codexCredentialSourceOptions} />
+              </Form.Item>
+            ) : null}
 
-          {isIssueSource ? (
-            <>
-              {selectedStartMode !== "prepare_workspace" ? (
-                <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
-                  <Select options={taskTypeOptions} />
-                </Form.Item>
-              ) : null}
-            </>
-          ) : null}
+            {providerMissingCredentials ? (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message={`${selectedProvider === "codex" ? "Codex" : "Anthropic"} credentials are missing`}
+                description={
+                selectedProvider === "codex"
+                  ? "Configure Codex auth.json in your Profile or Settings, or set an OpenAI API key in Settings before running this task."
+                  : "Configure the provider credential in Settings before running this task."
+                }
+              />
+            ) : null}
 
-          {(isBlankSource || isIssueSource) && baseBranchLabel ? (
-            <Form.Item name="baseBranch" label={baseBranchLabel} rules={[{ required: true }]}>
+            <Form.Item name="baseBranch" label="Base Branch" rules={[{ required: true }]}>
               <Select
                 showSearch
                 loading={githubOptionsLoading}
@@ -745,36 +627,62 @@ export function TaskDefinitionFields({
                 }
               />
             </Form.Item>
-          ) : null}
 
-          {(isBlankSource && isImplementationTask) || (isIssueSource && selectedTaskType === "build") ? (
-            <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]}>
-              <Select
-                options={[
-                  { label: "Create feature branch", value: "feature_branch" },
-                  { label: "Work on existing branch", value: "work_on_branch" }
-                ]}
-              />
+            {isImplementationTask ? (
+              <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]}>
+                <Select
+                  options={[
+                    { label: "Create feature branch", value: "feature_branch" },
+                    { label: "Work on existing branch", value: "work_on_branch" }
+                  ]}
+                />
+              </Form.Item>
+            ) : null}
+          </Card>
+        </Col>
+
+        <Col xs={24} xl={16}>
+          <Card
+            bordered={false}
+            title={promptPanelTitle}
+            styles={{
+              body: {
+                display: "flex",
+                flexDirection: "column",
+                minHeight: 640
+              }
+            }}
+          >
+            {renderPromptPanel()}
+          </Card>
+        </Col>
+      </Row>
+      <Modal
+        title={pendingSnippetForInsert ? `Insert Snippet: ${pendingSnippetForInsert.name}` : "Insert Snippet"}
+        open={snippetVariableModalOpen}
+        onCancel={handleCloseSnippetVariableModal}
+        destroyOnClose
+        onOk={() => void handleConfirmSnippetVariableInsert()}
+        okText="Insert"
+      >
+        <Form form={snippetVariableForm} layout="vertical">
+          {(pendingSnippetForInsert?.variables ?? []).map((variable) => (
+            <Form.Item
+              key={variable.name}
+              name={variable.name}
+              label={variable.title.trim() || variable.name}
+              tooltip={variable.description.trim() || undefined}
+              rules={[{ required: true, message: `Enter ${variable.title.trim() || variable.name}` }]}
+            >
+              {variable.type === "multiline" ? (
+                <Input.TextArea rows={4} placeholder={variable.description.trim() || variable.name} />
+              ) : (
+                <Input placeholder={variable.description.trim() || variable.name} />
+              )}
             </Form.Item>
-          ) : null}
-        </Card>
-      </Col>
-
-      <Col xs={24} xl={16}>
-        <Card
-          bordered={false}
-          title={promptPanelTitle}
-          styles={{
-            body: {
-              display: "flex",
-              flexDirection: "column",
-              minHeight: 640
-            }
-          }}
-        >
-          {renderPromptPanel(selectedRepository)}
-        </Card>
-      </Col>
-    </Row>
+          ))}
+        </Form>
+      </Modal>
+    </>
   );
 }

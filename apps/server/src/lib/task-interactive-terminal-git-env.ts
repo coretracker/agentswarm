@@ -54,3 +54,13 @@ export function buildGitTerminalEnvEntries(options: {
 
   return envEntries;
 }
+
+export function buildGitTerminalDockerEnvEntries(options: {
+  runtimeEnvEntries: Array<[string, string]>;
+  repositoryEnvEntries?: Array<[string, string]> | null;
+}): Array<[string, string]> {
+  return [
+    ...options.runtimeEnvEntries,
+    ...(options.repositoryEnvEntries ?? [])
+  ];
+}

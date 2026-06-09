@@ -1,20 +1,204 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
+import type { CreateRepositoryInput, GitHubAutomationRule, UpdateRepositoryInput } from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import { sendHttpError } from "../lib/http-error.js";
+import { canUserAccessRepository } from "../lib/task-ownership.js";
 import type { RepositoryStore } from "../services/repository-store.js";
+import type { UserStore } from "../services/user-store.js";
+
+const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
+const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
+const REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH = 8192;
+const REPOSITORY_ENV_FILE_NAME_MAX_LENGTH = 255;
+const REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH = 350_000;
+const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
+const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
+const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
+const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
+
+const repositoryEnvKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(REPOSITORY_ENV_VAR_KEY_MAX_LENGTH)
+  .regex(REPOSITORY_ENV_VAR_KEY_PATTERN, "Names must match /^[A-Za-z_][A-Za-z0-9_]*$/.");
+
+const repositoryEnvVarsSchema = z
+  .array(
+    z.union([
+      z.object({
+        key: repositoryEnvKeySchema,
+        type: z.literal("text").optional(),
+        value: z.string().max(REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH)
+      }),
+      z.object({
+        key: repositoryEnvKeySchema,
+        type: z.literal("file"),
+        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
+        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
+      })
+    ])
+  )
+  .max(REPOSITORY_ENV_VAR_MAX_COUNT)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const key = entries[index]?.key;
+      if (!key) {
+        continue;
+      }
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "key"],
+          message: `Duplicate variable name: ${key}`
+        });
+      } else {
+        seen.add(key);
+      }
+    }
+  });
+
+const repositoryEnvSecretsSchema = z
+  .array(
+    z.union([
+      z.object({
+        key: repositoryEnvKeySchema
+          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
+          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
+        type: z.literal("text").optional(),
+        value: z.string().max(REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH).optional()
+      }),
+      z.object({
+        key: repositoryEnvKeySchema
+          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
+          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
+        type: z.literal("file"),
+        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
+        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
+      })
+    ])
+  )
+  .max(REPOSITORY_ENV_SECRET_MAX_COUNT)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const key = entries[index]?.key;
+      if (!key) {
+        continue;
+      }
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "key"],
+          message: `Duplicate secret name: ${key}`
+        });
+      } else {
+        seen.add(key);
+      }
+    }
+  });
 
 const createRepositorySchema = z.object({
   name: z.string().min(1),
   url: z.string().min(1),
   defaultBranch: z.string().min(1).optional(),
+  syncStatusEnabled: z.boolean().optional(),
+  envVars: repositoryEnvVarsSchema.optional(),
+  envSecrets: repositoryEnvSecretsSchema.optional(),
   webhookUrl: z.string().trim().url().nullable().optional(),
   webhookEnabled: z.boolean().optional(),
-  webhookSecret: z.string().trim().min(1).optional()
+  webhookSecret: z.string().trim().min(1).optional(),
+  githubWebhookSecret: z.string().trim().min(1).optional(),
+  githubAutomations: z
+    .array(
+      z.object({
+        id: z.string().trim().min(1),
+        name: z.string().trim().min(1).max(160),
+        enabled: z.boolean().optional(),
+        trigger: z.enum(["issue_opened", "pull_request_opened"]),
+        syncStatusEnabled: z.boolean().optional(),
+        automationEnabled: z.boolean().optional(),
+        allowedTriggers: z.array(z.enum(["emoji_reaction", "slash_command", "bot_mention"])).optional(),
+        allowedReactions: z.array(z.string().trim().min(1)).optional(),
+        allowedCommands: z.array(z.string().trim().min(1)).optional(),
+        allowedActorLogins: z.array(z.string().trim().min(1)).optional(),
+        labelFilter: z
+          .object({
+            labelsAny: z.array(z.string().trim().min(1)).optional(),
+            labelsAll: z.array(z.string().trim().min(1)).optional(),
+            labelsNone: z.array(z.string().trim().min(1)).optional()
+          })
+          .optional(),
+        task: z
+          .object({
+            assigneeEmail: z.string().trim().email().optional(),
+            codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+            taskType: z.enum(["build", "ask"]).optional(),
+            includeComments: z.boolean().optional(),
+            titleTemplate: z.string().optional(),
+            notes: z.string().optional(),
+            provider: z.enum(["codex", "claude"]).optional(),
+            providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+            modelOverride: z.string().nullable().optional(),
+            baseBranch: z.string().optional(),
+            branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+            snippetId: z.string().optional()
+          })
+          .strict()
+      })
+    )
+    .optional()
 });
 
 const updateRepositorySchema = createRepositorySchema.partial().extend({
-  clearWebhookSecret: z.boolean().optional()
+  clearWebhookSecret: z.boolean().optional(),
+  clearGithubWebhookSecret: z.boolean().optional()
+});
+
+type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;
+type ParsedRepositoryUpdateInput = z.infer<typeof updateRepositorySchema>;
+type ParsedGitHubAutomationRule = NonNullable<ParsedRepositoryInput["githubAutomations"]>[number];
+
+const nowIso = (): string => new Date().toISOString();
+
+const toGitHubAutomationRule = (rule: ParsedGitHubAutomationRule, now: string): GitHubAutomationRule => ({
+  id: rule.id,
+  name: rule.name,
+  enabled: rule.enabled ?? true,
+  trigger: rule.trigger,
+  syncStatusEnabled: rule.syncStatusEnabled,
+  automationEnabled: rule.automationEnabled,
+  allowedTriggers: rule.allowedTriggers,
+  allowedReactions: rule.allowedReactions,
+  allowedCommands: rule.allowedCommands,
+  allowedActorLogins: rule.allowedActorLogins,
+  labelFilter: rule.labelFilter,
+  task: rule.task,
+  createdAt: now,
+  updatedAt: now
+});
+
+const normalizeGitHubAutomations = (
+  rules: ParsedRepositoryInput["githubAutomations"] | ParsedRepositoryUpdateInput["githubAutomations"]
+): GitHubAutomationRule[] | undefined => {
+  if (!rules) {
+    return undefined;
+  }
+  const now = nowIso();
+  return rules.map((rule) => toGitHubAutomationRule(rule, now));
+};
+
+const toCreateRepositoryInput = (input: ParsedRepositoryInput): CreateRepositoryInput => ({
+  ...input,
+  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
+});
+
+const toUpdateRepositoryInput = (input: ParsedRepositoryUpdateInput): UpdateRepositoryInput => ({
+  ...input,
+  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
 });
 
 export const registerRepositoryRoutes = (
@@ -22,9 +206,22 @@ export const registerRepositoryRoutes = (
   deps: {
     repositoryStore: RepositoryStore;
     auth: AuthService;
+    userStore: UserStore;
   }
 ): void => {
-  app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async () => deps.repositoryStore.listRepositories());
+  app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async (request) => {
+    const repositories = await deps.repositoryStore.listRepositories();
+    return repositories.filter((repository) => canUserAccessRepository(request.auth?.user, repository.id));
+  });
+
+  app.get<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repository = await deps.repositoryStore.getRepository(request.params.id);
+    if (!repository || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    return reply.send(repository);
+  });
 
   app.post("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:create"]) }, async (request, reply) => {
     const parsed = createRepositorySchema.safeParse(request.body);
@@ -33,7 +230,26 @@ export const registerRepositoryRoutes = (
     }
 
     try {
-      const repository = await deps.repositoryStore.createRepository(parsed.data);
+      const createInput: CreateRepositoryInput = toCreateRepositoryInput(parsed.data);
+      const repository = await deps.repositoryStore.createRepository(createInput);
+      const authUser = request.auth?.user;
+      if (authUser) {
+        const creator = await deps.userStore.getUser(authUser.id);
+        if (creator) {
+          const resolvedRepositoryIds = await Promise.all(
+            creator.repositoryIds.map(async (repositoryId) =>
+              (await deps.repositoryStore.getRepository(repositoryId)) ? repositoryId : null
+            )
+          );
+          const nextRepositoryIds = resolvedRepositoryIds.filter((repositoryId): repositoryId is string => Boolean(repositoryId));
+          if (!nextRepositoryIds.includes(repository.id)) {
+            nextRepositoryIds.push(repository.id);
+          }
+          await deps.userStore.updateUser(creator.id, {
+            repositoryIds: nextRepositoryIds
+          });
+        }
+      }
       return reply.status(201).send(repository);
     } catch (error) {
       const sent = sendHttpError(reply, error);
@@ -51,7 +267,13 @@ export const registerRepositoryRoutes = (
     }
 
     try {
-      const updated = await deps.repositoryStore.updateRepository(request.params.id, parsed.data);
+      const current = await deps.repositoryStore.getRepository(request.params.id);
+      if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+        return reply.status(404).send({ message: "Repository not found" });
+      }
+
+      const updateInput: UpdateRepositoryInput = toUpdateRepositoryInput(parsed.data);
+      const updated = await deps.repositoryStore.updateRepository(request.params.id, updateInput);
       if (!updated) {
         return reply.status(404).send({ message: "Repository not found" });
       }
@@ -67,6 +289,11 @@ export const registerRepositoryRoutes = (
   });
 
   app.delete<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:delete"]) }, async (request, reply) => {
+    const current = await deps.repositoryStore.getRepository(request.params.id);
+    if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
     const deleted = await deps.repositoryStore.deleteRepository(request.params.id);
     if (!deleted) {
       return reply.status(404).send({ message: "Repository not found" });

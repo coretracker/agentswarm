@@ -1,37 +1,15 @@
 import type Redis from "ioredis";
-import type { TaskAction, TaskContextEntry, TaskExecutionInput, TaskPromptAttachment } from "@agentswarm/shared-types";
+import type { TaskAction, TaskExecutionInput, TaskPromptAttachment } from "@agentswarm/shared-types";
 import { normalizeTaskPromptAttachment } from "../lib/task-prompt-attachments.js";
 
 const TASK_QUEUE_KEY = "agentswarm:queue";
 
 export type QueueReason = "manual" | "auto";
 
-const normalizeTaskContextEntry = (value: unknown): TaskContextEntry | null => {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const entry = value as Partial<TaskContextEntry>;
-  if (
-    (entry.kind !== "message" && entry.kind !== "run" && entry.kind !== "proposal" && entry.kind !== "terminal_session") ||
-    typeof entry.label !== "string" ||
-    typeof entry.content !== "string"
-  ) {
-    return null;
-  }
-
-  return {
-    kind: entry.kind,
-    label: entry.label,
-    content: entry.content
-  };
-};
-
 const normalizeQueueEntryInput = (input: unknown): TaskExecutionInput | undefined => {
   if (typeof input === "string") {
     return {
-      content: input,
-      contextEntries: []
+      content: input
     };
   }
 
@@ -39,21 +17,17 @@ const normalizeQueueEntryInput = (input: unknown): TaskExecutionInput | undefine
     return undefined;
   }
 
-  const value = input as Partial<TaskExecutionInput> & { contextEntries?: unknown; attachments?: unknown };
+  const value = input as Partial<TaskExecutionInput> & { attachments?: unknown };
   if (typeof value.content !== "string") {
     return undefined;
   }
 
-  const contextEntries = Array.isArray(value.contextEntries)
-    ? value.contextEntries.map(normalizeTaskContextEntry).filter((entry): entry is TaskContextEntry => entry !== null)
-    : [];
   const attachments = Array.isArray(value.attachments)
     ? value.attachments.map(normalizeTaskPromptAttachment).filter((attachment): attachment is TaskPromptAttachment => attachment !== null)
     : [];
 
   return {
     content: value.content,
-    contextEntries,
     ...(attachments.length > 0 ? { attachments } : {})
   };
 };

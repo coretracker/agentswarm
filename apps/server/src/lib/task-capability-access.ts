@@ -7,7 +7,6 @@ import {
   type ProviderProfile,
   type TaskAction,
   type TaskReasoningEffort,
-  type TaskStartMode,
   type TaskType
 } from "@agentswarm/shared-types";
 import {
@@ -41,17 +40,13 @@ const requireScopes = (
 export const requireTaskCapabilityAccess = (
   request: FastifyRequest,
   reply: FastifyReply,
-  input: { taskType?: TaskType; startMode?: TaskStartMode }
+  input: { taskType?: TaskType }
 ): boolean =>
   requireScopes(
     request,
     reply,
     getRequiredTaskCapabilityScopes(input),
-    input.startMode === "prepare_workspace"
-      ? "Interactive terminal access is not permitted for this role."
-      : input.taskType === "ask"
-        ? "Ask access is not permitted for this role."
-        : "Build access is not permitted for this role."
+    input.taskType === "ask" ? "Ask access is not permitted for this role." : "Build access is not permitted for this role."
   );
 
 export const requireTaskActionCapabilityAccess = (

@@ -13,9 +13,8 @@ import {
 } from "antd";
 import { PushpinFilled, PushpinOutlined, SearchOutlined } from "@ant-design/icons";
 import {
-  getTaskStatusLabel,
+  getTaskExecutionStatusLabel,
   getTaskTerminalSessionLabel,
-  isQueuedTaskStatus,
   isTaskWorking,
   type Task
 } from "@agentswarm/shared-types";
@@ -39,7 +38,7 @@ interface AppSidebarProps {
 }
 
 function isLiveTask(task: Task): boolean {
-  return isQueuedTaskStatus(task.status) || isTaskWorking(task);
+  return isTaskWorking(task);
 }
 
 function getTaskStatusText(task: Task): string {
@@ -47,7 +46,7 @@ function getTaskStatusText(task: Task): string {
     return `${getTaskTerminalSessionLabel(task.activeTerminalSessionMode === "git" ? "git" : "interactive")} Running`;
   }
 
-  return getTaskStatusLabel(task.status);
+  return getTaskExecutionStatusLabel(task.executionStatus);
 }
 
 function getStatusAccentColor(task: Task, token: ReturnType<typeof antTheme.useToken>["token"]): string {
@@ -55,15 +54,15 @@ function getStatusAccentColor(task: Task, token: ReturnType<typeof antTheme.useT
     return token.colorPrimary;
   }
 
-  if (task.status === "failed") {
+  if (task.executionStatus === "failed") {
     return token.colorError;
   }
 
-  if (task.status === "awaiting_review") {
+  if (task.executionStatus === "cancelled") {
     return token.colorWarning;
   }
 
-  if (task.status === "open") {
+  if (task.executionStatus === "idle") {
     return token.colorSuccess;
   }
 

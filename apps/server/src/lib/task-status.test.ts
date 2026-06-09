@@ -18,29 +18,59 @@ describe("resolveTaskReadyStatus", () => {
 
 describe("normalizeTaskLifecycleStatus", () => {
   it("maps legacy successful statuses into the new ready states", () => {
-    assert.equal(normalizeTaskLifecycleStatus("completed", "build", true), "awaiting_review");
+    assert.equal(normalizeTaskLifecycleStatus("completed", "build", true), "open");
     assert.equal(normalizeTaskLifecycleStatus("answered", "ask", false), "open");
     assert.equal(normalizeTaskLifecycleStatus("accepted", "build", false), "open");
   });
 
-  it("preserves queued and active statuses", () => {
-    assert.equal(normalizeTaskLifecycleStatus("build_queued", "build", false), "build_queued");
-    assert.equal(normalizeTaskLifecycleStatus("asking", "ask", false), "asking");
+  it("preserves explicit done state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("done", "build", false), "done");
+  });
+
+  it("preserves explicit in_review state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("in_review", "build", false), "in_review");
+  });
+
+  it("maps queued and active execution statuses back to open Kanban state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("scheduled", "build", false), "scheduled");
+    assert.equal(normalizeTaskLifecycleStatus("build_queued", "build", false), "open");
+    assert.equal(normalizeTaskLifecycleStatus("asking", "ask", false), "open");
+  });
+
+  it("preserves draft state", () => {
+    assert.equal(normalizeTaskLifecycleStatus("draft", "build", false), "draft");
   });
 });
 
 describe("reconcileTaskStatusWithPendingCheckpoint", () => {
-  it("moves idle tasks into review when a checkpoint is pending", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("failed", true), "awaiting_review");
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("open", true), "awaiting_review");
+  it("does not move Kanban state when a checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("failed", true), "open");
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("open", true), "open");
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", true), "in_review");
   });
 
-  it("returns review and legacy-ready states to open when no checkpoint is pending", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("awaiting_review", false), "open");
+  it("returns legacy-ready states to open when no checkpoint is pending", () => {
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("accepted", false), "open");
+  });
+
+  it("preserves explicit in_review and done states when no checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", false), "in_review");
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("done", false), "done");
+  });
+
+  it("returns awaiting_review to open when no checkpoint is pending", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("awaiting_review", false), "open");
   });
 
   it("keeps archived tasks unchanged", () => {
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("archived", true), "archived");
+  });
+
+  it("keeps scheduled tasks unchanged", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("scheduled", true), "scheduled");
+  });
+
+  it("keeps draft tasks unchanged", () => {
+    assert.equal(reconcileTaskStatusWithPendingCheckpoint("draft", true), "draft");
   });
 });

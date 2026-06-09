@@ -1,0 +1,58 @@
+[
+  {
+    "id": "ai-issue-opened",
+    "name": "AI issue -> build task",
+    "enabled": true,
+    "trigger": "issue_opened",
+    "labelFilter": {
+      "labelsAny": ["ai"],
+      "labelsNone": ["wip"]
+    },
+    "task": {
+      "assigneeEmail": "dev@company.com",
+      "taskType": "build",
+      "provider": "codex",
+      "providerProfile": "high",
+      "modelOverride": "gpt-5.4",
+      "codexCredentialSource": "profile"
+    }
+  },
+  {
+    "id": "ai-comment-triggers-on-issues",
+    "name": "Issue comments can intentionally trigger automation",
+    "enabled": true,
+    "trigger": "issue_opened",
+    "automationEnabled": true,
+    "allowedTriggers": ["emoji_reaction", "slash_command", "bot_mention"],
+    "allowedReactions": ["🤖", "eyes"],
+    "allowedCommands": ["/agent run"],
+    "allowedActorLogins": ["repo-admin", "maintainer-1"],
+    "labelFilter": {
+      "labelsAny": ["ai"],
+      "labelsNone": ["wip"]
+    },
+    "task": {
+      "assigneeEmail": "dev@company.com",
+      "taskType": "build",
+      "includeComments": true,
+      "provider": "codex",
+      "providerProfile": "high"
+    }
+  },
+  {
+    "id": "ai-comment-triggers-on-prs",
+    "name": "PR comments can intentionally trigger automation",
+    "enabled": true,
+    "trigger": "pull_request_opened",
+    "automationEnabled": true,
+    "allowedTriggers": ["emoji_reaction", "slash_command", "bot_mention"],
+    "allowedReactions": ["🤖", "rocket"],
+    "allowedCommands": ["/agent run"],
+    "allowedActorLogins": ["repo-admin", "maintainer-1"],
+    "task": {
+      "assigneeEmail": "dev@company.com",
+      "provider": "codex",
+      "providerProfile": "high"
+    }
+  }
+]

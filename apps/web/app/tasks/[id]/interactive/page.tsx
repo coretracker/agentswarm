@@ -47,7 +47,7 @@ export default function TaskInteractiveRoutePage() {
           <Typography.Text strong style={{ color: token.colorText }}>
             {mode === "git"
               ? task
-                ? `Git Terminal · ${task.branchName ?? task.repoDefaultBranch} in task workspace`
+                ? `Terminal · ${task.branchName ?? task.repoDefaultBranch} in task workspace`
                 : terminalLabel
               : task
                 ? `Interactive · ${providerLabel} in task workspace`

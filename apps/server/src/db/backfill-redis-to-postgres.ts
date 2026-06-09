@@ -53,6 +53,7 @@ interface UserRecord extends JsonRecord {
   email: string;
   active?: boolean;
   roleIds?: string[];
+  repositoryIds?: string[];
   passwordHash: string;
   passwordSalt: string;
   lastLoginAt?: string | null;
@@ -65,6 +66,8 @@ interface RepositoryRecord extends JsonRecord {
   name: string;
   url: string;
   defaultBranch?: string;
+  envVars?: unknown[];
+  envSecrets?: unknown[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string | null;
@@ -79,6 +82,7 @@ interface SnippetRecord extends JsonRecord {
   id: string;
   name: string;
   content: string;
+  variables?: unknown[];
   createdAt: string;
   updatedAt: string;
 }
@@ -129,12 +133,97 @@ const trimString = (value: unknown): string | null => {
   return normalized.length > 0 ? normalized : null;
 };
 
+const repositoryEnvVarArray = (
+  value: unknown
+): Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized: Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const rawKey = (entry as Record<string, unknown>).key;
+    const key = typeof rawKey === "string" ? rawKey.trim() : "";
+    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || seen.has(key)) {
+      continue;
+    }
+    const type = (entry as Record<string, unknown>).type === "file" ? "file" : "text";
+    if (type === "file") {
+      const fileId = trimString((entry as Record<string, unknown>).fileId);
+      if (!fileId) {
+        continue;
+      }
+      const fileName = trimString((entry as Record<string, unknown>).fileName) ?? `${key}.bin`;
+      const sizeBytesRaw = (entry as Record<string, unknown>).sizeBytes;
+      const sizeBytes = typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0 ? Math.floor(sizeBytesRaw) : 0;
+      normalized.push({ key, type: "file", fileId, fileName, sizeBytes });
+      seen.add(key);
+      continue;
+    }
+    const rawValue = (entry as Record<string, unknown>).value;
+    const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
+    normalized.push({ key, type: "text", value: normalizedValue });
+    seen.add(key);
+  }
+  return normalized;
+};
+
+const repositoryEnvSecretArray = (
+  value: unknown
+): Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized: Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const rawKey = (entry as Record<string, unknown>).key;
+    const key = typeof rawKey === "string" ? rawKey.trim() : "";
+    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || seen.has(key)) {
+      continue;
+    }
+    const type = (entry as Record<string, unknown>).type === "file" ? "file" : "text";
+    if (type === "file") {
+      const fileId = trimString((entry as Record<string, unknown>).fileId);
+      if (!fileId) {
+        continue;
+      }
+      const fileName = trimString((entry as Record<string, unknown>).fileName) ?? `${key}.bin`;
+      const sizeBytesRaw = (entry as Record<string, unknown>).sizeBytes;
+      const sizeBytes = typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0 ? Math.floor(sizeBytesRaw) : 0;
+      normalized.push({ key, type: "file", fileId, fileName, sizeBytes });
+      seen.add(key);
+      continue;
+    }
+    const rawValue = (entry as Record<string, unknown>).value;
+    const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
+    if (!normalizedValue) {
+      continue;
+    }
+    normalized.push({ key, type: "text", value: normalizedValue });
+    seen.add(key);
+  }
+  return normalized;
+};
+
 const stringArray = (value: unknown): string[] =>
   Array.isArray(value)
-    ? value
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
+    ? Array.from(
+        new Set(
+          value
+            .filter((entry): entry is string => typeof entry === "string")
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+        )
+      )
     : [];
 
 const loadRoles = async (redis: Redis): Promise<RoleRecord[]> => {
@@ -281,6 +370,8 @@ const main = async (): Promise<void> => {
       loadTaskSnapshots(redis),
       redis.get(BOOTSTRAP_ADMIN_MARKER_KEY)
     ]);
+    const repositoryIds = new Set(repositories.map((repository) => repository.id));
+    let skippedUserRepositoryAssignments = 0;
 
     await withPostgresTransaction(postgresPool, async (client) => {
       await client.query(`
@@ -293,6 +384,7 @@ const main = async (): Promise<void> => {
           task_interactive_terminal_transcripts,
           task_runs,
           tasks,
+          user_repositories,
           user_roles,
           users,
           roles,
@@ -354,20 +446,31 @@ const main = async (): Promise<void> => {
               id,
               name,
               email,
+              git_author_name,
+              git_author_email,
               active,
+              agent_response_preference,
               password_hash,
               password_salt,
               last_login_at,
               created_at,
               updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
           `,
           [
             user.id,
             String(user.name ?? "").trim(),
             String(user.email ?? "").trim().toLowerCase(),
+            trimString((user as { gitAuthorName?: string }).gitAuthorName),
+            trimString((user as { gitAuthorEmail?: string }).gitAuthorEmail)?.toLowerCase() ?? null,
             user.active !== false,
+            JSON.stringify(
+              user.agentResponsePreference &&
+                typeof user.agentResponsePreference === "object"
+                ? user.agentResponsePreference
+                : { enabled: false, style: null }
+            ),
             user.passwordHash,
             user.passwordSalt,
             user.lastLoginAt ?? null,
@@ -389,6 +492,8 @@ const main = async (): Promise<void> => {
               name,
               url,
               default_branch,
+              env_vars,
+              env_secrets,
               webhook_url,
               webhook_enabled,
               webhook_secret,
@@ -398,13 +503,15 @@ const main = async (): Promise<void> => {
               created_at,
               updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14)
           `,
           [
             repository.id,
             String(repository.name ?? "").trim(),
             String(repository.url ?? "").trim(),
             trimString(repository.defaultBranch) ?? "develop",
+            JSON.stringify(repositoryEnvVarArray(repository.envVars)),
+            JSON.stringify(repositoryEnvSecretArray(repository.envSecrets)),
             trimString(repository.webhookUrl),
             repository.webhookEnabled === true,
             trimString(repository.webhookSecret),
@@ -417,10 +524,27 @@ const main = async (): Promise<void> => {
         );
       }
 
+      for (const user of users) {
+        for (const repositoryId of stringArray(user.repositoryIds)) {
+          if (!repositoryIds.has(repositoryId)) {
+            skippedUserRepositoryAssignments += 1;
+            continue;
+          }
+          await client.query("INSERT INTO user_repositories (user_id, repository_id) VALUES ($1, $2)", [user.id, repositoryId]);
+        }
+      }
+
       for (const snippet of snippets) {
         await client.query(
-          "INSERT INTO snippets (id, name, content, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
-          [snippet.id, String(snippet.name ?? "").trim(), String(snippet.content ?? "").trim(), snippet.createdAt, snippet.updatedAt]
+          "INSERT INTO snippets (id, name, content, created_at, updated_at, variables) VALUES ($1, $2, $3, $4, $5, $6::jsonb)",
+          [
+            snippet.id,
+            String(snippet.name ?? "").trim(),
+            String(snippet.content ?? "").trim(),
+            snippet.createdAt,
+            snippet.updatedAt,
+            JSON.stringify(Array.isArray(snippet.variables) ? snippet.variables : [])
+          ]
         );
       }
 
@@ -432,27 +556,35 @@ const main = async (): Promise<void> => {
               default_provider,
               max_agents,
               branch_prefix,
+              workspace_provisioning_mode,
               git_username,
               mcp_servers,
               openai_base_url,
+              task_prompt_magic_model,
+              task_prompt_magic_template,
               codex_default_model,
               codex_default_effort,
               claude_default_model,
-              claude_default_effort
+              claude_default_effort,
+              response_preference_presets
             )
-            VALUES (1, $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+            VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13::jsonb)
           `,
           [
             trimString(settings.defaultProvider) ?? "codex",
             typeof settings.maxAgents === "number" ? settings.maxAgents : 2,
             trimString(settings.branchPrefix) ?? "agentswarm",
+            trimString((settings as { workspaceProvisioningMode?: string }).workspaceProvisioningMode) ?? "clone_only",
             trimString(settings.gitUsername) ?? "x-access-token",
             JSON.stringify(Array.isArray(settings.mcpServers) ? settings.mcpServers : []),
             trimString(settings.openaiBaseUrl),
+            trimString((settings as { taskPromptMagicModel?: string }).taskPromptMagicModel) ?? "gpt-5.4-mini",
+            trimString((settings as { taskPromptMagicTemplate?: string }).taskPromptMagicTemplate) ?? "",
             trimString(settings.codexDefaultModel) ?? "gpt-5.4",
             trimString(settings.codexDefaultEffort) ?? "high",
             trimString(settings.claudeDefaultModel) ?? "claude-sonnet-4-5",
-            trimString(settings.claudeDefaultEffort) ?? "high"
+            trimString(settings.claudeDefaultEffort) ?? "high",
+            JSON.stringify(Array.isArray(settings.responsePreferencePresets) ? settings.responsePreferencePresets : [])
           ]
         );
       }
@@ -577,6 +709,7 @@ const main = async (): Promise<void> => {
           roles: roles.length,
           users: users.length,
           repositories: repositories.length,
+          skippedUserRepositoryAssignments,
           snippets: snippets.length,
           tasks: taskSnapshots.length
         },

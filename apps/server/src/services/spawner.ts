@@ -1,10 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, type Dirent } from "node:fs";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { nanoid } from "nanoid";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  type AgentResponsePreference,
   getCheckpointMutationBlockedReason,
   getTaskStatusLabel,
   getTaskTerminalSessionEndMessage,
@@ -14,10 +16,10 @@ import {
   isActiveTaskStatus,
   isQueuedTaskStatus,
   type AgentProvider,
+  type NormalizedAgentEvent,
   type McpServerConfig,
   type Task,
   type TaskChangeProposal,
-  type TaskContextEntry,
   type TaskExecutionInput,
   type TaskLiveDiff,
   type TaskAction,
@@ -25,9 +27,15 @@ import {
   type TaskMergePreview,
   type TaskPushPreview,
   type TaskTerminalSessionMode,
+  type TaskWorkspaceFileSearchResult,
   type TaskWorkspaceFilePreview,
+  type TaskWorkspaceFileTree,
+  type TaskWorkspaceFileTreeEntry,
   type TaskWorkspaceCommit,
-  type TaskWorkspaceCommitLog
+  type TaskWorkspaceCommitLog,
+  type TaskGitOperation,
+  type TaskGitOperationFailureCode,
+  type TaskGitOperationType
 } from "@agentswarm/shared-types";
 import { makeBranchName } from "../lib/branch.js";
 import { buildGitProcessEnv } from "../lib/git-env.js";
@@ -38,6 +46,7 @@ import { installManagedGitHooks } from "../lib/managed-git-hooks.js";
 import { reconcileTaskStatusWithPendingCheckpoint, resolveTaskReadyStatus } from "../lib/task-status.js";
 import { buildTaskCommitSubject, formatCommitSubject } from "../lib/task-commit-subject.js";
 import { parsePostflightConfig, postflightAppliesToTask, type PostflightConfig } from "../lib/postflight-config.js";
+import { collectMcpServerEnvEntries, collectMissingMcpServerBearerTokenEnvVars } from "../lib/mcp-config.js";
 import {
   resolveTaskPromptAttachmentRoot,
   resolveTaskPromptAttachmentServerPath
@@ -47,6 +56,15 @@ import {
   readSafeWorkspaceFileBuffer,
   resolveSafeWorkspaceFilePath
 } from "../lib/safe-workspace-file.js";
+import { materializeRepositoryRuntimeEnvEntries } from "../lib/repository-runtime-env.js";
+import { parseAgentJsonlEvents } from "../lib/agent-event-parser.js";
+import {
+  emitDockerSocketEnabledEventOnce,
+  emitNestedContainerSpawnedEvent,
+  resolveDockerSocketAccessPolicy,
+  resolveDockerSocketEnvEntries,
+  resolveDockerSocketMountArgs
+} from "../lib/docker-socket-access.js";
 import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
 import { env } from "../config/env.js";
@@ -54,11 +72,29 @@ import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.j
 import type { TaskStore } from "./task-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { UserStore } from "./user-store.js";
+import type { RepositoryStore } from "./repository-store.js";
+import { RepositoryEnvFileStore } from "./repository-env-file-store.js";
+import { RepoSyncManager, type RepoSyncOperation } from "./repo-sync-manager.js";
 
 const ansiPattern = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\))/g;
+const LIVE_TIMELINE_POLL_INTERVAL_MS = 1_000;
 
 const sanitizeChunk = (chunk: string): string =>
   chunk.replace(/\r/g, "\n").replace(ansiPattern, "").replace(/[^\x09\x0A\x20-\x7E]/g, "");
+
+const stripIncompleteTrailingJsonlLine = (rawJsonl: string): string => {
+  if (rawJsonl.length === 0 || rawJsonl.endsWith("\n") || rawJsonl.endsWith("\r")) {
+    return rawJsonl;
+  }
+
+  const lastNewlineIndex = Math.max(rawJsonl.lastIndexOf("\n"), rawJsonl.lastIndexOf("\r"));
+  return lastNewlineIndex >= 0 ? rawJsonl.slice(0, lastNewlineIndex + 1) : "";
+};
+
+const timelineSignature = (events: NormalizedAgentEvent[]): string => {
+  const last = events.at(-1);
+  return `${events.length}:${last?.id ?? ""}:${last?.kind ?? ""}:${last?.rawEventIndex ?? ""}`;
+};
 
 const sanitizePathSegment = (value: string): string => {
   const cleaned = value
@@ -96,7 +132,6 @@ interface RuntimeManifest {
   executionSummary: string;
   repoProfile: string;
   content: string;
-  contextEntries: TaskContextEntry[];
   attachments: Array<{
     id: string;
     name: string;
@@ -113,9 +148,11 @@ interface RuntimeManifest {
   resolvedModel: string | null;
   resolvedReasoningEffort?: string;
   resolvedThinkingBudgetTokens?: number;
+  agentResponsePreference: AgentResponsePreference;
   workspacePath: string;
   resultMarkdownPath: string;
   resultJsonPath: string;
+  rawEventsJsonlPath: string;
   providerConfigPath: string;
 }
 
@@ -132,9 +169,26 @@ interface WorkspacePreparation {
   hostWorkspacePath: string;
   startRef: string;
   workspaceBaseRef: string;
-  kind: "worktree" | "clone";
+  kind: "clone";
   ephemeral: boolean;
   cleanupRepoPath: string | null;
+}
+
+type WorkspacePrepareFailureReason =
+  | "auth"
+  | "network"
+  | "branch_missing"
+  | "clone_error"
+  | "unknown";
+
+class WorkspacePrepareError extends Error {
+  readonly reason: WorkspacePrepareFailureReason;
+
+  constructor(message: string, reason: WorkspacePrepareFailureReason, readonly causeDetail?: string) {
+    super(message);
+    this.name = "WorkspacePrepareError";
+    this.reason = reason;
+  }
 }
 
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
@@ -153,7 +207,12 @@ const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
 };
 
 const WORKSPACE_FILE_PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
+const WORKSPACE_FILE_TREE_DEFAULT_LIMIT = 5_000;
+const WORKSPACE_FILE_TREE_MAX_LIMIT = 20_000;
+const WORKSPACE_FILE_SEARCH_DEFAULT_LIMIT = 50;
+const WORKSPACE_FILE_SEARCH_MAX_LIMIT = 500;
 const SAFE_GIT_PREVIEW_REF_PATTERN = /^[A-Za-z0-9._/-]+(?:[~^][0-9]*)*$/;
+const WORKSPACE_KIND = "clone";
 
 function getPreviewMimeType(filePath: string): string | null {
   return IMAGE_MIME_BY_EXTENSION[path.extname(filePath).toLowerCase()] ?? null;
@@ -189,16 +248,30 @@ export class SpawnerService {
   private cancelRequestedTaskIds = new Set<string>();
   private repoLocks = new Map<string, Promise<void>>();
   private gitTargetLocks = new Map<string, Promise<void>>();
+  private taskGitOperationLocks = new Map<string, Promise<void>>();
+  private readonly repoSyncManager = new RepoSyncManager();
   private executionContextStorage = new AsyncLocalStorage<{ taskId: string; executionId: string }>();
+  private gitWorkerContextStorage = new AsyncLocalStorage<{ enabled: boolean }>();
 
   constructor(
     private readonly taskStore: TaskStore,
     private readonly settingsStore: SettingsStore,
-    private readonly userStore: UserStore
+    private readonly userStore: UserStore,
+    private readonly repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries">,
+    private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore()
   ) {}
 
   private formatExecutionLabel(command: string, args: string[]): string {
     return truncate([command, ...args].join(" "), 160);
+  }
+
+  private normalizeCommandError(command: string, stderr: string, code: number | null): string {
+    const raw = (stderr || "").trim();
+    if (command === "git" && raw.includes("warning: Not a git repository. Use --no-index")) {
+      return "Task workspace is not a valid git repository. Rebuild/prep the workspace, then retry.";
+    }
+
+    return raw || `${command} exited with code ${code ?? "unknown"}`;
   }
 
   private registerCurrentExecutionProcess(command: string, args: string[], process: ReturnType<typeof spawn>): void {
@@ -254,7 +327,7 @@ export class SpawnerService {
           return;
         }
 
-        reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+        reject(new Error(this.normalizeCommandError(command, stderr, code)));
       });
     });
   }
@@ -291,7 +364,7 @@ export class SpawnerService {
           return;
         }
 
-        reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+        reject(new Error(this.normalizeCommandError(command, stderr, code)));
       });
     });
   }
@@ -328,7 +401,7 @@ export class SpawnerService {
           return;
         }
 
-        reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+        reject(new Error(this.normalizeCommandError(command, stderr, code)));
       });
     });
   }
@@ -365,7 +438,7 @@ export class SpawnerService {
           return;
         }
 
-        reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+        reject(new Error(this.normalizeCommandError(command, stderr, code)));
       });
     });
   }
@@ -407,9 +480,92 @@ export class SpawnerService {
           return;
         }
 
-        reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+        reject(new Error(this.normalizeCommandError(command, stderr, code)));
       });
     });
+  }
+
+  private shouldUseGitWorkerContainer(): boolean {
+    return this.gitWorkerContextStorage.getStore()?.enabled === true;
+  }
+
+  private buildGitWorkerDockerArgs(args: string[], gitEnv: NodeJS.ProcessEnv): string[] {
+    const image = env.GIT_TERMINAL_IMAGE?.trim();
+    if (!image) {
+      throw new Error("Git worker container is not configured (set GIT_TERMINAL_IMAGE on the server).");
+    }
+
+    const dockerEnv: string[] = [
+      "-e",
+      "GIT_OPTIONAL_LOCKS=0",
+      "-e",
+      "HOME=/tmp",
+      "-e",
+      "GIT_CONFIG_COUNT=1",
+      "-e",
+      "GIT_CONFIG_KEY_0=safe.directory",
+      "-e",
+      "GIT_CONFIG_VALUE_0=*"
+    ];
+    for (const [key, value] of Object.entries(gitEnv)) {
+      if (typeof value === "string") {
+        dockerEnv.push("-e", `${key}=${value}`);
+      }
+    }
+
+    const commandScript =
+      [
+        "set -eu",
+        "if [ -n \"${GIT_TOKEN:-}\" ]; then",
+        "  printf '%s\\n' '#!/bin/sh' 'case \"$1\" in' '  *sername*) echo \"${GIT_USERNAME:-x-access-token}\" ;;' '  *assword*) echo \"${GIT_TOKEN:-}\" ;;' '  *) echo \"\" ;;' 'esac' > /tmp/agentswarm-git-askpass.sh",
+        "  chmod 700 /tmp/agentswarm-git-askpass.sh",
+        "  export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/tmp/agentswarm-git-askpass.sh",
+        "fi",
+        "exec git \"$@\""
+      ].join("\n");
+
+    const repoCacheMountSource = existsSync("/.dockerenv") ? env.REPO_CACHE_VOLUME : env.REPO_CACHE_ROOT;
+
+    return [
+      "run",
+      "--rm",
+      "-i",
+      "-v",
+      `${env.TASK_WORKSPACE_HOST_ROOT}:${env.TASK_WORKSPACE_ROOT}:rw`,
+      "-v",
+      `${repoCacheMountSource}:${env.REPO_CACHE_ROOT}:rw`,
+      ...dockerEnv,
+      image,
+      "sh",
+      "-lc",
+      commandScript,
+      "sh",
+      ...args
+    ];
+  }
+
+  private async runGitCommandInWorker(args: string[], gitEnv: NodeJS.ProcessEnv): Promise<void> {
+    await this.runCommand("docker", this.buildGitWorkerDockerArgs(args, gitEnv));
+  }
+
+  private async runGitCommandCaptureInWorker(args: string[], gitEnv: NodeJS.ProcessEnv): Promise<string> {
+    return this.runCommandCapture("docker", this.buildGitWorkerDockerArgs(args, gitEnv));
+  }
+
+  private async runGitCommandCaptureRawInWorker(args: string[], gitEnv: NodeJS.ProcessEnv): Promise<string> {
+    return this.runCommandCaptureRaw("docker", this.buildGitWorkerDockerArgs(args, gitEnv));
+  }
+
+  private runGitCommandCaptureBufferInWorker(args: string[], gitEnv: NodeJS.ProcessEnv): Promise<Buffer> {
+    return this.runCommandCaptureBuffer("docker", this.buildGitWorkerDockerArgs(args, gitEnv));
+  }
+
+  private async runGitCommandCaptureAllowExitCodesInWorker(
+    args: string[],
+    allowedExitCodes: number[],
+    gitEnv: NodeJS.ProcessEnv
+  ): Promise<string> {
+    return this.runCommandCaptureAllowExitCodes("docker", this.buildGitWorkerDockerArgs(args, gitEnv), allowedExitCodes);
   }
 
   private async buildGitEnv(
@@ -462,18 +618,19 @@ export class SpawnerService {
   private async withNamedLock<T>(locks: Map<string, Promise<void>>, key: string, fn: () => Promise<T>): Promise<T> {
     const current = locks.get(key) ?? Promise.resolve();
     let release!: () => void;
-    const next = new Promise<void>((resolve) => {
+    const nextGate = new Promise<void>((resolve) => {
       release = resolve;
     });
+    const nextLock = current.then(() => nextGate);
 
-    locks.set(key, current.then(() => next));
+    locks.set(key, nextLock);
     await current;
 
     try {
       return await fn();
     } finally {
       release();
-      if (locks.get(key) === next) {
+      if (locks.get(key) === nextLock) {
         locks.delete(key);
       }
     }
@@ -517,22 +674,38 @@ export class SpawnerService {
     task?: Pick<Task, "ownerUserId">
   ): Promise<void> {
     const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername, task);
-    await this.runGitWithRecovery(args, () => this.runCommand("git", args, gitEnv));
+    await this.runGitWithRecovery(args, () =>
+      this.shouldUseGitWorkerContainer()
+        ? this.runGitCommandInWorker(args, gitEnv)
+        : this.runCommand("git", args, gitEnv)
+    );
   }
 
   private async gitCommandCapture(args: string[], githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
     const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
-    return this.runGitWithRecovery(args, () => this.runCommandCapture("git", args, gitEnv));
+    return this.runGitWithRecovery(args, () =>
+      this.shouldUseGitWorkerContainer()
+        ? this.runGitCommandCaptureInWorker(args, gitEnv)
+        : this.runCommandCapture("git", args, gitEnv)
+    );
   }
 
   private async gitCommandCaptureRaw(args: string[], githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
     const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
-    return this.runGitWithRecovery(args, () => this.runCommandCaptureRaw("git", args, gitEnv));
+    return this.runGitWithRecovery(args, () =>
+      this.shouldUseGitWorkerContainer()
+        ? this.runGitCommandCaptureRawInWorker(args, gitEnv)
+        : this.runCommandCaptureRaw("git", args, gitEnv)
+    );
   }
 
   private async gitCommandCaptureBuffer(args: string[], githubToken?: string | null, gitUsername = "x-access-token"): Promise<Buffer> {
     const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
-    return this.runGitWithRecovery(args, () => this.runCommandCaptureBuffer("git", args, gitEnv));
+    return this.runGitWithRecovery(args, () =>
+      this.shouldUseGitWorkerContainer()
+        ? this.runGitCommandCaptureBufferInWorker(args, gitEnv)
+        : this.runCommandCaptureBuffer("git", args, gitEnv)
+    );
   }
 
   private async gitCommandCaptureAllowExitCodes(
@@ -543,13 +716,295 @@ export class SpawnerService {
   ): Promise<string> {
     const gitEnv = await this.buildGitEnv(args, githubToken, gitUsername);
     return this.runGitWithRecovery(args, () =>
-      this.runCommandCaptureAllowExitCodes(
-        "git",
-        args,
-        allowedExitCodes,
-        gitEnv
-      )
+      this.shouldUseGitWorkerContainer()
+        ? this.runGitCommandCaptureAllowExitCodesInWorker(args, allowedExitCodes, gitEnv)
+        : this.runCommandCaptureAllowExitCodes(
+            "git",
+            args,
+            allowedExitCodes,
+            gitEnv
+          )
     );
+  }
+
+  /**
+   * Clone strategy for task/ask workspaces:
+   * - Fetch depth: full history by default (`null`) to avoid shallow-history edge cases.
+   * - Base ref selection: branch ref first, then task base branch.
+   * - Missing branch fallback: if feature branch is missing remotely, create it from base branch.
+   */
+  private static readonly WORKSPACE_FETCH_DEPTH: number | null = null;
+
+  private emitWorkspacePrepareEvent(
+    event: "workspace_prepare_started" | "workspace_prepare_succeeded" | "workspace_prepare_failed",
+    payload: {
+      taskId: string;
+      taskType: Task["taskType"];
+      workspaceKind: typeof WORKSPACE_KIND;
+      failureReason?: WorkspacePrepareFailureReason;
+      mode?: "clone_only" | "hybrid";
+    }
+  ): void {
+    const base = {
+      level: "info",
+      event,
+      workspace_kind: payload.workspaceKind,
+      task_type: payload.taskType,
+      task_id: payload.taskId,
+      workspace_provisioning_mode: payload.mode ?? "clone_only"
+    } as const;
+
+    if (event === "workspace_prepare_failed") {
+      console.info(JSON.stringify({ ...base, failure_reason: payload.failureReason ?? "unknown" }));
+      return;
+    }
+
+    console.info(JSON.stringify(base));
+  }
+
+  private classifyWorkspacePrepareFailure(error: unknown): WorkspacePrepareFailureReason {
+    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    if (
+      message.includes("authentication failed") ||
+      message.includes("could not read username") ||
+      message.includes("permission denied") ||
+      message.includes("repository not found") ||
+      message.includes("access denied")
+    ) {
+      return "auth";
+    }
+    if (
+      message.includes("could not resolve host") ||
+      message.includes("failed to connect") ||
+      message.includes("connection timed out") ||
+      message.includes("network is unreachable") ||
+      message.includes("http request failed")
+    ) {
+      return "network";
+    }
+    if (
+      message.includes("not a commit") ||
+      message.includes("did not match any file") ||
+      (message.includes("remote branch") && message.includes("not found"))
+    ) {
+      return "branch_missing";
+    }
+    if (message.includes("clone")) {
+      return "clone_error";
+    }
+    return "unknown";
+  }
+
+  private classifyTaskGitOperationFailure(operationType: TaskGitOperationType, error: unknown): TaskGitOperationFailureCode {
+    if (error instanceof CancelledTaskError) {
+      return "unknown";
+    }
+
+    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    if (
+      message.includes("authentication failed") ||
+      message.includes("could not read username") ||
+      message.includes("permission denied") ||
+      message.includes("repository not found") ||
+      message.includes("access denied")
+    ) {
+      return "auth_failed";
+    }
+    if (
+      message.includes("could not resolve host") ||
+      message.includes("failed to connect") ||
+      message.includes("connection timed out") ||
+      message.includes("network is unreachable") ||
+      message.includes("http request failed")
+    ) {
+      return "network_error";
+    }
+    if (message.includes("no local workspace exists")) {
+      return "workspace_missing";
+    }
+    if (
+      message.includes("remote branch") && message.includes("does not exist") ||
+      message.includes("not a commit") ||
+      message.includes("did not match any file")
+    ) {
+      return "branch_missing";
+    }
+    if (
+      message.includes("non-fast-forward") ||
+      message.includes("merge conflict") ||
+      message.includes("could not apply") ||
+      message.includes("rebase")
+    ) {
+      return "conflict";
+    }
+    if (operationType === "push_task_branch" && (message.includes("nothing to commit") || message.includes("nothing to push"))) {
+      return "nothing_to_push";
+    }
+    return "unknown";
+  }
+
+  private emitTaskGitOperationAnalytics(
+    event: "git_op_started" | "git_op_succeeded" | "git_op_failed" | "git_op_retried",
+    payload: {
+      operation: TaskGitOperation;
+      durationMs?: number;
+    }
+  ): void {
+    const base = {
+      level: "info",
+      event,
+      task_id: payload.operation.taskId,
+      operation_type: payload.operation.operationType,
+      status: payload.operation.status,
+      failure_code: payload.operation.errorCode,
+      retry_count: Math.max(0, payload.operation.attemptCount - 1)
+    } as Record<string, unknown>;
+    if (typeof payload.durationMs === "number") {
+      base.duration_ms = payload.durationMs;
+    }
+    console.info(JSON.stringify(base));
+  }
+
+  private async withGitWorkerContainer<T>(fn: () => Promise<T>): Promise<T> {
+    return this.gitWorkerContextStorage.run({ enabled: true }, fn);
+  }
+
+  private async withTrackedTaskGitOperation<T>(
+    task: Task,
+    operationType: TaskGitOperationType,
+    fn: (operation: TaskGitOperation) => Promise<T>
+  ): Promise<T> {
+    if (this.taskGitOperationLocks.has(task.id)) {
+      throw new Error("Another Git operation is already running for this task workspace. Wait for it to finish, then retry.");
+    }
+
+    const latest = await this.taskStore.getLatestGitOperation(task.id);
+    const attemptCount = latest && latest.operationType === operationType ? latest.attemptCount + 1 : 1;
+    const queued = await this.taskStore.createGitOperation({
+      taskId: task.id,
+      operationType,
+      status: "queued",
+      attemptCount
+    });
+    if (!queued) {
+      throw new Error("Task not found.");
+    }
+
+    if (attemptCount > 1) {
+      this.emitTaskGitOperationAnalytics("git_op_retried", { operation: queued });
+    }
+
+    return this.withNamedLock(this.taskGitOperationLocks, task.id, async () => {
+      const running =
+        (await this.taskStore.updateGitOperation(queued.operationId, {
+          status: "running",
+          finishedAt: null,
+          errorCode: null,
+          errorMessage: null,
+          attemptCount
+        })) ?? queued;
+      this.emitTaskGitOperationAnalytics("git_op_started", { operation: running });
+
+      const startedAtMs = Date.parse(running.startedAt);
+      try {
+        const result = await this.withGitWorkerContainer(() => fn(running));
+        const finished =
+          (await this.taskStore.updateGitOperation(running.operationId, {
+            status: "succeeded",
+            finishedAt: new Date().toISOString(),
+            errorCode: null,
+            errorMessage: null,
+            attemptCount
+          })) ?? running;
+        const finishedAtMs = finished.finishedAt ? Date.parse(finished.finishedAt) : NaN;
+        this.emitTaskGitOperationAnalytics("git_op_succeeded", {
+          operation: finished,
+          durationMs: Number.isFinite(startedAtMs) && Number.isFinite(finishedAtMs) ? Math.max(0, finishedAtMs - startedAtMs) : undefined
+        });
+        return result;
+      } catch (error) {
+        const failureCode = this.classifyTaskGitOperationFailure(operationType, error);
+        const message = error instanceof Error ? error.message : String(error);
+        const failedStatus: TaskGitOperation["status"] = error instanceof CancelledTaskError ? "cancelled" : "failed";
+        const failed =
+          (await this.taskStore.updateGitOperation(running.operationId, {
+            status: failedStatus,
+            finishedAt: new Date().toISOString(),
+            errorCode: failedStatus === "failed" ? failureCode : null,
+            errorMessage: failedStatus === "failed" ? message : null,
+            attemptCount
+          })) ?? running;
+        const finishedAtMs = failed.finishedAt ? Date.parse(failed.finishedAt) : NaN;
+        this.emitTaskGitOperationAnalytics("git_op_failed", {
+          operation: failed,
+          durationMs: Number.isFinite(startedAtMs) && Number.isFinite(finishedAtMs) ? Math.max(0, finishedAtMs - startedAtMs) : undefined
+        });
+        throw error;
+      }
+    });
+  }
+
+  private workspaceFetchArgs(refSpec: string): string[] {
+    const args = ["fetch", "--prune"];
+    if (SpawnerService.WORKSPACE_FETCH_DEPTH && SpawnerService.WORKSPACE_FETCH_DEPTH > 0) {
+      args.push(`--depth=${SpawnerService.WORKSPACE_FETCH_DEPTH}`);
+    }
+    args.push("origin", refSpec);
+    return args;
+  }
+
+  private async cloneWorkspaceRepository(sourceRepoPath: string, workspacePath: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<void> {
+    await this.gitCommand(["clone", "--no-checkout", "--no-local", sourceRepoPath, workspacePath], githubToken, gitUsername);
+  }
+
+  private async cloneWorkspaceFromSource(
+    sourceRepoPath: string,
+    sourceRepoUrl: string,
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<void> {
+    await rm(workspacePath, { recursive: true, force: true });
+    await mkdir(path.dirname(workspacePath), { recursive: true });
+    await this.cloneWorkspaceRepository(sourceRepoPath, workspacePath, githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "remote", "set-url", "origin", sourceRepoUrl], githubToken, gitUsername);
+  }
+
+  private async checkoutTaskWorkspaceBranch(
+    task: Task,
+    workspacePath: string,
+    branchName: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<void> {
+    const baseRemoteRef = `origin/${task.baseBranch}`;
+    const branchRemoteRef = `origin/${branchName}`;
+    await this.gitCommand(["-C", workspacePath, ...this.workspaceFetchArgs("+refs/heads/*:refs/remotes/origin/*")], githubToken, gitUsername);
+
+    if (task.branchStrategy === "work_on_branch") {
+      if (!(await this.refExists(workspacePath, baseRemoteRef, githubToken, gitUsername))) {
+        throw new WorkspacePrepareError(
+          `Workspace setup failed: base branch '${task.baseBranch}' is missing on origin.`,
+          "branch_missing"
+        );
+      }
+      await this.gitCommand(["-C", workspacePath, "checkout", "-B", task.baseBranch, baseRemoteRef], githubToken, gitUsername);
+      return;
+    }
+
+    if (await this.refExists(workspacePath, branchRemoteRef, githubToken, gitUsername)) {
+      await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, branchRemoteRef], githubToken, gitUsername);
+      return;
+    }
+
+    if (!(await this.refExists(workspacePath, baseRemoteRef, githubToken, gitUsername))) {
+      throw new WorkspacePrepareError(
+        `Workspace setup failed: neither '${branchName}' nor base branch '${task.baseBranch}' exists on origin.`,
+        "branch_missing"
+      );
+    }
+
+    await this.gitCommand(["-C", workspacePath, "checkout", "-B", branchName, baseRemoteRef], githubToken, gitUsername);
   }
 
   private async withRepoLock<T>(repoKey: string, fn: () => Promise<T>): Promise<T> {
@@ -575,6 +1030,18 @@ export class SpawnerService {
     return resolveGitPaths(path.join(workspacePath, ".git"));
   }
 
+  private async resolveWorkspaceHeadRef(
+    workspacePath: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string | null> {
+    try {
+      return await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
+    } catch {
+      return null;
+    }
+  }
+
   private async syncWorkspaceRemoteRefsIfNeeded(
     task: Pick<Task, "repoUrl">,
     workspacePath: string,
@@ -582,7 +1049,7 @@ export class SpawnerService {
     gitUsername = "x-access-token"
   ): Promise<void> {
     const gitPaths = await this.getWorkspaceGitPaths(workspacePath).catch(() => null);
-    if (!gitPaths || gitPaths.usesLinkedWorktree) {
+    if (!gitPaths) {
       return;
     }
 
@@ -685,11 +1152,12 @@ export class SpawnerService {
     task: Task,
     githubToken: string | null | undefined,
     gitUsername: string,
+    operation: RepoSyncOperation,
     fn: (repoPath: string) => Promise<T>
   ): Promise<T> {
     const repoCachePath = this.resolveRepoCachePath(task);
     return this.withRepoLock(repoCachePath, async () => {
-      let managedRepoPath = await this.ensureManagedRepoFresh(task, githubToken, gitUsername);
+      let managedRepoPath = await this.ensureManagedRepoFresh(task, operation, githubToken, gitUsername);
       try {
         return await fn(managedRepoPath);
       } catch (error) {
@@ -698,7 +1166,8 @@ export class SpawnerService {
         }
 
         await rm(managedRepoPath, { recursive: true, force: true });
-        managedRepoPath = await this.ensureManagedRepoFresh(task, githubToken, gitUsername);
+        this.repoSyncManager.clear(repoCachePath);
+        managedRepoPath = await this.ensureManagedRepoFresh(task, operation, githubToken, gitUsername);
         return fn(managedRepoPath);
       }
     });
@@ -708,9 +1177,10 @@ export class SpawnerService {
     task: Task,
     workspacePath: string,
     githubToken: string | null | undefined,
-    gitUsername: string
+    gitUsername: string,
+    operation: RepoSyncOperation = "status"
   ): Promise<void> {
-    await this.withFreshManagedRepo(task, githubToken, gitUsername, async () => {
+    await this.withFreshManagedRepo(task, githubToken, gitUsername, operation, async () => {
       await this.syncWorkspaceRemoteRefsIfNeeded(task, workspacePath, githubToken, gitUsername);
     });
   }
@@ -1005,20 +1475,128 @@ export class SpawnerService {
     return path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
   }
 
-  private resolveAskWorkspaceRoot(taskId: string): string {
-    return path.join(env.TASK_WORKSPACE_ROOT, ".ask-runs", taskId);
+  resolveTaskRunRawEventsJsonlPath(taskId: string, runId: string): string {
+    return path.join(resolveTaskStateRootPaths(taskId).serverPath, "raw-runs", `${sanitizePathSegment(runId)}.jsonl`);
   }
 
-  private resolveAskWorkspaceHostRoot(taskId: string): string {
-    return path.join(env.TASK_WORKSPACE_HOST_ROOT, ".ask-runs", taskId);
+  resolveTaskRunRawEventsJsonlHostPath(taskId: string, runId: string): string {
+    return path.join(resolveTaskStateRootPaths(taskId).hostPath, "raw-runs", `${sanitizePathSegment(runId)}.jsonl`);
   }
 
-  private resolveAskWorkspacePath(taskId: string, executionId: string): string {
-    return path.join(this.resolveAskWorkspaceRoot(taskId), executionId);
+  resolveTaskRunRawEventsMount(taskId: string, runId: string): { hostDir: string; containerDir: string } {
+    return {
+      hostDir: path.dirname(this.resolveTaskRunRawEventsJsonlHostPath(taskId, runId)),
+      containerDir: path.dirname(this.resolveTaskRunRawEventsJsonlPath(taskId, runId))
+    };
   }
 
-  private resolveAskWorkspaceHostPath(taskId: string, executionId: string): string {
-    return path.join(this.resolveAskWorkspaceHostRoot(taskId), executionId);
+  private async prepareTaskRunRawEventsJsonl(taskId: string, runId: string): Promise<string> {
+    const rawEventsJsonlPath = this.resolveTaskRunRawEventsJsonlPath(taskId, runId);
+    await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
+    await writeFile(rawEventsJsonlPath, "", "utf8");
+    await chmod(path.dirname(rawEventsJsonlPath), 0o777).catch(() => undefined);
+    await chmod(rawEventsJsonlPath, 0o666).catch(() => undefined);
+    return rawEventsJsonlPath;
+  }
+
+  private async readRunTimelineEvents(
+    task: Task,
+    rawEventsJsonlPath: string,
+    options: { includeTrailingPartialLine: boolean }
+  ): Promise<NormalizedAgentEvent[]> {
+    const rawJsonl = await readFile(rawEventsJsonlPath, "utf8");
+    const parseableJsonl = options.includeTrailingPartialLine ? rawJsonl : stripIncompleteTrailingJsonlLine(rawJsonl);
+    if (!parseableJsonl.trim()) {
+      return [];
+    }
+    return parseAgentJsonlEvents(task.provider, parseableJsonl);
+  }
+
+  private async parseAndStoreRunTimeline(task: Task, runId: string | null, rawEventsJsonlPath: string | null): Promise<void> {
+    if (!runId || !rawEventsJsonlPath) {
+      return;
+    }
+
+    try {
+      const timelineEvents = await this.readRunTimelineEvents(task, rawEventsJsonlPath, {
+        includeTrailingPartialLine: true
+      });
+      if (timelineEvents.length === 0) {
+        return;
+      }
+      await this.taskStore.updateRun(runId, { timelineEvents });
+    } catch (error) {
+      await this.taskStore.appendLogForRun(
+        task.id,
+        `Spawner: warning - could not parse raw ${task.provider} JSON timeline (${error instanceof Error ? error.message : String(error)}).`,
+        runId
+      );
+    }
+  }
+
+  private startLiveRunTimelineStream(
+    task: Task,
+    runId: string | null,
+    rawEventsJsonlPath: string | null
+  ): { stop: () => Promise<void> } {
+    if (!runId || !rawEventsJsonlPath) {
+      return { stop: async () => undefined };
+    }
+
+    let stopped = false;
+    let parseInFlight = false;
+    let lastSignature = "0:::";
+    let lastErrorMessage: string | null = null;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const parseAndPublish = async (): Promise<void> => {
+      if (stopped || parseInFlight) {
+        return;
+      }
+
+      parseInFlight = true;
+      try {
+        const timelineEvents = await this.readRunTimelineEvents(task, rawEventsJsonlPath, {
+          includeTrailingPartialLine: false
+        });
+        const nextSignature = timelineSignature(timelineEvents);
+        if (timelineEvents.length > 0 && nextSignature !== lastSignature) {
+          lastSignature = nextSignature;
+          await this.taskStore.updateRun(runId, { timelineEvents });
+        }
+        lastErrorMessage = null;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message !== lastErrorMessage) {
+          lastErrorMessage = message;
+          await this.taskStore.appendLogForRun(
+            task.id,
+            `Spawner: warning - live ${task.provider} JSON timeline stream paused (${message}).`,
+            runId
+          );
+        }
+      } finally {
+        parseInFlight = false;
+      }
+    };
+
+    interval = setInterval(() => {
+      void parseAndPublish();
+    }, LIVE_TIMELINE_POLL_INTERVAL_MS);
+    void parseAndPublish();
+
+    return {
+      stop: async () => {
+        stopped = true;
+        if (interval) {
+          clearInterval(interval);
+          interval = null;
+        }
+        while (parseInFlight) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
+    };
   }
 
   private registerActiveExecution(
@@ -1056,14 +1634,15 @@ export class SpawnerService {
       return false;
     }
 
-    const nextStatus = activeRuns.some((run) => run.action === "build") ? "building" : "asking";
+    const executionAction = activeRuns.some((run) => run.action === "build") ? "build" : "ask";
     const earliestStartedAt = activeRuns.reduce(
       (earliest, run) => (run.startedAt < earliest ? run.startedAt : earliest),
       activeRuns[0]!.startedAt
     );
 
-    await this.taskStore.setStatus(taskId, nextStatus, {
+    await this.taskStore.setExecutionState(taskId, "running", {
       ...patch,
+      executionAction,
       startedAt: earliestStartedAt,
       finishedAt: null,
       errorMessage: null,
@@ -1223,13 +1802,200 @@ export class SpawnerService {
     }
   }
 
+  async listTaskWorkspaceFiles(
+    task: Task,
+    options?: { prefix?: string | null; limit?: number }
+  ): Promise<TaskWorkspaceFileTree> {
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const safeLimit = Number.isFinite(options?.limit)
+      ? Math.max(1, Math.min(WORKSPACE_FILE_TREE_MAX_LIMIT, Math.floor(options?.limit ?? WORKSPACE_FILE_TREE_DEFAULT_LIMIT)))
+      : WORKSPACE_FILE_TREE_DEFAULT_LIMIT;
+    const normalizedPrefix = options?.prefix?.trim() ? normalizeSafeWorkspaceRelativePath(options.prefix) : "";
+
+    const workspaceExists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+
+    if (!workspaceExists) {
+      return {
+        prefix: normalizedPrefix || null,
+        entries: [],
+        fetchedAt: new Date().toISOString(),
+        truncated: false,
+        totalCount: 0
+      };
+    }
+
+    if (options?.prefix?.trim() && !normalizedPrefix) {
+      return {
+        prefix: null,
+        entries: [],
+        fetchedAt: new Date().toISOString(),
+        truncated: false,
+        totalCount: 0
+      };
+    }
+
+    const targetPath = normalizedPrefix ? resolveSafeWorkspaceFilePath(workspacePath, normalizedPrefix) : workspacePath;
+    if (!targetPath) {
+      return {
+        prefix: normalizedPrefix || null,
+        entries: [],
+        fetchedAt: new Date().toISOString(),
+        truncated: false,
+        totalCount: 0
+      };
+    }
+
+    let children: Dirent[];
+    try {
+      children = await readdir(targetPath, { withFileTypes: true });
+    } catch {
+      return {
+        prefix: normalizedPrefix || null,
+        entries: [],
+        fetchedAt: new Date().toISOString(),
+        truncated: false,
+        totalCount: 0
+      };
+    }
+
+    children.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+    const entries: TaskWorkspaceFileTreeEntry[] = [];
+    let truncated = false;
+    for (const child of children) {
+      if (child.name === ".git") {
+        continue;
+      }
+      if (!child.isDirectory() && !child.isFile()) {
+        continue;
+      }
+
+      const relativePath = normalizedPrefix ? `${normalizedPrefix}/${child.name}` : child.name;
+      entries.push({
+        path: relativePath,
+        name: child.name,
+        kind: child.isDirectory() ? "directory" : "file"
+      });
+
+      if (entries.length >= safeLimit) {
+        truncated = true;
+        break;
+      }
+    }
+
+    return {
+      prefix: normalizedPrefix || null,
+      entries,
+      fetchedAt: new Date().toISOString(),
+      truncated,
+      totalCount: entries.length
+    };
+  }
+
+  async searchTaskWorkspaceFiles(
+    task: Task,
+    options: { query: string; limit?: number }
+  ): Promise<TaskWorkspaceFileSearchResult> {
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const query = options.query.trim().toLowerCase();
+    const safeLimit = Number.isFinite(options.limit)
+      ? Math.max(1, Math.min(WORKSPACE_FILE_SEARCH_MAX_LIMIT, Math.floor(options.limit ?? WORKSPACE_FILE_SEARCH_DEFAULT_LIMIT)))
+      : WORKSPACE_FILE_SEARCH_DEFAULT_LIMIT;
+
+    if (!query) {
+      return {
+        query: options.query,
+        results: [],
+        fetchedAt: new Date().toISOString(),
+        truncated: false,
+        totalCount: 0
+      };
+    }
+
+    const workspaceExists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!workspaceExists) {
+      return {
+        query: options.query,
+        results: [],
+        fetchedAt: new Date().toISOString(),
+        truncated: false,
+        totalCount: 0
+      };
+    }
+
+    const results: string[] = [];
+    const queue: Array<{ absolutePath: string; relativePath: string }> = [{ absolutePath: workspacePath, relativePath: "" }];
+
+    while (queue.length > 0 && results.length < safeLimit) {
+      const current = queue.pop();
+      if (!current) {
+        break;
+      }
+
+      let children: Dirent[];
+      try {
+        children = await readdir(current.absolutePath, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      children.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+      const directoriesToVisit: Array<{ absolutePath: string; relativePath: string }> = [];
+
+      for (const child of children) {
+        if (child.name === ".git") {
+          continue;
+        }
+
+        const relativePath = current.relativePath ? `${current.relativePath}/${child.name}` : child.name;
+        if (child.isDirectory()) {
+          const safeDirectoryPath = resolveSafeWorkspaceFilePath(workspacePath, relativePath);
+          if (!safeDirectoryPath) {
+            continue;
+          }
+          directoriesToVisit.push({
+            absolutePath: safeDirectoryPath,
+            relativePath
+          });
+          continue;
+        }
+
+        if (!child.isFile()) {
+          continue;
+        }
+
+        const candidate = relativePath.toLowerCase();
+        if (candidate.includes(query)) {
+          results.push(relativePath);
+          if (results.length >= safeLimit) {
+            break;
+          }
+        }
+      }
+
+      for (let index = directoriesToVisit.length - 1; index >= 0; index -= 1) {
+        queue.push(directoriesToVisit[index]!);
+      }
+    }
+
+    return {
+      query: options.query,
+      results,
+      fetchedAt: new Date().toISOString(),
+      truncated: results.length >= safeLimit,
+      totalCount: results.length
+    };
+  }
+
   async getTaskWorkspaceFilePreview(
     task: Task,
     filePath: string,
-    ref?: string | null,
-    executionId?: string | null
+    ref?: string | null
   ): Promise<TaskWorkspaceFilePreview | null> {
-    const workspacePath = executionId ? this.resolveAskWorkspacePath(task.id, executionId) : this.resolveWorkspacePath(task.id);
+    const workspacePath = this.resolveWorkspacePath(task.id);
     const relativePath = normalizeSafeWorkspaceRelativePath(filePath);
     if (!relativePath) {
       return null;
@@ -1358,7 +2124,12 @@ export class SpawnerService {
     return summary;
   }
 
-  private async ensureManagedRepoFresh(task: Task, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
+  private async ensureManagedRepoFresh(
+    task: Task,
+    operation: RepoSyncOperation,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string> {
     const repoPath = this.resolveRepoCachePath(task);
     await mkdir(path.dirname(repoPath), { recursive: true });
 
@@ -1378,12 +2149,21 @@ export class SpawnerService {
     await this.gitCommand(["-C", repoPath, "remote", "set-url", "origin", task.repoUrl], githubToken, gitUsername).catch(async () => {
       await this.gitCommand(["-C", repoPath, "remote", "add", "origin", task.repoUrl], githubToken, gitUsername);
     });
-    await this.gitCommand(
-      ["-C", repoPath, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"],
-      githubToken,
-      gitUsername
-    );
-    await this.gitCommand(["-C", repoPath, "worktree", "prune"], githubToken, gitUsername).catch(() => undefined);
+
+    const syncDecision = this.repoSyncManager.decide(repoPath, operation);
+    if (!repoExists || syncDecision.shouldFetch) {
+      await this.gitCommand(
+        ["-C", repoPath, "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"],
+        githubToken,
+        gitUsername
+      );
+      this.repoSyncManager.markFetched(repoPath);
+    }
+
+    if (!repoExists || syncDecision.shouldPrune) {
+      await this.gitCommand(["-C", repoPath, "worktree", "prune"], githubToken, gitUsername).catch(() => undefined);
+      this.repoSyncManager.markPruned(repoPath);
+    }
 
     return repoPath;
   }
@@ -1426,7 +2206,7 @@ export class SpawnerService {
         return { pullCount: 0, pushCount: 0 };
       }
 
-      await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "status");
 
       let pullCount = 0;
       let pushCount = 0;
@@ -1525,7 +2305,7 @@ export class SpawnerService {
     for (const filePath of untrackedFiles) {
       try {
         const patch = await this.gitCommandCaptureAllowExitCodes(
-          ["-C", workspacePath, "diff", "--no-index", "--relative", "--", "/dev/null", filePath],
+          ["-C", workspacePath, "diff", "--no-index", "--", "/dev/null", filePath],
           [1],
           githubToken,
           gitUsername
@@ -1648,15 +2428,15 @@ export class SpawnerService {
       return null;
     }
 
-    if (await this.refExists(workspacePath, trimmed, githubToken, gitUsername)) {
-      return trimmed;
-    }
-
     if (!trimmed.includes("/") && trimmed.toUpperCase() !== "HEAD") {
       const originRef = `origin/${trimmed}`;
       if (await this.refExists(workspacePath, originRef, githubToken, gitUsername)) {
         return originRef;
       }
+    }
+
+    if (await this.refExists(workspacePath, trimmed, githubToken, gitUsername)) {
+      return trimmed;
     }
 
     return null;
@@ -1781,6 +2561,8 @@ export class SpawnerService {
       };
     }
 
+    await this.syncWorkspaceRemoteRefsIfNeeded(task, workspacePath, token, gitUsername).catch(() => undefined);
+
     const defaultBaseRef = await this.resolveLiveDiffBaseRef(task, workspacePath, token, gitUsername);
     if (!defaultBaseRef) {
       return {
@@ -1820,9 +2602,8 @@ export class SpawnerService {
     };
   }
 
-  private async prepareWorkspace(
+  private async prepareWorkspaceLegacyWorktree(
     task: Task,
-    _action: TaskAction,
     branchName: string,
     repoCachePath: string,
     githubToken?: string | null,
@@ -1852,54 +2633,159 @@ export class SpawnerService {
       await this.syncWorkspaceRemoteRefsIfNeeded(task, workspacePath, githubToken, gitUsername);
     }
 
-    const startRef = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
-    const gitPaths = await this.getWorkspaceGitPaths(workspacePath);
+    const startRef = await this.resolveWorkspaceHeadRef(workspacePath, githubToken, gitUsername);
+    if (!startRef) {
+      throw new WorkspacePrepareError(
+        "Workspace setup failed: repository has no commits yet, so HEAD is not available.",
+        "branch_missing"
+      );
+    }
     return {
       workspacePath,
       hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
       startRef,
       workspaceBaseRef: task.workspaceBaseRef ?? startRef,
-      kind: gitPaths.usesLinkedWorktree ? "worktree" : "clone",
+      kind: WORKSPACE_KIND,
       ephemeral: false,
       cleanupRepoPath: null
     };
   }
 
-  private async prepareAskWorkspace(
+  private async prepareWorkspace(
     task: Task,
+    _action: TaskAction,
     branchName: string,
     repoCachePath: string,
-    executionId: string,
+    provisioningMode: "clone_only" | "hybrid",
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<WorkspacePreparation> {
-    const askWorkspacePath = this.resolveAskWorkspacePath(task.id, executionId);
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    try {
+      await this.cloneWorkspaceFromSource(repoCachePath, task.repoUrl, workspacePath, githubToken, gitUsername);
+      await this.checkoutTaskWorkspaceBranch(task, workspacePath, branchName, githubToken, gitUsername);
+    } catch (error) {
+      const reason = this.classifyWorkspacePrepareFailure(error);
+      const detail = error instanceof Error ? error.message : String(error);
+      if (provisioningMode === "hybrid" && (reason === "clone_error" || reason === "unknown")) {
+        return this.prepareWorkspaceLegacyWorktree(task, branchName, repoCachePath, githubToken, gitUsername);
+      }
+      if (error instanceof WorkspacePrepareError) {
+        throw error;
+      }
+
+      switch (reason) {
+        case "auth":
+          throw new WorkspacePrepareError(
+            "Workspace setup failed: repository access was denied. Check GitHub token permissions for this repository.",
+            reason,
+            detail
+          );
+        case "network":
+          throw new WorkspacePrepareError(
+            "Workspace setup failed: could not reach the Git remote. Check network/DNS connectivity and retry.",
+            reason,
+            detail
+          );
+        case "branch_missing":
+          throw new WorkspacePrepareError(
+            `Workspace setup failed: expected branch refs were not found on origin (base branch: ${task.baseBranch}).`,
+            reason,
+            detail
+          );
+        default:
+          throw new WorkspacePrepareError(
+            "Workspace setup failed while cloning the repository. See task logs for git error details.",
+            reason,
+            detail
+          );
+      }
+    }
+
+    const startRef = await this.resolveWorkspaceHeadRef(workspacePath, githubToken, gitUsername);
+    if (!startRef) {
+      throw new WorkspacePrepareError(
+        "Workspace setup failed: repository has no commits yet, so HEAD is not available.",
+        "branch_missing"
+      );
+    }
+    return {
+      workspacePath,
+      hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
+      startRef,
+      workspaceBaseRef: task.workspaceBaseRef ?? startRef,
+      kind: WORKSPACE_KIND,
+      ephemeral: false,
+      cleanupRepoPath: null
+    };
+  }
+
+  private async prepareAskRunWorkspace(
+    task: Task,
+    branchName: string,
+    repoCachePath: string,
+    provisioningMode: "clone_only" | "hybrid",
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<WorkspacePreparation> {
     const taskWorkspacePath = this.resolveWorkspacePath(task.id);
     const taskWorkspaceExists = await access(taskWorkspacePath)
       .then(() => true)
       .catch(() => false);
 
-    const sourceRepoPath = taskWorkspaceExists ? taskWorkspacePath : repoCachePath;
-    const startPoint = taskWorkspaceExists
-      ? "HEAD"
-      : (await this.refExists(repoCachePath, `origin/${branchName}`, githubToken, gitUsername))
-        ? `origin/${branchName}`
-        : `origin/${task.baseBranch}`;
+    if (!taskWorkspaceExists) {
+      return this.prepareWorkspace(task, "ask", branchName, repoCachePath, provisioningMode, githubToken, gitUsername);
+    }
 
-    await rm(askWorkspacePath, { recursive: true, force: true });
-    await mkdir(path.dirname(askWorkspacePath), { recursive: true });
-    await this.gitCommand(["-C", sourceRepoPath, "worktree", "prune"], githubToken, gitUsername).catch(() => undefined);
-    await this.gitCommand(["-C", sourceRepoPath, "worktree", "add", "--detach", askWorkspacePath, startPoint], githubToken, gitUsername);
+    const gitPaths = await this.getWorkspaceGitPaths(taskWorkspacePath).catch(() => null);
+    if (!gitPaths) {
+      return this.prepareWorkspace(task, "ask", branchName, repoCachePath, provisioningMode, githubToken, gitUsername);
+    }
 
-    const startRef = await this.gitCommandCapture(["-C", askWorkspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
-    const gitPaths = await this.getWorkspaceGitPaths(askWorkspacePath);
+    const startRef = await this.resolveWorkspaceHeadRef(taskWorkspacePath, githubToken, gitUsername);
+    if (!startRef) {
+      throw new Error("Task workspace has no commits yet. Prepare the task workspace again after creating an initial commit.");
+    }
     return {
-      workspacePath: askWorkspacePath,
-      hostWorkspacePath: this.resolveAskWorkspaceHostPath(task.id, executionId),
+      workspacePath: taskWorkspacePath,
+      hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
       startRef,
       workspaceBaseRef: task.workspaceBaseRef ?? startRef,
-      kind: gitPaths.usesLinkedWorktree ? "worktree" : "clone",
-      // Keep ask-run workspaces on disk so file links in history remain previewable after the run finishes.
+      kind: WORKSPACE_KIND,
+      ephemeral: false,
+      cleanupRepoPath: null
+    };
+  }
+
+  private async requireExistingTaskWorkspace(
+    task: Task,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<WorkspacePreparation> {
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const workspaceExists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!workspaceExists) {
+      throw new Error("No local workspace exists for this task. Prepare the task workspace first.");
+    }
+
+    const gitPaths = await this.getWorkspaceGitPaths(workspacePath).catch(() => null);
+    if (!gitPaths) {
+      throw new Error("Task workspace is not a Git repository. Prepare the task workspace again.");
+    }
+
+    await this.cleanupWorkspaceGitLocks(workspacePath);
+    const startRef = await this.resolveWorkspaceHeadRef(workspacePath, githubToken, gitUsername);
+    if (!startRef) {
+      throw new Error("Task workspace has no commits yet. Prepare the task workspace again after creating an initial commit.");
+    }
+    return {
+      workspacePath,
+      hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
+      startRef,
+      workspaceBaseRef: task.workspaceBaseRef ?? startRef,
+      kind: WORKSPACE_KIND,
       ephemeral: false,
       cleanupRepoPath: null
     };
@@ -1913,15 +2799,6 @@ export class SpawnerService {
     if (!workspace?.ephemeral) {
       return;
     }
-
-    if (workspace.cleanupRepoPath) {
-      await this.gitCommand(
-        ["-C", workspace.cleanupRepoPath, "worktree", "remove", "--force", workspace.workspacePath],
-        githubToken,
-        gitUsername
-      ).catch(() => undefined);
-    }
-
     await rm(workspace.workspacePath, { recursive: true, force: true }).catch(() => undefined);
   }
 
@@ -1969,21 +2846,7 @@ export class SpawnerService {
   }
 
   private collectRuntimeMcpEnv(servers: McpServerConfig[]): Record<string, string> {
-    const envMap: Record<string, string> = {};
-
-    for (const server of servers) {
-      const envVarName = server.transport === "http" ? server.bearerTokenEnvVar?.trim() : "";
-      if (!envVarName) {
-        continue;
-      }
-
-      const value = process.env[envVarName];
-      if (value) {
-        envMap[envVarName] = value;
-      }
-    }
-
-    return envMap;
+    return Object.fromEntries(collectMcpServerEnvEntries(servers, process.env));
   }
 
   private async collectChangedFiles(workspacePath: string, startRef: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string[]> {
@@ -2135,7 +2998,7 @@ export class SpawnerService {
     runStartRef: string,
     githubToken?: string | null,
     gitUsername = "x-access-token"
-  ): Promise<{ branchDiff: string; changedFiles: string[]; commitSha: string; providerCommitted: boolean }> {
+  ): Promise<{ branchDiff: string; changedFiles: string[]; commitSha: string; providerCommitted: boolean; changeOutcome: "changed" | "no_change" }> {
     // Keep repo-owned .agentswarm files. Only strip workspace scratch paths from diffs/commits.
     await this.stripEphemeralWorkspaceFiles(workspacePath);
     const commitSha = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
@@ -2146,11 +3009,8 @@ export class SpawnerService {
       githubToken,
       gitUsername
     );
-    if (changedFiles.length === 0) {
-      throw new Error("No changes detected after provider execution");
-    }
-
-    return { branchDiff, changedFiles, commitSha, providerCommitted };
+    const changeOutcome = changedFiles.length > 0 ? "changed" : "no_change";
+    return { branchDiff, changedFiles, commitSha, providerCommitted, changeOutcome };
   }
 
   private async collectReviewDiff(task: Task, workspacePath: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string | null> {
@@ -2237,6 +3097,39 @@ export class SpawnerService {
     };
   }
 
+  async refreshPendingChangeProposalPreview(task: Task): Promise<TaskChangeProposal | null> {
+    const proposals = await this.taskStore.listChangeProposals(task.id);
+    const proposal = proposals.find((item) => item.status === "pending") ?? null;
+    if (!proposal) {
+      return null;
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const exists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      return null;
+    }
+
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const { githubToken, gitUsername } = runtimeCredentials;
+    const { diff, diffStat, changedFiles, diffTruncated, toRef } = await this.collectWorkingTreeDiffSinceRef(
+      workspacePath,
+      proposal.fromRef,
+      githubToken,
+      gitUsername
+    );
+
+    return this.taskStore.updateChangeProposalStatus(proposal.id, "pending", task.id, {
+      toRef,
+      diff,
+      diffStat,
+      changedFiles,
+      diffTruncated
+    });
+  }
+
   async createBuildRunChangeProposal(task: Task, runId: string, workspacePath: string): Promise<void> {
     const run = await this.taskStore.getRun(runId);
     if (!run || run.taskId !== task.id) {
@@ -2301,12 +3194,9 @@ export class SpawnerService {
       return null;
     }
 
-    const nextStatus = reconcileTaskStatusWithPendingCheckpoint(task.status, task.hasPendingCheckpoint);
-    if (nextStatus === task.status) {
-      return task;
-    }
-
-    return this.taskStore.setStatus(task.id, nextStatus);
+    return this.taskStore.patchTask(task.id, {
+      hasPendingCheckpoint: task.hasPendingCheckpoint
+    });
   }
 
   async beginInteractiveTerminalSession(taskId: string, mode: TaskTerminalSessionMode = "interactive"): Promise<{ sessionId: string }> {
@@ -2317,10 +3207,8 @@ export class SpawnerService {
     if (task.status === "archived") {
       throw new Error("Archived tasks are read-only.");
     }
-    if (isQueuedTaskStatus(task.status) || isActiveTaskStatus(task.status)) {
-      throw new Error(
-        `Terminal unavailable while the task is “${getTaskStatusLabel(task.status)}”. Finish or cancel that run first (one action at a time).`
-      );
+    if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
+      throw new Error("Terminal unavailable while the task is queued or running. Finish or cancel that run first (one action at a time).");
     }
     if (await this.taskStore.hasPendingChangeProposal(taskId)) {
       throw new Error("Apply or reject the pending checkpoint before opening a terminal.");
@@ -2576,7 +3464,10 @@ export class SpawnerService {
     if (!proposal || proposal.taskId !== task.id) {
       return { ok: false, message: "Proposal not found." };
     }
-    const checkpointBlocked = getCheckpointMutationBlockedReason(task.status);
+    const checkpointBlocked =
+      task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running"
+        ? "Checkpoint actions are unavailable while task execution is queued or running."
+        : null;
     if (checkpointBlocked) {
       return { ok: false, message: checkpointBlocked };
     }
@@ -2717,15 +3608,36 @@ export class SpawnerService {
       throw new Error("Checkpoint has no safe paths to restore from the base ref.");
     }
 
-    try {
-      await this.gitCommand(
-        ["-C", workspacePath, "restore", `--source=${fromRef}`, "--worktree", "--", ...unique],
-        githubToken,
-        gitUsername
-      );
-    } catch {
-      await this.gitCommand(["-C", workspacePath, "checkout", fromRef, "--", ...unique], githubToken, gitUsername);
-      await this.gitCommand(["-C", workspacePath, "reset", "HEAD", "--", ...unique], githubToken, gitUsername);
+    const pathsPresentAtBase: string[] = [];
+    const pathsMissingAtBase: string[] = [];
+
+    for (const rel of unique) {
+      try {
+        await this.gitCommandCapture(["-C", workspacePath, "cat-file", "-e", `${fromRef}:${rel}`], githubToken, gitUsername);
+        pathsPresentAtBase.push(rel);
+      } catch {
+        pathsMissingAtBase.push(rel);
+      }
+    }
+
+    if (pathsPresentAtBase.length > 0) {
+      try {
+        await this.gitCommand(
+          ["-C", workspacePath, "restore", `--source=${fromRef}`, "--worktree", "--", ...pathsPresentAtBase],
+          githubToken,
+          gitUsername
+        );
+      } catch {
+        await this.gitCommand(["-C", workspacePath, "checkout", fromRef, "--", ...pathsPresentAtBase], githubToken, gitUsername);
+        await this.gitCommand(["-C", workspacePath, "reset", "HEAD", "--", ...pathsPresentAtBase], githubToken, gitUsername);
+      }
+    }
+
+    for (const rel of pathsMissingAtBase) {
+      const fullPath = resolveSafeWorkspaceFilePath(workspacePath, rel);
+      if (fullPath) {
+        await rm(fullPath, { recursive: true, force: true }).catch(() => undefined);
+      }
     }
   }
 
@@ -2788,12 +3700,81 @@ export class SpawnerService {
     }
   }
 
+  async revertPendingChangeProposalFile(
+    task: Task,
+    proposalId: string,
+    filePath: string
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    const proposal = await this.taskStore.getChangeProposal(proposalId);
+    if (!proposal || proposal.taskId !== task.id) {
+      return { ok: false, message: "Proposal not found." };
+    }
+    const checkpointBlocked =
+      task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running"
+        ? "Checkpoint actions are unavailable while task execution is queued or running."
+        : null;
+    if (checkpointBlocked) {
+      return { ok: false, message: checkpointBlocked };
+    }
+    if (proposal.status !== "pending") {
+      return { ok: false, message: "Only a pending checkpoint supports file-level revert." };
+    }
+
+    const target = this.safeSortedCheckpointPaths([filePath])[0] ?? null;
+    if (!target) {
+      return { ok: false, message: "Invalid file path." };
+    }
+
+    const allowedPaths = new Set(this.safeSortedCheckpointPaths(proposal.changedFiles));
+    if (!allowedPaths.has(target)) {
+      return { ok: false, message: "File is not part of this checkpoint diff." };
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const workspaceExists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!workspaceExists) {
+      return { ok: false, message: "No local workspace exists for this task." };
+    }
+
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const { githubToken, gitUsername } = runtimeCredentials;
+    try {
+      await this.revertCheckpointPathsFromRef(workspacePath, proposal.fromRef, [target], githubToken, gitUsername);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return { ok: false, message: `Could not revert file from checkpoint base: ${detail}` };
+    }
+
+    const refreshed = await this.refreshPendingChangeProposalPreview(task);
+    if (refreshed && refreshed.id === proposalId && refreshed.changedFiles.length === 0) {
+      await this.taskStore.updateChangeProposalStatus(proposalId, "rejected", task.id, {
+        toRef: proposal.fromRef,
+        diff: "(no changes)",
+        diffStat: "—",
+        changedFiles: [],
+        diffTruncated: false
+      });
+      await this.syncTaskReviewStatus(task.id);
+      await this.taskStore.appendLog(task.id, `Checkpoint ${proposalId}: reverted ${target}; no files remain, checkpoint rejected.`);
+      return { ok: true };
+    }
+
+    await this.syncTaskReviewStatus(task.id);
+    await this.taskStore.appendLog(task.id, `Checkpoint ${proposalId}: reverted file ${target} to checkpoint base.`);
+    return { ok: true };
+  }
+
   async revertChangeProposal(task: Task, proposalId: string): Promise<{ ok: true } | { ok: false; message: string }> {
     const proposal = await this.taskStore.getChangeProposal(proposalId);
     if (!proposal || proposal.taskId !== task.id) {
       return { ok: false, message: "Proposal not found." };
     }
-    const checkpointBlocked = getCheckpointMutationBlockedReason(task.status);
+    const checkpointBlocked =
+      task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running"
+        ? "Checkpoint actions are unavailable while task execution is queued or running."
+        : null;
     if (checkpointBlocked) {
       return { ok: false, message: checkpointBlocked };
     }
@@ -2899,7 +3880,10 @@ export class SpawnerService {
     if (proposal.status !== "pending") {
       return { ok: false, message: "Proposal is not pending." };
     }
-    const checkpointBlocked = getCheckpointMutationBlockedReason(task.status);
+    const checkpointBlocked =
+      task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running"
+        ? "Checkpoint actions are unavailable while task execution is queued or running."
+        : null;
     if (checkpointBlocked) {
       return { ok: false, message: checkpointBlocked };
     }
@@ -2980,13 +3964,11 @@ export class SpawnerService {
   async cleanupTaskArtifacts(task: Task): Promise<void> {
     const payloadDir = this.resolveRuntimePayloadDir(task.id);
     const workspacePath = this.resolveWorkspacePath(task.id);
-    const askWorkspaceRoot = this.resolveAskWorkspaceRoot(task.id);
     const promptAttachmentRoot = resolveTaskPromptAttachmentRoot(task.id);
     const taskStateRootPath = resolveTaskStateRootPaths(task.id).serverPath;
     const legacyCodexStatePath = resolveTaskProviderStatePaths(task.id, "codex").legacyServerPath;
     const legacyClaudeStatePath = resolveTaskProviderStatePaths(task.id, "claude").legacyServerPath;
     await rm(payloadDir, { recursive: true, force: true });
-    await rm(askWorkspaceRoot, { recursive: true, force: true }).catch(() => undefined);
     await rm(promptAttachmentRoot, { recursive: true, force: true }).catch(() => undefined);
     const repoCachePath = this.resolveRepoCachePath(task);
     await this.withRepoLock(repoCachePath, async () => {
@@ -3004,6 +3986,10 @@ export class SpawnerService {
   }
 
   async pullTaskBranch(task: Task): Promise<Task> {
+    return this.withTrackedTaskGitOperation(task, "pull_task_branch", async () => this.pullTaskBranchCore(task));
+  }
+
+  private async pullTaskBranchCore(task: Task): Promise<Task> {
     const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
     const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
     if (!branchName) {
@@ -3024,7 +4010,7 @@ export class SpawnerService {
       await this.gitCommand(["-C", workspacePath, "checkout", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     }
 
-    await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "pull");
 
     const remoteRef = `origin/${branchName}`;
     if (!(await this.refExists(workspacePath, remoteRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
@@ -3060,7 +4046,7 @@ export class SpawnerService {
       await this.taskStore.appendLog(task.id, "Spawner: created a local commit from workspace changes before pulling.");
     }
 
-    await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+    await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "pull");
     await this.gitCommand(["-C", workspacePath, "rebase", remoteRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
       async (error) => {
         await this.gitCommand(["-C", workspacePath, "rebase", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
@@ -3075,6 +4061,10 @@ export class SpawnerService {
   }
 
   async pushTaskBranch(task: Task, options?: { commitMessage?: string | null }): Promise<Task> {
+    return this.withTrackedTaskGitOperation(task, "push_task_branch", async () => this.pushTaskBranchCore(task, options));
+  }
+
+  private async pushTaskBranchCore(task: Task, options?: { commitMessage?: string | null }): Promise<Task> {
     const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
     const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
     if (!branchName) {
@@ -3133,7 +4123,9 @@ export class SpawnerService {
     try {
       await this.gitCommand(["-C", workspacePath, "push", "--no-verify", "-u", "origin", branchName], runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     } catch {
-      await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(() => undefined);
+      await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "push").catch(
+        () => undefined
+      );
       try {
         await this.gitCommandCapture(
           ["-C", workspacePath, "rev-parse", "--verify", `origin/${branchName}`],
@@ -3187,7 +4179,7 @@ export class SpawnerService {
     }
 
     const repoCachePath = this.resolveRepoCachePath(task);
-    return this.withFreshManagedRepo(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, async (managedRepoPath) => {
+    return this.withFreshManagedRepo(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "merge_preview", async (managedRepoPath) => {
       const sourceRef = `origin/${sourceBranch}`;
       const targetRef = `origin/${normalizedTargetBranch}`;
 
@@ -3277,7 +4269,7 @@ export class SpawnerService {
       await this.pushTaskBranch(task);
     }
 
-    await this.withFreshManagedRepo(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, async (managedRepoPath) => {
+    await this.withFreshManagedRepo(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "merge", async (managedRepoPath) => {
       const defaultRef = `origin/${targetBranchName}`;
       const remoteBranchRef = `origin/${branchName}`;
 
@@ -3339,6 +4331,36 @@ export class SpawnerService {
     return (await this.taskStore.getTask(task.id)) ?? task;
   }
 
+  async deleteTaskRemoteBranch(task: Task): Promise<void> {
+    const branchName = task.branchName?.trim();
+    if (task.branchStrategy !== "feature_branch" || !branchName) {
+      await this.taskStore.appendLog(task.id, "Spawner: skipped remote branch deletion because this task does not own a feature branch.");
+      return;
+    }
+
+    if (branchName === task.repoDefaultBranch || branchName === task.baseBranch) {
+      await this.taskStore.appendLog(task.id, `Spawner: skipped remote branch deletion for protected branch ${branchName}.`);
+      return;
+    }
+
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    await this.withFreshManagedRepo(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "delete_remote_branch", async (managedRepoPath) => {
+      const remoteBranchRef = `origin/${branchName}`;
+      if (!(await this.refExists(managedRepoPath, remoteBranchRef, runtimeCredentials.githubToken, runtimeCredentials.gitUsername))) {
+        await this.taskStore.appendLog(task.id, `Spawner: remote branch ${branchName} does not exist; nothing to delete.`);
+        return;
+      }
+
+      await this.gitCommand(
+        ["-C", managedRepoPath, "push", "--no-verify", "origin", "--delete", branchName],
+        runtimeCredentials.githubToken,
+        runtimeCredentials.gitUsername
+      );
+    });
+
+    await this.taskStore.appendLog(task.id, `Spawner: deleted remote branch ${branchName} from origin.`);
+  }
+
   async publishAcceptedTask(task: Task): Promise<Task> {
     await this.pushTaskBranch(task);
     const published = await this.taskStore.setStatus(task.id, "open", {
@@ -3354,13 +4376,17 @@ export class SpawnerService {
   }
 
   /**
-   * Clone/fetch and check out the task workspace only (no agent container). Used for Interactive-first flows.
+   * Clone/fetch and check out the task workspace only (no agent container). Used for Interactive-first task sessions.
    */
   async prepareTaskWorkspaceOnly(task: Task): Promise<Task> {
-    const [settings, runtimeCredentials] = await Promise.all([
+    const [settings, runtimeCredentialsRaw] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials()
+      this.settingsStore.getRuntimeCredentials(task.ownerUserId, task.codexCredentialSource ?? "auto")
     ]);
+    const runtimeCredentials = runtimeCredentialsRaw;
+    if (task.provider === "codex" && task.codexCredentialSource === "profile" && !runtimeCredentials.codexAuthJson) {
+      throw new Error("Codex credential source is set to Profile, but your profile Codex auth.json is not configured.");
+    }
     const providerDefinition = getProviderRuntimeDefinition(task.provider);
     const missingCredentialMessage = providerDefinition.getMissingCredentialMessage(runtimeCredentials);
     if (missingCredentialMessage) {
@@ -3381,21 +4407,52 @@ export class SpawnerService {
     }
 
     const action: TaskAction = workingTask.taskType === "ask" ? "ask" : "build";
-    const { workspace } = await this.withFreshManagedRepo(
-      workingTask,
-      runtimeCredentials.githubToken,
-      runtimeCredentials.gitUsername,
-      async (managedRepoPath) => ({
-        workspace: await this.prepareWorkspace(
+    let workspace: WorkspacePreparation;
+    const preparedWorkspace = await this.withTrackedTaskGitOperation(workingTask, "clone_for_task", async () => {
+      this.emitWorkspacePrepareEvent("workspace_prepare_started", {
+        taskId: workingTask.id,
+        taskType: workingTask.taskType,
+        workspaceKind: WORKSPACE_KIND,
+        mode: settings.workspaceProvisioningMode
+      });
+      try {
+        const prepared = await this.withFreshManagedRepo(
           workingTask,
-          action,
-          branchName,
-          managedRepoPath,
           runtimeCredentials.githubToken,
-          runtimeCredentials.gitUsername
-        )
-      })
-    );
+          runtimeCredentials.gitUsername,
+          "workspace_prepare",
+          async (managedRepoPath) => ({
+            workspace: await this.prepareWorkspace(
+              workingTask,
+              action,
+              branchName,
+              managedRepoPath,
+              settings.workspaceProvisioningMode,
+              runtimeCredentials.githubToken,
+              runtimeCredentials.gitUsername
+            )
+          })
+        );
+        this.emitWorkspacePrepareEvent("workspace_prepare_succeeded", {
+          taskId: workingTask.id,
+          taskType: workingTask.taskType,
+          workspaceKind: WORKSPACE_KIND,
+          mode: settings.workspaceProvisioningMode
+        });
+        return prepared.workspace;
+      } catch (error) {
+        const reason = error instanceof WorkspacePrepareError ? error.reason : this.classifyWorkspacePrepareFailure(error);
+        this.emitWorkspacePrepareEvent("workspace_prepare_failed", {
+          taskId: workingTask.id,
+          taskType: workingTask.taskType,
+          workspaceKind: WORKSPACE_KIND,
+          failureReason: reason,
+          mode: settings.workspaceProvisioningMode
+        });
+        throw error;
+      }
+    });
+    workspace = preparedWorkspace;
 
     let nextTask = (await this.taskStore.getTask(workingTask.id)) ?? workingTask;
     if (action === "build" && !nextTask.workspaceBaseRef) {
@@ -3410,9 +4467,9 @@ export class SpawnerService {
       await this.ensureWorkspaceGitHooks(workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     }
 
-    const readyStatus = resolveTaskReadyStatus(false);
     await this.taskStore.patchTask(workingTask.id, {
-      status: readyStatus,
+      executionStatus: "idle",
+      executionAction: null,
       enqueued: false,
       errorMessage: null,
       finishedAt: new Date().toISOString()
@@ -3428,10 +4485,14 @@ export class SpawnerService {
     this.cancelRequestedTaskIds.delete(task.id);
     await this.validateTaskPostflight(task);
 
-    const [settings, runtimeCredentials] = await Promise.all([
+    const [settings, runtimeCredentialsRaw] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials()
+      this.settingsStore.getRuntimeCredentials(task.ownerUserId, task.codexCredentialSource ?? "auto")
     ]);
+    const runtimeCredentials = runtimeCredentialsRaw;
+    if (task.provider === "codex" && task.codexCredentialSource === "profile" && !runtimeCredentials.codexAuthJson) {
+      throw new Error("Codex credential source is set to Profile, but your profile Codex auth.json is not configured.");
+    }
 
     const branchName =
       task.branchStrategy === "work_on_branch"
@@ -3489,7 +4550,7 @@ export class SpawnerService {
         hostWorkspacePath,
         startRef: checkpointRef,
         workspaceBaseRef: task.workspaceBaseRef ?? checkpointRef,
-        kind: "worktree",
+        kind: WORKSPACE_KIND,
         ephemeral: false,
         cleanupRepoPath: null
       };
@@ -3536,11 +4597,12 @@ export class SpawnerService {
           errorMessage: null
         }))
       ) {
-        await this.taskStore.setStatus(task.id, resolveTaskReadyStatus(hasPendingCheckpoint), {
+        await this.taskStore.setExecutionState(task.id, "idle", {
           finishedAt,
           enqueued: false,
           branchDiff: nextBranchDiff,
           lastAction: "build",
+          executionAction: null,
           branchName,
           errorMessage: null
         });
@@ -3570,7 +4632,7 @@ export class SpawnerService {
           lastAction: "build"
         }))
       ) {
-        await this.taskStore.setStatus(task.id, isCancelled ? "cancelled" : "failed", {
+        await this.taskStore.setExecutionState(task.id, isCancelled ? "cancelled" : "failed", {
           finishedAt,
           enqueued: false,
           errorMessage: isCancelled ? "Cancelled by user" : message,
@@ -3595,10 +4657,16 @@ export class SpawnerService {
 
   async runTask(task: Task, action: TaskAction, input?: TaskExecutionInput | string): Promise<void> {
     this.cancelRequestedTaskIds.delete(task.id);
-    const [settings, runtimeCredentials] = await Promise.all([
+    const [settings, runtimeCredentialsRaw, repositoryRuntimeEnvEntries, responsePreferenceUser] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials()
+      this.settingsStore.getRuntimeCredentials(task.ownerUserId, task.codexCredentialSource ?? "auto"),
+      this.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId),
+      task.ownerUserId ? this.userStore.getAuthSessionUser(task.ownerUserId) : Promise.resolve(null)
     ]);
+    const runtimeCredentials = runtimeCredentialsRaw;
+    if (task.provider === "codex" && task.codexCredentialSource === "profile" && !runtimeCredentials.codexAuthJson) {
+      throw new Error("Codex credential source is set to Profile, but your profile Codex auth.json is not configured.");
+    }
     const providerDefinition = getProviderRuntimeDefinition(task.provider);
     const missingCredentialMessage = providerDefinition.getMissingCredentialMessage(runtimeCredentials);
     if (missingCredentialMessage) {
@@ -3612,6 +4680,8 @@ export class SpawnerService {
     let runId: string | null = null;
     let executionId = nanoid();
     let workspace: WorkspacePreparation | null = null;
+    let rawEventsJsonlPath: string | null = null;
+    let liveTimelineStream: { stop: () => Promise<void> } | null = null;
 
     try {
       const run = await this.taskStore.createRun(task.id, {
@@ -3626,50 +4696,31 @@ export class SpawnerService {
       this.executionContextStorage.enterWith({ taskId: task.id, executionId });
       const payloadDir = this.resolveRuntimePayloadDir(task.id, executionId);
       const appendRunLog = (line: string) => this.taskStore.appendLogForRun(task.id, line, runId);
+      rawEventsJsonlPath = runId
+        ? await this.prepareTaskRunRawEventsJsonl(task.id, runId)
+        : path.join(payloadDir, "raw-events.jsonl");
+      if (runId) {
+        await this.taskStore.updateRun(runId, { hasRawJson: true });
+      }
       await this.syncTaskStatusForRunningRuns(task.id, {
         branchName,
-        ...(action === "ask" && isActiveTaskStatus(task.status) ? {} : { lastAction: action })
+        ...(action === "ask" && task.executionStatus === "running" ? {} : { lastAction: action })
       });
       this.ensureTaskNotCancelled(task.id);
-      const repoCachePath = this.resolveRepoCachePath(task);
-      await appendRunLog("Spawner: preparing managed repository and workspace.");
-      const { repoProfile, workspace: preparedWorkspace } = await this.withFreshManagedRepo(
+      await appendRunLog("Spawner: using existing task workspace.");
+      workspace = await this.requireExistingTaskWorkspace(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      const repoProfile = await this.ensureRepoProfile(
         task,
+        workspace.workspacePath,
         runtimeCredentials.githubToken,
-        runtimeCredentials.gitUsername,
-        async (managedRepoPath) => ({
-          repoProfile: await this.ensureRepoProfile(
-            task,
-            managedRepoPath,
-            runtimeCredentials.githubToken,
-            runtimeCredentials.gitUsername
-          ),
-          workspace:
-            action === "ask"
-              ? await this.prepareAskWorkspace(
-                  task,
-                  branchName,
-                  managedRepoPath,
-                  executionId,
-                  runtimeCredentials.githubToken,
-                  runtimeCredentials.gitUsername
-                )
-              : await this.prepareWorkspace(
-                  task,
-                  action,
-                  branchName,
-                  managedRepoPath,
-                  runtimeCredentials.githubToken,
-                  runtimeCredentials.gitUsername
-                )
-        })
+        runtimeCredentials.gitUsername
       );
-      workspace = preparedWorkspace;
       this.ensureTaskNotCancelled(task.id);
       if (action === "build" && !task.workspaceBaseRef) {
         await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
       }
       const runtimeMcpEnv = this.collectRuntimeMcpEnv(settings.mcpServers);
+      const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(settings.mcpServers, process.env);
       const providerConfigPath = path.join(payloadDir, providerDefinition.configFileName);
       const resultMarkdownPath = path.join(payloadDir, "result.md");
       const resultJsonPath = path.join(payloadDir, "result.json");
@@ -3679,12 +4730,10 @@ export class SpawnerService {
         typeof input === "string"
           ? {
               content: input,
-              contextEntries: [] as TaskContextEntry[],
               attachments: []
             }
           : {
               content: input?.content ?? "",
-              contextEntries: input?.contextEntries ?? [],
               attachments: input?.attachments ?? []
             };
       const manifestAttachments = normalizedInput.attachments.map((attachment) => {
@@ -3711,7 +4760,6 @@ export class SpawnerService {
         executionSummary: task.executionSummary,
         repoProfile,
         content: normalizedInput.content,
-        contextEntries: normalizedInput.contextEntries,
         attachments: manifestAttachments,
         baseBranch: task.baseBranch,
         repoDefaultBranch: task.repoDefaultBranch,
@@ -3722,19 +4770,24 @@ export class SpawnerService {
         resolvedModel,
         resolvedReasoningEffort: resolvedProfileSettings.reasoningEffort,
         resolvedThinkingBudgetTokens: resolvedProfileSettings.thinkingBudgetTokens,
+        agentResponsePreference: responsePreferenceUser?.agentResponsePreference ?? {},
         workspacePath: workspace.workspacePath,
         resultMarkdownPath,
         resultJsonPath,
+        rawEventsJsonlPath,
         providerConfigPath
       };
       await appendRunLog(`Spawner: preparing ${task.provider} runtime image (${action}).`);
       await this.ensureRuntimeImage(task.provider);
-      await appendRunLog("Spawner: refreshed managed repository cache.");
-      await appendRunLog(`Spawner: managed repository ready at ${repoCachePath}.`);
       await appendRunLog("Spawner: repository profile ready.");
       await appendRunLog(`Spawner: ${workspace.kind} workspace ready at ${workspace.workspacePath}.`);
 
       const payloadPaths = await this.writeRuntimePayloadFiles(manifest, providerDefinition.getProviderConfig(settings.mcpServers));
+      const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
+        destinationDir: path.join(payloadPaths.payloadDir, "repository-env-files"),
+        entries: repositoryRuntimeEnvEntries,
+        fileStore: this.repositoryEnvFileStore
+      });
       await appendRunLog(`Spawner: runtime payload files ready at ${payloadDir}.`);
       this.ensureTaskNotCancelled(task.id);
 
@@ -3746,17 +4799,23 @@ export class SpawnerService {
       await appendRunLog(
         `Spawner: runtime config includes provider=${task.provider}, profile=${task.providerProfile}, and ${settings.mcpServers.length} MCP server${settings.mcpServers.length === 1 ? "" : "s"}.`
       );
+      if (missingMcpBearerEnvVars.length > 0) {
+        await appendRunLog(
+          `Spawner: warning - missing MCP bearer token env var${missingMcpBearerEnvVars.length === 1 ? "" : "s"}: ${missingMcpBearerEnvVars.join(", ")}`
+        );
+      }
 
       this.ensureTaskNotCancelled(task.id);
 
       if (runId && action === "build") {
-        const checkpointRef = (
-          await this.gitCommandCapture(
-            ["-C", workspace.workspacePath, "rev-parse", "HEAD"],
-            runtimeCredentials.githubToken,
-            runtimeCredentials.gitUsername
-          )
-        ).trim();
+        const checkpointRef = await this.resolveWorkspaceHeadRef(
+          workspace.workspacePath,
+          runtimeCredentials.githubToken,
+          runtimeCredentials.gitUsername
+        );
+        if (!checkpointRef) {
+          throw new Error("Task workspace has no commits yet. Create an initial commit before running build mode.");
+        }
         const changeProposalUntrackedPaths = await this.listUntrackedRelativePaths(
           workspace.workspacePath,
           runtimeCredentials.githubToken,
@@ -3770,11 +4829,21 @@ export class SpawnerService {
 
       const containerName = `agentswarm-task-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
       const workspaceMountMode = action === "ask" ? "ro" : "rw";
+      const rawEventsMount = runId ? this.resolveTaskRunRawEventsMount(task.id, runId) : null;
       const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
       const providerStateContainerPath = this.resolveProviderStateContainerPath(task.provider);
       const providerStatePaths = await ensureTaskProviderStatePaths(task.id, task.provider);
+      const dockerSocketPolicy = resolveDockerSocketAccessPolicy(task.provider);
+      const dockerSocketMountArgs = resolveDockerSocketMountArgs(dockerSocketPolicy);
+      const dockerSocketEnvEntries = resolveDockerSocketEnvEntries(dockerSocketPolicy);
       if (workspaceMountMode === "ro") {
         await appendRunLog("Spawner: mounting workspace read-only (ask mode).");
+      }
+      if (dockerSocketPolicy.enabled) {
+        emitDockerSocketEnabledEventOnce({ provider: task.provider, policy: dockerSocketPolicy });
+        await appendRunLog(
+          `Spawner: docker socket access enabled for provider runtime (${dockerSocketPolicy.appEnvironment} environment).`
+        );
       }
       const args = [
         "run",
@@ -3785,9 +4854,11 @@ export class SpawnerService {
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         "-v",
         `${env.TASK_WORKSPACE_HOST_ROOT}:${env.TASK_WORKSPACE_ROOT}:${workspaceMountMode}`,
+        ...(rawEventsMount ? ["-v", `${rawEventsMount.hostDir}:${rawEventsMount.containerDir}:rw`] : []),
         ...gitRuntimeMounts,
         "-v",
         `${providerStatePaths.hostPath}:${providerStateContainerPath}:rw`,
+        ...dockerSocketMountArgs,
         "-e",
         `TASK_MANIFEST_FILE=${payloadPaths.manifestPath}`,
         "-e",
@@ -3809,12 +4880,25 @@ export class SpawnerService {
           args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
         }
       }
+      for (const [name, value] of dockerSocketEnvEntries) {
+        args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
+      }
       for (const [name, value] of Object.entries(runtimeMcpEnv)) {
+        args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
+      }
+      for (const [name, value] of repositoryRuntimeEnv) {
         args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
       }
 
       await appendRunLog(`Spawner: launching ${task.provider} container for branch ${branchName}.`);
+      emitNestedContainerSpawnedEvent({
+        source: "task_runtime",
+        taskId: task.id,
+        provider: task.provider,
+        policy: dockerSocketPolicy
+      });
 
+      liveTimelineStream = this.startLiveRunTimelineStream(task, runId, rawEventsJsonlPath);
       await new Promise<void>((resolve, reject) => {
         const proc = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
         this.registerActiveExecution(task.id, executionId, { label: containerName, containerName, process: proc });
@@ -3880,6 +4964,9 @@ export class SpawnerService {
       });
 
       this.ensureTaskNotCancelled(task.id);
+      await liveTimelineStream.stop();
+      liveTimelineStream = null;
+      await this.parseAndStoreRunTimeline(task, runId, rawEventsJsonlPath);
 
       const runtimeResult = await this.readRuntimeResult(payloadPaths.resultMarkdownPath, payloadPaths.resultJsonPath);
       if (action === "build") {
@@ -3914,17 +5001,18 @@ export class SpawnerService {
             errorMessage: null
           }))
         ) {
-          await this.taskStore.setStatus(task.id, resolveTaskReadyStatus(false), {
+          await this.taskStore.setExecutionState(task.id, "idle", {
             finishedAt,
             enqueued: false,
             branchDiff,
             lastAction: action,
+            executionAction: null,
             errorMessage: null
           });
         }
       } else {
         const diffBaseRef = task.workspaceBaseRef ?? workspace.workspaceBaseRef;
-        const { branchDiff, providerCommitted } = await this.finalizeBuild(
+        const { branchDiff, providerCommitted, changeOutcome } = await this.finalizeBuild(
           task,
           workspace.workspacePath,
           diffBaseRef,
@@ -3935,21 +5023,25 @@ export class SpawnerService {
         if (providerCommitted) {
           await appendRunLog("Spawner: detected provider-created local commit; reusing it instead of creating a new commit.");
         }
-        if (runtimeResult.summaryMarkdown.trim()) {
-          await this.taskStore.updateResultArtifacts(task.id, runtimeResult.summaryMarkdown.trim());
+        const finalSummary =
+          runtimeResult.summaryMarkdown.trim() ||
+          (changeOutcome === "no_change"
+            ? "No code changes were needed. Reviewed current implementation and kept files unchanged."
+            : "Build completed locally. Review the diff, then push the branch when ready.");
+        if (finalSummary) {
+          await this.taskStore.updateResultArtifacts(task.id, finalSummary);
         }
         await this.taskStore.appendMessage(task.id, {
           role: "assistant",
           action,
-          content:
-            runtimeResult.summaryMarkdown.trim() ||
-            "Build completed locally. Review the diff, then push the branch when ready."
+          content: finalSummary
         });
         if (runId) {
           await this.taskStore.updateRun(runId, {
             status: "succeeded",
             finishedAt,
-            summary: runtimeResult.summaryMarkdown.trim() || "Build completed locally. Review the diff and push when ready."
+            summary: finalSummary,
+            changeOutcome
           });
         }
         if (runId && action === "build") {
@@ -3966,11 +5058,12 @@ export class SpawnerService {
             errorMessage: null
           }))
         ) {
-          await this.taskStore.setStatus(task.id, resolveTaskReadyStatus(hasPendingCheckpoint), {
+          await this.taskStore.setExecutionState(task.id, "idle", {
             finishedAt,
             enqueued: false,
             branchDiff: nextBranchDiff,
             lastAction: action,
+            executionAction: null,
             branchName,
             errorMessage: null
           });
@@ -3982,6 +5075,11 @@ export class SpawnerService {
       const finishedAt = new Date().toISOString();
       const message = error instanceof Error ? error.message : "Unknown runtime error";
       const isCancelled = error instanceof CancelledTaskError || this.isCancellationRequested(task.id);
+      if (liveTimelineStream) {
+        await liveTimelineStream.stop();
+        liveTimelineStream = null;
+      }
+      await this.parseAndStoreRunTimeline(task, runId, rawEventsJsonlPath);
       if (runId) {
         await this.taskStore.updateRun(runId, {
           status: isCancelled ? "cancelled" : "failed",
@@ -3995,7 +5093,7 @@ export class SpawnerService {
           lastAction: action
         }))
       ) {
-        await this.taskStore.setStatus(task.id, isCancelled ? "cancelled" : "failed", {
+        await this.taskStore.setExecutionState(task.id, isCancelled ? "cancelled" : "failed", {
           finishedAt,
           enqueued: false,
           errorMessage: isCancelled ? "Cancelled by user" : message,
@@ -4004,6 +5102,9 @@ export class SpawnerService {
       }
       throw error;
     } finally {
+      if (liveTimelineStream) {
+        await liveTimelineStream.stop();
+      }
       if (executionId) {
         this.unregisterActiveExecution(task.id, executionId);
       }

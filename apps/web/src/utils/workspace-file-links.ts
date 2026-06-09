@@ -1,6 +1,5 @@
 export interface WorkspaceFileLinkTarget {
   taskId: string;
-  executionId: string | null;
   filePath: string;
   line: number | null;
 }
@@ -37,7 +36,6 @@ export function parseWorkspaceFileLink(href?: string): WorkspaceFileLinkTarget |
       const parsedPath = splitLineSuffix(decodeURIComponent(askMatch[3] ?? ""));
       return {
         taskId: askMatch[1] ?? "",
-        executionId: askMatch[2] ?? "",
         filePath: parsedPath.filePath,
         line: parseLineFromHash(url.hash) ?? parsedPath.line
       };
@@ -51,7 +49,6 @@ export function parseWorkspaceFileLink(href?: string): WorkspaceFileLinkTarget |
     const parsedPath = splitLineSuffix(decodeURIComponent(match[2] ?? ""));
     return {
       taskId: match[1] ?? "",
-      executionId: null,
       filePath: parsedPath.filePath,
       line: parseLineFromHash(url.hash) ?? parsedPath.line
     };

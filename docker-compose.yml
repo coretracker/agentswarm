@@ -2,7 +2,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
 
@@ -13,7 +13,7 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -23,14 +23,6 @@ services:
       dockerfile: apps/server/Dockerfile
     environment:
       - PORT=4000
-      - STORE_BACKEND=${STORE_BACKEND:-redis}
-      - TASK_STORE_BACKEND=${TASK_STORE_BACKEND:-}
-      - SNIPPET_STORE_BACKEND=${SNIPPET_STORE_BACKEND:-}
-      - REPOSITORY_STORE_BACKEND=${REPOSITORY_STORE_BACKEND:-}
-      - CREDENTIAL_STORE_BACKEND=${CREDENTIAL_STORE_BACKEND:-}
-      - ROLE_STORE_BACKEND=${ROLE_STORE_BACKEND:-}
-      - USER_STORE_BACKEND=${USER_STORE_BACKEND:-}
-      - SETTINGS_STORE_BACKEND=${SETTINGS_STORE_BACKEND:-}
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=${DATABASE_URL:-postgres://postgres:postgres@postgres:5432/agentswarm}
       - POSTGRES_AUTO_MIGRATE=${POSTGRES_AUTO_MIGRATE:-true}
@@ -42,7 +34,7 @@ services:
       - RUNTIME_PAYLOAD_ROOT=/runtime-payloads
       - RUNTIME_PAYLOAD_VOLUME=agentswarm_runtime_payloads
       - TASK_WORKSPACE_ROOT=/task-workspaces
-      - TASK_WORKSPACE_HOST_ROOT=${TASK_WORKSPACE_HOST_ROOT:-${PWD}/task-workspaces}
+      - TASK_WORKSPACE_HOST_ROOT=${PWD}/task-workspaces
       - SECRET_KEY_PATH=/secrets/agentswarm.key
       - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3217}
       - DEFAULT_ADMIN_NAME=${DEFAULT_ADMIN_NAME:-Administrator}
@@ -50,6 +42,11 @@ services:
       - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-admin123!}
       - AUTH_COOKIE_NAME=${AUTH_COOKIE_NAME:-agentswarm_session}
       - AUTH_SESSION_TTL_DAYS=${AUTH_SESSION_TTL_DAYS:-7}
+      - APP_ENVIRONMENT=${APP_ENVIRONMENT:-local}
+      - DOCKER_SOCKET_ACCESS_ENABLED=${DOCKER_SOCKET_ACCESS_ENABLED:-false}
+      - DOCKER_SOCKET_HOST_PATH=${DOCKER_SOCKET_HOST_PATH:-/var/run/docker.sock}
+      - DOCKER_SOCKET_CONTAINER_PATH_CODEX=${DOCKER_SOCKET_CONTAINER_PATH_CODEX:-/var/run/docker.sock}
+      - DOCKER_SOCKET_CONTAINER_PATH_CLAUDE=${DOCKER_SOCKET_CONTAINER_PATH_CLAUDE:-/var/run/docker.sock}
       - GIT_TERMINAL_IMAGE=${GIT_TERMINAL_IMAGE:-local/git-terminal:latest}
       # In-browser terminal images: build with tools/codex-web-terminal/Dockerfile.git, Dockerfile.codex, and Dockerfile.claude
       - CODEX_INTERACTIVE_IMAGE=${CODEX_INTERACTIVE_IMAGE:-local/codex-interactive:latest}
@@ -58,10 +55,10 @@ services:
       - "4000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./local-plans:/plans
+      - ${LOCAL_PLANS_HOST_ROOT:-./local-plans}:/plans
       - repo_cache:/repo-cache
       - runtime_payloads:/runtime-payloads
-      - ${TASK_WORKSPACE_HOST_ROOT:-${PWD}/task-workspaces}:/task-workspaces
+      - ${PWD}/task-workspaces:/task-workspaces
       - server_secrets:/secrets
     depends_on:
       - redis
@@ -87,7 +84,7 @@ services:
     ports:
       - "${PUBLIC_PORT:-3217}:3217"
     volumes:
-      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${NGINX_CONF_HOST_PATH:-./deploy/nginx.conf}:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - web
       - server

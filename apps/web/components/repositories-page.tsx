@@ -1,61 +1,35 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import type { Repository } from "@agentswarm/shared-types";
-import { Button, Card, Checkbox, Flex, Form, Input, Modal, Popconfirm, Space, Switch, Table, Typography, message } from "antd";
+import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useAuth } from "./auth-provider";
 
-type RepositoryFormValues = {
-  name: string;
-  url: string;
-  defaultBranch: string;
-  webhookEnabled: boolean;
-  webhookUrl: string;
-  webhookSecret: string;
-  clearWebhookSecret: boolean;
-};
-
 export function RepositoriesPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { repositories, loading } = useRepositories();
   const { can } = useAuth();
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<Repository | null>(null);
-  const [form] = Form.useForm<RepositoryFormValues>();
-  const [submitting, setSubmitting] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
   const canCreateRepository = can("repo:create");
   const canEditRepository = can("repo:edit");
   const canDeleteRepository = can("repo:delete");
 
-  const openCreate = () => {
-    setEditing(null);
-    form.setFieldsValue({
-      name: "",
-      url: "",
-      defaultBranch: "develop",
-      webhookEnabled: false,
-      webhookUrl: "",
-      webhookSecret: "",
-      clearWebhookSecret: false
-    });
-    setOpen(true);
-  };
-
-  const openEdit = (repository: Repository) => {
-    setEditing(repository);
-    form.setFieldsValue({
-      name: repository.name,
-      url: repository.url,
-      defaultBranch: repository.defaultBranch,
-      webhookEnabled: repository.webhookEnabled,
-      webhookUrl: repository.webhookUrl ?? "",
-      webhookSecret: "",
-      clearWebhookSecret: false
-    });
-    setOpen(true);
-  };
+  useEffect(() => {
+    const savedState = searchParams.get("saved");
+    if (!savedState) {
+      return;
+    }
+    if (savedState === "created") {
+      messageApi.success("Repository created");
+    } else if (savedState === "updated") {
+      messageApi.success("Repository updated");
+    }
+    router.replace("/repositories");
+  }, [messageApi, router, searchParams]);
 
   return (
     <>
@@ -69,7 +43,7 @@ export function RepositoriesPage() {
             <Typography.Text type="secondary">Manage reusable repository definitions for task creation.</Typography.Text>
           </Flex>
           {canCreateRepository ? (
-            <Button type="primary" onClick={openCreate}>
+            <Button type="primary" onClick={() => router.push("/repositories/new?from=list")}>
               Add Repository
             </Button>
           ) : null}
@@ -84,6 +58,14 @@ export function RepositoriesPage() {
               { title: "Name", dataIndex: "name" },
               { title: "URL", dataIndex: "url" },
               { title: "Default Branch", dataIndex: "defaultBranch" },
+              {
+                title: "Env Vars",
+                render: (_, repository) => <Typography.Text>{(repository.envVars ?? []).length}</Typography.Text>
+              },
+              {
+                title: "Secrets",
+                render: (_, repository) => <Typography.Text>{(repository.envSecrets ?? []).length}</Typography.Text>
+              },
               {
                 title: "Webhook",
                 render: (_, repository) => {
@@ -108,17 +90,27 @@ export function RepositoriesPage() {
                 }
               },
               {
+                title: "Automations",
+                render: (_, repository) => <Typography.Text>{repository.githubAutomations?.length ?? 0}</Typography.Text>
+              },
+              {
                 title: "Actions",
                 render: (_, repository) => (
                   <Space>
-                    {canEditRepository ? <Button onClick={() => openEdit(repository)}>Edit</Button> : null}
+                    {canEditRepository ? (
+                      <Button onClick={() => router.push(`/repositories/${repository.id}/edit?from=list`)}>Edit</Button>
+                    ) : null}
                     {canDeleteRepository ? (
                       <Popconfirm
                         title="Delete repository?"
                         description="Tasks keep their stored snapshot, but this repository will be removed from quick selection."
                         onConfirm={async () => {
-                          await api.deleteRepository(repository.id);
-                          messageApi.success("Repository deleted");
+                          try {
+                            await api.deleteRepository(repository.id);
+                            messageApi.success("Repository deleted");
+                          } catch (error) {
+                            messageApi.error(error instanceof Error ? error.message : "Failed to delete repository");
+                          }
                         }}
                       >
                         <Button danger>Delete</Button>
@@ -131,108 +123,6 @@ export function RepositoriesPage() {
           />
         </Card>
       </Space>
-
-      <Modal open={open} title={editing ? "Edit Repository" : "Add Repository"} footer={null} onCancel={() => setOpen(false)}>
-        <Form
-          form={form}
-          layout="vertical"
-          onFinish={async (values) => {
-            setSubmitting(true);
-            try {
-              const payload = {
-                name: values.name,
-                url: values.url,
-                defaultBranch: values.defaultBranch,
-                webhookEnabled: values.webhookEnabled,
-                webhookUrl: values.webhookUrl.trim().length > 0 ? values.webhookUrl.trim() : null,
-                ...(values.webhookSecret.trim().length > 0 ? { webhookSecret: values.webhookSecret.trim() } : {}),
-                ...(editing && values.clearWebhookSecret ? { clearWebhookSecret: true } : {})
-              };
-              if (editing) {
-                await api.updateRepository(editing.id, payload);
-                messageApi.success("Repository updated");
-              } else {
-                await api.createRepository(payload);
-                messageApi.success("Repository created");
-              }
-              setOpen(false);
-            } finally {
-              setSubmitting(false);
-            }
-          }}
-        >
-          <Form.Item name="name" label="Name" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="url" label="URL" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="defaultBranch" label="Default Branch" rules={[{ required: true }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="webhookEnabled" label="Enable Webhooks" valuePropName="checked">
-            <Switch />
-          </Form.Item>
-          <Form.Item
-            name="webhookUrl"
-            label="Webhook URL"
-            dependencies={["webhookEnabled"]}
-            rules={[
-              ({ getFieldValue }) => ({
-                validator(_, value) {
-                  if (!getFieldValue("webhookEnabled")) {
-                    return Promise.resolve();
-                  }
-                  if (typeof value === "string" && value.trim().length > 0) {
-                    try {
-                      new URL(value.trim());
-                      return Promise.resolve();
-                    } catch {
-                      return Promise.reject(new Error("Webhook URL must be a valid absolute URL."));
-                    }
-                  }
-                  return Promise.reject(new Error("Webhook URL is required when webhooks are enabled."));
-                }
-              })
-            ]}
-          >
-            <Input placeholder="https://example.com/webhooks/agentswarm" />
-          </Form.Item>
-          <Form.Item
-            name="webhookSecret"
-            label={editing?.webhookSecretConfigured ? "Webhook Secret (leave blank to keep existing)" : "Webhook Secret"}
-            dependencies={["webhookEnabled", "clearWebhookSecret"]}
-            rules={[
-              ({ getFieldValue }) => ({
-                validator(_, value) {
-                  if (!getFieldValue("webhookEnabled")) {
-                    return Promise.resolve();
-                  }
-                  const normalized = typeof value === "string" ? value.trim() : "";
-                  const clearSecret = getFieldValue("clearWebhookSecret") === true;
-                  if (normalized.length > 0) {
-                    return Promise.resolve();
-                  }
-                  if (editing?.webhookSecretConfigured && !clearSecret) {
-                    return Promise.resolve();
-                  }
-                  return Promise.reject(new Error("Webhook secret is required when webhooks are enabled."));
-                }
-              })
-            ]}
-          >
-            <Input.Password />
-          </Form.Item>
-          {editing?.webhookSecretConfigured ? (
-            <Form.Item name="clearWebhookSecret" valuePropName="checked">
-              <Checkbox>Clear stored webhook secret</Checkbox>
-            </Form.Item>
-          ) : null}
-          <Button type="primary" htmlType="submit" loading={submitting}>
-            {editing ? "Save Changes" : "Create Repository"}
-          </Button>
-        </Form>
-      </Modal>
     </>
   );
 }

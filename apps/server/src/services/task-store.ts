@@ -2,6 +2,11 @@ import { nanoid } from "nanoid";
 import type Redis from "ioredis";
 import type { Pool } from "pg";
 import {
+  type CodexCredentialSource,
+  getTaskExecutionAction,
+  getTaskExecutionStatus,
+  getTaskReviewReason,
+  getTaskWorkflowStatus,
   getQueuedStatusForAction,
   type AgentProvider,
   type CreateTaskInput,
@@ -9,12 +14,17 @@ import {
   type Repository,
   type Task,
   type TaskAction,
-  type TaskContextEntry,
+  type TaskExecutionAction,
+  type TaskExecutionStatus,
   type TaskMessage,
   type TaskPromptAttachment,
   type TaskReasoningEffort,
   type TaskRun,
-  type TaskStartMode,
+  type TaskGitOperation,
+  type TaskGitOperationFailureCode,
+  type TaskGitOperationStatus,
+  type TaskGitOperationType,
+  type TaskWorkflowStatus,
   type TaskStatus,
   type TaskChangeProposal,
   type TaskChangeProposalStatus,
@@ -45,6 +55,8 @@ const TASK_MESSAGE_KEY_PREFIX = "agentswarm:task_messages:";
 const TASK_RUN_KEY_PREFIX = "agentswarm:task_run:";
 const TASK_RUN_LOG_KEY_PREFIX = "agentswarm:task_run_logs:";
 const TASK_RUN_IDS_KEY_PREFIX = "agentswarm:task_run_ids:";
+const TASK_GIT_OPERATION_KEY_PREFIX = "agentswarm:task_git_operation:";
+const TASK_GIT_OPERATION_IDS_KEY_PREFIX = "agentswarm:task_git_operation_ids:";
 const TASK_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_change_proposal:";
 const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "agentswarm:task_change_proposal_ids:";
 const TASK_PENDING_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_pending_change_proposal:";
@@ -53,20 +65,84 @@ const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "agentswarm:task_interac
 const TASK_IDS_KEY = "agentswarm:task_ids";
 const MAX_LOG_LINES = 400;
 const MAX_MESSAGES = 200;
+const DEFAULT_HISTORY_PAGE_LIMIT = 25;
+const MAX_HISTORY_PAGE_LIMIT = 100;
+const LEGACY_START_MODE_FIELD = "start" + "Mode";
 
 const nowIso = (): string => new Date().toISOString();
+const POSTGRES_DEADLOCK_ERROR_CODE = "40P01";
+const POSTGRES_SERIALIZATION_ERROR_CODE = "40001";
+
+const normalizeDeadline = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const timestamp = Date.parse(trimmed);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+};
+
+const isRetryablePostgresError = (error: unknown): boolean => {
+  if (!error || typeof error !== "object" || !("code" in error)) {
+    return false;
+  }
+  const code = String((error as { code?: string }).code ?? "");
+  return code === POSTGRES_DEADLOCK_ERROR_CODE || code === POSTGRES_SERIALIZATION_ERROR_CODE;
+};
+
+const sleep = async (ms: number): Promise<void> => {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+};
+
+const clampHistoryPageLimit = (raw: number | null | undefined): number => {
+  if (!Number.isFinite(raw)) {
+    return DEFAULT_HISTORY_PAGE_LIMIT;
+  }
+  return Math.max(1, Math.min(MAX_HISTORY_PAGE_LIMIT, Math.floor(raw as number)));
+};
+
+const paginateByTimestamp = <T extends { id: string }>(
+  input: T[],
+  options: ListTaskHistoryPageOptions | undefined,
+  getTimestamp: (item: T) => string
+): ListTaskHistoryPageResult<T> => {
+  const before = options?.before ?? null;
+  const beforeId = options?.beforeId ?? null;
+  const limit = clampHistoryPageLimit(options?.limit);
+  const filtered = before
+    ? input.filter((item) => {
+        const timestamp = getTimestamp(item);
+        return timestamp < before || (timestamp === before && beforeId !== null && item.id < beforeId);
+      })
+    : input;
+  const start = Math.max(0, filtered.length - (limit + 1));
+  const pageSlice = filtered.slice(start);
+  const hasMore = pageSlice.length > limit;
+  const items = hasMore ? pageSlice.slice(1) : pageSlice;
+  return { items, hasMore };
+};
 
 const getInitialAction = (task: { taskType: Task["taskType"] }): TaskAction => (task.taskType === "ask" ? "ask" : "build");
 
 const normalizeLegacyTaskType = (taskType: string | null | undefined): Task["taskType"] => (taskType === "ask" ? "ask" : "build");
 const currentTaskStatuses = new Set<TaskStatus>([
+  "draft",
+  "scheduled",
   "build_queued",
   "preparing_workspace",
   "building",
   "ask_queued",
   "asking",
   "open",
+  "in_progress",
+  "in_review",
   "awaiting_review",
+  "done",
   "completed",
   "answered",
   "accepted",
@@ -91,32 +167,7 @@ const normalizeTaskMessageAction = (action: string | null | undefined): TaskMess
   return null;
 };
 
-const normalizeTaskContextEntry = (value: unknown): TaskContextEntry | null => {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const entry = value as Partial<TaskContextEntry>;
-  if (
-    (entry.kind !== "message" && entry.kind !== "run" && entry.kind !== "proposal" && entry.kind !== "terminal_session") ||
-    typeof entry.label !== "string" ||
-    typeof entry.content !== "string"
-  ) {
-    return null;
-  }
-
-  return {
-    kind: entry.kind,
-    label: entry.label,
-    content: entry.content
-  };
-};
-
 const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
-  const rawContextEntries = (message as TaskMessage & { contextEntries?: unknown }).contextEntries;
-  const contextEntries = Array.isArray(rawContextEntries)
-    ? rawContextEntries.map(normalizeTaskContextEntry).filter((entry): entry is TaskContextEntry => entry !== null)
-    : [];
   const rawAttachments = (message as TaskMessage & { attachments?: unknown }).attachments;
   const attachments = Array.isArray(rawAttachments)
     ? rawAttachments.map(normalizeTaskPromptAttachment).filter((attachment): attachment is TaskPromptAttachment => attachment !== null)
@@ -126,10 +177,66 @@ const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
   return {
     ...message,
     action: normalizeTaskMessageAction(message.action),
-    ...(contextEntries.length > 0 ? { contextEntries } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
     ...(sessionId !== null || "sessionId" in message ? { sessionId } : {})
   };
+};
+
+const normalizeTaskExecutionStatus = (value: unknown, fallbackTask: Pick<Task, "status" | "activeInteractiveSession">): TaskExecutionStatus => {
+  if (
+    value === "idle" ||
+    value === "scheduled" ||
+    value === "queued" ||
+    value === "preparing" ||
+    value === "running" ||
+    value === "failed" ||
+    value === "cancelled"
+  ) {
+    return value;
+  }
+
+  return getTaskExecutionStatus(fallbackTask);
+};
+
+const normalizeTaskExecutionAction = (
+  value: unknown,
+  fallbackTask: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode">
+): TaskExecutionAction => {
+  if (value === "build" || value === "ask" || value === "interactive" || value === "terminal") {
+    return value;
+  }
+
+  return getTaskExecutionAction(fallbackTask);
+};
+
+const normalizeTaskWorkflowStatus = (
+  value: unknown,
+  fallbackTask: Pick<Task, "status" | "hasPendingCheckpoint" | "taskType">
+): TaskWorkflowStatus => {
+  if (fallbackTask.status === "archived") {
+    return "archived";
+  }
+
+  if (value === "backlog" || value === "ready" || value === "in_progress" || value === "review" || value === "done") {
+    return value;
+  }
+
+  return getTaskWorkflowStatus(fallbackTask);
+};
+
+const withDerivedTaskState = (task: Task): Task => ({
+  ...task,
+  workflowStatus: normalizeTaskWorkflowStatus(task.workflowStatus, task),
+  executionStatus: normalizeTaskExecutionStatus(task.executionStatus, task),
+  executionAction: normalizeTaskExecutionAction(task.executionAction, task),
+  reviewReason: getTaskReviewReason(task)
+});
+
+const normalizeCodexCredentialSource = (value: string | null | undefined): CodexCredentialSource => {
+  if (value === "profile" || value === "global") {
+    return value;
+  }
+  return "auto";
 };
 
 export interface ListTasksOptions {
@@ -146,10 +253,32 @@ export interface CreateTaskRunInput {
   branchName: string | null;
 }
 
+export interface CreateTaskGitOperationInput {
+  taskId: string;
+  operationType: TaskGitOperationType;
+  status?: TaskGitOperationStatus;
+  attemptCount?: number;
+  errorCode?: TaskGitOperationFailureCode | null;
+  errorMessage?: string | null;
+}
+
+export type UpdateTaskGitOperationPatch = Partial<
+  Pick<TaskGitOperation, "status" | "finishedAt" | "errorCode" | "errorMessage" | "attemptCount">
+>;
+
 export type UpdateTaskRunPatch = Partial<
   Pick<
     TaskRun,
-    "status" | "finishedAt" | "summary" | "errorMessage" | "branchName" | "changeProposalCheckpointRef" | "changeProposalUntrackedPaths"
+    | "status"
+    | "finishedAt"
+    | "summary"
+    | "changeOutcome"
+    | "errorMessage"
+    | "branchName"
+    | "changeProposalCheckpointRef"
+    | "changeProposalUntrackedPaths"
+    | "hasRawJson"
+    | "timelineEvents"
   >
 >;
 
@@ -157,9 +286,19 @@ export interface AppendTaskMessageInput {
   role: TaskMessage["role"];
   content: string;
   action?: TaskMessage["action"];
-  contextEntries?: TaskContextEntry[];
   attachments?: TaskPromptAttachment[];
   sessionId?: string | null;
+}
+
+export interface ListTaskHistoryPageOptions {
+  before?: string | null;
+  beforeId?: string | null;
+  limit?: number;
+}
+
+export interface ListTaskHistoryPageResult<T> {
+  items: T[];
+  hasMore: boolean;
 }
 
 export interface TaskPushedEventInput {
@@ -183,30 +322,59 @@ export interface TaskActiveInteractiveSession {
   mode: TaskTerminalSessionMode;
 }
 
+export type TaskMetadata = Pick<
+  Task,
+  | "id"
+  | "ownerUserId"
+  | "status"
+  | "executionStatus"
+  | "executionAction"
+  | "hasPendingCheckpoint"
+  | "activeInteractiveSession"
+  | "activeTerminalSessionMode"
+  | "provider"
+  | "providerProfile"
+  | "modelOverride"
+  | "codexCredentialSource"
+>;
+
 export type CreateTaskChangeProposalInput = Omit<TaskChangeProposal, "resolvedAt" | "revertedAt"> & {
   resolvedAt?: null;
   revertedAt?: null;
 };
 
-export type UpdateTaskChangeProposalUpdates = Partial<Pick<TaskChangeProposal, "toRef">>;
+export type UpdateTaskChangeProposalUpdates = Partial<
+  Pick<TaskChangeProposal, "toRef" | "diff" | "diffStat" | "changedFiles" | "diffTruncated">
+>;
 
 export interface TaskStore {
   createTask(input: CreateTaskInput, repository: Repository, ownerUserId: string): Promise<Task>;
   getTask(taskId: string): Promise<Task | null>;
+  getTaskMetadata(taskId: string): Promise<TaskMetadata | null>;
   listTasks(options?: ListTasksOptions): Promise<Task[]>;
   patchTask(taskId: string, patch: Partial<Omit<Task, "id" | "createdAt">>): Promise<Task | null>;
   updateResultArtifacts(taskId: string, resultMarkdown: string): Promise<Task | null>;
   appendLog(taskId: string, line: string): Promise<void>;
   appendLogForRun(taskId: string, line: string, runId: string | null): Promise<void>;
   listMessages(taskId: string): Promise<TaskMessage[]>;
+  listMessagesPage(taskId: string, options?: ListTaskHistoryPageOptions): Promise<ListTaskHistoryPageResult<TaskMessage>>;
   listRuns(taskId: string): Promise<TaskRun[]>;
+  listRunsPage(taskId: string, options?: ListTaskHistoryPageOptions): Promise<ListTaskHistoryPageResult<TaskRun>>;
   getRun(runId: string): Promise<TaskRun | null>;
   createRun(taskId: string, input: CreateTaskRunInput): Promise<TaskRun | null>;
   updateRun(runId: string, patch: UpdateTaskRunPatch): Promise<TaskRun | null>;
+  createGitOperation(input: CreateTaskGitOperationInput): Promise<TaskGitOperation | null>;
+  updateGitOperation(operationId: string, patch: UpdateTaskGitOperationPatch): Promise<TaskGitOperation | null>;
+  getLatestGitOperation(taskId: string): Promise<TaskGitOperation | null>;
   appendMessage(taskId: string, input: AppendTaskMessageInput): Promise<TaskMessage | null>;
   updateMessage(taskId: string, messageId: string, content: string): Promise<TaskMessage | null>;
   setMessageAttachments(taskId: string, messageId: string, attachments: TaskPromptAttachment[]): Promise<TaskMessage | null>;
   markQueuedForAction(taskId: string, action: TaskAction): Promise<Task | null>;
+  setExecutionState(
+    taskId: string,
+    executionStatus: TaskExecutionStatus,
+    extra?: Partial<Omit<Task, "id" | "createdAt" | "status">>
+  ): Promise<Task | null>;
   setStatus(taskId: string, status: TaskStatus, extra?: Partial<Task>): Promise<Task | null>;
   archiveTask(taskId: string): Promise<Task | null>;
   deleteTask(taskId: string): Promise<boolean>;
@@ -219,6 +387,10 @@ export interface TaskStore {
   saveInteractiveTerminalTranscript(taskId: string, sessionId: string, content: string, truncated: boolean): Promise<void>;
   getInteractiveTerminalTranscript(taskId: string, sessionId: string): Promise<TaskInteractiveTerminalTranscript | null>;
   listChangeProposals(taskId: string): Promise<TaskChangeProposal[]>;
+  listChangeProposalsPage(
+    taskId: string,
+    options?: ListTaskHistoryPageOptions
+  ): Promise<ListTaskHistoryPageResult<TaskChangeProposal>>;
   getChangeProposal(proposalId: string): Promise<TaskChangeProposal | null>;
   getLatestAppliedChangeProposalId(taskId: string): Promise<string | null>;
   createChangeProposal(input: CreateTaskChangeProposalInput): Promise<TaskChangeProposal | null>;
@@ -240,21 +412,34 @@ export class RedisTaskStore implements TaskStore {
   private normalizeTask(task: Task): Task {
     const legacyTask = task as Task & {
       taskType?: string;
+      deadline?: string | null;
       ownerUserId?: string | null;
       repoDefaultBranch?: string;
       resultMarkdown?: string | null;
       provider?: Task["provider"];
       providerProfile?: Task["providerProfile"];
       modelOverride?: string | null;
+      codexCredentialSource?: Task["codexCredentialSource"];
       model?: string | null;
       reasoningEffort?: TaskReasoningEffort | null;
       lastAction?: string | null;
+      executionStatus?: TaskExecutionStatus;
+      executionAction?: TaskExecutionAction;
       // Legacy field kept for migration of stored tasks created before the prompt refactor.
       requirements?: string;
       prompt?: string;
+      notes?: string;
+      taskSource?: Task["taskSource"];
+      snippetId?: string;
+      scheduledStartAt?: string | null;
+      scheduledEndAt?: string | null;
     };
+    const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
+    delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
+    const taskSource = legacyTask.taskSource === "snippet" || legacyTask.taskSource === "blank" ? legacyTask.taskSource : "blank";
     const normalizedTask: Task = {
-      ...legacyTask,
+      ...taskWithoutStartMode,
+      deadline: normalizeDeadline(legacyTask.deadline),
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
@@ -269,23 +454,41 @@ export class RedisTaskStore implements TaskStore {
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
+      codexCredentialSource: normalizeCodexCredentialSource(legacyTask.codexCredentialSource),
+      taskSource,
+      snippetId:
+        taskSource === "snippet" && typeof legacyTask.snippetId === "string" && legacyTask.snippetId.trim().length > 0
+          ? legacyTask.snippetId.trim()
+          : undefined,
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
       resultMarkdown: legacyTask.resultMarkdown ?? null,
       lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
+      scheduledStartAt:
+        typeof legacyTask.scheduledStartAt === "string" && legacyTask.scheduledStartAt.trim().length > 0
+          ? legacyTask.scheduledStartAt
+          : null,
+      scheduledEndAt:
+        typeof legacyTask.scheduledEndAt === "string" && legacyTask.scheduledEndAt.trim().length > 0
+          ? legacyTask.scheduledEndAt
+          : null,
       // Prefer the new prompt field; fall back to legacy requirements for older tasks.
-      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim()
+      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim(),
+      notes: (legacyTask.notes ?? "").trim()
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
-    return {
+    const legacyStatus = currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as TaskStatus) : "open";
+    return withDerivedTaskState({
       ...normalizedTask,
       status: normalizeTaskLifecycleStatus(
         currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as string) : String(legacyTask.status ?? ""),
         fallbackAction,
         normalizedTask.hasPendingCheckpoint
-      )
-    };
+      ),
+      executionStatus: normalizeTaskExecutionStatus(legacyTask.executionStatus, { ...normalizedTask, status: legacyStatus }),
+      executionAction: normalizeTaskExecutionAction(legacyTask.executionAction, { ...normalizedTask, status: legacyStatus })
+    });
   }
 
   private taskKey(taskId: string): string {
@@ -310,6 +513,14 @@ export class RedisTaskStore implements TaskStore {
 
   private taskRunIdsKey(taskId: string): string {
     return `${TASK_RUN_IDS_KEY_PREFIX}${taskId}`;
+  }
+
+  private taskGitOperationKey(operationId: string): string {
+    return `${TASK_GIT_OPERATION_KEY_PREFIX}${operationId}`;
+  }
+
+  private taskGitOperationIdsKey(taskId: string): string {
+    return `${TASK_GIT_OPERATION_IDS_KEY_PREFIX}${taskId}`;
   }
 
   private taskChangeProposalKey(proposalId: string): string {
@@ -365,9 +576,8 @@ export class RedisTaskStore implements TaskStore {
 
   private withPendingCheckpointState(task: Task): Task {
     const hasPendingCheckpoint = task.hasPendingCheckpoint ?? false;
-    return {
+    return withDerivedTaskState({
       ...task,
-      status: reconcileTaskStatusWithPendingCheckpoint(task.status, hasPendingCheckpoint),
       hasPendingCheckpoint,
       activeInteractiveSession: task.activeInteractiveSession === true,
       activeTerminalSessionMode:
@@ -376,7 +586,7 @@ export class RedisTaskStore implements TaskStore {
             ? "git"
             : "interactive"
           : null
-    };
+    });
   }
 
   private async publishTaskEvent(type: "task:created" | "task:updated", task: Task): Promise<Task> {
@@ -388,8 +598,21 @@ export class RedisTaskStore implements TaskStore {
   private normalizeRun(run: TaskRun): TaskRun {
     return {
       ...run,
+      changeOutcome: run.changeOutcome === "changed" || run.changeOutcome === "no_change" ? run.changeOutcome : null,
       changeProposalCheckpointRef: run.changeProposalCheckpointRef ?? null,
-      changeProposalUntrackedPaths: Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : null
+      changeProposalUntrackedPaths: Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : null,
+      hasRawJson: run.hasRawJson === true,
+      timelineEvents: Array.isArray(run.timelineEvents) ? run.timelineEvents : []
+    };
+  }
+
+  private normalizeGitOperation(operation: TaskGitOperation): TaskGitOperation {
+    return {
+      ...operation,
+      finishedAt: operation.finishedAt ?? null,
+      errorCode: operation.errorCode ?? null,
+      errorMessage: operation.errorMessage ?? null,
+      attemptCount: Math.max(1, Number.isFinite(operation.attemptCount) ? Math.floor(operation.attemptCount) : 1)
     };
   }
 
@@ -410,26 +633,37 @@ export class RedisTaskStore implements TaskStore {
     };
   }
 
+  private async getStoredGitOperation(operationId: string): Promise<TaskGitOperation | null> {
+    const raw = await this.redis.get(this.taskGitOperationKey(operationId));
+    if (!raw) {
+      return null;
+    }
+    return this.normalizeGitOperation(JSON.parse(raw) as TaskGitOperation);
+  }
+
   async createTask(input: CreateTaskInput, repository: Repository, ownerUserId: string): Promise<Task> {
     const timestamp = nowIso();
     const title = resolveTaskTitleForCreate(input);
     const taskType = input.taskType ?? "build";
     const promptRaw = (input.prompt ?? "").trim();
-    const startMode: TaskStartMode = input.startMode ?? "run_now";
-    const prompt =
-      promptRaw.length > 0 ? promptRaw : startMode === "prepare_workspace" ? "" : "(No prompt provided.)";
+    const prompt = promptRaw.length > 0 ? promptRaw : "(No prompt provided.)";
+    const notes = (input.notes ?? "").trim();
+    const deadline = normalizeDeadline(input.deadline);
     const complexity = classifyTaskComplexity(title, prompt);
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
     const provider = normalizeProvider(input.provider);
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
+    const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
+    const taskSource = "blank";
+    const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
-    const initialStatus: TaskStatus =
-      startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
+    const initialStatus: TaskStatus = isDraft ? "draft" : "open";
     const task: Task = {
       id: nanoid(),
       title,
+      deadline,
       pinned: false,
       hasPendingCheckpoint: false,
       activeInteractiveSession: false,
@@ -443,29 +677,38 @@ export class RedisTaskStore implements TaskStore {
       provider,
       providerProfile,
       modelOverride,
+      codexCredentialSource,
+      taskSource,
       baseBranch,
       branchStrategy,
       complexity,
       branchName: branchStrategy === "work_on_branch" ? baseBranch : null,
       workspaceBaseRef: null,
       prompt,
+      notes,
       resultMarkdown: null,
       executionSummary: buildExecutionSummaryFromPrompt(title, prompt),
       branchDiff: null,
       lastAction: initialAction,
       status: initialStatus,
+      workflowStatus: isDraft ? "backlog" : "ready",
+      executionStatus: isDraft ? "idle" : "queued",
+      executionAction: isDraft ? null : initialAction,
+      reviewReason: null,
       logs: [],
       enqueued: false,
+      scheduledStartAt: null,
+      scheduledEndAt: null,
       createdAt: timestamp,
       updatedAt: timestamp,
-      startedAt: startMode === "prepare_workspace" ? timestamp : null,
+      startedAt: null,
       finishedAt: null,
       errorMessage: null
     };
 
     await this.redis.multi().set(this.taskKey(task.id), JSON.stringify(task)).sadd(TASK_IDS_KEY, task.id).exec();
     await this.publishTaskEvent("task:created", task);
-    if (startMode !== "prepare_workspace" || prompt.trim().length > 0) {
+    if (!isDraft) {
       await this.appendMessage(task.id, {
         role: "user",
         action: initialAction,
@@ -483,6 +726,28 @@ export class RedisTaskStore implements TaskStore {
     }
 
     return this.hydrateTask(task);
+  }
+
+  async getTaskMetadata(taskId: string): Promise<TaskMetadata | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    return {
+      id: task.id,
+      ownerUserId: task.ownerUserId,
+      status: task.status,
+      executionStatus: task.executionStatus,
+      executionAction: task.executionAction,
+      hasPendingCheckpoint: task.hasPendingCheckpoint,
+      activeInteractiveSession: task.activeInteractiveSession,
+      activeTerminalSessionMode: task.activeTerminalSessionMode,
+      provider: task.provider,
+      providerProfile: task.providerProfile,
+      modelOverride: task.modelOverride,
+      codexCredentialSource: task.codexCredentialSource
+    };
   }
 
   async listTasks(options: ListTasksOptions = {}): Promise<Task[]> {
@@ -608,8 +873,13 @@ export class RedisTaskStore implements TaskStore {
   }
 
   async listMessages(taskId: string): Promise<TaskMessage[]> {
+    const page = await this.listMessagesPage(taskId);
+    return page.items;
+  }
+
+  async listMessagesPage(taskId: string, options?: ListTaskHistoryPageOptions): Promise<ListTaskHistoryPageResult<TaskMessage>> {
     const rawMessages = await this.redis.lrange(this.taskMessageKey(taskId), 0, -1);
-    return rawMessages.flatMap((raw) => {
+    const messages = rawMessages.flatMap((raw) => {
       try {
         const parsed = JSON.parse(raw) as TaskMessage;
         return normalizeTaskMessage(parsed);
@@ -617,12 +887,18 @@ export class RedisTaskStore implements TaskStore {
         return [];
       }
     });
+    return paginateByTimestamp(messages, options, (message) => message.createdAt);
   }
 
   async listRuns(taskId: string): Promise<TaskRun[]> {
+    const page = await this.listRunsPage(taskId);
+    return page.items;
+  }
+
+  async listRunsPage(taskId: string, options?: ListTaskHistoryPageOptions): Promise<ListTaskHistoryPageResult<TaskRun>> {
     const runIds = await this.redis.lrange(this.taskRunIdsKey(taskId), 0, -1);
     if (runIds.length === 0) {
-      return [];
+      return { items: [], hasMore: false };
     }
 
     const runs = await Promise.all(
@@ -632,7 +908,8 @@ export class RedisTaskStore implements TaskStore {
       })
     );
 
-    return runs.filter((run): run is TaskRun => !!run).sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+    const sortedRuns = runs.filter((run): run is TaskRun => !!run).sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+    return paginateByTimestamp(sortedRuns, options, (run) => run.startedAt);
   }
 
   async getRun(runId: string): Promise<TaskRun | null> {
@@ -671,9 +948,12 @@ export class RedisTaskStore implements TaskStore {
       startedAt: nowIso(),
       finishedAt: null,
       summary: null,
+      changeOutcome: null,
       errorMessage: null,
       changeProposalCheckpointRef: null,
       changeProposalUntrackedPaths: null,
+      hasRawJson: false,
+      timelineEvents: [],
       logs: []
     };
 
@@ -694,10 +974,13 @@ export class RedisTaskStore implements TaskStore {
         | "status"
         | "finishedAt"
         | "summary"
+        | "changeOutcome"
         | "errorMessage"
         | "branchName"
         | "changeProposalCheckpointRef"
         | "changeProposalUntrackedPaths"
+        | "hasRawJson"
+        | "timelineEvents"
       >
     >
   ): Promise<TaskRun | null> {
@@ -717,15 +1000,63 @@ export class RedisTaskStore implements TaskStore {
     return next;
   }
 
+  async createGitOperation(input: CreateTaskGitOperationInput): Promise<TaskGitOperation | null> {
+    const task = await this.getStoredTask(input.taskId);
+    if (!task) {
+      return null;
+    }
+
+    const operation: TaskGitOperation = this.normalizeGitOperation({
+      operationId: nanoid(),
+      taskId: input.taskId,
+      operationType: input.operationType,
+      status: input.status ?? "queued",
+      startedAt: nowIso(),
+      finishedAt: null,
+      errorCode: input.errorCode ?? null,
+      errorMessage: input.errorMessage ?? null,
+      attemptCount: Math.max(1, input.attemptCount ?? 1)
+    });
+
+    await this.redis
+      .multi()
+      .set(this.taskGitOperationKey(operation.operationId), JSON.stringify(operation))
+      .rpush(this.taskGitOperationIdsKey(input.taskId), operation.operationId)
+      .exec();
+    await this.eventBus.publish({ type: "task:git_operation", payload: operation });
+    return operation;
+  }
+
+  async updateGitOperation(operationId: string, patch: UpdateTaskGitOperationPatch): Promise<TaskGitOperation | null> {
+    const operation = await this.getStoredGitOperation(operationId);
+    if (!operation) {
+      return null;
+    }
+
+    const next: TaskGitOperation = this.normalizeGitOperation({
+      ...operation,
+      ...patch
+    });
+
+    await this.redis.set(this.taskGitOperationKey(operationId), JSON.stringify(next));
+    await this.eventBus.publish({ type: "task:git_operation", payload: next });
+    return next;
+  }
+
+  async getLatestGitOperation(taskId: string): Promise<TaskGitOperation | null> {
+    const operationId = await this.redis.lindex(this.taskGitOperationIdsKey(taskId), -1);
+    if (!operationId) {
+      return null;
+    }
+    return this.getStoredGitOperation(operationId);
+  }
+
   async appendMessage(taskId: string, input: AppendTaskMessageInput): Promise<TaskMessage | null> {
     const task = await this.getStoredTask(taskId);
     if (!task) {
       return null;
     }
 
-    const contextEntries = (input.contextEntries ?? [])
-      .map((entry) => normalizeTaskContextEntry(entry))
-      .filter((entry): entry is TaskContextEntry => entry !== null);
     const attachments = (input.attachments ?? [])
       .map((attachment) => normalizeTaskPromptAttachment(attachment))
       .filter((attachment): attachment is TaskPromptAttachment => attachment !== null);
@@ -736,7 +1067,6 @@ export class RedisTaskStore implements TaskStore {
       role: input.role,
       content: input.content,
       action: input.action ?? null,
-      ...(contextEntries.length > 0 ? { contextEntries } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(input.sessionId !== undefined ? { sessionId: input.sessionId ?? null } : {}),
       createdAt: nowIso()
@@ -859,13 +1189,38 @@ export class RedisTaskStore implements TaskStore {
 
     const next: Task = {
       ...task,
-      status: getQueuedStatusForAction(action),
+      executionStatus: "queued",
+      executionAction: action,
       enqueued: false,
       errorMessage: null,
       startedAt: null,
       finishedAt: null,
       lastAction: action,
       branchDiff: action === "build" ? task.branchDiff : null,
+      logs: [],
+      updatedAt: nowIso()
+    };
+
+    await this.redis.set(this.taskKey(taskId), JSON.stringify(next));
+    return this.publishTaskEvent("task:updated", next);
+  }
+
+  async setExecutionState(
+    taskId: string,
+    executionStatus: TaskExecutionStatus,
+    extra: Partial<Omit<Task, "id" | "createdAt" | "status">> = {}
+  ): Promise<Task | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    const next: Task = {
+      ...task,
+      ...extra,
+      status: task.status,
+      executionStatus,
+      executionAction: extra.executionAction ?? task.executionAction,
       logs: [],
       updatedAt: nowIso()
     };
@@ -916,6 +1271,7 @@ export class RedisTaskStore implements TaskStore {
       return false;
     }
     const runIds = await this.redis.lrange(this.taskRunIdsKey(taskId), 0, -1);
+    const gitOperationIds = await this.redis.lrange(this.taskGitOperationIdsKey(taskId), 0, -1);
     const proposalIds = await this.redis.lrange(this.taskChangeProposalIdsKey(taskId), 0, -1);
     const pipeline = this.redis
       .multi()
@@ -923,12 +1279,16 @@ export class RedisTaskStore implements TaskStore {
       .del(this.taskLogKey(taskId))
       .del(this.taskMessageKey(taskId))
       .del(this.taskRunIdsKey(taskId))
+      .del(this.taskGitOperationIdsKey(taskId))
       .del(this.taskChangeProposalIdsKey(taskId))
       .del(this.taskPendingChangeProposalKey(taskId))
       .del(this.taskActiveInteractiveSessionKey(taskId))
       .srem(TASK_IDS_KEY, taskId);
     for (const runId of runIds) {
       pipeline.del(this.taskRunKey(runId)).del(this.taskRunLogKey(runId));
+    }
+    for (const operationId of gitOperationIds) {
+      pipeline.del(this.taskGitOperationKey(operationId));
     }
     for (const proposalId of proposalIds) {
       pipeline.del(this.taskChangeProposalKey(proposalId));
@@ -1113,9 +1473,17 @@ export class RedisTaskStore implements TaskStore {
   }
 
   async listChangeProposals(taskId: string): Promise<TaskChangeProposal[]> {
+    const page = await this.listChangeProposalsPage(taskId);
+    return page.items;
+  }
+
+  async listChangeProposalsPage(
+    taskId: string,
+    options?: ListTaskHistoryPageOptions
+  ): Promise<ListTaskHistoryPageResult<TaskChangeProposal>> {
     const ids = await this.redis.lrange(this.taskChangeProposalIdsKey(taskId), 0, -1);
     if (ids.length === 0) {
-      return [];
+      return { items: [], hasMore: false };
     }
     const pipeline = this.redis.pipeline();
     for (const id of ids) {
@@ -1135,7 +1503,8 @@ export class RedisTaskStore implements TaskStore {
         /* skip */
       }
     }
-    return proposals.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const sortedProposals = proposals.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return paginateByTimestamp(sortedProposals, options, (proposal) => proposal.createdAt);
   }
 
   async getChangeProposal(proposalId: string): Promise<TaskChangeProposal | null> {
@@ -1207,7 +1576,7 @@ export class RedisTaskStore implements TaskStore {
     proposalId: string,
     status: TaskChangeProposalStatus,
     taskId: string,
-    updates?: Partial<Pick<TaskChangeProposal, "toRef">>
+    updates?: UpdateTaskChangeProposalUpdates
   ): Promise<TaskChangeProposal | null> {
     const existing = await this.getChangeProposal(proposalId);
     if (!existing || existing.taskId !== taskId) {
@@ -1275,20 +1644,33 @@ export class PostgresTaskStore implements TaskStore {
   private normalizeTask(task: Task): Task {
     const legacyTask = task as Task & {
       taskType?: string;
+      deadline?: string | null;
       ownerUserId?: string | null;
       repoDefaultBranch?: string;
       resultMarkdown?: string | null;
       provider?: Task["provider"];
       providerProfile?: Task["providerProfile"];
       modelOverride?: string | null;
+      codexCredentialSource?: Task["codexCredentialSource"];
       model?: string | null;
       reasoningEffort?: TaskReasoningEffort | null;
       lastAction?: string | null;
+      executionStatus?: TaskExecutionStatus;
+      executionAction?: TaskExecutionAction;
       requirements?: string;
       prompt?: string;
+      notes?: string;
+      taskSource?: Task["taskSource"];
+      snippetId?: string;
+      scheduledStartAt?: string | null;
+      scheduledEndAt?: string | null;
     };
+    const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
+    delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
+    const taskSource = legacyTask.taskSource === "snippet" || legacyTask.taskSource === "blank" ? legacyTask.taskSource : "blank";
     const normalizedTask: Task = {
-      ...legacyTask,
+      ...taskWithoutStartMode,
+      deadline: normalizeDeadline(legacyTask.deadline),
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
@@ -1303,29 +1685,46 @@ export class PostgresTaskStore implements TaskStore {
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
+      codexCredentialSource: normalizeCodexCredentialSource(legacyTask.codexCredentialSource),
+      taskSource,
+      snippetId:
+        taskSource === "snippet" && typeof legacyTask.snippetId === "string" && legacyTask.snippetId.trim().length > 0
+          ? legacyTask.snippetId.trim()
+          : undefined,
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
       resultMarkdown: legacyTask.resultMarkdown ?? null,
       lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
-      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim()
+      scheduledStartAt:
+        typeof legacyTask.scheduledStartAt === "string" && legacyTask.scheduledStartAt.trim().length > 0
+          ? legacyTask.scheduledStartAt
+          : null,
+      scheduledEndAt:
+        typeof legacyTask.scheduledEndAt === "string" && legacyTask.scheduledEndAt.trim().length > 0
+          ? legacyTask.scheduledEndAt
+          : null,
+      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim(),
+      notes: (legacyTask.notes ?? "").trim()
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
-    return {
+    const legacyStatus = currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as TaskStatus) : "open";
+    return withDerivedTaskState({
       ...normalizedTask,
       status: normalizeTaskLifecycleStatus(
         currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as string) : String(legacyTask.status ?? ""),
         fallbackAction,
         normalizedTask.hasPendingCheckpoint
-      )
-    };
+      ),
+      executionStatus: normalizeTaskExecutionStatus(legacyTask.executionStatus, { ...normalizedTask, status: legacyStatus }),
+      executionAction: normalizeTaskExecutionAction(legacyTask.executionAction, { ...normalizedTask, status: legacyStatus })
+    });
   }
 
   private withPendingCheckpointState(task: Task): Task {
     const hasPendingCheckpoint = task.hasPendingCheckpoint ?? false;
-    return {
+    return withDerivedTaskState({
       ...task,
-      status: reconcileTaskStatusWithPendingCheckpoint(task.status, hasPendingCheckpoint),
       hasPendingCheckpoint,
       activeInteractiveSession: task.activeInteractiveSession === true,
       activeTerminalSessionMode:
@@ -1334,7 +1733,7 @@ export class PostgresTaskStore implements TaskStore {
             ? "git"
             : "interactive"
           : null
-    };
+    });
   }
 
   private async publishTaskEvent(type: "task:created" | "task:updated", task: Task): Promise<Task> {
@@ -1346,8 +1745,19 @@ export class PostgresTaskStore implements TaskStore {
   private normalizeRun(run: TaskRun): TaskRun {
     return {
       ...run,
+      changeOutcome: run.changeOutcome === "changed" || run.changeOutcome === "no_change" ? run.changeOutcome : null,
       changeProposalCheckpointRef: run.changeProposalCheckpointRef ?? null,
       changeProposalUntrackedPaths: Array.isArray(run.changeProposalUntrackedPaths) ? run.changeProposalUntrackedPaths : null
+    };
+  }
+
+  private normalizeGitOperation(operation: TaskGitOperation): TaskGitOperation {
+    return {
+      ...operation,
+      finishedAt: operation.finishedAt ?? null,
+      errorCode: operation.errorCode ?? null,
+      errorMessage: operation.errorMessage ?? null,
+      attemptCount: Math.max(1, Number.isFinite(operation.attemptCount) ? Math.floor(operation.attemptCount) : 1)
     };
   }
 
@@ -1421,6 +1831,25 @@ export class PostgresTaskStore implements TaskStore {
     );
   }
 
+  private async trimTaskLogsBestEffort(taskId: string): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.trimTaskLogs(taskId);
+        return;
+      } catch (error) {
+        if (!isRetryablePostgresError(error) || attempt === 2) {
+          console.warn("Failed to trim task logs", {
+            taskId,
+            attempt: attempt + 1,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return;
+        }
+        await sleep(20 * (attempt + 1));
+      }
+    }
+  }
+
   private async hydrateTask(task: Task): Promise<Task> {
     const logs = await this.loadTaskLogs(task.id);
     const hydratedTask = {
@@ -1446,10 +1875,20 @@ export class PostgresTaskStore implements TaskStore {
     return { ...this.normalizeRun(parseJsonColumn<TaskRun>(row.run_data)), logs: [] };
   }
 
+  private mapGitOperationRow(row: Record<string, unknown>): TaskGitOperation {
+    return this.normalizeGitOperation(parseJsonColumn<TaskGitOperation>(row.operation_data));
+  }
+
   private async getStoredRun(runId: string, db: PostgresQueryable = this.pool): Promise<TaskRun | null> {
     const result = await db.query("SELECT run_data FROM task_runs WHERE id = $1", [runId]);
     const row = result.rows[0];
     return row ? this.mapRunRow(row) : null;
+  }
+
+  private async getStoredGitOperation(operationId: string, db: PostgresQueryable = this.pool): Promise<TaskGitOperation | null> {
+    const result = await db.query("SELECT operation_data FROM task_git_operations WHERE id = $1", [operationId]);
+    const row = result.rows[0];
+    return row ? this.mapGitOperationRow(row) : null;
   }
 
   private async loadRunLogs(runId: string, db: PostgresQueryable = this.pool): Promise<string[]> {
@@ -1474,6 +1913,25 @@ export class PostgresTaskStore implements TaskStore {
       `,
       [runId, MAX_LOG_LINES]
     );
+  }
+
+  private async trimRunLogsBestEffort(runId: string): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.trimRunLogs(runId);
+        return;
+      } catch (error) {
+        if (!isRetryablePostgresError(error) || attempt === 2) {
+          console.warn("Failed to trim run logs", {
+            runId,
+            attempt: attempt + 1,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          return;
+        }
+        await sleep(20 * (attempt + 1));
+      }
+    }
   }
 
   private async hydrateRun(run: TaskRun): Promise<TaskRun> {
@@ -1505,21 +1963,24 @@ export class PostgresTaskStore implements TaskStore {
     const title = resolveTaskTitleForCreate(input);
     const taskType = input.taskType ?? "build";
     const promptRaw = (input.prompt ?? "").trim();
-    const startMode: TaskStartMode = input.startMode ?? "run_now";
-    const prompt =
-      promptRaw.length > 0 ? promptRaw : startMode === "prepare_workspace" ? "" : "(No prompt provided.)";
+    const prompt = promptRaw.length > 0 ? promptRaw : "(No prompt provided.)";
+    const notes = (input.notes ?? "").trim();
+    const deadline = normalizeDeadline(input.deadline);
     const complexity = classifyTaskComplexity(title, prompt);
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
     const provider = normalizeProvider(input.provider);
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
+    const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
+    const taskSource = "blank";
+    const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
-    const initialStatus: TaskStatus =
-      startMode === "prepare_workspace" ? "preparing_workspace" : getQueuedStatusForAction(initialAction);
+    const initialStatus: TaskStatus = isDraft ? "draft" : "open";
     const task: Task = {
       id: nanoid(),
       title,
+      deadline,
       pinned: false,
       hasPendingCheckpoint: false,
       activeInteractiveSession: false,
@@ -1533,29 +1994,38 @@ export class PostgresTaskStore implements TaskStore {
       provider,
       providerProfile,
       modelOverride,
+      codexCredentialSource,
+      taskSource,
       baseBranch,
       branchStrategy,
       complexity,
       branchName: branchStrategy === "work_on_branch" ? baseBranch : null,
       workspaceBaseRef: null,
       prompt,
+      notes,
       resultMarkdown: null,
       executionSummary: buildExecutionSummaryFromPrompt(title, prompt),
       branchDiff: null,
       lastAction: initialAction,
       status: initialStatus,
+      workflowStatus: isDraft ? "backlog" : "ready",
+      executionStatus: isDraft ? "idle" : "queued",
+      executionAction: isDraft ? null : initialAction,
+      reviewReason: null,
       logs: [],
       enqueued: false,
+      scheduledStartAt: null,
+      scheduledEndAt: null,
       createdAt: timestamp,
       updatedAt: timestamp,
-      startedAt: startMode === "prepare_workspace" ? timestamp : null,
+      startedAt: null,
       finishedAt: null,
       errorMessage: null
     };
 
     await this.storeTask(task);
     await this.publishTaskEvent("task:created", task);
-    if (startMode !== "prepare_workspace" || prompt.trim().length > 0) {
+    if (!isDraft) {
       await this.appendMessage(task.id, {
         role: "user",
         action: initialAction,
@@ -1573,6 +2043,28 @@ export class PostgresTaskStore implements TaskStore {
     }
 
     return this.hydrateTask(task);
+  }
+
+  async getTaskMetadata(taskId: string): Promise<TaskMetadata | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    return {
+      id: task.id,
+      ownerUserId: task.ownerUserId,
+      status: task.status,
+      executionStatus: task.executionStatus,
+      executionAction: task.executionAction,
+      hasPendingCheckpoint: task.hasPendingCheckpoint,
+      activeInteractiveSession: task.activeInteractiveSession,
+      activeTerminalSessionMode: task.activeTerminalSessionMode,
+      provider: task.provider,
+      providerProfile: task.providerProfile,
+      modelOverride: task.modelOverride,
+      codexCredentialSource: task.codexCredentialSource
+    };
   }
 
   async listTasks(options: ListTasksOptions = {}): Promise<Task[]> {
@@ -1661,47 +2153,108 @@ export class PostgresTaskStore implements TaskStore {
     const timestamped = `[${new Date().toISOString()}] ${line}`;
     await withPostgresTransaction(this.pool, async (client) => {
       await client.query("INSERT INTO task_logs (task_id, line) VALUES ($1, $2)", [taskId, timestamped]);
-      await this.trimTaskLogs(taskId, client);
       if (runId) {
         const run = await this.getStoredRun(runId, client);
         if (run) {
           await client.query("INSERT INTO task_run_logs (run_id, line) VALUES ($1, $2)", [runId, timestamped]);
-          await this.trimRunLogs(runId, client);
         }
       }
     });
-    await this.eventBus.publish({
-      type: "task:log",
-      payload: {
+
+    await this.trimTaskLogsBestEffort(taskId);
+    if (runId) {
+      await this.trimRunLogsBestEffort(runId);
+    }
+
+    try {
+      await this.eventBus.publish({
+        type: "task:log",
+        payload: {
+          taskId,
+          runId,
+          line: timestamped,
+          timestamp: new Date().toISOString()
+        }
+      });
+    } catch (error) {
+      console.warn("Failed to publish task log event", {
         taskId,
         runId,
-        line: timestamped,
-        timestamp: new Date().toISOString()
-      }
-    });
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   async listMessages(taskId: string): Promise<TaskMessage[]> {
-    const result = await this.pool.query("SELECT message_data FROM task_messages WHERE task_id = $1 ORDER BY position ASC", [taskId]);
-    return result.rows.flatMap((row) => {
-      try {
-        const parsed = parseJsonColumn<TaskMessage>(row.message_data);
-        return normalizeTaskMessage(parsed);
-      } catch {
-        return [];
+    const page = await this.listMessagesPage(taskId);
+    return page.items;
+  }
+
+  async listMessagesPage(taskId: string, options?: ListTaskHistoryPageOptions): Promise<ListTaskHistoryPageResult<TaskMessage>> {
+    const limit = clampHistoryPageLimit(options?.limit);
+    const values: unknown[] = [taskId];
+    let whereSql = "WHERE task_id = $1";
+    if (options?.before) {
+      values.push(options.before);
+      if (options.beforeId) {
+        values.push(options.beforeId);
+        whereSql += ` AND (created_at < $${values.length - 1} OR (created_at = $${values.length - 1} AND message_id < $${values.length}))`;
+      } else {
+        whereSql += ` AND created_at < $${values.length}`;
       }
-    });
+    }
+    values.push(limit + 1);
+    const result = await this.pool.query(
+      `SELECT message_data FROM task_messages ${whereSql} ORDER BY created_at DESC, message_id DESC LIMIT $${values.length}`,
+      values
+    );
+    const hasMore = result.rows.length > limit;
+    const rows = hasMore ? result.rows.slice(0, limit) : result.rows;
+    const items = rows
+      .flatMap((row) => {
+        try {
+          const parsed = parseJsonColumn<TaskMessage>(row.message_data);
+          return normalizeTaskMessage(parsed);
+        } catch {
+          return [];
+        }
+      })
+      .reverse();
+    return { items, hasMore };
   }
 
   async listRuns(taskId: string): Promise<TaskRun[]> {
-    const result = await this.pool.query("SELECT run_data FROM task_runs WHERE task_id = $1 ORDER BY started_at ASC, id ASC", [taskId]);
+    const page = await this.listRunsPage(taskId);
+    return page.items;
+  }
+
+  async listRunsPage(taskId: string, options?: ListTaskHistoryPageOptions): Promise<ListTaskHistoryPageResult<TaskRun>> {
+    const limit = clampHistoryPageLimit(options?.limit);
+    const values: unknown[] = [taskId];
+    let whereSql = "WHERE task_id = $1";
+    if (options?.before) {
+      values.push(options.before);
+      if (options.beforeId) {
+        values.push(options.beforeId);
+        whereSql += ` AND (started_at < $${values.length - 1} OR (started_at = $${values.length - 1} AND id < $${values.length}))`;
+      } else {
+        whereSql += ` AND started_at < $${values.length}`;
+      }
+    }
+    values.push(limit + 1);
+    const result = await this.pool.query(
+      `SELECT run_data FROM task_runs ${whereSql} ORDER BY started_at DESC, id DESC LIMIT $${values.length}`,
+      values
+    );
+    const hasMore = result.rows.length > limit;
+    const rows = hasMore ? result.rows.slice(0, limit) : result.rows;
     const runs = await Promise.all(
-      result.rows.map(async (row) => {
+      rows.map(async (row) => {
         const run = this.mapRunRow(row);
         return this.hydrateRun(run);
       })
     );
-    return runs;
+    return { items: runs.reverse(), hasMore };
   }
 
   async getRun(runId: string): Promise<TaskRun | null> {
@@ -1731,9 +2284,12 @@ export class PostgresTaskStore implements TaskStore {
       startedAt: nowIso(),
       finishedAt: null,
       summary: null,
+      changeOutcome: null,
       errorMessage: null,
       changeProposalCheckpointRef: null,
       changeProposalUntrackedPaths: null,
+      hasRawJson: false,
+      timelineEvents: [],
       logs: []
     };
 
@@ -1765,15 +2321,66 @@ export class PostgresTaskStore implements TaskStore {
     return next;
   }
 
+  async createGitOperation(input: CreateTaskGitOperationInput): Promise<TaskGitOperation | null> {
+    const task = await this.getStoredTask(input.taskId);
+    if (!task) {
+      return null;
+    }
+
+    const operation: TaskGitOperation = this.normalizeGitOperation({
+      operationId: nanoid(),
+      taskId: input.taskId,
+      operationType: input.operationType,
+      status: input.status ?? "queued",
+      startedAt: nowIso(),
+      finishedAt: null,
+      errorCode: input.errorCode ?? null,
+      errorMessage: input.errorMessage ?? null,
+      attemptCount: Math.max(1, input.attemptCount ?? 1)
+    });
+
+    await this.pool.query(
+      "INSERT INTO task_git_operations (id, task_id, started_at, operation_data) VALUES ($1, $2, $3, $4::jsonb)",
+      [operation.operationId, operation.taskId, operation.startedAt, JSON.stringify(operation)]
+    );
+    await this.eventBus.publish({ type: "task:git_operation", payload: operation });
+    return operation;
+  }
+
+  async updateGitOperation(operationId: string, patch: UpdateTaskGitOperationPatch): Promise<TaskGitOperation | null> {
+    const operation = await this.getStoredGitOperation(operationId);
+    if (!operation) {
+      return null;
+    }
+
+    const next: TaskGitOperation = this.normalizeGitOperation({
+      ...operation,
+      ...patch
+    });
+
+    await this.pool.query(
+      "UPDATE task_git_operations SET started_at = $2, operation_data = $3::jsonb WHERE id = $1",
+      [operationId, next.startedAt, JSON.stringify(next)]
+    );
+    await this.eventBus.publish({ type: "task:git_operation", payload: next });
+    return next;
+  }
+
+  async getLatestGitOperation(taskId: string): Promise<TaskGitOperation | null> {
+    const result = await this.pool.query(
+      "SELECT operation_data FROM task_git_operations WHERE task_id = $1 ORDER BY started_at DESC, id DESC LIMIT 1",
+      [taskId]
+    );
+    const row = result.rows[0];
+    return row ? this.mapGitOperationRow(row) : null;
+  }
+
   async appendMessage(taskId: string, input: AppendTaskMessageInput): Promise<TaskMessage | null> {
     const task = await this.getStoredTask(taskId);
     if (!task) {
       return null;
     }
 
-    const contextEntries = (input.contextEntries ?? [])
-      .map((entry) => normalizeTaskContextEntry(entry))
-      .filter((entry): entry is TaskContextEntry => entry !== null);
     const attachments = (input.attachments ?? [])
       .map((attachment) => normalizeTaskPromptAttachment(attachment))
       .filter((attachment): attachment is TaskPromptAttachment => attachment !== null);
@@ -1784,7 +2391,6 @@ export class PostgresTaskStore implements TaskStore {
       role: input.role,
       content: input.content,
       action: input.action ?? null,
-      ...(contextEntries.length > 0 ? { contextEntries } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(input.sessionId !== undefined ? { sessionId: input.sessionId ?? null } : {}),
       createdAt: nowIso()
@@ -1875,13 +2481,38 @@ export class PostgresTaskStore implements TaskStore {
 
     const next: Task = {
       ...task,
-      status: getQueuedStatusForAction(action),
+      executionStatus: "queued",
+      executionAction: action,
       enqueued: false,
       errorMessage: null,
       startedAt: null,
       finishedAt: null,
       lastAction: action,
       branchDiff: action === "build" ? task.branchDiff : null,
+      logs: [],
+      updatedAt: nowIso()
+    };
+
+    await this.storeTask(next);
+    return this.publishTaskEvent("task:updated", next);
+  }
+
+  async setExecutionState(
+    taskId: string,
+    executionStatus: TaskExecutionStatus,
+    extra: Partial<Omit<Task, "id" | "createdAt" | "status">> = {}
+  ): Promise<Task | null> {
+    const task = await this.getStoredTask(taskId);
+    if (!task) {
+      return null;
+    }
+
+    const next: Task = {
+      ...task,
+      ...extra,
+      status: task.status,
+      executionStatus,
+      executionAction: extra.executionAction ?? task.executionAction,
       logs: [],
       updatedAt: nowIso()
     };
@@ -2100,19 +2731,42 @@ export class PostgresTaskStore implements TaskStore {
   }
 
   async listChangeProposals(taskId: string): Promise<TaskChangeProposal[]> {
+    const page = await this.listChangeProposalsPage(taskId);
+    return page.items;
+  }
+
+  async listChangeProposalsPage(
+    taskId: string,
+    options?: ListTaskHistoryPageOptions
+  ): Promise<ListTaskHistoryPageResult<TaskChangeProposal>> {
+    const limit = clampHistoryPageLimit(options?.limit);
+    const values: unknown[] = [taskId];
+    let whereSql = "WHERE task_id = $1";
+    if (options?.before) {
+      values.push(options.before);
+      if (options.beforeId) {
+        values.push(options.beforeId);
+        whereSql += ` AND (created_at < $${values.length - 1} OR (created_at = $${values.length - 1} AND id < $${values.length}))`;
+      } else {
+        whereSql += ` AND created_at < $${values.length}`;
+      }
+    }
+    values.push(limit + 1);
     const result = await this.pool.query(
-      "SELECT proposal_data FROM task_change_proposals WHERE task_id = $1 ORDER BY created_at ASC, id ASC",
-      [taskId]
+      `SELECT proposal_data FROM task_change_proposals ${whereSql} ORDER BY created_at DESC, id DESC LIMIT $${values.length}`,
+      values
     );
+    const hasMore = result.rows.length > limit;
+    const rows = hasMore ? result.rows.slice(0, limit) : result.rows;
     const proposals: TaskChangeProposal[] = [];
-    for (const row of result.rows) {
+    for (const row of rows) {
       try {
         proposals.push(this.normalizeStoredProposal(parseJsonColumn<TaskChangeProposal>(row.proposal_data)));
       } catch {
         /* skip */
       }
     }
-    return proposals;
+    return { items: proposals.reverse(), hasMore };
   }
 
   async getChangeProposal(proposalId: string): Promise<TaskChangeProposal | null> {

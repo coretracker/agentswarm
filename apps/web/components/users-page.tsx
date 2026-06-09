@@ -1,11 +1,23 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Role, User } from "@agentswarm/shared-types";
+import type {
+  AgentClarifyBehavior,
+  AgentCodePreference,
+  AgentExplanationDepth,
+  AgentFormattingStyle,
+  AgentJargonLevel,
+  AudienceType,
+  Repository,
+  ResponsePreferencePreset,
+  Role,
+  User
+} from "@agentswarm/shared-types";
 import {
   App,
   Button,
   Card,
+  Divider,
   Flex,
   Form,
   Input,
@@ -22,14 +34,28 @@ import {
 import dayjs from "dayjs";
 import { api } from "../src/api/client";
 import { useAuth } from "./auth-provider";
+import { ResponsePolicyFields } from "./response-policy-fields";
 
 interface UserFormValues {
   name: string;
   email: string;
+  gitAuthorName?: string;
+  gitAuthorEmail?: string;
   password?: string;
   active: boolean;
+  audience?: AudienceType;
+  explanationDepth?: AgentExplanationDepth;
+  jargonLevel?: AgentJargonLevel;
+  codePreference?: AgentCodePreference;
+  clarifyBehavior?: AgentClarifyBehavior;
+  formattingStyle?: AgentFormattingStyle;
+  extraInstructions?: string;
+  responsePreferencePresetId?: string;
   roleIds: string[];
+  repositoryIds: string[];
 }
+
+const SYSTEM_ADMIN_ROLE_ID = "admin";
 
 export function UsersPage() {
   const { message } = App.useApp();
@@ -37,6 +63,8 @@ export function UsersPage() {
   const [form] = Form.useForm<UserFormValues>();
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
+  const [repositories, setRepositories] = useState<Repository[]>([]);
+  const [responsePreferencePresets, setResponsePreferencePresets] = useState<ResponsePreferencePreset[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -46,17 +74,24 @@ export function UsersPage() {
   const canEditUsers = can("user:edit");
   const canDeleteUsers = can("user:delete");
   const canReadRoles = can("settings:read");
+  const canReadSettings = can("settings:read");
   const canEditRoles = can("settings:edit");
+  const canReadRepositories = can("repo:list");
+  const formatLabel = (value: string): string => value.replace(/_/g, " ");
 
   const loadUsers = async () => {
     setLoading(true);
     try {
-      const [nextUsers, nextRoles] = await Promise.all([
+      const [nextUsers, nextRoles, nextRepositories, nextSettings] = await Promise.all([
         api.listUsers(),
-        canReadRoles ? api.listRoles().catch(() => []) : Promise.resolve([])
+        canReadRoles ? api.listRoles().catch(() => []) : Promise.resolve([]),
+        canEditRoles && canReadRepositories ? api.listRepositories().catch(() => []) : Promise.resolve([]),
+        canReadSettings ? api.getSettings().catch(() => null) : Promise.resolve(null)
       ]);
       setUsers(nextUsers);
       setRoles(nextRoles);
+      setRepositories(nextRepositories);
+      setResponsePreferencePresets(nextSettings?.responsePreferencePresets ?? []);
     } finally {
       setLoading(false);
     }
@@ -64,16 +99,27 @@ export function UsersPage() {
 
   useEffect(() => {
     void loadUsers();
-  }, [canReadRoles]);
+  }, [canEditRoles, canReadRepositories, canReadRoles, canReadSettings]);
 
   const openCreateModal = () => {
     setEditingUser(null);
     form.setFieldsValue({
       name: "",
       email: "",
+      gitAuthorName: "",
+      gitAuthorEmail: "",
       password: "",
       active: true,
-      roleIds: []
+      audience: undefined,
+      explanationDepth: undefined,
+      jargonLevel: undefined,
+      codePreference: undefined,
+      clarifyBehavior: undefined,
+      formattingStyle: undefined,
+      extraInstructions: "",
+      responsePreferencePresetId: undefined,
+      roleIds: [],
+      repositoryIds: []
     });
     setModalOpen(true);
   };
@@ -83,14 +129,37 @@ export function UsersPage() {
     form.setFieldsValue({
       name: user.name,
       email: user.email,
+      gitAuthorName: user.gitAuthorName ?? "",
+      gitAuthorEmail: user.gitAuthorEmail ?? "",
       password: "",
       active: user.active,
-      roleIds: user.roles.map((role) => role.id)
+      audience: user.agentResponsePreference.audience,
+      explanationDepth: user.agentResponsePreference.explanationDepth,
+      jargonLevel: user.agentResponsePreference.jargonLevel,
+      codePreference: user.agentResponsePreference.codePreference,
+      clarifyBehavior: user.agentResponsePreference.clarifyBehavior,
+      formattingStyle: user.agentResponsePreference.formattingStyle,
+      extraInstructions: user.agentResponsePreference.extraInstructions ?? "",
+      responsePreferencePresetId:
+        responsePreferencePresets.find(
+          (preset) =>
+            preset.preference.audience === user.agentResponsePreference.audience &&
+            preset.preference.explanationDepth === user.agentResponsePreference.explanationDepth &&
+            preset.preference.jargonLevel === user.agentResponsePreference.jargonLevel &&
+            preset.preference.codePreference === user.agentResponsePreference.codePreference &&
+            preset.preference.clarifyBehavior === user.agentResponsePreference.clarifyBehavior &&
+            preset.preference.formattingStyle === user.agentResponsePreference.formattingStyle &&
+            (preset.preference.extraInstructions ?? "") === (user.agentResponsePreference.extraInstructions ?? "")
+        )?.id,
+      roleIds: user.roles.map((role) => role.id),
+      repositoryIds: user.repositoryIds ?? []
     });
     setModalOpen(true);
   };
 
   const currentUserId = session?.user.id ?? null;
+  const selectedRoleIds = Form.useWatch("roleIds", form) ?? [];
+  const adminRoleSelected = selectedRoleIds.includes(SYSTEM_ADMIN_ROLE_ID);
 
   return (
     <>
@@ -140,6 +209,16 @@ export function UsersPage() {
                       ))}
                     </Space>
                   );
+                }
+              },
+              {
+                title: "Response Style",
+                render: (_, user) => {
+                  if (!user.agentResponsePreference.audience) {
+                    return <Typography.Text type="secondary">Neutral</Typography.Text>;
+                  }
+
+                  return <Tag>{formatLabel(user.agentResponsePreference.audience)}</Tag>;
                 }
               },
               {
@@ -205,18 +284,42 @@ export function UsersPage() {
                 await api.updateUser(editingUser.id, {
                   name: values.name,
                   email: values.email,
+                  gitAuthorName: values.gitAuthorName?.trim() || null,
+                  gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
                   password: values.password?.trim() || undefined,
                   active: values.active,
-                  roleIds: canEditRoles ? values.roleIds : undefined
+                  agentResponsePreference: {
+                    audience: values.audience,
+                    explanationDepth: values.explanationDepth,
+                    jargonLevel: values.jargonLevel,
+                    codePreference: values.codePreference,
+                    clarifyBehavior: values.clarifyBehavior,
+                    formattingStyle: values.formattingStyle,
+                    extraInstructions: values.extraInstructions?.trim() || undefined
+                  },
+                  roleIds: canEditRoles ? values.roleIds : undefined,
+                  repositoryIds: canEditRoles ? values.repositoryIds : undefined
                 });
                 message.success("User updated");
               } else {
                 await api.createUser({
                   name: values.name,
                   email: values.email,
+                  gitAuthorName: values.gitAuthorName?.trim() || null,
+                  gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
                   password: values.password?.trim() || "",
                   active: values.active,
-                  roleIds: canEditRoles ? values.roleIds : undefined
+                  agentResponsePreference: {
+                    audience: values.audience,
+                    explanationDepth: values.explanationDepth,
+                    jargonLevel: values.jargonLevel,
+                    codePreference: values.codePreference,
+                    clarifyBehavior: values.clarifyBehavior,
+                    formattingStyle: values.formattingStyle,
+                    extraInstructions: values.extraInstructions?.trim() || undefined
+                  },
+                  roleIds: canEditRoles ? values.roleIds : undefined,
+                  repositoryIds: canEditRoles ? values.repositoryIds : undefined
                 });
                 message.success("User created");
               }
@@ -236,6 +339,24 @@ export function UsersPage() {
           <Form.Item name="email" label="Email" rules={[{ required: true, message: "Enter an email address" }]}>
             <Input />
           </Form.Item>
+          <Divider orientation="left" plain>
+            Git Commit Identity
+          </Divider>
+          <Form.Item
+            name="gitAuthorName"
+            label="Git Author Name"
+            extra="Leave blank to use the user's profile name."
+          >
+            <Input placeholder="Profile name" />
+          </Form.Item>
+          <Form.Item
+            name="gitAuthorEmail"
+            label="Git Author Email"
+            rules={[{ type: "email", message: "Enter a valid email address" }]}
+            extra="Leave blank to use the user's profile email."
+          >
+            <Input placeholder="Profile email" />
+          </Form.Item>
           <Form.Item
             name="password"
             label={editingUser ? "Password" : "Password"}
@@ -252,6 +373,41 @@ export function UsersPage() {
           >
             <Switch disabled={editingUser?.id === currentUserId} />
           </Form.Item>
+          <Form.Item
+            name="responsePreferencePresetId"
+            label="Response Preference Preset"
+            extra="Optional shortcut for applying a saved response preference."
+          >
+            <Select
+              allowClear
+              placeholder="Select a preset"
+              options={responsePreferencePresets.map((preset) => ({
+                label: preset.name,
+                value: preset.id
+              }))}
+              onChange={(value) => {
+                const preset = responsePreferencePresets.find((entry) => entry.id === value);
+                if (!preset) {
+                  return;
+                }
+                form.setFieldsValue({
+                  audience: preset.preference.audience,
+                  explanationDepth: preset.preference.explanationDepth,
+                  jargonLevel: preset.preference.jargonLevel,
+                  codePreference: preset.preference.codePreference,
+                  clarifyBehavior: preset.preference.clarifyBehavior,
+                  formattingStyle: preset.preference.formattingStyle,
+                  extraInstructions: preset.preference.extraInstructions ?? ""
+                });
+              }}
+            />
+          </Form.Item>
+          <Divider orientation="left" plain>
+            Response Format Preferences
+          </Divider>
+          <Card size="small">
+            <ResponsePolicyFields onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)} />
+          </Card>
           {canEditRoles ? (
             <Form.Item name="roleIds" label="Roles">
               <Select
@@ -259,6 +415,23 @@ export function UsersPage() {
                 options={roles.map((role) => ({
                   label: role.name,
                   value: role.id
+                }))}
+              />
+            </Form.Item>
+          ) : null}
+          {canEditRoles ? (
+            <Form.Item
+              name="repositoryIds"
+              label="Repositories"
+              extra={adminRoleSelected ? "All repositories (via Admin role)." : "Choose repositories this user can access."}
+            >
+              <Select
+                mode="multiple"
+                disabled={adminRoleSelected}
+                placeholder={adminRoleSelected ? "All repositories (via Admin role)" : "Select repositories"}
+                options={repositories.map((repository) => ({
+                  label: repository.name,
+                  value: repository.id
                 }))}
               />
             </Form.Item>

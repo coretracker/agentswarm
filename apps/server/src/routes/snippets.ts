@@ -5,7 +5,29 @@ import type { SnippetStore } from "../services/snippet-store.js";
 
 const snippetSchema = z.object({
   name: z.string().trim().min(1).max(120),
-  content: z.string().trim().min(1).max(20000)
+  content: z.string().trim().min(1).max(20000),
+  variables: z
+    .array(
+      z
+        .object({
+          name: z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(128),
+          type: z.enum(["text", "multiline"]),
+          title: z.string().trim().max(200).default(""),
+          description: z.string().trim().max(200).default(""),
+          defaultValue: z.string().max(2000).default("")
+        })
+        .superRefine((value, ctx) => {
+          if (value.type === "text" && /[\r\n]/.test(value.defaultValue)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["defaultValue"],
+              message: "Default value for text variables must be a single line."
+            });
+          }
+        })
+    )
+    .max(100)
+    .optional()
 });
 
 export const registerSnippetRoutes = (
@@ -34,6 +56,20 @@ export const registerSnippetRoutes = (
 
     const snippet = await deps.snippetStore.createSnippet(parsed.data);
     return reply.status(201).send(snippet);
+  });
+
+  app.post<{ Params: { id: string } }>("/snippets/:id/duplicate", { preHandler: deps.auth.requireAllScopes(["snippet:create"]) }, async (request, reply) => {
+    const source = await deps.snippetStore.getSnippet(request.params.id);
+    if (!source) {
+      return reply.status(404).send({ message: "Snippet not found" });
+    }
+
+    const duplicated = await deps.snippetStore.createSnippet({
+      name: `Copy of ${source.name}`,
+      content: source.content,
+      variables: source.variables
+    });
+    return reply.status(201).send(duplicated);
   });
 
   app.patch<{ Params: { id: string } }>("/snippets/:id", { preHandler: deps.auth.requireAllScopes(["snippet:edit"]) }, async (request, reply) => {

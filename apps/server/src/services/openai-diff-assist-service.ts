@@ -101,6 +101,29 @@ export async function executeOpenAiDiffAssist(input: {
   openaiApiKey: string;
   openaiBaseUrl: string | null;
 }): Promise<OpenAiDiffAssistResult> {
+  const userContent = await buildDiffAssistPromptContext(input);
+  const reasoningEffort = codexReasoningEffortForProfile(input.providerProfile);
+  const base = openAiChatBase(input.openaiBaseUrl);
+  const messages: Array<{ role: string; content: string }> = [
+    {
+      role: "system",
+      content:
+        "You are a careful code assistant. Answer using the provided context. Be concise and accurate."
+    },
+    { role: "user", content: userContent }
+  ];
+
+  const data = await chatReadWithRetries(base, input.openaiApiKey, input.model, messages, reasoningEffort);
+
+  return { text: extractCompletionText(data) };
+}
+
+export async function buildDiffAssistPromptContext(input: {
+  taskId: string;
+  filePath: string;
+  selectedSnippet: string;
+  userPrompt: string;
+}): Promise<string> {
   const relativePath = normalizeDiffFilePath(input.filePath);
   if (!relativePath) {
     throw Object.assign(new Error("Invalid file path."), { status: 400 });
@@ -113,8 +136,6 @@ export async function executeOpenAiDiffAssist(input: {
     throw Object.assign(new Error("No local workspace for this task."), { status: 409 });
   }
 
-  const reasoningEffort = codexReasoningEffortForProfile(input.providerProfile);
-  const base = openAiChatBase(input.openaiBaseUrl);
   const currentFile = await readSafeWorkspaceFile(workspaceRoot, relativePath);
   const snippet = input.selectedSnippet.slice(0, MAX_SNIPPET);
   const userPrompt = input.userPrompt.trim().slice(0, MAX_USER_PROMPT);
@@ -135,17 +156,5 @@ export async function executeOpenAiDiffAssist(input: {
     userPrompt
   ];
 
-  const userContent = contextParts.join("\n");
-  const messages: Array<{ role: string; content: string }> = [
-    {
-      role: "system",
-      content:
-        "You are a careful code assistant. Answer using the provided context. Be concise and accurate."
-    },
-    { role: "user", content: userContent }
-  ];
-
-  const data = await chatReadWithRetries(base, input.openaiApiKey, input.model, messages, reasoningEffort);
-
-  return { text: extractCompletionText(data) };
+  return contextParts.join("\n");
 }

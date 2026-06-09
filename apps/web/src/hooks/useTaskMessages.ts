@@ -9,10 +9,27 @@ interface TaskDeletedPayload {
   id: string;
 }
 
+const HISTORY_PAGE_SIZE = 25;
+
+const sortMessages = (items: TaskMessage[]): TaskMessage[] => [...items].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+const mergeMessages = (base: TaskMessage[], incoming: TaskMessage[]): TaskMessage[] => {
+  const merged = new Map<string, TaskMessage>();
+  for (const item of base) {
+    merged.set(item.id, item);
+  }
+  for (const item of incoming) {
+    merged.set(item.id, item);
+  }
+  return sortMessages([...merged.values()]);
+};
+
 export const useTaskMessages = (taskId: string) => {
   const socket = useSocket();
   const [messages, setMessages] = useState<TaskMessage[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
 
   const refetch = useCallback(
     async ({ showLoading = false }: { showLoading?: boolean } = {}): Promise<TaskMessage[]> => {
@@ -21,18 +38,47 @@ export const useTaskMessages = (taskId: string) => {
       }
 
       try {
-        const items = await api.listTaskMessages(taskId);
-        setMessages(items);
+        const page = await api.listTaskMessages(taskId, { limit: HISTORY_PAGE_SIZE });
+        setMessages(sortMessages(page.items));
+        setHasMore(page.hasMore);
         setLoading(false);
-        return items;
+        return page.items;
       } catch {
         setMessages([]);
+        setHasMore(false);
         setLoading(false);
         return [];
       }
     },
     [taskId]
   );
+
+  const loadMore = useCallback(async (): Promise<TaskMessage[]> => {
+    if (loadingMore || !hasMore) {
+      return [];
+    }
+
+    const oldest = messages[0] ?? null;
+    if (!oldest) {
+      return [];
+    }
+
+    setLoadingMore(true);
+    try {
+      const page = await api.listTaskMessages(taskId, {
+        limit: HISTORY_PAGE_SIZE,
+        before: oldest.createdAt,
+        beforeId: oldest.id
+      });
+      setMessages((current) => mergeMessages(current, page.items));
+      setHasMore(page.hasMore);
+      return page.items;
+    } catch {
+      return [];
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [hasMore, loadingMore, messages, taskId]);
 
   useEffect(() => {
     void refetch({ showLoading: true });
@@ -52,16 +98,7 @@ export const useTaskMessages = (taskId: string) => {
         return;
       }
 
-      setMessages((current) => {
-        const existingIndex = current.findIndex((entry) => entry.id === message.id);
-        if (existingIndex === -1) {
-          return [...current, message];
-        }
-
-        const next = [...current];
-        next[existingIndex] = message;
-        return next;
-      });
+      setMessages((current) => mergeMessages(current, [message]));
     };
 
     const onTaskMessageUpdated = (message: TaskMessage) => {
@@ -69,16 +106,7 @@ export const useTaskMessages = (taskId: string) => {
         return;
       }
 
-      setMessages((current) => {
-        const existingIndex = current.findIndex((entry) => entry.id === message.id);
-        if (existingIndex === -1) {
-          return [...current, message];
-        }
-
-        const next = [...current];
-        next[existingIndex] = message;
-        return next;
-      });
+      setMessages((current) => mergeMessages(current, [message]));
     };
 
     const onTaskDelete = (payload: TaskDeletedPayload) => {
@@ -87,6 +115,7 @@ export const useTaskMessages = (taskId: string) => {
       }
 
       setMessages([]);
+      setHasMore(false);
     };
 
     socket.on("connect", onConnect);
@@ -102,5 +131,5 @@ export const useTaskMessages = (taskId: string) => {
     };
   }, [refetch, socket, taskId]);
 
-  return { messages, setMessages, loading, refetch };
+  return { messages, setMessages, loading, loadingMore, hasMore, refetch, loadMore };
 };

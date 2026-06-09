@@ -23,11 +23,25 @@ load_env_file() {
   if [[ ! -f "$env_file" ]]; then
     return 0
   fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^[[:space:]]*# ]] || [[ "$line" =~ ^[[:space:]]*$ ]]; then
+      continue
+    fi
 
-  set -a
-  # shellcheck disable=SC1090
-  . "$env_file"
-  set +a
+    if [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+
+      # Trim leading/trailing whitespace in value while preserving internal spaces.
+      value="${value#"${value%%[![:space:]]*}"}"
+      value="${value%"${value##*[![:space:]]}"}"
+
+      # Keep explicitly provided environment overrides (for CI/remote harness).
+      if [[ -z "${!key+x}" ]]; then
+        export "${key}=${value}"
+      fi
+    fi
+  done < "$env_file"
 }
 
 require_docker() {

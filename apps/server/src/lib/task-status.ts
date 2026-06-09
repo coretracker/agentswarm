@@ -1,19 +1,4 @@
-import {
-  getActiveStatusForAction,
-  getQueuedStatusForAction,
-  isActiveTaskStatus,
-  isQueuedTaskStatus,
-  type TaskAction,
-  type TaskStatus
-} from "@agentswarm/shared-types";
-
-const readyLikeStatuses = new Set<TaskStatus | "completed" | "answered" | "accepted">([
-  "open",
-  "awaiting_review",
-  "completed",
-  "answered",
-  "accepted"
-]);
+import { type TaskAction, type TaskStatus } from "@agentswarm/shared-types";
 
 export const resolveTaskReadyStatus = (hasPendingCheckpoint: boolean): TaskStatus =>
   hasPendingCheckpoint ? "awaiting_review" : "open";
@@ -22,15 +7,23 @@ export const reconcileTaskStatusWithPendingCheckpoint = (
   status: TaskStatus,
   hasPendingCheckpoint: boolean
 ): TaskStatus => {
-  if (status === "archived" || isQueuedTaskStatus(status) || isActiveTaskStatus(status)) {
+  if (status === "draft" || status === "scheduled" || status === "archived") {
     return status;
   }
 
-  if (hasPendingCheckpoint) {
-    return "awaiting_review";
-  }
-
-  if (readyLikeStatuses.has(status)) {
+  if (
+    status === "build_queued" ||
+    status === "preparing_workspace" ||
+    status === "building" ||
+    status === "ask_queued" ||
+    status === "asking" ||
+    status === "completed" ||
+    status === "answered" ||
+    status === "accepted" ||
+    status === "cancelled" ||
+    status === "failed" ||
+    (!hasPendingCheckpoint && status === "awaiting_review")
+  ) {
     return "open";
   }
 
@@ -39,17 +32,22 @@ export const reconcileTaskStatusWithPendingCheckpoint = (
 
 export const normalizeTaskLifecycleStatus = (
   status: string,
-  fallbackAction: TaskAction,
+  _fallbackAction: TaskAction,
   hasPendingCheckpoint: boolean
 ): TaskStatus => {
   if (
+    status === "scheduled" ||
+    status === "draft" ||
     status === "build_queued" ||
     status === "preparing_workspace" ||
     status === "building" ||
     status === "ask_queued" ||
     status === "asking" ||
     status === "open" ||
+    status === "in_progress" ||
+    status === "in_review" ||
     status === "awaiting_review" ||
+    status === "done" ||
     status === "completed" ||
     status === "answered" ||
     status === "accepted" ||
@@ -61,11 +59,11 @@ export const normalizeTaskLifecycleStatus = (
   }
 
   if (status === "queued" || status.endsWith("_queued")) {
-    return getQueuedStatusForAction(fallbackAction);
+    return resolveTaskReadyStatus(hasPendingCheckpoint);
   }
 
   if (status === "spawning" || status === "running" || status.endsWith("ing")) {
-    return getActiveStatusForAction(fallbackAction);
+    return resolveTaskReadyStatus(hasPendingCheckpoint);
   }
 
   if (status === "succeeded" || status.endsWith("ed")) {
@@ -76,5 +74,5 @@ export const normalizeTaskLifecycleStatus = (
     return resolveTaskReadyStatus(hasPendingCheckpoint);
   }
 
-  return "failed";
+  return resolveTaskReadyStatus(hasPendingCheckpoint);
 };

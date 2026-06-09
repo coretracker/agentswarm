@@ -3,12 +3,17 @@
 import { useEffect, useState } from "react";
 import type {
   AgentProvider,
-  DataStoreBackend,
+  AgentClarifyBehavior,
+  AgentCodePreference,
+  AgentExplanationDepth,
+  AgentFormattingStyle,
+  AgentJargonLevel,
+  AudienceType,
   McpServerTransport,
   PermissionScope,
   ProviderProfile,
+  ResponsePreferencePreset,
   Role,
-  SystemDataStores,
   SystemSettings
 } from "@agentswarm/shared-types";
 import {
@@ -60,6 +65,8 @@ interface GeneralSettingsForm {
   branchPrefix: string;
   gitUsername: string;
   openaiBaseUrl: string;
+  taskPromptMagicModel: string;
+  taskPromptMagicTemplate: string;
   mcpServers: McpServerFormItem[];
   codexDefaultModel: string;
   codexDefaultEffort: ProviderProfile;
@@ -70,6 +77,7 @@ interface GeneralSettingsForm {
 interface CredentialForm {
   githubToken?: string;
   openaiApiKey?: string;
+  codexAuthJson?: string;
   anthropicApiKey?: string;
 }
 
@@ -82,7 +90,19 @@ interface RoleFormValues {
   allowedEfforts: ProviderProfile[];
 }
 
-type ClearCredentialTarget = "github" | "openai" | "anthropic";
+interface ResponsePreferencePresetFormValues {
+  name: string;
+  description: string;
+  audience?: AudienceType;
+  explanationDepth?: AgentExplanationDepth;
+  jargonLevel?: AgentJargonLevel;
+  codePreference?: AgentCodePreference;
+  clarifyBehavior?: AgentClarifyBehavior;
+  formattingStyle?: AgentFormattingStyle;
+  extraInstructions?: string;
+}
+
+type ClearCredentialTarget = "github" | "openai" | "codexAuthJson" | "anthropic";
 
 const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
   { label: "stdio", value: "stdio" },
@@ -94,19 +114,21 @@ const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: getAgentProviderLabel("claude"), value: "claude" }
 ];
 
-const backendTagColor: Record<DataStoreBackend, string> = {
-  postgres: "geekblue",
-  redis: "orange"
-};
-
-interface DataStoreRow {
-  key: string;
-  label: string;
-  backend: DataStoreBackend;
-  note: string;
-}
-
 const summarizeAllowlist = (label: string, values: string[]): string => `${label}: ${values.length === 0 ? "All" : values.join(", ")}`;
+const toSentenceValue = (value: string): string => value.replace(/_/g, " ");
+const summarizeResponsePreference = (preset: ResponsePreferencePreset): string => {
+  const parts: string[] = [];
+  if (preset.preference.audience) {
+    parts.push(`Audience: ${toSentenceValue(preset.preference.audience)}`);
+  }
+  if (preset.preference.explanationDepth) {
+    parts.push(`Depth: ${toSentenceValue(preset.preference.explanationDepth)}`);
+  }
+  if (preset.preference.jargonLevel) {
+    parts.push(`Jargon: ${toSentenceValue(preset.preference.jargonLevel)}`);
+  }
+  return parts.length > 0 ? parts.join(" | ") : "Neutral";
+};
 
 const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   defaultProvider: settings.defaultProvider,
@@ -114,6 +136,8 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   branchPrefix: settings.branchPrefix,
   gitUsername: settings.gitUsername,
   openaiBaseUrl: settings.openaiBaseUrl ?? "",
+  taskPromptMagicModel: settings.taskPromptMagicModel,
+  taskPromptMagicTemplate: settings.taskPromptMagicTemplate,
   mcpServers: settings.mcpServers.map((server) => ({
     name: server.name,
     enabled: server.enabled,
@@ -129,30 +153,6 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   claudeDefaultEffort: settings.claudeDefaultEffort
 });
 
-const buildDataStoreSections = (dataStores?: SystemDataStores): { durable: DataStoreRow[]; runtime: DataStoreRow[] } => {
-  if (!dataStores) {
-    return { durable: [], runtime: [] };
-  }
-
-  return {
-    durable: [
-      { key: "taskStore", label: "Tasks", backend: dataStores.taskStore, note: "Tasks, runs, messages, logs, proposals, transcripts" },
-      { key: "snippetStore", label: "Snippets", backend: dataStores.snippetStore, note: "Prompt and command snippets" },
-      { key: "repositoryStore", label: "Repositories", backend: dataStores.repositoryStore, note: "Repository metadata and webhook settings" },
-      { key: "credentialStore", label: "Credentials", backend: dataStores.credentialStore, note: "Encrypted provider and GitHub credentials" },
-      { key: "roleStore", label: "Roles", backend: dataStores.roleStore, note: "RBAC role definitions" },
-      { key: "userStore", label: "Users", backend: dataStores.userStore, note: "Users, passwords, and role assignments" },
-      { key: "settingsStore", label: "Settings", backend: dataStores.settingsStore, note: "Runtime defaults and MCP configuration" }
-    ],
-    runtime: [
-      { key: "taskQueueStore", label: "Task Queue", backend: dataStores.taskQueueStore, note: "Execution queue remains on Redis" },
-      { key: "webhookDeliveryStore", label: "Webhook Jobs", backend: dataStores.webhookDeliveryStore, note: "Webhook delivery queue remains on Redis" },
-      { key: "sessionStore", label: "Sessions", backend: dataStores.sessionStore, note: "Browser auth sessions remain on Redis" },
-      { key: "eventBus", label: "Realtime Events", backend: dataStores.eventBus, note: "Pub/Sub fan-out remains on Redis" }
-    ]
-  };
-};
-
 export function SettingsPage() {
   const { message } = App.useApp();
   const { can } = useAuth();
@@ -160,13 +160,17 @@ export function SettingsPage() {
   const [generalForm] = Form.useForm<GeneralSettingsForm>();
   const [credentialForm] = Form.useForm<CredentialForm>();
   const [roleForm] = Form.useForm<RoleFormValues>();
+  const [responsePreferencePresetForm] = Form.useForm<ResponsePreferencePresetFormValues>();
   const [roles, setRoles] = useState<Role[]>([]);
   const [rolesLoading, setRolesLoading] = useState(true);
   const [savingGeneral, setSavingGeneral] = useState(false);
   const [savingCredentials, setSavingCredentials] = useState(false);
   const [savingRole, setSavingRole] = useState(false);
+  const [savingResponsePreferencePreset, setSavingResponsePreferencePreset] = useState(false);
   const [roleModalOpen, setRoleModalOpen] = useState(false);
   const [editingRole, setEditingRole] = useState<Role | null>(null);
+  const [responsePreferencePresetModalOpen, setResponsePreferencePresetModalOpen] = useState(false);
+  const [editingResponsePreferencePreset, setEditingResponsePreferencePreset] = useState<ResponsePreferencePreset | null>(null);
   const canEditSettings = can("settings:edit");
   const { models: codexModels, loading: codexModelsLoading } = useProviderModels("codex");
   const { models: claudeModels, loading: claudeModelsLoading } = useProviderModels("claude");
@@ -180,27 +184,7 @@ export function SettingsPage() {
       [...getEffortOptionsForProvider("codex"), ...getEffortOptionsForProvider("claude")].map((option) => [option.value, option])
     ).values()
   );
-  const dataStoreSections = buildDataStoreSections(settings?.dataStores);
-  const dataStoreColumns = [
-    {
-      title: "Area",
-      dataIndex: "label",
-      key: "label",
-      render: (value: string) => <Typography.Text strong>{value}</Typography.Text>
-    },
-    {
-      title: "Backend",
-      dataIndex: "backend",
-      key: "backend",
-      render: (value: DataStoreBackend) => <Tag color={backendTagColor[value]}>{value === "postgres" ? "Postgres" : "Redis"}</Tag>
-    },
-    {
-      title: "Notes",
-      dataIndex: "note",
-      key: "note",
-      render: (value: string) => <Typography.Text type="secondary">{value}</Typography.Text>
-    }
-  ];
+  const responsePreferencePresets = settings?.responsePreferencePresets ?? [];
 
   const loadRoles = async () => {
     setRolesLoading(true);
@@ -242,6 +226,14 @@ export function SettingsPage() {
         return;
       }
 
+      if (target === "codexAuthJson") {
+        const nextSettings = await api.updateCredentials({ clearCodexAuthJson: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["codexAuthJson"]);
+        message.success("Codex auth.json cleared");
+        return;
+      }
+
       const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
       setSettings(nextSettings);
       credentialForm.resetFields(["anthropicApiKey"]);
@@ -254,6 +246,11 @@ export function SettingsPage() {
 
       if (target === "openai") {
         message.error(error instanceof Error ? error.message : "Failed to clear OpenAI API key");
+        return;
+      }
+
+      if (target === "codexAuthJson") {
+        message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");
         return;
       }
 
@@ -284,39 +281,6 @@ export function SettingsPage() {
           />
         ) : null}
 
-        <Card bordered={false} loading={loading} title="Data Stores">
-          <Space direction="vertical" size={16} style={{ width: "100%" }}>
-            <Alert
-              type="info"
-              showIcon
-              message="Current backend wiring"
-              description="Durable stores can run on Redis or Postgres. Queueing, sessions, webhook jobs, and realtime pub/sub still remain on Redis."
-            />
-            <div>
-              <Typography.Text strong>Durable Stores</Typography.Text>
-              <Table<DataStoreRow>
-                rowKey="key"
-                size="small"
-                pagination={false}
-                style={{ marginTop: 8 }}
-                dataSource={dataStoreSections.durable}
-                columns={dataStoreColumns}
-              />
-            </div>
-            <div>
-              <Typography.Text strong>Runtime Services</Typography.Text>
-              <Table<DataStoreRow>
-                rowKey="key"
-                size="small"
-                pagination={false}
-                style={{ marginTop: 8 }}
-                dataSource={dataStoreSections.runtime}
-                columns={dataStoreColumns}
-              />
-            </div>
-          </Space>
-        </Card>
-
         <Form
           form={generalForm}
           layout="vertical"
@@ -330,6 +294,8 @@ export function SettingsPage() {
                 branchPrefix: values.branchPrefix,
                 gitUsername: values.gitUsername,
                 openaiBaseUrl: values.openaiBaseUrl?.trim() ? values.openaiBaseUrl.trim() : null,
+                taskPromptMagicModel: values.taskPromptMagicModel,
+                taskPromptMagicTemplate: values.taskPromptMagicTemplate,
                 codexDefaultModel: values.codexDefaultModel,
                 codexDefaultEffort: values.codexDefaultEffort,
                 claudeDefaultModel: values.claudeDefaultModel,
@@ -394,6 +360,22 @@ export function SettingsPage() {
                       style={{ marginBottom: 0 }}
                     >
                       <Input placeholder="https://api.openai.com/v1" />
+                    </Form.Item>
+                    <Form.Item
+                      name="taskPromptMagicModel"
+                      label="Task Prompt Magic Model"
+                      extra="Model used by the Magic Prompt helper in task creation."
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input placeholder="gpt-5.4-mini" />
+                    </Form.Item>
+                    <Form.Item
+                      name="taskPromptMagicTemplate"
+                      label="Task Prompt Magic Template"
+                      extra="Use {{user_request}} as placeholder for the user's current text."
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input.TextArea autoSize={{ minRows: 6, maxRows: 16 }} placeholder="Template with {{user_request}} placeholder" />
                     </Form.Item>
                   </Flex>
                 </div>
@@ -486,7 +468,26 @@ export function SettingsPage() {
                                   <Form.Item name={[field.name, "url"]} label="URL" rules={[{ required: true, whitespace: true }]}>
                                     <Input placeholder="https://example.com/mcp" />
                                   </Form.Item>
-                                  <Form.Item name={[field.name, "bearerTokenEnvVar"]} label="Bearer Token Env Var">
+                                  <Form.Item
+                                    name={[field.name, "bearerTokenEnvVar"]}
+                                    label="Bearer Token Env Var"
+                                    extra="Environment variable name available to the server process (for example MCP_TOKEN)."
+                                    rules={[
+                                      {
+                                        validator: (_rule, value?: string) => {
+                                          if (!value || value.trim().length === 0) {
+                                            return Promise.resolve();
+                                          }
+
+                                          return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.trim())
+                                            ? Promise.resolve()
+                                            : Promise.reject(
+                                                new Error("Use a valid environment variable name (letters, numbers, underscore).")
+                                              );
+                                        }
+                                      }
+                                    ]}
+                                  >
                                     <Input placeholder="MY_MCP_TOKEN" />
                                   </Form.Item>
                                 </>
@@ -550,6 +551,9 @@ export function SettingsPage() {
                 <Tag color={settings.openaiApiKeyConfigured ? "green" : "default"}>
                   OpenAI API Key {settings.openaiApiKeyConfigured ? "Configured" : "Missing"}
                 </Tag>
+                <Tag color={settings.codexAuthJsonConfigured ? "green" : "default"}>
+                  Codex auth.json {settings.codexAuthJsonConfigured ? "Configured" : "Missing"}
+                </Tag>
                 <Tag color={settings.anthropicApiKeyConfigured ? "green" : "default"}>
                   Anthropic API Key (Claude, experimental) {settings.anthropicApiKeyConfigured ? "Configured" : "Missing"}
                 </Tag>
@@ -574,6 +578,7 @@ export function SettingsPage() {
                 const nextSettings = await api.updateCredentials({
                   githubToken: values.githubToken?.trim() || undefined,
                   openaiApiKey: values.openaiApiKey?.trim() || undefined,
+                  codexAuthJson: values.codexAuthJson?.trim() || undefined,
                   anthropicApiKey: values.anthropicApiKey?.trim() || undefined
                 });
                 credentialForm.resetFields();
@@ -591,6 +596,12 @@ export function SettingsPage() {
             </Form.Item>
             <Form.Item name="openaiApiKey" label="OpenAI API Key">
               <Input.Password placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."} />
+            </Form.Item>
+            <Form.Item name="codexAuthJson" label="Global Codex auth.json" extra="Used as the Global Codex credential source and as the Auto fallback after profile auth.json.">
+              <Input.TextArea
+                autoSize={{ minRows: 4, maxRows: 10 }}
+                placeholder={settings?.codexAuthJsonConfigured ? "Configured. Paste a new auth.json to replace it." : "{ ... }"}
+              />
             </Form.Item>
             <Form.Item
               name="anthropicApiKey"
@@ -629,6 +640,20 @@ export function SettingsPage() {
               >
                 <Button danger loading={savingCredentials} disabled={!canEditSettings}>
                   Clear OpenAI API Key
+                </Button>
+              </Popconfirm>
+              <Popconfirm
+                title="Clear Codex auth.json?"
+                description="This removes the stored global Codex auth.json from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
+                disabled={!canEditSettings}
+                onConfirm={() => handleClearCredential("codexAuthJson")}
+              >
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear Codex auth.json
                 </Button>
               </Popconfirm>
               <Popconfirm
@@ -756,6 +781,115 @@ export function SettingsPage() {
             ]}
           />
         </Card>
+
+        <Card
+          bordered={false}
+          loading={loading}
+          title="Response Preferences"
+          extra={
+            <Button
+              type="primary"
+              disabled={!canEditSettings}
+              onClick={() => {
+                setEditingResponsePreferencePreset(null);
+                responsePreferencePresetForm.setFieldsValue({
+                  name: "",
+                  description: "",
+                  audience: undefined,
+                  explanationDepth: undefined,
+                  jargonLevel: undefined,
+                  codePreference: undefined,
+                  clarifyBehavior: undefined,
+                  formattingStyle: undefined,
+                  extraInstructions: ""
+                });
+                setResponsePreferencePresetModalOpen(true);
+              }}
+            >
+              Add Response Preference
+            </Button>
+          }
+        >
+          <Table<ResponsePreferencePreset>
+            rowKey="id"
+            pagination={false}
+            dataSource={responsePreferencePresets}
+            columns={[
+              {
+                title: "Name",
+                dataIndex: "name",
+                render: (value: string, preset) => (
+                  <Space>
+                    <Typography.Text strong>{value}</Typography.Text>
+                    {preset.isSystem ? <Tag icon={<LockOutlined />}>System</Tag> : null}
+                  </Space>
+                )
+              },
+              {
+                title: "Description",
+                dataIndex: "description",
+                render: (value: string) => value || <Typography.Text type="secondary">None</Typography.Text>
+              },
+              {
+                title: "Policy",
+                render: (_, preset) => summarizeResponsePreference(preset)
+              },
+              {
+                title: "Actions",
+                render: (_, preset) => (
+                  <Space>
+                    <Button
+                      disabled={!canEditSettings || preset.isSystem}
+                      onClick={() => {
+                        setEditingResponsePreferencePreset(preset);
+                        responsePreferencePresetForm.setFieldsValue({
+                          name: preset.name,
+                          description: preset.description,
+                          audience: preset.preference.audience,
+                          explanationDepth: preset.preference.explanationDepth,
+                          jargonLevel: preset.preference.jargonLevel,
+                          codePreference: preset.preference.codePreference,
+                          clarifyBehavior: preset.preference.clarifyBehavior,
+                          formattingStyle: preset.preference.formattingStyle,
+                          extraInstructions: preset.preference.extraInstructions ?? ""
+                        });
+                        setResponsePreferencePresetModalOpen(true);
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Popconfirm
+                      title="Delete response preference?"
+                      description={`Delete ${preset.name}?`}
+                      disabled={!canEditSettings || preset.isSystem}
+                      onConfirm={async () => {
+                        if (!settings) {
+                          return;
+                        }
+                        try {
+                          const nextSettings = await api.updateSettings({
+                            responsePreferencePresets: responsePreferencePresets.filter((entry) => entry.id !== preset.id)
+                          });
+                          setSettings(nextSettings);
+                          message.success("Response preference deleted");
+                        } catch (error) {
+                          message.error(error instanceof Error ? error.message : "Failed to delete response preference");
+                        }
+                      }}
+                    >
+                      <Button
+                        danger
+                        disabled={!canEditSettings || preset.isSystem}
+                      >
+                        Delete
+                      </Button>
+                    </Popconfirm>
+                  </Space>
+                )
+              }
+            ]}
+          />
+        </Card>
       </Space>
 
       <Modal
@@ -870,6 +1004,170 @@ export function SettingsPage() {
             style={{ marginTop: 16 }}
           >
             {editingRole ? "Save Role" : "Create Role"}
+          </Button>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={responsePreferencePresetModalOpen}
+        title={editingResponsePreferencePreset ? `Edit Response Preference: ${editingResponsePreferencePreset.name}` : "Add Response Preference"}
+        footer={null}
+        onCancel={() => setResponsePreferencePresetModalOpen(false)}
+        destroyOnHidden
+      >
+        <Form
+          form={responsePreferencePresetForm}
+          layout="vertical"
+          onFinish={async (values) => {
+            if (!settings) {
+              return;
+            }
+
+            setSavingResponsePreferencePreset(true);
+            try {
+              const nextPresets = editingResponsePreferencePreset
+                ? responsePreferencePresets.map((preset) =>
+                    preset.id === editingResponsePreferencePreset.id
+                      ? {
+                          ...preset,
+                          name: values.name,
+                          description: values.description,
+                          preference: {
+                            audience: values.audience,
+                            explanationDepth: values.explanationDepth,
+                            jargonLevel: values.jargonLevel,
+                            codePreference: values.codePreference,
+                            clarifyBehavior: values.clarifyBehavior,
+                            formattingStyle: values.formattingStyle,
+                            extraInstructions: values.extraInstructions?.trim() || undefined
+                          }
+                        }
+                      : preset
+                  )
+                : [
+                    ...responsePreferencePresets,
+                    {
+                      name: values.name,
+                      description: values.description,
+                      preference: {
+                        audience: values.audience,
+                        explanationDepth: values.explanationDepth,
+                        jargonLevel: values.jargonLevel,
+                        codePreference: values.codePreference,
+                        clarifyBehavior: values.clarifyBehavior,
+                        formattingStyle: values.formattingStyle,
+                        extraInstructions: values.extraInstructions?.trim() || undefined
+                      }
+                    }
+                  ];
+
+              const nextSettings = await api.updateSettings({
+                responsePreferencePresets: nextPresets
+              });
+              setSettings(nextSettings);
+              setResponsePreferencePresetModalOpen(false);
+              message.success(editingResponsePreferencePreset ? "Response preference updated" : "Response preference created");
+            } catch (error) {
+              message.error(error instanceof Error ? error.message : "Failed to save response preference");
+            } finally {
+              setSavingResponsePreferencePreset(false);
+            }
+          }}
+        >
+          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a name" }]}>
+            <Input disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
+          </Form.Item>
+          <Form.Item name="description" label="Description">
+            <Input.TextArea rows={3} disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
+          </Form.Item>
+          <Form.Item name="audience" label="Audience">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use neutral"
+              options={[
+                { label: "Technical", value: "technical" },
+                { label: "Non-technical", value: "non_technical" },
+                { label: "Mixed", value: "mixed" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="explanationDepth" label="Explanation Depth">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default depth"
+              options={[
+                { label: "Brief", value: "brief" },
+                { label: "Standard", value: "standard" },
+                { label: "Detailed", value: "detailed" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="jargonLevel" label="Jargon Level">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default jargon level"
+              options={[
+                { label: "Avoid", value: "avoid" },
+                { label: "Balanced", value: "balanced" },
+                { label: "Expert", value: "expert" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="codePreference" label="Code Preference">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default code preference"
+              options={[
+                { label: "Only When Needed", value: "only_when_needed" },
+                { label: "Prefer Examples", value: "prefer_examples" },
+                { label: "Avoid Code", value: "avoid_code" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="clarifyBehavior" label="Clarify Behavior">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default clarify behavior"
+              options={[
+                { label: "Ask When Ambiguous", value: "ask_when_ambiguous" },
+                { label: "Make Reasonable Assumptions", value: "make_reasonable_assumptions" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="formattingStyle" label="Formatting Style">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default formatting style"
+              options={[
+                { label: "Direct", value: "direct" },
+                { label: "Teaching", value: "teaching" },
+                { label: "Executive", value: "executive" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="extraInstructions" label="Extra Instructions">
+            <Input.TextArea
+              rows={4}
+              maxLength={2000}
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              placeholder="Optional additional response instructions."
+            />
+          </Form.Item>
+          <Button
+            type="primary"
+            htmlType="submit"
+            loading={savingResponsePreferencePreset}
+            disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+            block
+            style={{ marginTop: 16 }}
+          >
+            {editingResponsePreferencePreset ? "Save Response Preference" : "Create Response Preference"}
           </Button>
         </Form>
       </Modal>

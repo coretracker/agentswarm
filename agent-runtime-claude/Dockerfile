@@ -6,7 +6,7 @@ ENV CLAUDE_INSTALL_ROOT=/runtime/home \
   DISABLE_AUTOUPDATER=1 \
   HOME=/runtime/home
 
-RUN apk add --no-cache git bash openssh-client ripgrep curl libgcc libstdc++ su-exec \
+RUN apk add --no-cache git bash openssh-client ripgrep curl docker-cli libgcc libstdc++ su-exec \
   && addgroup -S agent \
   && adduser -S -G agent -h /home/agent agent \
   && mkdir -p "$CLAUDE_INSTALL_ROOT" /home/agent /runtime \

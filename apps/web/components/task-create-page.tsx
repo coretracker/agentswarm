@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import type { TaskSourceType, TaskStartMode, TaskType } from "@agentswarm/shared-types";
+import type { TaskType } from "@agentswarm/shared-types";
 import { Button, Flex, Form, Space, Typography, message } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
+import { trackEvent } from "../src/utils/analytics";
 import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
 import {
@@ -19,35 +20,20 @@ export function TaskCreatePage() {
   const { can } = useAuth();
   const [form] = Form.useForm<TaskDefinitionFormValues>();
   const [submitting, setSubmitting] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
-  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
-  const selectedStartMode = (Form.useWatch("startMode", form) as TaskStartMode | undefined) ?? "prepare_workspace";
   const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
-  const isIssueSource = selectedSourceType === "issue";
-  const isPullRequestSource = selectedSourceType === "pull_request";
-  const isBlankOrIssueInteractivePrep =
-    (selectedSourceType === "blank" || selectedSourceType === "issue") && selectedStartMode === "prepare_workspace";
-  const canCreateAnyTaskMode = can("task:build") || can("task:ask") || can("task:interactive");
+  const canCreateAnyTaskMode = can("task:build") || can("task:ask");
 
-  const pageTitle =
-    selectedSourceType === "issue"
-      ? isBlankOrIssueInteractivePrep
-        ? "New Interactive Task From Issue"
-        : "New Task From Issue"
-      : selectedSourceType === "pull_request"
-        ? "New Task From Pull Request"
-        : isBlankOrIssueInteractivePrep
-          ? "New Interactive Task"
-          : selectedTaskType === "ask"
-            ? "New Ask Task"
-            : "New Build Task";
+  const pageTitle = selectedTaskType === "ask" ? "New Ask Task" : "New Build Task";
 
   const handleSubmit = async (values: TaskDefinitionFormValues) => {
     setSubmitting(true);
     try {
       const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
       const definition = buildTaskDefinitionInput(values, encodedAttachments);
+      trackEvent("task_create_submitted", { task_type: definition.taskType });
       const task = await createTaskFromDefinition(definition);
 
       messageApi.success(startMessageForDefinition(definition));
@@ -57,6 +43,22 @@ export function TaskCreatePage() {
       messageApi.error(error instanceof Error ? error.message : "Failed to create task");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleSaveDraft = async () => {
+    const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
+    setSavingDraft(true);
+    try {
+      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
+      const definition = buildTaskDefinitionInput(values, encodedAttachments);
+      const draft = await createTaskFromDefinition(definition, { draft: true });
+      messageApi.success("Draft saved");
+      router.push(`/tasks/${draft.id}`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to save draft");
+    } finally {
+      setSavingDraft(false);
     }
   };
 
@@ -81,8 +83,11 @@ export function TaskCreatePage() {
             </Flex>
             <Space>
               <Button onClick={() => router.push("/tasks")}>Cancel</Button>
+              <Button loading={savingDraft} onClick={() => void handleSaveDraft()}>
+                Save Draft
+              </Button>
               <Button type="primary" htmlType="submit" loading={submitting} disabled={!canCreateAnyTaskMode}>
-                {isIssueSource ? "Create Task From Issue" : isPullRequestSource ? "Create Task From Pull Request" : "Create Task"}
+                Create Task
               </Button>
             </Space>
           </Flex>

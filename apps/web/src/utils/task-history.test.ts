@@ -94,6 +94,7 @@ test("groups a build run with its prompt, summary message, and proposal", () => 
     throw new Error("Expected grouped_auto_run");
   }
   assert.equal(entries[0].promptMessage?.id, "m1");
+  assert.equal(entries[0].promptText, "Implement grouped history cards.");
   assert.equal(entries[0].summaryMessage?.id, "m2");
   assert.equal(entries[0].proposal?.id, "p1");
 });
@@ -175,6 +176,7 @@ test("keeps unmatched messages and proposals as raw entries when a run has no ma
     throw new Error("Expected grouped_auto_run");
   }
   assert.equal(grouped.promptMessage, null);
+  assert.equal(grouped.promptText, "No matched user prompt was found for this run.");
 });
 
 test("groups completed terminal sessions with a diff proposal", () => {

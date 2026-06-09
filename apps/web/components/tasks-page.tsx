@@ -3,14 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   getAgentProviderLabel,
-  getTaskStatusLabel,
+  getTaskExecutionStatusLabel,
   getTaskTerminalSessionLabel,
   getTaskTypeLabel,
-  isActiveTaskStatus,
   isTaskWorking,
   type Task
 } from "@agentswarm/shared-types";
-import { Button, Card, DatePicker, Divider, Flex, Input, Popconfirm, Select, Space, Spin, Table, Typography, message } from "antd";
+import { Button, Card, Checkbox, DatePicker, Divider, Flex, Input, Modal, Select, Space, Spin, Table, Typography, message } from "antd";
 import { PushpinFilled } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -25,7 +24,21 @@ function getWorkingIndicatorLabel(task: Task): string {
     return `${getTaskTerminalSessionLabel(task.activeTerminalSessionMode === "git" ? "git" : "interactive")} is running`;
   }
 
-  return isActiveTaskStatus(task.status) ? getTaskStatusLabel(task.status) : `${getTaskTypeLabel(task.taskType)} task is working`;
+  return task.executionStatus !== "idle" ? getTaskExecutionStatusLabel(task.executionStatus) : `${getTaskTypeLabel(task.taskType)} task is working`;
+}
+
+function isTaskExecutionBusy(task: Task): boolean {
+  return task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running";
+}
+
+function canOfferRemoteBranchDeletion(task: Task): boolean {
+  const branchName = task.branchName?.trim();
+  return Boolean(
+    task.branchStrategy === "feature_branch" &&
+      branchName &&
+      branchName !== task.repoDefaultBranch &&
+      branchName !== task.baseBranch
+  );
 }
 
 export function TasksPage() {
@@ -75,10 +88,10 @@ export function TasksPage() {
     });
   }, [archivedView, createdAtFilter, repoFilter, tasks, titleFilter]);
 
-  const handleDeleteTask = async (task: Task) => {
+  const handleDeleteTask = async (task: Task, options?: { deleteRemoteBranch?: boolean }) => {
     setDeletingTaskId(task.id);
     try {
-      await api.deleteTask(task.id);
+      await api.deleteTask(task.id, options);
       setTasks((current) => current.filter((item) => item.id !== task.id));
       messageApi.success(`Deleted task "${task.title}"`);
     } catch (error) {
@@ -90,10 +103,10 @@ export function TasksPage() {
 
   const [archivingTaskId, setArchivingTaskId] = useState<string | null>(null);
 
-  const handleArchiveTask = async (task: Task) => {
+  const handleArchiveTask = async (task: Task, options?: { deleteRemoteBranch?: boolean }) => {
     setArchivingTaskId(task.id);
     try {
-      const updatedTask = await api.archiveTask(task.id);
+      const updatedTask = await api.archiveTask(task.id, options);
       setTasks((current) =>
         current.map((item) =>
           item.id === task.id
@@ -107,6 +120,53 @@ export function TasksPage() {
     } finally {
       setArchivingTaskId(null);
     }
+  };
+
+  const confirmArchiveTask = (task: Task) => {
+    let deleteRemoteBranch = false;
+    const showBranchCleanup = canOfferRemoteBranchDeletion(task);
+
+    Modal.confirm({
+      title: "Archive task",
+      content: (
+        <Space direction="vertical" size={12}>
+          <Typography.Text>{`Archive "${task.title}"?`}</Typography.Text>
+          {showBranchCleanup ? (
+            <Checkbox onChange={(event) => {
+              deleteRemoteBranch = event.target.checked;
+            }}>
+              Delete remote branch <Typography.Text code>{task.branchName}</Typography.Text>
+            </Checkbox>
+          ) : null}
+        </Space>
+      ),
+      okText: "Archive",
+      onOk: () => handleArchiveTask(task, { deleteRemoteBranch })
+    });
+  };
+
+  const confirmDeleteTask = (task: Task) => {
+    let deleteRemoteBranch = false;
+    const showBranchCleanup = canOfferRemoteBranchDeletion(task);
+
+    Modal.confirm({
+      title: "Delete task",
+      content: (
+        <Space direction="vertical" size={12}>
+          <Typography.Text>{`Delete "${task.title}"?`}</Typography.Text>
+          {showBranchCleanup ? (
+            <Checkbox onChange={(event) => {
+              deleteRemoteBranch = event.target.checked;
+            }}>
+              Delete remote branch <Typography.Text code>{task.branchName}</Typography.Text>
+            </Checkbox>
+          ) : null}
+        </Space>
+      ),
+      okText: "Delete",
+      okButtonProps: { danger: true },
+      onOk: () => handleDeleteTask(task, { deleteRemoteBranch })
+    });
   };
 
   return (
@@ -129,11 +189,13 @@ export function TasksPage() {
               </Typography.Link>
             </Space>
           </Flex>
-          {canCreateTask ? (
-            <Button type="primary" onClick={() => router.push("/tasks/new")}>
-              New Task
-            </Button>
-          ) : null}
+          <Space>
+            {canCreateTask ? (
+              <Button type="primary" onClick={() => router.push("/tasks/new")}>
+                New Task
+              </Button>
+            ) : null}
+          </Space>
         </Flex>
 
         <Card bordered={false}>
@@ -237,36 +299,26 @@ export function TasksPage() {
                 render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
               },
               {
+                title: "Deadline",
+                dataIndex: "deadline",
+                sorter: (a, b) => (a.deadline ?? "").localeCompare(b.deadline ?? ""),
+                render: (value: Task["deadline"]) => (value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "None")
+              },
+              {
                 title: "Actions",
                 key: "actions",
                 width: 170,
                 render: (_value, task) => (
                   <Space onClick={(event) => event.stopPropagation()}>
                     {canEditTask && !archivedView ? (
-                      <Popconfirm
-                        title="Archive task"
-                        description={`Archive "${task.title}"?`}
-                        okText="Archive"
-                        okButtonProps={{ loading: archivingTaskId === task.id }}
-                        onConfirm={() => void handleArchiveTask(task)}
-                      >
-                        <Button size="small" disabled={isActiveTaskStatus(task.status)}>
-                          Archive
-                        </Button>
-                      </Popconfirm>
+                      <Button size="small" loading={archivingTaskId === task.id} disabled={isTaskExecutionBusy(task)} onClick={() => confirmArchiveTask(task)}>
+                        Archive
+                      </Button>
                     ) : null}
                     {canDeleteTask ? (
-                      <Popconfirm
-                        title="Delete task"
-                        description={`Delete "${task.title}"?`}
-                        okText="Delete"
-                        okButtonProps={{ danger: true, loading: deletingTaskId === task.id }}
-                        onConfirm={() => handleDeleteTask(task)}
-                      >
-                        <Button danger size="small" disabled={isActiveTaskStatus(task.status)}>
-                          Delete
-                        </Button>
-                      </Popconfirm>
+                      <Button danger size="small" loading={deletingTaskId === task.id} disabled={isTaskExecutionBusy(task)} onClick={() => confirmDeleteTask(task)}>
+                        Delete
+                      </Button>
                     ) : null}
                   </Space>
                 )
