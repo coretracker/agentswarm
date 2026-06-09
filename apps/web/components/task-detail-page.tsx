@@ -30,7 +30,6 @@ import {
   type GitHubPullRequestReference,
   type TaskMergePreview,
   type TaskPushPreview,
-  type UpdateTaskDraftInput,
   type TaskChangeProposal,
   type TaskInteractiveTerminalTranscript,
   type TaskTerminalSessionMode,
@@ -123,6 +122,7 @@ import { TaskTerminalTranscriptView } from "./task-terminal-transcript-view";
 import { CheckpointFileEditorModal } from "./checkpoint-file-editor-modal";
 import { TaskFilesTab } from "./task-files-tab";
 import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
+import { TaskCreateModal } from "./task-create-modal";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 import { useThemeMode } from "./theme-provider";
 import { getPrismTheme } from "../src/theme/code-highlighting";
@@ -136,19 +136,6 @@ const runStatusColor: Record<TaskRun["status"], string> = {
 
 type ComposerAction = TaskMessageAction | "interactive" | "terminal";
 type SnippetVariableFormValues = Record<string, string>;
-type DraftEditFormValues = {
-  title: string;
-  deadline: Dayjs | null;
-  prompt: string;
-  notes?: string;
-  taskType: Task["taskType"];
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-};
 
 const OPENAI_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
 const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
@@ -776,7 +763,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [assignableUsers, setAssignableUsers] = useState<User[]>([]);
   const [assignableUsersLoading, setAssignableUsersLoading] = useState(false);
   const [followUpForm] = Form.useForm();
-  const [draftEditForm] = Form.useForm<DraftEditFormValues>();
   const [chatInput, setChatInput] = useState("");
   const [chatInputDraftReady, setChatInputDraftReady] = useState(false);
   const [taskPromptMagicLoading, setTaskPromptMagicLoading] = useState(false);
@@ -786,8 +772,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [codexCredentialSourceInput, setCodexCredentialSourceInput] = useState<CodexCredentialSource>("auto");
   const [branchStrategyInput, setBranchStrategyInput] = useState<TaskBranchStrategy>("feature_branch");
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(providerInput);
-  const draftEditProvider = (Form.useWatch("provider", draftEditForm) as AgentProvider | undefined) ?? task?.provider ?? "codex";
-  const { models: draftEditProviderModels, loading: draftEditProviderModelsLoading } = useProviderModels(draftEditProvider);
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>(null);
   const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "diff" | "files">("chat");
   const [expandedRunKeys, setExpandedRunKeys] = useState<string[]>([]);
@@ -812,7 +796,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "pin"
     | "assign"
     | "deadline"
-    | "draftEdit"
     | "state"
     | "renameTitle"
     | "editComment"
@@ -1138,12 +1121,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
   );
   const allowedEffortOptions = getEffortOptionsForProvider(providerInput).filter(
-    (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
-  );
-  const draftEditAllowedProviderModels = draftEditProviderModels.filter(
-    (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
-  );
-  const draftEditAllowedEffortOptions = getEffortOptionsForProvider(draftEditProvider).filter(
     (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
   );
   const currentTaskProvider = task?.provider ?? "codex";
@@ -1481,34 +1458,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setProviderProfileInput(fallback);
     }
   }, [allowedEffortOptions, providerProfileInput]);
-
-  useEffect(() => {
-    if (!draftEditModalOpen || draftEditProviderModelsLoading) {
-      return;
-    }
-    const current = draftEditForm.getFieldValue("model") as string | undefined;
-    if (current && draftEditAllowedProviderModels.some((option) => option.value === current)) {
-      return;
-    }
-    const fallback = draftEditAllowedProviderModels[0]?.value;
-    if (fallback) {
-      draftEditForm.setFieldValue("model", fallback);
-    }
-  }, [draftEditAllowedProviderModels, draftEditForm, draftEditModalOpen, draftEditProviderModelsLoading]);
-
-  useEffect(() => {
-    if (!draftEditModalOpen) {
-      return;
-    }
-    const current = draftEditForm.getFieldValue("providerProfile") as ProviderProfile | undefined;
-    if (current && draftEditAllowedEffortOptions.some((option) => option.value === current)) {
-      return;
-    }
-    const fallback = draftEditAllowedEffortOptions[0]?.value;
-    if (fallback) {
-      draftEditForm.setFieldValue("providerProfile", fallback);
-    }
-  }, [draftEditAllowedEffortOptions, draftEditForm, draftEditModalOpen]);
 
   useEffect(() => {
     if (!allowedChatActions.includes(selectedChatAction)) {
@@ -2778,62 +2727,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
-    draftEditForm.setFieldsValue({
-      title: task.title,
-      deadline: task.deadline ? dayjs(task.deadline) : null,
-      prompt: task.prompt === "(No prompt provided.)" ? "" : task.prompt,
-      notes: task.notes ?? "",
-      taskType: task.taskType,
-      provider: task.provider,
-      model: task.modelOverride ?? getDefaultModelForProvider(task.provider),
-      providerProfile: task.providerProfile,
-      codexCredentialSource: task.codexCredentialSource ?? "auto",
-      baseBranch: task.baseBranch,
-      branchStrategy: task.branchStrategy
-    });
     setDraftEditModalOpen(true);
   };
   const closeDraftEditModal = () => {
-    if (submitting === "draftEdit") {
-      return;
-    }
     setDraftEditModalOpen(false);
-  };
-  const saveDraftEdit = async () => {
-    if (!task || task.status !== "draft" || !canEditTask || isArchived) {
-      return;
-    }
-
-    try {
-      const values = await draftEditForm.validateFields();
-      const input: UpdateTaskDraftInput = {
-        title: values.title.trim(),
-        deadline: values.deadline ? values.deadline.toISOString() : null,
-        prompt: values.prompt.trim(),
-        notes: values.notes?.trim() ?? "",
-        taskType: values.taskType,
-        provider: values.provider,
-        providerProfile: values.providerProfile,
-        modelOverride: values.model.trim() || null,
-        codexCredentialSource: values.provider === "codex" ? values.codexCredentialSource : undefined,
-        baseBranch: values.baseBranch.trim(),
-        branchStrategy: values.branchStrategy
-      };
-
-      setSubmitting("draftEdit");
-      const updatedTask = await api.updateTaskDraft(task.id, input);
-      applyUpdatedTask(updatedTask);
-      syncExecutionConfigInputs(updatedTask);
-      setDraftEditModalOpen(false);
-      void refetchTaskMessages();
-      messageApi.success("Draft updated");
-    } catch (error) {
-      if (error instanceof Error) {
-        showTaskActionError(error, "Failed to update draft");
-      }
-    } finally {
-      setSubmitting((current) => (current === "draftEdit" ? null : current));
-    }
   };
   const loadPushPreview = async () => {
     if (!task) {
@@ -5276,77 +5173,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   return (
     <>
       {contextHolder}
-      <Modal
-        title="Edit Draft"
+      <TaskCreateModal
         open={draftEditModalOpen}
-        onCancel={closeDraftEditModal}
-        onOk={() => void saveDraftEdit()}
-        okText="Save Draft"
-        confirmLoading={submitting === "draftEdit"}
-        destroyOnClose
-        width="min(900px, calc(100vw - 32px))"
-        styles={{
-          body: {
-            maxHeight: "calc(100vh - 220px)",
-            overflowY: "auto",
-            overflowX: "hidden"
-          }
+        onClose={closeDraftEditModal}
+        draftTask={task?.status === "draft" ? task : null}
+        onUpdated={(updatedTask) => {
+          applyUpdatedTask(updatedTask);
+          syncExecutionConfigInputs(updatedTask);
+          setDraftEditModalOpen(false);
+          void refetchTaskMessages();
         }}
-      >
-        <Form form={draftEditForm} layout="vertical">
-          <Space direction="vertical" size={12} style={{ width: "100%" }}>
-            <Form.Item name="title" label="Title" rules={[{ required: true, message: "Enter a task title" }]} style={{ marginBottom: 0 }}>
-              <Input />
-            </Form.Item>
-            <Form.Item name="prompt" label="Prompt" rules={[{ required: true, message: "Enter a prompt" }]} style={{ marginBottom: 0 }}>
-              <Input.TextArea autoSize={{ minRows: 6, maxRows: 18 }} style={{ resize: "none" }} />
-            </Form.Item>
-            <Form.Item name="notes" label="Notes" style={{ marginBottom: 0 }}>
-              <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} style={{ resize: "none" }} />
-            </Form.Item>
-            <Flex gap={12} wrap="wrap">
-              <Form.Item name="deadline" label="Deadline" style={{ flex: "1 1 220px", marginBottom: 0 }}>
-                <DatePicker showTime allowClear style={{ width: "100%" }} />
-              </Form.Item>
-              <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]} style={{ flex: "1 1 180px", marginBottom: 0 }}>
-                <Select
-                  options={[
-                    ...(can("task:build") ? [{ label: getTaskTypeLabel("build"), value: "build" as const }] : []),
-                    ...(can("task:ask") ? [{ label: getTaskTypeLabel("ask"), value: "ask" as const }] : [])
-                  ]}
-                />
-              </Form.Item>
-            </Flex>
-            <Flex gap={12} wrap="wrap">
-              <Form.Item name="provider" label="Provider" rules={[{ required: true }]} style={{ flex: "1 1 220px", marginBottom: 0 }}>
-                <Select options={providerInputOptions} />
-              </Form.Item>
-              <Form.Item name="model" label="Model" rules={[{ required: true }]} style={{ flex: "1 1 220px", marginBottom: 0 }}>
-                <Select
-                  options={draftEditAllowedProviderModels}
-                  loading={draftEditProviderModelsLoading}
-                  showSearch
-                  optionFilterProp="label"
-                />
-              </Form.Item>
-              <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]} style={{ flex: "1 1 160px", marginBottom: 0 }}>
-                <Select options={draftEditAllowedEffortOptions} />
-              </Form.Item>
-            </Flex>
-            <Flex gap={12} wrap="wrap">
-              <Form.Item name="codexCredentialSource" label="Codex Credential Source" style={{ flex: "1 1 260px", marginBottom: 0 }}>
-                <Select options={codexCredentialSourceOptions} disabled={draftEditProvider !== "codex"} />
-              </Form.Item>
-              <Form.Item name="baseBranch" label="Base Branch" rules={[{ required: true, message: "Enter a base branch" }]} style={{ flex: "1 1 220px", marginBottom: 0 }}>
-                <Input />
-              </Form.Item>
-              <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]} style={{ flex: "1 1 220px", marginBottom: 0 }}>
-                <Select options={branchStrategyOptions} />
-              </Form.Item>
-            </Flex>
-          </Space>
-        </Form>
-      </Modal>
+      />
       <Modal
         title="AI Settings"
         open={aiSettingsModalOpen}
@@ -5741,7 +5578,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                       {hasExecutionButtons ? (
                         <Space wrap size={8}>
                           {isDraft && canEditTask && !isArchived ? (
-                            <Button onClick={openDraftEditModal} loading={submitting === "draftEdit"}>
+                            <Button onClick={openDraftEditModal}>
                               Edit Draft
                             </Button>
                           ) : null}

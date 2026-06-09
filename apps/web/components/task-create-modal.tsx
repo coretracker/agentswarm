@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Task, TaskSourceType } from "@agentswarm/shared-types";
+import dayjs from "dayjs";
+import { getDefaultModelForProvider, type Task, type TaskSourceType, type UpdateTaskDraftInput } from "@agentswarm/shared-types";
 import { App, Button, Form, Modal } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
 import { trackEvent } from "../src/utils/analytics";
 import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
+import { api } from "../src/api/client";
 import { useAuth } from "./auth-provider";
 import {
   TaskDefinitionFields,
@@ -18,9 +20,42 @@ interface TaskCreateModalProps {
   open: boolean;
   onClose: () => void;
   onCreated?: (task: Task) => void;
+  onUpdated?: (task: Task) => void;
+  draftTask?: Task | null;
 }
 
-export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalProps) {
+const getDraftTaskInitialValues = (task: Task): Partial<TaskDefinitionFormValues> => ({
+  sourceType: "blank",
+  title: task.title,
+  deadline: task.deadline ? dayjs(task.deadline) : null,
+  repoId: task.repoId,
+  prompt: task.prompt === "(No prompt provided.)" ? "" : task.prompt,
+  notes: task.notes ?? "",
+  taskType: task.taskType,
+  provider: task.provider,
+  model: task.modelOverride ?? getDefaultModelForProvider(task.provider),
+  providerProfile: task.providerProfile,
+  codexCredentialSource: task.codexCredentialSource ?? "auto",
+  baseBranch: task.baseBranch,
+  branchStrategy: task.branchStrategy,
+  includeComments: true
+});
+
+const buildDraftUpdateInput = (values: TaskDefinitionFormValues): UpdateTaskDraftInput => ({
+  title: values.title?.trim() ?? "",
+  deadline: values.deadline ? dayjs(values.deadline).toISOString() : null,
+  prompt: values.prompt?.trim() ?? "",
+  notes: values.notes?.trim() ?? "",
+  taskType: values.taskType ?? "build",
+  provider: values.provider ?? "codex",
+  providerProfile: values.providerProfile ?? "high",
+  modelOverride: values.model?.trim() || null,
+  ...(values.provider === "codex" || !values.provider ? { codexCredentialSource: values.codexCredentialSource ?? "auto" } : {}),
+  baseBranch: values.baseBranch?.trim() ?? "",
+  branchStrategy: values.branchStrategy ?? "feature_branch"
+});
+
+export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask }: TaskCreateModalProps) {
   const { message } = App.useApp();
   const { can } = useAuth();
   const [form] = Form.useForm<TaskDefinitionFormValues>();
@@ -29,6 +64,7 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
   const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const canCreateAnyTaskMode = can("task:build") || can("task:ask");
+  const editingDraft = Boolean(draftTask);
   const busy = submitting || savingDraft;
 
   useEffect(() => {
@@ -37,9 +73,9 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
     }
 
     form.resetFields();
-    form.setFieldsValue(getTaskDefinitionInitialValues(undefined));
+    form.setFieldsValue(draftTask ? getDraftTaskInitialValues(draftTask) : getTaskDefinitionInitialValues(undefined));
     setPromptImageFiles([]);
-  }, [form, open]);
+  }, [draftTask, form, open]);
 
   const handleCancel = () => {
     if (busy) {
@@ -52,6 +88,23 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
   };
 
   const handleSubmit = async (values: TaskDefinitionFormValues) => {
+    if (draftTask) {
+      setSubmitting(true);
+      try {
+        const updatedTask = await api.updateTaskDraft(draftTask.id, buildDraftUpdateInput(values));
+        form.resetFields();
+        setPromptImageFiles([]);
+        onClose();
+        onUpdated?.(updatedTask);
+        message.success("Draft updated");
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : "Failed to update draft");
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
     setSubmitting(true);
     try {
       const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
@@ -101,9 +154,13 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
     <Button key="cancel" onClick={handleCancel} disabled={busy}>
       Cancel
     </Button>,
-    <Button key="draft" loading={savingDraft} disabled={submitting} onClick={() => void handleSaveDraft()}>
-      Save Draft
-    </Button>,
+    ...(editingDraft
+      ? []
+      : [
+          <Button key="draft" loading={savingDraft} disabled={submitting} onClick={() => void handleSaveDraft()}>
+            Save Draft
+          </Button>
+        ]),
     <Button
       key="submit"
       type="primary"
@@ -111,11 +168,13 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
       disabled={!canCreateAnyTaskMode || savingDraft}
       onClick={() => form.submit()}
     >
-      {selectedSourceType === "issue"
-        ? "Create Task From Issue"
-        : selectedSourceType === "pull_request"
-          ? "Create Task From Pull Request"
-          : "Create Task"}
+      {editingDraft
+        ? "Save Draft"
+        : selectedSourceType === "issue"
+          ? "Create Task From Issue"
+          : selectedSourceType === "pull_request"
+            ? "Create Task From Pull Request"
+            : "Create Task"}
     </Button>
   ];
 
@@ -123,7 +182,7 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
     <Modal
       open={open}
       onCancel={handleCancel}
-      title="New Task"
+      title={editingDraft ? "Edit Draft" : "New Task"}
       width="min(1180px, calc(100vw - 32px))"
       destroyOnHidden
       maskClosable={!busy}
@@ -143,7 +202,14 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
         initialValues={getTaskDefinitionInitialValues(undefined)}
         onFinish={handleSubmit}
       >
-        <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
+        <TaskDefinitionFields
+          form={form}
+          syncSettingsDefaults={!editingDraft}
+          lockSourceAndRepository={editingDraft}
+          allowPromptAttachments={!editingDraft}
+          promptImageFiles={promptImageFiles}
+          onPromptImageFilesChange={setPromptImageFiles}
+        />
       </Form>
     </Modal>
   );

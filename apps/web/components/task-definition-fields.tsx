@@ -63,6 +63,8 @@ export type TaskDefinitionFormValues = {
 export interface TaskDefinitionFieldsProps {
   form: FormInstance<TaskDefinitionFormValues>;
   syncSettingsDefaults?: boolean;
+  lockSourceAndRepository?: boolean;
+  allowPromptAttachments?: boolean;
   promptImageFiles?: SelectedTaskPromptImageFile[];
   onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
 }
@@ -218,6 +220,8 @@ export const buildTaskDefinitionInput = (
 export function TaskDefinitionFields({
   form,
   syncSettingsDefaults = true,
+  lockSourceAndRepository = false,
+  allowPromptAttachments = true,
   promptImageFiles = [],
   onPromptImageFilesChange
 }: TaskDefinitionFieldsProps) {
@@ -444,7 +448,7 @@ export function TaskDefinitionFields({
     : isSnippetSource
       ? "Snippet Variables"
       : "Imported Context";
-  const canAttachPromptImages = isBlankSource;
+  const canAttachPromptImages = allowPromptAttachments && isBlankSource;
   const canUsePromptMagic = isBlankSource;
   const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
 
@@ -630,12 +634,14 @@ export function TaskDefinitionFields({
                   </Button>
                 </Flex>
               ) : null}
-              <TaskPromptAttachmentsInput
-                files={promptImageFiles}
-                onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
-                onError={(errorMessage) => void message.error(errorMessage)}
-                disabled={!canAttachPromptImages || !onPromptImageFilesChange}
-              />
+              {allowPromptAttachments ? (
+                <TaskPromptAttachmentsInput
+                  files={promptImageFiles}
+                  onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
+                  onError={(errorMessage) => void message.error(errorMessage)}
+                  disabled={!canAttachPromptImages || !onPromptImageFilesChange}
+                />
+              ) : null}
             </Flex>
           </Form.Item>
           <Form.Item
@@ -822,6 +828,7 @@ export function TaskDefinitionFields({
           <Form.Item name="sourceType" label="Source" rules={[{ required: true }]}>
             <Select
               options={sourceOptions}
+              disabled={lockSourceAndRepository}
               onChange={(value: TaskSourceType) => {
                 trackEvent("task_source_selected", { source: value });
                 if (value === "pull_request") {
@@ -851,6 +858,7 @@ export function TaskDefinitionFields({
             <Select
               options={repositories.map((repository) => ({ label: repository.name, value: repository.id }))}
               placeholder="Select repository"
+              disabled={lockSourceAndRepository}
               onChange={(repoId) => {
                 const repository = repositories.find((item) => item.id === repoId);
                 form.setFieldValue("baseBranch", repository?.defaultBranch ?? "");

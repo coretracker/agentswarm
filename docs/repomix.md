@@ -4787,613 +4787,6 @@ describe("RepoSyncManager", () => {
 });
 ````
 
-## File: apps/server/src/services/role-store.ts
-````typescript
-import { nanoid } from "nanoid";
-import type Redis from "ioredis";
-import type { Pool } from "pg";
-import {
-  ALL_PERMISSION_SCOPES,
-  type AgentProvider,
-  type CreateRoleInput,
-  type PermissionScope,
-  type ProviderProfile,
-  type Role,
-  type UpdateRoleInput
-} from "@agentswarm/shared-types";
-import { HttpError } from "../lib/http-error.js";
-import { parseJsonColumn, type PostgresQueryable } from "../lib/postgres.js";
-
-const ROLE_KEY_PREFIX = "agentswarm:role:";
-const ROLE_IDS_KEY = "agentswarm:role_ids";
-const ROLE_NAME_KEY_PREFIX = "agentswarm:role_name:";
-
-export const SYSTEM_ADMIN_ROLE_ID = "admin";
-const SYSTEM_ADMIN_ROLE_NAME = "Admin";
-const SYSTEM_ADMIN_ROLE_DESCRIPTION = "Built-in superuser role with every available permission.";
-const ROLE_SCOPE_VERSION = 5;
-
-const nowIso = (): string => new Date().toISOString();
-const scopeOrder = new Map(ALL_PERMISSION_SCOPES.map((scope, index) => [scope, index]));
-const deprecatedPermissionScopes = new Set(["sequence:list", "sequence:create", "sequence:read", "sequence:edit", "sequence:delete"]);
-
-const normalizeRoleName = (value: string | undefined): string => (value ?? "").trim().replace(/\s+/g, " ");
-const normalizeRoleNameKey = (value: string | undefined): string => normalizeRoleName(value).toLowerCase();
-
-const normalizeRoleDescription = (value: string | undefined): string => (value ?? "").trim();
-const providerOrder: AgentProvider[] = ["codex", "claude"];
-const effortOrder: ProviderProfile[] = ["low", "medium", "high", "max"];
-
-const normalizeAllowedProviders = (providers: AgentProvider[] | string[] | undefined): AgentProvider[] => {
-  const unique = Array.from(new Set((providers ?? []).map((provider) => String(provider).trim()).filter(Boolean)));
-  const invalid = unique.find((provider) => !providerOrder.includes(provider as AgentProvider));
-  if (invalid) {
-    throw new HttpError(400, `Unknown provider: ${invalid}`);
-  }
-  return unique
-    .map((provider) => provider as AgentProvider)
-    .sort((left, right) => providerOrder.indexOf(left) - providerOrder.indexOf(right));
-};
-
-const normalizeAllowedEfforts = (efforts: ProviderProfile[] | string[] | undefined): ProviderProfile[] => {
-  const unique = Array.from(new Set((efforts ?? []).map((effort) => String(effort).trim()).filter(Boolean)));
-  const invalid = unique.find((effort) => !effortOrder.includes(effort as ProviderProfile));
-  if (invalid) {
-    throw new HttpError(400, `Unknown effort: ${invalid}`);
-  }
-  return unique
-    .map((effort) => effort as ProviderProfile)
-    .sort((left, right) => effortOrder.indexOf(left) - effortOrder.indexOf(right));
-};
-
-const normalizeAllowedModels = (models: string[] | undefined): string[] =>
-  Array.from(new Set((models ?? []).map((model) => model.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right));
-
-const expandLegacyTaskModeScopes = (scopes: string[]): string[] => {
-  const expanded = new Set(scopes);
-  if (expanded.has("task:create") || expanded.has("task:edit")) {
-    expanded.add("task:build");
-    expanded.add("task:ask");
-    expanded.add("task:interactive");
-  }
-  return Array.from(expanded);
-};
-
-const normalizeScopes = (
-  scopes: PermissionScope[] | string[] | undefined,
-  options?: { legacyTaskModes?: boolean }
-): PermissionScope[] => {
-  const uniqueScopesRaw = Array.from(
-    new Set(
-      (scopes ?? [])
-        .map((scope) => String(scope).trim())
-        .filter(Boolean)
-    )
-  );
-  const expandedScopes = options?.legacyTaskModes ? expandLegacyTaskModeScopes(uniqueScopesRaw) : uniqueScopesRaw;
-  const uniqueScopes = options?.legacyTaskModes ? expandedScopes.filter((scope) => !deprecatedPermissionScopes.has(scope)) : expandedScopes;
-  if (uniqueScopes.length === 0) {
-    if (options?.legacyTaskModes && uniqueScopesRaw.some((scope) => deprecatedPermissionScopes.has(scope))) {
-      return [];
-    }
-    throw new HttpError(400, "At least one permission scope is required");
-  }
-
-  const invalidScope = uniqueScopes.find((scope) => !scopeOrder.has(scope as PermissionScope));
-  if (invalidScope) {
-    throw new HttpError(400, `Unknown permission scope: ${invalidScope}`);
-  }
-
-  return uniqueScopes
-    .map((scope) => scope as PermissionScope)
-    .sort((left, right) => (scopeOrder.get(left) ?? 0) - (scopeOrder.get(right) ?? 0));
-};
-
-export interface RoleStore {
-  ensureDefaultAdminRole(): Promise<Role>;
-  listRoles(): Promise<Role[]>;
-  getRole(roleId: string): Promise<Role | null>;
-  getRolesByIds(roleIds: string[]): Promise<Role[]>;
-  createRole(input: CreateRoleInput): Promise<Role>;
-  updateRole(roleId: string, input: UpdateRoleInput): Promise<Role | null>;
-  deleteRole(roleId: string): Promise<boolean>;
-}
-
-export class RedisRoleStore implements RoleStore {
-  constructor(private readonly redis: Redis) {}
-
-  private roleKey(roleId: string): string {
-    return `${ROLE_KEY_PREFIX}${roleId}`;
-  }
-
-  private roleNameKey(roleName: string): string {
-    return `${ROLE_NAME_KEY_PREFIX}${normalizeRoleNameKey(roleName)}`;
-  }
-
-  private normalizeRole(role: Role): Role {
-    const legacyRole = role as Role & {
-      allowedProviders?: AgentProvider[] | string[];
-      allowedModels?: string[];
-      allowedEfforts?: ProviderProfile[] | string[];
-    };
-    return {
-      ...role,
-      name: normalizeRoleName(role.name),
-      description: normalizeRoleDescription(role.description),
-      scopes: normalizeScopes(role.scopes, { legacyTaskModes: role.scopeVersion !== ROLE_SCOPE_VERSION }),
-      allowedProviders: normalizeAllowedProviders(legacyRole.allowedProviders),
-      allowedModels: normalizeAllowedModels(legacyRole.allowedModels),
-      allowedEfforts: normalizeAllowedEfforts(legacyRole.allowedEfforts),
-      scopeVersion: ROLE_SCOPE_VERSION
-    };
-  }
-
-  private async getStoredRole(roleId: string): Promise<Role | null> {
-    const raw = await this.redis.get(this.roleKey(roleId));
-    if (!raw) {
-      return null;
-    }
-
-    return this.normalizeRole(JSON.parse(raw) as Role);
-  }
-
-  private async assertUniqueRoleName(roleName: string, currentRoleId?: string): Promise<void> {
-    const existingRoleId = await this.redis.get(this.roleNameKey(roleName));
-    if (existingRoleId && existingRoleId !== currentRoleId) {
-      throw new HttpError(409, "A role with that name already exists");
-    }
-  }
-
-  async ensureDefaultAdminRole(): Promise<Role> {
-    const timestamp = nowIso();
-    const current = await this.getStoredRole(SYSTEM_ADMIN_ROLE_ID);
-    const adminRole: Role = {
-      id: SYSTEM_ADMIN_ROLE_ID,
-      name: SYSTEM_ADMIN_ROLE_NAME,
-      description: SYSTEM_ADMIN_ROLE_DESCRIPTION,
-      scopes: [...ALL_PERMISSION_SCOPES],
-      allowedProviders: [],
-      allowedModels: [],
-      allowedEfforts: [],
-      scopeVersion: ROLE_SCOPE_VERSION,
-      isSystem: true,
-      createdAt: current?.createdAt ?? timestamp,
-      updatedAt: current?.updatedAt ?? timestamp
-    };
-
-    if (
-      current &&
-      current.name === adminRole.name &&
-      current.description === adminRole.description &&
-      current.isSystem &&
-      JSON.stringify(current.scopes) === JSON.stringify(adminRole.scopes)
-    ) {
-      await this.redis.set(this.roleNameKey(adminRole.name), adminRole.id);
-      return current;
-    }
-
-    const nextRole: Role = {
-      ...adminRole,
-      updatedAt: timestamp
-    };
-
-    const previousName = current?.name;
-    const pipeline = this.redis
-      .multi()
-      .set(this.roleKey(nextRole.id), JSON.stringify(nextRole))
-      .sadd(ROLE_IDS_KEY, nextRole.id)
-      .set(this.roleNameKey(nextRole.name), nextRole.id);
-
-    if (previousName && normalizeRoleNameKey(previousName) !== normalizeRoleNameKey(nextRole.name)) {
-      pipeline.del(this.roleNameKey(previousName));
-    }
-
-    await pipeline.exec();
-    return nextRole;
-  }
-
-  async listRoles(): Promise<Role[]> {
-    const roleIds = await this.redis.smembers(ROLE_IDS_KEY);
-    if (roleIds.length === 0) {
-      return [];
-    }
-
-    const pipeline = this.redis.pipeline();
-    for (const roleId of roleIds) {
-      pipeline.get(this.roleKey(roleId));
-    }
-
-    const result = await pipeline.exec();
-    const roles: Role[] = [];
-    for (const row of result ?? []) {
-      const raw = row[1];
-      if (typeof raw === "string") {
-        roles.push(this.normalizeRole(JSON.parse(raw) as Role));
-      }
-    }
-
-    return roles.sort((left, right) => {
-      if (left.isSystem !== right.isSystem) {
-        return left.isSystem ? -1 : 1;
-      }
-
-      return left.name.localeCompare(right.name);
-    });
-  }
-
-  async getRole(roleId: string): Promise<Role | null> {
-    return this.getStoredRole(roleId);
-  }
-
-  async getRolesByIds(roleIds: string[]): Promise<Role[]> {
-    const uniqueRoleIds = Array.from(new Set(roleIds.map((roleId) => roleId.trim()).filter(Boolean)));
-    if (uniqueRoleIds.length === 0) {
-      return [];
-    }
-
-    const pipeline = this.redis.pipeline();
-    for (const roleId of uniqueRoleIds) {
-      pipeline.get(this.roleKey(roleId));
-    }
-
-    const result = await pipeline.exec();
-    const rolesById = new Map<string, Role>();
-    for (const row of result ?? []) {
-      const raw = row[1];
-      if (typeof raw === "string") {
-        const role = this.normalizeRole(JSON.parse(raw) as Role);
-        rolesById.set(role.id, role);
-      }
-    }
-
-    return uniqueRoleIds.flatMap((roleId) => {
-      const role = rolesById.get(roleId);
-      return role ? [role] : [];
-    });
-  }
-
-  async createRole(input: CreateRoleInput): Promise<Role> {
-    const name = normalizeRoleName(input.name);
-    if (!name) {
-      throw new HttpError(400, "Role name is required");
-    }
-
-    await this.assertUniqueRoleName(name);
-    const timestamp = nowIso();
-    const role: Role = {
-      id: nanoid(),
-      name,
-      description: normalizeRoleDescription(input.description),
-      scopes: normalizeScopes(input.scopes),
-      allowedProviders: normalizeAllowedProviders(input.allowedProviders),
-      allowedModels: normalizeAllowedModels(input.allowedModels),
-      allowedEfforts: normalizeAllowedEfforts(input.allowedEfforts),
-      scopeVersion: ROLE_SCOPE_VERSION,
-      isSystem: false,
-      createdAt: timestamp,
-      updatedAt: timestamp
-    };
-
-    await this.redis
-      .multi()
-      .set(this.roleKey(role.id), JSON.stringify(role))
-      .sadd(ROLE_IDS_KEY, role.id)
-      .set(this.roleNameKey(role.name), role.id)
-      .exec();
-
-    return role;
-  }
-
-  async updateRole(roleId: string, input: UpdateRoleInput): Promise<Role | null> {
-    const current = await this.getStoredRole(roleId);
-    if (!current) {
-      return null;
-    }
-
-    if (current.isSystem) {
-      throw new HttpError(403, "System roles are immutable");
-    }
-
-    const nextName = input.name === undefined ? current.name : normalizeRoleName(input.name);
-    if (!nextName) {
-      throw new HttpError(400, "Role name is required");
-    }
-
-    await this.assertUniqueRoleName(nextName, current.id);
-    const next: Role = {
-      ...current,
-      name: nextName,
-      description: input.description === undefined ? current.description : normalizeRoleDescription(input.description),
-      scopes: input.scopes === undefined ? current.scopes : normalizeScopes(input.scopes),
-      allowedProviders:
-        input.allowedProviders === undefined ? current.allowedProviders : normalizeAllowedProviders(input.allowedProviders),
-      allowedModels: input.allowedModels === undefined ? current.allowedModels : normalizeAllowedModels(input.allowedModels),
-      allowedEfforts: input.allowedEfforts === undefined ? current.allowedEfforts : normalizeAllowedEfforts(input.allowedEfforts),
-      scopeVersion: ROLE_SCOPE_VERSION,
-      updatedAt: nowIso()
-    };
-
-    const pipeline = this.redis
-      .multi()
-      .set(this.roleKey(roleId), JSON.stringify(next))
-      .set(this.roleNameKey(next.name), next.id);
-
-    if (normalizeRoleNameKey(current.name) !== normalizeRoleNameKey(next.name)) {
-      pipeline.del(this.roleNameKey(current.name));
-    }
-
-    await pipeline.exec();
-    return next;
-  }
-
-  async deleteRole(roleId: string): Promise<boolean> {
-    const current = await this.getStoredRole(roleId);
-    if (!current) {
-      return false;
-    }
-
-    if (current.isSystem) {
-      throw new HttpError(403, "System roles cannot be deleted");
-    }
-
-    await this.redis
-      .multi()
-      .del(this.roleKey(roleId))
-      .srem(ROLE_IDS_KEY, roleId)
-      .del(this.roleNameKey(current.name))
-      .exec();
-
-    return true;
-  }
-}
-
-export class PostgresRoleStore implements RoleStore {
-  constructor(private readonly pool: Pool) {}
-
-  private mapRoleRow(row: Record<string, unknown>): Role {
-    return this.normalizeRole({
-      id: String(row.id),
-      name: String(row.name),
-      description: String(row.description ?? ""),
-      scopes: parseJsonColumn<PermissionScope[]>(row.scopes),
-      allowedProviders: parseJsonColumn<AgentProvider[]>(row.allowed_providers),
-      allowedModels: parseJsonColumn<string[]>(row.allowed_models),
-      allowedEfforts: parseJsonColumn<ProviderProfile[]>(row.allowed_efforts),
-      scopeVersion: Number(row.scope_version),
-      isSystem: row.is_system === true,
-      createdAt: String(row.created_at),
-      updatedAt: String(row.updated_at)
-    });
-  }
-
-  private normalizeRole(role: Role): Role {
-    const legacyRole = role as Role & {
-      allowedProviders?: AgentProvider[] | string[];
-      allowedModels?: string[];
-      allowedEfforts?: ProviderProfile[] | string[];
-    };
-    return {
-      ...role,
-      name: normalizeRoleName(role.name),
-      description: normalizeRoleDescription(role.description),
-      scopes: normalizeScopes(role.scopes, { legacyTaskModes: role.scopeVersion !== ROLE_SCOPE_VERSION }),
-      allowedProviders: normalizeAllowedProviders(legacyRole.allowedProviders),
-      allowedModels: normalizeAllowedModels(legacyRole.allowedModels),
-      allowedEfforts: normalizeAllowedEfforts(legacyRole.allowedEfforts),
-      scopeVersion: ROLE_SCOPE_VERSION
-    };
-  }
-
-  private async getStoredRole(roleId: string, db: PostgresQueryable = this.pool): Promise<Role | null> {
-    const result = await db.query("SELECT * FROM roles WHERE id = $1", [roleId]);
-    const row = result.rows[0];
-    return row ? this.mapRoleRow(row) : null;
-  }
-
-  private async assertUniqueRoleName(
-    roleName: string,
-    currentRoleId?: string,
-    db: PostgresQueryable = this.pool
-  ): Promise<void> {
-    const result = await db.query<{ id: string }>("SELECT id FROM roles WHERE name_key = $1", [normalizeRoleNameKey(roleName)]);
-    const existingRoleId = result.rows[0]?.id ?? null;
-    if (existingRoleId && existingRoleId !== currentRoleId) {
-      throw new HttpError(409, "A role with that name already exists");
-    }
-  }
-
-  private async upsertRole(role: Role, db: PostgresQueryable = this.pool): Promise<void> {
-    await db.query(
-      `
-        INSERT INTO roles (
-          id,
-          name,
-          name_key,
-          description,
-          scopes,
-          allowed_providers,
-          allowed_models,
-          allowed_efforts,
-          scope_version,
-          is_system,
-          created_at,
-          updated_at
-        )
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12)
-        ON CONFLICT (id) DO UPDATE
-        SET
-          name = EXCLUDED.name,
-          name_key = EXCLUDED.name_key,
-          description = EXCLUDED.description,
-          scopes = EXCLUDED.scopes,
-          allowed_providers = EXCLUDED.allowed_providers,
-          allowed_models = EXCLUDED.allowed_models,
-          allowed_efforts = EXCLUDED.allowed_efforts,
-          scope_version = EXCLUDED.scope_version,
-          is_system = EXCLUDED.is_system,
-          created_at = EXCLUDED.created_at,
-          updated_at = EXCLUDED.updated_at
-      `,
-      [
-        role.id,
-        role.name,
-        normalizeRoleNameKey(role.name),
-        role.description,
-        JSON.stringify(role.scopes),
-        JSON.stringify(role.allowedProviders),
-        JSON.stringify(role.allowedModels),
-        JSON.stringify(role.allowedEfforts),
-        role.scopeVersion ?? ROLE_SCOPE_VERSION,
-        role.isSystem,
-        role.createdAt,
-        role.updatedAt
-      ]
-    );
-  }
-
-  async ensureDefaultAdminRole(): Promise<Role> {
-    const timestamp = nowIso();
-    const current = await this.getStoredRole(SYSTEM_ADMIN_ROLE_ID);
-    const adminRole: Role = {
-      id: SYSTEM_ADMIN_ROLE_ID,
-      name: SYSTEM_ADMIN_ROLE_NAME,
-      description: SYSTEM_ADMIN_ROLE_DESCRIPTION,
-      scopes: [...ALL_PERMISSION_SCOPES],
-      allowedProviders: [],
-      allowedModels: [],
-      allowedEfforts: [],
-      scopeVersion: ROLE_SCOPE_VERSION,
-      isSystem: true,
-      createdAt: current?.createdAt ?? timestamp,
-      updatedAt: current?.updatedAt ?? timestamp
-    };
-
-    if (
-      current &&
-      current.name === adminRole.name &&
-      current.description === adminRole.description &&
-      current.isSystem &&
-      JSON.stringify(current.scopes) === JSON.stringify(adminRole.scopes) &&
-      JSON.stringify(current.allowedProviders) === JSON.stringify(adminRole.allowedProviders) &&
-      JSON.stringify(current.allowedModels) === JSON.stringify(adminRole.allowedModels) &&
-      JSON.stringify(current.allowedEfforts) === JSON.stringify(adminRole.allowedEfforts) &&
-      current.scopeVersion === adminRole.scopeVersion
-    ) {
-      return current;
-    }
-
-    const nextRole: Role = {
-      ...adminRole,
-      updatedAt: timestamp
-    };
-
-    await this.upsertRole(nextRole);
-    return nextRole;
-  }
-
-  async listRoles(): Promise<Role[]> {
-    const result = await this.pool.query("SELECT * FROM roles ORDER BY is_system DESC, name ASC");
-    return result.rows.map((row) => this.mapRoleRow(row));
-  }
-
-  async getRole(roleId: string): Promise<Role | null> {
-    return this.getStoredRole(roleId);
-  }
-
-  async getRolesByIds(roleIds: string[]): Promise<Role[]> {
-    const uniqueRoleIds = Array.from(new Set(roleIds.map((roleId) => roleId.trim()).filter(Boolean)));
-    if (uniqueRoleIds.length === 0) {
-      return [];
-    }
-
-    const result = await this.pool.query("SELECT * FROM roles WHERE id = ANY($1::text[])", [uniqueRoleIds]);
-    const rolesById = new Map<string, Role>();
-    for (const row of result.rows) {
-      const role = this.mapRoleRow(row);
-      rolesById.set(role.id, role);
-    }
-
-    return uniqueRoleIds.flatMap((roleId) => {
-      const role = rolesById.get(roleId);
-      return role ? [role] : [];
-    });
-  }
-
-  async createRole(input: CreateRoleInput): Promise<Role> {
-    const name = normalizeRoleName(input.name);
-    if (!name) {
-      throw new HttpError(400, "Role name is required");
-    }
-
-    await this.assertUniqueRoleName(name);
-    const timestamp = nowIso();
-    const role: Role = {
-      id: nanoid(),
-      name,
-      description: normalizeRoleDescription(input.description),
-      scopes: normalizeScopes(input.scopes),
-      allowedProviders: normalizeAllowedProviders(input.allowedProviders),
-      allowedModels: normalizeAllowedModels(input.allowedModels),
-      allowedEfforts: normalizeAllowedEfforts(input.allowedEfforts),
-      scopeVersion: ROLE_SCOPE_VERSION,
-      isSystem: false,
-      createdAt: timestamp,
-      updatedAt: timestamp
-    };
-
-    await this.upsertRole(role);
-    return role;
-  }
-
-  async updateRole(roleId: string, input: UpdateRoleInput): Promise<Role | null> {
-    const current = await this.getStoredRole(roleId);
-    if (!current) {
-      return null;
-    }
-
-    if (current.isSystem) {
-      throw new HttpError(403, "System roles are immutable");
-    }
-
-    const nextName = input.name === undefined ? current.name : normalizeRoleName(input.name);
-    if (!nextName) {
-      throw new HttpError(400, "Role name is required");
-    }
-
-    await this.assertUniqueRoleName(nextName, current.id);
-    const next: Role = {
-      ...current,
-      name: nextName,
-      description: input.description === undefined ? current.description : normalizeRoleDescription(input.description),
-      scopes: input.scopes === undefined ? current.scopes : normalizeScopes(input.scopes),
-      allowedProviders:
-        input.allowedProviders === undefined ? current.allowedProviders : normalizeAllowedProviders(input.allowedProviders),
-      allowedModels: input.allowedModels === undefined ? current.allowedModels : normalizeAllowedModels(input.allowedModels),
-      allowedEfforts: input.allowedEfforts === undefined ? current.allowedEfforts : normalizeAllowedEfforts(input.allowedEfforts),
-      scopeVersion: ROLE_SCOPE_VERSION,
-      updatedAt: nowIso()
-    };
-
-    await this.upsertRole(next);
-    return next;
-  }
-
-  async deleteRole(roleId: string): Promise<boolean> {
-    const current = await this.getStoredRole(roleId);
-    if (!current) {
-      return false;
-    }
-
-    if (current.isSystem) {
-      throw new HttpError(403, "System roles cannot be deleted");
-    }
-
-    await this.pool.query("DELETE FROM roles WHERE id = $1", [roleId]);
-    return true;
-  }
-}
-````
-
 ## File: apps/server/src/services/session-store.ts
 ````typescript
 import { randomBytes } from "node:crypto";
@@ -17446,6 +16839,613 @@ export class RepositoryEnvFileStore {
 }
 ````
 
+## File: apps/server/src/services/role-store.ts
+````typescript
+import { nanoid } from "nanoid";
+import type Redis from "ioredis";
+import type { Pool } from "pg";
+import {
+  ALL_PERMISSION_SCOPES,
+  type AgentProvider,
+  type CreateRoleInput,
+  type PermissionScope,
+  type ProviderProfile,
+  type Role,
+  type UpdateRoleInput
+} from "@agentswarm/shared-types";
+import { HttpError } from "../lib/http-error.js";
+import { parseJsonColumn, type PostgresQueryable } from "../lib/postgres.js";
+
+const ROLE_KEY_PREFIX = "agentswarm:role:";
+const ROLE_IDS_KEY = "agentswarm:role_ids";
+const ROLE_NAME_KEY_PREFIX = "agentswarm:role_name:";
+
+export const SYSTEM_ADMIN_ROLE_ID = "admin";
+const SYSTEM_ADMIN_ROLE_NAME = "Admin";
+const SYSTEM_ADMIN_ROLE_DESCRIPTION = "Built-in superuser role with every available permission.";
+const ROLE_SCOPE_VERSION = 5;
+
+const nowIso = (): string => new Date().toISOString();
+const scopeOrder = new Map(ALL_PERMISSION_SCOPES.map((scope, index) => [scope, index]));
+const deprecatedPermissionScopes = new Set(["sequence:list", "sequence:create", "sequence:read", "sequence:edit", "sequence:delete"]);
+
+const normalizeRoleName = (value: string | undefined): string => (value ?? "").trim().replace(/\s+/g, " ");
+const normalizeRoleNameKey = (value: string | undefined): string => normalizeRoleName(value).toLowerCase();
+
+const normalizeRoleDescription = (value: string | undefined): string => (value ?? "").trim();
+const providerOrder: AgentProvider[] = ["codex", "claude"];
+const effortOrder: ProviderProfile[] = ["low", "medium", "high", "max"];
+
+const normalizeAllowedProviders = (providers: AgentProvider[] | string[] | undefined): AgentProvider[] => {
+  const unique = Array.from(new Set((providers ?? []).map((provider) => String(provider).trim()).filter(Boolean)));
+  const invalid = unique.find((provider) => !providerOrder.includes(provider as AgentProvider));
+  if (invalid) {
+    throw new HttpError(400, `Unknown provider: ${invalid}`);
+  }
+  return unique
+    .map((provider) => provider as AgentProvider)
+    .sort((left, right) => providerOrder.indexOf(left) - providerOrder.indexOf(right));
+};
+
+const normalizeAllowedEfforts = (efforts: ProviderProfile[] | string[] | undefined): ProviderProfile[] => {
+  const unique = Array.from(new Set((efforts ?? []).map((effort) => String(effort).trim()).filter(Boolean)));
+  const invalid = unique.find((effort) => !effortOrder.includes(effort as ProviderProfile));
+  if (invalid) {
+    throw new HttpError(400, `Unknown effort: ${invalid}`);
+  }
+  return unique
+    .map((effort) => effort as ProviderProfile)
+    .sort((left, right) => effortOrder.indexOf(left) - effortOrder.indexOf(right));
+};
+
+const normalizeAllowedModels = (models: string[] | undefined): string[] =>
+  Array.from(new Set((models ?? []).map((model) => model.trim()).filter(Boolean))).sort((left, right) => left.localeCompare(right));
+
+const expandLegacyTaskModeScopes = (scopes: string[]): string[] => {
+  const expanded = new Set(scopes);
+  if (expanded.has("task:create") || expanded.has("task:edit")) {
+    expanded.add("task:build");
+    expanded.add("task:ask");
+    expanded.add("task:interactive");
+  }
+  return Array.from(expanded);
+};
+
+const normalizeScopes = (
+  scopes: PermissionScope[] | string[] | undefined,
+  options?: { legacyTaskModes?: boolean }
+): PermissionScope[] => {
+  const uniqueScopesRaw = Array.from(
+    new Set(
+      (scopes ?? [])
+        .map((scope) => String(scope).trim())
+        .filter(Boolean)
+    )
+  );
+  const expandedScopes = options?.legacyTaskModes ? expandLegacyTaskModeScopes(uniqueScopesRaw) : uniqueScopesRaw;
+  const uniqueScopes = options?.legacyTaskModes ? expandedScopes.filter((scope) => !deprecatedPermissionScopes.has(scope)) : expandedScopes;
+  if (uniqueScopes.length === 0) {
+    if (options?.legacyTaskModes && uniqueScopesRaw.some((scope) => deprecatedPermissionScopes.has(scope))) {
+      return [];
+    }
+    throw new HttpError(400, "At least one permission scope is required");
+  }
+
+  const invalidScope = uniqueScopes.find((scope) => !scopeOrder.has(scope as PermissionScope));
+  if (invalidScope) {
+    throw new HttpError(400, `Unknown permission scope: ${invalidScope}`);
+  }
+
+  return uniqueScopes
+    .map((scope) => scope as PermissionScope)
+    .sort((left, right) => (scopeOrder.get(left) ?? 0) - (scopeOrder.get(right) ?? 0));
+};
+
+export interface RoleStore {
+  ensureDefaultAdminRole(): Promise<Role>;
+  listRoles(): Promise<Role[]>;
+  getRole(roleId: string): Promise<Role | null>;
+  getRolesByIds(roleIds: string[]): Promise<Role[]>;
+  createRole(input: CreateRoleInput): Promise<Role>;
+  updateRole(roleId: string, input: UpdateRoleInput): Promise<Role | null>;
+  deleteRole(roleId: string): Promise<boolean>;
+}
+
+export class RedisRoleStore implements RoleStore {
+  constructor(private readonly redis: Redis) {}
+
+  private roleKey(roleId: string): string {
+    return `${ROLE_KEY_PREFIX}${roleId}`;
+  }
+
+  private roleNameKey(roleName: string): string {
+    return `${ROLE_NAME_KEY_PREFIX}${normalizeRoleNameKey(roleName)}`;
+  }
+
+  private normalizeRole(role: Role): Role {
+    const legacyRole = role as Role & {
+      allowedProviders?: AgentProvider[] | string[];
+      allowedModels?: string[];
+      allowedEfforts?: ProviderProfile[] | string[];
+    };
+    return {
+      ...role,
+      name: normalizeRoleName(role.name),
+      description: normalizeRoleDescription(role.description),
+      scopes: normalizeScopes(role.scopes, { legacyTaskModes: role.scopeVersion !== ROLE_SCOPE_VERSION }),
+      allowedProviders: normalizeAllowedProviders(legacyRole.allowedProviders),
+      allowedModels: normalizeAllowedModels(legacyRole.allowedModels),
+      allowedEfforts: normalizeAllowedEfforts(legacyRole.allowedEfforts),
+      scopeVersion: ROLE_SCOPE_VERSION
+    };
+  }
+
+  private async getStoredRole(roleId: string): Promise<Role | null> {
+    const raw = await this.redis.get(this.roleKey(roleId));
+    if (!raw) {
+      return null;
+    }
+
+    return this.normalizeRole(JSON.parse(raw) as Role);
+  }
+
+  private async assertUniqueRoleName(roleName: string, currentRoleId?: string): Promise<void> {
+    const existingRoleId = await this.redis.get(this.roleNameKey(roleName));
+    if (existingRoleId && existingRoleId !== currentRoleId) {
+      throw new HttpError(409, "A role with that name already exists");
+    }
+  }
+
+  async ensureDefaultAdminRole(): Promise<Role> {
+    const timestamp = nowIso();
+    const current = await this.getStoredRole(SYSTEM_ADMIN_ROLE_ID);
+    const adminRole: Role = {
+      id: SYSTEM_ADMIN_ROLE_ID,
+      name: SYSTEM_ADMIN_ROLE_NAME,
+      description: SYSTEM_ADMIN_ROLE_DESCRIPTION,
+      scopes: [...ALL_PERMISSION_SCOPES],
+      allowedProviders: [],
+      allowedModels: [],
+      allowedEfforts: [],
+      scopeVersion: ROLE_SCOPE_VERSION,
+      isSystem: true,
+      createdAt: current?.createdAt ?? timestamp,
+      updatedAt: current?.updatedAt ?? timestamp
+    };
+
+    if (
+      current &&
+      current.name === adminRole.name &&
+      current.description === adminRole.description &&
+      current.isSystem &&
+      JSON.stringify(current.scopes) === JSON.stringify(adminRole.scopes)
+    ) {
+      await this.redis.set(this.roleNameKey(adminRole.name), adminRole.id);
+      return current;
+    }
+
+    const nextRole: Role = {
+      ...adminRole,
+      updatedAt: timestamp
+    };
+
+    const previousName = current?.name;
+    const pipeline = this.redis
+      .multi()
+      .set(this.roleKey(nextRole.id), JSON.stringify(nextRole))
+      .sadd(ROLE_IDS_KEY, nextRole.id)
+      .set(this.roleNameKey(nextRole.name), nextRole.id);
+
+    if (previousName && normalizeRoleNameKey(previousName) !== normalizeRoleNameKey(nextRole.name)) {
+      pipeline.del(this.roleNameKey(previousName));
+    }
+
+    await pipeline.exec();
+    return nextRole;
+  }
+
+  async listRoles(): Promise<Role[]> {
+    const roleIds = await this.redis.smembers(ROLE_IDS_KEY);
+    if (roleIds.length === 0) {
+      return [];
+    }
+
+    const pipeline = this.redis.pipeline();
+    for (const roleId of roleIds) {
+      pipeline.get(this.roleKey(roleId));
+    }
+
+    const result = await pipeline.exec();
+    const roles: Role[] = [];
+    for (const row of result ?? []) {
+      const raw = row[1];
+      if (typeof raw === "string") {
+        roles.push(this.normalizeRole(JSON.parse(raw) as Role));
+      }
+    }
+
+    return roles.sort((left, right) => {
+      if (left.isSystem !== right.isSystem) {
+        return left.isSystem ? -1 : 1;
+      }
+
+      return left.name.localeCompare(right.name);
+    });
+  }
+
+  async getRole(roleId: string): Promise<Role | null> {
+    return this.getStoredRole(roleId);
+  }
+
+  async getRolesByIds(roleIds: string[]): Promise<Role[]> {
+    const uniqueRoleIds = Array.from(new Set(roleIds.map((roleId) => roleId.trim()).filter(Boolean)));
+    if (uniqueRoleIds.length === 0) {
+      return [];
+    }
+
+    const pipeline = this.redis.pipeline();
+    for (const roleId of uniqueRoleIds) {
+      pipeline.get(this.roleKey(roleId));
+    }
+
+    const result = await pipeline.exec();
+    const rolesById = new Map<string, Role>();
+    for (const row of result ?? []) {
+      const raw = row[1];
+      if (typeof raw === "string") {
+        const role = this.normalizeRole(JSON.parse(raw) as Role);
+        rolesById.set(role.id, role);
+      }
+    }
+
+    return uniqueRoleIds.flatMap((roleId) => {
+      const role = rolesById.get(roleId);
+      return role ? [role] : [];
+    });
+  }
+
+  async createRole(input: CreateRoleInput): Promise<Role> {
+    const name = normalizeRoleName(input.name);
+    if (!name) {
+      throw new HttpError(400, "Role name is required");
+    }
+
+    await this.assertUniqueRoleName(name);
+    const timestamp = nowIso();
+    const role: Role = {
+      id: nanoid(),
+      name,
+      description: normalizeRoleDescription(input.description),
+      scopes: normalizeScopes(input.scopes),
+      allowedProviders: normalizeAllowedProviders(input.allowedProviders),
+      allowedModels: normalizeAllowedModels(input.allowedModels),
+      allowedEfforts: normalizeAllowedEfforts(input.allowedEfforts),
+      scopeVersion: ROLE_SCOPE_VERSION,
+      isSystem: false,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+
+    await this.redis
+      .multi()
+      .set(this.roleKey(role.id), JSON.stringify(role))
+      .sadd(ROLE_IDS_KEY, role.id)
+      .set(this.roleNameKey(role.name), role.id)
+      .exec();
+
+    return role;
+  }
+
+  async updateRole(roleId: string, input: UpdateRoleInput): Promise<Role | null> {
+    const current = await this.getStoredRole(roleId);
+    if (!current) {
+      return null;
+    }
+
+    if (current.isSystem) {
+      throw new HttpError(403, "System roles are immutable");
+    }
+
+    const nextName = input.name === undefined ? current.name : normalizeRoleName(input.name);
+    if (!nextName) {
+      throw new HttpError(400, "Role name is required");
+    }
+
+    await this.assertUniqueRoleName(nextName, current.id);
+    const next: Role = {
+      ...current,
+      name: nextName,
+      description: input.description === undefined ? current.description : normalizeRoleDescription(input.description),
+      scopes: input.scopes === undefined ? current.scopes : normalizeScopes(input.scopes),
+      allowedProviders:
+        input.allowedProviders === undefined ? current.allowedProviders : normalizeAllowedProviders(input.allowedProviders),
+      allowedModels: input.allowedModels === undefined ? current.allowedModels : normalizeAllowedModels(input.allowedModels),
+      allowedEfforts: input.allowedEfforts === undefined ? current.allowedEfforts : normalizeAllowedEfforts(input.allowedEfforts),
+      scopeVersion: ROLE_SCOPE_VERSION,
+      updatedAt: nowIso()
+    };
+
+    const pipeline = this.redis
+      .multi()
+      .set(this.roleKey(roleId), JSON.stringify(next))
+      .set(this.roleNameKey(next.name), next.id);
+
+    if (normalizeRoleNameKey(current.name) !== normalizeRoleNameKey(next.name)) {
+      pipeline.del(this.roleNameKey(current.name));
+    }
+
+    await pipeline.exec();
+    return next;
+  }
+
+  async deleteRole(roleId: string): Promise<boolean> {
+    const current = await this.getStoredRole(roleId);
+    if (!current) {
+      return false;
+    }
+
+    if (current.isSystem) {
+      throw new HttpError(403, "System roles cannot be deleted");
+    }
+
+    await this.redis
+      .multi()
+      .del(this.roleKey(roleId))
+      .srem(ROLE_IDS_KEY, roleId)
+      .del(this.roleNameKey(current.name))
+      .exec();
+
+    return true;
+  }
+}
+
+export class PostgresRoleStore implements RoleStore {
+  constructor(private readonly pool: Pool) {}
+
+  private mapRoleRow(row: Record<string, unknown>): Role {
+    return this.normalizeRole({
+      id: String(row.id),
+      name: String(row.name),
+      description: String(row.description ?? ""),
+      scopes: parseJsonColumn<PermissionScope[]>(row.scopes),
+      allowedProviders: parseJsonColumn<AgentProvider[]>(row.allowed_providers),
+      allowedModels: parseJsonColumn<string[]>(row.allowed_models),
+      allowedEfforts: parseJsonColumn<ProviderProfile[]>(row.allowed_efforts),
+      scopeVersion: Number(row.scope_version),
+      isSystem: row.is_system === true,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    });
+  }
+
+  private normalizeRole(role: Role): Role {
+    const legacyRole = role as Role & {
+      allowedProviders?: AgentProvider[] | string[];
+      allowedModels?: string[];
+      allowedEfforts?: ProviderProfile[] | string[];
+    };
+    return {
+      ...role,
+      name: normalizeRoleName(role.name),
+      description: normalizeRoleDescription(role.description),
+      scopes: normalizeScopes(role.scopes, { legacyTaskModes: role.scopeVersion !== ROLE_SCOPE_VERSION }),
+      allowedProviders: normalizeAllowedProviders(legacyRole.allowedProviders),
+      allowedModels: normalizeAllowedModels(legacyRole.allowedModels),
+      allowedEfforts: normalizeAllowedEfforts(legacyRole.allowedEfforts),
+      scopeVersion: ROLE_SCOPE_VERSION
+    };
+  }
+
+  private async getStoredRole(roleId: string, db: PostgresQueryable = this.pool): Promise<Role | null> {
+    const result = await db.query("SELECT * FROM roles WHERE id = $1", [roleId]);
+    const row = result.rows[0];
+    return row ? this.mapRoleRow(row) : null;
+  }
+
+  private async assertUniqueRoleName(
+    roleName: string,
+    currentRoleId?: string,
+    db: PostgresQueryable = this.pool
+  ): Promise<void> {
+    const result = await db.query<{ id: string }>("SELECT id FROM roles WHERE name_key = $1", [normalizeRoleNameKey(roleName)]);
+    const existingRoleId = result.rows[0]?.id ?? null;
+    if (existingRoleId && existingRoleId !== currentRoleId) {
+      throw new HttpError(409, "A role with that name already exists");
+    }
+  }
+
+  private async upsertRole(role: Role, db: PostgresQueryable = this.pool): Promise<void> {
+    await db.query(
+      `
+        INSERT INTO roles (
+          id,
+          name,
+          name_key,
+          description,
+          scopes,
+          allowed_providers,
+          allowed_models,
+          allowed_efforts,
+          scope_version,
+          is_system,
+          created_at,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12)
+        ON CONFLICT (id) DO UPDATE
+        SET
+          name = EXCLUDED.name,
+          name_key = EXCLUDED.name_key,
+          description = EXCLUDED.description,
+          scopes = EXCLUDED.scopes,
+          allowed_providers = EXCLUDED.allowed_providers,
+          allowed_models = EXCLUDED.allowed_models,
+          allowed_efforts = EXCLUDED.allowed_efforts,
+          scope_version = EXCLUDED.scope_version,
+          is_system = EXCLUDED.is_system,
+          created_at = EXCLUDED.created_at,
+          updated_at = EXCLUDED.updated_at
+      `,
+      [
+        role.id,
+        role.name,
+        normalizeRoleNameKey(role.name),
+        role.description,
+        JSON.stringify(role.scopes),
+        JSON.stringify(role.allowedProviders),
+        JSON.stringify(role.allowedModels),
+        JSON.stringify(role.allowedEfforts),
+        role.scopeVersion ?? ROLE_SCOPE_VERSION,
+        role.isSystem,
+        role.createdAt,
+        role.updatedAt
+      ]
+    );
+  }
+
+  async ensureDefaultAdminRole(): Promise<Role> {
+    const timestamp = nowIso();
+    const current = await this.getStoredRole(SYSTEM_ADMIN_ROLE_ID);
+    const adminRole: Role = {
+      id: SYSTEM_ADMIN_ROLE_ID,
+      name: SYSTEM_ADMIN_ROLE_NAME,
+      description: SYSTEM_ADMIN_ROLE_DESCRIPTION,
+      scopes: [...ALL_PERMISSION_SCOPES],
+      allowedProviders: [],
+      allowedModels: [],
+      allowedEfforts: [],
+      scopeVersion: ROLE_SCOPE_VERSION,
+      isSystem: true,
+      createdAt: current?.createdAt ?? timestamp,
+      updatedAt: current?.updatedAt ?? timestamp
+    };
+
+    if (
+      current &&
+      current.name === adminRole.name &&
+      current.description === adminRole.description &&
+      current.isSystem &&
+      JSON.stringify(current.scopes) === JSON.stringify(adminRole.scopes) &&
+      JSON.stringify(current.allowedProviders) === JSON.stringify(adminRole.allowedProviders) &&
+      JSON.stringify(current.allowedModels) === JSON.stringify(adminRole.allowedModels) &&
+      JSON.stringify(current.allowedEfforts) === JSON.stringify(adminRole.allowedEfforts) &&
+      current.scopeVersion === adminRole.scopeVersion
+    ) {
+      return current;
+    }
+
+    const nextRole: Role = {
+      ...adminRole,
+      updatedAt: timestamp
+    };
+
+    await this.upsertRole(nextRole);
+    return nextRole;
+  }
+
+  async listRoles(): Promise<Role[]> {
+    const result = await this.pool.query("SELECT * FROM roles ORDER BY is_system DESC, name ASC");
+    return result.rows.map((row) => this.mapRoleRow(row));
+  }
+
+  async getRole(roleId: string): Promise<Role | null> {
+    return this.getStoredRole(roleId);
+  }
+
+  async getRolesByIds(roleIds: string[]): Promise<Role[]> {
+    const uniqueRoleIds = Array.from(new Set(roleIds.map((roleId) => roleId.trim()).filter(Boolean)));
+    if (uniqueRoleIds.length === 0) {
+      return [];
+    }
+
+    const result = await this.pool.query("SELECT * FROM roles WHERE id = ANY($1::text[])", [uniqueRoleIds]);
+    const rolesById = new Map<string, Role>();
+    for (const row of result.rows) {
+      const role = this.mapRoleRow(row);
+      rolesById.set(role.id, role);
+    }
+
+    return uniqueRoleIds.flatMap((roleId) => {
+      const role = rolesById.get(roleId);
+      return role ? [role] : [];
+    });
+  }
+
+  async createRole(input: CreateRoleInput): Promise<Role> {
+    const name = normalizeRoleName(input.name);
+    if (!name) {
+      throw new HttpError(400, "Role name is required");
+    }
+
+    await this.assertUniqueRoleName(name);
+    const timestamp = nowIso();
+    const role: Role = {
+      id: nanoid(),
+      name,
+      description: normalizeRoleDescription(input.description),
+      scopes: normalizeScopes(input.scopes),
+      allowedProviders: normalizeAllowedProviders(input.allowedProviders),
+      allowedModels: normalizeAllowedModels(input.allowedModels),
+      allowedEfforts: normalizeAllowedEfforts(input.allowedEfforts),
+      scopeVersion: ROLE_SCOPE_VERSION,
+      isSystem: false,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+
+    await this.upsertRole(role);
+    return role;
+  }
+
+  async updateRole(roleId: string, input: UpdateRoleInput): Promise<Role | null> {
+    const current = await this.getStoredRole(roleId);
+    if (!current) {
+      return null;
+    }
+
+    if (current.isSystem) {
+      throw new HttpError(403, "System roles are immutable");
+    }
+
+    const nextName = input.name === undefined ? current.name : normalizeRoleName(input.name);
+    if (!nextName) {
+      throw new HttpError(400, "Role name is required");
+    }
+
+    await this.assertUniqueRoleName(nextName, current.id);
+    const next: Role = {
+      ...current,
+      name: nextName,
+      description: input.description === undefined ? current.description : normalizeRoleDescription(input.description),
+      scopes: input.scopes === undefined ? current.scopes : normalizeScopes(input.scopes),
+      allowedProviders:
+        input.allowedProviders === undefined ? current.allowedProviders : normalizeAllowedProviders(input.allowedProviders),
+      allowedModels: input.allowedModels === undefined ? current.allowedModels : normalizeAllowedModels(input.allowedModels),
+      allowedEfforts: input.allowedEfforts === undefined ? current.allowedEfforts : normalizeAllowedEfforts(input.allowedEfforts),
+      scopeVersion: ROLE_SCOPE_VERSION,
+      updatedAt: nowIso()
+    };
+
+    await this.upsertRole(next);
+    return next;
+  }
+
+  async deleteRole(roleId: string): Promise<boolean> {
+    const current = await this.getStoredRole(roleId);
+    if (!current) {
+      return false;
+    }
+
+    if (current.isSystem) {
+      throw new HttpError(403, "System roles cannot be deleted");
+    }
+
+    await this.pool.query("DELETE FROM roles WHERE id = $1", [roleId]);
+    return true;
+  }
+}
+````
+
 ## File: apps/server/src/services/scheduler.test.ts
 ````typescript
 import assert from "node:assert/strict";
@@ -22219,376 +22219,6 @@ await writeFile(
 console.log("[runtime] completed");
 ````
 
-## File: apps/server/src/lib/auth.ts
-````typescript
-import type { IncomingHttpHeaders } from "node:http";
-import type { FastifyReply, FastifyRequest } from "fastify";
-import type { AuthSession, PermissionScope, RealtimeEvent } from "@agentswarm/shared-types";
-import type { Server as SocketIOServer, Socket } from "socket.io";
-import type { CredentialStore } from "../services/credential-store.js";
-import type { SessionStore } from "../services/session-store.js";
-import type { TaskStore } from "../services/task-store.js";
-import type { UserStore } from "../services/user-store.js";
-import { canUserAccessRepository, canUserAccessTask } from "./task-ownership.js";
-
-const realtimeScopesByEventType: Record<RealtimeEvent["type"], PermissionScope[]> = {
-  "task:created": ["task:list", "task:read"],
-  "task:updated": ["task:list", "task:read"],
-  "task:deleted": ["task:list", "task:read"],
-  "task:log": ["task:read"],
-  "task:message": ["task:read"],
-  "task:message_updated": ["task:read"],
-  "task:run_updated": ["task:read"],
-  "task:git_operation": ["task:read"],
-  "task:change_proposal": ["task:read"],
-  "task:pushed": [],
-  "task:merged": [],
-  "snippet:created": ["snippet:list"],
-  "snippet:updated": ["snippet:list"],
-  "snippet:deleted": ["snippet:list"],
-  "repository:created": ["repo:list"],
-  "repository:updated": ["repo:list"],
-  "repository:deleted": ["repo:list"],
-  "settings:updated": ["settings:read"]
-};
-
-const parseCookieHeader = (cookieHeader: string | undefined): Record<string, string> => {
-  if (!cookieHeader) {
-    return {};
-  }
-
-  return cookieHeader.split(";").reduce<Record<string, string>>((cookies, chunk) => {
-    const [namePart, ...valueParts] = chunk.split("=");
-    const name = namePart?.trim();
-    if (!name) {
-      return cookies;
-    }
-
-    cookies[name] = decodeURIComponent(valueParts.join("=").trim());
-    return cookies;
-  }, {});
-};
-
-const scopeRoom = (scope: PermissionScope): string => `scope:${scope}`;
-
-export interface RequestAuthContext {
-  user: AuthSession["user"];
-  scopes: Set<PermissionScope>;
-  sessionToken: string;
-  expiresAt: string;
-  session: AuthSession;
-}
-
-export interface AuthService {
-  requireAuth: () => AuthPreHandler;
-  requireAllScopes: (scopes: PermissionScope[]) => AuthPreHandler;
-  /** Cookie-based auth for raw Node HTTP upgrades (e.g. interactive terminal WebSocket). */
-  authenticateCookieHeader: (headers: IncomingHttpHeaders) => Promise<RequestAuthContext | null>;
-  setSessionCookie: (reply: FastifyReply, token: string, expiresAt: string) => void;
-  clearSessionCookie: (reply: FastifyReply) => void;
-  clearSessionFromRequest: (request: FastifyRequest) => Promise<void>;
-  buildSessionResponse: (userId: string, expiresAt: string) => Promise<AuthSession>;
-  authorizeSocket: () => (
-    socket: Socket,
-    next: (error?: Error) => void
-  ) => void | Promise<void>;
-  onSocketConnection: (socket: Socket) => void;
-  emitScopedRealtimeEvent: (io: SocketIOServer, event: RealtimeEvent) => Promise<void>;
-}
-
-type AuthPreHandler = (request: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
-
-export const createAuthService = ({
-  cookieName,
-  sessionStore,
-  userStore,
-  taskStore,
-  credentialStore
-}: {
-  cookieName: string;
-  sessionStore: SessionStore;
-  userStore: UserStore;
-  taskStore: TaskStore;
-  credentialStore: CredentialStore;
-}): AuthService => {
-  const getRequestToken = (request: FastifyRequest): string | null => {
-    const token = request.cookies?.[cookieName];
-    return token?.trim() ? token.trim() : null;
-  };
-
-  const buildAuthContext = async (token: string | null): Promise<RequestAuthContext | null> => {
-    if (!token) {
-      return null;
-    }
-
-    const session = await sessionStore.getSession(token);
-    if (!session) {
-      return null;
-    }
-
-    const user = await userStore.getAuthSessionUser(session.userId);
-    if (!user) {
-      await sessionStore.deleteSession(token);
-      return null;
-    }
-    const codexAuthJsonConfigured = await credentialStore.hasCodexAuthJsonForUser(user.id);
-    const sessionUser = {
-      ...user,
-      codexAuthJsonConfigured
-    };
-
-    return {
-      user: sessionUser,
-      scopes: new Set(sessionUser.scopes),
-      sessionToken: token,
-      expiresAt: session.expiresAt,
-      session: {
-        user: sessionUser,
-        expiresAt: session.expiresAt
-      }
-    };
-  };
-
-  const loadRequestAuth = async (
-    request: FastifyRequest,
-    reply: FastifyReply
-  ): Promise<RequestAuthContext | null> => {
-    const token = getRequestToken(request);
-    const auth = await buildAuthContext(token);
-    if (token && !auth) {
-      reply.clearCookie(cookieName, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/"
-      });
-    }
-
-    request.auth = auth;
-    return auth;
-  };
-
-  const requireAuth =
-    (): AuthPreHandler =>
-    async (request, reply) => {
-      const auth = await loadRequestAuth(request, reply);
-      if (!auth) {
-        return reply.status(401).send({ message: "Authentication required" });
-      }
-    };
-
-  const requireAllScopes =
-    (requiredScopes: PermissionScope[]): AuthPreHandler =>
-    async (request, reply) => {
-      const auth = await loadRequestAuth(request, reply);
-      if (!auth) {
-        return reply.status(401).send({ message: "Authentication required" });
-      }
-
-      const missingScopes = requiredScopes.filter((scope) => !auth.scopes.has(scope));
-      if (missingScopes.length > 0) {
-        return reply.status(403).send({ message: "Forbidden" });
-      }
-    };
-
-  const hasAllScopes = (grantedScopes: Set<PermissionScope>, requiredScopes: PermissionScope[]): boolean =>
-    requiredScopes.every((scope) => grantedScopes.has(scope));
-
-  const resolveTaskOwnerUserId = async (event: RealtimeEvent): Promise<string | null> => {
-    switch (event.type) {
-      case "task:created":
-      case "task:updated":
-        return event.payload.ownerUserId ?? null;
-      case "task:deleted":
-        return event.payload.ownerUserId ?? null;
-      case "task:log": {
-        const task = await taskStore.getTaskMetadata(event.payload.taskId);
-        return task?.ownerUserId ?? null;
-      }
-      case "task:message":
-      case "task:message_updated": {
-        const task = await taskStore.getTaskMetadata(event.payload.taskId);
-        return task?.ownerUserId ?? null;
-      }
-      case "task:run_updated": {
-        const task = await taskStore.getTaskMetadata(event.payload.taskId);
-        return task?.ownerUserId ?? null;
-      }
-      case "task:git_operation": {
-        const task = await taskStore.getTaskMetadata(event.payload.taskId);
-        return task?.ownerUserId ?? null;
-      }
-      case "task:change_proposal": {
-        const task = await taskStore.getTaskMetadata(event.payload.taskId);
-        return task?.ownerUserId ?? null;
-      }
-      default:
-        return null;
-    }
-  };
-
-  const resolveRepositoryId = (event: RealtimeEvent): string | null => {
-    switch (event.type) {
-      case "repository:created":
-      case "repository:updated":
-      case "repository:deleted":
-        return typeof event.payload.id === "string" ? event.payload.id : null;
-      default:
-        return null;
-    }
-  };
-
-  const getSocketSessionToken = (socket: Socket): string | null => {
-    if (typeof socket.data.sessionToken === "string" && socket.data.sessionToken.trim().length > 0) {
-      return socket.data.sessionToken.trim();
-    }
-
-    const auth = socket.data.auth as RequestAuthContext | undefined;
-    if (typeof auth?.sessionToken === "string" && auth.sessionToken.trim().length > 0) {
-      return auth.sessionToken.trim();
-    }
-
-    return null;
-  };
-
-  const revalidateSocketAuth = async (
-    socket: Socket,
-    authCache: Map<string, Promise<RequestAuthContext | null>>
-  ): Promise<RequestAuthContext | null> => {
-    const sessionToken = getSocketSessionToken(socket);
-    if (!sessionToken) {
-      socket.disconnect(true);
-      return null;
-    }
-
-    let authPromise = authCache.get(sessionToken);
-    if (!authPromise) {
-      authPromise = buildAuthContext(sessionToken);
-      authCache.set(sessionToken, authPromise);
-    }
-
-    const auth = await authPromise;
-    if (!auth) {
-      socket.disconnect(true);
-      return null;
-    }
-
-    socket.data.sessionToken = sessionToken;
-    socket.data.auth = auth;
-    return auth;
-  };
-
-  return {
-    requireAuth,
-    requireAllScopes,
-    async authenticateCookieHeader(headers) {
-      const raw = headers.cookie;
-      const cookieHeader = Array.isArray(raw) ? raw.join("; ") : raw;
-      const cookies = parseCookieHeader(cookieHeader);
-      const token = cookies[cookieName]?.trim() ? cookies[cookieName].trim() : null;
-      return buildAuthContext(token);
-    },
-    setSessionCookie(reply, token, expiresAt) {
-      reply.setCookie(cookieName, token, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/",
-        expires: new Date(expiresAt)
-      });
-    },
-    clearSessionCookie(reply) {
-      reply.clearCookie(cookieName, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/"
-      });
-    },
-    async clearSessionFromRequest(request) {
-      const token = request.auth?.sessionToken ?? getRequestToken(request);
-      if (!token) {
-        request.auth = null;
-        return;
-      }
-
-      await sessionStore.deleteSession(token);
-      request.auth = null;
-    },
-    async buildSessionResponse(userId, expiresAt) {
-      const user = await userStore.getAuthSessionUser(userId);
-      if (!user) {
-        throw new Error("Active session user not found");
-      }
-      const codexAuthJsonConfigured = await credentialStore.hasCodexAuthJsonForUser(user.id);
-
-      return {
-        user: {
-          ...user,
-          codexAuthJsonConfigured
-        },
-        expiresAt
-      };
-    },
-    authorizeSocket() {
-      return async (socket, next) => {
-        try {
-          const token = parseCookieHeader(socket.handshake.headers.cookie)[cookieName] ?? null;
-          const auth = await buildAuthContext(token);
-          if (!auth) {
-            return next(new Error("Unauthorized"));
-          }
-
-          socket.data.sessionToken = auth.sessionToken;
-          socket.data.auth = auth;
-          return next();
-        } catch (error) {
-          return next(error instanceof Error ? error : new Error("Unauthorized"));
-        }
-      };
-    },
-    onSocketConnection(socket) {
-      const auth = socket.data.auth as RequestAuthContext | undefined;
-      if (!auth) {
-        socket.disconnect(true);
-        return;
-      }
-
-      for (const scope of auth.scopes) {
-        socket.join(scopeRoom(scope));
-      }
-    },
-    async emitScopedRealtimeEvent(io, event) {
-      const requiredScopes = realtimeScopesByEventType[event.type] ?? [];
-      if (requiredScopes.length === 0) {
-        return;
-      }
-
-      const taskOwnerUserId = event.type.startsWith("task:") ? await resolveTaskOwnerUserId(event) : null;
-      const repositoryId = event.type.startsWith("repository:") ? resolveRepositoryId(event) : null;
-      if (event.type.startsWith("repository:") && !repositoryId) {
-        return;
-      }
-
-      const authCache = new Map<string, Promise<RequestAuthContext | null>>();
-      for (const socket of io.sockets.sockets.values()) {
-        const auth = await revalidateSocketAuth(socket, authCache);
-        if (!auth || !hasAllScopes(auth.scopes, requiredScopes)) {
-          continue;
-        }
-
-        if (event.type.startsWith("task:") && !canUserAccessTask(auth.user, { ownerUserId: taskOwnerUserId })) {
-          continue;
-        }
-
-        if (repositoryId && !canUserAccessRepository(auth.user, repositoryId)) {
-          continue;
-        }
-
-        socket.emit(event.type, event.payload);
-      }
-    }
-  };
-};
-````
-
 ## File: apps/server/src/lib/task-interactive-terminal-git-env.ts
 ````typescript
 import type { GitCommitIdentity } from "./task-git-identity.js";
@@ -23978,41 +23608,6 @@ export function SnippetEditorPage({ mode, snippetId }: SnippetEditorPageProps) {
 }
 ````
 
-## File: apps/web/e2e/auth.smoke.spec.ts
-````typescript
-import { expect, test } from "@playwright/test";
-
-const loginEmail = process.env.AGENTSWARM_E2E_EMAIL ?? "admin@agentswarm.local";
-const loginPassword = process.env.AGENTSWARM_E2E_PASSWORD ?? "admin123!";
-
-test("smoke: login route renders", async ({ page }) => {
-  await page.goto("/login");
-
-  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
-  await expect(page.getByLabel("Email")).toBeVisible();
-  await expect(page.getByLabel("Password")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
-});
-
-test("smoke: main route redirects to login when signed out", async ({ page }) => {
-  await page.goto("/");
-
-  await expect(page).toHaveURL(/\/login$/, { timeout: 20_000 });
-  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
-});
-
-test("happy path: seeded admin can sign in", async ({ page }) => {
-  await page.goto("/login");
-
-  await page.getByLabel("Email").fill(loginEmail);
-  await page.getByLabel("Password").fill(loginPassword);
-  await page.getByTestId("login-submit-button").click();
-
-  await expect(page).toHaveURL(/\/(tasks|snippets|repositories|settings|users)(\/.*)?$/, { timeout: 20_000 });
-  await expect(page.getByRole("button", { name: "Logout" })).toBeVisible();
-});
-````
-
 ## File: apps/web/src/hooks/useTasks.ts
 ````typescript
 "use client";
@@ -25274,6 +24869,376 @@ echo "[harness:test]"
 echo "[harness:test] all requested test phases passed"
 ````
 
+## File: apps/server/src/lib/auth.ts
+````typescript
+import type { IncomingHttpHeaders } from "node:http";
+import type { FastifyReply, FastifyRequest } from "fastify";
+import type { AuthSession, PermissionScope, RealtimeEvent } from "@agentswarm/shared-types";
+import type { Server as SocketIOServer, Socket } from "socket.io";
+import type { CredentialStore } from "../services/credential-store.js";
+import type { SessionStore } from "../services/session-store.js";
+import type { TaskStore } from "../services/task-store.js";
+import type { UserStore } from "../services/user-store.js";
+import { canUserAccessRepository, canUserAccessTask } from "./task-ownership.js";
+
+const realtimeScopesByEventType: Record<RealtimeEvent["type"], PermissionScope[]> = {
+  "task:created": ["task:list", "task:read"],
+  "task:updated": ["task:list", "task:read"],
+  "task:deleted": ["task:list", "task:read"],
+  "task:log": ["task:read"],
+  "task:message": ["task:read"],
+  "task:message_updated": ["task:read"],
+  "task:run_updated": ["task:read"],
+  "task:git_operation": ["task:read"],
+  "task:change_proposal": ["task:read"],
+  "task:pushed": [],
+  "task:merged": [],
+  "snippet:created": ["snippet:list"],
+  "snippet:updated": ["snippet:list"],
+  "snippet:deleted": ["snippet:list"],
+  "repository:created": ["repo:list"],
+  "repository:updated": ["repo:list"],
+  "repository:deleted": ["repo:list"],
+  "settings:updated": ["settings:read"]
+};
+
+const parseCookieHeader = (cookieHeader: string | undefined): Record<string, string> => {
+  if (!cookieHeader) {
+    return {};
+  }
+
+  return cookieHeader.split(";").reduce<Record<string, string>>((cookies, chunk) => {
+    const [namePart, ...valueParts] = chunk.split("=");
+    const name = namePart?.trim();
+    if (!name) {
+      return cookies;
+    }
+
+    cookies[name] = decodeURIComponent(valueParts.join("=").trim());
+    return cookies;
+  }, {});
+};
+
+const scopeRoom = (scope: PermissionScope): string => `scope:${scope}`;
+
+export interface RequestAuthContext {
+  user: AuthSession["user"];
+  scopes: Set<PermissionScope>;
+  sessionToken: string;
+  expiresAt: string;
+  session: AuthSession;
+}
+
+export interface AuthService {
+  requireAuth: () => AuthPreHandler;
+  requireAllScopes: (scopes: PermissionScope[]) => AuthPreHandler;
+  /** Cookie-based auth for raw Node HTTP upgrades (e.g. interactive terminal WebSocket). */
+  authenticateCookieHeader: (headers: IncomingHttpHeaders) => Promise<RequestAuthContext | null>;
+  setSessionCookie: (reply: FastifyReply, token: string, expiresAt: string) => void;
+  clearSessionCookie: (reply: FastifyReply) => void;
+  clearSessionFromRequest: (request: FastifyRequest) => Promise<void>;
+  buildSessionResponse: (userId: string, expiresAt: string) => Promise<AuthSession>;
+  authorizeSocket: () => (
+    socket: Socket,
+    next: (error?: Error) => void
+  ) => void | Promise<void>;
+  onSocketConnection: (socket: Socket) => void;
+  emitScopedRealtimeEvent: (io: SocketIOServer, event: RealtimeEvent) => Promise<void>;
+}
+
+type AuthPreHandler = (request: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
+
+export const createAuthService = ({
+  cookieName,
+  sessionStore,
+  userStore,
+  taskStore,
+  credentialStore
+}: {
+  cookieName: string;
+  sessionStore: SessionStore;
+  userStore: UserStore;
+  taskStore: TaskStore;
+  credentialStore: CredentialStore;
+}): AuthService => {
+  const getRequestToken = (request: FastifyRequest): string | null => {
+    const token = request.cookies?.[cookieName];
+    return token?.trim() ? token.trim() : null;
+  };
+
+  const buildAuthContext = async (token: string | null): Promise<RequestAuthContext | null> => {
+    if (!token) {
+      return null;
+    }
+
+    const session = await sessionStore.getSession(token);
+    if (!session) {
+      return null;
+    }
+
+    const user = await userStore.getAuthSessionUser(session.userId);
+    if (!user) {
+      await sessionStore.deleteSession(token);
+      return null;
+    }
+    const codexAuthJsonConfigured = await credentialStore.hasCodexAuthJsonForUser(user.id);
+    const sessionUser = {
+      ...user,
+      codexAuthJsonConfigured
+    };
+
+    return {
+      user: sessionUser,
+      scopes: new Set(sessionUser.scopes),
+      sessionToken: token,
+      expiresAt: session.expiresAt,
+      session: {
+        user: sessionUser,
+        expiresAt: session.expiresAt
+      }
+    };
+  };
+
+  const loadRequestAuth = async (
+    request: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<RequestAuthContext | null> => {
+    const token = getRequestToken(request);
+    const auth = await buildAuthContext(token);
+    if (token && !auth) {
+      reply.clearCookie(cookieName, {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/"
+      });
+    }
+
+    request.auth = auth;
+    return auth;
+  };
+
+  const requireAuth =
+    (): AuthPreHandler =>
+    async (request, reply) => {
+      const auth = await loadRequestAuth(request, reply);
+      if (!auth) {
+        return reply.status(401).send({ message: "Authentication required" });
+      }
+    };
+
+  const requireAllScopes =
+    (requiredScopes: PermissionScope[]): AuthPreHandler =>
+    async (request, reply) => {
+      const auth = await loadRequestAuth(request, reply);
+      if (!auth) {
+        return reply.status(401).send({ message: "Authentication required" });
+      }
+
+      const missingScopes = requiredScopes.filter((scope) => !auth.scopes.has(scope));
+      if (missingScopes.length > 0) {
+        return reply.status(403).send({ message: "Forbidden" });
+      }
+    };
+
+  const hasAllScopes = (grantedScopes: Set<PermissionScope>, requiredScopes: PermissionScope[]): boolean =>
+    requiredScopes.every((scope) => grantedScopes.has(scope));
+
+  const resolveTaskOwnerUserId = async (event: RealtimeEvent): Promise<string | null> => {
+    switch (event.type) {
+      case "task:created":
+      case "task:updated":
+        return event.payload.ownerUserId ?? null;
+      case "task:deleted":
+        return event.payload.ownerUserId ?? null;
+      case "task:log": {
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
+        return task?.ownerUserId ?? null;
+      }
+      case "task:message":
+      case "task:message_updated": {
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
+        return task?.ownerUserId ?? null;
+      }
+      case "task:run_updated": {
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
+        return task?.ownerUserId ?? null;
+      }
+      case "task:git_operation": {
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
+        return task?.ownerUserId ?? null;
+      }
+      case "task:change_proposal": {
+        const task = await taskStore.getTaskMetadata(event.payload.taskId);
+        return task?.ownerUserId ?? null;
+      }
+      default:
+        return null;
+    }
+  };
+
+  const resolveRepositoryId = (event: RealtimeEvent): string | null => {
+    switch (event.type) {
+      case "repository:created":
+      case "repository:updated":
+      case "repository:deleted":
+        return typeof event.payload.id === "string" ? event.payload.id : null;
+      default:
+        return null;
+    }
+  };
+
+  const getSocketSessionToken = (socket: Socket): string | null => {
+    if (typeof socket.data.sessionToken === "string" && socket.data.sessionToken.trim().length > 0) {
+      return socket.data.sessionToken.trim();
+    }
+
+    const auth = socket.data.auth as RequestAuthContext | undefined;
+    if (typeof auth?.sessionToken === "string" && auth.sessionToken.trim().length > 0) {
+      return auth.sessionToken.trim();
+    }
+
+    return null;
+  };
+
+  const revalidateSocketAuth = async (
+    socket: Socket,
+    authCache: Map<string, Promise<RequestAuthContext | null>>
+  ): Promise<RequestAuthContext | null> => {
+    const sessionToken = getSocketSessionToken(socket);
+    if (!sessionToken) {
+      socket.disconnect(true);
+      return null;
+    }
+
+    let authPromise = authCache.get(sessionToken);
+    if (!authPromise) {
+      authPromise = buildAuthContext(sessionToken);
+      authCache.set(sessionToken, authPromise);
+    }
+
+    const auth = await authPromise;
+    if (!auth) {
+      socket.disconnect(true);
+      return null;
+    }
+
+    socket.data.sessionToken = sessionToken;
+    socket.data.auth = auth;
+    return auth;
+  };
+
+  return {
+    requireAuth,
+    requireAllScopes,
+    async authenticateCookieHeader(headers) {
+      const raw = headers.cookie;
+      const cookieHeader = Array.isArray(raw) ? raw.join("; ") : raw;
+      const cookies = parseCookieHeader(cookieHeader);
+      const token = cookies[cookieName]?.trim() ? cookies[cookieName].trim() : null;
+      return buildAuthContext(token);
+    },
+    setSessionCookie(reply, token, expiresAt) {
+      reply.setCookie(cookieName, token, {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        expires: new Date(expiresAt)
+      });
+    },
+    clearSessionCookie(reply) {
+      reply.clearCookie(cookieName, {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/"
+      });
+    },
+    async clearSessionFromRequest(request) {
+      const token = request.auth?.sessionToken ?? getRequestToken(request);
+      if (!token) {
+        request.auth = null;
+        return;
+      }
+
+      await sessionStore.deleteSession(token);
+      request.auth = null;
+    },
+    async buildSessionResponse(userId, expiresAt) {
+      const user = await userStore.getAuthSessionUser(userId);
+      if (!user) {
+        throw new Error("Active session user not found");
+      }
+      const codexAuthJsonConfigured = await credentialStore.hasCodexAuthJsonForUser(user.id);
+
+      return {
+        user: {
+          ...user,
+          codexAuthJsonConfigured
+        },
+        expiresAt
+      };
+    },
+    authorizeSocket() {
+      return async (socket, next) => {
+        try {
+          const token = parseCookieHeader(socket.handshake.headers.cookie)[cookieName] ?? null;
+          const auth = await buildAuthContext(token);
+          if (!auth) {
+            return next(new Error("Unauthorized"));
+          }
+
+          socket.data.sessionToken = auth.sessionToken;
+          socket.data.auth = auth;
+          return next();
+        } catch (error) {
+          return next(error instanceof Error ? error : new Error("Unauthorized"));
+        }
+      };
+    },
+    onSocketConnection(socket) {
+      const auth = socket.data.auth as RequestAuthContext | undefined;
+      if (!auth) {
+        socket.disconnect(true);
+        return;
+      }
+
+      for (const scope of auth.scopes) {
+        socket.join(scopeRoom(scope));
+      }
+    },
+    async emitScopedRealtimeEvent(io, event) {
+      const requiredScopes = realtimeScopesByEventType[event.type] ?? [];
+      if (requiredScopes.length === 0) {
+        return;
+      }
+
+      const taskOwnerUserId = event.type.startsWith("task:") ? await resolveTaskOwnerUserId(event) : null;
+      const repositoryId = event.type.startsWith("repository:") ? resolveRepositoryId(event) : null;
+      if (event.type.startsWith("repository:") && !repositoryId) {
+        return;
+      }
+
+      const authCache = new Map<string, Promise<RequestAuthContext | null>>();
+      for (const socket of io.sockets.sockets.values()) {
+        const auth = await revalidateSocketAuth(socket, authCache);
+        if (!auth || !hasAllScopes(auth.scopes, requiredScopes)) {
+          continue;
+        }
+
+        if (event.type.startsWith("task:") && !canUserAccessTask(auth.user, { ownerUserId: taskOwnerUserId })) {
+          continue;
+        }
+
+        if (repositoryId && !canUserAccessRepository(auth.user, repositoryId)) {
+          continue;
+        }
+
+        socket.emit(event.type, event.payload);
+      }
+    }
+  };
+};
+````
+
 ## File: apps/server/src/lib/task-interactive-terminal.test.ts
 ````typescript
 import assert from "node:assert/strict";
@@ -25660,50 +25625,39 @@ export const registerSettingsRoutes = (
 };
 ````
 
-## File: apps/web/package.json
-````json
-{
-  "name": "@agentswarm/web",
-  "version": "0.1.0",
-  "private": true,
-  "scripts": {
-    "dev": "next dev -H 0.0.0.0 -p 3217",
-    "build": "next build",
-    "start": "next start -H 0.0.0.0 -p 3217",
-    "lint": "tsc --noEmit",
-    "test": "node --import tsx --test src/utils/task-history.test.ts src/utils/snippets.test.ts src/utils/diff.test.ts src/utils/workspace-file-links.test.ts src/utils/task-lifecycle-view-model.test.ts"
-  },
-  "dependencies": {
-    "@agentswarm/shared-types": "*",
-    "@ant-design/icons": "^6.0.0",
-    "@ant-design/nextjs-registry": "^1.0.2",
-    "@dnd-kit/core": "^6.3.1",
-    "@dnd-kit/sortable": "^10.0.0",
-    "@dnd-kit/utilities": "^3.2.2",
-    "@mdxeditor/editor": "^3.55.0",
-    "@monaco-editor/react": "^4.7.0",
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/xterm": "^6.0.0",
-    "antd": "^5.24.3",
-    "dayjs": "^1.11.13",
-    "mermaid": "^11.12.0",
-    "monaco-editor": "^0.55.1",
-    "next": "^14.2.25",
-    "prism-react-renderer": "^2.4.1",
-    "react": "^18.3.1",
-    "react-diff-view": "^3.3.2",
-    "react-dom": "^18.3.1",
-    "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1",
-    "socket.io-client": "^4.8.1"
-  },
-  "devDependencies": {
-    "@types/node": "^22.8.6",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
-    "typescript": "^5.6.3"
-  }
-}
+## File: apps/web/e2e/auth.smoke.spec.ts
+````typescript
+import { expect, test } from "@playwright/test";
+
+const loginEmail = process.env.AGENTSWARM_E2E_EMAIL ?? "admin@agentswarm.local";
+const loginPassword = process.env.AGENTSWARM_E2E_PASSWORD ?? "admin123!";
+
+test("smoke: login route renders", async ({ page }) => {
+  await page.goto("/login");
+
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  await expect(page.getByLabel("Email")).toBeVisible();
+  await expect(page.getByLabel("Password")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
+});
+
+test("smoke: main route redirects to login when signed out", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page).toHaveURL(/\/login$/, { timeout: 20_000 });
+  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+});
+
+test("happy path: seeded admin can sign in", async ({ page }) => {
+  await page.goto("/login");
+
+  await page.getByLabel("Email").fill(loginEmail);
+  await page.getByLabel("Password").fill(loginPassword);
+  await page.getByTestId("login-submit-button").click();
+
+  await expect(page).toHaveURL(/\/(tasks|snippets|repositories|settings|users)(\/.*)?$/, { timeout: 20_000 });
+  await expect(page.getByRole("button", { name: "Logout" })).toBeVisible();
+});
 ````
 
 ## File: docs/product/terminology.md
@@ -28303,87 +28257,6 @@ export const registerGitHubWebhookRoutes = (
 
     return reply.status(202).send({ accepted: true, matched: 0, created: 0 });
   });
-};
-````
-
-## File: apps/server/src/services/app-stores.ts
-````typescript
-import type { CredentialStore } from "./credential-store.js";
-import type { RepositoryStore } from "./repository-store.js";
-import type { RoleStore } from "./role-store.js";
-import type { SessionStore } from "./session-store.js";
-import type { SettingsStore } from "./settings-store.js";
-import type { SnippetStore } from "./snippet-store.js";
-import type { TaskQueueStore } from "./task-queue-store.js";
-import type { TaskStore } from "./task-store.js";
-import type { UserStore } from "./user-store.js";
-import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
-import type { GitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
-
-export interface AppStores {
-  taskStore: TaskStore;
-  taskQueueStore: TaskQueueStore;
-  githubOutboundQueueStore: GitHubOutboundQueueStore;
-  webhookDeliveryStore: WebhookDeliveryStore;
-  snippetStore: SnippetStore;
-  repositoryStore: RepositoryStore;
-  credentialStore: CredentialStore;
-  roleStore: RoleStore;
-  userStore: UserStore;
-  sessionStore: SessionStore;
-  settingsStore: SettingsStore;
-}
-````
-
-## File: apps/server/src/services/create-postgres-stores.ts
-````typescript
-import type { Pool } from "pg";
-import type { EventBus } from "../lib/events.js";
-import type { RedisClients } from "../lib/redis.js";
-import type { AppStores } from "./app-stores.js";
-import { PostgresCredentialStore } from "./credential-store.js";
-import { PostgresRepositoryStore } from "./repository-store.js";
-import { PostgresRoleStore } from "./role-store.js";
-import { RedisSessionStore } from "./session-store.js";
-import { PostgresSettingsStore } from "./settings-store.js";
-import { PostgresSnippetStore } from "./snippet-store.js";
-import { RedisTaskQueueStore } from "./task-queue-store.js";
-import { PostgresTaskStore } from "./task-store.js";
-import { PostgresUserStore } from "./user-store.js";
-import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
-import { RedisGitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
-
-export const createPostgresStores = (
-  pool: Pool,
-  redisClients: RedisClients,
-  eventBus: EventBus,
-  sessionTtlDays: number
-): AppStores => {
-  const taskStore = new PostgresTaskStore(pool, eventBus);
-  const taskQueueStore = new RedisTaskQueueStore(redisClients.command);
-  const githubOutboundQueueStore = new RedisGitHubOutboundQueueStore(redisClients.command);
-  const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
-  const snippetStore = new PostgresSnippetStore(pool, eventBus);
-  const repositoryStore = new PostgresRepositoryStore(pool, eventBus);
-  const credentialStore = new PostgresCredentialStore(pool);
-  const roleStore = new PostgresRoleStore(pool);
-  const userStore = new PostgresUserStore(pool, roleStore, repositoryStore);
-  const sessionStore = new RedisSessionStore(redisClients.command, sessionTtlDays);
-  const settingsStore = new PostgresSettingsStore(pool, eventBus, credentialStore);
-
-  return {
-    taskStore,
-    taskQueueStore,
-    githubOutboundQueueStore,
-    webhookDeliveryStore,
-    snippetStore,
-    repositoryStore,
-    credentialStore,
-    roleStore,
-    userStore,
-    sessionStore,
-    settingsStore
-  };
 };
 ````
 
@@ -31505,361 +31378,49 @@ export function TaskCreatePage() {
 }
 ````
 
-## File: apps/web/src/utils/task-history.ts
-````typescript
-import {
-  getTaskTerminalSessionEndMessage,
-  getTaskTerminalSessionReviewMessage,
-  getTaskTerminalSessionStartMessage,
-  type TaskAction,
-  type TaskChangeProposal,
-  type TaskMessage,
-  type TaskRun
-} from "@agentswarm/shared-types";
-
-type RawMessageHistoryEntry = {
-  key: string;
-  kind: "message";
-  timestamp: string;
-  message: TaskMessage;
-};
-
-type RawRunHistoryEntry = {
-  key: string;
-  kind: "run";
-  timestamp: string;
-  run: TaskRun;
-};
-
-type RawProposalHistoryEntry = {
-  key: string;
-  kind: "proposal";
-  timestamp: string;
-  proposal: TaskChangeProposal;
-};
-
-export type GroupedAutoRunHistoryEntry = {
-  key: string;
-  kind: "grouped_auto_run";
-  timestamp: string;
-  run: TaskRun;
-  promptText: string;
-  promptMessage: TaskMessage | null;
-  summaryMessage: TaskMessage | null;
-  proposal: TaskChangeProposal | null;
-};
-
-export type GroupedTerminalHistoryEntry = {
-  key: string;
-  kind: "grouped_terminal_session";
-  timestamp: string;
-  sessionId: string | null;
-  startMessage: TaskMessage;
-  endMessage: TaskMessage | null;
-  proposal: TaskChangeProposal | null;
-  active: boolean;
-};
-
-export type TaskHistoryEntry =
-  | RawMessageHistoryEntry
-  | RawRunHistoryEntry
-  | RawProposalHistoryEntry
-  | GroupedAutoRunHistoryEntry
-  | GroupedTerminalHistoryEntry;
-
-export const INTERACTIVE_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("interactive");
-export const INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("interactive");
-export const INTERACTIVE_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("interactive").replace(/\.$/, "");
-export const GIT_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("git");
-export const LEGACY_GIT_TERMINAL_START_MESSAGE = "Git terminal session started.";
-export const GIT_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("git");
-export const GIT_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("git").replace(/\.$/, "");
-
-type AutoRunAction = Extract<TaskAction, "ask" | "build">;
-
-function compareIso(leftTimestamp: string, rightTimestamp: string, leftKey: string, rightKey: string): number {
-  if (leftTimestamp === rightTimestamp) {
-    return leftKey.localeCompare(rightKey);
+## File: apps/web/package.json
+````json
+{
+  "name": "@agentswarm/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -H 0.0.0.0 -p 3217",
+    "build": "next build",
+    "start": "next start -H 0.0.0.0 -p 3217",
+    "lint": "tsc --noEmit",
+    "test": "node --import tsx --test src/utils/task-history.test.ts src/utils/snippets.test.ts src/utils/diff.test.ts src/utils/workspace-file-links.test.ts src/utils/task-lifecycle-view-model.test.ts"
+  },
+  "dependencies": {
+    "@agentswarm/shared-types": "*",
+    "@ant-design/icons": "^6.0.0",
+    "@ant-design/nextjs-registry": "^1.0.2",
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@mdxeditor/editor": "^3.55.0",
+    "@monaco-editor/react": "^4.7.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "antd": "^5.24.3",
+    "dayjs": "^1.11.13",
+    "mermaid": "^11.12.0",
+    "monaco-editor": "^0.55.1",
+    "next": "^14.2.25",
+    "prism-react-renderer": "^2.4.1",
+    "react": "^18.3.1",
+    "react-diff-view": "^3.3.2",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "socket.io-client": "^4.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.8.6",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "typescript": "^5.6.3"
   }
-
-  return leftTimestamp.localeCompare(rightTimestamp);
-}
-
-function isAutoRunAction(action: TaskRun["action"]): action is AutoRunAction {
-  return action === "ask" || action === "build";
-}
-
-function isAutoPromptMessage(message: TaskMessage): message is TaskMessage & { role: "user"; action: AutoRunAction } {
-  return message.role === "user" && (message.action === "ask" || message.action === "build");
-}
-
-function isAssistantSummaryMessage(message: TaskMessage): message is TaskMessage & { role: "assistant"; action: AutoRunAction } {
-  return message.role === "assistant" && (message.action === "ask" || message.action === "build");
-}
-
-function isInteractiveTerminalStartMessage(message: TaskMessage): boolean {
-  return (
-    message.role === "system" &&
-    (
-      message.content === INTERACTIVE_TERMINAL_START_MESSAGE ||
-      message.content === GIT_TERMINAL_START_MESSAGE ||
-      message.content === LEGACY_GIT_TERMINAL_START_MESSAGE
-    )
-  );
-}
-
-function isInteractiveTerminalEndMessage(message: TaskMessage): boolean {
-  return (
-    message.role === "system" &&
-    (message.content.startsWith(INTERACTIVE_TERMINAL_END_PREFIX) || message.content.startsWith(GIT_TERMINAL_END_PREFIX))
-  );
-}
-
-export function buildTaskHistoryEntries(input: {
-  messages: TaskMessage[];
-  runs: TaskRun[];
-  proposals: TaskChangeProposal[];
-  interactiveTerminalRunning?: boolean;
-}): TaskHistoryEntry[] {
-  const sortedMessages = [...input.messages].sort((left, right) =>
-    compareIso(left.createdAt, right.createdAt, left.id, right.id)
-  );
-  const sortedRuns = [...input.runs].sort((left, right) => compareIso(left.startedAt, right.startedAt, left.id, right.id));
-  const sortedProposals = [...input.proposals].sort((left, right) =>
-    compareIso(left.createdAt, right.createdAt, left.id, right.id)
-  );
-
-  const consumedMessageIds = new Set<string>();
-  const consumedRunIds = new Set<string>();
-  const consumedProposalIds = new Set<string>();
-  const groupedAutoEntries: GroupedAutoRunHistoryEntry[] = [];
-  const groupedTerminalEntries: GroupedTerminalHistoryEntry[] = [];
-
-  const autoPromptCandidates = sortedMessages.filter(isAutoPromptMessage);
-  const autoAssistantCandidates = sortedMessages.filter(isAssistantSummaryMessage);
-  const promptQueues: Record<AutoRunAction, TaskMessage[]> = { ask: [], build: [] };
-  let promptCursor = 0;
-
-  const buildProposalByRunId = new Map<string, TaskChangeProposal>();
-  for (const proposal of sortedProposals) {
-    if (proposal.sourceType !== "build_run") {
-      continue;
-    }
-    if (!buildProposalByRunId.has(proposal.sourceId)) {
-      buildProposalByRunId.set(proposal.sourceId, proposal);
-    }
-  }
-  for (const run of sortedRuns) {
-    if (!isAutoRunAction(run.action)) {
-      continue;
-    }
-
-    while (promptCursor < autoPromptCandidates.length && autoPromptCandidates[promptCursor]!.createdAt <= run.startedAt) {
-      const candidate = autoPromptCandidates[promptCursor]!;
-      if (!consumedMessageIds.has(candidate.id)) {
-        promptQueues[candidate.action].push(candidate);
-      }
-      promptCursor += 1;
-    }
-
-    const promptMessage = promptQueues[run.action].shift() ?? null;
-    if (promptMessage) {
-      consumedMessageIds.add(promptMessage.id);
-    }
-    const promptText = promptMessage?.content ?? "No matched user prompt was found for this run.";
-
-    let summaryMessage: TaskMessage | null = null;
-    const normalizedRunSummary = run.summary?.trim() ?? "";
-    if (normalizedRunSummary) {
-      const summaryThreshold = run.finishedAt ?? run.startedAt;
-      summaryMessage =
-        autoAssistantCandidates.find(
-          (message) =>
-            !consumedMessageIds.has(message.id) &&
-            message.action === run.action &&
-            message.createdAt >= summaryThreshold &&
-            message.content.trim() === normalizedRunSummary
-        ) ?? null;
-
-      if (summaryMessage) {
-        consumedMessageIds.add(summaryMessage.id);
-      }
-    }
-
-    const proposal = buildProposalByRunId.get(run.id) ?? null;
-    if (proposal) {
-      consumedProposalIds.add(proposal.id);
-    }
-
-    consumedRunIds.add(run.id);
-    groupedAutoEntries.push({
-      key: `grouped-auto-${run.id}`,
-      kind: "grouped_auto_run",
-      timestamp: run.startedAt,
-      run,
-      promptText,
-      promptMessage,
-      summaryMessage,
-      proposal
-    });
-  }
-
-  const terminalStartMessages = sortedMessages.filter(isInteractiveTerminalStartMessage);
-  const terminalEndMessages = sortedMessages.filter(isInteractiveTerminalEndMessage);
-  const interactiveProposals = sortedProposals.filter((proposal) => proposal.sourceType === "interactive_session");
-  const lastTerminalStartMessageId = terminalStartMessages.at(-1)?.id ?? null;
-  const interactiveProposalsBySessionId = new Map<string, TaskChangeProposal>();
-  for (const proposal of interactiveProposals) {
-    if (!interactiveProposalsBySessionId.has(proposal.sourceId)) {
-      interactiveProposalsBySessionId.set(proposal.sourceId, proposal);
-    }
-  }
-  let terminalEndCursor = 0;
-  let interactiveProposalCursor = 0;
-
-  for (const startMessage of terminalStartMessages) {
-    if (consumedMessageIds.has(startMessage.id)) {
-      continue;
-    }
-
-    while (
-      terminalEndCursor < terminalEndMessages.length &&
-      (consumedMessageIds.has(terminalEndMessages[terminalEndCursor]!.id) ||
-        terminalEndMessages[terminalEndCursor]!.createdAt < startMessage.createdAt)
-    ) {
-      terminalEndCursor += 1;
-    }
-
-    const startSessionId = typeof startMessage.sessionId === "string" && startMessage.sessionId.trim().length > 0 ? startMessage.sessionId : null;
-    let endMessage: TaskMessage | null = null;
-
-    if (startSessionId) {
-      endMessage =
-        terminalEndMessages.find(
-          (message) =>
-            !consumedMessageIds.has(message.id) &&
-            message.createdAt >= startMessage.createdAt &&
-            message.sessionId === startSessionId
-        ) ?? null;
-    } else {
-      endMessage = terminalEndCursor < terminalEndMessages.length ? terminalEndMessages[terminalEndCursor]! : null;
-    }
-
-    if (!endMessage) {
-      if (input.interactiveTerminalRunning && startMessage.id === lastTerminalStartMessageId) {
-        consumedMessageIds.add(startMessage.id);
-        groupedTerminalEntries.push({
-          key: `grouped-terminal-${startMessage.id}`,
-          kind: "grouped_terminal_session",
-          timestamp: startMessage.createdAt,
-          sessionId: startSessionId,
-          startMessage,
-          endMessage: null,
-          proposal: null,
-          active: true
-        });
-      }
-      continue;
-    }
-
-    terminalEndCursor += 1;
-    consumedMessageIds.add(startMessage.id);
-    consumedMessageIds.add(endMessage.id);
-
-    const endSessionId = typeof endMessage.sessionId === "string" && endMessage.sessionId.trim().length > 0 ? endMessage.sessionId : null;
-    let sessionId = startSessionId ?? endSessionId;
-    let proposal: TaskChangeProposal | null = null;
-    if (endMessage.content === INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE || endMessage.content === GIT_TERMINAL_END_REVIEW_MESSAGE) {
-      if (sessionId) {
-        const matchedProposal = interactiveProposalsBySessionId.get(sessionId) ?? null;
-        if (matchedProposal && !consumedProposalIds.has(matchedProposal.id)) {
-          proposal = matchedProposal;
-          consumedProposalIds.add(matchedProposal.id);
-        }
-      }
-
-      if (!proposal) {
-        while (
-          interactiveProposalCursor < interactiveProposals.length &&
-          (consumedProposalIds.has(interactiveProposals[interactiveProposalCursor]!.id) ||
-            interactiveProposals[interactiveProposalCursor]!.createdAt < endMessage.createdAt)
-        ) {
-          interactiveProposalCursor += 1;
-        }
-
-        proposal = interactiveProposalCursor < interactiveProposals.length ? interactiveProposals[interactiveProposalCursor]! : null;
-        if (proposal) {
-          consumedProposalIds.add(proposal.id);
-          interactiveProposalCursor += 1;
-        }
-      }
-    }
-
-    sessionId = sessionId ?? proposal?.sourceId ?? null;
-
-    groupedTerminalEntries.push({
-      key: `grouped-terminal-${startMessage.id}`,
-      kind: "grouped_terminal_session",
-      timestamp: startMessage.createdAt,
-      sessionId,
-      startMessage,
-      endMessage,
-      proposal,
-      active: false
-    });
-  }
-
-  const rawRuns = sortedRuns.filter((run) => !consumedRunIds.has(run.id));
-  const rawRunSummaryKeys = new Set(
-    rawRuns.filter((run) => run.summary?.trim()).map((run) => `${run.action}:${run.summary?.trim()}`)
-  );
-
-  const rawMessages = sortedMessages.filter((message) => {
-    if (consumedMessageIds.has(message.id)) {
-      return false;
-    }
-
-    if (message.role === "assistant" && message.action) {
-      const trimmedContent = message.content.trim();
-      if (trimmedContent && rawRunSummaryKeys.has(`${message.action}:${trimmedContent}`)) {
-        return false;
-      }
-    }
-
-    return true;
-  });
-  const rawProposals = sortedProposals.filter((proposal) => !consumedProposalIds.has(proposal.id));
-
-  const entries = [
-    ...groupedAutoEntries,
-    ...groupedTerminalEntries,
-    ...rawMessages.map(
-      (message): RawMessageHistoryEntry => ({
-        key: `message-${message.id}`,
-        kind: "message",
-        timestamp: message.createdAt,
-        message
-      })
-    ),
-    ...rawRuns.map(
-      (run): RawRunHistoryEntry => ({
-        key: `run-${run.id}`,
-        kind: "run",
-        timestamp: run.startedAt,
-        run
-      })
-    ),
-    ...rawProposals.map(
-      (proposal): RawProposalHistoryEntry => ({
-        key: `proposal-${proposal.id}`,
-        kind: "proposal",
-        timestamp: proposal.createdAt,
-        proposal
-      })
-    )
-  ];
-
-  return entries.sort((left, right) => compareIso(left.timestamp, right.timestamp, left.key, right.key));
 }
 ````
 
@@ -32366,6 +31927,87 @@ await writeFile(
 );
 
 console.log("[runtime] completed");
+````
+
+## File: apps/server/src/services/app-stores.ts
+````typescript
+import type { CredentialStore } from "./credential-store.js";
+import type { RepositoryStore } from "./repository-store.js";
+import type { RoleStore } from "./role-store.js";
+import type { SessionStore } from "./session-store.js";
+import type { SettingsStore } from "./settings-store.js";
+import type { SnippetStore } from "./snippet-store.js";
+import type { TaskQueueStore } from "./task-queue-store.js";
+import type { TaskStore } from "./task-store.js";
+import type { UserStore } from "./user-store.js";
+import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
+import type { GitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
+
+export interface AppStores {
+  taskStore: TaskStore;
+  taskQueueStore: TaskQueueStore;
+  githubOutboundQueueStore: GitHubOutboundQueueStore;
+  webhookDeliveryStore: WebhookDeliveryStore;
+  snippetStore: SnippetStore;
+  repositoryStore: RepositoryStore;
+  credentialStore: CredentialStore;
+  roleStore: RoleStore;
+  userStore: UserStore;
+  sessionStore: SessionStore;
+  settingsStore: SettingsStore;
+}
+````
+
+## File: apps/server/src/services/create-postgres-stores.ts
+````typescript
+import type { Pool } from "pg";
+import type { EventBus } from "../lib/events.js";
+import type { RedisClients } from "../lib/redis.js";
+import type { AppStores } from "./app-stores.js";
+import { PostgresCredentialStore } from "./credential-store.js";
+import { PostgresRepositoryStore } from "./repository-store.js";
+import { PostgresRoleStore } from "./role-store.js";
+import { RedisSessionStore } from "./session-store.js";
+import { PostgresSettingsStore } from "./settings-store.js";
+import { PostgresSnippetStore } from "./snippet-store.js";
+import { RedisTaskQueueStore } from "./task-queue-store.js";
+import { PostgresTaskStore } from "./task-store.js";
+import { PostgresUserStore } from "./user-store.js";
+import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
+import { RedisGitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
+
+export const createPostgresStores = (
+  pool: Pool,
+  redisClients: RedisClients,
+  eventBus: EventBus,
+  sessionTtlDays: number
+): AppStores => {
+  const taskStore = new PostgresTaskStore(pool, eventBus);
+  const taskQueueStore = new RedisTaskQueueStore(redisClients.command);
+  const githubOutboundQueueStore = new RedisGitHubOutboundQueueStore(redisClients.command);
+  const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
+  const snippetStore = new PostgresSnippetStore(pool, eventBus);
+  const repositoryStore = new PostgresRepositoryStore(pool, eventBus);
+  const credentialStore = new PostgresCredentialStore(pool);
+  const roleStore = new PostgresRoleStore(pool);
+  const userStore = new PostgresUserStore(pool, roleStore, repositoryStore);
+  const sessionStore = new RedisSessionStore(redisClients.command, sessionTtlDays);
+  const settingsStore = new PostgresSettingsStore(pool, eventBus, credentialStore);
+
+  return {
+    taskStore,
+    taskQueueStore,
+    githubOutboundQueueStore,
+    webhookDeliveryStore,
+    snippetStore,
+    repositoryStore,
+    credentialStore,
+    roleStore,
+    userStore,
+    sessionStore,
+    settingsStore
+  };
+};
 ````
 
 ## File: apps/server/src/services/github-status-sync-service.test.ts
@@ -33966,367 +33608,362 @@ export function TasksPage() {
 }
 ````
 
-## File: apps/web/src/utils/task-history.test.ts
+## File: apps/web/src/utils/task-history.ts
 ````typescript
-import assert from "node:assert/strict";
-import test from "node:test";
-import type { TaskChangeProposal, TaskMessage, TaskRun } from "@agentswarm/shared-types";
 import {
-  buildTaskHistoryEntries,
-  GIT_TERMINAL_END_REVIEW_MESSAGE,
-  GIT_TERMINAL_START_MESSAGE,
-  INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE,
-  INTERACTIVE_TERMINAL_START_MESSAGE
-} from "./task-history";
+  getTaskTerminalSessionEndMessage,
+  getTaskTerminalSessionReviewMessage,
+  getTaskTerminalSessionStartMessage,
+  type TaskAction,
+  type TaskChangeProposal,
+  type TaskMessage,
+  type TaskRun
+} from "@agentswarm/shared-types";
 
-function createMessage(input: Partial<TaskMessage> & Pick<TaskMessage, "id" | "createdAt" | "role" | "content">): TaskMessage {
-  return {
-    taskId: "task-1",
-    action: null,
-    ...input
-  };
-}
+type RawMessageHistoryEntry = {
+  key: string;
+  kind: "message";
+  timestamp: string;
+  message: TaskMessage;
+};
 
-function createRun(input: Partial<TaskRun> & Pick<TaskRun, "id" | "action" | "startedAt" | "status">): TaskRun {
-  return {
-    taskId: "task-1",
-    provider: "codex",
-    providerProfile: "high",
-    modelOverride: null,
-    branchName: "feature/test",
-    finishedAt: null,
-    summary: null,
-    errorMessage: null,
-    logs: [],
-    ...input
-  };
-}
+type RawRunHistoryEntry = {
+  key: string;
+  kind: "run";
+  timestamp: string;
+  run: TaskRun;
+};
 
-function createProposal(
-  input: Partial<TaskChangeProposal> &
-    Pick<TaskChangeProposal, "id" | "sourceType" | "sourceId" | "status" | "createdAt" | "diff">
-): TaskChangeProposal {
-  return {
-    taskId: "task-1",
-    fromRef: "abc123",
-    toRef: "def456",
-    diffStat: "1 file changed",
-    changedFiles: ["src/example.ts"],
-    diffTruncated: false,
-    untrackedPathsAtCheckpoint: [],
-    resolvedAt: null,
-    revertedAt: null,
-    ...input
-  };
-}
+type RawProposalHistoryEntry = {
+  key: string;
+  kind: "proposal";
+  timestamp: string;
+  proposal: TaskChangeProposal;
+};
 
-test("groups a build run with its prompt, summary message, and proposal", () => {
-  const prompt = createMessage({
-    id: "m1",
-    createdAt: "2026-03-24T10:00:00.000Z",
-    role: "user",
-    action: "build",
-    content: "Implement grouped history cards."
-  });
-  const summary = createMessage({
-    id: "m2",
-    createdAt: "2026-03-24T10:03:00.000Z",
-    role: "assistant",
-    action: "build",
-    content: "Implemented grouped history cards."
-  });
-  const run = createRun({
-    id: "r1",
-    action: "build",
-    startedAt: "2026-03-24T10:01:00.000Z",
-    finishedAt: "2026-03-24T10:02:30.000Z",
-    status: "succeeded",
-    summary: "Implemented grouped history cards."
-  });
-  const proposal = createProposal({
-    id: "p1",
-    sourceType: "build_run",
-    sourceId: "r1",
-    status: "pending",
-    createdAt: "2026-03-24T10:03:30.000Z",
-    diff: "diff --git a/a b/a"
-  });
+export type GroupedAutoRunHistoryEntry = {
+  key: string;
+  kind: "grouped_auto_run";
+  timestamp: string;
+  run: TaskRun;
+  promptText: string;
+  promptMessage: TaskMessage | null;
+  summaryMessage: TaskMessage | null;
+  proposal: TaskChangeProposal | null;
+};
 
-  const entries = buildTaskHistoryEntries({
-    messages: [prompt, summary],
-    runs: [run],
-    proposals: [proposal]
-  });
+export type GroupedTerminalHistoryEntry = {
+  key: string;
+  kind: "grouped_terminal_session";
+  timestamp: string;
+  sessionId: string | null;
+  startMessage: TaskMessage;
+  endMessage: TaskMessage | null;
+  proposal: TaskChangeProposal | null;
+  active: boolean;
+};
 
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.kind, "grouped_auto_run");
-  if (entries[0]?.kind !== "grouped_auto_run") {
-    throw new Error("Expected grouped_auto_run");
+export type TaskHistoryEntry =
+  | RawMessageHistoryEntry
+  | RawRunHistoryEntry
+  | RawProposalHistoryEntry
+  | GroupedAutoRunHistoryEntry
+  | GroupedTerminalHistoryEntry;
+
+export const INTERACTIVE_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("interactive");
+export const INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("interactive");
+export const INTERACTIVE_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("interactive").replace(/\.$/, "");
+export const GIT_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("git");
+export const LEGACY_GIT_TERMINAL_START_MESSAGE = "Git terminal session started.";
+export const GIT_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("git");
+export const GIT_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("git").replace(/\.$/, "");
+
+type AutoRunAction = Extract<TaskAction, "ask" | "build">;
+
+function compareIso(leftTimestamp: string, rightTimestamp: string, leftKey: string, rightKey: string): number {
+  if (leftTimestamp === rightTimestamp) {
+    return leftKey.localeCompare(rightKey);
   }
-  assert.equal(entries[0].promptMessage?.id, "m1");
-  assert.equal(entries[0].promptText, "Implement grouped history cards.");
-  assert.equal(entries[0].summaryMessage?.id, "m2");
-  assert.equal(entries[0].proposal?.id, "p1");
-});
 
-test("groups ask runs without forcing a diff section", () => {
-  const prompt = createMessage({
-    id: "m1",
-    createdAt: "2026-03-24T11:00:00.000Z",
-    role: "user",
-    action: "ask",
-    content: "Explain the current history pipeline."
-  });
-  const summary = createMessage({
-    id: "m2",
-    createdAt: "2026-03-24T11:01:30.000Z",
-    role: "assistant",
-    action: "ask",
-    content: "The history pipeline merges messages, runs, and proposals."
-  });
-  const run = createRun({
-    id: "r1",
-    action: "ask",
-    startedAt: "2026-03-24T11:00:10.000Z",
-    finishedAt: "2026-03-24T11:01:00.000Z",
-    status: "succeeded",
-    summary: "The history pipeline merges messages, runs, and proposals."
-  });
+  return leftTimestamp.localeCompare(rightTimestamp);
+}
 
-  const entries = buildTaskHistoryEntries({
-    messages: [prompt, summary],
-    runs: [run],
-    proposals: []
-  });
+function isAutoRunAction(action: TaskRun["action"]): action is AutoRunAction {
+  return action === "ask" || action === "build";
+}
 
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.kind, "grouped_auto_run");
-  if (entries[0]?.kind !== "grouped_auto_run") {
-    throw new Error("Expected grouped_auto_run");
-  }
-  assert.equal(entries[0].proposal, null);
-});
+function isAutoPromptMessage(message: TaskMessage): message is TaskMessage & { role: "user"; action: AutoRunAction } {
+  return message.role === "user" && (message.action === "ask" || message.action === "build");
+}
 
-test("keeps unmatched messages and proposals as raw entries when a run has no matched prompt", () => {
-  const unrelatedMessage = createMessage({
-    id: "m1",
-    createdAt: "2026-03-24T12:00:00.000Z",
-    role: "user",
-    action: "comment",
-    content: "Keep an eye on the history ordering."
-  });
-  const run = createRun({
-    id: "r1",
-    action: "build",
-    startedAt: "2026-03-24T12:05:00.000Z",
-    status: "running"
-  });
-  const unmatchedProposal = createProposal({
-    id: "p1",
-    sourceType: "build_run",
-    sourceId: "missing-run",
-    status: "pending",
-    createdAt: "2026-03-24T12:06:00.000Z",
-    diff: "diff --git a/a b/a"
-  });
+function isAssistantSummaryMessage(message: TaskMessage): message is TaskMessage & { role: "assistant"; action: AutoRunAction } {
+  return message.role === "assistant" && (message.action === "ask" || message.action === "build");
+}
 
-  const entries = buildTaskHistoryEntries({
-    messages: [unrelatedMessage],
-    runs: [run],
-    proposals: [unmatchedProposal]
-  });
-
-  assert.deepEqual(
-    entries.map((entry) => entry.kind),
-    ["message", "grouped_auto_run", "proposal"]
+function isInteractiveTerminalStartMessage(message: TaskMessage): boolean {
+  return (
+    message.role === "system" &&
+    (
+      message.content === INTERACTIVE_TERMINAL_START_MESSAGE ||
+      message.content === GIT_TERMINAL_START_MESSAGE ||
+      message.content === LEGACY_GIT_TERMINAL_START_MESSAGE
+    )
   );
-  const grouped = entries[1];
-  assert.equal(grouped?.kind, "grouped_auto_run");
-  if (grouped?.kind !== "grouped_auto_run") {
-    throw new Error("Expected grouped_auto_run");
-  }
-  assert.equal(grouped.promptMessage, null);
-  assert.equal(grouped.promptText, "No matched user prompt was found for this run.");
-});
+}
 
-test("groups completed terminal sessions with a diff proposal", () => {
-  const start = createMessage({
-    id: "m1",
-    createdAt: "2026-03-24T13:00:00.000Z",
-    role: "system",
-    content: INTERACTIVE_TERMINAL_START_MESSAGE,
-    sessionId: "session-1"
-  });
-  const end = createMessage({
-    id: "m2",
-    createdAt: "2026-03-24T13:10:00.000Z",
-    role: "system",
-    content: INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE,
-    sessionId: "session-1"
-  });
-  const proposal = createProposal({
-    id: "p1",
-    sourceType: "interactive_session",
-    sourceId: "session-1",
-    status: "pending",
-    createdAt: "2026-03-24T13:10:01.000Z",
-    diff: "diff --git a/a b/a"
-  });
-
-  const entries = buildTaskHistoryEntries({
-    messages: [start, end],
-    runs: [],
-    proposals: [proposal]
-  });
-
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.kind, "grouped_terminal_session");
-  if (entries[0]?.kind !== "grouped_terminal_session") {
-    throw new Error("Expected grouped_terminal_session");
-  }
-  assert.equal(entries[0].sessionId, "session-1");
-  assert.equal(entries[0].startMessage.id, "m1");
-  assert.equal(entries[0].endMessage?.id, "m2");
-  assert.equal(entries[0].proposal?.id, "p1");
-  assert.equal(entries[0].active, false);
-});
-
-test("groups completed git terminal sessions with a diff proposal", () => {
-  const start = createMessage({
-    id: "m1",
-    createdAt: "2026-03-24T13:30:00.000Z",
-    role: "system",
-    content: GIT_TERMINAL_START_MESSAGE,
-    sessionId: "session-git-1"
-  });
-  const end = createMessage({
-    id: "m2",
-    createdAt: "2026-03-24T13:42:00.000Z",
-    role: "system",
-    content: GIT_TERMINAL_END_REVIEW_MESSAGE,
-    sessionId: "session-git-1"
-  });
-  const proposal = createProposal({
-    id: "p1",
-    sourceType: "interactive_session",
-    sourceId: "session-git-1",
-    status: "pending",
-    createdAt: "2026-03-24T13:42:01.000Z",
-    diff: "diff --git a/a b/a"
-  });
-
-  const entries = buildTaskHistoryEntries({
-    messages: [start, end],
-    runs: [],
-    proposals: [proposal]
-  });
-
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.kind, "grouped_terminal_session");
-  if (entries[0]?.kind !== "grouped_terminal_session") {
-    throw new Error("Expected grouped_terminal_session");
-  }
-  assert.equal(entries[0].sessionId, "session-git-1");
-  assert.equal(entries[0].startMessage.id, "m1");
-  assert.equal(entries[0].endMessage?.id, "m2");
-  assert.equal(entries[0].proposal?.id, "p1");
-});
-
-test("groups no-change terminal sessions without attaching a later proposal", () => {
-  const start = createMessage({
-    id: "m1",
-    createdAt: "2026-03-24T14:00:00.000Z",
-    role: "system",
-    content: INTERACTIVE_TERMINAL_START_MESSAGE
-  });
-  const end = createMessage({
-    id: "m2",
-    createdAt: "2026-03-24T14:01:00.000Z",
-    role: "system",
-    content: "Interactive terminal session ended. No workspace changes were detected."
-  });
-  const laterProposal = createProposal({
-    id: "p1",
-    sourceType: "interactive_session",
-    sourceId: "session-2",
-    status: "pending",
-    createdAt: "2026-03-24T14:05:00.000Z",
-    diff: "diff --git a/a b/a"
-  });
-
-  const entries = buildTaskHistoryEntries({
-    messages: [start, end],
-    runs: [],
-    proposals: [laterProposal]
-  });
-
-  assert.deepEqual(
-    entries.map((entry) => entry.kind),
-    ["grouped_terminal_session", "proposal"]
+function isInteractiveTerminalEndMessage(message: TaskMessage): boolean {
+  return (
+    message.role === "system" &&
+    (message.content.startsWith(INTERACTIVE_TERMINAL_END_PREFIX) || message.content.startsWith(GIT_TERMINAL_END_PREFIX))
   );
-  const grouped = entries[0];
-  assert.equal(grouped?.kind, "grouped_terminal_session");
-  if (grouped?.kind !== "grouped_terminal_session") {
-    throw new Error("Expected grouped_terminal_session");
+}
+
+export function buildTaskHistoryEntries(input: {
+  messages: TaskMessage[];
+  runs: TaskRun[];
+  proposals: TaskChangeProposal[];
+  interactiveTerminalRunning?: boolean;
+}): TaskHistoryEntry[] {
+  const sortedMessages = [...input.messages].sort((left, right) =>
+    compareIso(left.createdAt, right.createdAt, left.id, right.id)
+  );
+  const sortedRuns = [...input.runs].sort((left, right) => compareIso(left.startedAt, right.startedAt, left.id, right.id));
+  const sortedProposals = [...input.proposals].sort((left, right) =>
+    compareIso(left.createdAt, right.createdAt, left.id, right.id)
+  );
+
+  const consumedMessageIds = new Set<string>();
+  const consumedRunIds = new Set<string>();
+  const consumedProposalIds = new Set<string>();
+  const groupedAutoEntries: GroupedAutoRunHistoryEntry[] = [];
+  const groupedTerminalEntries: GroupedTerminalHistoryEntry[] = [];
+
+  const autoPromptCandidates = sortedMessages.filter(isAutoPromptMessage);
+  const autoAssistantCandidates = sortedMessages.filter(isAssistantSummaryMessage);
+  const promptQueues: Record<AutoRunAction, TaskMessage[]> = { ask: [], build: [] };
+  let promptCursor = 0;
+
+  const buildProposalByRunId = new Map<string, TaskChangeProposal>();
+  for (const proposal of sortedProposals) {
+    if (proposal.sourceType !== "build_run") {
+      continue;
+    }
+    if (!buildProposalByRunId.has(proposal.sourceId)) {
+      buildProposalByRunId.set(proposal.sourceId, proposal);
+    }
   }
-  assert.equal(grouped.proposal, null);
-});
+  for (const run of sortedRuns) {
+    if (!isAutoRunAction(run.action)) {
+      continue;
+    }
 
-test("shows an active terminal session as a start-only grouped card", () => {
-  const start = createMessage({
-    id: "m1",
-    createdAt: "2026-03-24T15:00:00.000Z",
-    role: "system",
-    content: INTERACTIVE_TERMINAL_START_MESSAGE
-  });
+    while (promptCursor < autoPromptCandidates.length && autoPromptCandidates[promptCursor]!.createdAt <= run.startedAt) {
+      const candidate = autoPromptCandidates[promptCursor]!;
+      if (!consumedMessageIds.has(candidate.id)) {
+        promptQueues[candidate.action].push(candidate);
+      }
+      promptCursor += 1;
+    }
 
-  const entries = buildTaskHistoryEntries({
-    messages: [start],
-    runs: [],
-    proposals: [],
-    interactiveTerminalRunning: true
-  });
+    const promptMessage = promptQueues[run.action].shift() ?? null;
+    if (promptMessage) {
+      consumedMessageIds.add(promptMessage.id);
+    }
+    const promptText = promptMessage?.content ?? "No matched user prompt was found for this run.";
 
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.kind, "grouped_terminal_session");
-  if (entries[0]?.kind !== "grouped_terminal_session") {
-    throw new Error("Expected grouped_terminal_session");
+    let summaryMessage: TaskMessage | null = null;
+    const normalizedRunSummary = run.summary?.trim() ?? "";
+    if (normalizedRunSummary) {
+      const summaryThreshold = run.finishedAt ?? run.startedAt;
+      summaryMessage =
+        autoAssistantCandidates.find(
+          (message) =>
+            !consumedMessageIds.has(message.id) &&
+            message.action === run.action &&
+            message.createdAt >= summaryThreshold &&
+            message.content.trim() === normalizedRunSummary
+        ) ?? null;
+
+      if (summaryMessage) {
+        consumedMessageIds.add(summaryMessage.id);
+      }
+    }
+
+    const proposal = buildProposalByRunId.get(run.id) ?? null;
+    if (proposal) {
+      consumedProposalIds.add(proposal.id);
+    }
+
+    consumedRunIds.add(run.id);
+    groupedAutoEntries.push({
+      key: `grouped-auto-${run.id}`,
+      kind: "grouped_auto_run",
+      timestamp: run.startedAt,
+      run,
+      promptText,
+      promptMessage,
+      summaryMessage,
+      proposal
+    });
   }
-  assert.equal(entries[0].endMessage, null);
-  assert.equal(entries[0].active, true);
-});
 
-test("shows active auto runs as grouped cards before summary or diff exist", () => {
-  const prompt = createMessage({
-    id: "m1",
-    createdAt: "2026-03-24T16:00:00.000Z",
-    role: "user",
-    action: "build",
-    content: "Keep streaming logs in the grouped card."
-  });
-  const run = createRun({
-    id: "r1",
-    action: "build",
-    startedAt: "2026-03-24T16:00:05.000Z",
-    status: "running",
-    logs: ["Preparing workspace", "Launching runtime"]
-  });
-
-  const entries = buildTaskHistoryEntries({
-    messages: [prompt],
-    runs: [run],
-    proposals: []
-  });
-
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.kind, "grouped_auto_run");
-  if (entries[0]?.kind !== "grouped_auto_run") {
-    throw new Error("Expected grouped_auto_run");
+  const terminalStartMessages = sortedMessages.filter(isInteractiveTerminalStartMessage);
+  const terminalEndMessages = sortedMessages.filter(isInteractiveTerminalEndMessage);
+  const interactiveProposals = sortedProposals.filter((proposal) => proposal.sourceType === "interactive_session");
+  const lastTerminalStartMessageId = terminalStartMessages.at(-1)?.id ?? null;
+  const interactiveProposalsBySessionId = new Map<string, TaskChangeProposal>();
+  for (const proposal of interactiveProposals) {
+    if (!interactiveProposalsBySessionId.has(proposal.sourceId)) {
+      interactiveProposalsBySessionId.set(proposal.sourceId, proposal);
+    }
   }
-  assert.equal(entries[0].promptMessage?.id, "m1");
-  assert.equal(entries[0].summaryMessage, null);
-  assert.equal(entries[0].proposal, null);
-});
+  let terminalEndCursor = 0;
+  let interactiveProposalCursor = 0;
+
+  for (const startMessage of terminalStartMessages) {
+    if (consumedMessageIds.has(startMessage.id)) {
+      continue;
+    }
+
+    while (
+      terminalEndCursor < terminalEndMessages.length &&
+      (consumedMessageIds.has(terminalEndMessages[terminalEndCursor]!.id) ||
+        terminalEndMessages[terminalEndCursor]!.createdAt < startMessage.createdAt)
+    ) {
+      terminalEndCursor += 1;
+    }
+
+    const startSessionId = typeof startMessage.sessionId === "string" && startMessage.sessionId.trim().length > 0 ? startMessage.sessionId : null;
+    let endMessage: TaskMessage | null = null;
+
+    if (startSessionId) {
+      endMessage =
+        terminalEndMessages.find(
+          (message) =>
+            !consumedMessageIds.has(message.id) &&
+            message.createdAt >= startMessage.createdAt &&
+            message.sessionId === startSessionId
+        ) ?? null;
+    } else {
+      endMessage = terminalEndCursor < terminalEndMessages.length ? terminalEndMessages[terminalEndCursor]! : null;
+    }
+
+    if (!endMessage) {
+      if (input.interactiveTerminalRunning && startMessage.id === lastTerminalStartMessageId) {
+        consumedMessageIds.add(startMessage.id);
+        groupedTerminalEntries.push({
+          key: `grouped-terminal-${startMessage.id}`,
+          kind: "grouped_terminal_session",
+          timestamp: startMessage.createdAt,
+          sessionId: startSessionId,
+          startMessage,
+          endMessage: null,
+          proposal: null,
+          active: true
+        });
+      }
+      continue;
+    }
+
+    terminalEndCursor += 1;
+    consumedMessageIds.add(startMessage.id);
+    consumedMessageIds.add(endMessage.id);
+
+    const endSessionId = typeof endMessage.sessionId === "string" && endMessage.sessionId.trim().length > 0 ? endMessage.sessionId : null;
+    let sessionId = startSessionId ?? endSessionId;
+    let proposal: TaskChangeProposal | null = null;
+    if (endMessage.content === INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE || endMessage.content === GIT_TERMINAL_END_REVIEW_MESSAGE) {
+      if (sessionId) {
+        const matchedProposal = interactiveProposalsBySessionId.get(sessionId) ?? null;
+        if (matchedProposal && !consumedProposalIds.has(matchedProposal.id)) {
+          proposal = matchedProposal;
+          consumedProposalIds.add(matchedProposal.id);
+        }
+      }
+
+      if (!proposal) {
+        while (
+          interactiveProposalCursor < interactiveProposals.length &&
+          (consumedProposalIds.has(interactiveProposals[interactiveProposalCursor]!.id) ||
+            interactiveProposals[interactiveProposalCursor]!.createdAt < endMessage.createdAt)
+        ) {
+          interactiveProposalCursor += 1;
+        }
+
+        proposal = interactiveProposalCursor < interactiveProposals.length ? interactiveProposals[interactiveProposalCursor]! : null;
+        if (proposal) {
+          consumedProposalIds.add(proposal.id);
+          interactiveProposalCursor += 1;
+        }
+      }
+    }
+
+    sessionId = sessionId ?? proposal?.sourceId ?? null;
+
+    groupedTerminalEntries.push({
+      key: `grouped-terminal-${startMessage.id}`,
+      kind: "grouped_terminal_session",
+      timestamp: startMessage.createdAt,
+      sessionId,
+      startMessage,
+      endMessage,
+      proposal,
+      active: false
+    });
+  }
+
+  const rawRuns = sortedRuns.filter((run) => !consumedRunIds.has(run.id));
+  const rawRunSummaryKeys = new Set(
+    rawRuns.filter((run) => run.summary?.trim()).map((run) => `${run.action}:${run.summary?.trim()}`)
+  );
+
+  const rawMessages = sortedMessages.filter((message) => {
+    if (consumedMessageIds.has(message.id)) {
+      return false;
+    }
+
+    if (message.role === "assistant" && message.action) {
+      const trimmedContent = message.content.trim();
+      if (trimmedContent && rawRunSummaryKeys.has(`${message.action}:${trimmedContent}`)) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+  const rawProposals = sortedProposals.filter((proposal) => !consumedProposalIds.has(proposal.id));
+
+  const entries = [
+    ...groupedAutoEntries,
+    ...groupedTerminalEntries,
+    ...rawMessages.map(
+      (message): RawMessageHistoryEntry => ({
+        key: `message-${message.id}`,
+        kind: "message",
+        timestamp: message.createdAt,
+        message
+      })
+    ),
+    ...rawRuns.map(
+      (run): RawRunHistoryEntry => ({
+        key: `run-${run.id}`,
+        kind: "run",
+        timestamp: run.startedAt,
+        run
+      })
+    ),
+    ...rawProposals.map(
+      (proposal): RawProposalHistoryEntry => ({
+        key: `proposal-${proposal.id}`,
+        kind: "proposal",
+        timestamp: proposal.createdAt,
+        proposal
+      })
+    )
+  ];
+
+  return entries.sort((left, right) => compareIso(left.timestamp, right.timestamp, left.key, right.key));
+}
 ````
 
 ## File: apps/web/src/utils/task-lifecycle-view-model.ts
@@ -34919,6 +34556,1432 @@ export const registerRepositoryRoutes = (
     }
 
     return reply.status(204).send();
+  });
+};
+````
+
+## File: apps/web/app/globals.css
+````css
+@import "@mdxeditor/editor/style.css";
+
+:root {
+  color-scheme: light;
+  --app-body-bg: #f4f8f5;
+  --app-body-text: #5a675d;
+  --diff-background-color: #fcfefd;
+  --diff-text-color: #415046;
+  --diff-selection-background-color: rgba(28, 128, 87, 0.12);
+  --diff-selection-text-color: var(--diff-text-color);
+  --diff-gutter-insert-background-color: #dff5e4;
+  --diff-gutter-insert-text-color: #2e6a48;
+  --diff-gutter-delete-background-color: #f5dde0;
+  --diff-gutter-delete-text-color: #8d4a53;
+  --diff-gutter-selected-background-color: #efe7c8;
+  --diff-gutter-selected-text-color: #5b5538;
+  --diff-code-insert-background-color: #ebf9ee;
+  --diff-code-insert-text-color: #274b35;
+  --diff-code-delete-background-color: #faecee;
+  --diff-code-delete-text-color: #6d3c43;
+  --diff-code-insert-edit-background-color: #c8e8d1;
+  --diff-code-insert-edit-text-color: #1f402c;
+  --diff-code-delete-edit-background-color: #efc0c7;
+  --diff-code-delete-edit-text-color: #5e2f36;
+  --diff-code-selected-background-color: #f3edcf;
+  --diff-code-selected-text-color: #4e4731;
+  --diff-omit-gutter-line-color: #c95c5c;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --app-body-bg: #0e1411;
+  --app-body-text: #d8e2d9;
+  --diff-background-color: #141c18;
+  --diff-text-color: #d7e3d8;
+  --diff-selection-background-color: rgba(103, 196, 150, 0.18);
+  --diff-selection-text-color: #f4f8f5;
+  --diff-gutter-insert-background-color: #173624;
+  --diff-gutter-insert-text-color: #8fd9ae;
+  --diff-gutter-delete-background-color: #3a1f25;
+  --diff-gutter-delete-text-color: #e2a2ab;
+  --diff-gutter-selected-background-color: #3a3723;
+  --diff-gutter-selected-text-color: #efe2a0;
+  --diff-code-insert-background-color: #10251a;
+  --diff-code-insert-text-color: #cfeedd;
+  --diff-code-delete-background-color: #2c171c;
+  --diff-code-delete-text-color: #f2c4ca;
+  --diff-code-insert-edit-background-color: #27543e;
+  --diff-code-insert-edit-text-color: #e8fff1;
+  --diff-code-delete-edit-background-color: #7a3a47;
+  --diff-code-delete-edit-text-color: #fff0f2;
+  --diff-code-selected-background-color: #33311f;
+  --diff-code-selected-text-color: #f2e8b7;
+  --diff-omit-gutter-line-color: #d46c6c;
+}
+
+html[data-theme="cyber"] {
+  color-scheme: dark;
+  --app-body-bg: #181825;
+  --app-body-text: rgba(200, 182, 255, 0.9);
+  --diff-background-color: #1e1e2e;
+  --diff-text-color: #c8b6ff;
+  --diff-selection-background-color: rgba(157, 78, 221, 0.18);
+  --diff-selection-text-color: #f4eeff;
+  --diff-gutter-insert-background-color: #17353a;
+  --diff-gutter-insert-text-color: #72efdd;
+  --diff-gutter-delete-background-color: #3a1028;
+  --diff-gutter-delete-text-color: #ff8ab5;
+  --diff-gutter-selected-background-color: #3a3111;
+  --diff-gutter-selected-text-color: #ffd60a;
+  --diff-code-insert-background-color: #11272a;
+  --diff-code-insert-text-color: #d2fffb;
+  --diff-code-delete-background-color: #2a0c1b;
+  --diff-code-delete-text-color: #ffd1e4;
+  --diff-code-insert-edit-background-color: #1c4f56;
+  --diff-code-insert-edit-text-color: #effffd;
+  --diff-code-delete-edit-background-color: #6d1240;
+  --diff-code-delete-edit-text-color: #fff0f7;
+  --diff-code-selected-background-color: #3a3111;
+  --diff-code-selected-text-color: #ffe98a;
+  --diff-omit-gutter-line-color: #ff006e;
+}
+
+html[data-theme="forge"] {
+  color-scheme: dark;
+  --app-body-bg: #0d1117;
+  --app-body-text: rgba(201, 209, 217, 0.88);
+  --diff-background-color: #161b22;
+  --diff-text-color: #c9d1d9;
+  --diff-selection-background-color: rgba(255, 107, 53, 0.16);
+  --diff-selection-text-color: #f6f8fa;
+  --diff-gutter-insert-background-color: #0f302e;
+  --diff-gutter-insert-text-color: #59e1ce;
+  --diff-gutter-delete-background-color: #34191d;
+  --diff-gutter-delete-text-color: #ff9b9b;
+  --diff-gutter-selected-background-color: #3a2c16;
+  --diff-gutter-selected-text-color: #ffbf66;
+  --diff-code-insert-background-color: #0d2625;
+  --diff-code-insert-text-color: #d3fff8;
+  --diff-code-delete-background-color: #281316;
+  --diff-code-delete-text-color: #ffd7d7;
+  --diff-code-insert-edit-background-color: #13524d;
+  --diff-code-insert-edit-text-color: #effffb;
+  --diff-code-delete-edit-background-color: #7b2b31;
+  --diff-code-delete-edit-text-color: #fff1f1;
+  --diff-code-selected-background-color: #352915;
+  --diff-code-selected-text-color: #ffdca0;
+  --diff-omit-gutter-line-color: #ff5252;
+}
+
+html[data-theme="forge-light"] {
+  color-scheme: light;
+  --app-body-bg: #fff3eb;
+  --app-body-text: rgba(51, 40, 33, 0.92);
+  --diff-background-color: #ffffff;
+  --diff-text-color: #332821;
+  --diff-selection-background-color: rgba(255, 107, 53, 0.12);
+  --diff-selection-text-color: #332821;
+  --diff-gutter-insert-background-color: #e3f7f2;
+  --diff-gutter-insert-text-color: #0b7c69;
+  --diff-gutter-delete-background-color: #fff0ef;
+  --diff-gutter-delete-text-color: #dc2626;
+  --diff-gutter-selected-background-color: #fff0d8;
+  --diff-gutter-selected-text-color: #b96b00;
+  --diff-code-insert-background-color: #f0fffb;
+  --diff-code-insert-text-color: #0a5c4e;
+  --diff-code-delete-background-color: #fff5f4;
+  --diff-code-delete-text-color: #b91c1c;
+  --diff-code-insert-edit-background-color: #c7efe5;
+  --diff-code-insert-edit-text-color: #09483e;
+  --diff-code-delete-edit-background-color: #ffd6d1;
+  --diff-code-delete-edit-text-color: #991b1b;
+  --diff-code-selected-background-color: #ffe7c2;
+  --diff-code-selected-text-color: #9a5600;
+  --diff-omit-gutter-line-color: #dc2626;
+}
+
+html[data-theme="github"] {
+  color-scheme: dark;
+  --app-body-bg: #0d1117;
+  --app-body-text: #c9d1d9;
+  --diff-background-color: #161b22;
+  --diff-text-color: #c9d1d9;
+  --diff-selection-background-color: rgba(31, 111, 235, 0.18);
+  --diff-selection-text-color: #f0f6fc;
+  --diff-gutter-insert-background-color: #0f2419;
+  --diff-gutter-insert-text-color: #56d364;
+  --diff-gutter-delete-background-color: #2d1517;
+  --diff-gutter-delete-text-color: #ff7b72;
+  --diff-gutter-selected-background-color: #2b2415;
+  --diff-gutter-selected-text-color: #ffa657;
+  --diff-code-insert-background-color: #0d1f14;
+  --diff-code-insert-text-color: #aff5b4;
+  --diff-code-delete-background-color: #231417;
+  --diff-code-delete-text-color: #ffdcd7;
+  --diff-code-insert-edit-background-color: #1a3a24;
+  --diff-code-insert-edit-text-color: #d2ffd8;
+  --diff-code-delete-edit-background-color: #5d2023;
+  --diff-code-delete-edit-text-color: #fff1ee;
+  --diff-code-selected-background-color: #2b2415;
+  --diff-code-selected-text-color: #ffddb0;
+  --diff-omit-gutter-line-color: #f85149;
+}
+
+html[data-theme="github-light"] {
+  color-scheme: light;
+  --app-body-bg: #f6f8fa;
+  --app-body-text: #1f2328;
+  --diff-background-color: #ffffff;
+  --diff-text-color: #1f2328;
+  --diff-selection-background-color: rgba(9, 105, 218, 0.12);
+  --diff-selection-text-color: #1f2328;
+  --diff-gutter-insert-background-color: #dafbe1;
+  --diff-gutter-insert-text-color: #1a7f37;
+  --diff-gutter-delete-background-color: #ffebe9;
+  --diff-gutter-delete-text-color: #cf222e;
+  --diff-gutter-selected-background-color: #fff8c5;
+  --diff-gutter-selected-text-color: #9a6700;
+  --diff-code-insert-background-color: #ebfff0;
+  --diff-code-insert-text-color: #116329;
+  --diff-code-delete-background-color: #fff1f0;
+  --diff-code-delete-text-color: #a40e26;
+  --diff-code-insert-edit-background-color: #aceebb;
+  --diff-code-insert-edit-text-color: #0f5323;
+  --diff-code-delete-edit-background-color: #ffcecb;
+  --diff-code-delete-edit-text-color: #82071e;
+  --diff-code-selected-background-color: #fff1b8;
+  --diff-code-selected-text-color: #7d4e00;
+  --diff-omit-gutter-line-color: #cf222e;
+}
+
+html[data-theme="nord"] {
+  color-scheme: dark;
+  --app-body-bg: #2b303b;
+  --app-body-text: #e5e9f0;
+  --diff-background-color: #3b4252;
+  --diff-text-color: #e5e9f0;
+  --diff-selection-background-color: rgba(136, 192, 208, 0.18);
+  --diff-selection-text-color: #f7fafc;
+  --diff-gutter-insert-background-color: #334038;
+  --diff-gutter-insert-text-color: #a3be8c;
+  --diff-gutter-delete-background-color: #43343a;
+  --diff-gutter-delete-text-color: #d08770;
+  --diff-gutter-selected-background-color: #4a4437;
+  --diff-gutter-selected-text-color: #ebcb8b;
+  --diff-code-insert-background-color: #2f3933;
+  --diff-code-insert-text-color: #d8e7cb;
+  --diff-code-delete-background-color: #3a2f33;
+  --diff-code-delete-text-color: #f1c2b6;
+  --diff-code-insert-edit-background-color: #425046;
+  --diff-code-insert-edit-text-color: #f3faeb;
+  --diff-code-delete-edit-background-color: #6c4a52;
+  --diff-code-delete-edit-text-color: #fff1ef;
+  --diff-code-selected-background-color: #4a4437;
+  --diff-code-selected-text-color: #f5ddb0;
+  --diff-omit-gutter-line-color: #bf616a;
+}
+
+html[data-theme="solarized-light"] {
+  color-scheme: light;
+  --app-body-bg: #f4edd8;
+  --app-body-text: #586e75;
+  --diff-background-color: #fdf6e3;
+  --diff-text-color: #586e75;
+  --diff-selection-background-color: rgba(38, 139, 210, 0.12);
+  --diff-selection-text-color: #586e75;
+  --diff-gutter-insert-background-color: #eef6d2;
+  --diff-gutter-insert-text-color: #657b00;
+  --diff-gutter-delete-background-color: #f8e1dc;
+  --diff-gutter-delete-text-color: #c0392b;
+  --diff-gutter-selected-background-color: #f8efc8;
+  --diff-gutter-selected-text-color: #9a7400;
+  --diff-code-insert-background-color: #f5f9e7;
+  --diff-code-insert-text-color: #4e6400;
+  --diff-code-delete-background-color: #fbebe7;
+  --diff-code-delete-text-color: #a92b26;
+  --diff-code-insert-edit-background-color: #dfeab2;
+  --diff-code-insert-edit-text-color: #425300;
+  --diff-code-delete-edit-background-color: #f2c4ba;
+  --diff-code-delete-edit-text-color: #86211e;
+  --diff-code-selected-background-color: #f5e7a8;
+  --diff-code-selected-text-color: #7f5c00;
+  --diff-omit-gutter-line-color: #dc322f;
+}
+
+html[data-theme="gruvbox-dark"] {
+  color-scheme: dark;
+  --app-body-bg: #1d2021;
+  --app-body-text: #ebdbb2;
+  --diff-background-color: #32302f;
+  --diff-text-color: #ebdbb2;
+  --diff-selection-background-color: rgba(215, 153, 33, 0.18);
+  --diff-selection-text-color: #fbf1c7;
+  --diff-gutter-insert-background-color: #30361d;
+  --diff-gutter-insert-text-color: #b8bb26;
+  --diff-gutter-delete-background-color: #442726;
+  --diff-gutter-delete-text-color: #fb7c6d;
+  --diff-gutter-selected-background-color: #47341c;
+  --diff-gutter-selected-text-color: #fabd2f;
+  --diff-code-insert-background-color: #2a2f19;
+  --diff-code-insert-text-color: #dde79b;
+  --diff-code-delete-background-color: #3a2221;
+  --diff-code-delete-text-color: #ffd2cb;
+  --diff-code-insert-edit-background-color: #46511d;
+  --diff-code-insert-edit-text-color: #f4ffd1;
+  --diff-code-delete-edit-background-color: #7d3b34;
+  --diff-code-delete-edit-text-color: #fff0ed;
+  --diff-code-selected-background-color: #47341c;
+  --diff-code-selected-text-color: #ffd88a;
+  --diff-omit-gutter-line-color: #fb4934;
+}
+
+html[data-theme="high-contrast"] {
+  color-scheme: dark;
+  --app-body-bg: #000000;
+  --app-body-text: #ffffff;
+  --diff-background-color: #0f0f0f;
+  --diff-text-color: #ffffff;
+  --diff-selection-background-color: rgba(77, 163, 255, 0.26);
+  --diff-selection-text-color: #ffffff;
+  --diff-gutter-insert-background-color: #001d0d;
+  --diff-gutter-insert-text-color: #43f090;
+  --diff-gutter-delete-background-color: #2a0000;
+  --diff-gutter-delete-text-color: #ffb0b0;
+  --diff-gutter-selected-background-color: #241f00;
+  --diff-gutter-selected-text-color: #ffe14d;
+  --diff-code-insert-background-color: #002813;
+  --diff-code-insert-text-color: #b3ffd2;
+  --diff-code-delete-background-color: #300000;
+  --diff-code-delete-text-color: #ffe0e0;
+  --diff-code-insert-edit-background-color: #004d25;
+  --diff-code-insert-edit-text-color: #ecfff3;
+  --diff-code-delete-edit-background-color: #6b0000;
+  --diff-code-delete-edit-text-color: #fff5f5;
+  --diff-code-selected-background-color: #3d3500;
+  --diff-code-selected-text-color: #fff4a3;
+  --diff-omit-gutter-line-color: #ff5c5c;
+}
+
+html[data-theme="tokyo-night"] {
+  color-scheme: dark;
+  --app-body-bg: #16161e;
+  --app-body-text: #c0caf5;
+  --diff-background-color: #1f2335;
+  --diff-text-color: #c0caf5;
+  --diff-selection-background-color: rgba(122, 162, 247, 0.18);
+  --diff-selection-text-color: #eef2ff;
+  --diff-gutter-insert-background-color: #223126;
+  --diff-gutter-insert-text-color: #9ece6a;
+  --diff-gutter-delete-background-color: #3b2532;
+  --diff-gutter-delete-text-color: #f7768e;
+  --diff-gutter-selected-background-color: #393324;
+  --diff-gutter-selected-text-color: #e0af68;
+  --diff-code-insert-background-color: #1d2b22;
+  --diff-code-insert-text-color: #d8f2bc;
+  --diff-code-delete-background-color: #301f29;
+  --diff-code-delete-text-color: #ffc3ce;
+  --diff-code-insert-edit-background-color: #35503f;
+  --diff-code-insert-edit-text-color: #f0ffe5;
+  --diff-code-delete-edit-background-color: #6e4251;
+  --diff-code-delete-edit-text-color: #fff0f4;
+  --diff-code-selected-background-color: #393324;
+  --diff-code-selected-text-color: #f3d5a5;
+  --diff-omit-gutter-line-color: #f7768e;
+}
+
+html[data-theme="solarized-dark"] {
+  color-scheme: dark;
+  --app-body-bg: #001f27;
+  --app-body-text: #93a1a1;
+  --diff-background-color: #073642;
+  --diff-text-color: #93a1a1;
+  --diff-selection-background-color: rgba(38, 139, 210, 0.2);
+  --diff-selection-text-color: #eee8d5;
+  --diff-gutter-insert-background-color: #1b3314;
+  --diff-gutter-insert-text-color: #859900;
+  --diff-gutter-delete-background-color: #3b1712;
+  --diff-gutter-delete-text-color: #dc322f;
+  --diff-gutter-selected-background-color: #3a2d09;
+  --diff-gutter-selected-text-color: #b58900;
+  --diff-code-insert-background-color: #153016;
+  --diff-code-insert-text-color: #c3d269;
+  --diff-code-delete-background-color: #31130f;
+  --diff-code-delete-text-color: #ff9b94;
+  --diff-code-insert-edit-background-color: #31511d;
+  --diff-code-insert-edit-text-color: #eef7b3;
+  --diff-code-delete-edit-background-color: #723127;
+  --diff-code-delete-edit-text-color: #ffe5df;
+  --diff-code-selected-background-color: #3a2d09;
+  --diff-code-selected-text-color: #e8c65a;
+  --diff-omit-gutter-line-color: #dc322f;
+}
+
+html[data-theme="paper"] {
+  color-scheme: light;
+  --app-body-bg: #efe8d5;
+  --app-body-text: #4b463c;
+  --diff-background-color: #fffaf0;
+  --diff-text-color: #4b463c;
+  --diff-selection-background-color: rgba(70, 124, 138, 0.12);
+  --diff-selection-text-color: #4b463c;
+  --diff-gutter-insert-background-color: #edf2e3;
+  --diff-gutter-insert-text-color: #567038;
+  --diff-gutter-delete-background-color: #f5e3e1;
+  --diff-gutter-delete-text-color: #9d4f4f;
+  --diff-gutter-selected-background-color: #f6ead7;
+  --diff-gutter-selected-text-color: #9b6d2b;
+  --diff-code-insert-background-color: #f4f7eb;
+  --diff-code-insert-text-color: #445a2b;
+  --diff-code-delete-background-color: #faecea;
+  --diff-code-delete-text-color: #884646;
+  --diff-code-insert-edit-background-color: #dfe8d2;
+  --diff-code-insert-edit-text-color: #394b24;
+  --diff-code-delete-edit-background-color: #edd1ce;
+  --diff-code-delete-edit-text-color: #723b3b;
+  --diff-code-selected-background-color: #efddc0;
+  --diff-code-selected-text-color: #7f5b22;
+  --diff-omit-gutter-line-color: #b55d5d;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--app-body-bg);
+  color: var(--app-body-text);
+  transition:
+    background-color 160ms ease,
+    color 160ms ease;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "SFMono-Regular", "Consolas", monospace;
+}
+
+.xterm .xterm-screen {
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.diff {
+  background: var(--diff-background-color);
+  color: var(--diff-text-color);
+}
+
+.diff-hunk + .diff-hunk .diff-line:first-child td,
+.diff-hunk + .diff-hunk .diff-widget:first-child td,
+.diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.diff-gutter {
+  color: rgba(90, 103, 93, 0.72);
+  background: rgba(0, 0, 0, 0.015);
+  border-right: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.diff-code-normal {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.diff-code,
+.diff-decoration-content,
+.diff-widget-content {
+  color: var(--diff-text-color);
+}
+
+.diff-decoration-content,
+.diff-widget-content {
+  background: rgba(0, 0, 0, 0.025);
+}
+
+html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="github"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="github"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="github"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme="dark"] .diff-gutter,
+html[data-theme="cyber"] .diff-gutter,
+html[data-theme="forge"] .diff-gutter,
+html[data-theme="github"] .diff-gutter,
+html[data-theme="nord"] .diff-gutter,
+html[data-theme="gruvbox-dark"] .diff-gutter,
+html[data-theme="high-contrast"] .diff-gutter,
+html[data-theme="tokyo-night"] .diff-gutter,
+html[data-theme="solarized-dark"] .diff-gutter {
+  color: #8ea394;
+  background: rgba(255, 255, 255, 0.02);
+  border-right-color: rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme="dark"] .diff-code-normal,
+html[data-theme="cyber"] .diff-code-normal,
+html[data-theme="forge"] .diff-code-normal,
+html[data-theme="github"] .diff-code-normal,
+html[data-theme="nord"] .diff-code-normal,
+html[data-theme="gruvbox-dark"] .diff-code-normal,
+html[data-theme="high-contrast"] .diff-code-normal,
+html[data-theme="tokyo-night"] .diff-code-normal,
+html[data-theme="solarized-dark"] .diff-code-normal {
+  background: rgba(255, 255, 255, 0.01);
+}
+
+html[data-theme="dark"] .diff-decoration-content,
+html[data-theme="dark"] .diff-widget-content,
+html[data-theme="cyber"] .diff-decoration-content,
+html[data-theme="cyber"] .diff-widget-content,
+html[data-theme="forge"] .diff-decoration-content,
+html[data-theme="forge"] .diff-widget-content,
+html[data-theme="github"] .diff-decoration-content,
+html[data-theme="github"] .diff-widget-content,
+html[data-theme="nord"] .diff-decoration-content,
+html[data-theme="nord"] .diff-widget-content,
+html[data-theme="gruvbox-dark"] .diff-decoration-content,
+html[data-theme="gruvbox-dark"] .diff-widget-content,
+html[data-theme="high-contrast"] .diff-decoration-content,
+html[data-theme="high-contrast"] .diff-widget-content,
+html[data-theme="tokyo-night"] .diff-decoration-content,
+html[data-theme="tokyo-night"] .diff-widget-content,
+html[data-theme="solarized-dark"] .diff-decoration-content,
+html[data-theme="solarized-dark"] .diff-widget-content {
+  background: rgba(255, 255, 255, 0.03);
+  color: #9fb3a5;
+}
+
+html[data-theme="cyber"] .diff-gutter {
+  color: rgba(200, 182, 255, 0.65);
+  background: rgba(255, 255, 255, 0.025);
+  border-right-color: rgba(200, 182, 255, 0.08);
+}
+
+html[data-theme="cyber"] .diff-decoration-content,
+html[data-theme="cyber"] .diff-widget-content {
+  color: rgba(200, 182, 255, 0.72);
+}
+
+html[data-theme="forge"] .diff-gutter {
+  color: rgba(201, 209, 217, 0.62);
+  background: rgba(255, 255, 255, 0.02);
+  border-right-color: rgba(201, 209, 217, 0.07);
+}
+
+html[data-theme="forge"] .diff-decoration-content,
+html[data-theme="forge"] .diff-widget-content {
+  color: rgba(201, 209, 217, 0.72);
+}
+
+html[data-theme="github"] .diff-gutter {
+  color: #8b949e;
+  background: rgba(255, 255, 255, 0.02);
+  border-right-color: rgba(201, 209, 217, 0.08);
+}
+
+html[data-theme="github"] .diff-decoration-content,
+html[data-theme="github"] .diff-widget-content {
+  color: #8b949e;
+}
+
+html[data-theme="nord"] .diff-gutter {
+  color: #c2cad6;
+  background: rgba(236, 239, 244, 0.03);
+  border-right-color: rgba(236, 239, 244, 0.08);
+}
+
+html[data-theme="nord"] .diff-decoration-content,
+html[data-theme="nord"] .diff-widget-content {
+  color: #c2cad6;
+}
+
+html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(208, 215, 222, 0.7);
+}
+
+html[data-theme="github-light"] .diff-gutter {
+  color: #57606a;
+  background: rgba(246, 248, 250, 0.9);
+  border-right-color: rgba(208, 215, 222, 0.9);
+}
+
+html[data-theme="github-light"] .diff-code-normal {
+  background: rgba(246, 248, 250, 0.65);
+}
+
+html[data-theme="github-light"] .diff-decoration-content,
+html[data-theme="github-light"] .diff-widget-content {
+  background: rgba(246, 248, 250, 0.85);
+  color: #57606a;
+}
+
+html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(131, 148, 150, 0.35);
+}
+
+html[data-theme="solarized-light"] .diff-gutter {
+  color: #6b7f86;
+  background: rgba(253, 246, 227, 0.9);
+  border-right-color: rgba(215, 206, 181, 0.9);
+}
+
+html[data-theme="solarized-light"] .diff-code-normal {
+  background: rgba(255, 249, 233, 0.72);
+}
+
+html[data-theme="solarized-light"] .diff-decoration-content,
+html[data-theme="solarized-light"] .diff-widget-content {
+  background: rgba(255, 249, 233, 0.88);
+  color: #6b7f86;
+}
+
+html[data-theme="gruvbox-dark"] .diff-gutter {
+  color: #bdae93;
+  background: rgba(235, 219, 178, 0.03);
+  border-right-color: rgba(235, 219, 178, 0.08);
+}
+
+html[data-theme="gruvbox-dark"] .diff-decoration-content,
+html[data-theme="gruvbox-dark"] .diff-widget-content {
+  color: #bdae93;
+}
+
+html[data-theme="high-contrast"] .diff-gutter {
+  color: #d9d9d9;
+  background: rgba(255, 255, 255, 0.04);
+  border-right-color: rgba(255, 255, 255, 0.2);
+}
+
+html[data-theme="high-contrast"] .diff-code-normal {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+html[data-theme="high-contrast"] .diff-decoration-content,
+html[data-theme="high-contrast"] .diff-widget-content {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+
+html[data-theme="tokyo-night"] .diff-gutter {
+  color: #a9b1d6;
+  background: rgba(192, 202, 245, 0.03);
+  border-right-color: rgba(192, 202, 245, 0.08);
+}
+
+html[data-theme="tokyo-night"] .diff-decoration-content,
+html[data-theme="tokyo-night"] .diff-widget-content {
+  color: #a9b1d6;
+}
+
+html[data-theme="solarized-dark"] .diff-gutter {
+  color: #839496;
+  background: rgba(147, 161, 161, 0.03);
+  border-right-color: rgba(147, 161, 161, 0.08);
+}
+
+html[data-theme="solarized-dark"] .diff-decoration-content,
+html[data-theme="solarized-dark"] .diff-widget-content {
+  color: #839496;
+}
+
+html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(216, 205, 182, 0.72);
+}
+
+html[data-theme="paper"] .diff-gutter {
+  color: #6a665c;
+  background: rgba(255, 250, 240, 0.86);
+  border-right-color: rgba(216, 205, 182, 0.92);
+}
+
+html[data-theme="paper"] .diff-code-normal {
+  background: rgba(255, 253, 247, 0.75);
+}
+
+html[data-theme="paper"] .diff-decoration-content,
+html[data-theme="paper"] .diff-widget-content {
+  background: rgba(255, 253, 247, 0.9);
+  color: #6a665c;
+}
+
+html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(231, 216, 205, 0.9);
+}
+
+html[data-theme="forge-light"] .diff-gutter {
+  color: #6d584b;
+  background: rgba(255, 250, 246, 0.92);
+  border-right-color: rgba(231, 216, 205, 0.96);
+}
+
+html[data-theme="forge-light"] .diff-code-normal {
+  background: rgba(255, 252, 249, 0.82);
+}
+
+html[data-theme="forge-light"] .diff-decoration-content,
+html[data-theme="forge-light"] .diff-widget-content {
+  background: rgba(255, 252, 249, 0.94);
+  color: #6d584b;
+}
+
+.task-notes-mdx-editor {
+  border: 0;
+  overflow: hidden;
+  color: var(--ant-colorText, inherit);
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar {
+  background: transparent !important;
+  border: 0;
+  color: var(--ant-colorTextSecondary, inherit);
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button,
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] {
+  background: transparent !important;
+  border: 0;
+  color: var(--ant-colorTextSecondary, inherit) !important;
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button:hover,
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"]:hover {
+  background: transparent !important;
+  color: var(--ant-colorText, inherit) !important;
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button[aria-pressed="true"],
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"][aria-pressed="true"] {
+  color: var(--ant-colorPrimary, inherit) !important;
+}
+
+.task-notes-mdx-editor .mdxeditor-toolbar button svg,
+.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] svg {
+  color: inherit !important;
+  fill: currentColor !important;
+  stroke: none !important;
+}
+
+.task-notes-mdx-editor-content {
+  min-height: 380px;
+  color: var(--ant-colorText, inherit);
+  background: transparent;
+}
+
+.task-notes-mdx-editor-content ul,
+.task-notes-mdx-editor-content ol {
+  margin-inline-start: 0;
+  padding-inline-start: 15px;
+}
+````
+
+## File: apps/web/src/utils/task-history.test.ts
+````typescript
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { TaskChangeProposal, TaskMessage, TaskRun } from "@agentswarm/shared-types";
+import {
+  buildTaskHistoryEntries,
+  GIT_TERMINAL_END_REVIEW_MESSAGE,
+  GIT_TERMINAL_START_MESSAGE,
+  INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE,
+  INTERACTIVE_TERMINAL_START_MESSAGE
+} from "./task-history";
+
+function createMessage(input: Partial<TaskMessage> & Pick<TaskMessage, "id" | "createdAt" | "role" | "content">): TaskMessage {
+  return {
+    taskId: "task-1",
+    action: null,
+    ...input
+  };
+}
+
+function createRun(input: Partial<TaskRun> & Pick<TaskRun, "id" | "action" | "startedAt" | "status">): TaskRun {
+  return {
+    taskId: "task-1",
+    provider: "codex",
+    providerProfile: "high",
+    modelOverride: null,
+    branchName: "feature/test",
+    finishedAt: null,
+    summary: null,
+    errorMessage: null,
+    logs: [],
+    ...input
+  };
+}
+
+function createProposal(
+  input: Partial<TaskChangeProposal> &
+    Pick<TaskChangeProposal, "id" | "sourceType" | "sourceId" | "status" | "createdAt" | "diff">
+): TaskChangeProposal {
+  return {
+    taskId: "task-1",
+    fromRef: "abc123",
+    toRef: "def456",
+    diffStat: "1 file changed",
+    changedFiles: ["src/example.ts"],
+    diffTruncated: false,
+    untrackedPathsAtCheckpoint: [],
+    resolvedAt: null,
+    revertedAt: null,
+    ...input
+  };
+}
+
+test("groups a build run with its prompt, summary message, and proposal", () => {
+  const prompt = createMessage({
+    id: "m1",
+    createdAt: "2026-03-24T10:00:00.000Z",
+    role: "user",
+    action: "build",
+    content: "Implement grouped history cards."
+  });
+  const summary = createMessage({
+    id: "m2",
+    createdAt: "2026-03-24T10:03:00.000Z",
+    role: "assistant",
+    action: "build",
+    content: "Implemented grouped history cards."
+  });
+  const run = createRun({
+    id: "r1",
+    action: "build",
+    startedAt: "2026-03-24T10:01:00.000Z",
+    finishedAt: "2026-03-24T10:02:30.000Z",
+    status: "succeeded",
+    summary: "Implemented grouped history cards."
+  });
+  const proposal = createProposal({
+    id: "p1",
+    sourceType: "build_run",
+    sourceId: "r1",
+    status: "pending",
+    createdAt: "2026-03-24T10:03:30.000Z",
+    diff: "diff --git a/a b/a"
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [prompt, summary],
+    runs: [run],
+    proposals: [proposal]
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.kind, "grouped_auto_run");
+  if (entries[0]?.kind !== "grouped_auto_run") {
+    throw new Error("Expected grouped_auto_run");
+  }
+  assert.equal(entries[0].promptMessage?.id, "m1");
+  assert.equal(entries[0].promptText, "Implement grouped history cards.");
+  assert.equal(entries[0].summaryMessage?.id, "m2");
+  assert.equal(entries[0].proposal?.id, "p1");
+});
+
+test("groups ask runs without forcing a diff section", () => {
+  const prompt = createMessage({
+    id: "m1",
+    createdAt: "2026-03-24T11:00:00.000Z",
+    role: "user",
+    action: "ask",
+    content: "Explain the current history pipeline."
+  });
+  const summary = createMessage({
+    id: "m2",
+    createdAt: "2026-03-24T11:01:30.000Z",
+    role: "assistant",
+    action: "ask",
+    content: "The history pipeline merges messages, runs, and proposals."
+  });
+  const run = createRun({
+    id: "r1",
+    action: "ask",
+    startedAt: "2026-03-24T11:00:10.000Z",
+    finishedAt: "2026-03-24T11:01:00.000Z",
+    status: "succeeded",
+    summary: "The history pipeline merges messages, runs, and proposals."
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [prompt, summary],
+    runs: [run],
+    proposals: []
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.kind, "grouped_auto_run");
+  if (entries[0]?.kind !== "grouped_auto_run") {
+    throw new Error("Expected grouped_auto_run");
+  }
+  assert.equal(entries[0].proposal, null);
+});
+
+test("keeps unmatched messages and proposals as raw entries when a run has no matched prompt", () => {
+  const unrelatedMessage = createMessage({
+    id: "m1",
+    createdAt: "2026-03-24T12:00:00.000Z",
+    role: "user",
+    action: "comment",
+    content: "Keep an eye on the history ordering."
+  });
+  const run = createRun({
+    id: "r1",
+    action: "build",
+    startedAt: "2026-03-24T12:05:00.000Z",
+    status: "running"
+  });
+  const unmatchedProposal = createProposal({
+    id: "p1",
+    sourceType: "build_run",
+    sourceId: "missing-run",
+    status: "pending",
+    createdAt: "2026-03-24T12:06:00.000Z",
+    diff: "diff --git a/a b/a"
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [unrelatedMessage],
+    runs: [run],
+    proposals: [unmatchedProposal]
+  });
+
+  assert.deepEqual(
+    entries.map((entry) => entry.kind),
+    ["message", "grouped_auto_run", "proposal"]
+  );
+  const grouped = entries[1];
+  assert.equal(grouped?.kind, "grouped_auto_run");
+  if (grouped?.kind !== "grouped_auto_run") {
+    throw new Error("Expected grouped_auto_run");
+  }
+  assert.equal(grouped.promptMessage, null);
+  assert.equal(grouped.promptText, "No matched user prompt was found for this run.");
+});
+
+test("groups completed terminal sessions with a diff proposal", () => {
+  const start = createMessage({
+    id: "m1",
+    createdAt: "2026-03-24T13:00:00.000Z",
+    role: "system",
+    content: INTERACTIVE_TERMINAL_START_MESSAGE,
+    sessionId: "session-1"
+  });
+  const end = createMessage({
+    id: "m2",
+    createdAt: "2026-03-24T13:10:00.000Z",
+    role: "system",
+    content: INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE,
+    sessionId: "session-1"
+  });
+  const proposal = createProposal({
+    id: "p1",
+    sourceType: "interactive_session",
+    sourceId: "session-1",
+    status: "pending",
+    createdAt: "2026-03-24T13:10:01.000Z",
+    diff: "diff --git a/a b/a"
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [start, end],
+    runs: [],
+    proposals: [proposal]
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.kind, "grouped_terminal_session");
+  if (entries[0]?.kind !== "grouped_terminal_session") {
+    throw new Error("Expected grouped_terminal_session");
+  }
+  assert.equal(entries[0].sessionId, "session-1");
+  assert.equal(entries[0].startMessage.id, "m1");
+  assert.equal(entries[0].endMessage?.id, "m2");
+  assert.equal(entries[0].proposal?.id, "p1");
+  assert.equal(entries[0].active, false);
+});
+
+test("groups completed git terminal sessions with a diff proposal", () => {
+  const start = createMessage({
+    id: "m1",
+    createdAt: "2026-03-24T13:30:00.000Z",
+    role: "system",
+    content: GIT_TERMINAL_START_MESSAGE,
+    sessionId: "session-git-1"
+  });
+  const end = createMessage({
+    id: "m2",
+    createdAt: "2026-03-24T13:42:00.000Z",
+    role: "system",
+    content: GIT_TERMINAL_END_REVIEW_MESSAGE,
+    sessionId: "session-git-1"
+  });
+  const proposal = createProposal({
+    id: "p1",
+    sourceType: "interactive_session",
+    sourceId: "session-git-1",
+    status: "pending",
+    createdAt: "2026-03-24T13:42:01.000Z",
+    diff: "diff --git a/a b/a"
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [start, end],
+    runs: [],
+    proposals: [proposal]
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.kind, "grouped_terminal_session");
+  if (entries[0]?.kind !== "grouped_terminal_session") {
+    throw new Error("Expected grouped_terminal_session");
+  }
+  assert.equal(entries[0].sessionId, "session-git-1");
+  assert.equal(entries[0].startMessage.id, "m1");
+  assert.equal(entries[0].endMessage?.id, "m2");
+  assert.equal(entries[0].proposal?.id, "p1");
+});
+
+test("groups no-change terminal sessions without attaching a later proposal", () => {
+  const start = createMessage({
+    id: "m1",
+    createdAt: "2026-03-24T14:00:00.000Z",
+    role: "system",
+    content: INTERACTIVE_TERMINAL_START_MESSAGE
+  });
+  const end = createMessage({
+    id: "m2",
+    createdAt: "2026-03-24T14:01:00.000Z",
+    role: "system",
+    content: "Interactive terminal session ended. No workspace changes were detected."
+  });
+  const laterProposal = createProposal({
+    id: "p1",
+    sourceType: "interactive_session",
+    sourceId: "session-2",
+    status: "pending",
+    createdAt: "2026-03-24T14:05:00.000Z",
+    diff: "diff --git a/a b/a"
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [start, end],
+    runs: [],
+    proposals: [laterProposal]
+  });
+
+  assert.deepEqual(
+    entries.map((entry) => entry.kind),
+    ["grouped_terminal_session", "proposal"]
+  );
+  const grouped = entries[0];
+  assert.equal(grouped?.kind, "grouped_terminal_session");
+  if (grouped?.kind !== "grouped_terminal_session") {
+    throw new Error("Expected grouped_terminal_session");
+  }
+  assert.equal(grouped.proposal, null);
+});
+
+test("shows an active terminal session as a start-only grouped card", () => {
+  const start = createMessage({
+    id: "m1",
+    createdAt: "2026-03-24T15:00:00.000Z",
+    role: "system",
+    content: INTERACTIVE_TERMINAL_START_MESSAGE
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [start],
+    runs: [],
+    proposals: [],
+    interactiveTerminalRunning: true
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.kind, "grouped_terminal_session");
+  if (entries[0]?.kind !== "grouped_terminal_session") {
+    throw new Error("Expected grouped_terminal_session");
+  }
+  assert.equal(entries[0].endMessage, null);
+  assert.equal(entries[0].active, true);
+});
+
+test("shows active auto runs as grouped cards before summary or diff exist", () => {
+  const prompt = createMessage({
+    id: "m1",
+    createdAt: "2026-03-24T16:00:00.000Z",
+    role: "user",
+    action: "build",
+    content: "Keep streaming logs in the grouped card."
+  });
+  const run = createRun({
+    id: "r1",
+    action: "build",
+    startedAt: "2026-03-24T16:00:05.000Z",
+    status: "running",
+    logs: ["Preparing workspace", "Launching runtime"]
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [prompt],
+    runs: [run],
+    proposals: []
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.kind, "grouped_auto_run");
+  if (entries[0]?.kind !== "grouped_auto_run") {
+    throw new Error("Expected grouped_auto_run");
+  }
+  assert.equal(entries[0].promptMessage?.id, "m1");
+  assert.equal(entries[0].summaryMessage, null);
+  assert.equal(entries[0].proposal, null);
+});
+````
+
+## File: apps/server/src/routes/imports.ts
+````typescript
+import { z } from "zod";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { AuthService } from "../lib/auth.js";
+import type { SchedulerService } from "../services/scheduler.js";
+import type { RepositoryStore } from "../services/repository-store.js";
+import type { SettingsStore } from "../services/settings-store.js";
+import type { SpawnerService } from "../services/spawner.js";
+import type { TaskStore } from "../services/task-store.js";
+import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
+import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
+import { requireTaskCapabilityAccess, requireTaskExecutionConfigAccess } from "../lib/task-capability-access.js";
+import { canUserAccessRepository } from "../lib/task-ownership.js";
+import { withBranchSyncCounts, withTaskCreatorName } from "./tasks.js";
+import { normalizeProvider } from "../lib/provider-config.js";
+import type { UserStore } from "../services/user-store.js";
+
+const deadlineSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
+  .nullable();
+
+const issueImportSchema = z.object({
+  repoId: z.string().min(1),
+  draft: z.boolean().optional(),
+  issueNumber: z.coerce.number().int().positive(),
+  includeComments: z.boolean().optional(),
+  notes: z.string().max(40_000).optional(),
+  deadline: deadlineSchema.optional(),
+  taskType: z.enum(["build", "ask"]).optional(),
+  title: z.string().trim().optional(),
+  provider: z.enum(["codex", "claude"]).optional(),
+  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+  modelOverride: z.string().trim().min(1).optional(),
+  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+  baseBranch: z.string().trim().min(1).optional(),
+  branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+  model: z.string().trim().min(1).optional(),
+  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
+}).strict();
+
+const pullRequestImportSchema = z.object({
+  repoId: z.string().min(1),
+  draft: z.boolean().optional(),
+  pullRequestNumber: z.coerce.number().int().positive(),
+  notes: z.string().max(40_000).optional(),
+  deadline: deadlineSchema.optional(),
+  title: z.string().trim().optional(),
+  provider: z.enum(["codex", "claude"]).optional(),
+  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+  modelOverride: z.string().trim().min(1).optional(),
+  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+  model: z.string().trim().min(1).optional(),
+  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
+});
+
+const applyCreateDefaultsFromSettings = <
+  T extends {
+    provider?: "codex" | "claude";
+    providerProfile?: "low" | "medium" | "high" | "max";
+    modelOverride?: string;
+    model?: string;
+  }
+>(
+  payload: T,
+  settings: Awaited<ReturnType<SettingsStore["getSettings"]>>
+): T => {
+  const provider = normalizeProvider(payload.provider ?? settings.defaultProvider);
+  const providerProfile =
+    payload.providerProfile ??
+    (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort);
+  const hasLegacyModel = Boolean(payload.model?.trim());
+  const modelOverride =
+    payload.modelOverride ??
+    (hasLegacyModel ? undefined : provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel);
+
+  return {
+    ...payload,
+    provider,
+    providerProfile,
+    modelOverride
+  };
+};
+
+export const registerImportRoutes = (
+  app: FastifyInstance,
+  deps: {
+    githubImportService: GitHubImportService;
+    repositoryStore: RepositoryStore;
+    settingsStore: SettingsStore;
+    taskStore: TaskStore;
+    userStore: UserStore;
+    scheduler: SchedulerService;
+    spawner: SpawnerService;
+    auth: AuthService;
+  }
+): void => {
+  const getAccessibleRepository = async (
+    repoId: string,
+    request: FastifyRequest,
+    reply: FastifyReply
+  ) => {
+    const repository = await deps.repositoryStore.getRepository(repoId);
+    if (!repository || !canUserAccessRepository(request.auth?.user, repoId)) {
+      await reply.status(404).send({ message: "Repository not found" });
+      return null;
+    }
+
+    return repository;
+  };
+
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/issues", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repoId = String(request.query.repoId ?? "").trim();
+    if (!repoId) {
+      return reply.status(400).send({ message: "repoId is required" });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      const issues = await deps.githubImportService.listOpenIssues(repository);
+      return reply.send(issues);
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/pull-requests", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repoId = String(request.query.repoId ?? "").trim();
+    if (!repoId) {
+      return reply.status(400).send({ message: "repoId is required" });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      const pullRequests = await deps.githubImportService.listOpenPullRequests(repository);
+      return reply.send(pullRequests);
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/branches", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repoId = String(request.query.repoId ?? "").trim();
+    if (!repoId) {
+      return reply.status(400).send({ message: "repoId is required" });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      const branches = await deps.githubImportService.listBranches(repository);
+      return reply.send(branches);
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.post("/imports/issue", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
+    const parsed = issueImportSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      const settings = await deps.settingsStore.getSettings();
+      const issueRest = applyCreateDefaultsFromSettings(parsed.data, settings);
+      if (
+        !requireTaskCapabilityAccess(request, reply, {
+          taskType: issueRest.taskType ?? "build"
+        })
+      ) {
+        return;
+      }
+      if (!requireTaskExecutionConfigAccess(request, reply, issueRest)) {
+        return;
+      }
+
+      const taskInput = {
+        ...(await deps.githubImportService.buildTaskInputFromIssue(repository, issueRest)),
+        ...(issueRest.draft === true ? { draft: true } : {})
+      };
+      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
+      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
+        creatorName: request.auth!.user.name
+      });
+      const createdTask = taskWithCreator ?? {
+        ...task,
+        creatorName: request.auth!.user.name
+      };
+      if (issueRest.draft === true) {
+        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
+      }
+      const startResult = await orchestrateTaskStart(
+        {
+          taskStore: deps.taskStore,
+          scheduler: deps.scheduler,
+          spawner: deps.spawner
+        },
+        {
+          task: createdTask,
+          fallbackMessage: "Imported task execution could not be started"
+        }
+      );
+      if (!startResult.ok) {
+        return reply.status(startResult.statusCode).send({ message: startResult.message });
+      }
+      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.post("/imports/pull-request", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
+    const parsed = pullRequestImportSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      if (!requireTaskCapabilityAccess(request, reply, { taskType: "build" })) {
+        return;
+      }
+      const settings = await deps.settingsStore.getSettings();
+      const createPayload = applyCreateDefaultsFromSettings(parsed.data, settings);
+      if (!requireTaskExecutionConfigAccess(request, reply, createPayload)) {
+        return;
+      }
+
+      const taskInput = {
+        ...(await deps.githubImportService.buildTaskInputFromPullRequest(repository, createPayload)),
+        ...(createPayload.draft === true ? { draft: true } : {})
+      };
+      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
+      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
+        creatorName: request.auth!.user.name
+      });
+      const createdTask = taskWithCreator ?? {
+        ...task,
+        creatorName: request.auth!.user.name
+      };
+      if (createPayload.draft === true) {
+        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
+      }
+      const startResult = await orchestrateTaskStart(
+        {
+          taskStore: deps.taskStore,
+          scheduler: deps.scheduler,
+          spawner: deps.spawner
+        },
+        {
+          task: createdTask,
+          fallbackMessage: "Imported task execution could not be started"
+        }
+      );
+      if (!startResult.ok) {
+        return reply.status(startResult.statusCode).send({ message: startResult.message });
+      }
+      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
   });
 };
 ````
@@ -35967,760 +37030,6 @@ void bootstrap().catch((error) => {
 });
 ````
 
-## File: apps/web/app/globals.css
-````css
-@import "@mdxeditor/editor/style.css";
-
-:root {
-  color-scheme: light;
-  --app-body-bg: #f4f8f5;
-  --app-body-text: #5a675d;
-  --diff-background-color: #fcfefd;
-  --diff-text-color: #415046;
-  --diff-selection-background-color: rgba(28, 128, 87, 0.12);
-  --diff-selection-text-color: var(--diff-text-color);
-  --diff-gutter-insert-background-color: #dff5e4;
-  --diff-gutter-insert-text-color: #2e6a48;
-  --diff-gutter-delete-background-color: #f5dde0;
-  --diff-gutter-delete-text-color: #8d4a53;
-  --diff-gutter-selected-background-color: #efe7c8;
-  --diff-gutter-selected-text-color: #5b5538;
-  --diff-code-insert-background-color: #ebf9ee;
-  --diff-code-insert-text-color: #274b35;
-  --diff-code-delete-background-color: #faecee;
-  --diff-code-delete-text-color: #6d3c43;
-  --diff-code-insert-edit-background-color: #c8e8d1;
-  --diff-code-insert-edit-text-color: #1f402c;
-  --diff-code-delete-edit-background-color: #efc0c7;
-  --diff-code-delete-edit-text-color: #5e2f36;
-  --diff-code-selected-background-color: #f3edcf;
-  --diff-code-selected-text-color: #4e4731;
-  --diff-omit-gutter-line-color: #c95c5c;
-}
-
-html[data-theme="dark"] {
-  color-scheme: dark;
-  --app-body-bg: #0e1411;
-  --app-body-text: #d8e2d9;
-  --diff-background-color: #141c18;
-  --diff-text-color: #d7e3d8;
-  --diff-selection-background-color: rgba(103, 196, 150, 0.18);
-  --diff-selection-text-color: #f4f8f5;
-  --diff-gutter-insert-background-color: #173624;
-  --diff-gutter-insert-text-color: #8fd9ae;
-  --diff-gutter-delete-background-color: #3a1f25;
-  --diff-gutter-delete-text-color: #e2a2ab;
-  --diff-gutter-selected-background-color: #3a3723;
-  --diff-gutter-selected-text-color: #efe2a0;
-  --diff-code-insert-background-color: #10251a;
-  --diff-code-insert-text-color: #cfeedd;
-  --diff-code-delete-background-color: #2c171c;
-  --diff-code-delete-text-color: #f2c4ca;
-  --diff-code-insert-edit-background-color: #27543e;
-  --diff-code-insert-edit-text-color: #e8fff1;
-  --diff-code-delete-edit-background-color: #7a3a47;
-  --diff-code-delete-edit-text-color: #fff0f2;
-  --diff-code-selected-background-color: #33311f;
-  --diff-code-selected-text-color: #f2e8b7;
-  --diff-omit-gutter-line-color: #d46c6c;
-}
-
-html[data-theme="cyber"] {
-  color-scheme: dark;
-  --app-body-bg: #181825;
-  --app-body-text: rgba(200, 182, 255, 0.9);
-  --diff-background-color: #1e1e2e;
-  --diff-text-color: #c8b6ff;
-  --diff-selection-background-color: rgba(157, 78, 221, 0.18);
-  --diff-selection-text-color: #f4eeff;
-  --diff-gutter-insert-background-color: #17353a;
-  --diff-gutter-insert-text-color: #72efdd;
-  --diff-gutter-delete-background-color: #3a1028;
-  --diff-gutter-delete-text-color: #ff8ab5;
-  --diff-gutter-selected-background-color: #3a3111;
-  --diff-gutter-selected-text-color: #ffd60a;
-  --diff-code-insert-background-color: #11272a;
-  --diff-code-insert-text-color: #d2fffb;
-  --diff-code-delete-background-color: #2a0c1b;
-  --diff-code-delete-text-color: #ffd1e4;
-  --diff-code-insert-edit-background-color: #1c4f56;
-  --diff-code-insert-edit-text-color: #effffd;
-  --diff-code-delete-edit-background-color: #6d1240;
-  --diff-code-delete-edit-text-color: #fff0f7;
-  --diff-code-selected-background-color: #3a3111;
-  --diff-code-selected-text-color: #ffe98a;
-  --diff-omit-gutter-line-color: #ff006e;
-}
-
-html[data-theme="forge"] {
-  color-scheme: dark;
-  --app-body-bg: #0d1117;
-  --app-body-text: rgba(201, 209, 217, 0.88);
-  --diff-background-color: #161b22;
-  --diff-text-color: #c9d1d9;
-  --diff-selection-background-color: rgba(255, 107, 53, 0.16);
-  --diff-selection-text-color: #f6f8fa;
-  --diff-gutter-insert-background-color: #0f302e;
-  --diff-gutter-insert-text-color: #59e1ce;
-  --diff-gutter-delete-background-color: #34191d;
-  --diff-gutter-delete-text-color: #ff9b9b;
-  --diff-gutter-selected-background-color: #3a2c16;
-  --diff-gutter-selected-text-color: #ffbf66;
-  --diff-code-insert-background-color: #0d2625;
-  --diff-code-insert-text-color: #d3fff8;
-  --diff-code-delete-background-color: #281316;
-  --diff-code-delete-text-color: #ffd7d7;
-  --diff-code-insert-edit-background-color: #13524d;
-  --diff-code-insert-edit-text-color: #effffb;
-  --diff-code-delete-edit-background-color: #7b2b31;
-  --diff-code-delete-edit-text-color: #fff1f1;
-  --diff-code-selected-background-color: #352915;
-  --diff-code-selected-text-color: #ffdca0;
-  --diff-omit-gutter-line-color: #ff5252;
-}
-
-html[data-theme="forge-light"] {
-  color-scheme: light;
-  --app-body-bg: #fff3eb;
-  --app-body-text: rgba(51, 40, 33, 0.92);
-  --diff-background-color: #ffffff;
-  --diff-text-color: #332821;
-  --diff-selection-background-color: rgba(255, 107, 53, 0.12);
-  --diff-selection-text-color: #332821;
-  --diff-gutter-insert-background-color: #e3f7f2;
-  --diff-gutter-insert-text-color: #0b7c69;
-  --diff-gutter-delete-background-color: #fff0ef;
-  --diff-gutter-delete-text-color: #dc2626;
-  --diff-gutter-selected-background-color: #fff0d8;
-  --diff-gutter-selected-text-color: #b96b00;
-  --diff-code-insert-background-color: #f0fffb;
-  --diff-code-insert-text-color: #0a5c4e;
-  --diff-code-delete-background-color: #fff5f4;
-  --diff-code-delete-text-color: #b91c1c;
-  --diff-code-insert-edit-background-color: #c7efe5;
-  --diff-code-insert-edit-text-color: #09483e;
-  --diff-code-delete-edit-background-color: #ffd6d1;
-  --diff-code-delete-edit-text-color: #991b1b;
-  --diff-code-selected-background-color: #ffe7c2;
-  --diff-code-selected-text-color: #9a5600;
-  --diff-omit-gutter-line-color: #dc2626;
-}
-
-html[data-theme="github"] {
-  color-scheme: dark;
-  --app-body-bg: #0d1117;
-  --app-body-text: #c9d1d9;
-  --diff-background-color: #161b22;
-  --diff-text-color: #c9d1d9;
-  --diff-selection-background-color: rgba(31, 111, 235, 0.18);
-  --diff-selection-text-color: #f0f6fc;
-  --diff-gutter-insert-background-color: #0f2419;
-  --diff-gutter-insert-text-color: #56d364;
-  --diff-gutter-delete-background-color: #2d1517;
-  --diff-gutter-delete-text-color: #ff7b72;
-  --diff-gutter-selected-background-color: #2b2415;
-  --diff-gutter-selected-text-color: #ffa657;
-  --diff-code-insert-background-color: #0d1f14;
-  --diff-code-insert-text-color: #aff5b4;
-  --diff-code-delete-background-color: #231417;
-  --diff-code-delete-text-color: #ffdcd7;
-  --diff-code-insert-edit-background-color: #1a3a24;
-  --diff-code-insert-edit-text-color: #d2ffd8;
-  --diff-code-delete-edit-background-color: #5d2023;
-  --diff-code-delete-edit-text-color: #fff1ee;
-  --diff-code-selected-background-color: #2b2415;
-  --diff-code-selected-text-color: #ffddb0;
-  --diff-omit-gutter-line-color: #f85149;
-}
-
-html[data-theme="github-light"] {
-  color-scheme: light;
-  --app-body-bg: #f6f8fa;
-  --app-body-text: #1f2328;
-  --diff-background-color: #ffffff;
-  --diff-text-color: #1f2328;
-  --diff-selection-background-color: rgba(9, 105, 218, 0.12);
-  --diff-selection-text-color: #1f2328;
-  --diff-gutter-insert-background-color: #dafbe1;
-  --diff-gutter-insert-text-color: #1a7f37;
-  --diff-gutter-delete-background-color: #ffebe9;
-  --diff-gutter-delete-text-color: #cf222e;
-  --diff-gutter-selected-background-color: #fff8c5;
-  --diff-gutter-selected-text-color: #9a6700;
-  --diff-code-insert-background-color: #ebfff0;
-  --diff-code-insert-text-color: #116329;
-  --diff-code-delete-background-color: #fff1f0;
-  --diff-code-delete-text-color: #a40e26;
-  --diff-code-insert-edit-background-color: #aceebb;
-  --diff-code-insert-edit-text-color: #0f5323;
-  --diff-code-delete-edit-background-color: #ffcecb;
-  --diff-code-delete-edit-text-color: #82071e;
-  --diff-code-selected-background-color: #fff1b8;
-  --diff-code-selected-text-color: #7d4e00;
-  --diff-omit-gutter-line-color: #cf222e;
-}
-
-html[data-theme="nord"] {
-  color-scheme: dark;
-  --app-body-bg: #2b303b;
-  --app-body-text: #e5e9f0;
-  --diff-background-color: #3b4252;
-  --diff-text-color: #e5e9f0;
-  --diff-selection-background-color: rgba(136, 192, 208, 0.18);
-  --diff-selection-text-color: #f7fafc;
-  --diff-gutter-insert-background-color: #334038;
-  --diff-gutter-insert-text-color: #a3be8c;
-  --diff-gutter-delete-background-color: #43343a;
-  --diff-gutter-delete-text-color: #d08770;
-  --diff-gutter-selected-background-color: #4a4437;
-  --diff-gutter-selected-text-color: #ebcb8b;
-  --diff-code-insert-background-color: #2f3933;
-  --diff-code-insert-text-color: #d8e7cb;
-  --diff-code-delete-background-color: #3a2f33;
-  --diff-code-delete-text-color: #f1c2b6;
-  --diff-code-insert-edit-background-color: #425046;
-  --diff-code-insert-edit-text-color: #f3faeb;
-  --diff-code-delete-edit-background-color: #6c4a52;
-  --diff-code-delete-edit-text-color: #fff1ef;
-  --diff-code-selected-background-color: #4a4437;
-  --diff-code-selected-text-color: #f5ddb0;
-  --diff-omit-gutter-line-color: #bf616a;
-}
-
-html[data-theme="solarized-light"] {
-  color-scheme: light;
-  --app-body-bg: #f4edd8;
-  --app-body-text: #586e75;
-  --diff-background-color: #fdf6e3;
-  --diff-text-color: #586e75;
-  --diff-selection-background-color: rgba(38, 139, 210, 0.12);
-  --diff-selection-text-color: #586e75;
-  --diff-gutter-insert-background-color: #eef6d2;
-  --diff-gutter-insert-text-color: #657b00;
-  --diff-gutter-delete-background-color: #f8e1dc;
-  --diff-gutter-delete-text-color: #c0392b;
-  --diff-gutter-selected-background-color: #f8efc8;
-  --diff-gutter-selected-text-color: #9a7400;
-  --diff-code-insert-background-color: #f5f9e7;
-  --diff-code-insert-text-color: #4e6400;
-  --diff-code-delete-background-color: #fbebe7;
-  --diff-code-delete-text-color: #a92b26;
-  --diff-code-insert-edit-background-color: #dfeab2;
-  --diff-code-insert-edit-text-color: #425300;
-  --diff-code-delete-edit-background-color: #f2c4ba;
-  --diff-code-delete-edit-text-color: #86211e;
-  --diff-code-selected-background-color: #f5e7a8;
-  --diff-code-selected-text-color: #7f5c00;
-  --diff-omit-gutter-line-color: #dc322f;
-}
-
-html[data-theme="gruvbox-dark"] {
-  color-scheme: dark;
-  --app-body-bg: #1d2021;
-  --app-body-text: #ebdbb2;
-  --diff-background-color: #32302f;
-  --diff-text-color: #ebdbb2;
-  --diff-selection-background-color: rgba(215, 153, 33, 0.18);
-  --diff-selection-text-color: #fbf1c7;
-  --diff-gutter-insert-background-color: #30361d;
-  --diff-gutter-insert-text-color: #b8bb26;
-  --diff-gutter-delete-background-color: #442726;
-  --diff-gutter-delete-text-color: #fb7c6d;
-  --diff-gutter-selected-background-color: #47341c;
-  --diff-gutter-selected-text-color: #fabd2f;
-  --diff-code-insert-background-color: #2a2f19;
-  --diff-code-insert-text-color: #dde79b;
-  --diff-code-delete-background-color: #3a2221;
-  --diff-code-delete-text-color: #ffd2cb;
-  --diff-code-insert-edit-background-color: #46511d;
-  --diff-code-insert-edit-text-color: #f4ffd1;
-  --diff-code-delete-edit-background-color: #7d3b34;
-  --diff-code-delete-edit-text-color: #fff0ed;
-  --diff-code-selected-background-color: #47341c;
-  --diff-code-selected-text-color: #ffd88a;
-  --diff-omit-gutter-line-color: #fb4934;
-}
-
-html[data-theme="high-contrast"] {
-  color-scheme: dark;
-  --app-body-bg: #000000;
-  --app-body-text: #ffffff;
-  --diff-background-color: #0f0f0f;
-  --diff-text-color: #ffffff;
-  --diff-selection-background-color: rgba(77, 163, 255, 0.26);
-  --diff-selection-text-color: #ffffff;
-  --diff-gutter-insert-background-color: #001d0d;
-  --diff-gutter-insert-text-color: #43f090;
-  --diff-gutter-delete-background-color: #2a0000;
-  --diff-gutter-delete-text-color: #ffb0b0;
-  --diff-gutter-selected-background-color: #241f00;
-  --diff-gutter-selected-text-color: #ffe14d;
-  --diff-code-insert-background-color: #002813;
-  --diff-code-insert-text-color: #b3ffd2;
-  --diff-code-delete-background-color: #300000;
-  --diff-code-delete-text-color: #ffe0e0;
-  --diff-code-insert-edit-background-color: #004d25;
-  --diff-code-insert-edit-text-color: #ecfff3;
-  --diff-code-delete-edit-background-color: #6b0000;
-  --diff-code-delete-edit-text-color: #fff5f5;
-  --diff-code-selected-background-color: #3d3500;
-  --diff-code-selected-text-color: #fff4a3;
-  --diff-omit-gutter-line-color: #ff5c5c;
-}
-
-html[data-theme="tokyo-night"] {
-  color-scheme: dark;
-  --app-body-bg: #16161e;
-  --app-body-text: #c0caf5;
-  --diff-background-color: #1f2335;
-  --diff-text-color: #c0caf5;
-  --diff-selection-background-color: rgba(122, 162, 247, 0.18);
-  --diff-selection-text-color: #eef2ff;
-  --diff-gutter-insert-background-color: #223126;
-  --diff-gutter-insert-text-color: #9ece6a;
-  --diff-gutter-delete-background-color: #3b2532;
-  --diff-gutter-delete-text-color: #f7768e;
-  --diff-gutter-selected-background-color: #393324;
-  --diff-gutter-selected-text-color: #e0af68;
-  --diff-code-insert-background-color: #1d2b22;
-  --diff-code-insert-text-color: #d8f2bc;
-  --diff-code-delete-background-color: #301f29;
-  --diff-code-delete-text-color: #ffc3ce;
-  --diff-code-insert-edit-background-color: #35503f;
-  --diff-code-insert-edit-text-color: #f0ffe5;
-  --diff-code-delete-edit-background-color: #6e4251;
-  --diff-code-delete-edit-text-color: #fff0f4;
-  --diff-code-selected-background-color: #393324;
-  --diff-code-selected-text-color: #f3d5a5;
-  --diff-omit-gutter-line-color: #f7768e;
-}
-
-html[data-theme="solarized-dark"] {
-  color-scheme: dark;
-  --app-body-bg: #001f27;
-  --app-body-text: #93a1a1;
-  --diff-background-color: #073642;
-  --diff-text-color: #93a1a1;
-  --diff-selection-background-color: rgba(38, 139, 210, 0.2);
-  --diff-selection-text-color: #eee8d5;
-  --diff-gutter-insert-background-color: #1b3314;
-  --diff-gutter-insert-text-color: #859900;
-  --diff-gutter-delete-background-color: #3b1712;
-  --diff-gutter-delete-text-color: #dc322f;
-  --diff-gutter-selected-background-color: #3a2d09;
-  --diff-gutter-selected-text-color: #b58900;
-  --diff-code-insert-background-color: #153016;
-  --diff-code-insert-text-color: #c3d269;
-  --diff-code-delete-background-color: #31130f;
-  --diff-code-delete-text-color: #ff9b94;
-  --diff-code-insert-edit-background-color: #31511d;
-  --diff-code-insert-edit-text-color: #eef7b3;
-  --diff-code-delete-edit-background-color: #723127;
-  --diff-code-delete-edit-text-color: #ffe5df;
-  --diff-code-selected-background-color: #3a2d09;
-  --diff-code-selected-text-color: #e8c65a;
-  --diff-omit-gutter-line-color: #dc322f;
-}
-
-html[data-theme="paper"] {
-  color-scheme: light;
-  --app-body-bg: #efe8d5;
-  --app-body-text: #4b463c;
-  --diff-background-color: #fffaf0;
-  --diff-text-color: #4b463c;
-  --diff-selection-background-color: rgba(70, 124, 138, 0.12);
-  --diff-selection-text-color: #4b463c;
-  --diff-gutter-insert-background-color: #edf2e3;
-  --diff-gutter-insert-text-color: #567038;
-  --diff-gutter-delete-background-color: #f5e3e1;
-  --diff-gutter-delete-text-color: #9d4f4f;
-  --diff-gutter-selected-background-color: #f6ead7;
-  --diff-gutter-selected-text-color: #9b6d2b;
-  --diff-code-insert-background-color: #f4f7eb;
-  --diff-code-insert-text-color: #445a2b;
-  --diff-code-delete-background-color: #faecea;
-  --diff-code-delete-text-color: #884646;
-  --diff-code-insert-edit-background-color: #dfe8d2;
-  --diff-code-insert-edit-text-color: #394b24;
-  --diff-code-delete-edit-background-color: #edd1ce;
-  --diff-code-delete-edit-text-color: #723b3b;
-  --diff-code-selected-background-color: #efddc0;
-  --diff-code-selected-text-color: #7f5b22;
-  --diff-omit-gutter-line-color: #b55d5d;
-}
-
-html,
-body {
-  margin: 0;
-  min-height: 100%;
-}
-
-body {
-  background: var(--app-body-bg);
-  color: var(--app-body-text);
-  transition:
-    background-color 160ms ease,
-    color 160ms ease;
-}
-
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: "SFMono-Regular", "Consolas", monospace;
-}
-
-.xterm .xterm-screen {
-  padding: 0;
-  box-sizing: border-box;
-}
-
-.diff {
-  background: var(--diff-background-color);
-  color: var(--diff-text-color);
-}
-
-.diff-hunk + .diff-hunk .diff-line:first-child td,
-.diff-hunk + .diff-hunk .diff-widget:first-child td,
-.diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
-}
-
-.diff-gutter {
-  color: rgba(90, 103, 93, 0.72);
-  background: rgba(0, 0, 0, 0.015);
-  border-right: 1px solid rgba(0, 0, 0, 0.05);
-}
-
-.diff-code-normal {
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.diff-code,
-.diff-decoration-content,
-.diff-widget-content {
-  color: var(--diff-text-color);
-}
-
-.diff-decoration-content,
-.diff-widget-content {
-  background: rgba(0, 0, 0, 0.025);
-}
-
-html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="cyber"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="github"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="github"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="github"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="nord"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="gruvbox-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="high-contrast"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="tokyo-night"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="solarized-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(255, 255, 255, 0.06);
-}
-
-html[data-theme="dark"] .diff-gutter,
-html[data-theme="cyber"] .diff-gutter,
-html[data-theme="forge"] .diff-gutter,
-html[data-theme="github"] .diff-gutter,
-html[data-theme="nord"] .diff-gutter,
-html[data-theme="gruvbox-dark"] .diff-gutter,
-html[data-theme="high-contrast"] .diff-gutter,
-html[data-theme="tokyo-night"] .diff-gutter,
-html[data-theme="solarized-dark"] .diff-gutter {
-  color: #8ea394;
-  background: rgba(255, 255, 255, 0.02);
-  border-right-color: rgba(255, 255, 255, 0.06);
-}
-
-html[data-theme="dark"] .diff-code-normal,
-html[data-theme="cyber"] .diff-code-normal,
-html[data-theme="forge"] .diff-code-normal,
-html[data-theme="github"] .diff-code-normal,
-html[data-theme="nord"] .diff-code-normal,
-html[data-theme="gruvbox-dark"] .diff-code-normal,
-html[data-theme="high-contrast"] .diff-code-normal,
-html[data-theme="tokyo-night"] .diff-code-normal,
-html[data-theme="solarized-dark"] .diff-code-normal {
-  background: rgba(255, 255, 255, 0.01);
-}
-
-html[data-theme="dark"] .diff-decoration-content,
-html[data-theme="dark"] .diff-widget-content,
-html[data-theme="cyber"] .diff-decoration-content,
-html[data-theme="cyber"] .diff-widget-content,
-html[data-theme="forge"] .diff-decoration-content,
-html[data-theme="forge"] .diff-widget-content,
-html[data-theme="github"] .diff-decoration-content,
-html[data-theme="github"] .diff-widget-content,
-html[data-theme="nord"] .diff-decoration-content,
-html[data-theme="nord"] .diff-widget-content,
-html[data-theme="gruvbox-dark"] .diff-decoration-content,
-html[data-theme="gruvbox-dark"] .diff-widget-content,
-html[data-theme="high-contrast"] .diff-decoration-content,
-html[data-theme="high-contrast"] .diff-widget-content,
-html[data-theme="tokyo-night"] .diff-decoration-content,
-html[data-theme="tokyo-night"] .diff-widget-content,
-html[data-theme="solarized-dark"] .diff-decoration-content,
-html[data-theme="solarized-dark"] .diff-widget-content {
-  background: rgba(255, 255, 255, 0.03);
-  color: #9fb3a5;
-}
-
-html[data-theme="cyber"] .diff-gutter {
-  color: rgba(200, 182, 255, 0.65);
-  background: rgba(255, 255, 255, 0.025);
-  border-right-color: rgba(200, 182, 255, 0.08);
-}
-
-html[data-theme="cyber"] .diff-decoration-content,
-html[data-theme="cyber"] .diff-widget-content {
-  color: rgba(200, 182, 255, 0.72);
-}
-
-html[data-theme="forge"] .diff-gutter {
-  color: rgba(201, 209, 217, 0.62);
-  background: rgba(255, 255, 255, 0.02);
-  border-right-color: rgba(201, 209, 217, 0.07);
-}
-
-html[data-theme="forge"] .diff-decoration-content,
-html[data-theme="forge"] .diff-widget-content {
-  color: rgba(201, 209, 217, 0.72);
-}
-
-html[data-theme="github"] .diff-gutter {
-  color: #8b949e;
-  background: rgba(255, 255, 255, 0.02);
-  border-right-color: rgba(201, 209, 217, 0.08);
-}
-
-html[data-theme="github"] .diff-decoration-content,
-html[data-theme="github"] .diff-widget-content {
-  color: #8b949e;
-}
-
-html[data-theme="nord"] .diff-gutter {
-  color: #c2cad6;
-  background: rgba(236, 239, 244, 0.03);
-  border-right-color: rgba(236, 239, 244, 0.08);
-}
-
-html[data-theme="nord"] .diff-decoration-content,
-html[data-theme="nord"] .diff-widget-content {
-  color: #c2cad6;
-}
-
-html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(208, 215, 222, 0.7);
-}
-
-html[data-theme="github-light"] .diff-gutter {
-  color: #57606a;
-  background: rgba(246, 248, 250, 0.9);
-  border-right-color: rgba(208, 215, 222, 0.9);
-}
-
-html[data-theme="github-light"] .diff-code-normal {
-  background: rgba(246, 248, 250, 0.65);
-}
-
-html[data-theme="github-light"] .diff-decoration-content,
-html[data-theme="github-light"] .diff-widget-content {
-  background: rgba(246, 248, 250, 0.85);
-  color: #57606a;
-}
-
-html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="solarized-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(131, 148, 150, 0.35);
-}
-
-html[data-theme="solarized-light"] .diff-gutter {
-  color: #6b7f86;
-  background: rgba(253, 246, 227, 0.9);
-  border-right-color: rgba(215, 206, 181, 0.9);
-}
-
-html[data-theme="solarized-light"] .diff-code-normal {
-  background: rgba(255, 249, 233, 0.72);
-}
-
-html[data-theme="solarized-light"] .diff-decoration-content,
-html[data-theme="solarized-light"] .diff-widget-content {
-  background: rgba(255, 249, 233, 0.88);
-  color: #6b7f86;
-}
-
-html[data-theme="gruvbox-dark"] .diff-gutter {
-  color: #bdae93;
-  background: rgba(235, 219, 178, 0.03);
-  border-right-color: rgba(235, 219, 178, 0.08);
-}
-
-html[data-theme="gruvbox-dark"] .diff-decoration-content,
-html[data-theme="gruvbox-dark"] .diff-widget-content {
-  color: #bdae93;
-}
-
-html[data-theme="high-contrast"] .diff-gutter {
-  color: #d9d9d9;
-  background: rgba(255, 255, 255, 0.04);
-  border-right-color: rgba(255, 255, 255, 0.2);
-}
-
-html[data-theme="high-contrast"] .diff-code-normal {
-  background: rgba(255, 255, 255, 0.03);
-}
-
-html[data-theme="high-contrast"] .diff-decoration-content,
-html[data-theme="high-contrast"] .diff-widget-content {
-  background: rgba(255, 255, 255, 0.06);
-  color: #ffffff;
-}
-
-html[data-theme="tokyo-night"] .diff-gutter {
-  color: #a9b1d6;
-  background: rgba(192, 202, 245, 0.03);
-  border-right-color: rgba(192, 202, 245, 0.08);
-}
-
-html[data-theme="tokyo-night"] .diff-decoration-content,
-html[data-theme="tokyo-night"] .diff-widget-content {
-  color: #a9b1d6;
-}
-
-html[data-theme="solarized-dark"] .diff-gutter {
-  color: #839496;
-  background: rgba(147, 161, 161, 0.03);
-  border-right-color: rgba(147, 161, 161, 0.08);
-}
-
-html[data-theme="solarized-dark"] .diff-decoration-content,
-html[data-theme="solarized-dark"] .diff-widget-content {
-  color: #839496;
-}
-
-html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="paper"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(216, 205, 182, 0.72);
-}
-
-html[data-theme="paper"] .diff-gutter {
-  color: #6a665c;
-  background: rgba(255, 250, 240, 0.86);
-  border-right-color: rgba(216, 205, 182, 0.92);
-}
-
-html[data-theme="paper"] .diff-code-normal {
-  background: rgba(255, 253, 247, 0.75);
-}
-
-html[data-theme="paper"] .diff-decoration-content,
-html[data-theme="paper"] .diff-widget-content {
-  background: rgba(255, 253, 247, 0.9);
-  color: #6a665c;
-}
-
-html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(231, 216, 205, 0.9);
-}
-
-html[data-theme="forge-light"] .diff-gutter {
-  color: #6d584b;
-  background: rgba(255, 250, 246, 0.92);
-  border-right-color: rgba(231, 216, 205, 0.96);
-}
-
-html[data-theme="forge-light"] .diff-code-normal {
-  background: rgba(255, 252, 249, 0.82);
-}
-
-html[data-theme="forge-light"] .diff-decoration-content,
-html[data-theme="forge-light"] .diff-widget-content {
-  background: rgba(255, 252, 249, 0.94);
-  color: #6d584b;
-}
-
-.task-notes-mdx-editor {
-  border: 0;
-  overflow: hidden;
-  color: var(--ant-colorText, inherit);
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar {
-  background: transparent !important;
-  border: 0;
-  color: var(--ant-colorTextSecondary, inherit);
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar button,
-.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] {
-  background: transparent !important;
-  border: 0;
-  color: var(--ant-colorTextSecondary, inherit) !important;
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar button:hover,
-.task-notes-mdx-editor .mdxeditor-toolbar [role="button"]:hover {
-  background: transparent !important;
-  color: var(--ant-colorText, inherit) !important;
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar button[aria-pressed="true"],
-.task-notes-mdx-editor .mdxeditor-toolbar [role="button"][aria-pressed="true"] {
-  color: var(--ant-colorPrimary, inherit) !important;
-}
-
-.task-notes-mdx-editor .mdxeditor-toolbar button svg,
-.task-notes-mdx-editor .mdxeditor-toolbar [role="button"] svg {
-  color: inherit !important;
-  fill: currentColor !important;
-  stroke: none !important;
-}
-
-.task-notes-mdx-editor-content {
-  min-height: 380px;
-  color: var(--ant-colorText, inherit);
-  background: transparent;
-}
-
-.task-notes-mdx-editor-content ul,
-.task-notes-mdx-editor-content ol {
-  margin-inline-start: 0;
-  padding-inline-start: 15px;
-}
-````
-
 ## File: apps/web/src/auth/access.ts
 ````typescript
 import type { PermissionScope } from "@agentswarm/shared-types";
@@ -36905,6 +37214,91 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput, option
         : { task_source: "blank" as const })
   });
 };
+````
+
+## File: apps/web/src/utils/task-lifecycle-view-model.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import type { Task } from "@agentswarm/shared-types";
+import { buildTaskLifecycleViewModel } from "./task-lifecycle-view-model";
+
+const createTask = (overrides: Partial<Task> = {}): Task =>
+  ({
+    id: "task-1",
+    title: "Task",
+    deadline: null,
+    pinned: false,
+    hasPendingCheckpoint: false,
+    activeInteractiveSession: false,
+    activeTerminalSessionMode: null,
+    ownerUserId: null,
+    creatorName: null,
+    repoId: "repo-1",
+    repoName: "repo",
+    repoUrl: "https://github.com/example/repo.git",
+    repoDefaultBranch: "main",
+    taskType: "build",
+    provider: "codex",
+    providerProfile: "high",
+    modelOverride: null,
+    codexCredentialSource: "auto",
+    baseBranch: "main",
+    branchStrategy: "feature_branch",
+    complexity: "normal",
+    branchName: "feature/task-1",
+    workspaceBaseRef: null,
+    prompt: "Do the work",
+    notes: "",
+    executionSummary: "",
+    resultMarkdown: null,
+    branchDiff: null,
+    status: "open",
+    workflowStatus: "ready",
+    executionStatus: "idle",
+    executionAction: "build",
+    reviewReason: null,
+    logs: [],
+    createdAt: "2026-05-24T00:00:00.000Z",
+    updatedAt: "2026-05-24T00:00:00.000Z",
+    startedAt: null,
+    finishedAt: null,
+    errorMessage: null,
+    lastAction: "build",
+    enqueued: false,
+    ...overrides
+  }) satisfies Task as Task;
+
+describe("buildTaskLifecycleViewModel", () => {
+  it("maps preparing workspace state", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "preparing_workspace" }));
+    assert.equal(vm.isPreparingWorkspace, true);
+    assert.equal(vm.resultStatusText, "Preparing workspace");
+  });
+
+  it("maps queued build state", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "build_queued", taskType: "build" }));
+    assert.equal(vm.isQueued, true);
+    assert.equal(vm.resultStatusText, "Build queued");
+  });
+
+  it("maps queued ask state", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "ask_queued", taskType: "ask" }));
+    assert.equal(vm.isQueued, true);
+    assert.equal(vm.resultStatusText, "Question queued");
+  });
+
+  it("marks archived tasks", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "archived" }));
+    assert.equal(vm.isArchived, true);
+  });
+
+  it("marks checkpoint mutations as blocked while the task is running", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "building" }));
+    assert.equal(vm.checkpointDiffActionsBlocked, true);
+    assert.ok(vm.checkpointDiffActionsBlockedReason);
+  });
+});
 ````
 
 ## File: README.md
@@ -37271,315 +37665,6 @@ HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
 ## License
 
 No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.
-````
-
-## File: apps/server/src/routes/imports.ts
-````typescript
-import { z } from "zod";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { AuthService } from "../lib/auth.js";
-import type { SchedulerService } from "../services/scheduler.js";
-import type { RepositoryStore } from "../services/repository-store.js";
-import type { SettingsStore } from "../services/settings-store.js";
-import type { SpawnerService } from "../services/spawner.js";
-import type { TaskStore } from "../services/task-store.js";
-import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
-import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
-import { requireTaskCapabilityAccess, requireTaskExecutionConfigAccess } from "../lib/task-capability-access.js";
-import { canUserAccessRepository } from "../lib/task-ownership.js";
-import { withBranchSyncCounts, withTaskCreatorName } from "./tasks.js";
-import { normalizeProvider } from "../lib/provider-config.js";
-import type { UserStore } from "../services/user-store.js";
-
-const deadlineSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
-  .nullable();
-
-const issueImportSchema = z.object({
-  repoId: z.string().min(1),
-  draft: z.boolean().optional(),
-  issueNumber: z.coerce.number().int().positive(),
-  includeComments: z.boolean().optional(),
-  notes: z.string().max(40_000).optional(),
-  deadline: deadlineSchema.optional(),
-  taskType: z.enum(["build", "ask"]).optional(),
-  title: z.string().trim().optional(),
-  provider: z.enum(["codex", "claude"]).optional(),
-  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-  modelOverride: z.string().trim().min(1).optional(),
-  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-  baseBranch: z.string().trim().min(1).optional(),
-  branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-  model: z.string().trim().min(1).optional(),
-  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
-}).strict();
-
-const pullRequestImportSchema = z.object({
-  repoId: z.string().min(1),
-  draft: z.boolean().optional(),
-  pullRequestNumber: z.coerce.number().int().positive(),
-  notes: z.string().max(40_000).optional(),
-  deadline: deadlineSchema.optional(),
-  title: z.string().trim().optional(),
-  provider: z.enum(["codex", "claude"]).optional(),
-  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-  modelOverride: z.string().trim().min(1).optional(),
-  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-  model: z.string().trim().min(1).optional(),
-  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
-});
-
-const applyCreateDefaultsFromSettings = <
-  T extends {
-    provider?: "codex" | "claude";
-    providerProfile?: "low" | "medium" | "high" | "max";
-    modelOverride?: string;
-    model?: string;
-  }
->(
-  payload: T,
-  settings: Awaited<ReturnType<SettingsStore["getSettings"]>>
-): T => {
-  const provider = normalizeProvider(payload.provider ?? settings.defaultProvider);
-  const providerProfile =
-    payload.providerProfile ??
-    (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort);
-  const hasLegacyModel = Boolean(payload.model?.trim());
-  const modelOverride =
-    payload.modelOverride ??
-    (hasLegacyModel ? undefined : provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel);
-
-  return {
-    ...payload,
-    provider,
-    providerProfile,
-    modelOverride
-  };
-};
-
-export const registerImportRoutes = (
-  app: FastifyInstance,
-  deps: {
-    githubImportService: GitHubImportService;
-    repositoryStore: RepositoryStore;
-    settingsStore: SettingsStore;
-    taskStore: TaskStore;
-    userStore: UserStore;
-    scheduler: SchedulerService;
-    spawner: SpawnerService;
-    auth: AuthService;
-  }
-): void => {
-  const getAccessibleRepository = async (
-    repoId: string,
-    request: FastifyRequest,
-    reply: FastifyReply
-  ) => {
-    const repository = await deps.repositoryStore.getRepository(repoId);
-    if (!repository || !canUserAccessRepository(request.auth?.user, repoId)) {
-      await reply.status(404).send({ message: "Repository not found" });
-      return null;
-    }
-
-    return repository;
-  };
-
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/issues", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repoId = String(request.query.repoId ?? "").trim();
-    if (!repoId) {
-      return reply.status(400).send({ message: "repoId is required" });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const issues = await deps.githubImportService.listOpenIssues(repository);
-      return reply.send(issues);
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/pull-requests", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repoId = String(request.query.repoId ?? "").trim();
-    if (!repoId) {
-      return reply.status(400).send({ message: "repoId is required" });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const pullRequests = await deps.githubImportService.listOpenPullRequests(repository);
-      return reply.send(pullRequests);
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/branches", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repoId = String(request.query.repoId ?? "").trim();
-    if (!repoId) {
-      return reply.status(400).send({ message: "repoId is required" });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const branches = await deps.githubImportService.listBranches(repository);
-      return reply.send(branches);
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.post("/imports/issue", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
-    const parsed = issueImportSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const settings = await deps.settingsStore.getSettings();
-      const issueRest = applyCreateDefaultsFromSettings(parsed.data, settings);
-      if (
-        !requireTaskCapabilityAccess(request, reply, {
-          taskType: issueRest.taskType ?? "build"
-        })
-      ) {
-        return;
-      }
-      if (!requireTaskExecutionConfigAccess(request, reply, issueRest)) {
-        return;
-      }
-
-      const taskInput = {
-        ...(await deps.githubImportService.buildTaskInputFromIssue(repository, issueRest)),
-        ...(issueRest.draft === true ? { draft: true } : {})
-      };
-      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
-      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
-        creatorName: request.auth!.user.name
-      });
-      const createdTask = taskWithCreator ?? {
-        ...task,
-        creatorName: request.auth!.user.name
-      };
-      if (issueRest.draft === true) {
-        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
-      }
-      const startResult = await orchestrateTaskStart(
-        {
-          taskStore: deps.taskStore,
-          scheduler: deps.scheduler,
-          spawner: deps.spawner
-        },
-        {
-          task: createdTask,
-          fallbackMessage: "Imported task execution could not be started"
-        }
-      );
-      if (!startResult.ok) {
-        return reply.status(startResult.statusCode).send({ message: startResult.message });
-      }
-      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.post("/imports/pull-request", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
-    const parsed = pullRequestImportSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      if (!requireTaskCapabilityAccess(request, reply, { taskType: "build" })) {
-        return;
-      }
-      const settings = await deps.settingsStore.getSettings();
-      const createPayload = applyCreateDefaultsFromSettings(parsed.data, settings);
-      if (!requireTaskExecutionConfigAccess(request, reply, createPayload)) {
-        return;
-      }
-
-      const taskInput = {
-        ...(await deps.githubImportService.buildTaskInputFromPullRequest(repository, createPayload)),
-        ...(createPayload.draft === true ? { draft: true } : {})
-      };
-      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
-      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
-        creatorName: request.auth!.user.name
-      });
-      const createdTask = taskWithCreator ?? {
-        ...task,
-        creatorName: request.auth!.user.name
-      };
-      if (createPayload.draft === true) {
-        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
-      }
-      const startResult = await orchestrateTaskStart(
-        {
-          taskStore: deps.taskStore,
-          scheduler: deps.scheduler,
-          spawner: deps.spawner
-        },
-        {
-          task: createdTask,
-          fallbackMessage: "Imported task execution could not be started"
-        }
-      );
-      if (!startResult.ok) {
-        return reply.status(startResult.statusCode).send({ message: startResult.message });
-      }
-      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-};
 ````
 
 ## File: apps/web/components/app-shell.tsx
@@ -38290,91 +38375,6 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 ````
 
-## File: apps/web/src/utils/task-lifecycle-view-model.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import type { Task } from "@agentswarm/shared-types";
-import { buildTaskLifecycleViewModel } from "./task-lifecycle-view-model";
-
-const createTask = (overrides: Partial<Task> = {}): Task =>
-  ({
-    id: "task-1",
-    title: "Task",
-    deadline: null,
-    pinned: false,
-    hasPendingCheckpoint: false,
-    activeInteractiveSession: false,
-    activeTerminalSessionMode: null,
-    ownerUserId: null,
-    creatorName: null,
-    repoId: "repo-1",
-    repoName: "repo",
-    repoUrl: "https://github.com/example/repo.git",
-    repoDefaultBranch: "main",
-    taskType: "build",
-    provider: "codex",
-    providerProfile: "high",
-    modelOverride: null,
-    codexCredentialSource: "auto",
-    baseBranch: "main",
-    branchStrategy: "feature_branch",
-    complexity: "normal",
-    branchName: "feature/task-1",
-    workspaceBaseRef: null,
-    prompt: "Do the work",
-    notes: "",
-    executionSummary: "",
-    resultMarkdown: null,
-    branchDiff: null,
-    status: "open",
-    workflowStatus: "ready",
-    executionStatus: "idle",
-    executionAction: "build",
-    reviewReason: null,
-    logs: [],
-    createdAt: "2026-05-24T00:00:00.000Z",
-    updatedAt: "2026-05-24T00:00:00.000Z",
-    startedAt: null,
-    finishedAt: null,
-    errorMessage: null,
-    lastAction: "build",
-    enqueued: false,
-    ...overrides
-  }) satisfies Task as Task;
-
-describe("buildTaskLifecycleViewModel", () => {
-  it("maps preparing workspace state", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "preparing_workspace" }));
-    assert.equal(vm.isPreparingWorkspace, true);
-    assert.equal(vm.resultStatusText, "Preparing workspace");
-  });
-
-  it("maps queued build state", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "build_queued", taskType: "build" }));
-    assert.equal(vm.isQueued, true);
-    assert.equal(vm.resultStatusText, "Build queued");
-  });
-
-  it("maps queued ask state", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "ask_queued", taskType: "ask" }));
-    assert.equal(vm.isQueued, true);
-    assert.equal(vm.resultStatusText, "Question queued");
-  });
-
-  it("marks archived tasks", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "archived" }));
-    assert.equal(vm.isArchived, true);
-  });
-
-  it("marks checkpoint mutations as blocked while the task is running", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "building" }));
-    assert.equal(vm.checkpointDiffActionsBlocked, true);
-    assert.ok(vm.checkpointDiffActionsBlockedReason);
-  });
-});
-````
-
 ## File: apps/server/src/db/migrations.ts
 ````typescript
 export interface PostgresMigration {
@@ -38773,231 +38773,6 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
 ];
 ````
 
-## File: docs/product/user-flows.md
-````markdown
-# User Flows
-
-## Login (Current Harness Coverage)
-1. Open `/login`.
-2. Enter admin email and password.
-3. Click **Sign in**.
-4. User is redirected to their first allowed page.
-
-Notes:
-- Default first-boot admin values come from `.env` / `.env.example`.
-- This flow is validated by Playwright in `apps/web/e2e/auth.smoke.spec.ts`.
-
-## TODO
-- Task flows are documented below.
-- TODO: Document repository connect/sync flow.
-- TODO: Document settings and credentials flow.
-
-## Repository Configuration Flow (Current)
-1. Open `/repositories`.
-2. Create or edit a repository.
-3. Add environment variables (plaintext key/value).
-4. Add environment secrets (write-only values).
-5. Save.
-
-Notes:
-- Existing secrets are shown as configured placeholders only; values are never shown again after save.
-- Editing can keep an existing secret by leaving its value blank, replace it by entering a new value, or delete it by removing the row.
-
-## Task Flows (New + Existing)
-
-Notes:
-- `/tasks/board` shows saved task drafts in Backlog and active tasks in Ready, In Progress, Review, and Done columns.
-- Saving a draft stores the same task definition fields used by the new task form; opening a draft reuses the same form and can create the runnable task.
-
-```mermaid
-flowchart TD
-  subgraph A[New Task Flow]
-    A1[User opens Create Task]
-    A2[Fill config: source, repo, title, prompt, provider]
-    A3{Optional: Magic Prompt?}
-    A4[POST /tasks/prompt-magic]
-    A5[Prompt returned + textarea/title updated]
-    A6[Submit create form]
-    A7{Source type}
-    A8[Blank/Snippet -> POST /tasks]
-    A9[Issue -> POST /imports/issue]
-    A10[PR -> POST /imports/pull-request]
-    A11[Task row created in store]
-    A12[Workspace prepared]
-    A13[Action enqueued via Scheduler]
-    A14[Task Detail opens]
-  end
-
-  A1 --> A2 --> A3
-  A3 -- Yes --> A4 --> A5 --> A6
-  A3 -- No --> A6
-  A6 --> A7
-  A7 --> A8 --> A11
-  A7 --> A9 --> A11
-  A7 --> A10 --> A11
-  A11 --> A12 --> A13 --> A14
-
-  subgraph B[Existing Build Flow]
-    B1[Open existing task]
-    B2[Click Build or send Build message]
-    B3[Scheduler triggerAction build]
-    B4{Can run now? active/queued/archived/pending checkpoint/terminal active}
-    B5[Set queued status + enqueue]
-    B6[Worker dequeues]
-    B7[Status -> building]
-    B8[Spawner ensures workspace clone/checkout]
-    B9[Run provider build execution]
-    B10[Stream logs + runs/messages]
-    B11{Changes produced?}
-    B12[Create pending checkpoint/change proposal]
-    B13[Wait for Apply/Reject/Revert]
-    B14[Apply selected checkpoint action]
-    B15[Status -> done/failed/cancelled]
-  end
-
-  B1 --> B2 --> B3 --> B4
-  B4 -- No --> B15
-  B4 -- Yes --> B5 --> B6 --> B7 --> B8 --> B9 --> B10 --> B11
-  B11 -- Yes --> B12 --> B13 --> B14 --> B15
-  B11 -- No --> B15
-
-  subgraph C[Existing Ask Flow]
-    C1[Open existing task]
-    C2[Click Ask or send Ask message]
-    C3[Scheduler triggerAction ask]
-    C4{Parallel ask allowed while already building or asking}
-    C5[Run ask immediately if capacity]
-    C6[Else queue ask]
-    C7[Status -> asking]
-    C8[Spawner ensures workspace/context]
-    C9[Run provider ask execution]
-    C10[Stream logs + assistant response]
-    C11[Status -> answered/failed/cancelled]
-  end
-
-  C1 --> C2 --> C3 --> C4
-  C4 -- Yes --> C5 --> C7
-  C4 -- No --> C6 --> C7
-  C7 --> C8 --> C9 --> C10 --> C11
-```
-
-## Code Flow (Implementation Path)
-
-```mermaid
-flowchart TD
-  subgraph N[New Task - Code Path]
-    N1[web: task-create-page.tsx submit]
-    N2[web: buildTaskDefinitionInput]
-    N3[web: createTaskFromDefinition]
-    N4{sourceType}
-    N5[web api: POST /tasks]
-    N6[web api: POST /imports/issue]
-    N7[web api: POST /imports/pull-request]
-    N8[server route: routes/tasks.ts or routes/imports.ts]
-    N9[server: taskStore.createTask]
-    N10[server: orchestrateTaskStart]
-    N11[spawner.prepareWorkspace]
-    N12[scheduler.triggerAction]
-    N14[task persisted + events published]
-  end
-
-  N1 --> N2 --> N3 --> N4
-  N4 -- blank/snippet --> N5 --> N8
-  N4 -- issue --> N6 --> N8
-  N4 -- pull_request --> N7 --> N8
-  N8 --> N9 --> N10 --> N11 --> N12 --> N14
-
-  subgraph B[Existing Build - Code Path]
-    B1[web: task-detail build action]
-    B2[web api: POST /tasks/:id/actions action=build]
-    B3[server route: routes/tasks.ts]
-    B4[server: orchestrateTaskActionStart]
-    B5[taskStore.markQueuedForAction]
-    B6[taskQueueStore.replaceTask]
-    B7[scheduler.drainQueue dequeue]
-    B8[scheduler.executeTask]
-    B9[spawner.run build provider]
-    B10[taskStore.createRun/updateRun/appendLog]
-    B11{pending checkpoint?}
-    B12[taskStore upsert pending change proposal]
-    B13[route handlers apply/reject/revert checkpoint]
-    B14[task terminal status update + event publish]
-  end
-
-  B1 --> B2 --> B3 --> B4 --> B5 --> B6 --> B7 --> B8 --> B9 --> B10 --> B11
-  B11 -- Yes --> B12 --> B13 --> B14
-  B11 -- No --> B14
-
-  subgraph A[Existing Ask - Code Path]
-    A1[web: task-detail ask action]
-    A2[web api: POST /tasks/:id/actions action=ask]
-    A3[server route: routes/tasks.ts]
-    A4[server: orchestrateTaskActionStart]
-    A5{parallel ask allowed}
-    A6[scheduler.executeTask direct]
-    A7[queue via taskQueueStore]
-    A8[scheduler.executeTask from queue]
-    A9[spawner.run ask provider]
-    A10[taskStore.createRun/updateRun/appendLog]
-    A11[task status answered/failed/cancelled + events]
-  end
-
-  A1 --> A2 --> A3 --> A4 --> A5
-  A5 -- Yes --> A6 --> A9
-  A5 -- No --> A7 --> A8 --> A9
-  A9 --> A10 --> A11
-```
-
-## Git Flow (Task Detail)
-
-```mermaid
-flowchart TD
-  G1[User opens task detail Git actions]
-  G2{Action chosen}
-
-  G3[Pull selected]
-  G4[POST tasks id pull]
-  G5{Mutation blocked? active run pending checkpoint terminal active archived}
-  G6[shared git command handler then spawner pullTaskBranch]
-  G7[task refreshed and sync counts updated]
-
-  G8[Push selected]
-  G9[POST tasks id push]
-  G10{Mutation blocked? active run pending checkpoint terminal active archived}
-  G11[shared git command handler then spawner pushTaskBranch]
-  G12[publish task pushed event]
-  G13[task refreshed and sync counts updated]
-
-  G14[Merge selected]
-  G15[GET merge preview target branch]
-  G16{Merge allowed? feature branch target not same blocked checks pass}
-  G17[POST tasks id merge]
-  G18[shared git command handler then spawner mergeTaskBranch]
-  G19[publish task merged event]
-  G20[remove queued entry archive task append archived log]
-  G21[return merged archived task]
-
-  G22[Checkpoint action apply reject revert]
-  G23[POST change proposals action endpoint]
-  G24[checkpoint mutation transition helper executes action and refresh]
-  G1 --> G2
-
-  G2 -- Pull --> G3 --> G4 --> G5
-  G5 -- No --> G6 --> G7
-  G5 -- Yes --> G7
-
-  G2 -- Push --> G8 --> G9 --> G10
-  G10 -- No --> G11 --> G12 --> G13
-  G10 -- Yes --> G13
-
-  G2 -- Merge --> G14 --> G15 --> G16
-  G16 -- Yes --> G17 --> G18 --> G19 --> G20 --> G21
-  G16 -- No --> G21
-
-  G2 -- Checkpoint --> G22 --> G23 --> G24
-```
-````
-
 ## File: apps/web/components/tasks-kanban-board-page.tsx
 ````typescript
 "use client";
@@ -39280,6 +39055,231 @@ export function TasksKanbanBoardPage() {
     </>
   );
 }
+````
+
+## File: docs/product/user-flows.md
+````markdown
+# User Flows
+
+## Login (Current Harness Coverage)
+1. Open `/login`.
+2. Enter admin email and password.
+3. Click **Sign in**.
+4. User is redirected to their first allowed page.
+
+Notes:
+- Default first-boot admin values come from `.env` / `.env.example`.
+- This flow is validated by Playwright in `apps/web/e2e/auth.smoke.spec.ts`.
+
+## TODO
+- Task flows are documented below.
+- TODO: Document repository connect/sync flow.
+- TODO: Document settings and credentials flow.
+
+## Repository Configuration Flow (Current)
+1. Open `/repositories`.
+2. Create or edit a repository.
+3. Add environment variables (plaintext key/value).
+4. Add environment secrets (write-only values).
+5. Save.
+
+Notes:
+- Existing secrets are shown as configured placeholders only; values are never shown again after save.
+- Editing can keep an existing secret by leaving its value blank, replace it by entering a new value, or delete it by removing the row.
+
+## Task Flows (New + Existing)
+
+Notes:
+- `/tasks/board` shows saved task drafts in Backlog and active tasks in Ready, In Progress, Review, and Done columns.
+- Saving a draft stores the same task definition fields used by the new task form; opening a draft reuses the same form and can create the runnable task.
+
+```mermaid
+flowchart TD
+  subgraph A[New Task Flow]
+    A1[User opens Create Task]
+    A2[Fill config: source, repo, title, prompt, provider]
+    A3{Optional: Magic Prompt?}
+    A4[POST /tasks/prompt-magic]
+    A5[Prompt returned + textarea/title updated]
+    A6[Submit create form]
+    A7{Source type}
+    A8[Blank/Snippet -> POST /tasks]
+    A9[Issue -> POST /imports/issue]
+    A10[PR -> POST /imports/pull-request]
+    A11[Task row created in store]
+    A12[Workspace prepared]
+    A13[Action enqueued via Scheduler]
+    A14[Task Detail opens]
+  end
+
+  A1 --> A2 --> A3
+  A3 -- Yes --> A4 --> A5 --> A6
+  A3 -- No --> A6
+  A6 --> A7
+  A7 --> A8 --> A11
+  A7 --> A9 --> A11
+  A7 --> A10 --> A11
+  A11 --> A12 --> A13 --> A14
+
+  subgraph B[Existing Build Flow]
+    B1[Open existing task]
+    B2[Click Build or send Build message]
+    B3[Scheduler triggerAction build]
+    B4{Can run now? active/queued/archived/pending checkpoint/terminal active}
+    B5[Set queued status + enqueue]
+    B6[Worker dequeues]
+    B7[Status -> building]
+    B8[Spawner ensures workspace clone/checkout]
+    B9[Run provider build execution]
+    B10[Stream logs + runs/messages]
+    B11{Changes produced?}
+    B12[Create pending checkpoint/change proposal]
+    B13[Wait for Apply/Reject/Revert]
+    B14[Apply selected checkpoint action]
+    B15[Status -> done/failed/cancelled]
+  end
+
+  B1 --> B2 --> B3 --> B4
+  B4 -- No --> B15
+  B4 -- Yes --> B5 --> B6 --> B7 --> B8 --> B9 --> B10 --> B11
+  B11 -- Yes --> B12 --> B13 --> B14 --> B15
+  B11 -- No --> B15
+
+  subgraph C[Existing Ask Flow]
+    C1[Open existing task]
+    C2[Click Ask or send Ask message]
+    C3[Scheduler triggerAction ask]
+    C4{Parallel ask allowed while already building or asking}
+    C5[Run ask immediately if capacity]
+    C6[Else queue ask]
+    C7[Status -> asking]
+    C8[Spawner ensures workspace/context]
+    C9[Run provider ask execution]
+    C10[Stream logs + assistant response]
+    C11[Status -> answered/failed/cancelled]
+  end
+
+  C1 --> C2 --> C3 --> C4
+  C4 -- Yes --> C5 --> C7
+  C4 -- No --> C6 --> C7
+  C7 --> C8 --> C9 --> C10 --> C11
+```
+
+## Code Flow (Implementation Path)
+
+```mermaid
+flowchart TD
+  subgraph N[New Task - Code Path]
+    N1[web: task-create-page.tsx submit]
+    N2[web: buildTaskDefinitionInput]
+    N3[web: createTaskFromDefinition]
+    N4{sourceType}
+    N5[web api: POST /tasks]
+    N6[web api: POST /imports/issue]
+    N7[web api: POST /imports/pull-request]
+    N8[server route: routes/tasks.ts or routes/imports.ts]
+    N9[server: taskStore.createTask]
+    N10[server: orchestrateTaskStart]
+    N11[spawner.prepareWorkspace]
+    N12[scheduler.triggerAction]
+    N14[task persisted + events published]
+  end
+
+  N1 --> N2 --> N3 --> N4
+  N4 -- blank/snippet --> N5 --> N8
+  N4 -- issue --> N6 --> N8
+  N4 -- pull_request --> N7 --> N8
+  N8 --> N9 --> N10 --> N11 --> N12 --> N14
+
+  subgraph B[Existing Build - Code Path]
+    B1[web: task-detail build action]
+    B2[web api: POST /tasks/:id/actions action=build]
+    B3[server route: routes/tasks.ts]
+    B4[server: orchestrateTaskActionStart]
+    B5[taskStore.markQueuedForAction]
+    B6[taskQueueStore.replaceTask]
+    B7[scheduler.drainQueue dequeue]
+    B8[scheduler.executeTask]
+    B9[spawner.run build provider]
+    B10[taskStore.createRun/updateRun/appendLog]
+    B11{pending checkpoint?}
+    B12[taskStore upsert pending change proposal]
+    B13[route handlers apply/reject/revert checkpoint]
+    B14[task terminal status update + event publish]
+  end
+
+  B1 --> B2 --> B3 --> B4 --> B5 --> B6 --> B7 --> B8 --> B9 --> B10 --> B11
+  B11 -- Yes --> B12 --> B13 --> B14
+  B11 -- No --> B14
+
+  subgraph A[Existing Ask - Code Path]
+    A1[web: task-detail ask action]
+    A2[web api: POST /tasks/:id/actions action=ask]
+    A3[server route: routes/tasks.ts]
+    A4[server: orchestrateTaskActionStart]
+    A5{parallel ask allowed}
+    A6[scheduler.executeTask direct]
+    A7[queue via taskQueueStore]
+    A8[scheduler.executeTask from queue]
+    A9[spawner.run ask provider]
+    A10[taskStore.createRun/updateRun/appendLog]
+    A11[task status answered/failed/cancelled + events]
+  end
+
+  A1 --> A2 --> A3 --> A4 --> A5
+  A5 -- Yes --> A6 --> A9
+  A5 -- No --> A7 --> A8 --> A9
+  A9 --> A10 --> A11
+```
+
+## Git Flow (Task Detail)
+
+```mermaid
+flowchart TD
+  G1[User opens task detail Git actions]
+  G2{Action chosen}
+
+  G3[Pull selected]
+  G4[POST tasks id pull]
+  G5{Mutation blocked? active run pending checkpoint terminal active archived}
+  G6[shared git command handler then spawner pullTaskBranch]
+  G7[task refreshed and sync counts updated]
+
+  G8[Push selected]
+  G9[POST tasks id push]
+  G10{Mutation blocked? active run pending checkpoint terminal active archived}
+  G11[shared git command handler then spawner pushTaskBranch]
+  G12[publish task pushed event]
+  G13[task refreshed and sync counts updated]
+
+  G14[Merge selected]
+  G15[GET merge preview target branch]
+  G16{Merge allowed? feature branch target not same blocked checks pass}
+  G17[POST tasks id merge]
+  G18[shared git command handler then spawner mergeTaskBranch]
+  G19[publish task merged event]
+  G20[remove queued entry archive task append archived log]
+  G21[return merged archived task]
+
+  G22[Checkpoint action apply reject revert]
+  G23[POST change proposals action endpoint]
+  G24[checkpoint mutation transition helper executes action and refresh]
+  G1 --> G2
+
+  G2 -- Pull --> G3 --> G4 --> G5
+  G5 -- No --> G6 --> G7
+  G5 -- Yes --> G7
+
+  G2 -- Push --> G8 --> G9 --> G10
+  G10 -- No --> G11 --> G12 --> G13
+  G10 -- Yes --> G13
+
+  G2 -- Merge --> G14 --> G15 --> G16
+  G16 -- Yes --> G17 --> G18 --> G19 --> G20 --> G21
+  G16 -- No --> G21
+
+  G2 -- Checkpoint --> G22 --> G23 --> G24
+```
 ````
 
 ## File: apps/server/src/services/spawner.workspace-provisioning.test.ts
@@ -39573,56 +39573,18 @@ describe("SpawnerService workspace provisioning", () => {
 });
 ````
 
-## File: apps/server/package.json
-````json
-{
-  "name": "@agentswarm/server",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
-    "db:migrate": "tsx src/db/migrate.ts",
-    "db:backfill:redis-to-postgres": "tsx src/db/backfill-redis-to-postgres.ts",
-    "build": "tsc -p tsconfig.json",
-    "lint": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/lib/agent-event-parser.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
-  },
-  "dependencies": {
-    "@agentswarm/shared-types": "*",
-    "@fastify/cookie": "^11.0.2",
-    "@fastify/cors": "^10.0.1",
-    "@sentry/node": "^10.53.1",
-    "fastify": "^5.0.0",
-    "ioredis": "^5.4.1",
-    "nanoid": "^5.1.0",
-    "node-pty": "^1.0.0",
-    "pg": "^8.20.0",
-    "socket.io": "^4.8.1",
-    "ws": "^8.18.0",
-    "zod": "^3.24.1"
-  },
-  "devDependencies": {
-    "@types/node": "^22.8.6",
-    "@types/pg": "^8.20.0",
-    "@types/ws": "^8.5.13",
-    "tsx": "^4.19.1",
-    "typescript": "^5.6.3"
-  }
-}
-````
-
 ## File: apps/web/components/task-create-modal.tsx
 ````typescript
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Task, TaskSourceType } from "@agentswarm/shared-types";
+import dayjs from "dayjs";
+import { getDefaultModelForProvider, type Task, type TaskSourceType, type UpdateTaskDraftInput } from "@agentswarm/shared-types";
 import { App, Button, Form, Modal } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
 import { trackEvent } from "../src/utils/analytics";
 import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
+import { api } from "../src/api/client";
 import { useAuth } from "./auth-provider";
 import {
   TaskDefinitionFields,
@@ -39635,9 +39597,42 @@ interface TaskCreateModalProps {
   open: boolean;
   onClose: () => void;
   onCreated?: (task: Task) => void;
+  onUpdated?: (task: Task) => void;
+  draftTask?: Task | null;
 }
 
-export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalProps) {
+const getDraftTaskInitialValues = (task: Task): Partial<TaskDefinitionFormValues> => ({
+  sourceType: "blank",
+  title: task.title,
+  deadline: task.deadline ? dayjs(task.deadline) : null,
+  repoId: task.repoId,
+  prompt: task.prompt === "(No prompt provided.)" ? "" : task.prompt,
+  notes: task.notes ?? "",
+  taskType: task.taskType,
+  provider: task.provider,
+  model: task.modelOverride ?? getDefaultModelForProvider(task.provider),
+  providerProfile: task.providerProfile,
+  codexCredentialSource: task.codexCredentialSource ?? "auto",
+  baseBranch: task.baseBranch,
+  branchStrategy: task.branchStrategy,
+  includeComments: true
+});
+
+const buildDraftUpdateInput = (values: TaskDefinitionFormValues): UpdateTaskDraftInput => ({
+  title: values.title?.trim() ?? "",
+  deadline: values.deadline ? dayjs(values.deadline).toISOString() : null,
+  prompt: values.prompt?.trim() ?? "",
+  notes: values.notes?.trim() ?? "",
+  taskType: values.taskType ?? "build",
+  provider: values.provider ?? "codex",
+  providerProfile: values.providerProfile ?? "high",
+  modelOverride: values.model?.trim() || null,
+  ...(values.provider === "codex" || !values.provider ? { codexCredentialSource: values.codexCredentialSource ?? "auto" } : {}),
+  baseBranch: values.baseBranch?.trim() ?? "",
+  branchStrategy: values.branchStrategy ?? "feature_branch"
+});
+
+export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask }: TaskCreateModalProps) {
   const { message } = App.useApp();
   const { can } = useAuth();
   const [form] = Form.useForm<TaskDefinitionFormValues>();
@@ -39646,6 +39641,7 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
   const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const canCreateAnyTaskMode = can("task:build") || can("task:ask");
+  const editingDraft = Boolean(draftTask);
   const busy = submitting || savingDraft;
 
   useEffect(() => {
@@ -39654,9 +39650,9 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
     }
 
     form.resetFields();
-    form.setFieldsValue(getTaskDefinitionInitialValues(undefined));
+    form.setFieldsValue(draftTask ? getDraftTaskInitialValues(draftTask) : getTaskDefinitionInitialValues(undefined));
     setPromptImageFiles([]);
-  }, [form, open]);
+  }, [draftTask, form, open]);
 
   const handleCancel = () => {
     if (busy) {
@@ -39669,6 +39665,23 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
   };
 
   const handleSubmit = async (values: TaskDefinitionFormValues) => {
+    if (draftTask) {
+      setSubmitting(true);
+      try {
+        const updatedTask = await api.updateTaskDraft(draftTask.id, buildDraftUpdateInput(values));
+        form.resetFields();
+        setPromptImageFiles([]);
+        onClose();
+        onUpdated?.(updatedTask);
+        message.success("Draft updated");
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : "Failed to update draft");
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+
     setSubmitting(true);
     try {
       const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
@@ -39718,9 +39731,13 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
     <Button key="cancel" onClick={handleCancel} disabled={busy}>
       Cancel
     </Button>,
-    <Button key="draft" loading={savingDraft} disabled={submitting} onClick={() => void handleSaveDraft()}>
-      Save Draft
-    </Button>,
+    ...(editingDraft
+      ? []
+      : [
+          <Button key="draft" loading={savingDraft} disabled={submitting} onClick={() => void handleSaveDraft()}>
+            Save Draft
+          </Button>
+        ]),
     <Button
       key="submit"
       type="primary"
@@ -39728,11 +39745,13 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
       disabled={!canCreateAnyTaskMode || savingDraft}
       onClick={() => form.submit()}
     >
-      {selectedSourceType === "issue"
-        ? "Create Task From Issue"
-        : selectedSourceType === "pull_request"
-          ? "Create Task From Pull Request"
-          : "Create Task"}
+      {editingDraft
+        ? "Save Draft"
+        : selectedSourceType === "issue"
+          ? "Create Task From Issue"
+          : selectedSourceType === "pull_request"
+            ? "Create Task From Pull Request"
+            : "Create Task"}
     </Button>
   ];
 
@@ -39740,7 +39759,7 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
     <Modal
       open={open}
       onCancel={handleCancel}
-      title="New Task"
+      title={editingDraft ? "Edit Draft" : "New Task"}
       width="min(1180px, calc(100vw - 32px))"
       destroyOnHidden
       maskClosable={!busy}
@@ -39760,10 +39779,57 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
         initialValues={getTaskDefinitionInitialValues(undefined)}
         onFinish={handleSubmit}
       >
-        <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
+        <TaskDefinitionFields
+          form={form}
+          syncSettingsDefaults={!editingDraft}
+          lockSourceAndRepository={editingDraft}
+          allowPromptAttachments={!editingDraft}
+          promptImageFiles={promptImageFiles}
+          onPromptImageFilesChange={setPromptImageFiles}
+        />
       </Form>
     </Modal>
   );
+}
+````
+
+## File: apps/server/package.json
+````json
+{
+  "name": "@agentswarm/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:backfill:redis-to-postgres": "tsx src/db/backfill-redis-to-postgres.ts",
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/lib/agent-event-parser.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
+  },
+  "dependencies": {
+    "@agentswarm/shared-types": "*",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/cors": "^10.0.1",
+    "@sentry/node": "^10.53.1",
+    "fastify": "^5.0.0",
+    "ioredis": "^5.4.1",
+    "nanoid": "^5.1.0",
+    "node-pty": "^1.0.0",
+    "pg": "^8.20.0",
+    "socket.io": "^4.8.1",
+    "ws": "^8.18.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.8.6",
+    "@types/pg": "^8.20.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
 }
 ````
 
@@ -43319,6 +43385,8 @@ export type TaskDefinitionFormValues = {
 export interface TaskDefinitionFieldsProps {
   form: FormInstance<TaskDefinitionFormValues>;
   syncSettingsDefaults?: boolean;
+  lockSourceAndRepository?: boolean;
+  allowPromptAttachments?: boolean;
   promptImageFiles?: SelectedTaskPromptImageFile[];
   onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
 }
@@ -43474,6 +43542,8 @@ export const buildTaskDefinitionInput = (
 export function TaskDefinitionFields({
   form,
   syncSettingsDefaults = true,
+  lockSourceAndRepository = false,
+  allowPromptAttachments = true,
   promptImageFiles = [],
   onPromptImageFilesChange
 }: TaskDefinitionFieldsProps) {
@@ -43700,7 +43770,7 @@ export function TaskDefinitionFields({
     : isSnippetSource
       ? "Snippet Variables"
       : "Imported Context";
-  const canAttachPromptImages = isBlankSource;
+  const canAttachPromptImages = allowPromptAttachments && isBlankSource;
   const canUsePromptMagic = isBlankSource;
   const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
 
@@ -43886,12 +43956,14 @@ export function TaskDefinitionFields({
                   </Button>
                 </Flex>
               ) : null}
-              <TaskPromptAttachmentsInput
-                files={promptImageFiles}
-                onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
-                onError={(errorMessage) => void message.error(errorMessage)}
-                disabled={!canAttachPromptImages || !onPromptImageFilesChange}
-              />
+              {allowPromptAttachments ? (
+                <TaskPromptAttachmentsInput
+                  files={promptImageFiles}
+                  onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
+                  onError={(errorMessage) => void message.error(errorMessage)}
+                  disabled={!canAttachPromptImages || !onPromptImageFilesChange}
+                />
+              ) : null}
             </Flex>
           </Form.Item>
           <Form.Item
@@ -44078,6 +44150,7 @@ export function TaskDefinitionFields({
           <Form.Item name="sourceType" label="Source" rules={[{ required: true }]}>
             <Select
               options={sourceOptions}
+              disabled={lockSourceAndRepository}
               onChange={(value: TaskSourceType) => {
                 trackEvent("task_source_selected", { source: value });
                 if (value === "pull_request") {
@@ -44107,6 +44180,7 @@ export function TaskDefinitionFields({
             <Select
               options={repositories.map((repository) => ({ label: repository.name, value: repository.id }))}
               placeholder="Select repository"
+              disabled={lockSourceAndRepository}
               onChange={(repoId) => {
                 const repository = repositories.find((item) => item.id === repoId);
                 form.setFieldValue("baseBranch", repository?.defaultBranch ?? "");
@@ -52875,7 +52949,6 @@ import {
   type GitHubPullRequestReference,
   type TaskMergePreview,
   type TaskPushPreview,
-  type UpdateTaskDraftInput,
   type TaskChangeProposal,
   type TaskInteractiveTerminalTranscript,
   type TaskTerminalSessionMode,
@@ -52968,6 +53041,7 @@ import { TaskTerminalTranscriptView } from "./task-terminal-transcript-view";
 import { CheckpointFileEditorModal } from "./checkpoint-file-editor-modal";
 import { TaskFilesTab } from "./task-files-tab";
 import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
+import { TaskCreateModal } from "./task-create-modal";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 import { useThemeMode } from "./theme-provider";
 import { getPrismTheme } from "../src/theme/code-highlighting";
@@ -52981,19 +53055,6 @@ const runStatusColor: Record<TaskRun["status"], string> = {
 
 type ComposerAction = TaskMessageAction | "interactive" | "terminal";
 type SnippetVariableFormValues = Record<string, string>;
-type DraftEditFormValues = {
-  title: string;
-  deadline: Dayjs | null;
-  prompt: string;
-  notes?: string;
-  taskType: Task["taskType"];
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-};
 
 const OPENAI_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
 const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
@@ -53621,7 +53682,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [assignableUsers, setAssignableUsers] = useState<User[]>([]);
   const [assignableUsersLoading, setAssignableUsersLoading] = useState(false);
   const [followUpForm] = Form.useForm();
-  const [draftEditForm] = Form.useForm<DraftEditFormValues>();
   const [chatInput, setChatInput] = useState("");
   const [chatInputDraftReady, setChatInputDraftReady] = useState(false);
   const [taskPromptMagicLoading, setTaskPromptMagicLoading] = useState(false);
@@ -53631,8 +53691,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [codexCredentialSourceInput, setCodexCredentialSourceInput] = useState<CodexCredentialSource>("auto");
   const [branchStrategyInput, setBranchStrategyInput] = useState<TaskBranchStrategy>("feature_branch");
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(providerInput);
-  const draftEditProvider = (Form.useWatch("provider", draftEditForm) as AgentProvider | undefined) ?? task?.provider ?? "codex";
-  const { models: draftEditProviderModels, loading: draftEditProviderModelsLoading } = useProviderModels(draftEditProvider);
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>(null);
   const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "diff" | "files">("chat");
   const [expandedRunKeys, setExpandedRunKeys] = useState<string[]>([]);
@@ -53657,7 +53715,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "pin"
     | "assign"
     | "deadline"
-    | "draftEdit"
     | "state"
     | "renameTitle"
     | "editComment"
@@ -53983,12 +54040,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
   );
   const allowedEffortOptions = getEffortOptionsForProvider(providerInput).filter(
-    (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
-  );
-  const draftEditAllowedProviderModels = draftEditProviderModels.filter(
-    (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
-  );
-  const draftEditAllowedEffortOptions = getEffortOptionsForProvider(draftEditProvider).filter(
     (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
   );
   const currentTaskProvider = task?.provider ?? "codex";
@@ -54326,34 +54377,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setProviderProfileInput(fallback);
     }
   }, [allowedEffortOptions, providerProfileInput]);
-
-  useEffect(() => {
-    if (!draftEditModalOpen || draftEditProviderModelsLoading) {
-      return;
-    }
-    const current = draftEditForm.getFieldValue("model") as string | undefined;
-    if (current && draftEditAllowedProviderModels.some((option) => option.value === current)) {
-      return;
-    }
-    const fallback = draftEditAllowedProviderModels[0]?.value;
-    if (fallback) {
-      draftEditForm.setFieldValue("model", fallback);
-    }
-  }, [draftEditAllowedProviderModels, draftEditForm, draftEditModalOpen, draftEditProviderModelsLoading]);
-
-  useEffect(() => {
-    if (!draftEditModalOpen) {
-      return;
-    }
-    const current = draftEditForm.getFieldValue("providerProfile") as ProviderProfile | undefined;
-    if (current && draftEditAllowedEffortOptions.some((option) => option.value === current)) {
-      return;
-    }
-    const fallback = draftEditAllowedEffortOptions[0]?.value;
-    if (fallback) {
-      draftEditForm.setFieldValue("providerProfile", fallback);
-    }
-  }, [draftEditAllowedEffortOptions, draftEditForm, draftEditModalOpen]);
 
   useEffect(() => {
     if (!allowedChatActions.includes(selectedChatAction)) {
@@ -55623,62 +55646,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
-    draftEditForm.setFieldsValue({
-      title: task.title,
-      deadline: task.deadline ? dayjs(task.deadline) : null,
-      prompt: task.prompt === "(No prompt provided.)" ? "" : task.prompt,
-      notes: task.notes ?? "",
-      taskType: task.taskType,
-      provider: task.provider,
-      model: task.modelOverride ?? getDefaultModelForProvider(task.provider),
-      providerProfile: task.providerProfile,
-      codexCredentialSource: task.codexCredentialSource ?? "auto",
-      baseBranch: task.baseBranch,
-      branchStrategy: task.branchStrategy
-    });
     setDraftEditModalOpen(true);
   };
   const closeDraftEditModal = () => {
-    if (submitting === "draftEdit") {
-      return;
-    }
     setDraftEditModalOpen(false);
-  };
-  const saveDraftEdit = async () => {
-    if (!task || task.status !== "draft" || !canEditTask || isArchived) {
-      return;
-    }
-
-    try {
-      const values = await draftEditForm.validateFields();
-      const input: UpdateTaskDraftInput = {
-        title: values.title.trim(),
-        deadline: values.deadline ? values.deadline.toISOString() : null,
-        prompt: values.prompt.trim(),
-        notes: values.notes?.trim() ?? "",
-        taskType: values.taskType,
-        provider: values.provider,
-        providerProfile: values.providerProfile,
-        modelOverride: values.model.trim() || null,
-        codexCredentialSource: values.provider === "codex" ? values.codexCredentialSource : undefined,
-        baseBranch: values.baseBranch.trim(),
-        branchStrategy: values.branchStrategy
-      };
-
-      setSubmitting("draftEdit");
-      const updatedTask = await api.updateTaskDraft(task.id, input);
-      applyUpdatedTask(updatedTask);
-      syncExecutionConfigInputs(updatedTask);
-      setDraftEditModalOpen(false);
-      void refetchTaskMessages();
-      messageApi.success("Draft updated");
-    } catch (error) {
-      if (error instanceof Error) {
-        showTaskActionError(error, "Failed to update draft");
-      }
-    } finally {
-      setSubmitting((current) => (current === "draftEdit" ? null : current));
-    }
   };
   const loadPushPreview = async () => {
     if (!task) {
@@ -58121,77 +58092,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   return (
     <>
       {contextHolder}
-      <Modal
-        title="Edit Draft"
+      <TaskCreateModal
         open={draftEditModalOpen}
-        onCancel={closeDraftEditModal}
-        onOk={() => void saveDraftEdit()}
-        okText="Save Draft"
-        confirmLoading={submitting === "draftEdit"}
-        destroyOnClose
-        width="min(900px, calc(100vw - 32px))"
-        styles={{
-          body: {
-            maxHeight: "calc(100vh - 220px)",
-            overflowY: "auto",
-            overflowX: "hidden"
-          }
+        onClose={closeDraftEditModal}
+        draftTask={task?.status === "draft" ? task : null}
+        onUpdated={(updatedTask) => {
+          applyUpdatedTask(updatedTask);
+          syncExecutionConfigInputs(updatedTask);
+          setDraftEditModalOpen(false);
+          void refetchTaskMessages();
         }}
-      >
-        <Form form={draftEditForm} layout="vertical">
-          <Space direction="vertical" size={12} style={{ width: "100%" }}>
-            <Form.Item name="title" label="Title" rules={[{ required: true, message: "Enter a task title" }]} style={{ marginBottom: 0 }}>
-              <Input />
-            </Form.Item>
-            <Form.Item name="prompt" label="Prompt" rules={[{ required: true, message: "Enter a prompt" }]} style={{ marginBottom: 0 }}>
-              <Input.TextArea autoSize={{ minRows: 6, maxRows: 18 }} style={{ resize: "none" }} />
-            </Form.Item>
-            <Form.Item name="notes" label="Notes" style={{ marginBottom: 0 }}>
-              <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} style={{ resize: "none" }} />
-            </Form.Item>
-            <Flex gap={12} wrap="wrap">
-              <Form.Item name="deadline" label="Deadline" style={{ flex: "1 1 220px", marginBottom: 0 }}>
-                <DatePicker showTime allowClear style={{ width: "100%" }} />
-              </Form.Item>
-              <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]} style={{ flex: "1 1 180px", marginBottom: 0 }}>
-                <Select
-                  options={[
-                    ...(can("task:build") ? [{ label: getTaskTypeLabel("build"), value: "build" as const }] : []),
-                    ...(can("task:ask") ? [{ label: getTaskTypeLabel("ask"), value: "ask" as const }] : [])
-                  ]}
-                />
-              </Form.Item>
-            </Flex>
-            <Flex gap={12} wrap="wrap">
-              <Form.Item name="provider" label="Provider" rules={[{ required: true }]} style={{ flex: "1 1 220px", marginBottom: 0 }}>
-                <Select options={providerInputOptions} />
-              </Form.Item>
-              <Form.Item name="model" label="Model" rules={[{ required: true }]} style={{ flex: "1 1 220px", marginBottom: 0 }}>
-                <Select
-                  options={draftEditAllowedProviderModels}
-                  loading={draftEditProviderModelsLoading}
-                  showSearch
-                  optionFilterProp="label"
-                />
-              </Form.Item>
-              <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]} style={{ flex: "1 1 160px", marginBottom: 0 }}>
-                <Select options={draftEditAllowedEffortOptions} />
-              </Form.Item>
-            </Flex>
-            <Flex gap={12} wrap="wrap">
-              <Form.Item name="codexCredentialSource" label="Codex Credential Source" style={{ flex: "1 1 260px", marginBottom: 0 }}>
-                <Select options={codexCredentialSourceOptions} disabled={draftEditProvider !== "codex"} />
-              </Form.Item>
-              <Form.Item name="baseBranch" label="Base Branch" rules={[{ required: true, message: "Enter a base branch" }]} style={{ flex: "1 1 220px", marginBottom: 0 }}>
-                <Input />
-              </Form.Item>
-              <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]} style={{ flex: "1 1 220px", marginBottom: 0 }}>
-                <Select options={branchStrategyOptions} />
-              </Form.Item>
-            </Flex>
-          </Space>
-        </Form>
-      </Modal>
+      />
       <Modal
         title="AI Settings"
         open={aiSettingsModalOpen}
@@ -58586,7 +58497,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                       {hasExecutionButtons ? (
                         <Space wrap size={8}>
                           {isDraft && canEditTask && !isArchived ? (
-                            <Button onClick={openDraftEditModal} loading={submitting === "draftEdit"}>
+                            <Button onClick={openDraftEditModal}>
                               Edit Draft
                             </Button>
                           ) : null}
