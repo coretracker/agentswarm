@@ -22289,6 +22289,201 @@ export function buildGitTerminalDockerEnvEntries(options: {
 }
 ````
 
+## File: apps/server/src/routes/settings.ts
+````typescript
+import { z } from "zod";
+import type { FastifyInstance } from "fastify";
+import type { AgentProvider } from "@agentswarm/shared-types";
+import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
+import type { AuthService } from "../lib/auth.js";
+import type { SchedulerService } from "../services/scheduler.js";
+import type { SettingsStore } from "../services/settings-store.js";
+
+interface ProviderModelEntry {
+  label: string;
+  value: string;
+}
+
+async function fetchOpenAiModels(apiKey: string, baseUrl: string | null): Promise<ProviderModelEntry[]> {
+  const base = (baseUrl?.replace(/\/$/, "") ?? "https://api.openai.com") + "/v1";
+  const response = await fetch(`${base}/models`, {
+    headers: { Authorization: `Bearer ${apiKey}` }
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenAI models API returned ${response.status}`);
+  }
+
+  const data = await response.json() as { data: Array<{ id: string }> };
+  return data.data
+    .map((m) => ({ label: m.id, value: m.id }))
+    .sort((a, b) => a.value.localeCompare(b.value));
+}
+
+async function fetchAnthropicModels(apiKey: string): Promise<ProviderModelEntry[]> {
+  const response = await fetch("https://api.anthropic.com/v1/models", {
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01"
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Anthropic models API returned ${response.status}`);
+  }
+
+  const data = await response.json() as { data: Array<{ id: string; display_name: string }> };
+  return data.data
+    .map((m) => ({ label: m.display_name || m.id, value: m.id }))
+    .sort((a, b) => a.value.localeCompare(b.value));
+}
+
+const mcpServerSchema = z.discriminatedUnion("transport", [
+  z.object({
+    name: z.string().trim().min(1).max(120),
+    enabled: z.boolean(),
+    transport: z.literal("stdio"),
+    command: z.string().trim().min(1).max(300),
+    args: z.array(z.string().trim().min(1).max(300)).max(40).optional()
+  }),
+  z.object({
+    name: z.string().trim().min(1).max(120),
+    enabled: z.boolean(),
+    transport: z.literal("http"),
+    url: z.string().trim().url(),
+    bearerTokenEnvVar: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
+      .nullable()
+      .optional()
+  })
+]);
+
+const providerProfileEnum = z.enum(["low", "medium", "high", "max"]);
+const responsePreferenceSchema = z
+  .object({
+    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
+    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
+    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
+    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
+    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
+    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
+    extraInstructions: z.string().trim().max(2000).optional()
+  });
+const responsePreferencePresetSchema = z.object({
+  id: z.string().trim().min(1).max(120).optional(),
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).optional(),
+  preference: responsePreferenceSchema
+});
+
+const updateSettingsSchema = z.object({
+  defaultProvider: z.enum(["codex", "claude"]).optional(),
+  maxAgents: z.coerce.number().int().min(1).max(20).optional(),
+  branchPrefix: z.string().trim().min(1).max(80).optional(),
+  workspaceProvisioningMode: z.enum(["clone_only", "hybrid"]).optional(),
+  gitUsername: z.string().trim().min(1).max(120).optional(),
+  mcpServers: z.array(mcpServerSchema).max(25).optional(),
+  openaiBaseUrl: z.string().trim().url().nullable().optional(),
+  taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
+  taskPromptMagicTemplate: z.string().trim().min(1).max(12_000).optional(),
+  codexDefaultModel: z.string().trim().min(1).max(120).optional(),
+  codexDefaultEffort: providerProfileEnum.optional(),
+  claudeDefaultModel: z.string().trim().min(1).max(120).optional(),
+  claudeDefaultEffort: providerProfileEnum.optional(),
+  responsePreferencePresets: z.array(responsePreferencePresetSchema).max(50).optional()
+});
+
+const updateCredentialsSchema = z.object({
+  githubToken: z.string().trim().min(1).optional(),
+  openaiApiKey: z.string().trim().min(1).optional(),
+  anthropicApiKey: z.string().trim().min(1).optional(),
+  clearGithubToken: z.boolean().optional(),
+  clearOpenAiApiKey: z.boolean().optional(),
+  clearAnthropicApiKey: z.boolean().optional()
+});
+
+const updateUserNotesSchema = z.object({
+  notes: z.string().max(200_000)
+});
+
+export const registerSettingsRoutes = (
+  app: FastifyInstance,
+  deps: {
+    settingsStore: SettingsStore;
+    scheduler: SchedulerService;
+    auth: AuthService;
+  }
+): void => {
+  app.get("/settings", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => deps.settingsStore.getSettings());
+
+  app.get("/settings/models", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async (request, reply) => {
+    const providerParam = (request.query as Record<string, string>).provider as AgentProvider | undefined;
+    const provider = providerParam === "claude" ? "claude" : "codex";
+
+    const credentials = await deps.settingsStore.getRuntimeCredentials();
+    const settings = await deps.settingsStore.getSettings();
+    const fallback = provider === "claude" ? [...CLAUDE_MODELS] : [...CODEX_MODELS];
+
+    try {
+      if (provider === "claude") {
+        if (!credentials.anthropicApiKey) {
+          return reply.send({ models: fallback, source: "static" });
+        }
+        const models = await fetchAnthropicModels(credentials.anthropicApiKey);
+        return reply.send({ models, source: "api" });
+      }
+
+      if (!credentials.openaiApiKey) {
+        return reply.send({ models: fallback, source: "static" });
+      }
+      const models = await fetchOpenAiModels(credentials.openaiApiKey, settings.openaiBaseUrl);
+      return reply.send({ models, source: "api" });
+    } catch {
+      return reply.send({ models: fallback, source: "static" });
+    }
+  });
+
+  app.patch("/settings", { preHandler: deps.auth.requireAllScopes(["settings:edit"]) }, async (request, reply) => {
+    const parsed = updateSettingsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const settings = await deps.settingsStore.updateSettings(parsed.data);
+    await deps.scheduler.onSettingsChanged();
+    return reply.send(settings);
+  });
+
+  app.patch("/settings/credentials", { preHandler: deps.auth.requireAllScopes(["settings:edit"]) }, async (request, reply) => {
+    const parsed = updateCredentialsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const settings = await deps.settingsStore.updateCredentials(parsed.data);
+    return reply.send(settings);
+  });
+
+  app.get("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request) =>
+    deps.settingsStore.getUserNotes(request.auth!.user.id)
+  );
+
+  app.patch("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateUserNotesSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const next = await deps.settingsStore.updateUserNotes(request.auth!.user.id, parsed.data.notes);
+    return reply.send(next);
+  });
+};
+````
+
 ## File: apps/server/src/services/github-import-service.ts
 ````typescript
 import type {
@@ -25427,201 +25622,6 @@ export const normalizeTaskLifecycleStatus = (
   }
 
   return resolveTaskReadyStatus(hasPendingCheckpoint);
-};
-````
-
-## File: apps/server/src/routes/settings.ts
-````typescript
-import { z } from "zod";
-import type { FastifyInstance } from "fastify";
-import type { AgentProvider } from "@agentswarm/shared-types";
-import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
-import type { AuthService } from "../lib/auth.js";
-import type { SchedulerService } from "../services/scheduler.js";
-import type { SettingsStore } from "../services/settings-store.js";
-
-interface ProviderModelEntry {
-  label: string;
-  value: string;
-}
-
-async function fetchOpenAiModels(apiKey: string, baseUrl: string | null): Promise<ProviderModelEntry[]> {
-  const base = (baseUrl?.replace(/\/$/, "") ?? "https://api.openai.com") + "/v1";
-  const response = await fetch(`${base}/models`, {
-    headers: { Authorization: `Bearer ${apiKey}` }
-  });
-
-  if (!response.ok) {
-    throw new Error(`OpenAI models API returned ${response.status}`);
-  }
-
-  const data = await response.json() as { data: Array<{ id: string }> };
-  return data.data
-    .map((m) => ({ label: m.id, value: m.id }))
-    .sort((a, b) => a.value.localeCompare(b.value));
-}
-
-async function fetchAnthropicModels(apiKey: string): Promise<ProviderModelEntry[]> {
-  const response = await fetch("https://api.anthropic.com/v1/models", {
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01"
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`Anthropic models API returned ${response.status}`);
-  }
-
-  const data = await response.json() as { data: Array<{ id: string; display_name: string }> };
-  return data.data
-    .map((m) => ({ label: m.display_name || m.id, value: m.id }))
-    .sort((a, b) => a.value.localeCompare(b.value));
-}
-
-const mcpServerSchema = z.discriminatedUnion("transport", [
-  z.object({
-    name: z.string().trim().min(1).max(120),
-    enabled: z.boolean(),
-    transport: z.literal("stdio"),
-    command: z.string().trim().min(1).max(300),
-    args: z.array(z.string().trim().min(1).max(300)).max(40).optional()
-  }),
-  z.object({
-    name: z.string().trim().min(1).max(120),
-    enabled: z.boolean(),
-    transport: z.literal("http"),
-    url: z.string().trim().url(),
-    bearerTokenEnvVar: z
-      .string()
-      .trim()
-      .min(1)
-      .max(120)
-      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
-      .nullable()
-      .optional()
-  })
-]);
-
-const providerProfileEnum = z.enum(["low", "medium", "high", "max"]);
-const responsePreferenceSchema = z
-  .object({
-    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
-    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
-    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
-    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
-    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
-    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
-    extraInstructions: z.string().trim().max(2000).optional()
-  });
-const responsePreferencePresetSchema = z.object({
-  id: z.string().trim().min(1).max(120).optional(),
-  name: z.string().trim().min(1).max(120),
-  description: z.string().trim().max(500).optional(),
-  preference: responsePreferenceSchema
-});
-
-const updateSettingsSchema = z.object({
-  defaultProvider: z.enum(["codex", "claude"]).optional(),
-  maxAgents: z.coerce.number().int().min(1).max(20).optional(),
-  branchPrefix: z.string().trim().min(1).max(80).optional(),
-  workspaceProvisioningMode: z.enum(["clone_only", "hybrid"]).optional(),
-  gitUsername: z.string().trim().min(1).max(120).optional(),
-  mcpServers: z.array(mcpServerSchema).max(25).optional(),
-  openaiBaseUrl: z.string().trim().url().nullable().optional(),
-  taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
-  taskPromptMagicTemplate: z.string().trim().min(1).max(12_000).optional(),
-  codexDefaultModel: z.string().trim().min(1).max(120).optional(),
-  codexDefaultEffort: providerProfileEnum.optional(),
-  claudeDefaultModel: z.string().trim().min(1).max(120).optional(),
-  claudeDefaultEffort: providerProfileEnum.optional(),
-  responsePreferencePresets: z.array(responsePreferencePresetSchema).max(50).optional()
-});
-
-const updateCredentialsSchema = z.object({
-  githubToken: z.string().trim().min(1).optional(),
-  openaiApiKey: z.string().trim().min(1).optional(),
-  anthropicApiKey: z.string().trim().min(1).optional(),
-  clearGithubToken: z.boolean().optional(),
-  clearOpenAiApiKey: z.boolean().optional(),
-  clearAnthropicApiKey: z.boolean().optional()
-});
-
-const updateUserNotesSchema = z.object({
-  notes: z.string().max(200_000)
-});
-
-export const registerSettingsRoutes = (
-  app: FastifyInstance,
-  deps: {
-    settingsStore: SettingsStore;
-    scheduler: SchedulerService;
-    auth: AuthService;
-  }
-): void => {
-  app.get("/settings", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => deps.settingsStore.getSettings());
-
-  app.get("/settings/models", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async (request, reply) => {
-    const providerParam = (request.query as Record<string, string>).provider as AgentProvider | undefined;
-    const provider = providerParam === "claude" ? "claude" : "codex";
-
-    const credentials = await deps.settingsStore.getRuntimeCredentials();
-    const settings = await deps.settingsStore.getSettings();
-    const fallback = provider === "claude" ? [...CLAUDE_MODELS] : [...CODEX_MODELS];
-
-    try {
-      if (provider === "claude") {
-        if (!credentials.anthropicApiKey) {
-          return reply.send({ models: fallback, source: "static" });
-        }
-        const models = await fetchAnthropicModels(credentials.anthropicApiKey);
-        return reply.send({ models, source: "api" });
-      }
-
-      if (!credentials.openaiApiKey) {
-        return reply.send({ models: fallback, source: "static" });
-      }
-      const models = await fetchOpenAiModels(credentials.openaiApiKey, settings.openaiBaseUrl);
-      return reply.send({ models, source: "api" });
-    } catch {
-      return reply.send({ models: fallback, source: "static" });
-    }
-  });
-
-  app.patch("/settings", { preHandler: deps.auth.requireAllScopes(["settings:edit"]) }, async (request, reply) => {
-    const parsed = updateSettingsSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const settings = await deps.settingsStore.updateSettings(parsed.data);
-    await deps.scheduler.onSettingsChanged();
-    return reply.send(settings);
-  });
-
-  app.patch("/settings/credentials", { preHandler: deps.auth.requireAllScopes(["settings:edit"]) }, async (request, reply) => {
-    const parsed = updateCredentialsSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const settings = await deps.settingsStore.updateCredentials(parsed.data);
-    return reply.send(settings);
-  });
-
-  app.get("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request) =>
-    deps.settingsStore.getUserNotes(request.auth!.user.id)
-  );
-
-  app.patch("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const parsed = updateUserNotesSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const next = await deps.settingsStore.updateUserNotes(request.auth!.user.id, parsed.data.notes);
-    return reply.send(next);
-  });
 };
 ````
 
@@ -34560,6 +34560,711 @@ export const registerRepositoryRoutes = (
 };
 ````
 
+## File: apps/server/src/services/settings-store.ts
+````typescript
+import { randomUUID } from "node:crypto";
+import type Redis from "ioredis";
+import type { Pool } from "pg";
+import type {
+  AgentProvider,
+  AgentResponsePreference,
+  AudienceType,
+  SystemDataStores,
+  McpServerConfig,
+  ProviderProfile,
+  WorkspaceProvisioningMode,
+  ResponsePreferencePreset,
+  ResponsePreferencePresetInput,
+  SystemSettings,
+  UserNotes,
+  UpdateCredentialSettingsInput,
+  UpdateSettingsInput
+} from "@agentswarm/shared-types";
+import { EventBus } from "../lib/events.js";
+import { normalizeProvider, DEFAULT_PROVIDER, normalizeProviderProfile } from "../lib/provider-config.js";
+import { defaultModelForProvider } from "../lib/provider-config.js";
+import type { CredentialStore, RuntimeCredentials } from "./credential-store.js";
+
+const SETTINGS_KEY = "agentswarm:settings";
+const USER_NOTES_KEY_PREFIX = "agentswarm:user-notes:";
+const SYSTEM_RESPONSE_PREFERENCE_PRESET_ID = "neutral";
+
+const DEFAULT_CODEX_EFFORT: ProviderProfile = "high";
+const DEFAULT_CLAUDE_EFFORT: ProviderProfile = "high";
+const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
+
+const nowIso = (): string => new Date().toISOString();
+
+const buildSystemResponsePreferencePreset = (): ResponsePreferencePreset => ({
+  id: SYSTEM_RESPONSE_PREFERENCE_PRESET_ID,
+  name: "Neutral",
+  description: "No tailored response style. The agent responds normally.",
+  preference: DEFAULT_AGENT_RESPONSE_PREFERENCE,
+  isSystem: true,
+  createdAt: "2026-05-07T00:00:00.000Z",
+  updatedAt: "2026-05-07T00:00:00.000Z"
+});
+
+const buildSystemDataStores = (): SystemDataStores => ({
+  taskStore: "postgres",
+  snippetStore: "postgres",
+  repositoryStore: "postgres",
+  credentialStore: "postgres",
+  roleStore: "postgres",
+  userStore: "postgres",
+  settingsStore: "postgres",
+  taskQueueStore: "redis",
+  webhookDeliveryStore: "redis",
+  sessionStore: "redis",
+  eventBus: "redis"
+});
+
+const defaultSettings: SystemSettings = {
+  defaultProvider: DEFAULT_PROVIDER,
+  maxAgents: 2,
+  branchPrefix: "agentswarm",
+  workspaceProvisioningMode: "clone_only",
+  gitUsername: "x-access-token",
+  mcpServers: [],
+  openaiBaseUrl: null,
+  taskPromptMagicModel: "gpt-5.4-mini",
+  taskPromptMagicTemplate:
+    "You are an expert prompt editor for software engineering tasks.\nRewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.\n\nRequirements:\n- Preserve intent and constraints.\n- Make it specific and actionable.\n- Include acceptance criteria when implied.\n- Avoid changing requested scope.\n- Return plain text only, no markdown fences.\n\nUser request:\n{{user_request}}\n",
+  githubTokenConfigured: false,
+  openaiApiKeyConfigured: false,
+  anthropicApiKeyConfigured: false,
+  codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.4",
+  codexDefaultEffort: DEFAULT_CODEX_EFFORT,
+  claudeDefaultModel: defaultModelForProvider("claude", DEFAULT_CLAUDE_EFFORT) ?? "claude-sonnet-4-5",
+  claudeDefaultEffort: DEFAULT_CLAUDE_EFFORT,
+  responsePreferencePresets: [buildSystemResponsePreferencePreset()],
+  dataStores: buildSystemDataStores()
+};
+
+const normalizeBranchPrefix = (value: string | undefined): string => {
+  const cleaned = (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9/_-]+/g, "-")
+    .replace(/\/+/g, "/")
+    .replace(/^\/+|\/+$/g, "");
+
+  return cleaned || defaultSettings.branchPrefix;
+};
+
+const normalizeGitUsername = (value: string | undefined): string => {
+  const cleaned = (value ?? "").trim();
+  return cleaned || defaultSettings.gitUsername;
+};
+
+const normalizeDefaultProvider = (value: AgentProvider | string | undefined): AgentProvider =>
+  normalizeProvider(value ?? defaultSettings.defaultProvider);
+
+const normalizeWorkspaceProvisioningMode = (value: WorkspaceProvisioningMode | string | undefined): WorkspaceProvisioningMode =>
+  value === "hybrid" ? "hybrid" : "clone_only";
+
+const normalizeMcpServerName = (value: string | undefined): string =>
+  (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const normalizeMcpServerArgs = (value: string[] | undefined): string[] =>
+  (value ?? []).map((item) => item.trim()).filter(Boolean);
+
+const MCP_BEARER_TOKEN_ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+const normalizeMcpBearerTokenEnvVar = (value: string | null | undefined): string | null => {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed || !MCP_BEARER_TOKEN_ENV_VAR_PATTERN.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+};
+
+const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerConfig[] => {
+  const normalized: McpServerConfig[] = [];
+  const seenNames = new Set<string>();
+
+  for (const server of value ?? []) {
+    const name = normalizeMcpServerName(server.name);
+    if (!name || seenNames.has(name)) {
+      continue;
+    }
+
+    const transport = server.transport === "http" ? "http" : "stdio";
+    const baseServer: McpServerConfig = {
+      name,
+      enabled: server.enabled !== false,
+      transport
+    };
+
+    if (transport === "http") {
+      const url = server.url?.trim() || null;
+      if (!url) {
+        continue;
+      }
+
+      normalized.push({
+        ...baseServer,
+        url,
+        bearerTokenEnvVar: normalizeMcpBearerTokenEnvVar(server.bearerTokenEnvVar)
+      });
+    } else {
+      const command = server.command?.trim() || null;
+      if (!command) {
+        continue;
+      }
+
+      normalized.push({
+        ...baseServer,
+        command,
+        args: normalizeMcpServerArgs(server.args)
+      });
+    }
+
+    seenNames.add(name);
+  }
+
+  return normalized;
+};
+
+const normalizeResponsePreferencePresetName = (value: string | undefined): string =>
+  (value ?? "").trim().replace(/\s+/g, " ");
+
+const normalizeResponsePreferencePresetDescription = (value: string | undefined): string => (value ?? "").trim();
+
+const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
+const RESPONSE_EXPLANATION_DEPTH = new Set(["one_line", "brief", "standard", "detailed", "deep_dive"]);
+const RESPONSE_JARGON_LEVEL = new Set(["avoid", "balanced", "expert"]);
+const RESPONSE_CODE_PREFERENCE = new Set(["only_when_needed", "prefer_examples", "avoid_code"]);
+const RESPONSE_CLARIFY_BEHAVIOR = new Set(["ask_when_ambiguous", "make_reasonable_assumptions"]);
+const RESPONSE_FORMATTING_STYLE = new Set(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]);
+
+const normalizeAgentResponsePreference = (
+  value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined
+): AgentResponsePreference => ({
+  audience: (() => {
+    if (typeof value?.audience === "string" && RESPONSE_AUDIENCES.has(value.audience as AudienceType)) {
+      return value.audience as AudienceType;
+    }
+    if ((value as { style?: string } | undefined)?.style === "technical" || (value as { style?: string } | undefined)?.style === "non_technical") {
+      return (value as { style?: AudienceType }).style;
+    }
+    return undefined;
+  })(),
+  explanationDepth:
+    typeof value?.explanationDepth === "string" && RESPONSE_EXPLANATION_DEPTH.has(value.explanationDepth)
+      ? value.explanationDepth
+      : undefined,
+  jargonLevel:
+    typeof value?.jargonLevel === "string" && RESPONSE_JARGON_LEVEL.has(value.jargonLevel)
+      ? value.jargonLevel
+      : undefined,
+  codePreference:
+    typeof value?.codePreference === "string" && RESPONSE_CODE_PREFERENCE.has(value.codePreference)
+      ? value.codePreference
+      : undefined,
+  clarifyBehavior:
+    typeof value?.clarifyBehavior === "string" && RESPONSE_CLARIFY_BEHAVIOR.has(value.clarifyBehavior)
+      ? value.clarifyBehavior
+      : undefined,
+  formattingStyle:
+    typeof value?.formattingStyle === "string" && RESPONSE_FORMATTING_STYLE.has(value.formattingStyle)
+      ? value.formattingStyle
+      : undefined,
+  extraInstructions: value?.extraInstructions?.trim() || undefined
+});
+
+const normalizeResponsePreferencePresets = (
+  value: ResponsePreferencePresetInput[] | ResponsePreferencePreset[] | undefined
+): ResponsePreferencePreset[] => {
+  const systemPreset = buildSystemResponsePreferencePreset();
+  const presets: ResponsePreferencePreset[] = [];
+  const seenIds = new Set<string>([systemPreset.id]);
+  const seenNames = new Set<string>([systemPreset.name.toLowerCase()]);
+
+  for (const rawPreset of value ?? []) {
+    const presetId = typeof rawPreset.id === "string" && rawPreset.id.trim() ? rawPreset.id.trim() : randomUUID();
+    if (presetId === systemPreset.id || seenIds.has(presetId)) {
+      continue;
+    }
+
+    const name = normalizeResponsePreferencePresetName(rawPreset.name);
+    const normalizedNameKey = name.toLowerCase();
+    if (!name || seenNames.has(normalizedNameKey)) {
+      continue;
+    }
+
+    presets.push({
+      id: presetId,
+      name,
+      description: normalizeResponsePreferencePresetDescription(rawPreset.description),
+      preference: normalizeAgentResponsePreference(rawPreset.preference),
+      isSystem: false,
+      createdAt: "createdAt" in rawPreset && typeof rawPreset.createdAt === "string" ? rawPreset.createdAt : nowIso(),
+      updatedAt: nowIso()
+    });
+    seenIds.add(presetId);
+    seenNames.add(normalizedNameKey);
+  }
+
+  return [systemPreset, ...presets].sort((left, right) => {
+    if (left.isSystem !== right.isSystem) {
+      return left.isSystem ? -1 : 1;
+    }
+    return left.name.localeCompare(right.name);
+  });
+};
+
+export interface SettingsRuntimeCredentials extends RuntimeCredentials {
+  gitUsername: string;
+  openaiBaseUrl: string | null;
+  defaultProvider: AgentProvider;
+}
+
+export interface SettingsStore {
+  getSettings(): Promise<SystemSettings>;
+  updateSettings(input: UpdateSettingsInput): Promise<SystemSettings>;
+  updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings>;
+  getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials>;
+  getUserNotes(userId: string): Promise<UserNotes>;
+  updateUserNotes(userId: string, notes: string): Promise<UserNotes>;
+}
+
+export class RedisSettingsStore implements SettingsStore {
+  constructor(
+    private readonly redis: Redis,
+    private readonly eventBus: EventBus,
+    private readonly credentialStore: CredentialStore
+  ) {}
+
+  private async publishSettings(settings: SystemSettings): Promise<void> {
+    await this.eventBus.publish({ type: "settings:updated", payload: settings });
+  }
+
+  async getSettings(): Promise<SystemSettings> {
+    const raw = await this.redis.get(SETTINGS_KEY);
+    if (!raw) {
+      const baseSettings = {
+        defaultProvider: defaultSettings.defaultProvider,
+        maxAgents: defaultSettings.maxAgents,
+        branchPrefix: defaultSettings.branchPrefix,
+        workspaceProvisioningMode: defaultSettings.workspaceProvisioningMode,
+        gitUsername: defaultSettings.gitUsername,
+        mcpServers: defaultSettings.mcpServers,
+        openaiBaseUrl: defaultSettings.openaiBaseUrl,
+        taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
+        taskPromptMagicTemplate: defaultSettings.taskPromptMagicTemplate,
+        codexDefaultModel: defaultSettings.codexDefaultModel,
+        codexDefaultEffort: defaultSettings.codexDefaultEffort,
+        claudeDefaultModel: defaultSettings.claudeDefaultModel,
+        claudeDefaultEffort: defaultSettings.claudeDefaultEffort,
+        responsePreferencePresets: defaultSettings.responsePreferencePresets
+      };
+      await this.redis.set(SETTINGS_KEY, JSON.stringify(baseSettings));
+    }
+
+    const parsed = raw ? (JSON.parse(raw) as Partial<SystemSettings> & { agentRules?: string; autoModeEnabled?: boolean }) : {};
+    const normalizedBase = {
+      defaultProvider: normalizeDefaultProvider(parsed.defaultProvider),
+      maxAgents: parsed.maxAgents ?? defaultSettings.maxAgents,
+      branchPrefix: normalizeBranchPrefix(parsed.branchPrefix),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(parsed.workspaceProvisioningMode),
+      gitUsername: normalizeGitUsername(parsed.gitUsername),
+      mcpServers: normalizeMcpServers(parsed.mcpServers),
+      openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null,
+      taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
+      taskPromptMagicTemplate: parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate,
+      codexDefaultModel: parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(parsed.codexDefaultEffort) ?? defaultSettings.codexDefaultEffort,
+      claudeDefaultModel: parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(parsed.claudeDefaultEffort) ?? defaultSettings.claudeDefaultEffort,
+      responsePreferencePresets: normalizeResponsePreferencePresets(parsed.responsePreferencePresets)
+    };
+
+    if (
+      Object.prototype.hasOwnProperty.call(parsed, "autoModeEnabled") ||
+      Object.prototype.hasOwnProperty.call(parsed, "agentRules") ||
+      parsed.defaultProvider !== normalizedBase.defaultProvider ||
+      parsed.maxAgents !== normalizedBase.maxAgents ||
+      parsed.branchPrefix !== normalizedBase.branchPrefix ||
+      parsed.workspaceProvisioningMode !== normalizedBase.workspaceProvisioningMode ||
+      parsed.gitUsername !== normalizedBase.gitUsername ||
+      JSON.stringify(parsed.mcpServers ?? []) !== JSON.stringify(normalizedBase.mcpServers) ||
+      (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl ||
+      (parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel) !== normalizedBase.taskPromptMagicModel ||
+      (parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate) !== normalizedBase.taskPromptMagicTemplate ||
+      JSON.stringify(parsed.responsePreferencePresets ?? []) !== JSON.stringify(normalizedBase.responsePreferencePresets)
+    ) {
+      await this.redis.set(SETTINGS_KEY, JSON.stringify(normalizedBase));
+    }
+
+    const credentialStatus = await this.credentialStore.getCredentialStatus();
+    return {
+      ...normalizedBase,
+      ...credentialStatus,
+      dataStores: buildSystemDataStores()
+    };
+  }
+
+  async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
+    const current = await this.getSettings();
+    const nextBase = {
+      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
+      maxAgents: input.maxAgents ?? current.maxAgents,
+      branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
+        input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
+      ),
+      gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
+      mcpServers:
+        input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
+      openaiBaseUrl:
+        input.openaiBaseUrl === undefined
+          ? current.openaiBaseUrl
+          : input.openaiBaseUrl?.trim()
+            ? input.openaiBaseUrl.trim()
+            : null,
+      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
+      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
+      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
+      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
+      responsePreferencePresets:
+        input.responsePreferencePresets === undefined
+          ? current.responsePreferencePresets
+          : normalizeResponsePreferencePresets(input.responsePreferencePresets)
+    };
+
+    await this.redis.set(SETTINGS_KEY, JSON.stringify(nextBase));
+    const next = await this.getSettings();
+    await this.publishSettings(next);
+    return next;
+  }
+
+  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings> {
+    await this.credentialStore.updateCredentials(input);
+    const settings = await this.getSettings();
+    await this.publishSettings(settings);
+    return settings;
+  }
+
+  async getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials> {
+    const [credentials, settings] = await Promise.all([
+      this.credentialStore.getCredentials(),
+      this.getSettings()
+    ]);
+    const codexAuthJson = userId?.trim()
+      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
+      : null;
+
+    return {
+      ...credentials,
+      codexAuthJson: codexAuthJson || null,
+      gitUsername: settings.gitUsername,
+      openaiBaseUrl: settings.openaiBaseUrl,
+      defaultProvider: settings.defaultProvider
+    };
+  }
+
+  async getUserNotes(userId: string): Promise<UserNotes> {
+    const key = `${USER_NOTES_KEY_PREFIX}${userId}`;
+    const raw = await this.redis.get(key);
+    if (!raw) {
+      const initial: UserNotes = { notes: "", updatedAt: nowIso() };
+      await this.redis.set(key, JSON.stringify(initial));
+      return initial;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<UserNotes> | null;
+    return {
+      notes: typeof parsed?.notes === "string" ? parsed.notes : "",
+      updatedAt: typeof parsed?.updatedAt === "string" && parsed.updatedAt.trim().length > 0 ? parsed.updatedAt : nowIso()
+    };
+  }
+
+  async updateUserNotes(userId: string, notes: string): Promise<UserNotes> {
+    const key = `${USER_NOTES_KEY_PREFIX}${userId}`;
+    const next: UserNotes = {
+      notes,
+      updatedAt: nowIso()
+    };
+    await this.redis.set(key, JSON.stringify(next));
+    return next;
+  }
+}
+
+export class PostgresSettingsStore implements SettingsStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly eventBus: EventBus,
+    private readonly credentialStore: CredentialStore
+  ) {}
+
+  private async publishSettings(settings: SystemSettings): Promise<void> {
+    await this.eventBus.publish({ type: "settings:updated", payload: settings });
+  }
+
+  private async ensureBaseSettingsRow(): Promise<void> {
+    await this.pool.query(
+      `
+        INSERT INTO system_settings (
+          singleton_id,
+          default_provider,
+          max_agents,
+          branch_prefix,
+          workspace_provisioning_mode,
+          git_username,
+          mcp_servers,
+          openai_base_url,
+          task_prompt_magic_model,
+          task_prompt_magic_template,
+          codex_default_model,
+          codex_default_effort,
+          claude_default_model,
+          claude_default_effort,
+          response_preference_presets
+        )
+        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+        ON CONFLICT (singleton_id) DO NOTHING
+      `,
+      [
+        defaultSettings.defaultProvider,
+        defaultSettings.maxAgents,
+        defaultSettings.branchPrefix,
+        defaultSettings.workspaceProvisioningMode,
+        defaultSettings.gitUsername,
+        JSON.stringify(defaultSettings.mcpServers),
+        defaultSettings.openaiBaseUrl,
+        defaultSettings.taskPromptMagicModel,
+        defaultSettings.taskPromptMagicTemplate,
+        defaultSettings.codexDefaultModel,
+        defaultSettings.codexDefaultEffort,
+        defaultSettings.claudeDefaultModel,
+        defaultSettings.claudeDefaultEffort,
+        JSON.stringify(defaultSettings.responsePreferencePresets)
+      ]
+    );
+  }
+
+  async getSettings(): Promise<SystemSettings> {
+    await this.ensureBaseSettingsRow();
+    const result = await this.pool.query(
+      `
+        SELECT
+          default_provider,
+          max_agents,
+          branch_prefix,
+          workspace_provisioning_mode,
+          git_username,
+          mcp_servers,
+          openai_base_url,
+          task_prompt_magic_model,
+          task_prompt_magic_template,
+          codex_default_model,
+          codex_default_effort,
+          claude_default_model,
+          claude_default_effort,
+          response_preference_presets
+        FROM system_settings
+        WHERE singleton_id = 1
+      `
+    );
+    const row = result.rows[0];
+    const normalizedBase = {
+      defaultProvider: normalizeDefaultProvider(row?.default_provider),
+      maxAgents: typeof row?.max_agents === "number" ? row.max_agents : defaultSettings.maxAgents,
+      branchPrefix: normalizeBranchPrefix(typeof row?.branch_prefix === "string" ? row.branch_prefix : undefined),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(row?.workspace_provisioning_mode),
+      gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
+      mcpServers: normalizeMcpServers(Array.isArray(row?.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined),
+      openaiBaseUrl: typeof row?.openai_base_url === "string" && row.openai_base_url.trim().length > 0 ? row.openai_base_url.trim() : null,
+      taskPromptMagicModel:
+        typeof row?.task_prompt_magic_model === "string" && row.task_prompt_magic_model.trim().length > 0
+          ? row.task_prompt_magic_model.trim()
+          : defaultSettings.taskPromptMagicModel,
+      taskPromptMagicTemplate:
+        typeof row?.task_prompt_magic_template === "string" && row.task_prompt_magic_template.trim().length > 0
+          ? row.task_prompt_magic_template.trim()
+          : defaultSettings.taskPromptMagicTemplate,
+      codexDefaultModel:
+        typeof row?.codex_default_model === "string" && row.codex_default_model.trim().length > 0
+          ? row.codex_default_model.trim()
+          : defaultSettings.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(row?.codex_default_effort) ?? defaultSettings.codexDefaultEffort,
+      claudeDefaultModel:
+        typeof row?.claude_default_model === "string" && row.claude_default_model.trim().length > 0
+          ? row.claude_default_model.trim()
+          : defaultSettings.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(row?.claude_default_effort) ?? defaultSettings.claudeDefaultEffort,
+      responsePreferencePresets: normalizeResponsePreferencePresets(
+        Array.isArray(row?.response_preference_presets) ? (row.response_preference_presets as ResponsePreferencePreset[]) : undefined
+      )
+    };
+
+    const credentialStatus = await this.credentialStore.getCredentialStatus();
+    return {
+      ...normalizedBase,
+      ...credentialStatus,
+      dataStores: buildSystemDataStores()
+    };
+  }
+
+  async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
+    const current = await this.getSettings();
+    const nextBase = {
+      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
+      maxAgents: input.maxAgents ?? current.maxAgents,
+      branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
+        input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
+      ),
+      gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
+      mcpServers: input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
+      openaiBaseUrl:
+        input.openaiBaseUrl === undefined
+          ? current.openaiBaseUrl
+          : input.openaiBaseUrl?.trim()
+            ? input.openaiBaseUrl.trim()
+            : null,
+      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
+      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
+      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
+      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
+      responsePreferencePresets:
+        input.responsePreferencePresets === undefined
+          ? current.responsePreferencePresets
+          : normalizeResponsePreferencePresets(input.responsePreferencePresets)
+    };
+
+    await this.pool.query(
+      `
+        INSERT INTO system_settings (
+          singleton_id,
+          default_provider,
+          max_agents,
+          branch_prefix,
+          workspace_provisioning_mode,
+          git_username,
+          mcp_servers,
+          openai_base_url,
+          task_prompt_magic_model,
+          task_prompt_magic_template,
+          codex_default_model,
+          codex_default_effort,
+          claude_default_model,
+          claude_default_effort,
+          response_preference_presets
+        )
+        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+        ON CONFLICT (singleton_id) DO UPDATE
+        SET
+          default_provider = EXCLUDED.default_provider,
+          max_agents = EXCLUDED.max_agents,
+          branch_prefix = EXCLUDED.branch_prefix,
+          workspace_provisioning_mode = EXCLUDED.workspace_provisioning_mode,
+          git_username = EXCLUDED.git_username,
+          mcp_servers = EXCLUDED.mcp_servers,
+          openai_base_url = EXCLUDED.openai_base_url,
+          task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
+          task_prompt_magic_template = EXCLUDED.task_prompt_magic_template,
+          codex_default_model = EXCLUDED.codex_default_model,
+          codex_default_effort = EXCLUDED.codex_default_effort,
+          claude_default_model = EXCLUDED.claude_default_model,
+          claude_default_effort = EXCLUDED.claude_default_effort,
+          response_preference_presets = EXCLUDED.response_preference_presets
+      `,
+      [
+        nextBase.defaultProvider,
+        nextBase.maxAgents,
+        nextBase.branchPrefix,
+        nextBase.workspaceProvisioningMode,
+        nextBase.gitUsername,
+        JSON.stringify(nextBase.mcpServers),
+        nextBase.openaiBaseUrl,
+        nextBase.taskPromptMagicModel,
+        nextBase.taskPromptMagicTemplate,
+        nextBase.codexDefaultModel,
+        nextBase.codexDefaultEffort,
+        nextBase.claudeDefaultModel,
+        nextBase.claudeDefaultEffort,
+        JSON.stringify(nextBase.responsePreferencePresets)
+      ]
+    );
+    const next = await this.getSettings();
+    await this.publishSettings(next);
+    return next;
+  }
+
+  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings> {
+    await this.credentialStore.updateCredentials(input);
+    const settings = await this.getSettings();
+    await this.publishSettings(settings);
+    return settings;
+  }
+
+  async getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials> {
+    const [credentials, settings] = await Promise.all([
+      this.credentialStore.getCredentials(),
+      this.getSettings()
+    ]);
+    const codexAuthJson = userId?.trim()
+      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
+      : null;
+
+    return {
+      ...credentials,
+      codexAuthJson: codexAuthJson || null,
+      gitUsername: settings.gitUsername,
+      openaiBaseUrl: settings.openaiBaseUrl,
+      defaultProvider: settings.defaultProvider
+    };
+  }
+
+  async getUserNotes(userId: string): Promise<UserNotes> {
+    const result = await this.pool.query(
+      `
+        SELECT notes, updated_at
+        FROM user_notes
+        WHERE user_id = $1
+      `,
+      [userId]
+    );
+    const row = result.rows[0];
+    return {
+      notes: typeof row?.notes === "string" ? row.notes : "",
+      updatedAt:
+        typeof row?.updated_at === "string" && row.updated_at.trim().length > 0
+          ? row.updated_at
+          : nowIso()
+    };
+  }
+
+  async updateUserNotes(userId: string, notes: string): Promise<UserNotes> {
+    const next: UserNotes = {
+      notes,
+      updatedAt: nowIso()
+    };
+    await this.pool.query(
+      `
+        INSERT INTO user_notes (user_id, notes, updated_at)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id) DO UPDATE
+        SET notes = EXCLUDED.notes, updated_at = EXCLUDED.updated_at
+      `,
+      [userId, next.notes, next.updatedAt]
+    );
+    return next;
+  }
+}
+````
+
 ## File: apps/web/app/globals.css
 ````css
 @import "@mdxeditor/editor/style.css";
@@ -35986,711 +36691,6 @@ export const registerImportRoutes = (
 };
 ````
 
-## File: apps/server/src/services/settings-store.ts
-````typescript
-import { randomUUID } from "node:crypto";
-import type Redis from "ioredis";
-import type { Pool } from "pg";
-import type {
-  AgentProvider,
-  AgentResponsePreference,
-  AudienceType,
-  SystemDataStores,
-  McpServerConfig,
-  ProviderProfile,
-  WorkspaceProvisioningMode,
-  ResponsePreferencePreset,
-  ResponsePreferencePresetInput,
-  SystemSettings,
-  UserNotes,
-  UpdateCredentialSettingsInput,
-  UpdateSettingsInput
-} from "@agentswarm/shared-types";
-import { EventBus } from "../lib/events.js";
-import { normalizeProvider, DEFAULT_PROVIDER, normalizeProviderProfile } from "../lib/provider-config.js";
-import { defaultModelForProvider } from "../lib/provider-config.js";
-import type { CredentialStore, RuntimeCredentials } from "./credential-store.js";
-
-const SETTINGS_KEY = "agentswarm:settings";
-const USER_NOTES_KEY_PREFIX = "agentswarm:user-notes:";
-const SYSTEM_RESPONSE_PREFERENCE_PRESET_ID = "neutral";
-
-const DEFAULT_CODEX_EFFORT: ProviderProfile = "high";
-const DEFAULT_CLAUDE_EFFORT: ProviderProfile = "high";
-const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
-
-const nowIso = (): string => new Date().toISOString();
-
-const buildSystemResponsePreferencePreset = (): ResponsePreferencePreset => ({
-  id: SYSTEM_RESPONSE_PREFERENCE_PRESET_ID,
-  name: "Neutral",
-  description: "No tailored response style. The agent responds normally.",
-  preference: DEFAULT_AGENT_RESPONSE_PREFERENCE,
-  isSystem: true,
-  createdAt: "2026-05-07T00:00:00.000Z",
-  updatedAt: "2026-05-07T00:00:00.000Z"
-});
-
-const buildSystemDataStores = (): SystemDataStores => ({
-  taskStore: "postgres",
-  snippetStore: "postgres",
-  repositoryStore: "postgres",
-  credentialStore: "postgres",
-  roleStore: "postgres",
-  userStore: "postgres",
-  settingsStore: "postgres",
-  taskQueueStore: "redis",
-  webhookDeliveryStore: "redis",
-  sessionStore: "redis",
-  eventBus: "redis"
-});
-
-const defaultSettings: SystemSettings = {
-  defaultProvider: DEFAULT_PROVIDER,
-  maxAgents: 2,
-  branchPrefix: "agentswarm",
-  workspaceProvisioningMode: "clone_only",
-  gitUsername: "x-access-token",
-  mcpServers: [],
-  openaiBaseUrl: null,
-  taskPromptMagicModel: "gpt-5.4-mini",
-  taskPromptMagicTemplate:
-    "You are an expert prompt editor for software engineering tasks.\nRewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.\n\nRequirements:\n- Preserve intent and constraints.\n- Make it specific and actionable.\n- Include acceptance criteria when implied.\n- Avoid changing requested scope.\n- Return plain text only, no markdown fences.\n\nUser request:\n{{user_request}}\n",
-  githubTokenConfigured: false,
-  openaiApiKeyConfigured: false,
-  anthropicApiKeyConfigured: false,
-  codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.4",
-  codexDefaultEffort: DEFAULT_CODEX_EFFORT,
-  claudeDefaultModel: defaultModelForProvider("claude", DEFAULT_CLAUDE_EFFORT) ?? "claude-sonnet-4-5",
-  claudeDefaultEffort: DEFAULT_CLAUDE_EFFORT,
-  responsePreferencePresets: [buildSystemResponsePreferencePreset()],
-  dataStores: buildSystemDataStores()
-};
-
-const normalizeBranchPrefix = (value: string | undefined): string => {
-  const cleaned = (value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9/_-]+/g, "-")
-    .replace(/\/+/g, "/")
-    .replace(/^\/+|\/+$/g, "");
-
-  return cleaned || defaultSettings.branchPrefix;
-};
-
-const normalizeGitUsername = (value: string | undefined): string => {
-  const cleaned = (value ?? "").trim();
-  return cleaned || defaultSettings.gitUsername;
-};
-
-const normalizeDefaultProvider = (value: AgentProvider | string | undefined): AgentProvider =>
-  normalizeProvider(value ?? defaultSettings.defaultProvider);
-
-const normalizeWorkspaceProvisioningMode = (value: WorkspaceProvisioningMode | string | undefined): WorkspaceProvisioningMode =>
-  value === "hybrid" ? "hybrid" : "clone_only";
-
-const normalizeMcpServerName = (value: string | undefined): string =>
-  (value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-const normalizeMcpServerArgs = (value: string[] | undefined): string[] =>
-  (value ?? []).map((item) => item.trim()).filter(Boolean);
-
-const MCP_BEARER_TOKEN_ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-const normalizeMcpBearerTokenEnvVar = (value: string | null | undefined): string | null => {
-  const trimmed = value?.trim() ?? "";
-  if (!trimmed || !MCP_BEARER_TOKEN_ENV_VAR_PATTERN.test(trimmed)) {
-    return null;
-  }
-  return trimmed;
-};
-
-const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerConfig[] => {
-  const normalized: McpServerConfig[] = [];
-  const seenNames = new Set<string>();
-
-  for (const server of value ?? []) {
-    const name = normalizeMcpServerName(server.name);
-    if (!name || seenNames.has(name)) {
-      continue;
-    }
-
-    const transport = server.transport === "http" ? "http" : "stdio";
-    const baseServer: McpServerConfig = {
-      name,
-      enabled: server.enabled !== false,
-      transport
-    };
-
-    if (transport === "http") {
-      const url = server.url?.trim() || null;
-      if (!url) {
-        continue;
-      }
-
-      normalized.push({
-        ...baseServer,
-        url,
-        bearerTokenEnvVar: normalizeMcpBearerTokenEnvVar(server.bearerTokenEnvVar)
-      });
-    } else {
-      const command = server.command?.trim() || null;
-      if (!command) {
-        continue;
-      }
-
-      normalized.push({
-        ...baseServer,
-        command,
-        args: normalizeMcpServerArgs(server.args)
-      });
-    }
-
-    seenNames.add(name);
-  }
-
-  return normalized;
-};
-
-const normalizeResponsePreferencePresetName = (value: string | undefined): string =>
-  (value ?? "").trim().replace(/\s+/g, " ");
-
-const normalizeResponsePreferencePresetDescription = (value: string | undefined): string => (value ?? "").trim();
-
-const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
-const RESPONSE_EXPLANATION_DEPTH = new Set(["one_line", "brief", "standard", "detailed", "deep_dive"]);
-const RESPONSE_JARGON_LEVEL = new Set(["avoid", "balanced", "expert"]);
-const RESPONSE_CODE_PREFERENCE = new Set(["only_when_needed", "prefer_examples", "avoid_code"]);
-const RESPONSE_CLARIFY_BEHAVIOR = new Set(["ask_when_ambiguous", "make_reasonable_assumptions"]);
-const RESPONSE_FORMATTING_STYLE = new Set(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]);
-
-const normalizeAgentResponsePreference = (
-  value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined
-): AgentResponsePreference => ({
-  audience: (() => {
-    if (typeof value?.audience === "string" && RESPONSE_AUDIENCES.has(value.audience as AudienceType)) {
-      return value.audience as AudienceType;
-    }
-    if ((value as { style?: string } | undefined)?.style === "technical" || (value as { style?: string } | undefined)?.style === "non_technical") {
-      return (value as { style?: AudienceType }).style;
-    }
-    return undefined;
-  })(),
-  explanationDepth:
-    typeof value?.explanationDepth === "string" && RESPONSE_EXPLANATION_DEPTH.has(value.explanationDepth)
-      ? value.explanationDepth
-      : undefined,
-  jargonLevel:
-    typeof value?.jargonLevel === "string" && RESPONSE_JARGON_LEVEL.has(value.jargonLevel)
-      ? value.jargonLevel
-      : undefined,
-  codePreference:
-    typeof value?.codePreference === "string" && RESPONSE_CODE_PREFERENCE.has(value.codePreference)
-      ? value.codePreference
-      : undefined,
-  clarifyBehavior:
-    typeof value?.clarifyBehavior === "string" && RESPONSE_CLARIFY_BEHAVIOR.has(value.clarifyBehavior)
-      ? value.clarifyBehavior
-      : undefined,
-  formattingStyle:
-    typeof value?.formattingStyle === "string" && RESPONSE_FORMATTING_STYLE.has(value.formattingStyle)
-      ? value.formattingStyle
-      : undefined,
-  extraInstructions: value?.extraInstructions?.trim() || undefined
-});
-
-const normalizeResponsePreferencePresets = (
-  value: ResponsePreferencePresetInput[] | ResponsePreferencePreset[] | undefined
-): ResponsePreferencePreset[] => {
-  const systemPreset = buildSystemResponsePreferencePreset();
-  const presets: ResponsePreferencePreset[] = [];
-  const seenIds = new Set<string>([systemPreset.id]);
-  const seenNames = new Set<string>([systemPreset.name.toLowerCase()]);
-
-  for (const rawPreset of value ?? []) {
-    const presetId = typeof rawPreset.id === "string" && rawPreset.id.trim() ? rawPreset.id.trim() : randomUUID();
-    if (presetId === systemPreset.id || seenIds.has(presetId)) {
-      continue;
-    }
-
-    const name = normalizeResponsePreferencePresetName(rawPreset.name);
-    const normalizedNameKey = name.toLowerCase();
-    if (!name || seenNames.has(normalizedNameKey)) {
-      continue;
-    }
-
-    presets.push({
-      id: presetId,
-      name,
-      description: normalizeResponsePreferencePresetDescription(rawPreset.description),
-      preference: normalizeAgentResponsePreference(rawPreset.preference),
-      isSystem: false,
-      createdAt: "createdAt" in rawPreset && typeof rawPreset.createdAt === "string" ? rawPreset.createdAt : nowIso(),
-      updatedAt: nowIso()
-    });
-    seenIds.add(presetId);
-    seenNames.add(normalizedNameKey);
-  }
-
-  return [systemPreset, ...presets].sort((left, right) => {
-    if (left.isSystem !== right.isSystem) {
-      return left.isSystem ? -1 : 1;
-    }
-    return left.name.localeCompare(right.name);
-  });
-};
-
-export interface SettingsRuntimeCredentials extends RuntimeCredentials {
-  gitUsername: string;
-  openaiBaseUrl: string | null;
-  defaultProvider: AgentProvider;
-}
-
-export interface SettingsStore {
-  getSettings(): Promise<SystemSettings>;
-  updateSettings(input: UpdateSettingsInput): Promise<SystemSettings>;
-  updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings>;
-  getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials>;
-  getUserNotes(userId: string): Promise<UserNotes>;
-  updateUserNotes(userId: string, notes: string): Promise<UserNotes>;
-}
-
-export class RedisSettingsStore implements SettingsStore {
-  constructor(
-    private readonly redis: Redis,
-    private readonly eventBus: EventBus,
-    private readonly credentialStore: CredentialStore
-  ) {}
-
-  private async publishSettings(settings: SystemSettings): Promise<void> {
-    await this.eventBus.publish({ type: "settings:updated", payload: settings });
-  }
-
-  async getSettings(): Promise<SystemSettings> {
-    const raw = await this.redis.get(SETTINGS_KEY);
-    if (!raw) {
-      const baseSettings = {
-        defaultProvider: defaultSettings.defaultProvider,
-        maxAgents: defaultSettings.maxAgents,
-        branchPrefix: defaultSettings.branchPrefix,
-        workspaceProvisioningMode: defaultSettings.workspaceProvisioningMode,
-        gitUsername: defaultSettings.gitUsername,
-        mcpServers: defaultSettings.mcpServers,
-        openaiBaseUrl: defaultSettings.openaiBaseUrl,
-        taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
-        taskPromptMagicTemplate: defaultSettings.taskPromptMagicTemplate,
-        codexDefaultModel: defaultSettings.codexDefaultModel,
-        codexDefaultEffort: defaultSettings.codexDefaultEffort,
-        claudeDefaultModel: defaultSettings.claudeDefaultModel,
-        claudeDefaultEffort: defaultSettings.claudeDefaultEffort,
-        responsePreferencePresets: defaultSettings.responsePreferencePresets
-      };
-      await this.redis.set(SETTINGS_KEY, JSON.stringify(baseSettings));
-    }
-
-    const parsed = raw ? (JSON.parse(raw) as Partial<SystemSettings> & { agentRules?: string; autoModeEnabled?: boolean }) : {};
-    const normalizedBase = {
-      defaultProvider: normalizeDefaultProvider(parsed.defaultProvider),
-      maxAgents: parsed.maxAgents ?? defaultSettings.maxAgents,
-      branchPrefix: normalizeBranchPrefix(parsed.branchPrefix),
-      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(parsed.workspaceProvisioningMode),
-      gitUsername: normalizeGitUsername(parsed.gitUsername),
-      mcpServers: normalizeMcpServers(parsed.mcpServers),
-      openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null,
-      taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
-      taskPromptMagicTemplate: parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate,
-      codexDefaultModel: parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel,
-      codexDefaultEffort: normalizeProviderProfile(parsed.codexDefaultEffort) ?? defaultSettings.codexDefaultEffort,
-      claudeDefaultModel: parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(parsed.claudeDefaultEffort) ?? defaultSettings.claudeDefaultEffort,
-      responsePreferencePresets: normalizeResponsePreferencePresets(parsed.responsePreferencePresets)
-    };
-
-    if (
-      Object.prototype.hasOwnProperty.call(parsed, "autoModeEnabled") ||
-      Object.prototype.hasOwnProperty.call(parsed, "agentRules") ||
-      parsed.defaultProvider !== normalizedBase.defaultProvider ||
-      parsed.maxAgents !== normalizedBase.maxAgents ||
-      parsed.branchPrefix !== normalizedBase.branchPrefix ||
-      parsed.workspaceProvisioningMode !== normalizedBase.workspaceProvisioningMode ||
-      parsed.gitUsername !== normalizedBase.gitUsername ||
-      JSON.stringify(parsed.mcpServers ?? []) !== JSON.stringify(normalizedBase.mcpServers) ||
-      (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl ||
-      (parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel) !== normalizedBase.taskPromptMagicModel ||
-      (parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate) !== normalizedBase.taskPromptMagicTemplate ||
-      JSON.stringify(parsed.responsePreferencePresets ?? []) !== JSON.stringify(normalizedBase.responsePreferencePresets)
-    ) {
-      await this.redis.set(SETTINGS_KEY, JSON.stringify(normalizedBase));
-    }
-
-    const credentialStatus = await this.credentialStore.getCredentialStatus();
-    return {
-      ...normalizedBase,
-      ...credentialStatus,
-      dataStores: buildSystemDataStores()
-    };
-  }
-
-  async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
-    const current = await this.getSettings();
-    const nextBase = {
-      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
-      maxAgents: input.maxAgents ?? current.maxAgents,
-      branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
-      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
-        input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
-      ),
-      gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
-      mcpServers:
-        input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
-      openaiBaseUrl:
-        input.openaiBaseUrl === undefined
-          ? current.openaiBaseUrl
-          : input.openaiBaseUrl?.trim()
-            ? input.openaiBaseUrl.trim()
-            : null,
-      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
-      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
-      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
-      codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
-      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
-      responsePreferencePresets:
-        input.responsePreferencePresets === undefined
-          ? current.responsePreferencePresets
-          : normalizeResponsePreferencePresets(input.responsePreferencePresets)
-    };
-
-    await this.redis.set(SETTINGS_KEY, JSON.stringify(nextBase));
-    const next = await this.getSettings();
-    await this.publishSettings(next);
-    return next;
-  }
-
-  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings> {
-    await this.credentialStore.updateCredentials(input);
-    const settings = await this.getSettings();
-    await this.publishSettings(settings);
-    return settings;
-  }
-
-  async getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials> {
-    const [credentials, settings] = await Promise.all([
-      this.credentialStore.getCredentials(),
-      this.getSettings()
-    ]);
-    const codexAuthJson = userId?.trim()
-      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
-      : null;
-
-    return {
-      ...credentials,
-      codexAuthJson: codexAuthJson || null,
-      gitUsername: settings.gitUsername,
-      openaiBaseUrl: settings.openaiBaseUrl,
-      defaultProvider: settings.defaultProvider
-    };
-  }
-
-  async getUserNotes(userId: string): Promise<UserNotes> {
-    const key = `${USER_NOTES_KEY_PREFIX}${userId}`;
-    const raw = await this.redis.get(key);
-    if (!raw) {
-      const initial: UserNotes = { notes: "", updatedAt: nowIso() };
-      await this.redis.set(key, JSON.stringify(initial));
-      return initial;
-    }
-
-    const parsed = JSON.parse(raw) as Partial<UserNotes> | null;
-    return {
-      notes: typeof parsed?.notes === "string" ? parsed.notes : "",
-      updatedAt: typeof parsed?.updatedAt === "string" && parsed.updatedAt.trim().length > 0 ? parsed.updatedAt : nowIso()
-    };
-  }
-
-  async updateUserNotes(userId: string, notes: string): Promise<UserNotes> {
-    const key = `${USER_NOTES_KEY_PREFIX}${userId}`;
-    const next: UserNotes = {
-      notes,
-      updatedAt: nowIso()
-    };
-    await this.redis.set(key, JSON.stringify(next));
-    return next;
-  }
-}
-
-export class PostgresSettingsStore implements SettingsStore {
-  constructor(
-    private readonly pool: Pool,
-    private readonly eventBus: EventBus,
-    private readonly credentialStore: CredentialStore
-  ) {}
-
-  private async publishSettings(settings: SystemSettings): Promise<void> {
-    await this.eventBus.publish({ type: "settings:updated", payload: settings });
-  }
-
-  private async ensureBaseSettingsRow(): Promise<void> {
-    await this.pool.query(
-      `
-        INSERT INTO system_settings (
-          singleton_id,
-          default_provider,
-          max_agents,
-          branch_prefix,
-          workspace_provisioning_mode,
-          git_username,
-          mcp_servers,
-          openai_base_url,
-          task_prompt_magic_model,
-          task_prompt_magic_template,
-          codex_default_model,
-          codex_default_effort,
-          claude_default_model,
-          claude_default_effort,
-          response_preference_presets
-        )
-        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
-        ON CONFLICT (singleton_id) DO NOTHING
-      `,
-      [
-        defaultSettings.defaultProvider,
-        defaultSettings.maxAgents,
-        defaultSettings.branchPrefix,
-        defaultSettings.workspaceProvisioningMode,
-        defaultSettings.gitUsername,
-        JSON.stringify(defaultSettings.mcpServers),
-        defaultSettings.openaiBaseUrl,
-        defaultSettings.taskPromptMagicModel,
-        defaultSettings.taskPromptMagicTemplate,
-        defaultSettings.codexDefaultModel,
-        defaultSettings.codexDefaultEffort,
-        defaultSettings.claudeDefaultModel,
-        defaultSettings.claudeDefaultEffort,
-        JSON.stringify(defaultSettings.responsePreferencePresets)
-      ]
-    );
-  }
-
-  async getSettings(): Promise<SystemSettings> {
-    await this.ensureBaseSettingsRow();
-    const result = await this.pool.query(
-      `
-        SELECT
-          default_provider,
-          max_agents,
-          branch_prefix,
-          workspace_provisioning_mode,
-          git_username,
-          mcp_servers,
-          openai_base_url,
-          task_prompt_magic_model,
-          task_prompt_magic_template,
-          codex_default_model,
-          codex_default_effort,
-          claude_default_model,
-          claude_default_effort,
-          response_preference_presets
-        FROM system_settings
-        WHERE singleton_id = 1
-      `
-    );
-    const row = result.rows[0];
-    const normalizedBase = {
-      defaultProvider: normalizeDefaultProvider(row?.default_provider),
-      maxAgents: typeof row?.max_agents === "number" ? row.max_agents : defaultSettings.maxAgents,
-      branchPrefix: normalizeBranchPrefix(typeof row?.branch_prefix === "string" ? row.branch_prefix : undefined),
-      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(row?.workspace_provisioning_mode),
-      gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
-      mcpServers: normalizeMcpServers(Array.isArray(row?.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined),
-      openaiBaseUrl: typeof row?.openai_base_url === "string" && row.openai_base_url.trim().length > 0 ? row.openai_base_url.trim() : null,
-      taskPromptMagicModel:
-        typeof row?.task_prompt_magic_model === "string" && row.task_prompt_magic_model.trim().length > 0
-          ? row.task_prompt_magic_model.trim()
-          : defaultSettings.taskPromptMagicModel,
-      taskPromptMagicTemplate:
-        typeof row?.task_prompt_magic_template === "string" && row.task_prompt_magic_template.trim().length > 0
-          ? row.task_prompt_magic_template.trim()
-          : defaultSettings.taskPromptMagicTemplate,
-      codexDefaultModel:
-        typeof row?.codex_default_model === "string" && row.codex_default_model.trim().length > 0
-          ? row.codex_default_model.trim()
-          : defaultSettings.codexDefaultModel,
-      codexDefaultEffort: normalizeProviderProfile(row?.codex_default_effort) ?? defaultSettings.codexDefaultEffort,
-      claudeDefaultModel:
-        typeof row?.claude_default_model === "string" && row.claude_default_model.trim().length > 0
-          ? row.claude_default_model.trim()
-          : defaultSettings.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(row?.claude_default_effort) ?? defaultSettings.claudeDefaultEffort,
-      responsePreferencePresets: normalizeResponsePreferencePresets(
-        Array.isArray(row?.response_preference_presets) ? (row.response_preference_presets as ResponsePreferencePreset[]) : undefined
-      )
-    };
-
-    const credentialStatus = await this.credentialStore.getCredentialStatus();
-    return {
-      ...normalizedBase,
-      ...credentialStatus,
-      dataStores: buildSystemDataStores()
-    };
-  }
-
-  async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
-    const current = await this.getSettings();
-    const nextBase = {
-      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
-      maxAgents: input.maxAgents ?? current.maxAgents,
-      branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
-      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
-        input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
-      ),
-      gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
-      mcpServers: input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
-      openaiBaseUrl:
-        input.openaiBaseUrl === undefined
-          ? current.openaiBaseUrl
-          : input.openaiBaseUrl?.trim()
-            ? input.openaiBaseUrl.trim()
-            : null,
-      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
-      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
-      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
-      codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
-      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
-      responsePreferencePresets:
-        input.responsePreferencePresets === undefined
-          ? current.responsePreferencePresets
-          : normalizeResponsePreferencePresets(input.responsePreferencePresets)
-    };
-
-    await this.pool.query(
-      `
-        INSERT INTO system_settings (
-          singleton_id,
-          default_provider,
-          max_agents,
-          branch_prefix,
-          workspace_provisioning_mode,
-          git_username,
-          mcp_servers,
-          openai_base_url,
-          task_prompt_magic_model,
-          task_prompt_magic_template,
-          codex_default_model,
-          codex_default_effort,
-          claude_default_model,
-          claude_default_effort,
-          response_preference_presets
-        )
-        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
-        ON CONFLICT (singleton_id) DO UPDATE
-        SET
-          default_provider = EXCLUDED.default_provider,
-          max_agents = EXCLUDED.max_agents,
-          branch_prefix = EXCLUDED.branch_prefix,
-          workspace_provisioning_mode = EXCLUDED.workspace_provisioning_mode,
-          git_username = EXCLUDED.git_username,
-          mcp_servers = EXCLUDED.mcp_servers,
-          openai_base_url = EXCLUDED.openai_base_url,
-          task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
-          task_prompt_magic_template = EXCLUDED.task_prompt_magic_template,
-          codex_default_model = EXCLUDED.codex_default_model,
-          codex_default_effort = EXCLUDED.codex_default_effort,
-          claude_default_model = EXCLUDED.claude_default_model,
-          claude_default_effort = EXCLUDED.claude_default_effort,
-          response_preference_presets = EXCLUDED.response_preference_presets
-      `,
-      [
-        nextBase.defaultProvider,
-        nextBase.maxAgents,
-        nextBase.branchPrefix,
-        nextBase.workspaceProvisioningMode,
-        nextBase.gitUsername,
-        JSON.stringify(nextBase.mcpServers),
-        nextBase.openaiBaseUrl,
-        nextBase.taskPromptMagicModel,
-        nextBase.taskPromptMagicTemplate,
-        nextBase.codexDefaultModel,
-        nextBase.codexDefaultEffort,
-        nextBase.claudeDefaultModel,
-        nextBase.claudeDefaultEffort,
-        JSON.stringify(nextBase.responsePreferencePresets)
-      ]
-    );
-    const next = await this.getSettings();
-    await this.publishSettings(next);
-    return next;
-  }
-
-  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings> {
-    await this.credentialStore.updateCredentials(input);
-    const settings = await this.getSettings();
-    await this.publishSettings(settings);
-    return settings;
-  }
-
-  async getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials> {
-    const [credentials, settings] = await Promise.all([
-      this.credentialStore.getCredentials(),
-      this.getSettings()
-    ]);
-    const codexAuthJson = userId?.trim()
-      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
-      : null;
-
-    return {
-      ...credentials,
-      codexAuthJson: codexAuthJson || null,
-      gitUsername: settings.gitUsername,
-      openaiBaseUrl: settings.openaiBaseUrl,
-      defaultProvider: settings.defaultProvider
-    };
-  }
-
-  async getUserNotes(userId: string): Promise<UserNotes> {
-    const result = await this.pool.query(
-      `
-        SELECT notes, updated_at
-        FROM user_notes
-        WHERE user_id = $1
-      `,
-      [userId]
-    );
-    const row = result.rows[0];
-    return {
-      notes: typeof row?.notes === "string" ? row.notes : "",
-      updatedAt:
-        typeof row?.updated_at === "string" && row.updated_at.trim().length > 0
-          ? row.updated_at
-          : nowIso()
-    };
-  }
-
-  async updateUserNotes(userId: string, notes: string): Promise<UserNotes> {
-    const next: UserNotes = {
-      notes,
-      updatedAt: nowIso()
-    };
-    await this.pool.query(
-      `
-        INSERT INTO user_notes (user_id, notes, updated_at)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (user_id) DO UPDATE
-        SET notes = EXCLUDED.notes, updated_at = EXCLUDED.updated_at
-      `,
-      [userId, next.notes, next.updatedAt]
-    );
-    return next;
-  }
-}
-````
-
 ## File: apps/server/src/index.ts
 ````typescript
 import Fastify from "fastify";
@@ -37667,6 +37667,404 @@ HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
 No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.
 ````
 
+## File: apps/server/src/db/migrations.ts
+````typescript
+export interface PostgresMigration {
+  id: string;
+  sql: string;
+}
+
+export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
+  {
+    id: "20260421_01_initial_postgres_store",
+    sql: `
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        id text PRIMARY KEY,
+        applied_at timestamptz NOT NULL DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS app_metadata (
+        key text PRIMARY KEY,
+        value text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS roles (
+        id text PRIMARY KEY,
+        name text NOT NULL,
+        name_key text NOT NULL UNIQUE,
+        description text NOT NULL,
+        scopes jsonb NOT NULL,
+        allowed_providers jsonb NOT NULL,
+        allowed_models jsonb NOT NULL,
+        allowed_efforts jsonb NOT NULL,
+        scope_version integer NOT NULL,
+        is_system boolean NOT NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS roles_name_key_idx ON roles(name_key);
+
+      CREATE TABLE IF NOT EXISTS users (
+        id text PRIMARY KEY,
+        name text NOT NULL,
+        email text NOT NULL UNIQUE,
+        active boolean NOT NULL,
+        password_hash text NOT NULL,
+        password_salt text NOT NULL,
+        last_login_at text NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS users_email_idx ON users(email);
+
+      CREATE TABLE IF NOT EXISTS user_roles (
+        user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role_id text NOT NULL REFERENCES roles(id) ON DELETE RESTRICT,
+        PRIMARY KEY (user_id, role_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS user_roles_role_id_idx ON user_roles(role_id);
+
+      CREATE TABLE IF NOT EXISTS repositories (
+        id text PRIMARY KEY,
+        name text NOT NULL,
+        url text NOT NULL,
+        default_branch text NOT NULL,
+        webhook_url text NULL,
+        webhook_enabled boolean NOT NULL,
+        webhook_secret text NULL,
+        webhook_last_attempt_at text NULL,
+        webhook_last_status text NULL,
+        webhook_last_error text NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS snippets (
+        id text PRIMARY KEY,
+        name text NOT NULL,
+        content text NOT NULL,
+        variables jsonb NOT NULL DEFAULT '[]'::jsonb,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS snippets_updated_at_idx ON snippets(updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS system_settings (
+        singleton_id smallint PRIMARY KEY CHECK (singleton_id = 1),
+        default_provider text NOT NULL,
+        max_agents integer NOT NULL,
+        branch_prefix text NOT NULL,
+        workspace_provisioning_mode text NOT NULL DEFAULT 'clone_only',
+        git_username text NOT NULL,
+        mcp_servers jsonb NOT NULL,
+        openai_base_url text NULL,
+        task_prompt_magic_model text NOT NULL DEFAULT 'gpt-5.4-mini',
+        task_prompt_magic_template text NOT NULL DEFAULT '',
+        codex_default_model text NOT NULL,
+        codex_default_effort text NOT NULL,
+        claude_default_model text NOT NULL,
+        claude_default_effort text NOT NULL,
+        response_preference_presets jsonb NOT NULL DEFAULT '[]'::jsonb
+      );
+
+      CREATE TABLE IF NOT EXISTS credentials (
+        singleton_id smallint PRIMARY KEY CHECK (singleton_id = 1),
+        payload_encrypted text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS tasks (
+        id text PRIMARY KEY,
+        owner_user_id text NULL,
+        status text NOT NULL,
+        pinned boolean NOT NULL,
+        created_at text NOT NULL,
+        task_data jsonb NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS tasks_owner_view_idx ON tasks(owner_user_id, status, pinned DESC, created_at DESC);
+      CREATE INDEX IF NOT EXISTS tasks_view_idx ON tasks(status, pinned DESC, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS task_logs (
+        log_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        line text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_logs_task_id_log_id_idx ON task_logs(task_id, log_id);
+
+      CREATE TABLE IF NOT EXISTS task_messages (
+        position bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        message_id text NOT NULL UNIQUE,
+        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        created_at text NOT NULL,
+        message_data jsonb NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_messages_task_id_position_idx ON task_messages(task_id, position);
+
+      CREATE TABLE IF NOT EXISTS task_runs (
+        id text PRIMARY KEY,
+        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        started_at text NOT NULL,
+        run_data jsonb NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_runs_task_id_started_at_idx ON task_runs(task_id, started_at, id);
+
+      CREATE TABLE IF NOT EXISTS task_run_logs (
+        log_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        run_id text NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
+        line text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_run_logs_run_id_log_id_idx ON task_run_logs(run_id, log_id);
+
+      CREATE TABLE IF NOT EXISTS task_change_proposals (
+        id text PRIMARY KEY,
+        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        status text NOT NULL,
+        created_at text NOT NULL,
+        resolved_at text NULL,
+        proposal_data jsonb NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_change_proposals_task_id_created_at_idx
+        ON task_change_proposals(task_id, created_at, id);
+      CREATE UNIQUE INDEX IF NOT EXISTS task_change_proposals_pending_idx
+        ON task_change_proposals(task_id)
+        WHERE status = 'pending';
+
+      CREATE TABLE IF NOT EXISTS task_active_interactive_sessions (
+        task_id text PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        session_data jsonb NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS task_interactive_terminal_transcripts (
+        session_id text PRIMARY KEY,
+        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        transcript_data jsonb NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS task_drafts (
+        id text PRIMARY KEY,
+        owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title text NOT NULL,
+        definition jsonb NOT NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_drafts_owner_updated_at_idx ON task_drafts(owner_user_id, updated_at DESC);
+    `
+  },
+  {
+    id: "20260424_01_repository_env_vars",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS env_vars jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260427_01_user_repository_assignments",
+    sql: `
+      CREATE TABLE IF NOT EXISTS user_repositories (
+        user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        repository_id text NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+        PRIMARY KEY (user_id, repository_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS user_repositories_repository_id_idx ON user_repositories(repository_id);
+    `
+  },
+  {
+    id: "20260507_01_user_agent_response_preference",
+    sql: `
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS agent_response_preference jsonb NOT NULL DEFAULT '{"enabled": false, "style": null}'::jsonb;
+    `
+  },
+  {
+    id: "20260507_02_settings_response_preference_presets",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS response_preference_presets jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260513_01_cleanup_legacy_flow_data",
+    sql: `
+      UPDATE roles AS r
+      SET scopes = COALESCE(
+        (
+          SELECT jsonb_agg(value ORDER BY value)
+          FROM (
+            SELECT DISTINCT value
+            FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+            WHERE value !~ '^flow:'
+          ) AS deduped
+        ),
+        '[]'::jsonb
+      )
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+        WHERE value ~ '^flow:'
+      );
+
+      UPDATE tasks
+      SET task_data = task_data - 'taskMode' - 'flowId'
+      WHERE task_data ? 'taskMode' OR task_data ? 'flowId';
+
+      UPDATE task_runs
+      SET run_data = run_data - 'flow'
+      WHERE run_data ? 'flow';
+
+      DROP TABLE IF EXISTS flows;
+    `
+  },
+  {
+    id: "20260513_02_cleanup_legacy_preset_scopes",
+    sql: `
+      UPDATE roles AS r
+      SET scopes = COALESCE(
+        (
+          SELECT jsonb_agg(value ORDER BY value)
+          FROM (
+            SELECT DISTINCT
+              CASE value
+                WHEN 'preset:list' THEN 'snippet:list'
+                WHEN 'preset:create' THEN 'snippet:create'
+                WHEN 'preset:read' THEN 'snippet:read'
+                WHEN 'preset:edit' THEN 'snippet:edit'
+                WHEN 'preset:delete' THEN 'snippet:delete'
+                ELSE value
+              END AS value
+            FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+            WHERE value !~ '^preset:' OR value IN ('preset:list', 'preset:create', 'preset:read', 'preset:edit', 'preset:delete')
+          ) AS deduped
+        ),
+        '[]'::jsonb
+      )
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+        WHERE value ~ '^preset:'
+      );
+    `
+  },
+  {
+    id: "20260521_01_snippet_variables",
+    sql: `
+      ALTER TABLE snippets
+      ADD COLUMN IF NOT EXISTS variables jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260520_01_repository_github_automations",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_webhook_secret text NULL;
+
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_automations jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260524_01_workspace_provisioning_mode",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS workspace_provisioning_mode text NOT NULL DEFAULT 'clone_only';
+    `
+  },
+  {
+    id: "20260522_01_repository_sync_status_enabled",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS sync_status_enabled boolean NOT NULL DEFAULT false;
+    `
+  },
+  {
+    id: "20260601_01_repository_env_secrets",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS env_secrets jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260522_02_workspace_notes",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS workspace_notes text NOT NULL DEFAULT '';
+
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS workspace_notes_updated_at text NOT NULL DEFAULT '';
+    `
+  },
+  {
+    id: "20260522_03_user_notes",
+    sql: `
+      CREATE TABLE IF NOT EXISTS user_notes (
+        user_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        notes text NOT NULL,
+        updated_at text NOT NULL
+      );
+    `
+  },
+  {
+    id: "20260526_02_task_git_operations",
+    sql: `
+      CREATE TABLE IF NOT EXISTS task_git_operations (
+        id text PRIMARY KEY,
+        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        started_at text NOT NULL,
+        operation_data jsonb NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_git_operations_task_id_started_at_idx
+        ON task_git_operations(task_id, started_at DESC, id DESC);
+    `
+  },
+  {
+    id: "20260527_01_task_prompt_magic_settings",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS task_prompt_magic_model text NOT NULL DEFAULT 'gpt-5.4-mini';
+
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS task_prompt_magic_template text NOT NULL DEFAULT '';
+    `
+  },
+  {
+    id: "20260603_01_task_drafts",
+    sql: `
+      CREATE TABLE IF NOT EXISTS task_drafts (
+        id text PRIMARY KEY,
+        owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title text NOT NULL,
+        definition jsonb NOT NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_drafts_owner_updated_at_idx ON task_drafts(owner_user_id, updated_at DESC);
+    `
+  },
+  {
+    id: "20260609_01_remove_sequences",
+    sql: `
+      DROP TABLE IF EXISTS sequence_runs;
+      DROP TABLE IF EXISTS sequences;
+    `
+  }
+];
+````
+
 ## File: apps/web/components/app-shell.tsx
 ````typescript
 "use client";
@@ -38375,404 +38773,6 @@ export function AppShell({ children }: { children: ReactNode }) {
 }
 ````
 
-## File: apps/server/src/db/migrations.ts
-````typescript
-export interface PostgresMigration {
-  id: string;
-  sql: string;
-}
-
-export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
-  {
-    id: "20260421_01_initial_postgres_store",
-    sql: `
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-        id text PRIMARY KEY,
-        applied_at timestamptz NOT NULL DEFAULT now()
-      );
-
-      CREATE TABLE IF NOT EXISTS app_metadata (
-        key text PRIMARY KEY,
-        value text NOT NULL,
-        updated_at text NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS roles (
-        id text PRIMARY KEY,
-        name text NOT NULL,
-        name_key text NOT NULL UNIQUE,
-        description text NOT NULL,
-        scopes jsonb NOT NULL,
-        allowed_providers jsonb NOT NULL,
-        allowed_models jsonb NOT NULL,
-        allowed_efforts jsonb NOT NULL,
-        scope_version integer NOT NULL,
-        is_system boolean NOT NULL,
-        created_at text NOT NULL,
-        updated_at text NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS roles_name_key_idx ON roles(name_key);
-
-      CREATE TABLE IF NOT EXISTS users (
-        id text PRIMARY KEY,
-        name text NOT NULL,
-        email text NOT NULL UNIQUE,
-        active boolean NOT NULL,
-        password_hash text NOT NULL,
-        password_salt text NOT NULL,
-        last_login_at text NULL,
-        created_at text NOT NULL,
-        updated_at text NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS users_email_idx ON users(email);
-
-      CREATE TABLE IF NOT EXISTS user_roles (
-        user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        role_id text NOT NULL REFERENCES roles(id) ON DELETE RESTRICT,
-        PRIMARY KEY (user_id, role_id)
-      );
-
-      CREATE INDEX IF NOT EXISTS user_roles_role_id_idx ON user_roles(role_id);
-
-      CREATE TABLE IF NOT EXISTS repositories (
-        id text PRIMARY KEY,
-        name text NOT NULL,
-        url text NOT NULL,
-        default_branch text NOT NULL,
-        webhook_url text NULL,
-        webhook_enabled boolean NOT NULL,
-        webhook_secret text NULL,
-        webhook_last_attempt_at text NULL,
-        webhook_last_status text NULL,
-        webhook_last_error text NULL,
-        created_at text NOT NULL,
-        updated_at text NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS snippets (
-        id text PRIMARY KEY,
-        name text NOT NULL,
-        content text NOT NULL,
-        variables jsonb NOT NULL DEFAULT '[]'::jsonb,
-        created_at text NOT NULL,
-        updated_at text NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS snippets_updated_at_idx ON snippets(updated_at DESC);
-
-      CREATE TABLE IF NOT EXISTS system_settings (
-        singleton_id smallint PRIMARY KEY CHECK (singleton_id = 1),
-        default_provider text NOT NULL,
-        max_agents integer NOT NULL,
-        branch_prefix text NOT NULL,
-        workspace_provisioning_mode text NOT NULL DEFAULT 'clone_only',
-        git_username text NOT NULL,
-        mcp_servers jsonb NOT NULL,
-        openai_base_url text NULL,
-        task_prompt_magic_model text NOT NULL DEFAULT 'gpt-5.4-mini',
-        task_prompt_magic_template text NOT NULL DEFAULT '',
-        codex_default_model text NOT NULL,
-        codex_default_effort text NOT NULL,
-        claude_default_model text NOT NULL,
-        claude_default_effort text NOT NULL,
-        response_preference_presets jsonb NOT NULL DEFAULT '[]'::jsonb
-      );
-
-      CREATE TABLE IF NOT EXISTS credentials (
-        singleton_id smallint PRIMARY KEY CHECK (singleton_id = 1),
-        payload_encrypted text NOT NULL,
-        updated_at text NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS tasks (
-        id text PRIMARY KEY,
-        owner_user_id text NULL,
-        status text NOT NULL,
-        pinned boolean NOT NULL,
-        created_at text NOT NULL,
-        task_data jsonb NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS tasks_owner_view_idx ON tasks(owner_user_id, status, pinned DESC, created_at DESC);
-      CREATE INDEX IF NOT EXISTS tasks_view_idx ON tasks(status, pinned DESC, created_at DESC);
-
-      CREATE TABLE IF NOT EXISTS task_logs (
-        log_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-        line text NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS task_logs_task_id_log_id_idx ON task_logs(task_id, log_id);
-
-      CREATE TABLE IF NOT EXISTS task_messages (
-        position bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        message_id text NOT NULL UNIQUE,
-        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-        created_at text NOT NULL,
-        message_data jsonb NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS task_messages_task_id_position_idx ON task_messages(task_id, position);
-
-      CREATE TABLE IF NOT EXISTS task_runs (
-        id text PRIMARY KEY,
-        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-        started_at text NOT NULL,
-        run_data jsonb NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS task_runs_task_id_started_at_idx ON task_runs(task_id, started_at, id);
-
-      CREATE TABLE IF NOT EXISTS task_run_logs (
-        log_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-        run_id text NOT NULL REFERENCES task_runs(id) ON DELETE CASCADE,
-        line text NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS task_run_logs_run_id_log_id_idx ON task_run_logs(run_id, log_id);
-
-      CREATE TABLE IF NOT EXISTS task_change_proposals (
-        id text PRIMARY KEY,
-        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-        status text NOT NULL,
-        created_at text NOT NULL,
-        resolved_at text NULL,
-        proposal_data jsonb NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS task_change_proposals_task_id_created_at_idx
-        ON task_change_proposals(task_id, created_at, id);
-      CREATE UNIQUE INDEX IF NOT EXISTS task_change_proposals_pending_idx
-        ON task_change_proposals(task_id)
-        WHERE status = 'pending';
-
-      CREATE TABLE IF NOT EXISTS task_active_interactive_sessions (
-        task_id text PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-        session_data jsonb NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS task_interactive_terminal_transcripts (
-        session_id text PRIMARY KEY,
-        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-        transcript_data jsonb NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS task_drafts (
-        id text PRIMARY KEY,
-        owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        title text NOT NULL,
-        definition jsonb NOT NULL,
-        created_at text NOT NULL,
-        updated_at text NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS task_drafts_owner_updated_at_idx ON task_drafts(owner_user_id, updated_at DESC);
-    `
-  },
-  {
-    id: "20260424_01_repository_env_vars",
-    sql: `
-      ALTER TABLE repositories
-      ADD COLUMN IF NOT EXISTS env_vars jsonb NOT NULL DEFAULT '[]'::jsonb;
-    `
-  },
-  {
-    id: "20260427_01_user_repository_assignments",
-    sql: `
-      CREATE TABLE IF NOT EXISTS user_repositories (
-        user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        repository_id text NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
-        PRIMARY KEY (user_id, repository_id)
-      );
-
-      CREATE INDEX IF NOT EXISTS user_repositories_repository_id_idx ON user_repositories(repository_id);
-    `
-  },
-  {
-    id: "20260507_01_user_agent_response_preference",
-    sql: `
-      ALTER TABLE users
-      ADD COLUMN IF NOT EXISTS agent_response_preference jsonb NOT NULL DEFAULT '{"enabled": false, "style": null}'::jsonb;
-    `
-  },
-  {
-    id: "20260507_02_settings_response_preference_presets",
-    sql: `
-      ALTER TABLE system_settings
-      ADD COLUMN IF NOT EXISTS response_preference_presets jsonb NOT NULL DEFAULT '[]'::jsonb;
-    `
-  },
-  {
-    id: "20260513_01_cleanup_legacy_flow_data",
-    sql: `
-      UPDATE roles AS r
-      SET scopes = COALESCE(
-        (
-          SELECT jsonb_agg(value ORDER BY value)
-          FROM (
-            SELECT DISTINCT value
-            FROM jsonb_array_elements_text(r.scopes) AS scope(value)
-            WHERE value !~ '^flow:'
-          ) AS deduped
-        ),
-        '[]'::jsonb
-      )
-      WHERE EXISTS (
-        SELECT 1
-        FROM jsonb_array_elements_text(r.scopes) AS scope(value)
-        WHERE value ~ '^flow:'
-      );
-
-      UPDATE tasks
-      SET task_data = task_data - 'taskMode' - 'flowId'
-      WHERE task_data ? 'taskMode' OR task_data ? 'flowId';
-
-      UPDATE task_runs
-      SET run_data = run_data - 'flow'
-      WHERE run_data ? 'flow';
-
-      DROP TABLE IF EXISTS flows;
-    `
-  },
-  {
-    id: "20260513_02_cleanup_legacy_preset_scopes",
-    sql: `
-      UPDATE roles AS r
-      SET scopes = COALESCE(
-        (
-          SELECT jsonb_agg(value ORDER BY value)
-          FROM (
-            SELECT DISTINCT
-              CASE value
-                WHEN 'preset:list' THEN 'snippet:list'
-                WHEN 'preset:create' THEN 'snippet:create'
-                WHEN 'preset:read' THEN 'snippet:read'
-                WHEN 'preset:edit' THEN 'snippet:edit'
-                WHEN 'preset:delete' THEN 'snippet:delete'
-                ELSE value
-              END AS value
-            FROM jsonb_array_elements_text(r.scopes) AS scope(value)
-            WHERE value !~ '^preset:' OR value IN ('preset:list', 'preset:create', 'preset:read', 'preset:edit', 'preset:delete')
-          ) AS deduped
-        ),
-        '[]'::jsonb
-      )
-      WHERE EXISTS (
-        SELECT 1
-        FROM jsonb_array_elements_text(r.scopes) AS scope(value)
-        WHERE value ~ '^preset:'
-      );
-    `
-  },
-  {
-    id: "20260521_01_snippet_variables",
-    sql: `
-      ALTER TABLE snippets
-      ADD COLUMN IF NOT EXISTS variables jsonb NOT NULL DEFAULT '[]'::jsonb;
-    `
-  },
-  {
-    id: "20260520_01_repository_github_automations",
-    sql: `
-      ALTER TABLE repositories
-      ADD COLUMN IF NOT EXISTS github_webhook_secret text NULL;
-
-      ALTER TABLE repositories
-      ADD COLUMN IF NOT EXISTS github_automations jsonb NOT NULL DEFAULT '[]'::jsonb;
-    `
-  },
-  {
-    id: "20260524_01_workspace_provisioning_mode",
-    sql: `
-      ALTER TABLE system_settings
-      ADD COLUMN IF NOT EXISTS workspace_provisioning_mode text NOT NULL DEFAULT 'clone_only';
-    `
-  },
-  {
-    id: "20260522_01_repository_sync_status_enabled",
-    sql: `
-      ALTER TABLE repositories
-      ADD COLUMN IF NOT EXISTS sync_status_enabled boolean NOT NULL DEFAULT false;
-    `
-  },
-  {
-    id: "20260601_01_repository_env_secrets",
-    sql: `
-      ALTER TABLE repositories
-      ADD COLUMN IF NOT EXISTS env_secrets jsonb NOT NULL DEFAULT '[]'::jsonb;
-    `
-  },
-  {
-    id: "20260522_02_workspace_notes",
-    sql: `
-      ALTER TABLE system_settings
-      ADD COLUMN IF NOT EXISTS workspace_notes text NOT NULL DEFAULT '';
-
-      ALTER TABLE system_settings
-      ADD COLUMN IF NOT EXISTS workspace_notes_updated_at text NOT NULL DEFAULT '';
-    `
-  },
-  {
-    id: "20260522_03_user_notes",
-    sql: `
-      CREATE TABLE IF NOT EXISTS user_notes (
-        user_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-        notes text NOT NULL,
-        updated_at text NOT NULL
-      );
-    `
-  },
-  {
-    id: "20260526_02_task_git_operations",
-    sql: `
-      CREATE TABLE IF NOT EXISTS task_git_operations (
-        id text PRIMARY KEY,
-        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-        started_at text NOT NULL,
-        operation_data jsonb NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS task_git_operations_task_id_started_at_idx
-        ON task_git_operations(task_id, started_at DESC, id DESC);
-    `
-  },
-  {
-    id: "20260527_01_task_prompt_magic_settings",
-    sql: `
-      ALTER TABLE system_settings
-      ADD COLUMN IF NOT EXISTS task_prompt_magic_model text NOT NULL DEFAULT 'gpt-5.4-mini';
-
-      ALTER TABLE system_settings
-      ADD COLUMN IF NOT EXISTS task_prompt_magic_template text NOT NULL DEFAULT '';
-    `
-  },
-  {
-    id: "20260603_01_task_drafts",
-    sql: `
-      CREATE TABLE IF NOT EXISTS task_drafts (
-        id text PRIMARY KEY,
-        owner_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        title text NOT NULL,
-        definition jsonb NOT NULL,
-        created_at text NOT NULL,
-        updated_at text NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS task_drafts_owner_updated_at_idx ON task_drafts(owner_user_id, updated_at DESC);
-    `
-  },
-  {
-    id: "20260609_01_remove_sequences",
-    sql: `
-      DROP TABLE IF EXISTS sequence_runs;
-      DROP TABLE IF EXISTS sequences;
-    `
-  }
-];
-````
-
 ## File: apps/web/components/tasks-kanban-board-page.tsx
 ````typescript
 "use client";
@@ -39368,6 +39368,33 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
   });
 
+  it("ignores incomplete trailing raw JSON events during live timeline parsing", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-raw-events-"));
+    const rawEventsPath = path.join(root, "events.jsonl");
+    await writeFile(
+      rawEventsPath,
+      [
+        JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
+        "{\"type\":\"turn.started\""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const liveEvents = await spawnerAny.readRunTimelineEvents(createTask(), rawEventsPath, {
+      includeTrailingPartialLine: false
+    });
+    assert.equal(liveEvents.length, 1);
+    assert.equal(liveEvents[0]?.kind, "run.started");
+
+    const finalEvents = await spawnerAny.readRunTimelineEvents(createTask(), rawEventsPath, {
+      includeTrailingPartialLine: true
+    });
+    assert.equal(finalEvents.length, 2);
+    assert.equal(finalEvents[1]?.title, "Invalid JSON event");
+  });
+
   it("prepares build workspace via clone model", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
@@ -39571,6 +39598,46 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(workspaceKindSeen, "clone");
   });
 });
+````
+
+## File: apps/server/package.json
+````json
+{
+  "name": "@agentswarm/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:backfill:redis-to-postgres": "tsx src/db/backfill-redis-to-postgres.ts",
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/lib/agent-event-parser.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
+  },
+  "dependencies": {
+    "@agentswarm/shared-types": "*",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/cors": "^10.0.1",
+    "@sentry/node": "^10.53.1",
+    "fastify": "^5.0.0",
+    "ioredis": "^5.4.1",
+    "nanoid": "^5.1.0",
+    "node-pty": "^1.0.0",
+    "pg": "^8.20.0",
+    "socket.io": "^4.8.1",
+    "ws": "^8.18.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.8.6",
+    "@types/pg": "^8.20.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}
 ````
 
 ## File: apps/web/components/task-create-modal.tsx
@@ -39790,46 +39857,6 @@ export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask
       </Form>
     </Modal>
   );
-}
-````
-
-## File: apps/server/package.json
-````json
-{
-  "name": "@agentswarm/server",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
-    "db:migrate": "tsx src/db/migrate.ts",
-    "db:backfill:redis-to-postgres": "tsx src/db/backfill-redis-to-postgres.ts",
-    "build": "tsc -p tsconfig.json",
-    "lint": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/lib/agent-event-parser.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
-  },
-  "dependencies": {
-    "@agentswarm/shared-types": "*",
-    "@fastify/cookie": "^11.0.2",
-    "@fastify/cors": "^10.0.1",
-    "@sentry/node": "^10.53.1",
-    "fastify": "^5.0.0",
-    "ioredis": "^5.4.1",
-    "nanoid": "^5.1.0",
-    "node-pty": "^1.0.0",
-    "pg": "^8.20.0",
-    "socket.io": "^4.8.1",
-    "ws": "^8.18.0",
-    "zod": "^3.24.1"
-  },
-  "devDependencies": {
-    "@types/node": "^22.8.6",
-    "@types/pg": "^8.20.0",
-    "@types/ws": "^8.5.13",
-    "tsx": "^4.19.1",
-    "typescript": "^5.6.3"
-  }
 }
 ````
 
@@ -43318,1072 +43345,6 @@ export class PostgresTaskStore implements TaskStore {
 }
 ````
 
-## File: apps/web/components/task-definition-fields.tsx
-````typescript
-"use client";
-
-import { useEffect, useState } from "react";
-import type { FormInstance } from "antd";
-import dayjs, { type Dayjs } from "dayjs";
-import type {
-  AgentProvider,
-  CodexCredentialSource,
-  CreateTaskPromptAttachmentInput,
-  GitHubBranchReference,
-  GitHubIssueReference,
-  GitHubPullRequestReference,
-  ProviderProfile,
-  Repository,
-  Snippet,
-  SnippetVariable,
-  SystemSettings,
-  TaskBranchStrategy,
-  TaskDefinitionInput,
-  TaskSourceType,
-  TaskType
-} from "@agentswarm/shared-types";
-import {
-  getAgentProviderLabel,
-  getDefaultModelForProvider,
-  getEffortOptionsForProvider,
-  getModelsForProvider
-} from "@agentswarm/shared-types";
-import { Alert, Button, Card, Checkbox, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Space, Typography, message } from "antd";
-import { RobotOutlined } from "@ant-design/icons";
-import { api } from "../src/api/client";
-import { useProviderModels } from "../src/hooks/useProviderModels";
-import { useRepositories } from "../src/hooks/useRepositories";
-import { useSettings } from "../src/hooks/useSettings";
-import { useSnippets } from "../src/hooks/useSnippets";
-import { trackEvent } from "../src/utils/analytics";
-import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
-import { type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
-import { useAuth } from "./auth-provider";
-import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
-
-export type TaskDefinitionFormValues = {
-  sourceType?: TaskSourceType;
-  title?: string;
-  deadline?: string | null | Dayjs;
-  repoId?: string;
-  prompt?: string;
-  notes?: string;
-  taskType?: TaskType;
-  provider?: AgentProvider;
-  model?: string;
-  providerProfile?: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  issueNumber?: number;
-  includeComments?: boolean;
-  pullRequestNumber?: number;
-  snippetId?: string;
-  snippetVariables?: Record<string, string>;
-};
-
-export interface TaskDefinitionFieldsProps {
-  form: FormInstance<TaskDefinitionFormValues>;
-  syncSettingsDefaults?: boolean;
-  lockSourceAndRepository?: boolean;
-  allowPromptAttachments?: boolean;
-  promptImageFiles?: SelectedTaskPromptImageFile[];
-  onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
-}
-
-type SnippetVariableFormValues = Record<string, string>;
-
-const providerOptions = (
-  hasOpenAi: boolean,
-  hasAnthropic: boolean
-): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
-  { label: "Codex (OpenAI)", value: "codex", disabled: !hasOpenAi },
-  { label: getAgentProviderLabel("claude"), value: "claude", disabled: !hasAnthropic }
-];
-
-const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
-  { label: "Auto (Profile then Global)", value: "auto" },
-  { label: "Profile auth.json only", value: "profile" },
-  { label: "Global OpenAI key only", value: "global" }
-];
-
-const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSettings | null): string =>
-  provider === "claude"
-    ? settings?.claudeDefaultModel ?? getDefaultModelForProvider(provider)
-    : settings?.codexDefaultModel ?? getDefaultModelForProvider(provider);
-
-const getProviderDefaultProfile = (provider: AgentProvider, settings?: SystemSettings | null): ProviderProfile =>
-  provider === "claude" ? settings?.claudeDefaultEffort ?? "high" : settings?.codexDefaultEffort ?? "high";
-
-const deriveTitleFromPrompt = (prompt: string): string => {
-  const lines = prompt
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  if (lines.length === 0) {
-    return "";
-  }
-
-  const heading = lines.find((line) => /^#{1,6}\s+/.test(line));
-  if (heading) {
-    return heading.replace(/^#{1,6}\s+/, "").trim();
-  }
-
-  return lines[0];
-};
-
-export const getTaskDefinitionDeadlineIso = (value: TaskDefinitionFormValues["deadline"]): string | undefined => {
-  if (!value) {
-    return undefined;
-  }
-
-  const parsed = dayjs.isDayjs(value) ? value : dayjs(value);
-  return parsed.isValid() ? parsed.toISOString() : undefined;
-};
-
-export const getTaskDefinitionInitialValues = (
-  settings?: SystemSettings | null
-): Partial<TaskDefinitionFormValues> => {
-  const provider = settings?.defaultProvider ?? "codex";
-  return {
-    sourceType: "blank",
-    taskType: "build",
-    provider,
-    model: getProviderDefaultModel(provider, settings),
-    providerProfile: getProviderDefaultProfile(provider, settings),
-    codexCredentialSource: "auto",
-    branchStrategy: "feature_branch",
-    includeComments: true
-  };
-};
-
-export const buildTaskDefinitionInput = (
-  values: TaskDefinitionFormValues,
-  promptAttachments: CreateTaskPromptAttachmentInput[] = [],
-  snippetContent?: string,
-  snippetVariablesDefinition: SnippetVariable[] = []
-): TaskDefinitionInput => {
-  const provider = values.provider ?? "codex";
-  const codexCredentialSource = provider === "codex" ? (values.codexCredentialSource ?? "auto") : undefined;
-
-  if (values.sourceType === "blank") {
-    return {
-      sourceType: "blank",
-      title: values.title?.trim() ?? "",
-      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
-      repoId: values.repoId ?? "",
-      prompt: values.prompt?.trim() ?? "",
-      notes: values.notes?.trim() ?? "",
-      ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
-      taskType: values.taskType ?? "build",
-      provider,
-      model: values.model?.trim() ?? "",
-      providerProfile: values.providerProfile ?? "high",
-      ...(codexCredentialSource ? { codexCredentialSource } : {}),
-      baseBranch: values.baseBranch?.trim() ?? "",
-      branchStrategy: values.branchStrategy ?? "feature_branch"
-    };
-  }
-
-  if (values.sourceType === "issue") {
-    return {
-      sourceType: "issue",
-      title: values.title?.trim() || undefined,
-      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
-      notes: values.notes?.trim() || undefined,
-      repoId: values.repoId ?? "",
-      issueNumber: values.issueNumber ?? 0,
-      includeComments: values.includeComments ?? true,
-      taskType: values.taskType === "build" || values.taskType === "ask" ? values.taskType : "build",
-      provider,
-      model: values.model?.trim() ?? "",
-      providerProfile: values.providerProfile ?? "high",
-      ...(codexCredentialSource ? { codexCredentialSource } : {}),
-      baseBranch: values.baseBranch?.trim() ?? "",
-      branchStrategy: values.branchStrategy ?? "feature_branch"
-    };
-  }
-
-  if (values.sourceType === "snippet") {
-    const renderedPrompt = applySnippetVariables(snippetContent ?? "", snippetVariablesDefinition, values.snippetVariables ?? {});
-    return {
-      sourceType: "snippet",
-      title: values.title?.trim() ?? "",
-      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
-      repoId: values.repoId ?? "",
-      snippetId: values.snippetId ?? "",
-      prompt: renderedPrompt.trim(),
-      notes: values.notes?.trim() ?? "",
-      ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
-      taskType: values.taskType ?? "build",
-      provider,
-      model: values.model?.trim() ?? "",
-      providerProfile: values.providerProfile ?? "high",
-      ...(codexCredentialSource ? { codexCredentialSource } : {}),
-      baseBranch: values.baseBranch?.trim() ?? "",
-      branchStrategy: values.branchStrategy ?? "feature_branch"
-    };
-  }
-
-  return {
-    sourceType: "pull_request",
-    title: values.title?.trim() || undefined,
-    deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
-    notes: values.notes?.trim() || undefined,
-    repoId: values.repoId ?? "",
-    pullRequestNumber: values.pullRequestNumber ?? 0,
-    provider,
-    model: values.model?.trim() ?? "",
-    providerProfile: values.providerProfile ?? "high",
-    ...(codexCredentialSource ? { codexCredentialSource } : {})
-  };
-};
-
-export function TaskDefinitionFields({
-  form,
-  syncSettingsDefaults = true,
-  lockSourceAndRepository = false,
-  allowPromptAttachments = true,
-  promptImageFiles = [],
-  onPromptImageFilesChange
-}: TaskDefinitionFieldsProps) {
-  const { can, session } = useAuth();
-  const { repositories } = useRepositories();
-  const { settings } = useSettings();
-  const [githubIssues, setGitHubIssues] = useState<GitHubIssueReference[]>([]);
-  const [githubPullRequests, setGitHubPullRequests] = useState<GitHubPullRequestReference[]>([]);
-  const [githubBranches, setGitHubBranches] = useState<GitHubBranchReference[]>([]);
-  const [githubOptionsLoading, setGitHubOptionsLoading] = useState(false);
-  const [magicPromptLoading, setMagicPromptLoading] = useState(false);
-  const [selectedSnippetToInsertId, setSelectedSnippetToInsertId] = useState<string | null>(null);
-  const [pendingSnippetForInsert, setPendingSnippetForInsert] = useState<Snippet | null>(null);
-  const [snippetVariableModalOpen, setSnippetVariableModalOpen] = useState(false);
-  const [snippetVariableForm] = Form.useForm<SnippetVariableFormValues>();
-  const canReadRepositoryMetadata = can("repo:read");
-  const canBuildTasks = can("task:build");
-  const canAskTasks = can("task:ask");
-  const canRunAutomatedTask = canBuildTasks || canAskTasks;
-  const canUseSnippets = can("snippet:list");
-
-  const selectedRepoId = Form.useWatch("repoId", form);
-  const selectedModel = Form.useWatch("model", form);
-  const selectedBaseBranch = Form.useWatch("baseBranch", form);
-  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
-  const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
-  const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
-  const selectedIssueNumber = Form.useWatch("issueNumber", form);
-  const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
-  const selectedSnippetId = Form.useWatch("snippetId", form);
-  const selectedPrompt = Form.useWatch("prompt", form);
-  const { models: providerModels, loading: providerModelsLoading } = useProviderModels(selectedProvider);
-  const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
-  const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
-  const selectedIssue = githubIssues.find((issue) => issue.number === selectedIssueNumber) ?? null;
-  const selectedPullRequest = githubPullRequests.find((pullRequest) => pullRequest.number === selectedPullRequestNumber) ?? null;
-  const isBlankSource = selectedSourceType === "blank";
-  const isSnippetSource = selectedSourceType === "snippet";
-  const isIssueSource = selectedSourceType === "issue";
-  const isPullRequestSource = selectedSourceType === "pull_request";
-  const effectiveTaskType = isPullRequestSource ? "build" : selectedTaskType;
-  const isImplementationTask = effectiveTaskType === "build";
-  const baseBranchLabel = isBlankSource || isSnippetSource || isIssueSource ? "Base Branch" : undefined;
-  const selectedSnippet = snippets.find((snippet) => snippet.id === selectedSnippetId) ?? null;
-  const providerMissingCredentials =
-    selectedProvider === "codex"
-      ? !(settings?.openaiApiKeyConfigured || session?.user.codexAuthJsonConfigured)
-      : !settings?.anthropicApiKeyConfigured;
-  const roleAllowedProviders = session?.user.allowedProviders ?? [];
-  const roleAllowedModels = session?.user.allowedModels ?? [];
-  const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
-  const providerSelectOptions = providerOptions(
-    Boolean(settings?.openaiApiKeyConfigured || session?.user.codexAuthJsonConfigured),
-    Boolean(settings?.anthropicApiKeyConfigured)
-  ).map(
-    (option) => ({
-      ...option,
-      disabled: Boolean(option.disabled || (roleAllowedProviders.length > 0 && !roleAllowedProviders.includes(option.value)))
-    })
-  );
-  const allowedModelOptions = providerModels.filter(
-    (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
-  );
-  const allowedEffortOptions = getEffortOptionsForProvider(selectedProvider).filter(
-    (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
-  );
-  const sourceOptions: Array<{ label: string; value: TaskSourceType }> = [
-    { label: "Blank", value: "blank" },
-    ...(canUseSnippets ? [{ label: "Snippet", value: "snippet" as const }] : []),
-    ...(canReadRepositoryMetadata
-      ? [
-          { label: "From Issue", value: "issue" as const },
-          ...(canBuildTasks ? [{ label: "From Pull Request", value: "pull_request" as const }] : [])
-        ]
-      : [])
-  ];
-  const taskTypeOptions: Array<{ label: string; value: TaskType }> = [
-    ...(canBuildTasks ? [{ label: "Build", value: "build" as const }] : []),
-    ...(canAskTasks ? [{ label: "Ask", value: "ask" as const }] : [])
-  ];
-
-  useEffect(() => {
-    if (canReadRepositoryMetadata || selectedSourceType === "blank" || selectedSourceType === "snippet") {
-      return;
-    }
-
-    form.setFieldValue("sourceType", "blank");
-  }, [canReadRepositoryMetadata, form, selectedSourceType]);
-
-  useEffect(() => {
-    if (selectedSourceType === "pull_request" && !canBuildTasks) {
-      form.setFieldValue("sourceType", canReadRepositoryMetadata ? "issue" : "blank");
-    }
-  }, [canBuildTasks, canReadRepositoryMetadata, form, selectedSourceType]);
-
-  useEffect(() => {
-    if (!settings || !syncSettingsDefaults) {
-      return;
-    }
-
-    const currentProvider = form.getFieldValue("provider") as AgentProvider | undefined;
-    const shouldReplaceProvider = !form.isFieldTouched("provider") && (!currentProvider || currentProvider === "codex");
-    const nextProvider = shouldReplaceProvider ? settings.defaultProvider : currentProvider ?? settings.defaultProvider;
-    const providerChanged = nextProvider !== currentProvider;
-
-    if (shouldReplaceProvider) {
-      form.setFieldValue("provider", nextProvider);
-    }
-
-    const currentModel = form.getFieldValue("model") as string | undefined;
-    const currentProfile = form.getFieldValue("providerProfile") as ProviderProfile | undefined;
-    const genericModel = getDefaultModelForProvider(currentProvider ?? nextProvider);
-
-    if (!form.isFieldTouched("model") && (providerChanged || !currentModel || currentModel === genericModel)) {
-      form.setFieldValue("model", getProviderDefaultModel(nextProvider, settings));
-    }
-
-    if (!form.isFieldTouched("providerProfile") && (providerChanged || !currentProfile || currentProfile === "high")) {
-      form.setFieldValue("providerProfile", getProviderDefaultProfile(nextProvider, settings));
-    }
-  }, [form, settings, syncSettingsDefaults]);
-
-  useEffect(() => {
-    const selected = providerSelectOptions.find((option) => option.value === selectedProvider && !option.disabled);
-    if (selected) {
-      return;
-    }
-
-    const fallback = providerSelectOptions.find((option) => !option.disabled);
-    if (!fallback) {
-      return;
-    }
-
-    form.setFieldValue("provider", fallback.value);
-  }, [form, providerSelectOptions, selectedProvider]);
-
-  useEffect(() => {
-    if (providerModelsLoading) {
-      return;
-    }
-    if (allowedModelOptions.length === 0) {
-      return;
-    }
-    if (allowedModelOptions.some((option) => option.value === selectedModel)) {
-      return;
-    }
-    form.setFieldValue("model", allowedModelOptions[0]?.value);
-  }, [allowedModelOptions, form, providerModelsLoading, selectedModel]);
-
-  useEffect(() => {
-    if (allowedEffortOptions.length === 0) {
-      return;
-    }
-    const currentProfile = form.getFieldValue("providerProfile") as ProviderProfile | undefined;
-    if (currentProfile && allowedEffortOptions.some((option) => option.value === currentProfile)) {
-      return;
-    }
-    form.setFieldValue("providerProfile", allowedEffortOptions[0]?.value);
-  }, [allowedEffortOptions, form]);
-
-  useEffect(() => {
-    if (selectedProvider !== "codex") {
-      return;
-    }
-    const current = form.getFieldValue("codexCredentialSource") as CodexCredentialSource | undefined;
-    if (current === "auto" || current === "profile" || current === "global") {
-      return;
-    }
-    form.setFieldValue("codexCredentialSource", "auto");
-  }, [form, selectedProvider]);
-
-  useEffect(() => {
-    if (selectedTaskType === "build" && !canBuildTasks && canAskTasks) {
-      form.setFieldValue("taskType", "ask");
-      return;
-    }
-
-    if (selectedTaskType === "ask" && !canAskTasks && canBuildTasks) {
-      form.setFieldValue("taskType", "build");
-    }
-  }, [canAskTasks, canBuildTasks, form, selectedTaskType]);
-
-  useEffect(() => {
-    if (!isSnippetSource || !selectedSnippet) {
-      return;
-    }
-    const defaults = Object.fromEntries((selectedSnippet.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""]));
-    form.setFieldValue("snippetVariables", defaults);
-  }, [form, isSnippetSource, selectedSnippet]);
-
-  useEffect(() => {
-    if (!selectedRepoId || !canReadRepositoryMetadata) {
-      setGitHubIssues([]);
-      setGitHubPullRequests([]);
-      setGitHubBranches([]);
-      return;
-    }
-
-    let active = true;
-    setGitHubOptionsLoading(true);
-
-    void Promise.all([
-      api.listGitHubBranches(selectedRepoId).catch(() => []),
-      api.listGitHubIssues(selectedRepoId).catch(() => []),
-      api.listGitHubPullRequests(selectedRepoId).catch(() => [])
-    ]).then(([branches, issues, pullRequests]) => {
-      if (!active) {
-        return;
-      }
-
-      setGitHubBranches(branches);
-      setGitHubIssues(issues);
-      setGitHubPullRequests(pullRequests);
-      setGitHubOptionsLoading(false);
-    });
-
-    return () => {
-      active = false;
-    };
-  }, [canReadRepositoryMetadata, selectedRepoId]);
-
-  const promptPanelTitle = isBlankSource
-    ? (effectiveTaskType === "ask" ? "Question" : "Prompt")
-    : isSnippetSource
-      ? "Snippet Variables"
-      : "Imported Context";
-  const canAttachPromptImages = allowPromptAttachments && isBlankSource;
-  const canUsePromptMagic = isBlankSource;
-  const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
-
-  const handleGeneratePromptMagic = async (): Promise<void> => {
-    const prompt = (form.getFieldValue("prompt") as string | undefined)?.trim() ?? "";
-    if (!prompt || magicPromptLoading) {
-      return;
-    }
-
-    setMagicPromptLoading(true);
-    try {
-      const response = await api.generateTaskPromptMagic({ prompt });
-      const nextPrompt = response.prompt ?? "";
-      const currentTitle = (form.getFieldValue("title") as string | undefined)?.trim() ?? "";
-      const derivedTitle = deriveTitleFromPrompt(nextPrompt);
-      const nextValues: Partial<TaskDefinitionFormValues> = { prompt: nextPrompt };
-      if (!currentTitle && derivedTitle) {
-        nextValues.title = derivedTitle.slice(0, 500);
-      }
-      form.setFieldsValue(nextValues);
-      form.setFields([{ name: "prompt", value: nextPrompt }]);
-      trackEvent("task_prompt_magic_used", {
-        source: "task_create",
-        input_length: prompt.length,
-        output_length: nextPrompt.length
-      });
-      if (nextPrompt.trim() === prompt) {
-        void message.info("Magic prompt returned a similar result.");
-      } else {
-        void message.success("Prompt improved.");
-      }
-    } catch (error) {
-      const fallback = "Failed to generate prompt.";
-      const errorMessage = error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
-      void message.error(errorMessage);
-    } finally {
-      setMagicPromptLoading(false);
-    }
-  };
-
-  const insertIntoPrompt = (snippetContent: string | null | undefined): void => {
-    const currentPrompt = form.getFieldValue("prompt") as string | undefined;
-    const nextPrompt = insertSnippetContent(currentPrompt, snippetContent);
-    form.setFieldValue("prompt", nextPrompt);
-    form.setFields([{ name: "prompt", value: nextPrompt }]);
-  };
-
-  const handleInsertSelectedSnippet = (): void => {
-    if (!selectedSnippetToInsertId) {
-      return;
-    }
-
-    const snippet = snippets.find((item) => item.id === selectedSnippetToInsertId);
-    if (!snippet) {
-      void message.error("Selected snippet is no longer available.");
-      return;
-    }
-
-    if ((snippet.variables ?? []).length > 0) {
-      setPendingSnippetForInsert(snippet);
-      snippetVariableForm.resetFields();
-      const defaultValues = Object.fromEntries(
-        (snippet.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""])
-      );
-      snippetVariableForm.setFieldsValue(defaultValues);
-      setSnippetVariableModalOpen(true);
-      return;
-    }
-
-    insertIntoPrompt(snippet.content);
-    setSelectedSnippetToInsertId(null);
-  };
-
-  const handleConfirmSnippetVariableInsert = async (): Promise<void> => {
-    if (!pendingSnippetForInsert) {
-      return;
-    }
-
-    try {
-      const values = await snippetVariableForm.validateFields();
-      const rendered = applySnippetVariables(pendingSnippetForInsert.content, pendingSnippetForInsert.variables, values);
-      insertIntoPrompt(rendered);
-      setSnippetVariableModalOpen(false);
-      setPendingSnippetForInsert(null);
-      snippetVariableForm.resetFields();
-      setSelectedSnippetToInsertId(null);
-    } catch {
-      // Form-level validation messages are shown inline.
-    }
-  };
-
-  const handleCloseSnippetVariableModal = (): void => {
-    setSnippetVariableModalOpen(false);
-    setPendingSnippetForInsert(null);
-    snippetVariableForm.resetFields();
-    setSelectedSnippetToInsertId(null);
-  };
-
-  useEffect(() => {
-    if (selectedSourceType === "blank") {
-      return;
-    }
-
-    if ((promptImageFiles?.length ?? 0) > 0) {
-      onPromptImageFilesChange?.([]);
-    }
-  }, [onPromptImageFilesChange, promptImageFiles?.length, selectedSourceType]);
-
-  const renderPromptPanel = (repository: Repository | null) => {
-    if (isBlankSource) {
-      return (
-        <>
-          <Form.Item
-            name="title"
-            label="Title"
-            rules={[{ required: true, message: "Enter a task title" }]}
-            style={{ marginBottom: 16 }}
-            extra={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Choose a short, descriptive task title.
-              </Typography.Text>
-            }
-          >
-            <Input placeholder="Your Task Title" size="large" />
-          </Form.Item>
-          <Form.Item
-            label={promptPanelTitle}
-            style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
-          >
-            <Flex vertical gap={12} style={{ flex: 1 }}>
-              <div style={{ position: "relative" }}>
-                <Button
-                  size="small"
-                  type="default"
-                  icon={<RobotOutlined />}
-                  title="Magic Wand"
-                  aria-label="Magic Wand"
-                  loading={magicPromptLoading}
-                  disabled={!canUsePromptMagic || promptIsEmpty || magicPromptLoading}
-                  onClick={() => void handleGeneratePromptMagic()}
-                  style={{
-                    position: "absolute",
-                    right: 10,
-                    bottom: 10,
-                    zIndex: 1
-                  }}
-                />
-                <Form.Item
-                  name="prompt"
-                  style={{ marginBottom: 0 }}
-                  rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]}
-                >
-                  <Input.TextArea
-                    autoSize={{ minRows: 12, maxRows: 28 }}
-                    style={{ resize: "none", paddingRight: 44, paddingBottom: 38 }}
-                    placeholder={
-                      effectiveTaskType === "ask"
-                        ? "Ask a repository question."
-                        : "Describe the goal, constraints, and expected outcome in your prompt."
-                    }
-                  />
-                </Form.Item>
-              </div>
-              {canUseSnippets ? (
-                <Flex gap={8} wrap="wrap">
-                  <Select
-                    showSearch
-                    style={{ minWidth: 220, flex: 1 }}
-                    placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
-                    value={selectedSnippetToInsertId}
-                    onChange={(value) => setSelectedSnippetToInsertId(value)}
-                    optionFilterProp="label"
-                    allowClear
-                    loading={snippetsLoading}
-                    disabled={snippetsLoading || snippets.length === 0}
-                    options={snippets.map((snippet) => ({
-                      label: snippet.name,
-                      value: snippet.id
-                    }))}
-                  />
-                  <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetToInsertId}>
-                    Insert
-                  </Button>
-                </Flex>
-              ) : null}
-              {allowPromptAttachments ? (
-                <TaskPromptAttachmentsInput
-                  files={promptImageFiles}
-                  onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
-                  onError={(errorMessage) => void message.error(errorMessage)}
-                  disabled={!canAttachPromptImages || !onPromptImageFilesChange}
-                />
-              ) : null}
-            </Flex>
-          </Form.Item>
-          <Form.Item
-            name="notes"
-            label="Notes (Markdown)"
-            extra={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Optional. These notes are shown in the task Info tab below current configuration.
-              </Typography.Text>
-            }
-            style={{ marginTop: 16, marginBottom: 0 }}
-          >
-            <Input.TextArea
-              autoSize={{ minRows: 6, maxRows: 16 }}
-              style={{ resize: "none" }}
-              placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
-            />
-          </Form.Item>
-        </>
-      );
-    }
-
-    if (isSnippetSource) {
-      return (
-        <Flex vertical gap={16}>
-          <Form.Item name="title" label="Title" rules={[{ required: true, message: "Enter a task title" }]} style={{ marginBottom: 0 }}>
-            <Input placeholder="Your Task Title" size="large" />
-          </Form.Item>
-          <Alert
-            type="info"
-            showIcon
-            message="Prompt input is replaced by snippet variables"
-            description="Pick a snippet and fill the fields below. This reduces mistakes and keeps setup fast."
-          />
-          <Form.Item name="snippetId" label="Snippet" rules={[{ required: true, message: "Select a snippet" }]} style={{ marginBottom: 0 }}>
-            <Select
-              showSearch
-              loading={snippetsLoading}
-              placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
-              optionFilterProp="label"
-              options={snippets.map((snippet) => ({ label: snippet.name, value: snippet.id }))}
-              onChange={() => trackEvent("snippet_selected")}
-            />
-          </Form.Item>
-          {(selectedSnippet?.variables ?? []).map((variable) => (
-            <Form.Item
-              key={variable.name}
-              name={["snippetVariables", variable.name]}
-              label={variable.title || variable.name}
-              rules={[{ required: true, message: `Enter ${variable.title || variable.name}` }]}
-              extra={variable.description || undefined}
-              style={{ marginBottom: 0 }}
-            >
-              {variable.type === "multiline" ? (
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 12 }} placeholder={variable.defaultValue || ""} />
-              ) : (
-                <Input placeholder={variable.defaultValue || ""} />
-              )}
-            </Form.Item>
-          ))}
-          <Form.Item
-            name="notes"
-            label="Notes (Markdown)"
-            extra={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Optional. These notes are shown in the task Info tab below current configuration.
-              </Typography.Text>
-            }
-            style={{ marginBottom: 0 }}
-          >
-            <Input.TextArea
-              autoSize={{ minRows: 6, maxRows: 16 }}
-              style={{ resize: "none" }}
-              placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
-            />
-          </Form.Item>
-        </Flex>
-      );
-    }
-
-    if (isIssueSource) {
-      return (
-        <Flex vertical gap={16}>
-          <Alert
-            type="info"
-            showIcon
-            message="Issue content is imported from GitHub"
-            description="The issue title, body, and optional comments become the task prompt. Use the left-side configuration to select the issue and task behavior."
-          />
-          <Form.Item name="title" label="Task Title Override" style={{ marginBottom: 0 }}>
-            <Input placeholder="Optional. Leave blank to use the issue title." size="large" />
-          </Form.Item>
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            Imported against repository <Typography.Text code>{repository?.name ?? "unknown"}</Typography.Text>.
-          </Typography.Paragraph>
-          {selectedIssue ? (
-            <Alert
-              type="success"
-              showIcon
-              message={`Issue #${selectedIssue.number}: ${selectedIssue.title}`}
-              description={
-                <Typography.Link href={selectedIssue.url} target="_blank">
-                  Open issue in GitHub
-                </Typography.Link>
-              }
-            />
-          ) : null}
-          <Form.Item
-            name="notes"
-            label="Notes (Markdown)"
-            extra={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Optional. These notes are shown in the task Info tab below current configuration.
-              </Typography.Text>
-            }
-            style={{ marginBottom: 0 }}
-          >
-            <Input.TextArea
-              autoSize={{ minRows: 6, maxRows: 16 }}
-              style={{ resize: "none" }}
-              placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
-            />
-          </Form.Item>
-        </Flex>
-      );
-    }
-
-    return (
-      <Flex vertical gap={16}>
-        <Alert
-          type="info"
-          showIcon
-          message="Pull request review threads are imported from GitHub"
-          description="AgentSwarm will create a build task from unresolved pull request review threads and continue work on the pull request branch."
-        />
-        <Form.Item name="title" label="Task Title Override" style={{ marginBottom: 0 }}>
-          <Input placeholder="Optional. Leave blank to use the pull request title." size="large" />
-        </Form.Item>
-        <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-          The task targets the pull request head branch and uses <Typography.Text code>work_on_branch</Typography.Text>.
-        </Typography.Paragraph>
-        {selectedPullRequest ? (
-          <Alert
-            type="success"
-            showIcon
-            message={`PR #${selectedPullRequest.number}: ${selectedPullRequest.title}`}
-            description={
-              <Space wrap>
-                <Typography.Link href={selectedPullRequest.url} target="_blank">
-                  Open pull request in GitHub
-                </Typography.Link>
-                <Typography.Text type="secondary">
-                  {selectedPullRequest.baseBranch} {"->"} {selectedPullRequest.headBranch}
-                </Typography.Text>
-              </Space>
-              }
-            />
-          ) : null}
-        <Form.Item
-          name="notes"
-          label="Notes (Markdown)"
-          extra={
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Optional. These notes are shown in the task Info tab below current configuration.
-            </Typography.Text>
-          }
-          style={{ marginBottom: 0 }}
-        >
-          <Input.TextArea
-            autoSize={{ minRows: 6, maxRows: 16 }}
-            style={{ resize: "none" }}
-            placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
-          />
-        </Form.Item>
-      </Flex>
-    );
-  };
-
-  return (
-    <>
-      <Row gutter={[24, 24]} align="stretch">
-        <Col xs={24} xl={8}>
-          <Card bordered={false} title="Configuration" styles={{ body: { display: "flex", flexDirection: "column", gap: 0 } }}>
-          <Form.Item name="sourceType" label="Source" rules={[{ required: true }]}>
-            <Select
-              options={sourceOptions}
-              disabled={lockSourceAndRepository}
-              onChange={(value: TaskSourceType) => {
-                trackEvent("task_source_selected", { source: value });
-                if (value === "pull_request") {
-                  form.setFieldValue("taskType", "build");
-                  form.setFieldValue("branchStrategy", "work_on_branch");
-                }
-                if (value === "snippet") {
-                  form.setFieldValue("taskType", "build");
-                }
-                if (value !== "blank") {
-                  form.setFieldValue("prompt", undefined);
-                }
-
-                if (value === "issue" || value === "pull_request") {
-                  form.setFieldValue("title", undefined);
-                  form.setFields([{ name: "title", touched: false }]);
-                }
-                if (value !== "snippet") {
-                  form.setFieldValue("snippetId", undefined);
-                  form.setFieldValue("snippetVariables", undefined);
-                }
-              }}
-            />
-          </Form.Item>
-
-          <Form.Item name="repoId" label="Repository" rules={[{ required: true }]}>
-            <Select
-              options={repositories.map((repository) => ({ label: repository.name, value: repository.id }))}
-              placeholder="Select repository"
-              disabled={lockSourceAndRepository}
-              onChange={(repoId) => {
-                const repository = repositories.find((item) => item.id === repoId);
-                form.setFieldValue("baseBranch", repository?.defaultBranch ?? "");
-                form.setFieldValue("issueNumber", undefined);
-                form.setFieldValue("pullRequestNumber", undefined);
-              }}
-            />
-          </Form.Item>
-
-          <Form.Item name="deadline" label="Deadline">
-            <DatePicker
-              showTime={{ format: "HH:mm" }}
-              format="YYYY-MM-DD HH:mm"
-              placeholder="No deadline"
-              style={{ width: "100%" }}
-              allowClear
-            />
-          </Form.Item>
-
-          {isPullRequestSource ? (
-            <Form.Item name="pullRequestNumber" label="Pull Request" rules={[{ required: true }]}>
-              <Select
-                showSearch
-                loading={githubOptionsLoading}
-                placeholder={selectedRepoId ? "Select open pull request" : "Select repository first"}
-                optionFilterProp="label"
-                disabled={!selectedRepoId}
-                options={githubPullRequests.map((pullRequest) => ({
-                  label: `#${pullRequest.number} ${pullRequest.title}`,
-                  value: pullRequest.number
-                }))}
-              />
-            </Form.Item>
-          ) : null}
-
-          {isIssueSource ? (
-            <>
-              <Form.Item name="issueNumber" label="Issue" rules={[{ required: true }]}>
-                <Select
-                  showSearch
-                  loading={githubOptionsLoading}
-                  placeholder={selectedRepoId ? "Select open issue" : "Select repository first"}
-                  optionFilterProp="label"
-                  disabled={!selectedRepoId}
-                  options={githubIssues.map((issue) => ({
-                    label: `#${issue.number} ${issue.title}`,
-                    value: issue.number
-                  }))}
-                />
-              </Form.Item>
-              <Form.Item name="includeComments" valuePropName="checked">
-                <Checkbox>Include issue comments</Checkbox>
-              </Form.Item>
-            </>
-          ) : null}
-
-          {isBlankSource || isSnippetSource ? (
-            <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
-              <Select options={taskTypeOptions} />
-            </Form.Item>
-          ) : null}
-
-          {!canRunAutomatedTask ? (
-            <Alert
-              type="warning"
-              showIcon
-              style={{ marginBottom: 16 }}
-              message="This role cannot create build or ask tasks."
-              description="Ask an administrator to grant task mode permissions in Settings."
-            />
-          ) : null}
-
-          <Form.Item name="provider" label="Provider" rules={[{ required: true }]}>
-            <Select
-              options={providerSelectOptions}
-              onChange={(value: AgentProvider) => {
-                const nextModels = getModelsForProvider(value).filter(
-                  (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
-                );
-                const nextEfforts = getEffortOptionsForProvider(value).filter(
-                  (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
-                );
-                form.setFieldValue("model", nextModels[0]?.value ?? getProviderDefaultModel(value, settings));
-                form.setFieldValue("providerProfile", nextEfforts[0]?.value ?? getProviderDefaultProfile(value, settings));
-              }}
-            />
-          </Form.Item>
-
-          <Form.Item name="model" label="Model" rules={[{ required: true }]}>
-            <Select options={allowedModelOptions} loading={providerModelsLoading} showSearch optionFilterProp="label" />
-          </Form.Item>
-
-          <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
-            <Select options={allowedEffortOptions} />
-          </Form.Item>
-
-          {selectedProvider === "codex" ? (
-            <Form.Item name="codexCredentialSource" label="Codex Credential Source" rules={[{ required: true }]}>
-              <Select options={codexCredentialSourceOptions} />
-            </Form.Item>
-          ) : null}
-
-          {providerMissingCredentials ? (
-            <Alert
-              type="warning"
-              showIcon
-              style={{ marginBottom: 16 }}
-              message={`${selectedProvider === "codex" ? "Codex" : "Anthropic"} credentials are missing`}
-              description={
-                selectedProvider === "codex"
-                  ? "Configure Codex auth.json in your Profile or set an OpenAI API key in Settings before running this task."
-                  : "Configure the provider credential in Settings before running this task."
-              }
-            />
-          ) : null}
-
-          {isIssueSource ? (
-            <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
-              <Select options={taskTypeOptions} />
-            </Form.Item>
-          ) : null}
-
-          {(isBlankSource || isSnippetSource || isIssueSource) && baseBranchLabel ? (
-            <Form.Item name="baseBranch" label={baseBranchLabel} rules={[{ required: true }]}>
-              <Select
-                showSearch
-                loading={githubOptionsLoading}
-                placeholder={selectedRepository?.defaultBranch ?? "develop"}
-                optionFilterProp="label"
-                options={
-                  canReadRepositoryMetadata
-                    ? githubBranches.map((branch) => ({
-                        label: branch.isDefault ? `${branch.name} (default)` : branch.name,
-                        value: branch.name
-                      }))
-                    : selectedRepository
-                      ? [{ label: selectedRepository.defaultBranch, value: selectedRepository.defaultBranch }]
-                      : []
-                }
-              />
-            </Form.Item>
-          ) : null}
-
-          {(isBlankSource && isImplementationTask) || (isSnippetSource && isImplementationTask) || (isIssueSource && selectedTaskType === "build") ? (
-            <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]}>
-              <Select
-                options={[
-                  { label: "Create feature branch", value: "feature_branch" },
-                  { label: "Work on existing branch", value: "work_on_branch" }
-                ]}
-              />
-            </Form.Item>
-          ) : null}
-          </Card>
-        </Col>
-
-        <Col xs={24} xl={16}>
-          <Card
-            bordered={false}
-            title={promptPanelTitle}
-            styles={{
-              body: {
-                display: "flex",
-                flexDirection: "column",
-                minHeight: 640
-              }
-            }}
-          >
-            {renderPromptPanel(selectedRepository)}
-          </Card>
-        </Col>
-      </Row>
-      <Modal
-        title={pendingSnippetForInsert ? `Insert Snippet: ${pendingSnippetForInsert.name}` : "Insert Snippet"}
-        open={snippetVariableModalOpen}
-        onCancel={handleCloseSnippetVariableModal}
-        destroyOnClose
-        onOk={() => void handleConfirmSnippetVariableInsert()}
-        okText="Insert"
-      >
-        <Form form={snippetVariableForm} layout="vertical">
-          {(pendingSnippetForInsert?.variables ?? []).map((variable) => (
-            <Form.Item
-              key={variable.name}
-              name={variable.name}
-              label={variable.title.trim() || variable.name}
-              tooltip={variable.description.trim() || undefined}
-              rules={[{ required: true, message: `Enter ${variable.title.trim() || variable.name}` }]}
-            >
-              {variable.type === "multiline" ? (
-                <Input.TextArea rows={4} placeholder={variable.description.trim() || variable.name} />
-              ) : (
-                <Input placeholder={variable.description.trim() || variable.name} />
-              )}
-            </Form.Item>
-          ))}
-        </Form>
-      </Modal>
-    </>
-  );
-}
-````
-
 ## File: apps/server/src/services/spawner.ts
 ````typescript
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -44404,6 +43365,7 @@ import {
   isActiveTaskStatus,
   isQueuedTaskStatus,
   type AgentProvider,
+  type NormalizedAgentEvent,
   type McpServerConfig,
   type Task,
   type TaskChangeProposal,
@@ -44464,9 +43426,24 @@ import { RepositoryEnvFileStore } from "./repository-env-file-store.js";
 import { RepoSyncManager, type RepoSyncOperation } from "./repo-sync-manager.js";
 
 const ansiPattern = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\))/g;
+const LIVE_TIMELINE_POLL_INTERVAL_MS = 1_000;
 
 const sanitizeChunk = (chunk: string): string =>
   chunk.replace(/\r/g, "\n").replace(ansiPattern, "").replace(/[^\x09\x0A\x20-\x7E]/g, "");
+
+const stripIncompleteTrailingJsonlLine = (rawJsonl: string): string => {
+  if (rawJsonl.length === 0 || rawJsonl.endsWith("\n") || rawJsonl.endsWith("\r")) {
+    return rawJsonl;
+  }
+
+  const lastNewlineIndex = Math.max(rawJsonl.lastIndexOf("\n"), rawJsonl.lastIndexOf("\r"));
+  return lastNewlineIndex >= 0 ? rawJsonl.slice(0, lastNewlineIndex + 1) : "";
+};
+
+const timelineSignature = (events: NormalizedAgentEvent[]): string => {
+  const last = events.at(-1);
+  return `${events.length}:${last?.id ?? ""}:${last?.kind ?? ""}:${last?.rawEventIndex ?? ""}`;
+};
 
 const sanitizePathSegment = (value: string): string => {
   const cleaned = value
@@ -45871,17 +44848,31 @@ export class SpawnerService {
     return rawEventsJsonlPath;
   }
 
+  private async readRunTimelineEvents(
+    task: Task,
+    rawEventsJsonlPath: string,
+    options: { includeTrailingPartialLine: boolean }
+  ): Promise<NormalizedAgentEvent[]> {
+    const rawJsonl = await readFile(rawEventsJsonlPath, "utf8");
+    const parseableJsonl = options.includeTrailingPartialLine ? rawJsonl : stripIncompleteTrailingJsonlLine(rawJsonl);
+    if (!parseableJsonl.trim()) {
+      return [];
+    }
+    return parseAgentJsonlEvents(task.provider, parseableJsonl);
+  }
+
   private async parseAndStoreRunTimeline(task: Task, runId: string | null, rawEventsJsonlPath: string | null): Promise<void> {
     if (!runId || !rawEventsJsonlPath) {
       return;
     }
 
     try {
-      const rawJsonl = await readFile(rawEventsJsonlPath, "utf8");
-      if (!rawJsonl.trim()) {
+      const timelineEvents = await this.readRunTimelineEvents(task, rawEventsJsonlPath, {
+        includeTrailingPartialLine: true
+      });
+      if (timelineEvents.length === 0) {
         return;
       }
-      const timelineEvents = parseAgentJsonlEvents(task.provider, rawJsonl);
       await this.taskStore.updateRun(runId, { timelineEvents });
     } catch (error) {
       await this.taskStore.appendLogForRun(
@@ -45890,6 +44881,71 @@ export class SpawnerService {
         runId
       );
     }
+  }
+
+  private startLiveRunTimelineStream(
+    task: Task,
+    runId: string | null,
+    rawEventsJsonlPath: string | null
+  ): { stop: () => Promise<void> } {
+    if (!runId || !rawEventsJsonlPath) {
+      return { stop: async () => undefined };
+    }
+
+    let stopped = false;
+    let parseInFlight = false;
+    let lastSignature = "0:::";
+    let lastErrorMessage: string | null = null;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const parseAndPublish = async (): Promise<void> => {
+      if (stopped || parseInFlight) {
+        return;
+      }
+
+      parseInFlight = true;
+      try {
+        const timelineEvents = await this.readRunTimelineEvents(task, rawEventsJsonlPath, {
+          includeTrailingPartialLine: false
+        });
+        const nextSignature = timelineSignature(timelineEvents);
+        if (timelineEvents.length > 0 && nextSignature !== lastSignature) {
+          lastSignature = nextSignature;
+          await this.taskStore.updateRun(runId, { timelineEvents });
+        }
+        lastErrorMessage = null;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message !== lastErrorMessage) {
+          lastErrorMessage = message;
+          await this.taskStore.appendLogForRun(
+            task.id,
+            `Spawner: warning - live ${task.provider} JSON timeline stream paused (${message}).`,
+            runId
+          );
+        }
+      } finally {
+        parseInFlight = false;
+      }
+    };
+
+    interval = setInterval(() => {
+      void parseAndPublish();
+    }, LIVE_TIMELINE_POLL_INTERVAL_MS);
+    void parseAndPublish();
+
+    return {
+      stop: async () => {
+        stopped = true;
+        if (interval) {
+          clearInterval(interval);
+          interval = null;
+        }
+        while (parseInFlight) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
+    };
   }
 
   private registerActiveExecution(
@@ -48983,6 +48039,7 @@ export class SpawnerService {
     let executionId = nanoid();
     let workspace: WorkspacePreparation | null = null;
     let rawEventsJsonlPath: string | null = null;
+    let liveTimelineStream: { stop: () => Promise<void> } | null = null;
 
     try {
       const run = await this.taskStore.createRun(task.id, {
@@ -49199,6 +48256,7 @@ export class SpawnerService {
         policy: dockerSocketPolicy
       });
 
+      liveTimelineStream = this.startLiveRunTimelineStream(task, runId, rawEventsJsonlPath);
       await new Promise<void>((resolve, reject) => {
         const proc = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
         this.registerActiveExecution(task.id, executionId, { label: containerName, containerName, process: proc });
@@ -49264,6 +48322,8 @@ export class SpawnerService {
       });
 
       this.ensureTaskNotCancelled(task.id);
+      await liveTimelineStream.stop();
+      liveTimelineStream = null;
       await this.parseAndStoreRunTimeline(task, runId, rawEventsJsonlPath);
 
       const runtimeResult = await this.readRuntimeResult(payloadPaths.resultMarkdownPath, payloadPaths.resultJsonPath);
@@ -49373,6 +48433,10 @@ export class SpawnerService {
       const finishedAt = new Date().toISOString();
       const message = error instanceof Error ? error.message : "Unknown runtime error";
       const isCancelled = error instanceof CancelledTaskError || this.isCancellationRequested(task.id);
+      if (liveTimelineStream) {
+        await liveTimelineStream.stop();
+        liveTimelineStream = null;
+      }
       await this.parseAndStoreRunTimeline(task, runId, rawEventsJsonlPath);
       if (runId) {
         await this.taskStore.updateRun(runId, {
@@ -49396,6 +48460,9 @@ export class SpawnerService {
       }
       throw error;
     } finally {
+      if (liveTimelineStream) {
+        await liveTimelineStream.stop();
+      }
       if (executionId) {
         this.unregisterActiveExecution(task.id, executionId);
       }
@@ -49418,6 +48485,1072 @@ export class CancelledTaskError extends Error {
     super("Task cancelled by user");
     this.name = "CancelledTaskError";
   }
+}
+````
+
+## File: apps/web/components/task-definition-fields.tsx
+````typescript
+"use client";
+
+import { useEffect, useState } from "react";
+import type { FormInstance } from "antd";
+import dayjs, { type Dayjs } from "dayjs";
+import type {
+  AgentProvider,
+  CodexCredentialSource,
+  CreateTaskPromptAttachmentInput,
+  GitHubBranchReference,
+  GitHubIssueReference,
+  GitHubPullRequestReference,
+  ProviderProfile,
+  Repository,
+  Snippet,
+  SnippetVariable,
+  SystemSettings,
+  TaskBranchStrategy,
+  TaskDefinitionInput,
+  TaskSourceType,
+  TaskType
+} from "@agentswarm/shared-types";
+import {
+  getAgentProviderLabel,
+  getDefaultModelForProvider,
+  getEffortOptionsForProvider,
+  getModelsForProvider
+} from "@agentswarm/shared-types";
+import { Alert, Button, Card, Checkbox, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Space, Typography, message } from "antd";
+import { RobotOutlined } from "@ant-design/icons";
+import { api } from "../src/api/client";
+import { useProviderModels } from "../src/hooks/useProviderModels";
+import { useRepositories } from "../src/hooks/useRepositories";
+import { useSettings } from "../src/hooks/useSettings";
+import { useSnippets } from "../src/hooks/useSnippets";
+import { trackEvent } from "../src/utils/analytics";
+import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
+import { type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
+import { useAuth } from "./auth-provider";
+import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
+
+export type TaskDefinitionFormValues = {
+  sourceType?: TaskSourceType;
+  title?: string;
+  deadline?: string | null | Dayjs;
+  repoId?: string;
+  prompt?: string;
+  notes?: string;
+  taskType?: TaskType;
+  provider?: AgentProvider;
+  model?: string;
+  providerProfile?: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch?: string;
+  branchStrategy?: TaskBranchStrategy;
+  issueNumber?: number;
+  includeComments?: boolean;
+  pullRequestNumber?: number;
+  snippetId?: string;
+  snippetVariables?: Record<string, string>;
+};
+
+export interface TaskDefinitionFieldsProps {
+  form: FormInstance<TaskDefinitionFormValues>;
+  syncSettingsDefaults?: boolean;
+  lockSourceAndRepository?: boolean;
+  allowPromptAttachments?: boolean;
+  promptImageFiles?: SelectedTaskPromptImageFile[];
+  onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
+}
+
+type SnippetVariableFormValues = Record<string, string>;
+
+const providerOptions = (
+  hasOpenAi: boolean,
+  hasAnthropic: boolean
+): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
+  { label: "Codex (OpenAI)", value: "codex", disabled: !hasOpenAi },
+  { label: getAgentProviderLabel("claude"), value: "claude", disabled: !hasAnthropic }
+];
+
+const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
+  { label: "Auto (Profile then Global)", value: "auto" },
+  { label: "Profile auth.json only", value: "profile" },
+  { label: "Global OpenAI key only", value: "global" }
+];
+
+const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSettings | null): string =>
+  provider === "claude"
+    ? settings?.claudeDefaultModel ?? getDefaultModelForProvider(provider)
+    : settings?.codexDefaultModel ?? getDefaultModelForProvider(provider);
+
+const getProviderDefaultProfile = (provider: AgentProvider, settings?: SystemSettings | null): ProviderProfile =>
+  provider === "claude" ? settings?.claudeDefaultEffort ?? "high" : settings?.codexDefaultEffort ?? "high";
+
+const deriveTitleFromPrompt = (prompt: string): string => {
+  const lines = prompt
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) {
+    return "";
+  }
+
+  const heading = lines.find((line) => /^#{1,6}\s+/.test(line));
+  if (heading) {
+    return heading.replace(/^#{1,6}\s+/, "").trim();
+  }
+
+  return lines[0];
+};
+
+export const getTaskDefinitionDeadlineIso = (value: TaskDefinitionFormValues["deadline"]): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = dayjs.isDayjs(value) ? value : dayjs(value);
+  return parsed.isValid() ? parsed.toISOString() : undefined;
+};
+
+export const getTaskDefinitionInitialValues = (
+  settings?: SystemSettings | null
+): Partial<TaskDefinitionFormValues> => {
+  const provider = settings?.defaultProvider ?? "codex";
+  return {
+    sourceType: "blank",
+    taskType: "build",
+    provider,
+    model: getProviderDefaultModel(provider, settings),
+    providerProfile: getProviderDefaultProfile(provider, settings),
+    codexCredentialSource: "auto",
+    branchStrategy: "feature_branch",
+    includeComments: true
+  };
+};
+
+export const buildTaskDefinitionInput = (
+  values: TaskDefinitionFormValues,
+  promptAttachments: CreateTaskPromptAttachmentInput[] = [],
+  snippetContent?: string,
+  snippetVariablesDefinition: SnippetVariable[] = []
+): TaskDefinitionInput => {
+  const provider = values.provider ?? "codex";
+  const codexCredentialSource = provider === "codex" ? (values.codexCredentialSource ?? "auto") : undefined;
+
+  if (values.sourceType === "blank") {
+    return {
+      sourceType: "blank",
+      title: values.title?.trim() ?? "",
+      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
+      repoId: values.repoId ?? "",
+      prompt: values.prompt?.trim() ?? "",
+      notes: values.notes?.trim() ?? "",
+      ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
+      taskType: values.taskType ?? "build",
+      provider,
+      model: values.model?.trim() ?? "",
+      providerProfile: values.providerProfile ?? "high",
+      ...(codexCredentialSource ? { codexCredentialSource } : {}),
+      baseBranch: values.baseBranch?.trim() ?? "",
+      branchStrategy: values.branchStrategy ?? "feature_branch"
+    };
+  }
+
+  if (values.sourceType === "issue") {
+    return {
+      sourceType: "issue",
+      title: values.title?.trim() || undefined,
+      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
+      notes: values.notes?.trim() || undefined,
+      repoId: values.repoId ?? "",
+      issueNumber: values.issueNumber ?? 0,
+      includeComments: values.includeComments ?? true,
+      taskType: values.taskType === "build" || values.taskType === "ask" ? values.taskType : "build",
+      provider,
+      model: values.model?.trim() ?? "",
+      providerProfile: values.providerProfile ?? "high",
+      ...(codexCredentialSource ? { codexCredentialSource } : {}),
+      baseBranch: values.baseBranch?.trim() ?? "",
+      branchStrategy: values.branchStrategy ?? "feature_branch"
+    };
+  }
+
+  if (values.sourceType === "snippet") {
+    const renderedPrompt = applySnippetVariables(snippetContent ?? "", snippetVariablesDefinition, values.snippetVariables ?? {});
+    return {
+      sourceType: "snippet",
+      title: values.title?.trim() ?? "",
+      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
+      repoId: values.repoId ?? "",
+      snippetId: values.snippetId ?? "",
+      prompt: renderedPrompt.trim(),
+      notes: values.notes?.trim() ?? "",
+      ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
+      taskType: values.taskType ?? "build",
+      provider,
+      model: values.model?.trim() ?? "",
+      providerProfile: values.providerProfile ?? "high",
+      ...(codexCredentialSource ? { codexCredentialSource } : {}),
+      baseBranch: values.baseBranch?.trim() ?? "",
+      branchStrategy: values.branchStrategy ?? "feature_branch"
+    };
+  }
+
+  return {
+    sourceType: "pull_request",
+    title: values.title?.trim() || undefined,
+    deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
+    notes: values.notes?.trim() || undefined,
+    repoId: values.repoId ?? "",
+    pullRequestNumber: values.pullRequestNumber ?? 0,
+    provider,
+    model: values.model?.trim() ?? "",
+    providerProfile: values.providerProfile ?? "high",
+    ...(codexCredentialSource ? { codexCredentialSource } : {})
+  };
+};
+
+export function TaskDefinitionFields({
+  form,
+  syncSettingsDefaults = true,
+  lockSourceAndRepository = false,
+  allowPromptAttachments = true,
+  promptImageFiles = [],
+  onPromptImageFilesChange
+}: TaskDefinitionFieldsProps) {
+  const { can, session } = useAuth();
+  const { repositories } = useRepositories();
+  const { settings } = useSettings();
+  const [githubIssues, setGitHubIssues] = useState<GitHubIssueReference[]>([]);
+  const [githubPullRequests, setGitHubPullRequests] = useState<GitHubPullRequestReference[]>([]);
+  const [githubBranches, setGitHubBranches] = useState<GitHubBranchReference[]>([]);
+  const [githubOptionsLoading, setGitHubOptionsLoading] = useState(false);
+  const [magicPromptLoading, setMagicPromptLoading] = useState(false);
+  const [selectedSnippetToInsertId, setSelectedSnippetToInsertId] = useState<string | null>(null);
+  const [pendingSnippetForInsert, setPendingSnippetForInsert] = useState<Snippet | null>(null);
+  const [snippetVariableModalOpen, setSnippetVariableModalOpen] = useState(false);
+  const [snippetVariableForm] = Form.useForm<SnippetVariableFormValues>();
+  const canReadRepositoryMetadata = can("repo:read");
+  const canBuildTasks = can("task:build");
+  const canAskTasks = can("task:ask");
+  const canRunAutomatedTask = canBuildTasks || canAskTasks;
+  const canUseSnippets = can("snippet:list");
+
+  const selectedRepoId = Form.useWatch("repoId", form);
+  const selectedModel = Form.useWatch("model", form);
+  const selectedBaseBranch = Form.useWatch("baseBranch", form);
+  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
+  const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
+  const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
+  const selectedIssueNumber = Form.useWatch("issueNumber", form);
+  const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
+  const selectedSnippetId = Form.useWatch("snippetId", form);
+  const selectedPrompt = Form.useWatch("prompt", form);
+  const { models: providerModels, loading: providerModelsLoading } = useProviderModels(selectedProvider);
+  const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
+  const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
+  const selectedIssue = githubIssues.find((issue) => issue.number === selectedIssueNumber) ?? null;
+  const selectedPullRequest = githubPullRequests.find((pullRequest) => pullRequest.number === selectedPullRequestNumber) ?? null;
+  const isBlankSource = selectedSourceType === "blank";
+  const isSnippetSource = selectedSourceType === "snippet";
+  const isIssueSource = selectedSourceType === "issue";
+  const isPullRequestSource = selectedSourceType === "pull_request";
+  const effectiveTaskType = isPullRequestSource ? "build" : selectedTaskType;
+  const isImplementationTask = effectiveTaskType === "build";
+  const baseBranchLabel = isBlankSource || isSnippetSource || isIssueSource ? "Base Branch" : undefined;
+  const selectedSnippet = snippets.find((snippet) => snippet.id === selectedSnippetId) ?? null;
+  const providerMissingCredentials =
+    selectedProvider === "codex"
+      ? !(settings?.openaiApiKeyConfigured || session?.user.codexAuthJsonConfigured)
+      : !settings?.anthropicApiKeyConfigured;
+  const roleAllowedProviders = session?.user.allowedProviders ?? [];
+  const roleAllowedModels = session?.user.allowedModels ?? [];
+  const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
+  const providerSelectOptions = providerOptions(
+    Boolean(settings?.openaiApiKeyConfigured || session?.user.codexAuthJsonConfigured),
+    Boolean(settings?.anthropicApiKeyConfigured)
+  ).map(
+    (option) => ({
+      ...option,
+      disabled: Boolean(option.disabled || (roleAllowedProviders.length > 0 && !roleAllowedProviders.includes(option.value)))
+    })
+  );
+  const allowedModelOptions = providerModels.filter(
+    (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
+  );
+  const allowedEffortOptions = getEffortOptionsForProvider(selectedProvider).filter(
+    (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
+  );
+  const sourceOptions: Array<{ label: string; value: TaskSourceType }> = [
+    { label: "Blank", value: "blank" },
+    ...(canUseSnippets ? [{ label: "Snippet", value: "snippet" as const }] : []),
+    ...(canReadRepositoryMetadata
+      ? [
+          { label: "From Issue", value: "issue" as const },
+          ...(canBuildTasks ? [{ label: "From Pull Request", value: "pull_request" as const }] : [])
+        ]
+      : [])
+  ];
+  const taskTypeOptions: Array<{ label: string; value: TaskType }> = [
+    ...(canBuildTasks ? [{ label: "Build", value: "build" as const }] : []),
+    ...(canAskTasks ? [{ label: "Ask", value: "ask" as const }] : [])
+  ];
+
+  useEffect(() => {
+    if (canReadRepositoryMetadata || selectedSourceType === "blank" || selectedSourceType === "snippet") {
+      return;
+    }
+
+    form.setFieldValue("sourceType", "blank");
+  }, [canReadRepositoryMetadata, form, selectedSourceType]);
+
+  useEffect(() => {
+    if (selectedSourceType === "pull_request" && !canBuildTasks) {
+      form.setFieldValue("sourceType", canReadRepositoryMetadata ? "issue" : "blank");
+    }
+  }, [canBuildTasks, canReadRepositoryMetadata, form, selectedSourceType]);
+
+  useEffect(() => {
+    if (!settings || !syncSettingsDefaults) {
+      return;
+    }
+
+    const currentProvider = form.getFieldValue("provider") as AgentProvider | undefined;
+    const shouldReplaceProvider = !form.isFieldTouched("provider") && (!currentProvider || currentProvider === "codex");
+    const nextProvider = shouldReplaceProvider ? settings.defaultProvider : currentProvider ?? settings.defaultProvider;
+    const providerChanged = nextProvider !== currentProvider;
+
+    if (shouldReplaceProvider) {
+      form.setFieldValue("provider", nextProvider);
+    }
+
+    const currentModel = form.getFieldValue("model") as string | undefined;
+    const currentProfile = form.getFieldValue("providerProfile") as ProviderProfile | undefined;
+    const genericModel = getDefaultModelForProvider(currentProvider ?? nextProvider);
+
+    if (!form.isFieldTouched("model") && (providerChanged || !currentModel || currentModel === genericModel)) {
+      form.setFieldValue("model", getProviderDefaultModel(nextProvider, settings));
+    }
+
+    if (!form.isFieldTouched("providerProfile") && (providerChanged || !currentProfile || currentProfile === "high")) {
+      form.setFieldValue("providerProfile", getProviderDefaultProfile(nextProvider, settings));
+    }
+  }, [form, settings, syncSettingsDefaults]);
+
+  useEffect(() => {
+    const selected = providerSelectOptions.find((option) => option.value === selectedProvider && !option.disabled);
+    if (selected) {
+      return;
+    }
+
+    const fallback = providerSelectOptions.find((option) => !option.disabled);
+    if (!fallback) {
+      return;
+    }
+
+    form.setFieldValue("provider", fallback.value);
+  }, [form, providerSelectOptions, selectedProvider]);
+
+  useEffect(() => {
+    if (providerModelsLoading) {
+      return;
+    }
+    if (allowedModelOptions.length === 0) {
+      return;
+    }
+    if (allowedModelOptions.some((option) => option.value === selectedModel)) {
+      return;
+    }
+    form.setFieldValue("model", allowedModelOptions[0]?.value);
+  }, [allowedModelOptions, form, providerModelsLoading, selectedModel]);
+
+  useEffect(() => {
+    if (allowedEffortOptions.length === 0) {
+      return;
+    }
+    const currentProfile = form.getFieldValue("providerProfile") as ProviderProfile | undefined;
+    if (currentProfile && allowedEffortOptions.some((option) => option.value === currentProfile)) {
+      return;
+    }
+    form.setFieldValue("providerProfile", allowedEffortOptions[0]?.value);
+  }, [allowedEffortOptions, form]);
+
+  useEffect(() => {
+    if (selectedProvider !== "codex") {
+      return;
+    }
+    const current = form.getFieldValue("codexCredentialSource") as CodexCredentialSource | undefined;
+    if (current === "auto" || current === "profile" || current === "global") {
+      return;
+    }
+    form.setFieldValue("codexCredentialSource", "auto");
+  }, [form, selectedProvider]);
+
+  useEffect(() => {
+    if (selectedTaskType === "build" && !canBuildTasks && canAskTasks) {
+      form.setFieldValue("taskType", "ask");
+      return;
+    }
+
+    if (selectedTaskType === "ask" && !canAskTasks && canBuildTasks) {
+      form.setFieldValue("taskType", "build");
+    }
+  }, [canAskTasks, canBuildTasks, form, selectedTaskType]);
+
+  useEffect(() => {
+    if (!isSnippetSource || !selectedSnippet) {
+      return;
+    }
+    const defaults = Object.fromEntries((selectedSnippet.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""]));
+    form.setFieldValue("snippetVariables", defaults);
+  }, [form, isSnippetSource, selectedSnippet]);
+
+  useEffect(() => {
+    if (!selectedRepoId || !canReadRepositoryMetadata) {
+      setGitHubIssues([]);
+      setGitHubPullRequests([]);
+      setGitHubBranches([]);
+      return;
+    }
+
+    let active = true;
+    setGitHubOptionsLoading(true);
+
+    void Promise.all([
+      api.listGitHubBranches(selectedRepoId).catch(() => []),
+      api.listGitHubIssues(selectedRepoId).catch(() => []),
+      api.listGitHubPullRequests(selectedRepoId).catch(() => [])
+    ]).then(([branches, issues, pullRequests]) => {
+      if (!active) {
+        return;
+      }
+
+      setGitHubBranches(branches);
+      setGitHubIssues(issues);
+      setGitHubPullRequests(pullRequests);
+      setGitHubOptionsLoading(false);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [canReadRepositoryMetadata, selectedRepoId]);
+
+  const promptPanelTitle = isBlankSource
+    ? (effectiveTaskType === "ask" ? "Question" : "Prompt")
+    : isSnippetSource
+      ? "Snippet Variables"
+      : "Imported Context";
+  const canAttachPromptImages = allowPromptAttachments && isBlankSource;
+  const canUsePromptMagic = isBlankSource;
+  const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
+
+  const handleGeneratePromptMagic = async (): Promise<void> => {
+    const prompt = (form.getFieldValue("prompt") as string | undefined)?.trim() ?? "";
+    if (!prompt || magicPromptLoading) {
+      return;
+    }
+
+    setMagicPromptLoading(true);
+    try {
+      const response = await api.generateTaskPromptMagic({ prompt });
+      const nextPrompt = response.prompt ?? "";
+      const currentTitle = (form.getFieldValue("title") as string | undefined)?.trim() ?? "";
+      const derivedTitle = deriveTitleFromPrompt(nextPrompt);
+      const nextValues: Partial<TaskDefinitionFormValues> = { prompt: nextPrompt };
+      if (!currentTitle && derivedTitle) {
+        nextValues.title = derivedTitle.slice(0, 500);
+      }
+      form.setFieldsValue(nextValues);
+      form.setFields([{ name: "prompt", value: nextPrompt }]);
+      trackEvent("task_prompt_magic_used", {
+        source: "task_create",
+        input_length: prompt.length,
+        output_length: nextPrompt.length
+      });
+      if (nextPrompt.trim() === prompt) {
+        void message.info("Magic prompt returned a similar result.");
+      } else {
+        void message.success("Prompt improved.");
+      }
+    } catch (error) {
+      const fallback = "Failed to generate prompt.";
+      const errorMessage = error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
+      void message.error(errorMessage);
+    } finally {
+      setMagicPromptLoading(false);
+    }
+  };
+
+  const insertIntoPrompt = (snippetContent: string | null | undefined): void => {
+    const currentPrompt = form.getFieldValue("prompt") as string | undefined;
+    const nextPrompt = insertSnippetContent(currentPrompt, snippetContent);
+    form.setFieldValue("prompt", nextPrompt);
+    form.setFields([{ name: "prompt", value: nextPrompt }]);
+  };
+
+  const handleInsertSelectedSnippet = (): void => {
+    if (!selectedSnippetToInsertId) {
+      return;
+    }
+
+    const snippet = snippets.find((item) => item.id === selectedSnippetToInsertId);
+    if (!snippet) {
+      void message.error("Selected snippet is no longer available.");
+      return;
+    }
+
+    if ((snippet.variables ?? []).length > 0) {
+      setPendingSnippetForInsert(snippet);
+      snippetVariableForm.resetFields();
+      const defaultValues = Object.fromEntries(
+        (snippet.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""])
+      );
+      snippetVariableForm.setFieldsValue(defaultValues);
+      setSnippetVariableModalOpen(true);
+      return;
+    }
+
+    insertIntoPrompt(snippet.content);
+    setSelectedSnippetToInsertId(null);
+  };
+
+  const handleConfirmSnippetVariableInsert = async (): Promise<void> => {
+    if (!pendingSnippetForInsert) {
+      return;
+    }
+
+    try {
+      const values = await snippetVariableForm.validateFields();
+      const rendered = applySnippetVariables(pendingSnippetForInsert.content, pendingSnippetForInsert.variables, values);
+      insertIntoPrompt(rendered);
+      setSnippetVariableModalOpen(false);
+      setPendingSnippetForInsert(null);
+      snippetVariableForm.resetFields();
+      setSelectedSnippetToInsertId(null);
+    } catch {
+      // Form-level validation messages are shown inline.
+    }
+  };
+
+  const handleCloseSnippetVariableModal = (): void => {
+    setSnippetVariableModalOpen(false);
+    setPendingSnippetForInsert(null);
+    snippetVariableForm.resetFields();
+    setSelectedSnippetToInsertId(null);
+  };
+
+  useEffect(() => {
+    if (selectedSourceType === "blank") {
+      return;
+    }
+
+    if ((promptImageFiles?.length ?? 0) > 0) {
+      onPromptImageFilesChange?.([]);
+    }
+  }, [onPromptImageFilesChange, promptImageFiles?.length, selectedSourceType]);
+
+  const renderPromptPanel = (repository: Repository | null) => {
+    if (isBlankSource) {
+      return (
+        <>
+          <Form.Item
+            name="title"
+            label="Title"
+            rules={[{ required: true, message: "Enter a task title" }]}
+            style={{ marginBottom: 16 }}
+            extra={
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Choose a short, descriptive task title.
+              </Typography.Text>
+            }
+          >
+            <Input placeholder="Your Task Title" size="large" />
+          </Form.Item>
+          <Form.Item
+            label={promptPanelTitle}
+            style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
+          >
+            <Flex vertical gap={12} style={{ flex: 1 }}>
+              <div style={{ position: "relative" }}>
+                <Button
+                  size="small"
+                  type="default"
+                  icon={<RobotOutlined />}
+                  title="Magic Wand"
+                  aria-label="Magic Wand"
+                  loading={magicPromptLoading}
+                  disabled={!canUsePromptMagic || promptIsEmpty || magicPromptLoading}
+                  onClick={() => void handleGeneratePromptMagic()}
+                  style={{
+                    position: "absolute",
+                    right: 10,
+                    bottom: 10,
+                    zIndex: 1
+                  }}
+                />
+                <Form.Item
+                  name="prompt"
+                  style={{ marginBottom: 0 }}
+                  rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]}
+                >
+                  <Input.TextArea
+                    autoSize={{ minRows: 12, maxRows: 28 }}
+                    style={{ resize: "none", paddingRight: 44, paddingBottom: 38 }}
+                    placeholder={
+                      effectiveTaskType === "ask"
+                        ? "Ask a repository question."
+                        : "Describe the goal, constraints, and expected outcome in your prompt."
+                    }
+                  />
+                </Form.Item>
+              </div>
+              {canUseSnippets ? (
+                <Flex gap={8} wrap="wrap">
+                  <Select
+                    showSearch
+                    style={{ minWidth: 220, flex: 1 }}
+                    placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
+                    value={selectedSnippetToInsertId}
+                    onChange={(value) => setSelectedSnippetToInsertId(value)}
+                    optionFilterProp="label"
+                    allowClear
+                    loading={snippetsLoading}
+                    disabled={snippetsLoading || snippets.length === 0}
+                    options={snippets.map((snippet) => ({
+                      label: snippet.name,
+                      value: snippet.id
+                    }))}
+                  />
+                  <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetToInsertId}>
+                    Insert
+                  </Button>
+                </Flex>
+              ) : null}
+              {allowPromptAttachments ? (
+                <TaskPromptAttachmentsInput
+                  files={promptImageFiles}
+                  onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
+                  onError={(errorMessage) => void message.error(errorMessage)}
+                  disabled={!canAttachPromptImages || !onPromptImageFilesChange}
+                />
+              ) : null}
+            </Flex>
+          </Form.Item>
+          <Form.Item
+            name="notes"
+            label="Notes (Markdown)"
+            extra={
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Optional. These notes are shown in the task Info tab below current configuration.
+              </Typography.Text>
+            }
+            style={{ marginTop: 16, marginBottom: 0 }}
+          >
+            <Input.TextArea
+              autoSize={{ minRows: 6, maxRows: 16 }}
+              style={{ resize: "none" }}
+              placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
+            />
+          </Form.Item>
+        </>
+      );
+    }
+
+    if (isSnippetSource) {
+      return (
+        <Flex vertical gap={16}>
+          <Form.Item name="title" label="Title" rules={[{ required: true, message: "Enter a task title" }]} style={{ marginBottom: 0 }}>
+            <Input placeholder="Your Task Title" size="large" />
+          </Form.Item>
+          <Alert
+            type="info"
+            showIcon
+            message="Prompt input is replaced by snippet variables"
+            description="Pick a snippet and fill the fields below. This reduces mistakes and keeps setup fast."
+          />
+          <Form.Item name="snippetId" label="Snippet" rules={[{ required: true, message: "Select a snippet" }]} style={{ marginBottom: 0 }}>
+            <Select
+              showSearch
+              loading={snippetsLoading}
+              placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
+              optionFilterProp="label"
+              options={snippets.map((snippet) => ({ label: snippet.name, value: snippet.id }))}
+              onChange={() => trackEvent("snippet_selected")}
+            />
+          </Form.Item>
+          {(selectedSnippet?.variables ?? []).map((variable) => (
+            <Form.Item
+              key={variable.name}
+              name={["snippetVariables", variable.name]}
+              label={variable.title || variable.name}
+              rules={[{ required: true, message: `Enter ${variable.title || variable.name}` }]}
+              extra={variable.description || undefined}
+              style={{ marginBottom: 0 }}
+            >
+              {variable.type === "multiline" ? (
+                <Input.TextArea autoSize={{ minRows: 3, maxRows: 12 }} placeholder={variable.defaultValue || ""} />
+              ) : (
+                <Input placeholder={variable.defaultValue || ""} />
+              )}
+            </Form.Item>
+          ))}
+          <Form.Item
+            name="notes"
+            label="Notes (Markdown)"
+            extra={
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Optional. These notes are shown in the task Info tab below current configuration.
+              </Typography.Text>
+            }
+            style={{ marginBottom: 0 }}
+          >
+            <Input.TextArea
+              autoSize={{ minRows: 6, maxRows: 16 }}
+              style={{ resize: "none" }}
+              placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
+            />
+          </Form.Item>
+        </Flex>
+      );
+    }
+
+    if (isIssueSource) {
+      return (
+        <Flex vertical gap={16}>
+          <Alert
+            type="info"
+            showIcon
+            message="Issue content is imported from GitHub"
+            description="The issue title, body, and optional comments become the task prompt. Use the left-side configuration to select the issue and task behavior."
+          />
+          <Form.Item name="title" label="Task Title Override" style={{ marginBottom: 0 }}>
+            <Input placeholder="Optional. Leave blank to use the issue title." size="large" />
+          </Form.Item>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+            Imported against repository <Typography.Text code>{repository?.name ?? "unknown"}</Typography.Text>.
+          </Typography.Paragraph>
+          {selectedIssue ? (
+            <Alert
+              type="success"
+              showIcon
+              message={`Issue #${selectedIssue.number}: ${selectedIssue.title}`}
+              description={
+                <Typography.Link href={selectedIssue.url} target="_blank">
+                  Open issue in GitHub
+                </Typography.Link>
+              }
+            />
+          ) : null}
+          <Form.Item
+            name="notes"
+            label="Notes (Markdown)"
+            extra={
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Optional. These notes are shown in the task Info tab below current configuration.
+              </Typography.Text>
+            }
+            style={{ marginBottom: 0 }}
+          >
+            <Input.TextArea
+              autoSize={{ minRows: 6, maxRows: 16 }}
+              style={{ resize: "none" }}
+              placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
+            />
+          </Form.Item>
+        </Flex>
+      );
+    }
+
+    return (
+      <Flex vertical gap={16}>
+        <Alert
+          type="info"
+          showIcon
+          message="Pull request review threads are imported from GitHub"
+          description="AgentSwarm will create a build task from unresolved pull request review threads and continue work on the pull request branch."
+        />
+        <Form.Item name="title" label="Task Title Override" style={{ marginBottom: 0 }}>
+          <Input placeholder="Optional. Leave blank to use the pull request title." size="large" />
+        </Form.Item>
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
+          The task targets the pull request head branch and uses <Typography.Text code>work_on_branch</Typography.Text>.
+        </Typography.Paragraph>
+        {selectedPullRequest ? (
+          <Alert
+            type="success"
+            showIcon
+            message={`PR #${selectedPullRequest.number}: ${selectedPullRequest.title}`}
+            description={
+              <Space wrap>
+                <Typography.Link href={selectedPullRequest.url} target="_blank">
+                  Open pull request in GitHub
+                </Typography.Link>
+                <Typography.Text type="secondary">
+                  {selectedPullRequest.baseBranch} {"->"} {selectedPullRequest.headBranch}
+                </Typography.Text>
+              </Space>
+              }
+            />
+          ) : null}
+        <Form.Item
+          name="notes"
+          label="Notes (Markdown)"
+          extra={
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Optional. These notes are shown in the task Info tab below current configuration.
+            </Typography.Text>
+          }
+          style={{ marginBottom: 0 }}
+        >
+          <Input.TextArea
+            autoSize={{ minRows: 6, maxRows: 16 }}
+            style={{ resize: "none" }}
+            placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
+          />
+        </Form.Item>
+      </Flex>
+    );
+  };
+
+  return (
+    <>
+      <Row gutter={[24, 24]} align="stretch">
+        <Col xs={24} xl={8}>
+          <Card bordered={false} title="Configuration" styles={{ body: { display: "flex", flexDirection: "column", gap: 0 } }}>
+          <Form.Item name="sourceType" label="Source" rules={[{ required: true }]}>
+            <Select
+              options={sourceOptions}
+              disabled={lockSourceAndRepository}
+              onChange={(value: TaskSourceType) => {
+                trackEvent("task_source_selected", { source: value });
+                if (value === "pull_request") {
+                  form.setFieldValue("taskType", "build");
+                  form.setFieldValue("branchStrategy", "work_on_branch");
+                }
+                if (value === "snippet") {
+                  form.setFieldValue("taskType", "build");
+                }
+                if (value !== "blank") {
+                  form.setFieldValue("prompt", undefined);
+                }
+
+                if (value === "issue" || value === "pull_request") {
+                  form.setFieldValue("title", undefined);
+                  form.setFields([{ name: "title", touched: false }]);
+                }
+                if (value !== "snippet") {
+                  form.setFieldValue("snippetId", undefined);
+                  form.setFieldValue("snippetVariables", undefined);
+                }
+              }}
+            />
+          </Form.Item>
+
+          <Form.Item name="repoId" label="Repository" rules={[{ required: true }]}>
+            <Select
+              options={repositories.map((repository) => ({ label: repository.name, value: repository.id }))}
+              placeholder="Select repository"
+              disabled={lockSourceAndRepository}
+              onChange={(repoId) => {
+                const repository = repositories.find((item) => item.id === repoId);
+                form.setFieldValue("baseBranch", repository?.defaultBranch ?? "");
+                form.setFieldValue("issueNumber", undefined);
+                form.setFieldValue("pullRequestNumber", undefined);
+              }}
+            />
+          </Form.Item>
+
+          <Form.Item name="deadline" label="Deadline">
+            <DatePicker
+              showTime={{ format: "HH:mm" }}
+              format="YYYY-MM-DD HH:mm"
+              placeholder="No deadline"
+              style={{ width: "100%" }}
+              allowClear
+            />
+          </Form.Item>
+
+          {isPullRequestSource ? (
+            <Form.Item name="pullRequestNumber" label="Pull Request" rules={[{ required: true }]}>
+              <Select
+                showSearch
+                loading={githubOptionsLoading}
+                placeholder={selectedRepoId ? "Select open pull request" : "Select repository first"}
+                optionFilterProp="label"
+                disabled={!selectedRepoId}
+                options={githubPullRequests.map((pullRequest) => ({
+                  label: `#${pullRequest.number} ${pullRequest.title}`,
+                  value: pullRequest.number
+                }))}
+              />
+            </Form.Item>
+          ) : null}
+
+          {isIssueSource ? (
+            <>
+              <Form.Item name="issueNumber" label="Issue" rules={[{ required: true }]}>
+                <Select
+                  showSearch
+                  loading={githubOptionsLoading}
+                  placeholder={selectedRepoId ? "Select open issue" : "Select repository first"}
+                  optionFilterProp="label"
+                  disabled={!selectedRepoId}
+                  options={githubIssues.map((issue) => ({
+                    label: `#${issue.number} ${issue.title}`,
+                    value: issue.number
+                  }))}
+                />
+              </Form.Item>
+              <Form.Item name="includeComments" valuePropName="checked">
+                <Checkbox>Include issue comments</Checkbox>
+              </Form.Item>
+            </>
+          ) : null}
+
+          {isBlankSource || isSnippetSource ? (
+            <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
+              <Select options={taskTypeOptions} />
+            </Form.Item>
+          ) : null}
+
+          {!canRunAutomatedTask ? (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="This role cannot create build or ask tasks."
+              description="Ask an administrator to grant task mode permissions in Settings."
+            />
+          ) : null}
+
+          <Form.Item name="provider" label="Provider" rules={[{ required: true }]}>
+            <Select
+              options={providerSelectOptions}
+              onChange={(value: AgentProvider) => {
+                const nextModels = getModelsForProvider(value).filter(
+                  (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
+                );
+                const nextEfforts = getEffortOptionsForProvider(value).filter(
+                  (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
+                );
+                form.setFieldValue("model", nextModels[0]?.value ?? getProviderDefaultModel(value, settings));
+                form.setFieldValue("providerProfile", nextEfforts[0]?.value ?? getProviderDefaultProfile(value, settings));
+              }}
+            />
+          </Form.Item>
+
+          <Form.Item name="model" label="Model" rules={[{ required: true }]}>
+            <Select options={allowedModelOptions} loading={providerModelsLoading} showSearch optionFilterProp="label" />
+          </Form.Item>
+
+          <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
+            <Select options={allowedEffortOptions} />
+          </Form.Item>
+
+          {selectedProvider === "codex" ? (
+            <Form.Item name="codexCredentialSource" label="Codex Credential Source" rules={[{ required: true }]}>
+              <Select options={codexCredentialSourceOptions} />
+            </Form.Item>
+          ) : null}
+
+          {providerMissingCredentials ? (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={`${selectedProvider === "codex" ? "Codex" : "Anthropic"} credentials are missing`}
+              description={
+                selectedProvider === "codex"
+                  ? "Configure Codex auth.json in your Profile or set an OpenAI API key in Settings before running this task."
+                  : "Configure the provider credential in Settings before running this task."
+              }
+            />
+          ) : null}
+
+          {isIssueSource ? (
+            <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
+              <Select options={taskTypeOptions} />
+            </Form.Item>
+          ) : null}
+
+          {(isBlankSource || isSnippetSource || isIssueSource) && baseBranchLabel ? (
+            <Form.Item name="baseBranch" label={baseBranchLabel} rules={[{ required: true }]}>
+              <Select
+                showSearch
+                loading={githubOptionsLoading}
+                placeholder={selectedRepository?.defaultBranch ?? "develop"}
+                optionFilterProp="label"
+                options={
+                  canReadRepositoryMetadata
+                    ? githubBranches.map((branch) => ({
+                        label: branch.isDefault ? `${branch.name} (default)` : branch.name,
+                        value: branch.name
+                      }))
+                    : selectedRepository
+                      ? [{ label: selectedRepository.defaultBranch, value: selectedRepository.defaultBranch }]
+                      : []
+                }
+              />
+            </Form.Item>
+          ) : null}
+
+          {(isBlankSource && isImplementationTask) || (isSnippetSource && isImplementationTask) || (isIssueSource && selectedTaskType === "build") ? (
+            <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]}>
+              <Select
+                options={[
+                  { label: "Create feature branch", value: "feature_branch" },
+                  { label: "Work on existing branch", value: "work_on_branch" }
+                ]}
+              />
+            </Form.Item>
+          ) : null}
+          </Card>
+        </Col>
+
+        <Col xs={24} xl={16}>
+          <Card
+            bordered={false}
+            title={promptPanelTitle}
+            styles={{
+              body: {
+                display: "flex",
+                flexDirection: "column",
+                minHeight: 640
+              }
+            }}
+          >
+            {renderPromptPanel(selectedRepository)}
+          </Card>
+        </Col>
+      </Row>
+      <Modal
+        title={pendingSnippetForInsert ? `Insert Snippet: ${pendingSnippetForInsert.name}` : "Insert Snippet"}
+        open={snippetVariableModalOpen}
+        onCancel={handleCloseSnippetVariableModal}
+        destroyOnClose
+        onOk={() => void handleConfirmSnippetVariableInsert()}
+        okText="Insert"
+      >
+        <Form form={snippetVariableForm} layout="vertical">
+          {(pendingSnippetForInsert?.variables ?? []).map((variable) => (
+            <Form.Item
+              key={variable.name}
+              name={variable.name}
+              label={variable.title.trim() || variable.name}
+              tooltip={variable.description.trim() || undefined}
+              rules={[{ required: true, message: `Enter ${variable.title.trim() || variable.name}` }]}
+            >
+              {variable.type === "multiline" ? (
+                <Input.TextArea rows={4} placeholder={variable.description.trim() || variable.name} />
+              ) : (
+                <Input placeholder={variable.description.trim() || variable.name} />
+              )}
+            </Form.Item>
+          ))}
+        </Form>
+      </Modal>
+    </>
+  );
 }
 ````
 

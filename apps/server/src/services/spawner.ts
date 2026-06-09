@@ -16,6 +16,7 @@ import {
   isActiveTaskStatus,
   isQueuedTaskStatus,
   type AgentProvider,
+  type NormalizedAgentEvent,
   type McpServerConfig,
   type Task,
   type TaskChangeProposal,
@@ -76,9 +77,24 @@ import { RepositoryEnvFileStore } from "./repository-env-file-store.js";
 import { RepoSyncManager, type RepoSyncOperation } from "./repo-sync-manager.js";
 
 const ansiPattern = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\))/g;
+const LIVE_TIMELINE_POLL_INTERVAL_MS = 1_000;
 
 const sanitizeChunk = (chunk: string): string =>
   chunk.replace(/\r/g, "\n").replace(ansiPattern, "").replace(/[^\x09\x0A\x20-\x7E]/g, "");
+
+const stripIncompleteTrailingJsonlLine = (rawJsonl: string): string => {
+  if (rawJsonl.length === 0 || rawJsonl.endsWith("\n") || rawJsonl.endsWith("\r")) {
+    return rawJsonl;
+  }
+
+  const lastNewlineIndex = Math.max(rawJsonl.lastIndexOf("\n"), rawJsonl.lastIndexOf("\r"));
+  return lastNewlineIndex >= 0 ? rawJsonl.slice(0, lastNewlineIndex + 1) : "";
+};
+
+const timelineSignature = (events: NormalizedAgentEvent[]): string => {
+  const last = events.at(-1);
+  return `${events.length}:${last?.id ?? ""}:${last?.kind ?? ""}:${last?.rawEventIndex ?? ""}`;
+};
 
 const sanitizePathSegment = (value: string): string => {
   const cleaned = value
@@ -1483,17 +1499,31 @@ export class SpawnerService {
     return rawEventsJsonlPath;
   }
 
+  private async readRunTimelineEvents(
+    task: Task,
+    rawEventsJsonlPath: string,
+    options: { includeTrailingPartialLine: boolean }
+  ): Promise<NormalizedAgentEvent[]> {
+    const rawJsonl = await readFile(rawEventsJsonlPath, "utf8");
+    const parseableJsonl = options.includeTrailingPartialLine ? rawJsonl : stripIncompleteTrailingJsonlLine(rawJsonl);
+    if (!parseableJsonl.trim()) {
+      return [];
+    }
+    return parseAgentJsonlEvents(task.provider, parseableJsonl);
+  }
+
   private async parseAndStoreRunTimeline(task: Task, runId: string | null, rawEventsJsonlPath: string | null): Promise<void> {
     if (!runId || !rawEventsJsonlPath) {
       return;
     }
 
     try {
-      const rawJsonl = await readFile(rawEventsJsonlPath, "utf8");
-      if (!rawJsonl.trim()) {
+      const timelineEvents = await this.readRunTimelineEvents(task, rawEventsJsonlPath, {
+        includeTrailingPartialLine: true
+      });
+      if (timelineEvents.length === 0) {
         return;
       }
-      const timelineEvents = parseAgentJsonlEvents(task.provider, rawJsonl);
       await this.taskStore.updateRun(runId, { timelineEvents });
     } catch (error) {
       await this.taskStore.appendLogForRun(
@@ -1502,6 +1532,71 @@ export class SpawnerService {
         runId
       );
     }
+  }
+
+  private startLiveRunTimelineStream(
+    task: Task,
+    runId: string | null,
+    rawEventsJsonlPath: string | null
+  ): { stop: () => Promise<void> } {
+    if (!runId || !rawEventsJsonlPath) {
+      return { stop: async () => undefined };
+    }
+
+    let stopped = false;
+    let parseInFlight = false;
+    let lastSignature = "0:::";
+    let lastErrorMessage: string | null = null;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const parseAndPublish = async (): Promise<void> => {
+      if (stopped || parseInFlight) {
+        return;
+      }
+
+      parseInFlight = true;
+      try {
+        const timelineEvents = await this.readRunTimelineEvents(task, rawEventsJsonlPath, {
+          includeTrailingPartialLine: false
+        });
+        const nextSignature = timelineSignature(timelineEvents);
+        if (timelineEvents.length > 0 && nextSignature !== lastSignature) {
+          lastSignature = nextSignature;
+          await this.taskStore.updateRun(runId, { timelineEvents });
+        }
+        lastErrorMessage = null;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message !== lastErrorMessage) {
+          lastErrorMessage = message;
+          await this.taskStore.appendLogForRun(
+            task.id,
+            `Spawner: warning - live ${task.provider} JSON timeline stream paused (${message}).`,
+            runId
+          );
+        }
+      } finally {
+        parseInFlight = false;
+      }
+    };
+
+    interval = setInterval(() => {
+      void parseAndPublish();
+    }, LIVE_TIMELINE_POLL_INTERVAL_MS);
+    void parseAndPublish();
+
+    return {
+      stop: async () => {
+        stopped = true;
+        if (interval) {
+          clearInterval(interval);
+          interval = null;
+        }
+        while (parseInFlight) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
+    };
   }
 
   private registerActiveExecution(
@@ -4595,6 +4690,7 @@ export class SpawnerService {
     let executionId = nanoid();
     let workspace: WorkspacePreparation | null = null;
     let rawEventsJsonlPath: string | null = null;
+    let liveTimelineStream: { stop: () => Promise<void> } | null = null;
 
     try {
       const run = await this.taskStore.createRun(task.id, {
@@ -4811,6 +4907,7 @@ export class SpawnerService {
         policy: dockerSocketPolicy
       });
 
+      liveTimelineStream = this.startLiveRunTimelineStream(task, runId, rawEventsJsonlPath);
       await new Promise<void>((resolve, reject) => {
         const proc = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
         this.registerActiveExecution(task.id, executionId, { label: containerName, containerName, process: proc });
@@ -4876,6 +4973,8 @@ export class SpawnerService {
       });
 
       this.ensureTaskNotCancelled(task.id);
+      await liveTimelineStream.stop();
+      liveTimelineStream = null;
       await this.parseAndStoreRunTimeline(task, runId, rawEventsJsonlPath);
 
       const runtimeResult = await this.readRuntimeResult(payloadPaths.resultMarkdownPath, payloadPaths.resultJsonPath);
@@ -4985,6 +5084,10 @@ export class SpawnerService {
       const finishedAt = new Date().toISOString();
       const message = error instanceof Error ? error.message : "Unknown runtime error";
       const isCancelled = error instanceof CancelledTaskError || this.isCancellationRequested(task.id);
+      if (liveTimelineStream) {
+        await liveTimelineStream.stop();
+        liveTimelineStream = null;
+      }
       await this.parseAndStoreRunTimeline(task, runId, rawEventsJsonlPath);
       if (runId) {
         await this.taskStore.updateRun(runId, {
@@ -5008,6 +5111,9 @@ export class SpawnerService {
       }
       throw error;
     } finally {
+      if (liveTimelineStream) {
+        await liveTimelineStream.stop();
+      }
       if (executionId) {
         this.unregisterActiveExecution(task.id, executionId);
       }

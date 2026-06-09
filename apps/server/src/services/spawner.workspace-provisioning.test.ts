@@ -82,6 +82,33 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
   });
 
+  it("ignores incomplete trailing raw JSON events during live timeline parsing", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-raw-events-"));
+    const rawEventsPath = path.join(root, "events.jsonl");
+    await writeFile(
+      rawEventsPath,
+      [
+        JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
+        "{\"type\":\"turn.started\""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const liveEvents = await spawnerAny.readRunTimelineEvents(createTask(), rawEventsPath, {
+      includeTrailingPartialLine: false
+    });
+    assert.equal(liveEvents.length, 1);
+    assert.equal(liveEvents[0]?.kind, "run.started");
+
+    const finalEvents = await spawnerAny.readRunTimelineEvents(createTask(), rawEventsPath, {
+      includeTrailingPartialLine: true
+    });
+    assert.equal(finalEvents.length, 2);
+    assert.equal(finalEvents[1]?.title, "Invalid JSON event");
+  });
+
   it("prepares build workspace via clone model", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
