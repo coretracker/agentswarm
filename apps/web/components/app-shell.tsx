@@ -89,6 +89,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const workspaceNotesSaveRequestIdRef = useRef(0);
   const [profileForm] = Form.useForm<{
     name: string;
+    gitAuthorName?: string;
+    gitAuthorEmail?: string;
     codexAuthJson?: string;
     audience?: AudienceType;
     explanationDepth?: AgentExplanationDepth;
@@ -294,6 +296,8 @@ export function AppShell({ children }: { children: ReactNode }) {
       const profile = await api.getProfile();
       profileForm.setFieldsValue({
         name: profile.name,
+        gitAuthorName: profile.gitAuthorName ?? "",
+        gitAuthorEmail: profile.gitAuthorEmail ?? "",
         codexAuthJson: "",
         audience: profile.agentResponsePreference.audience,
         explanationDepth: profile.agentResponsePreference.explanationDepth,
@@ -317,6 +321,8 @@ export function AppShell({ children }: { children: ReactNode }) {
       setSavingProfile(true);
       const next = await api.updateProfile({
         name: values.name,
+        gitAuthorName: values.gitAuthorName?.trim() || null,
+        gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
         codexAuthJson: values.codexAuthJson?.trim() || undefined,
         agentResponsePreference: {
           audience: values.audience,
@@ -332,6 +338,8 @@ export function AppShell({ children }: { children: ReactNode }) {
       profileForm.setFieldValue("codexAuthJson", "");
       setSessionUser({
         name: next.name,
+        gitAuthorName: next.gitAuthorName,
+        gitAuthorEmail: next.gitAuthorEmail,
         agentResponsePreference: next.agentResponsePreference,
         codexAuthJsonConfigured: next.codexAuthJsonConfigured
       });
@@ -658,6 +666,8 @@ export function AppShell({ children }: { children: ReactNode }) {
             layout="vertical"
             initialValues={{
               name: session.user.name,
+              gitAuthorName: session.user.gitAuthorName ?? "",
+              gitAuthorEmail: session.user.gitAuthorEmail ?? "",
               codexAuthJson: "",
               audience: session.user.agentResponsePreference.audience,
               explanationDepth: session.user.agentResponsePreference.explanationDepth,
@@ -670,6 +680,24 @@ export function AppShell({ children }: { children: ReactNode }) {
           >
             <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
               <Input />
+            </Form.Item>
+            <Divider orientation="left" plain>
+              Git Commit Identity
+            </Divider>
+            <Form.Item
+              name="gitAuthorName"
+              label="Git Author Name"
+              extra="Leave blank to use your profile name."
+            >
+              <Input placeholder={session.user.name} />
+            </Form.Item>
+            <Form.Item
+              name="gitAuthorEmail"
+              label="Git Author Email"
+              rules={[{ type: "email", message: "Enter a valid email address" }]}
+              extra="Leave blank to use your profile email."
+            >
+              <Input placeholder={session.user.email} />
             </Form.Item>
             <Divider orientation="left" plain>
               Response Format Preferences

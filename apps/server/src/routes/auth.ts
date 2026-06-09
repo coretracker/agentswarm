@@ -23,6 +23,8 @@ const responsePreferenceSchema = z
 
 const updateProfileSchema = z.object({
   name: z.string().trim().min(1).optional(),
+  gitAuthorName: z.string().trim().max(120).nullable().optional(),
+  gitAuthorEmail: z.string().trim().email().nullable().optional(),
   codexAuthJson: z.string().min(1).optional(),
   clearCodexAuthJson: z.boolean().optional(),
   agentResponsePreference: responsePreferenceSchema.optional()
@@ -66,6 +68,8 @@ export const registerAuthRoutes = (
     return {
       name: authUser.name,
       email: authUser.email,
+      gitAuthorName: authUser.gitAuthorName,
+      gitAuthorEmail: authUser.gitAuthorEmail,
       agentResponsePreference: authUser.agentResponsePreference,
       codexAuthJsonConfigured: await deps.credentialStore.hasCodexAuthJsonForUser(authUser.id)
     };
@@ -78,9 +82,16 @@ export const registerAuthRoutes = (
     }
 
     const userId = request.auth!.user.id;
-    if (parsed.data.name !== undefined || parsed.data.agentResponsePreference !== undefined) {
+    if (
+      parsed.data.name !== undefined ||
+      parsed.data.gitAuthorName !== undefined ||
+      parsed.data.gitAuthorEmail !== undefined ||
+      parsed.data.agentResponsePreference !== undefined
+    ) {
       const updated = await deps.userStore.updateUser(userId, {
         ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+        ...(parsed.data.gitAuthorName !== undefined ? { gitAuthorName: parsed.data.gitAuthorName } : {}),
+        ...(parsed.data.gitAuthorEmail !== undefined ? { gitAuthorEmail: parsed.data.gitAuthorEmail } : {}),
         ...(parsed.data.agentResponsePreference !== undefined ? { agentResponsePreference: parsed.data.agentResponsePreference } : {})
       });
       if (!updated) {
@@ -113,6 +124,8 @@ export const registerAuthRoutes = (
     return reply.send({
       name: refreshedUser.name,
       email: refreshedUser.email,
+      gitAuthorName: refreshedUser.gitAuthorName,
+      gitAuthorEmail: refreshedUser.gitAuthorEmail,
       agentResponsePreference: refreshedUser.agentResponsePreference,
       codexAuthJsonConfigured: await deps.credentialStore.hasCodexAuthJsonForUser(userId)
     });

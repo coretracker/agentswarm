@@ -446,6 +446,8 @@ const main = async (): Promise<void> => {
               id,
               name,
               email,
+              git_author_name,
+              git_author_email,
               active,
               agent_response_preference,
               password_hash,
@@ -454,12 +456,14 @@ const main = async (): Promise<void> => {
               created_at,
               updated_at
             )
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
           `,
           [
             user.id,
             String(user.name ?? "").trim(),
             String(user.email ?? "").trim().toLowerCase(),
+            trimString((user as { gitAuthorName?: string }).gitAuthorName),
+            trimString((user as { gitAuthorEmail?: string }).gitAuthorEmail)?.toLowerCase() ?? null,
             user.active !== false,
             JSON.stringify(
               user.agentResponsePreference &&

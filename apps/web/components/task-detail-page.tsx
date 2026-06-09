@@ -797,7 +797,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
   const viewedGitOperationIdsRef = useRef<Set<string>>(new Set());
+  const runTimelineScrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const runTimelineEventCountsRef = useRef<Record<string, number>>({});
   const [gitOperation, setGitOperation] = useState<TaskGitOperation | null>(null);
+
+  const scrollRunTimelineToBottom = useCallback((runId: string) => {
+    const container = runTimelineScrollRefs.current[runId];
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    for (const run of taskRuns) {
+      const nextCount = run.timelineEvents?.length ?? 0;
+      const previousCount = runTimelineEventCountsRef.current[run.id] ?? 0;
+      runTimelineEventCountsRef.current[run.id] = nextCount;
+
+      if (nextCount > previousCount) {
+        scrollRunTimelineToBottom(run.id);
+      }
+    }
+  }, [scrollRunTimelineToBottom, taskRuns]);
 
   useEffect(() => {
     for (const run of taskRuns) {
@@ -1563,7 +1584,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             ? gitResult.value
             : {
                 available: false,
-                reason: "Could not load git terminal status."
+                reason: "Could not load terminal status."
               }
         );
       });
@@ -3073,7 +3094,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             ? gitResult.value
             : {
                 available: false,
-                reason: "Could not load git terminal status."
+                reason: "Could not load terminal status."
               }
         );
       });
@@ -4300,14 +4321,25 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     return (
-      <Timeline
-        mode="left"
-        items={events.map((event) => ({
-          key: event.id,
-          color: getTimelineEventColor(event),
-          children: renderTimelineEventContent(event)
-        }))}
-      />
+      <div
+        ref={(element) => {
+          runTimelineScrollRefs.current[run.id] = element;
+        }}
+        style={{
+          maxHeight: 420,
+          overflowY: "auto",
+          paddingRight: 8
+        }}
+      >
+        <Timeline
+          mode="left"
+          items={events.map((event) => ({
+            key: event.id,
+            color: getTimelineEventColor(event),
+            children: renderTimelineEventContent(event)
+          }))}
+        />
+      </div>
     );
   };
 
@@ -4317,12 +4349,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       <Collapse
         size="small"
         activeKey={expandedRunTimelineKeys.includes(run.id) ? [run.id] : []}
-        onChange={(keys) =>
+        onChange={(keys) => {
+          const isOpen = Array.isArray(keys) ? keys.length > 0 : Boolean(keys);
+          if (isOpen) {
+            window.requestAnimationFrame(() => scrollRunTimelineToBottom(run.id));
+          }
           setExpandedRunTimelineKeys((current) => {
-            const isOpen = Array.isArray(keys) ? keys.length > 0 : Boolean(keys);
             return isOpen ? (current.includes(run.id) ? current : [...current, run.id]) : current.filter((key) => key !== run.id);
-          })
-        }
+          });
+        }}
         items={[
           {
             key: run.id,

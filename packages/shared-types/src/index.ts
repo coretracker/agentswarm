@@ -254,6 +254,8 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  gitAuthorName: string | null;
+  gitAuthorEmail: string | null;
   active: boolean;
   agentResponsePreference: AgentResponsePreference;
   roles: UserRoleRef[];
@@ -279,6 +281,8 @@ export interface AuthSession {
 export interface AuthProfile {
   name: string;
   email: string;
+  gitAuthorName: string | null;
+  gitAuthorEmail: string | null;
   agentResponsePreference: AgentResponsePreference;
   codexAuthJsonConfigured: boolean;
 }
@@ -309,6 +313,8 @@ export interface UpdateRoleInput {
 export interface CreateUserInput {
   name: string;
   email: string;
+  gitAuthorName?: string | null;
+  gitAuthorEmail?: string | null;
   password: string;
   active?: boolean;
   roleIds?: string[];
@@ -319,6 +325,8 @@ export interface CreateUserInput {
 export interface UpdateUserInput {
   name?: string;
   email?: string;
+  gitAuthorName?: string | null;
+  gitAuthorEmail?: string | null;
   password?: string;
   active?: boolean;
   roleIds?: string[];
@@ -1273,10 +1281,10 @@ export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingChe
 };
 
 export const getTaskTerminalSessionLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Git Terminal" : "Interactive Terminal";
+  mode === "git" ? "Terminal" : "Interactive Terminal";
 
 export const getTaskTerminalSessionSentenceLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Git terminal" : "Interactive terminal";
+  mode === "git" ? "Terminal" : "Interactive terminal";
 
 export const getTaskTerminalSessionStartMessage = (mode: TaskTerminalSessionMode): string =>
   mode === "git" ? "Terminal session started." : `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
@@ -1372,6 +1380,8 @@ export interface UpdateCredentialSettingsInput {
 
 export interface UpdateAuthProfileInput {
   name?: string;
+  gitAuthorName?: string | null;
+  gitAuthorEmail?: string | null;
   codexAuthJson?: string;
   clearCodexAuthJson?: boolean;
   agentResponsePreference?: Partial<AgentResponsePreference>;

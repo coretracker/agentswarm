@@ -6,7 +6,7 @@ export interface GitCommitIdentity {
 }
 
 type UserLookup = {
-  getUser(userId: string): Promise<Pick<User, "name" | "email"> | null>;
+  getUser(userId: string): Promise<Pick<User, "name" | "email" | "gitAuthorName" | "gitAuthorEmail"> | null>;
 };
 
 export async function resolveTaskGitCommitIdentity(
@@ -23,8 +23,8 @@ export async function resolveTaskGitCommitIdentity(
     return fallback;
   }
 
-  const name = user.name.trim();
-  const email = user.email.trim();
+  const name = (user.gitAuthorName?.trim() || user.name.trim());
+  const email = (user.gitAuthorEmail?.trim() || user.email.trim());
   if (!name || !email) {
     return fallback;
   }

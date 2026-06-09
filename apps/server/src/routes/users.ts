@@ -20,6 +20,8 @@ const responsePreferenceSchema = z
 const createUserSchema = z.object({
   name: z.string().trim().min(1),
   email: z.string().trim().email(),
+  gitAuthorName: z.string().trim().max(120).nullable().optional(),
+  gitAuthorEmail: z.string().trim().email().nullable().optional(),
   password: z.string().min(1),
   active: z.boolean().optional(),
   roleIds: z.array(z.string().trim().min(1)).optional(),
@@ -30,6 +32,8 @@ const createUserSchema = z.object({
 const updateUserSchema = z.object({
   name: z.string().trim().min(1).optional(),
   email: z.string().trim().email().optional(),
+  gitAuthorName: z.string().trim().max(120).nullable().optional(),
+  gitAuthorEmail: z.string().trim().email().nullable().optional(),
   password: z.string().min(1).optional(),
   active: z.boolean().optional(),
   roleIds: z.array(z.string().trim().min(1)).optional(),

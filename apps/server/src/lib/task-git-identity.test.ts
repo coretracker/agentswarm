@@ -11,7 +11,7 @@ describe("resolveTaskGitCommitIdentity", () => {
       {
         getUser: async (userId) =>
           userId === "user-1"
-            ? { name: "Ada Lovelace", email: "ada@example.com" }
+            ? { name: "Ada Lovelace", email: "ada@example.com", gitAuthorName: null, gitAuthorEmail: null }
             : null
       },
       fallback
@@ -20,10 +20,30 @@ describe("resolveTaskGitCommitIdentity", () => {
     assert.deepEqual(identity, { name: "Ada Lovelace", email: "ada@example.com" });
   });
 
+  it("prefers the task owner's configured git author identity", async () => {
+    const identity = await resolveTaskGitCommitIdentity(
+      { ownerUserId: "user-1" },
+      {
+        getUser: async (userId) =>
+          userId === "user-1"
+            ? {
+                name: "Ada Lovelace",
+                email: "ada@example.com",
+                gitAuthorName: "Countess Lovelace",
+                gitAuthorEmail: "commits@example.dev"
+              }
+            : null
+      },
+      fallback
+    );
+
+    assert.deepEqual(identity, { name: "Countess Lovelace", email: "commits@example.dev" });
+  });
+
   it("falls back when the task has no owner", async () => {
     const identity = await resolveTaskGitCommitIdentity(
       { ownerUserId: null },
-      { getUser: async () => ({ name: "Ignored", email: "ignored@example.com" }) },
+      { getUser: async () => ({ name: "Ignored", email: "ignored@example.com", gitAuthorName: null, gitAuthorEmail: null }) },
       fallback
     );
 

@@ -227,7 +227,7 @@ function resolveGitTerminalRuntimeConfig(
     } {
   const image = env.GIT_TERMINAL_IMAGE?.trim();
   if (!image) {
-    return { ok: false, reason: "Git terminal is not configured (set GIT_TERMINAL_IMAGE on the server)." };
+    return { ok: false, reason: "Terminal is not configured (set GIT_TERMINAL_IMAGE on the server)." };
   }
 
   return {
@@ -547,7 +547,7 @@ export async function getTaskInteractiveTerminalStatus(
     if (!(await dockerImageExists(runtime.image))) {
       return {
         available: false,
-        reason: `Git terminal image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("git", task.provider, runtime.image)}`
+        reason: `Terminal image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("git", task.provider, runtime.image)}`
       };
     }
     return { available: true };

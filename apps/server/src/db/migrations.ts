@@ -39,6 +39,8 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         id text PRIMARY KEY,
         name text NOT NULL,
         email text NOT NULL UNIQUE,
+        git_author_name text NULL,
+        git_author_email text NULL,
         active boolean NOT NULL,
         password_hash text NOT NULL,
         password_salt text NOT NULL,
@@ -223,6 +225,16 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
     sql: `
       ALTER TABLE system_settings
       ADD COLUMN IF NOT EXISTS response_preference_presets jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260509_01_user_git_author_identity",
+    sql: `
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS git_author_name text NULL;
+
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS git_author_email text NULL;
     `
   },
   {

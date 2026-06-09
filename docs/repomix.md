@@ -2345,7 +2345,7 @@ describe("resolveTaskGitCommitIdentity", () => {
       {
         getUser: async (userId) =>
           userId === "user-1"
-            ? { name: "Ada Lovelace", email: "ada@example.com" }
+            ? { name: "Ada Lovelace", email: "ada@example.com", gitAuthorName: null, gitAuthorEmail: null }
             : null
       },
       fallback
@@ -2354,10 +2354,30 @@ describe("resolveTaskGitCommitIdentity", () => {
     assert.deepEqual(identity, { name: "Ada Lovelace", email: "ada@example.com" });
   });
 
+  it("prefers the task owner's configured git author identity", async () => {
+    const identity = await resolveTaskGitCommitIdentity(
+      { ownerUserId: "user-1" },
+      {
+        getUser: async (userId) =>
+          userId === "user-1"
+            ? {
+                name: "Ada Lovelace",
+                email: "ada@example.com",
+                gitAuthorName: "Countess Lovelace",
+                gitAuthorEmail: "commits@example.dev"
+              }
+            : null
+      },
+      fallback
+    );
+
+    assert.deepEqual(identity, { name: "Countess Lovelace", email: "commits@example.dev" });
+  });
+
   it("falls back when the task has no owner", async () => {
     const identity = await resolveTaskGitCommitIdentity(
       { ownerUserId: null },
-      { getUser: async () => ({ name: "Ignored", email: "ignored@example.com" }) },
+      { getUser: async () => ({ name: "Ignored", email: "ignored@example.com", gitAuthorName: null, gitAuthorEmail: null }) },
       fallback
     );
 
@@ -2386,7 +2406,7 @@ export interface GitCommitIdentity {
 }
 
 type UserLookup = {
-  getUser(userId: string): Promise<Pick<User, "name" | "email"> | null>;
+  getUser(userId: string): Promise<Pick<User, "name" | "email" | "gitAuthorName" | "gitAuthorEmail"> | null>;
 };
 
 export async function resolveTaskGitCommitIdentity(
@@ -2403,8 +2423,8 @@ export async function resolveTaskGitCommitIdentity(
     return fallback;
   }
 
-  const name = user.name.trim();
-  const email = user.email.trim();
+  const name = (user.gitAuthorName?.trim() || user.name.trim());
+  const email = (user.gitAuthorEmail?.trim() || user.email.trim());
   if (!name || !email) {
     return fallback;
   }
@@ -2515,7 +2535,7 @@ export function buildExecutionSummaryFromPrompt(title: string, prompt: string): 
 export function buildGitTerminalStartScript(): string {
   return [
     'cd "$TASK_INTERACTIVE_WORKSPACE"',
-    'printf "\\033[90mGit terminal ready in %s. The shell is restricted to this workspace and only exposes git, nvim, vim, vi, and diff3.\\033[0m\\n" "$PWD"',
+    'printf "\\033[90mTerminal ready in %s. The shell is restricted to this workspace and only exposes git, nvim, vim, vi, and diff3.\\033[0m\\n" "$PWD"',
     [
       'if [ -n "${GIT_TOKEN:-}" ]; then',
       "  printf '%s\\n' '#!/bin/sh' 'case \"$1\" in' '  *sername*) echo \"${GIT_USERNAME:-x-access-token}\" ;;' '  *assword*) echo \"${GIT_TOKEN:-}\" ;;' '  *) echo \"\" ;;' 'esac' > /tmp/agentswarm-git-askpass.sh",
@@ -3018,6 +3038,8 @@ const responsePreferenceSchema = z
 
 const updateProfileSchema = z.object({
   name: z.string().trim().min(1).optional(),
+  gitAuthorName: z.string().trim().max(120).nullable().optional(),
+  gitAuthorEmail: z.string().trim().email().nullable().optional(),
   codexAuthJson: z.string().min(1).optional(),
   clearCodexAuthJson: z.boolean().optional(),
   agentResponsePreference: responsePreferenceSchema.optional()
@@ -3061,6 +3083,8 @@ export const registerAuthRoutes = (
     return {
       name: authUser.name,
       email: authUser.email,
+      gitAuthorName: authUser.gitAuthorName,
+      gitAuthorEmail: authUser.gitAuthorEmail,
       agentResponsePreference: authUser.agentResponsePreference,
       codexAuthJsonConfigured: await deps.credentialStore.hasCodexAuthJsonForUser(authUser.id)
     };
@@ -3073,9 +3097,16 @@ export const registerAuthRoutes = (
     }
 
     const userId = request.auth!.user.id;
-    if (parsed.data.name !== undefined || parsed.data.agentResponsePreference !== undefined) {
+    if (
+      parsed.data.name !== undefined ||
+      parsed.data.gitAuthorName !== undefined ||
+      parsed.data.gitAuthorEmail !== undefined ||
+      parsed.data.agentResponsePreference !== undefined
+    ) {
       const updated = await deps.userStore.updateUser(userId, {
         ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+        ...(parsed.data.gitAuthorName !== undefined ? { gitAuthorName: parsed.data.gitAuthorName } : {}),
+        ...(parsed.data.gitAuthorEmail !== undefined ? { gitAuthorEmail: parsed.data.gitAuthorEmail } : {}),
         ...(parsed.data.agentResponsePreference !== undefined ? { agentResponsePreference: parsed.data.agentResponsePreference } : {})
       });
       if (!updated) {
@@ -3108,6 +3139,8 @@ export const registerAuthRoutes = (
     return reply.send({
       name: refreshedUser.name,
       email: refreshedUser.email,
+      gitAuthorName: refreshedUser.gitAuthorName,
+      gitAuthorEmail: refreshedUser.gitAuthorEmail,
       agentResponsePreference: refreshedUser.agentResponsePreference,
       codexAuthJsonConfigured: await deps.credentialStore.hasCodexAuthJsonForUser(userId)
     });
@@ -3362,6 +3395,8 @@ const responsePreferenceSchema = z
 const createUserSchema = z.object({
   name: z.string().trim().min(1),
   email: z.string().trim().email(),
+  gitAuthorName: z.string().trim().max(120).nullable().optional(),
+  gitAuthorEmail: z.string().trim().email().nullable().optional(),
   password: z.string().min(1),
   active: z.boolean().optional(),
   roleIds: z.array(z.string().trim().min(1)).optional(),
@@ -3372,6 +3407,8 @@ const createUserSchema = z.object({
 const updateUserSchema = z.object({
   name: z.string().trim().min(1).optional(),
   email: z.string().trim().email().optional(),
+  gitAuthorName: z.string().trim().max(120).nullable().optional(),
+  gitAuthorEmail: z.string().trim().email().nullable().optional(),
   password: z.string().min(1).optional(),
   active: z.boolean().optional(),
   roleIds: z.array(z.string().trim().min(1)).optional(),
@@ -5306,6 +5343,8 @@ export interface StoredUserRecord {
   id: string;
   name: string;
   email: string;
+  gitAuthorName: string | null;
+  gitAuthorEmail: string | null;
   active: boolean;
   agentResponsePreference: AgentResponsePreference;
   roleIds: string[];
@@ -5319,6 +5358,14 @@ export interface StoredUserRecord {
 
 const normalizeUserName = (value: string | undefined): string => (value ?? "").trim().replace(/\s+/g, " ");
 const normalizeUserEmail = (value: string | undefined): string => (value ?? "").trim().toLowerCase();
+const normalizeOptionalGitAuthorName = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim().replace(/\s+/g, " ");
+  return normalized || null;
+};
+const normalizeOptionalGitAuthorEmail = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  return normalized || null;
+};
 const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
 const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
 const RESPONSE_EXPLANATION_DEPTH = new Set(["one_line", "brief", "standard", "detailed", "deep_dive"]);
@@ -5439,6 +5486,8 @@ export class RedisUserStore implements UserStore {
       ...user,
       name: normalizeUserName(user.name),
       email: normalizeUserEmail(user.email),
+      gitAuthorName: normalizeOptionalGitAuthorName(user.gitAuthorName),
+      gitAuthorEmail: normalizeOptionalGitAuthorEmail(user.gitAuthorEmail),
       active: user.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
@@ -5522,6 +5571,8 @@ export class RedisUserStore implements UserStore {
       id: user.id,
       name: user.name,
       email: user.email,
+      gitAuthorName: user.gitAuthorName,
+      gitAuthorEmail: user.gitAuthorEmail,
       active: user.active,
       agentResponsePreference: user.agentResponsePreference,
       roles: this.buildRoleRefs(roles),
@@ -5696,6 +5747,8 @@ export class RedisUserStore implements UserStore {
   async createUser(input: CreateUserInput): Promise<User> {
     const name = normalizeUserName(input.name);
     const email = normalizeUserEmail(input.email);
+    const gitAuthorName = normalizeOptionalGitAuthorName(input.gitAuthorName);
+    const gitAuthorEmail = normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
     const password = input.password.trim();
 
     if (!name) {
@@ -5725,6 +5778,8 @@ export class RedisUserStore implements UserStore {
       id: nanoid(),
       name,
       email,
+      gitAuthorName,
+      gitAuthorEmail,
       active: input.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
       roleIds,
@@ -5748,6 +5803,10 @@ export class RedisUserStore implements UserStore {
 
     const nextName = input.name === undefined ? current.name : normalizeUserName(input.name);
     const nextEmail = input.email === undefined ? current.email : normalizeUserEmail(input.email);
+    const nextGitAuthorName =
+      input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName);
+    const nextGitAuthorEmail =
+      input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
     if (!nextName) {
       throw new HttpError(400, "User name is required");
     }
@@ -5787,6 +5846,8 @@ export class RedisUserStore implements UserStore {
       ...current,
       name: nextName,
       email: nextEmail,
+      gitAuthorName: nextGitAuthorName,
+      gitAuthorEmail: nextGitAuthorEmail,
       active: nextActive,
       agentResponsePreference:
         input.agentResponsePreference === undefined
@@ -5851,6 +5912,8 @@ export class PostgresUserStore implements UserStore {
       id: String(row.id),
       name: String(row.name ?? ""),
       email: String(row.email ?? ""),
+      gitAuthorName: typeof row.git_author_name === "string" ? row.git_author_name : null,
+      gitAuthorEmail: typeof row.git_author_email === "string" ? row.git_author_email : null,
       active: row.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(
         row.agent_response_preference && typeof row.agent_response_preference === "object"
@@ -5872,6 +5935,8 @@ export class PostgresUserStore implements UserStore {
       ...user,
       name: normalizeUserName(user.name),
       email: normalizeUserEmail(user.email),
+      gitAuthorName: normalizeOptionalGitAuthorName(user.gitAuthorName),
+      gitAuthorEmail: normalizeOptionalGitAuthorEmail(user.gitAuthorEmail),
       active: user.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
@@ -5991,6 +6056,8 @@ export class PostgresUserStore implements UserStore {
       id: user.id,
       name: user.name,
       email: user.email,
+      gitAuthorName: user.gitAuthorName,
+      gitAuthorEmail: user.gitAuthorEmail,
       active: user.active,
       agentResponsePreference: user.agentResponsePreference,
       roles: this.buildRoleRefs(roles),
@@ -6044,6 +6111,8 @@ export class PostgresUserStore implements UserStore {
           id,
           name,
           email,
+          git_author_name,
+          git_author_email,
           active,
           agent_response_preference,
           password_hash,
@@ -6052,11 +6121,13 @@ export class PostgresUserStore implements UserStore {
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
         ON CONFLICT (id) DO UPDATE
         SET
           name = EXCLUDED.name,
           email = EXCLUDED.email,
+          git_author_name = EXCLUDED.git_author_name,
+          git_author_email = EXCLUDED.git_author_email,
           active = EXCLUDED.active,
           agent_response_preference = EXCLUDED.agent_response_preference,
           password_hash = EXCLUDED.password_hash,
@@ -6069,6 +6140,8 @@ export class PostgresUserStore implements UserStore {
         nextUser.id,
         nextUser.name,
         nextUser.email,
+        nextUser.gitAuthorName,
+        nextUser.gitAuthorEmail,
         nextUser.active,
         JSON.stringify(nextUser.agentResponsePreference),
         nextUser.passwordHash,
@@ -6253,6 +6326,8 @@ export class PostgresUserStore implements UserStore {
   async createUser(input: CreateUserInput): Promise<User> {
     const name = normalizeUserName(input.name);
     const email = normalizeUserEmail(input.email);
+    const gitAuthorName = normalizeOptionalGitAuthorName(input.gitAuthorName);
+    const gitAuthorEmail = normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
     const password = input.password.trim();
 
     if (!name) {
@@ -6282,6 +6357,8 @@ export class PostgresUserStore implements UserStore {
       id: nanoid(),
       name,
       email,
+      gitAuthorName,
+      gitAuthorEmail,
       active: input.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
       roleIds,
@@ -6307,6 +6384,10 @@ export class PostgresUserStore implements UserStore {
 
     const nextName = input.name === undefined ? current.name : normalizeUserName(input.name);
     const nextEmail = input.email === undefined ? current.email : normalizeUserEmail(input.email);
+    const nextGitAuthorName =
+      input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName);
+    const nextGitAuthorEmail =
+      input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
     if (!nextName) {
       throw new HttpError(400, "User name is required");
     }
@@ -6347,6 +6428,8 @@ export class PostgresUserStore implements UserStore {
       ...current,
       name: nextName,
       email: nextEmail,
+      gitAuthorName: nextGitAuthorName,
+      gitAuthorEmail: nextGitAuthorEmail,
       active: nextActive,
       agentResponsePreference:
         input.agentResponsePreference === undefined
@@ -6894,7 +6977,7 @@ export default function TaskInteractiveRoutePage() {
           <Typography.Text strong style={{ color: token.colorText }}>
             {mode === "git"
               ? task
-                ? `Git Terminal · ${task.branchName ?? task.repoDefaultBranch} in task workspace`
+                ? `Terminal · ${task.branchName ?? task.repoDefaultBranch} in task workspace`
                 : terminalLabel
               : task
                 ? `Interactive · ${providerLabel} in task workspace`
@@ -7093,6 +7176,48 @@ export function AppLogo({
       }}
     />
   );
+}
+````
+
+## File: apps/web/components/app-right-panel-context.tsx
+````typescript
+"use client";
+
+import { createContext, useContext, type ReactNode } from "react";
+
+export interface AppRightPanelConfig {
+  title?: ReactNode;
+  extra?: ReactNode;
+  content?: ReactNode;
+}
+
+interface AppRightPanelContextValue {
+  setRightPanel: (next: AppRightPanelConfig | null) => void;
+}
+
+const AppRightPanelContext = createContext<AppRightPanelContextValue | null>(null);
+
+export function AppRightPanelProvider({
+  value,
+  children
+}: {
+  value: AppRightPanelContextValue;
+  children: ReactNode;
+}) {
+  return <AppRightPanelContext.Provider value={value}>{children}</AppRightPanelContext.Provider>;
+}
+
+export function useAppRightPanel(): AppRightPanelContextValue {
+  const context = useContext(AppRightPanelContext);
+  if (context) {
+    return context;
+  }
+
+  return {
+    setRightPanel: () => {
+      // No shell context (e.g. tests or public routes); ignore panel updates.
+    }
+  };
 }
 ````
 
@@ -9350,6 +9475,8 @@ import { ResponsePolicyFields } from "./response-policy-fields";
 interface UserFormValues {
   name: string;
   email: string;
+  gitAuthorName?: string;
+  gitAuthorEmail?: string;
   password?: string;
   active: boolean;
   audience?: AudienceType;
@@ -9415,6 +9542,8 @@ export function UsersPage() {
     form.setFieldsValue({
       name: "",
       email: "",
+      gitAuthorName: "",
+      gitAuthorEmail: "",
       password: "",
       active: true,
       audience: undefined,
@@ -9436,6 +9565,8 @@ export function UsersPage() {
     form.setFieldsValue({
       name: user.name,
       email: user.email,
+      gitAuthorName: user.gitAuthorName ?? "",
+      gitAuthorEmail: user.gitAuthorEmail ?? "",
       password: "",
       active: user.active,
       audience: user.agentResponsePreference.audience,
@@ -9589,6 +9720,8 @@ export function UsersPage() {
                 await api.updateUser(editingUser.id, {
                   name: values.name,
                   email: values.email,
+                  gitAuthorName: values.gitAuthorName?.trim() || null,
+                  gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
                   password: values.password?.trim() || undefined,
                   active: values.active,
                   agentResponsePreference: {
@@ -9608,6 +9741,8 @@ export function UsersPage() {
                 await api.createUser({
                   name: values.name,
                   email: values.email,
+                  gitAuthorName: values.gitAuthorName?.trim() || null,
+                  gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
                   password: values.password?.trim() || "",
                   active: values.active,
                   agentResponsePreference: {
@@ -9639,6 +9774,24 @@ export function UsersPage() {
           </Form.Item>
           <Form.Item name="email" label="Email" rules={[{ required: true, message: "Enter an email address" }]}>
             <Input />
+          </Form.Item>
+          <Divider orientation="left" plain>
+            Git Commit Identity
+          </Divider>
+          <Form.Item
+            name="gitAuthorName"
+            label="Git Author Name"
+            extra="Leave blank to use the user's profile name."
+          >
+            <Input placeholder="Profile name" />
+          </Form.Item>
+          <Form.Item
+            name="gitAuthorEmail"
+            label="Git Author Email"
+            rules={[{ type: "email", message: "Enter a valid email address" }]}
+            extra="Leave blank to use the user's profile email."
+          >
+            <Input placeholder="Profile email" />
           </Form.Item>
           <Form.Item
             name="password"
@@ -17636,48 +17789,6 @@ export default function TasksBoardRoute() {
       <TasksKanbanBoardPage />
     </Suspense>
   );
-}
-````
-
-## File: apps/web/components/app-right-panel-context.tsx
-````typescript
-"use client";
-
-import { createContext, useContext, type ReactNode } from "react";
-
-export interface AppRightPanelConfig {
-  title?: ReactNode;
-  extra?: ReactNode;
-  content?: ReactNode;
-}
-
-interface AppRightPanelContextValue {
-  setRightPanel: (next: AppRightPanelConfig | null) => void;
-}
-
-const AppRightPanelContext = createContext<AppRightPanelContextValue | null>(null);
-
-export function AppRightPanelProvider({
-  value,
-  children
-}: {
-  value: AppRightPanelContextValue;
-  children: ReactNode;
-}) {
-  return <AppRightPanelContext.Provider value={value}>{children}</AppRightPanelContext.Provider>;
-}
-
-export function useAppRightPanel(): AppRightPanelContextValue {
-  const context = useContext(AppRightPanelContext);
-  if (context) {
-    return context;
-  }
-
-  return {
-    setRightPanel: () => {
-      // No shell context (e.g. tests or public routes); ignore panel updates.
-    }
-  };
 }
 ````
 
@@ -26133,6 +26244,8 @@ const main = async (): Promise<void> => {
               id,
               name,
               email,
+              git_author_name,
+              git_author_email,
               active,
               agent_response_preference,
               password_hash,
@@ -26141,12 +26254,14 @@ const main = async (): Promise<void> => {
               created_at,
               updated_at
             )
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
           `,
           [
             user.id,
             String(user.name ?? "").trim(),
             String(user.email ?? "").trim().toLowerCase(),
+            trimString((user as { gitAuthorName?: string }).gitAuthorName),
+            trimString((user as { gitAuthorEmail?: string }).gitAuthorEmail)?.toLowerCase() ?? null,
             user.active !== false,
             JSON.stringify(
               user.agentResponsePreference &&
@@ -26647,7 +26762,7 @@ function resolveGitTerminalRuntimeConfig(
     } {
   const image = env.GIT_TERMINAL_IMAGE?.trim();
   if (!image) {
-    return { ok: false, reason: "Git terminal is not configured (set GIT_TERMINAL_IMAGE on the server)." };
+    return { ok: false, reason: "Terminal is not configured (set GIT_TERMINAL_IMAGE on the server)." };
   }
 
   return {
@@ -26967,7 +27082,7 @@ export async function getTaskInteractiveTerminalStatus(
     if (!(await dockerImageExists(runtime.image))) {
       return {
         available: false,
-        reason: `Git terminal image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("git", task.provider, runtime.image)}`
+        reason: `Terminal image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("git", task.provider, runtime.image)}`
       };
     }
     return { available: true };
@@ -37030,6 +37145,742 @@ void bootstrap().catch((error) => {
 });
 ````
 
+## File: apps/web/components/app-shell.tsx
+````typescript
+"use client";
+
+import { useMemo, useEffect, useRef, useState, type ReactNode } from "react";
+import { App, Button, Card, Divider, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Skeleton, Spin, Typography, message, theme as antTheme } from "antd";
+import {
+  AppstoreOutlined,
+  CopyOutlined,
+  DatabaseOutlined,
+  LeftOutlined,
+  LogoutOutlined,
+  MenuOutlined,
+  RightOutlined,
+  SettingOutlined,
+  TeamOutlined,
+  UnorderedListOutlined
+} from "@ant-design/icons";
+import { usePathname, useRouter } from "next/navigation";
+import { AppLogo } from "./app-logo";
+import { AppSidebar } from "./app-sidebar";
+import { AppFooterNote } from "./app-footer-note";
+import { ResponsePolicyFields } from "./response-policy-fields";
+import { useAuth } from "./auth-provider";
+import { TaskBrowserNotifications } from "./task-browser-notifications";
+import { useThemeMode } from "./theme-provider";
+import { appThemeOptions, type AppThemeMode } from "../src/theme/antd-theme";
+import { api } from "../src/api/client";
+import { trackEvent } from "../src/utils/analytics";
+import { AppRightPanelProvider, type AppRightPanelConfig } from "./app-right-panel-context";
+import { NotesMarkdownEditor } from "./notes-markdown-editor";
+import type {
+  AgentClarifyBehavior,
+  AgentCodePreference,
+  AgentExplanationDepth,
+  AgentFormattingStyle,
+  AgentJargonLevel,
+  AudienceType,
+  UserNotes
+} from "@agentswarm/shared-types";
+import {
+  getRequiredScopesForPathname,
+  getSelectedNavigationKey,
+  isPublicPathname,
+  isTaskInteractiveFullscreenPath,
+  navigationRoutes,
+  resolveDefaultPath
+} from "../src/auth/access";
+
+const menuIconByPath: Record<string, ReactNode> = {
+  "/tasks": <UnorderedListOutlined />,
+  "/tasks/board": <AppstoreOutlined />,
+  "/snippets": <CopyOutlined />,
+  "/repositories": <DatabaseOutlined />,
+  "/settings": <SettingOutlined />,
+  "/users": <TeamOutlined />
+};
+
+const NOTES_PANEL_STATE_STORAGE_KEY_PREFIX = "agentswarm:notes-sidebar-state:v1";
+const DEFAULT_NOTES_PANEL_WIDTH = 420;
+const NOTES_PANEL_MIN_WIDTH = 320;
+const NOTES_PANEL_MAX_WIDTH = 720;
+const NOTES_PANEL_COLLAPSED_RAIL_WIDTH = 56;
+
+export function AppShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const { canAll, loading, logout, session, setSessionUser } = useAuth();
+  const { mode, setMode } = useThemeMode();
+  const contentMaxWidth = 1760;
+  const headerHeight = 64;
+  const sidebarWidth = 320;
+  const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_NOTES_PANEL_WIDTH);
+  const [notesSidebarCollapsed, setNotesSidebarCollapsed] = useState(false);
+  const notesResizeSessionRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const [notesResizing, setNotesResizing] = useState(false);
+  const { token } = antTheme.useToken();
+  const screens = Grid.useBreakpoint();
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileCodexConfigured, setProfileCodexConfigured] = useState(false);
+  const [rightPanel, setRightPanel] = useState<AppRightPanelConfig | null>(null);
+  const [workspaceNotes, setWorkspaceNotes] = useState<UserNotes | null>(null);
+  const [workspaceNotesDraft, setWorkspaceNotesDraft] = useState("");
+  const [workspaceNotesLoading, setWorkspaceNotesLoading] = useState(true);
+  const [workspaceNotesSaving, setWorkspaceNotesSaving] = useState(false);
+  const [workspaceNotesStatus, setWorkspaceNotesStatus] = useState<"saved" | "saving" | "error">("saved");
+  const workspaceNotesAutosaveTimeoutRef = useRef<number | null>(null);
+  const workspaceNotesSaveRequestIdRef = useRef(0);
+  const [profileForm] = Form.useForm<{
+    name: string;
+    gitAuthorName?: string;
+    gitAuthorEmail?: string;
+    codexAuthJson?: string;
+    audience?: AudienceType;
+    explanationDepth?: AgentExplanationDepth;
+    jargonLevel?: AgentJargonLevel;
+    codePreference?: AgentCodePreference;
+    clarifyBehavior?: AgentClarifyBehavior;
+    formattingStyle?: AgentFormattingStyle;
+    extraInstructions?: string;
+  }>();
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const publicPath = isPublicPathname(pathname);
+  const desktopSidebar = screens.lg ?? false;
+  const selectedNavigationKey = getSelectedNavigationKey(pathname);
+  const defaultPath = session ? resolveDefaultPath(session.user.scopes) : null;
+  const menuItems = navigationRoutes
+    .filter((route) => canAll(route.requiredScopes))
+    .map((route) => ({
+      key: route.key,
+      icon: menuIconByPath[route.key],
+      label: route.label
+    }));
+  const hasRouteAccess = session ? canAll(getRequiredScopesForPathname(pathname)) : false;
+  const rightPanelContextValue = useMemo(() => ({ setRightPanel }), []);
+  const notesPanelId = "workspace-notes-panel";
+  const notesPanelStorageKey = useMemo(
+    () => `${NOTES_PANEL_STATE_STORAGE_KEY_PREFIX}:${session?.user.id ?? "anonymous"}`,
+    [session?.user.id]
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(notesPanelStorageKey);
+      if (!raw) {
+        return;
+      }
+      const parsed = JSON.parse(raw) as { collapsed?: boolean; width?: number };
+      if (typeof parsed.collapsed === "boolean") {
+        setNotesSidebarCollapsed(parsed.collapsed);
+      }
+      if (typeof parsed.width === "number" && Number.isFinite(parsed.width)) {
+        setRightPanelWidth(Math.min(NOTES_PANEL_MAX_WIDTH, Math.max(NOTES_PANEL_MIN_WIDTH, Math.round(parsed.width))));
+      }
+    } catch {
+      // Ignore localStorage read/parse errors.
+    }
+  }, [notesPanelStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(
+        notesPanelStorageKey,
+        JSON.stringify({ collapsed: notesSidebarCollapsed, width: rightPanelWidth })
+      );
+    } catch {
+      // Ignore localStorage write errors.
+    }
+  }, [notesPanelStorageKey, notesSidebarCollapsed, rightPanelWidth]);
+
+  useEffect(() => {
+    if (!notesResizing) {
+      return;
+    }
+
+    const handleMouseMove = (event: MouseEvent): void => {
+      const session = notesResizeSessionRef.current;
+      if (!session) {
+        return;
+      }
+      const deltaX = session.startX - event.clientX;
+      const nextWidth = Math.min(NOTES_PANEL_MAX_WIDTH, Math.max(NOTES_PANEL_MIN_WIDTH, session.startWidth + deltaX));
+      setRightPanelWidth(nextWidth);
+    };
+
+    const stopResizing = (): void => {
+      notesResizeSessionRef.current = null;
+      setNotesResizing(false);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", stopResizing);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", stopResizing);
+    };
+  }, [notesResizing]);
+
+  useEffect(() => {
+    if (loading || publicPath) {
+      return;
+    }
+
+    if (!session) {
+      router.replace("/login");
+    }
+  }, [loading, publicPath, router, session]);
+
+  useEffect(() => {
+    if (desktopSidebar) {
+      setMobileSidebarOpen(false);
+    }
+  }, [desktopSidebar]);
+
+  const toggleNotesSidebar = (nextCollapsed: boolean): void => {
+    setNotesSidebarCollapsed(nextCollapsed);
+    trackEvent(nextCollapsed ? "notes_sidebar_collapsed" : "notes_sidebar_expanded", {
+      surface: "app_shell",
+      width: rightPanelWidth
+    });
+  };
+
+  useEffect(() => {
+    if (publicPath || !session) {
+      return;
+    }
+
+    setWorkspaceNotesLoading(true);
+    void api
+      .getUserNotes()
+      .then((next) => {
+        setWorkspaceNotes(next);
+        setWorkspaceNotesDraft(next.notes);
+        setWorkspaceNotesStatus("saved");
+      })
+      .catch((error) => {
+        const messageText = error instanceof Error ? error.message : "Failed to load notes";
+        setWorkspaceNotesStatus("error");
+        message.error(messageText);
+      })
+      .finally(() => {
+        setWorkspaceNotesLoading(false);
+      });
+  }, [publicPath, session]);
+
+  useEffect(() => {
+    if (workspaceNotesAutosaveTimeoutRef.current !== null) {
+      window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
+      workspaceNotesAutosaveTimeoutRef.current = null;
+    }
+    if (!workspaceNotes || workspaceNotesDraft === workspaceNotes.notes) {
+      setWorkspaceNotesStatus("saved");
+      return;
+    }
+
+    setWorkspaceNotesStatus("saving");
+    workspaceNotesAutosaveTimeoutRef.current = window.setTimeout(() => {
+      workspaceNotesAutosaveTimeoutRef.current = null;
+      const requestId = workspaceNotesSaveRequestIdRef.current + 1;
+      workspaceNotesSaveRequestIdRef.current = requestId;
+      setWorkspaceNotesSaving(true);
+      void api
+        .updateUserNotes({ notes: workspaceNotesDraft })
+        .then((next) => {
+          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
+            return;
+          }
+          setWorkspaceNotes(next);
+          setWorkspaceNotesDraft(next.notes);
+          setWorkspaceNotesStatus("saved");
+        })
+        .catch((error) => {
+          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
+            return;
+          }
+          const messageText = error instanceof Error ? error.message : "Failed to save notes";
+          setWorkspaceNotesStatus("error");
+          message.error(messageText);
+        })
+        .finally(() => {
+          if (workspaceNotesSaveRequestIdRef.current === requestId) {
+            setWorkspaceNotesSaving(false);
+          }
+        });
+    }, 700);
+
+    return () => {
+      if (workspaceNotesAutosaveTimeoutRef.current !== null) {
+        window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
+        workspaceNotesAutosaveTimeoutRef.current = null;
+      }
+    };
+  }, [workspaceNotes, workspaceNotesDraft]);
+
+  if (publicPath) {
+    return <App>{children}</App>;
+  }
+
+  if (loading || !session) {
+    return <Spin fullscreen tip="Loading session" />;
+  }
+
+  const openProfile = async (): Promise<void> => {
+    setProfileOpen(true);
+    setProfileLoading(true);
+    try {
+      const profile = await api.getProfile();
+      profileForm.setFieldsValue({
+        name: profile.name,
+        gitAuthorName: profile.gitAuthorName ?? "",
+        gitAuthorEmail: profile.gitAuthorEmail ?? "",
+        codexAuthJson: "",
+        audience: profile.agentResponsePreference.audience,
+        explanationDepth: profile.agentResponsePreference.explanationDepth,
+        jargonLevel: profile.agentResponsePreference.jargonLevel,
+        codePreference: profile.agentResponsePreference.codePreference,
+        clarifyBehavior: profile.agentResponsePreference.clarifyBehavior,
+        formattingStyle: profile.agentResponsePreference.formattingStyle,
+        extraInstructions: profile.agentResponsePreference.extraInstructions ?? ""
+      });
+      setProfileCodexConfigured(profile.codexAuthJsonConfigured);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to load profile");
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+
+  const saveProfile = async (): Promise<void> => {
+    try {
+      const values = await profileForm.validateFields();
+      setSavingProfile(true);
+      const next = await api.updateProfile({
+        name: values.name,
+        gitAuthorName: values.gitAuthorName?.trim() || null,
+        gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
+        codexAuthJson: values.codexAuthJson?.trim() || undefined,
+        agentResponsePreference: {
+          audience: values.audience,
+          explanationDepth: values.explanationDepth,
+          jargonLevel: values.jargonLevel,
+          codePreference: values.codePreference,
+          clarifyBehavior: values.clarifyBehavior,
+          formattingStyle: values.formattingStyle,
+          extraInstructions: values.extraInstructions?.trim() || undefined
+        }
+      });
+      setProfileCodexConfigured(next.codexAuthJsonConfigured);
+      profileForm.setFieldValue("codexAuthJson", "");
+      setSessionUser({
+        name: next.name,
+        gitAuthorName: next.gitAuthorName,
+        gitAuthorEmail: next.gitAuthorEmail,
+        agentResponsePreference: next.agentResponsePreference,
+        codexAuthJsonConfigured: next.codexAuthJsonConfigured
+      });
+      message.success("Profile updated");
+    } catch (error) {
+      if (error && typeof error === "object" && "errorFields" in error) {
+        return;
+      }
+      message.error(error instanceof Error ? error.message : "Failed to update profile");
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const clearCodexAuthJson = async (): Promise<void> => {
+    setSavingProfile(true);
+    try {
+      const next = await api.updateProfile({ clearCodexAuthJson: true });
+      setProfileCodexConfigured(next.codexAuthJsonConfigured);
+      profileForm.setFieldValue("codexAuthJson", "");
+      setSessionUser({
+        agentResponsePreference: next.agentResponsePreference,
+        codexAuthJsonConfigured: next.codexAuthJsonConfigured
+      });
+      message.success("Codex auth.json cleared");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  if (isTaskInteractiveFullscreenPath(pathname)) {
+    return (
+      <App>
+        {hasRouteAccess ? (
+          <div style={{ height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>{children}</div>
+        ) : (
+          <Result
+            status="403"
+            title="403"
+            subTitle="This account does not have access to the requested page."
+            extra={
+              defaultPath ? (
+                <Button type="primary" onClick={() => router.push(defaultPath)}>
+                  Go To An Allowed Page
+                </Button>
+              ) : null
+            }
+          />
+        )}
+      </App>
+    );
+  }
+
+  const shellContent = (
+    <>
+      <AppRightPanelProvider value={rightPanelContextValue}>
+        <Layout style={{ minHeight: "100vh", background: token.colorBgLayout }}>
+        <Layout.Header
+          style={{
+            position: "sticky",
+            top: 0,
+            zIndex: 20,
+            paddingInline: 24,
+            background: token.colorBgContainer,
+            borderBottom: `1px solid ${token.colorBorderSecondary}`,
+            boxShadow: token.boxShadowSecondary
+          }}
+        >
+          <Flex
+            align="center"
+            justify="space-between"
+            style={{ height: "100%", width: "100%", gap: 24 }}
+          >
+            <Flex align="center" gap={12}>
+              {!desktopSidebar ? (
+                <Button
+                  type="text"
+                  icon={<MenuOutlined />}
+                  aria-label="Open navigation"
+                  onClick={() => setMobileSidebarOpen(true)}
+                />
+              ) : null}
+              <AppLogo width={28} height={40} />
+              <Flex vertical gap={0}>
+                <Typography.Title level={4} style={{ margin: 0, color: token.colorText }}>
+                  AgentSwarm
+                </Typography.Title>
+              </Flex>
+            </Flex>
+            <Menu
+              mode="horizontal"
+              selectedKeys={[selectedNavigationKey]}
+              items={menuItems}
+              onClick={({ key }) => router.push(key)}
+              selectable
+              style={{ minWidth: 0, borderBottom: 0, flex: 1, background: "transparent" }}
+            />
+            <Flex align="center" gap={12}>
+              <TaskBrowserNotifications />
+              <Flex vertical gap={0} style={{ minWidth: 0 }}>
+                <Button type="text" style={{ paddingInline: 6 }} onClick={() => { void openProfile(); }}>
+                  <Typography.Text strong>{`Hi, ${session.user.name || "Administrator"}`}</Typography.Text>
+                </Button>
+              </Flex>
+              <Select
+                value={mode}
+                onChange={(value) => setMode(value as AppThemeMode)}
+                options={appThemeOptions}
+                style={{ minWidth: 180 }}
+              />
+              <Button
+                icon={<LogoutOutlined />}
+                loading={loggingOut}
+                onClick={async () => {
+                  setLoggingOut(true);
+                  try {
+                    await logout();
+                    router.replace("/login");
+                  } finally {
+                    setLoggingOut(false);
+                  }
+                }}
+              >
+                Logout
+              </Button>
+            </Flex>
+          </Flex>
+        </Layout.Header>
+        <Layout style={{ flex: 1, minHeight: 0, background: token.colorBgLayout }}>
+          {desktopSidebar ? (
+            <Layout.Sider
+              width={sidebarWidth}
+              theme="light"
+              style={{
+                position: "sticky",
+                top: headerHeight,
+                alignSelf: "flex-start",
+                height: `calc(100vh - ${headerHeight}px)`,
+                background: token.colorBgContainer,
+                borderRight: `1px solid ${token.colorBorderSecondary}`,
+                overflow: "hidden"
+              }}
+            >
+              <AppSidebar pathname={pathname} onNavigate={(path) => router.push(path)} />
+            </Layout.Sider>
+          ) : null}
+          <Layout style={{ minWidth: 0, background: token.colorBgLayout }}>
+            <Layout.Content style={{ padding: 24, minHeight: 0, overflow: "auto", background: token.colorBgLayout }}>
+              <div style={{ width: "100%", maxWidth: contentMaxWidth, marginInline: "auto", minHeight: "100%" }}>
+                {hasRouteAccess ? (
+                  children
+                ) : (
+                  <Result
+                    status="403"
+                    title="403"
+                    subTitle="This account does not have access to the requested page."
+                    extra={
+                      defaultPath ? (
+                        <Button type="primary" onClick={() => router.push(defaultPath)}>
+                          Go To An Allowed Page
+                        </Button>
+                      ) : null
+                    }
+                  />
+                )}
+              </div>
+            </Layout.Content>
+            <Layout.Footer
+              style={{
+                padding: "8px 24px 18px",
+                background: token.colorBgLayout
+              }}
+            >
+              <div style={{ width: "100%", maxWidth: contentMaxWidth, marginInline: "auto" }}>
+                <AppFooterNote />
+              </div>
+            </Layout.Footer>
+          </Layout>
+          {desktopSidebar && !notesSidebarCollapsed ? (
+            <Layout.Sider
+              id={notesPanelId}
+              width={rightPanelWidth}
+              theme="light"
+              style={{
+                position: "sticky",
+                top: headerHeight,
+                alignSelf: "flex-start",
+                height: `calc(100vh - ${headerHeight}px)`,
+                background: token.colorBgContainer,
+                borderLeft: `1px solid ${token.colorBorderSecondary}`,
+                overflow: "hidden",
+                userSelect: notesResizing ? "none" : undefined
+              }}
+            >
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize notes sidebar"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  notesResizeSessionRef.current = { startX: event.clientX, startWidth: rightPanelWidth };
+                  setNotesResizing(true);
+                }}
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  width: 8,
+                  height: "100%",
+                  cursor: "col-resize",
+                  zIndex: 2
+                }}
+              />
+              <Flex vertical style={{ height: "100%", minHeight: 0 }}>
+                <Flex
+                  justify="space-between"
+                  align="center"
+                  style={{
+                    padding: "16px 16px 12px",
+                    borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                    gap: 12
+                  }}
+                >
+                  <Typography.Title level={5} style={{ margin: 0 }}>
+                    {rightPanel?.title ?? "Notes"}
+                  </Typography.Title>
+                  <Flex align="center" gap={8}>
+                    {rightPanel?.extra ?? null}
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<RightOutlined />}
+                      onClick={() => toggleNotesSidebar(true)}
+                      aria-label="Collapse notes"
+                      aria-controls={notesPanelId}
+                      aria-expanded={!notesSidebarCollapsed}
+                    >
+                      Collapse notes
+                    </Button>
+                  </Flex>
+                </Flex>
+                <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16 }}>
+                  {rightPanel?.content ?? (
+                    <Flex vertical gap={12}>
+                      <Typography.Text type={workspaceNotesStatus === "error" ? "danger" : "secondary"}>
+                        {workspaceNotesStatus === "saving"
+                          ? "Saving…"
+                          : workspaceNotesStatus === "error"
+                            ? "Save failed. Keep this page open; retrying on next edit."
+                            : "Saved"}
+                      </Typography.Text>
+                      {workspaceNotesLoading ? (
+                        <Skeleton active title={false} paragraph={{ rows: 12 }} />
+                      ) : (
+                        <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={workspaceNotesSaving} />
+                      )}
+                    </Flex>
+                  )}
+                </div>
+              </Flex>
+            </Layout.Sider>
+          ) : null}
+          {desktopSidebar && notesSidebarCollapsed ? (
+            <Layout.Sider
+              width={NOTES_PANEL_COLLAPSED_RAIL_WIDTH}
+              theme="light"
+              style={{
+                position: "sticky",
+                top: headerHeight,
+                alignSelf: "flex-start",
+                height: `calc(100vh - ${headerHeight}px)`,
+                background: token.colorBgContainer,
+                borderLeft: `1px solid ${token.colorBorderSecondary}`,
+                overflow: "hidden"
+              }}
+            >
+              <Flex vertical justify="flex-start" align="center" style={{ height: "100%", paddingTop: 12 }}>
+                <Button
+                  type="text"
+                  icon={<LeftOutlined />}
+                  onClick={() => toggleNotesSidebar(false)}
+                  aria-label="Expand notes"
+                  aria-controls={notesPanelId}
+                  aria-expanded={!notesSidebarCollapsed}
+                  title="Expand notes"
+                />
+              </Flex>
+            </Layout.Sider>
+          ) : null}
+        </Layout>
+      </Layout>
+      </AppRightPanelProvider>
+      <Drawer
+        placement="left"
+        open={!desktopSidebar && mobileSidebarOpen}
+        onClose={() => setMobileSidebarOpen(false)}
+        width={sidebarWidth}
+        styles={{ body: { padding: 0 } }}
+      >
+        <AppSidebar
+          pathname={pathname}
+          onNavigate={(path) => {
+            setMobileSidebarOpen(false);
+            router.push(path);
+          }}
+        />
+      </Drawer>
+      <Modal
+        title="Profile"
+        open={profileOpen}
+        onCancel={() => setProfileOpen(false)}
+        onOk={() => {
+          void saveProfile();
+        }}
+        okText="Save"
+        confirmLoading={savingProfile}
+        destroyOnClose
+      >
+        <Spin spinning={profileLoading}>
+          <Form
+            form={profileForm}
+            layout="vertical"
+            initialValues={{
+              name: session.user.name,
+              gitAuthorName: session.user.gitAuthorName ?? "",
+              gitAuthorEmail: session.user.gitAuthorEmail ?? "",
+              codexAuthJson: "",
+              audience: session.user.agentResponsePreference.audience,
+              explanationDepth: session.user.agentResponsePreference.explanationDepth,
+              jargonLevel: session.user.agentResponsePreference.jargonLevel,
+              codePreference: session.user.agentResponsePreference.codePreference,
+              clarifyBehavior: session.user.agentResponsePreference.clarifyBehavior,
+              formattingStyle: session.user.agentResponsePreference.formattingStyle,
+              extraInstructions: session.user.agentResponsePreference.extraInstructions ?? ""
+            }}
+          >
+            <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
+              <Input />
+            </Form.Item>
+            <Divider orientation="left" plain>
+              Git Commit Identity
+            </Divider>
+            <Form.Item
+              name="gitAuthorName"
+              label="Git Author Name"
+              extra="Leave blank to use your profile name."
+            >
+              <Input placeholder={session.user.name} />
+            </Form.Item>
+            <Form.Item
+              name="gitAuthorEmail"
+              label="Git Author Email"
+              rules={[{ type: "email", message: "Enter a valid email address" }]}
+              extra="Leave blank to use your profile email."
+            >
+              <Input placeholder={session.user.email} />
+            </Form.Item>
+            <Divider orientation="left" plain>
+              Response Format Preferences
+            </Divider>
+            <Card size="small">
+              <ResponsePolicyFields />
+            </Card>
+            <Divider orientation="left" plain>
+              Credentials
+            </Divider>
+            <Form.Item name="codexAuthJson" label="Codex auth.json">
+              <Input.TextArea
+                autoSize={{ minRows: 6, maxRows: 14 }}
+                placeholder={profileCodexConfigured ? "Configured. Paste new JSON to replace." : "{\"...\": \"...\"}"}
+              />
+            </Form.Item>
+            <Typography.Text type="secondary">
+              Stored write-only and encrypted. Existing value is never returned.
+            </Typography.Text>
+            <div style={{ marginTop: 12 }}>
+              <Button danger onClick={() => { void clearCodexAuthJson(); }} loading={savingProfile}>
+                Clear Codex auth.json
+              </Button>
+            </div>
+          </Form>
+        </Spin>
+      </Modal>
+    </>
+  );
+
+  return <App>{shellContent}</App>;
+}
+````
+
 ## File: apps/web/src/auth/access.ts
 ````typescript
 import type { PermissionScope } from "@agentswarm/shared-types";
@@ -37710,6 +38561,8 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         id text PRIMARY KEY,
         name text NOT NULL,
         email text NOT NULL UNIQUE,
+        git_author_name text NULL,
+        git_author_email text NULL,
         active boolean NOT NULL,
         password_hash text NOT NULL,
         password_salt text NOT NULL,
@@ -37897,6 +38750,16 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
     `
   },
   {
+    id: "20260509_01_user_git_author_identity",
+    sql: `
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS git_author_name text NULL;
+
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS git_author_email text NULL;
+    `
+  },
+  {
     id: "20260513_01_cleanup_legacy_flow_data",
     sql: `
       UPDATE roles AS r
@@ -38063,714 +38926,6 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
     `
   }
 ];
-````
-
-## File: apps/web/components/app-shell.tsx
-````typescript
-"use client";
-
-import { useMemo, useEffect, useRef, useState, type ReactNode } from "react";
-import { App, Button, Card, Divider, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Skeleton, Spin, Typography, message, theme as antTheme } from "antd";
-import {
-  AppstoreOutlined,
-  CopyOutlined,
-  DatabaseOutlined,
-  LeftOutlined,
-  LogoutOutlined,
-  MenuOutlined,
-  RightOutlined,
-  SettingOutlined,
-  TeamOutlined,
-  UnorderedListOutlined
-} from "@ant-design/icons";
-import { usePathname, useRouter } from "next/navigation";
-import { AppLogo } from "./app-logo";
-import { AppSidebar } from "./app-sidebar";
-import { AppFooterNote } from "./app-footer-note";
-import { ResponsePolicyFields } from "./response-policy-fields";
-import { useAuth } from "./auth-provider";
-import { TaskBrowserNotifications } from "./task-browser-notifications";
-import { useThemeMode } from "./theme-provider";
-import { appThemeOptions, type AppThemeMode } from "../src/theme/antd-theme";
-import { api } from "../src/api/client";
-import { trackEvent } from "../src/utils/analytics";
-import { AppRightPanelProvider, type AppRightPanelConfig } from "./app-right-panel-context";
-import { NotesMarkdownEditor } from "./notes-markdown-editor";
-import type {
-  AgentClarifyBehavior,
-  AgentCodePreference,
-  AgentExplanationDepth,
-  AgentFormattingStyle,
-  AgentJargonLevel,
-  AudienceType,
-  UserNotes
-} from "@agentswarm/shared-types";
-import {
-  getRequiredScopesForPathname,
-  getSelectedNavigationKey,
-  isPublicPathname,
-  isTaskInteractiveFullscreenPath,
-  navigationRoutes,
-  resolveDefaultPath
-} from "../src/auth/access";
-
-const menuIconByPath: Record<string, ReactNode> = {
-  "/tasks": <UnorderedListOutlined />,
-  "/tasks/board": <AppstoreOutlined />,
-  "/snippets": <CopyOutlined />,
-  "/repositories": <DatabaseOutlined />,
-  "/settings": <SettingOutlined />,
-  "/users": <TeamOutlined />
-};
-
-const NOTES_PANEL_STATE_STORAGE_KEY_PREFIX = "agentswarm:notes-sidebar-state:v1";
-const DEFAULT_NOTES_PANEL_WIDTH = 420;
-const NOTES_PANEL_MIN_WIDTH = 320;
-const NOTES_PANEL_MAX_WIDTH = 720;
-const NOTES_PANEL_COLLAPSED_RAIL_WIDTH = 56;
-
-export function AppShell({ children }: { children: ReactNode }) {
-  const pathname = usePathname();
-  const router = useRouter();
-  const { canAll, loading, logout, session, setSessionUser } = useAuth();
-  const { mode, setMode } = useThemeMode();
-  const contentMaxWidth = 1760;
-  const headerHeight = 64;
-  const sidebarWidth = 320;
-  const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_NOTES_PANEL_WIDTH);
-  const [notesSidebarCollapsed, setNotesSidebarCollapsed] = useState(false);
-  const notesResizeSessionRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const [notesResizing, setNotesResizing] = useState(false);
-  const { token } = antTheme.useToken();
-  const screens = Grid.useBreakpoint();
-  const [loggingOut, setLoggingOut] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [savingProfile, setSavingProfile] = useState(false);
-  const [profileLoading, setProfileLoading] = useState(false);
-  const [profileCodexConfigured, setProfileCodexConfigured] = useState(false);
-  const [rightPanel, setRightPanel] = useState<AppRightPanelConfig | null>(null);
-  const [workspaceNotes, setWorkspaceNotes] = useState<UserNotes | null>(null);
-  const [workspaceNotesDraft, setWorkspaceNotesDraft] = useState("");
-  const [workspaceNotesLoading, setWorkspaceNotesLoading] = useState(true);
-  const [workspaceNotesSaving, setWorkspaceNotesSaving] = useState(false);
-  const [workspaceNotesStatus, setWorkspaceNotesStatus] = useState<"saved" | "saving" | "error">("saved");
-  const workspaceNotesAutosaveTimeoutRef = useRef<number | null>(null);
-  const workspaceNotesSaveRequestIdRef = useRef(0);
-  const [profileForm] = Form.useForm<{
-    name: string;
-    codexAuthJson?: string;
-    audience?: AudienceType;
-    explanationDepth?: AgentExplanationDepth;
-    jargonLevel?: AgentJargonLevel;
-    codePreference?: AgentCodePreference;
-    clarifyBehavior?: AgentClarifyBehavior;
-    formattingStyle?: AgentFormattingStyle;
-    extraInstructions?: string;
-  }>();
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const publicPath = isPublicPathname(pathname);
-  const desktopSidebar = screens.lg ?? false;
-  const selectedNavigationKey = getSelectedNavigationKey(pathname);
-  const defaultPath = session ? resolveDefaultPath(session.user.scopes) : null;
-  const menuItems = navigationRoutes
-    .filter((route) => canAll(route.requiredScopes))
-    .map((route) => ({
-      key: route.key,
-      icon: menuIconByPath[route.key],
-      label: route.label
-    }));
-  const hasRouteAccess = session ? canAll(getRequiredScopesForPathname(pathname)) : false;
-  const rightPanelContextValue = useMemo(() => ({ setRightPanel }), []);
-  const notesPanelId = "workspace-notes-panel";
-  const notesPanelStorageKey = useMemo(
-    () => `${NOTES_PANEL_STATE_STORAGE_KEY_PREFIX}:${session?.user.id ?? "anonymous"}`,
-    [session?.user.id]
-  );
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    try {
-      const raw = window.localStorage.getItem(notesPanelStorageKey);
-      if (!raw) {
-        return;
-      }
-      const parsed = JSON.parse(raw) as { collapsed?: boolean; width?: number };
-      if (typeof parsed.collapsed === "boolean") {
-        setNotesSidebarCollapsed(parsed.collapsed);
-      }
-      if (typeof parsed.width === "number" && Number.isFinite(parsed.width)) {
-        setRightPanelWidth(Math.min(NOTES_PANEL_MAX_WIDTH, Math.max(NOTES_PANEL_MIN_WIDTH, Math.round(parsed.width))));
-      }
-    } catch {
-      // Ignore localStorage read/parse errors.
-    }
-  }, [notesPanelStorageKey]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    try {
-      window.localStorage.setItem(
-        notesPanelStorageKey,
-        JSON.stringify({ collapsed: notesSidebarCollapsed, width: rightPanelWidth })
-      );
-    } catch {
-      // Ignore localStorage write errors.
-    }
-  }, [notesPanelStorageKey, notesSidebarCollapsed, rightPanelWidth]);
-
-  useEffect(() => {
-    if (!notesResizing) {
-      return;
-    }
-
-    const handleMouseMove = (event: MouseEvent): void => {
-      const session = notesResizeSessionRef.current;
-      if (!session) {
-        return;
-      }
-      const deltaX = session.startX - event.clientX;
-      const nextWidth = Math.min(NOTES_PANEL_MAX_WIDTH, Math.max(NOTES_PANEL_MIN_WIDTH, session.startWidth + deltaX));
-      setRightPanelWidth(nextWidth);
-    };
-
-    const stopResizing = (): void => {
-      notesResizeSessionRef.current = null;
-      setNotesResizing(false);
-    };
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", stopResizing);
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", stopResizing);
-    };
-  }, [notesResizing]);
-
-  useEffect(() => {
-    if (loading || publicPath) {
-      return;
-    }
-
-    if (!session) {
-      router.replace("/login");
-    }
-  }, [loading, publicPath, router, session]);
-
-  useEffect(() => {
-    if (desktopSidebar) {
-      setMobileSidebarOpen(false);
-    }
-  }, [desktopSidebar]);
-
-  const toggleNotesSidebar = (nextCollapsed: boolean): void => {
-    setNotesSidebarCollapsed(nextCollapsed);
-    trackEvent(nextCollapsed ? "notes_sidebar_collapsed" : "notes_sidebar_expanded", {
-      surface: "app_shell",
-      width: rightPanelWidth
-    });
-  };
-
-  useEffect(() => {
-    if (publicPath || !session) {
-      return;
-    }
-
-    setWorkspaceNotesLoading(true);
-    void api
-      .getUserNotes()
-      .then((next) => {
-        setWorkspaceNotes(next);
-        setWorkspaceNotesDraft(next.notes);
-        setWorkspaceNotesStatus("saved");
-      })
-      .catch((error) => {
-        const messageText = error instanceof Error ? error.message : "Failed to load notes";
-        setWorkspaceNotesStatus("error");
-        message.error(messageText);
-      })
-      .finally(() => {
-        setWorkspaceNotesLoading(false);
-      });
-  }, [publicPath, session]);
-
-  useEffect(() => {
-    if (workspaceNotesAutosaveTimeoutRef.current !== null) {
-      window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
-      workspaceNotesAutosaveTimeoutRef.current = null;
-    }
-    if (!workspaceNotes || workspaceNotesDraft === workspaceNotes.notes) {
-      setWorkspaceNotesStatus("saved");
-      return;
-    }
-
-    setWorkspaceNotesStatus("saving");
-    workspaceNotesAutosaveTimeoutRef.current = window.setTimeout(() => {
-      workspaceNotesAutosaveTimeoutRef.current = null;
-      const requestId = workspaceNotesSaveRequestIdRef.current + 1;
-      workspaceNotesSaveRequestIdRef.current = requestId;
-      setWorkspaceNotesSaving(true);
-      void api
-        .updateUserNotes({ notes: workspaceNotesDraft })
-        .then((next) => {
-          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
-            return;
-          }
-          setWorkspaceNotes(next);
-          setWorkspaceNotesDraft(next.notes);
-          setWorkspaceNotesStatus("saved");
-        })
-        .catch((error) => {
-          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
-            return;
-          }
-          const messageText = error instanceof Error ? error.message : "Failed to save notes";
-          setWorkspaceNotesStatus("error");
-          message.error(messageText);
-        })
-        .finally(() => {
-          if (workspaceNotesSaveRequestIdRef.current === requestId) {
-            setWorkspaceNotesSaving(false);
-          }
-        });
-    }, 700);
-
-    return () => {
-      if (workspaceNotesAutosaveTimeoutRef.current !== null) {
-        window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
-        workspaceNotesAutosaveTimeoutRef.current = null;
-      }
-    };
-  }, [workspaceNotes, workspaceNotesDraft]);
-
-  if (publicPath) {
-    return <App>{children}</App>;
-  }
-
-  if (loading || !session) {
-    return <Spin fullscreen tip="Loading session" />;
-  }
-
-  const openProfile = async (): Promise<void> => {
-    setProfileOpen(true);
-    setProfileLoading(true);
-    try {
-      const profile = await api.getProfile();
-      profileForm.setFieldsValue({
-        name: profile.name,
-        codexAuthJson: "",
-        audience: profile.agentResponsePreference.audience,
-        explanationDepth: profile.agentResponsePreference.explanationDepth,
-        jargonLevel: profile.agentResponsePreference.jargonLevel,
-        codePreference: profile.agentResponsePreference.codePreference,
-        clarifyBehavior: profile.agentResponsePreference.clarifyBehavior,
-        formattingStyle: profile.agentResponsePreference.formattingStyle,
-        extraInstructions: profile.agentResponsePreference.extraInstructions ?? ""
-      });
-      setProfileCodexConfigured(profile.codexAuthJsonConfigured);
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "Failed to load profile");
-    } finally {
-      setProfileLoading(false);
-    }
-  };
-
-  const saveProfile = async (): Promise<void> => {
-    try {
-      const values = await profileForm.validateFields();
-      setSavingProfile(true);
-      const next = await api.updateProfile({
-        name: values.name,
-        codexAuthJson: values.codexAuthJson?.trim() || undefined,
-        agentResponsePreference: {
-          audience: values.audience,
-          explanationDepth: values.explanationDepth,
-          jargonLevel: values.jargonLevel,
-          codePreference: values.codePreference,
-          clarifyBehavior: values.clarifyBehavior,
-          formattingStyle: values.formattingStyle,
-          extraInstructions: values.extraInstructions?.trim() || undefined
-        }
-      });
-      setProfileCodexConfigured(next.codexAuthJsonConfigured);
-      profileForm.setFieldValue("codexAuthJson", "");
-      setSessionUser({
-        name: next.name,
-        agentResponsePreference: next.agentResponsePreference,
-        codexAuthJsonConfigured: next.codexAuthJsonConfigured
-      });
-      message.success("Profile updated");
-    } catch (error) {
-      if (error && typeof error === "object" && "errorFields" in error) {
-        return;
-      }
-      message.error(error instanceof Error ? error.message : "Failed to update profile");
-    } finally {
-      setSavingProfile(false);
-    }
-  };
-
-  const clearCodexAuthJson = async (): Promise<void> => {
-    setSavingProfile(true);
-    try {
-      const next = await api.updateProfile({ clearCodexAuthJson: true });
-      setProfileCodexConfigured(next.codexAuthJsonConfigured);
-      profileForm.setFieldValue("codexAuthJson", "");
-      setSessionUser({
-        agentResponsePreference: next.agentResponsePreference,
-        codexAuthJsonConfigured: next.codexAuthJsonConfigured
-      });
-      message.success("Codex auth.json cleared");
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");
-    } finally {
-      setSavingProfile(false);
-    }
-  };
-
-  if (isTaskInteractiveFullscreenPath(pathname)) {
-    return (
-      <App>
-        {hasRouteAccess ? (
-          <div style={{ height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>{children}</div>
-        ) : (
-          <Result
-            status="403"
-            title="403"
-            subTitle="This account does not have access to the requested page."
-            extra={
-              defaultPath ? (
-                <Button type="primary" onClick={() => router.push(defaultPath)}>
-                  Go To An Allowed Page
-                </Button>
-              ) : null
-            }
-          />
-        )}
-      </App>
-    );
-  }
-
-  const shellContent = (
-    <>
-      <AppRightPanelProvider value={rightPanelContextValue}>
-        <Layout style={{ minHeight: "100vh", background: token.colorBgLayout }}>
-        <Layout.Header
-          style={{
-            position: "sticky",
-            top: 0,
-            zIndex: 20,
-            paddingInline: 24,
-            background: token.colorBgContainer,
-            borderBottom: `1px solid ${token.colorBorderSecondary}`,
-            boxShadow: token.boxShadowSecondary
-          }}
-        >
-          <Flex
-            align="center"
-            justify="space-between"
-            style={{ height: "100%", width: "100%", gap: 24 }}
-          >
-            <Flex align="center" gap={12}>
-              {!desktopSidebar ? (
-                <Button
-                  type="text"
-                  icon={<MenuOutlined />}
-                  aria-label="Open navigation"
-                  onClick={() => setMobileSidebarOpen(true)}
-                />
-              ) : null}
-              <AppLogo width={28} height={40} />
-              <Flex vertical gap={0}>
-                <Typography.Title level={4} style={{ margin: 0, color: token.colorText }}>
-                  AgentSwarm
-                </Typography.Title>
-              </Flex>
-            </Flex>
-            <Menu
-              mode="horizontal"
-              selectedKeys={[selectedNavigationKey]}
-              items={menuItems}
-              onClick={({ key }) => router.push(key)}
-              selectable
-              style={{ minWidth: 0, borderBottom: 0, flex: 1, background: "transparent" }}
-            />
-            <Flex align="center" gap={12}>
-              <TaskBrowserNotifications />
-              <Flex vertical gap={0} style={{ minWidth: 0 }}>
-                <Button type="text" style={{ paddingInline: 6 }} onClick={() => { void openProfile(); }}>
-                  <Typography.Text strong>{`Hi, ${session.user.name || "Administrator"}`}</Typography.Text>
-                </Button>
-              </Flex>
-              <Select
-                value={mode}
-                onChange={(value) => setMode(value as AppThemeMode)}
-                options={appThemeOptions}
-                style={{ minWidth: 180 }}
-              />
-              <Button
-                icon={<LogoutOutlined />}
-                loading={loggingOut}
-                onClick={async () => {
-                  setLoggingOut(true);
-                  try {
-                    await logout();
-                    router.replace("/login");
-                  } finally {
-                    setLoggingOut(false);
-                  }
-                }}
-              >
-                Logout
-              </Button>
-            </Flex>
-          </Flex>
-        </Layout.Header>
-        <Layout style={{ flex: 1, minHeight: 0, background: token.colorBgLayout }}>
-          {desktopSidebar ? (
-            <Layout.Sider
-              width={sidebarWidth}
-              theme="light"
-              style={{
-                position: "sticky",
-                top: headerHeight,
-                alignSelf: "flex-start",
-                height: `calc(100vh - ${headerHeight}px)`,
-                background: token.colorBgContainer,
-                borderRight: `1px solid ${token.colorBorderSecondary}`,
-                overflow: "hidden"
-              }}
-            >
-              <AppSidebar pathname={pathname} onNavigate={(path) => router.push(path)} />
-            </Layout.Sider>
-          ) : null}
-          <Layout style={{ minWidth: 0, background: token.colorBgLayout }}>
-            <Layout.Content style={{ padding: 24, minHeight: 0, overflow: "auto", background: token.colorBgLayout }}>
-              <div style={{ width: "100%", maxWidth: contentMaxWidth, marginInline: "auto", minHeight: "100%" }}>
-                {hasRouteAccess ? (
-                  children
-                ) : (
-                  <Result
-                    status="403"
-                    title="403"
-                    subTitle="This account does not have access to the requested page."
-                    extra={
-                      defaultPath ? (
-                        <Button type="primary" onClick={() => router.push(defaultPath)}>
-                          Go To An Allowed Page
-                        </Button>
-                      ) : null
-                    }
-                  />
-                )}
-              </div>
-            </Layout.Content>
-            <Layout.Footer
-              style={{
-                padding: "8px 24px 18px",
-                background: token.colorBgLayout
-              }}
-            >
-              <div style={{ width: "100%", maxWidth: contentMaxWidth, marginInline: "auto" }}>
-                <AppFooterNote />
-              </div>
-            </Layout.Footer>
-          </Layout>
-          {desktopSidebar && !notesSidebarCollapsed ? (
-            <Layout.Sider
-              id={notesPanelId}
-              width={rightPanelWidth}
-              theme="light"
-              style={{
-                position: "sticky",
-                top: headerHeight,
-                alignSelf: "flex-start",
-                height: `calc(100vh - ${headerHeight}px)`,
-                background: token.colorBgContainer,
-                borderLeft: `1px solid ${token.colorBorderSecondary}`,
-                overflow: "hidden",
-                userSelect: notesResizing ? "none" : undefined
-              }}
-            >
-              <div
-                role="separator"
-                aria-orientation="vertical"
-                aria-label="Resize notes sidebar"
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  notesResizeSessionRef.current = { startX: event.clientX, startWidth: rightPanelWidth };
-                  setNotesResizing(true);
-                }}
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  top: 0,
-                  width: 8,
-                  height: "100%",
-                  cursor: "col-resize",
-                  zIndex: 2
-                }}
-              />
-              <Flex vertical style={{ height: "100%", minHeight: 0 }}>
-                <Flex
-                  justify="space-between"
-                  align="center"
-                  style={{
-                    padding: "16px 16px 12px",
-                    borderBottom: `1px solid ${token.colorBorderSecondary}`,
-                    gap: 12
-                  }}
-                >
-                  <Typography.Title level={5} style={{ margin: 0 }}>
-                    {rightPanel?.title ?? "Notes"}
-                  </Typography.Title>
-                  <Flex align="center" gap={8}>
-                    {rightPanel?.extra ?? null}
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<RightOutlined />}
-                      onClick={() => toggleNotesSidebar(true)}
-                      aria-label="Collapse notes"
-                      aria-controls={notesPanelId}
-                      aria-expanded={!notesSidebarCollapsed}
-                    >
-                      Collapse notes
-                    </Button>
-                  </Flex>
-                </Flex>
-                <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16 }}>
-                  {rightPanel?.content ?? (
-                    <Flex vertical gap={12}>
-                      <Typography.Text type={workspaceNotesStatus === "error" ? "danger" : "secondary"}>
-                        {workspaceNotesStatus === "saving"
-                          ? "Saving…"
-                          : workspaceNotesStatus === "error"
-                            ? "Save failed. Keep this page open; retrying on next edit."
-                            : "Saved"}
-                      </Typography.Text>
-                      {workspaceNotesLoading ? (
-                        <Skeleton active title={false} paragraph={{ rows: 12 }} />
-                      ) : (
-                        <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={workspaceNotesSaving} />
-                      )}
-                    </Flex>
-                  )}
-                </div>
-              </Flex>
-            </Layout.Sider>
-          ) : null}
-          {desktopSidebar && notesSidebarCollapsed ? (
-            <Layout.Sider
-              width={NOTES_PANEL_COLLAPSED_RAIL_WIDTH}
-              theme="light"
-              style={{
-                position: "sticky",
-                top: headerHeight,
-                alignSelf: "flex-start",
-                height: `calc(100vh - ${headerHeight}px)`,
-                background: token.colorBgContainer,
-                borderLeft: `1px solid ${token.colorBorderSecondary}`,
-                overflow: "hidden"
-              }}
-            >
-              <Flex vertical justify="flex-start" align="center" style={{ height: "100%", paddingTop: 12 }}>
-                <Button
-                  type="text"
-                  icon={<LeftOutlined />}
-                  onClick={() => toggleNotesSidebar(false)}
-                  aria-label="Expand notes"
-                  aria-controls={notesPanelId}
-                  aria-expanded={!notesSidebarCollapsed}
-                  title="Expand notes"
-                />
-              </Flex>
-            </Layout.Sider>
-          ) : null}
-        </Layout>
-      </Layout>
-      </AppRightPanelProvider>
-      <Drawer
-        placement="left"
-        open={!desktopSidebar && mobileSidebarOpen}
-        onClose={() => setMobileSidebarOpen(false)}
-        width={sidebarWidth}
-        styles={{ body: { padding: 0 } }}
-      >
-        <AppSidebar
-          pathname={pathname}
-          onNavigate={(path) => {
-            setMobileSidebarOpen(false);
-            router.push(path);
-          }}
-        />
-      </Drawer>
-      <Modal
-        title="Profile"
-        open={profileOpen}
-        onCancel={() => setProfileOpen(false)}
-        onOk={() => {
-          void saveProfile();
-        }}
-        okText="Save"
-        confirmLoading={savingProfile}
-        destroyOnClose
-      >
-        <Spin spinning={profileLoading}>
-          <Form
-            form={profileForm}
-            layout="vertical"
-            initialValues={{
-              name: session.user.name,
-              codexAuthJson: "",
-              audience: session.user.agentResponsePreference.audience,
-              explanationDepth: session.user.agentResponsePreference.explanationDepth,
-              jargonLevel: session.user.agentResponsePreference.jargonLevel,
-              codePreference: session.user.agentResponsePreference.codePreference,
-              clarifyBehavior: session.user.agentResponsePreference.clarifyBehavior,
-              formattingStyle: session.user.agentResponsePreference.formattingStyle,
-              extraInstructions: session.user.agentResponsePreference.extraInstructions ?? ""
-            }}
-          >
-            <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
-              <Input />
-            </Form.Item>
-            <Divider orientation="left" plain>
-              Response Format Preferences
-            </Divider>
-            <Card size="small">
-              <ResponsePolicyFields />
-            </Card>
-            <Divider orientation="left" plain>
-              Credentials
-            </Divider>
-            <Form.Item name="codexAuthJson" label="Codex auth.json">
-              <Input.TextArea
-                autoSize={{ minRows: 6, maxRows: 14 }}
-                placeholder={profileCodexConfigured ? "Configured. Paste new JSON to replace." : "{\"...\": \"...\"}"}
-              />
-            </Form.Item>
-            <Typography.Text type="secondary">
-              Stored write-only and encrypted. Existing value is never returned.
-            </Typography.Text>
-            <div style={{ marginTop: 12 }}>
-              <Button danger onClick={() => { void clearCodexAuthJson(); }} loading={savingProfile}>
-                Clear Codex auth.json
-              </Button>
-            </div>
-          </Form>
-        </Spin>
-      </Modal>
-    </>
-  );
-
-  return <App>{shellContent}</App>;
-}
 ````
 
 ## File: apps/web/components/tasks-kanban-board-page.tsx
@@ -51822,6 +51977,8 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  gitAuthorName: string | null;
+  gitAuthorEmail: string | null;
   active: boolean;
   agentResponsePreference: AgentResponsePreference;
   roles: UserRoleRef[];
@@ -51847,6 +52004,8 @@ export interface AuthSession {
 export interface AuthProfile {
   name: string;
   email: string;
+  gitAuthorName: string | null;
+  gitAuthorEmail: string | null;
   agentResponsePreference: AgentResponsePreference;
   codexAuthJsonConfigured: boolean;
 }
@@ -51877,6 +52036,8 @@ export interface UpdateRoleInput {
 export interface CreateUserInput {
   name: string;
   email: string;
+  gitAuthorName?: string | null;
+  gitAuthorEmail?: string | null;
   password: string;
   active?: boolean;
   roleIds?: string[];
@@ -51887,6 +52048,8 @@ export interface CreateUserInput {
 export interface UpdateUserInput {
   name?: string;
   email?: string;
+  gitAuthorName?: string | null;
+  gitAuthorEmail?: string | null;
   password?: string;
   active?: boolean;
   roleIds?: string[];
@@ -52841,10 +53004,10 @@ export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingChe
 };
 
 export const getTaskTerminalSessionLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Git Terminal" : "Interactive Terminal";
+  mode === "git" ? "Terminal" : "Interactive Terminal";
 
 export const getTaskTerminalSessionSentenceLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Git terminal" : "Interactive terminal";
+  mode === "git" ? "Terminal" : "Interactive terminal";
 
 export const getTaskTerminalSessionStartMessage = (mode: TaskTerminalSessionMode): string =>
   mode === "git" ? "Terminal session started." : `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
@@ -52940,6 +53103,8 @@ export interface UpdateCredentialSettingsInput {
 
 export interface UpdateAuthProfileInput {
   name?: string;
+  gitAuthorName?: string | null;
+  gitAuthorEmail?: string | null;
   codexAuthJson?: string;
   clearCodexAuthJson?: boolean;
   agentResponsePreference?: Partial<AgentResponsePreference>;
@@ -53849,7 +54014,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
   const viewedGitOperationIdsRef = useRef<Set<string>>(new Set());
+  const runTimelineScrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const runTimelineEventCountsRef = useRef<Record<string, number>>({});
   const [gitOperation, setGitOperation] = useState<TaskGitOperation | null>(null);
+
+  const scrollRunTimelineToBottom = useCallback((runId: string) => {
+    const container = runTimelineScrollRefs.current[runId];
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    for (const run of taskRuns) {
+      const nextCount = run.timelineEvents?.length ?? 0;
+      const previousCount = runTimelineEventCountsRef.current[run.id] ?? 0;
+      runTimelineEventCountsRef.current[run.id] = nextCount;
+
+      if (nextCount > previousCount) {
+        scrollRunTimelineToBottom(run.id);
+      }
+    }
+  }, [scrollRunTimelineToBottom, taskRuns]);
 
   useEffect(() => {
     for (const run of taskRuns) {
@@ -54615,7 +54801,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             ? gitResult.value
             : {
                 available: false,
-                reason: "Could not load git terminal status."
+                reason: "Could not load terminal status."
               }
         );
       });
@@ -56125,7 +56311,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             ? gitResult.value
             : {
                 available: false,
-                reason: "Could not load git terminal status."
+                reason: "Could not load terminal status."
               }
         );
       });
@@ -57352,14 +57538,25 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     return (
-      <Timeline
-        mode="left"
-        items={events.map((event) => ({
-          key: event.id,
-          color: getTimelineEventColor(event),
-          children: renderTimelineEventContent(event)
-        }))}
-      />
+      <div
+        ref={(element) => {
+          runTimelineScrollRefs.current[run.id] = element;
+        }}
+        style={{
+          maxHeight: 420,
+          overflowY: "auto",
+          paddingRight: 8
+        }}
+      >
+        <Timeline
+          mode="left"
+          items={events.map((event) => ({
+            key: event.id,
+            color: getTimelineEventColor(event),
+            children: renderTimelineEventContent(event)
+          }))}
+        />
+      </div>
     );
   };
 
@@ -57369,12 +57566,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       <Collapse
         size="small"
         activeKey={expandedRunTimelineKeys.includes(run.id) ? [run.id] : []}
-        onChange={(keys) =>
+        onChange={(keys) => {
+          const isOpen = Array.isArray(keys) ? keys.length > 0 : Boolean(keys);
+          if (isOpen) {
+            window.requestAnimationFrame(() => scrollRunTimelineToBottom(run.id));
+          }
           setExpandedRunTimelineKeys((current) => {
-            const isOpen = Array.isArray(keys) ? keys.length > 0 : Boolean(keys);
             return isOpen ? (current.includes(run.id) ? current : [...current, run.id]) : current.filter((key) => key !== run.id);
-          })
-        }
+          });
+        }}
         items={[
           {
             key: run.id,
