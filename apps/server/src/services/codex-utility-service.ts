@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import type { ProviderProfile } from "@agentswarm/shared-types";
 import { env } from "../config/env.js";
@@ -10,7 +9,7 @@ import type { SettingsRuntimeCredentials } from "./settings-store.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_OUTPUT_MAX_CHARS = 12_000;
-const CODEX_UTILITY_WORKDIR = "/utility";
+const CODEX_UTILITY_DIR_NAME = "codex-utility";
 
 export class CodexUtilityUnavailableError extends Error {
   constructor(message: string) {
@@ -54,17 +53,29 @@ codex exec \\
   --skip-git-repo-check \\
   --ignore-rules \\
   --sandbox read-only \\
-  -C "${CODEX_UTILITY_WORKDIR}" \\
+  -C "$CODEX_UTILITY_WORKDIR" \\
   -m "$CODEX_MODEL" \\
   -c cli_auth_credentials_store=file \\
   -c "model_reasoning_effort=\\"$CODEX_REASONING_EFFORT\\"" \\
-  -o "${CODEX_UTILITY_WORKDIR}/output.txt" \\
-  - < "${CODEX_UTILITY_WORKDIR}/prompt.txt"
+  -o "$CODEX_UTILITY_WORKDIR/output.txt" \\
+  - < "$CODEX_UTILITY_WORKDIR/prompt.txt"
 `;
 
 const trimProcessOutput = (value: string, maxChars = 4000): string => {
   const trimmed = value.trim();
   return trimmed.length > maxChars ? `${trimmed.slice(0, maxChars)}...` : trimmed;
+};
+
+const isDockerRunnerUnavailable = (code: number | null, output: string): boolean => {
+  const normalized = output.toLowerCase();
+  return (
+    code === 125 ||
+    normalized.includes("cannot connect to the docker daemon") ||
+    normalized.includes("unable to find image") ||
+    normalized.includes("pull access denied") ||
+    normalized.includes("no such image") ||
+    normalized.includes("manifest unknown")
+  );
 };
 
 export async function executeCodexUtility(input: {
@@ -83,7 +94,7 @@ export async function executeCodexUtility(input: {
     throw new CodexUtilityUnavailableError("Codex credentials are not configured.");
   }
 
-  const tempDir = path.join(os.tmpdir(), `agentswarm-codex-utility-${randomUUID()}`);
+  const tempDir = path.join(env.RUNTIME_PAYLOAD_ROOT, CODEX_UTILITY_DIR_NAME, randomUUID());
   await mkdir(tempDir, { recursive: true });
   await writeFile(path.join(tempDir, "prompt.txt"), input.prompt, "utf8");
 
@@ -96,15 +107,17 @@ export async function executeCodexUtility(input: {
     `CODEX_MODEL=${input.model}`,
     "-e",
     `CODEX_REASONING_EFFORT=${codexReasoningEffortForProfile(input.providerProfile)}`,
+    "-e",
+    `CODEX_UTILITY_WORKDIR=${tempDir}`,
     ...(input.credentials.openaiApiKey ? ["-e", `OPENAI_API_KEY=${input.credentials.openaiApiKey}`] : []),
     ...(input.credentials.codexAuthJson
       ? ["-e", `CODEX_AUTH_JSON_B64=${Buffer.from(input.credentials.codexAuthJson, "utf8").toString("base64")}`]
       : []),
     ...(input.credentials.openaiBaseUrl ? ["-e", `OPENAI_BASE_URL=${input.credentials.openaiBaseUrl}`] : []),
     "-v",
-    `${tempDir}:${CODEX_UTILITY_WORKDIR}`,
+    `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
     "-w",
-    CODEX_UTILITY_WORKDIR,
+    tempDir,
     image,
     "sh",
     "-lc",
@@ -150,6 +163,10 @@ export async function executeCodexUtility(input: {
           return;
         }
         const details = trimProcessOutput(stderr || stdout);
+        if (isDockerRunnerUnavailable(code, details)) {
+          reject(new CodexUtilityUnavailableError(details || "Codex utility runner Docker image is unavailable."));
+          return;
+        }
         reject(new CodexUtilityError(details || `Codex utility run failed with exit code ${code ?? "unknown"}.`));
       });
     });

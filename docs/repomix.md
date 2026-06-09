@@ -3114,643 +3114,6 @@ export const registerRoleRoutes = (
 };
 ````
 
-## File: apps/server/src/services/codex-utility-service.ts
-````typescript
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import type { ProviderProfile } from "@agentswarm/shared-types";
-import { env } from "../config/env.js";
-import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
-import type { SettingsRuntimeCredentials } from "./settings-store.js";
-
-const DEFAULT_TIMEOUT_MS = 60_000;
-const DEFAULT_OUTPUT_MAX_CHARS = 12_000;
-const CODEX_UTILITY_WORKDIR = "/utility";
-
-export class CodexUtilityUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "CodexUtilityUnavailableError";
-  }
-}
-
-export class CodexUtilityError extends Error {
-  constructor(
-    message: string,
-    readonly statusCode = 502
-  ) {
-    super(message);
-    this.name = "CodexUtilityError";
-  }
-}
-
-const codexUtilityScript = `
-set -eu
-mkdir -p "$HOME/.codex"
-cat > "$HOME/.codex/config.toml" <<'EOF'
-sandbox_mode = "read-only"
-approval_policy = "never"
-
-[notice]
-hide_rate_limit_model_nudge = true
-hide_gpt5_1_migration_prompt = true
-"hide_gpt-5.1-codex-max_migration_prompt" = true
-EOF
-if [ -n "\${CODEX_AUTH_JSON_B64:-}" ]; then
-  printf %s "$CODEX_AUTH_JSON_B64" | base64 -d > "$HOME/.codex/auth.json"
-elif [ -n "\${OPENAI_API_KEY:-}" ]; then
-  printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file
-else
-  echo "Codex credentials are not configured." >&2
-  exit 64
-fi
-codex exec \\
-  --ephemeral \\
-  --skip-git-repo-check \\
-  --ignore-rules \\
-  --sandbox read-only \\
-  -C "${CODEX_UTILITY_WORKDIR}" \\
-  -m "$CODEX_MODEL" \\
-  -c cli_auth_credentials_store=file \\
-  -c "model_reasoning_effort=\\"$CODEX_REASONING_EFFORT\\"" \\
-  -o "${CODEX_UTILITY_WORKDIR}/output.txt" \\
-  - < "${CODEX_UTILITY_WORKDIR}/prompt.txt"
-`;
-
-const trimProcessOutput = (value: string, maxChars = 4000): string => {
-  const trimmed = value.trim();
-  return trimmed.length > maxChars ? `${trimmed.slice(0, maxChars)}...` : trimmed;
-};
-
-export async function executeCodexUtility(input: {
-  prompt: string;
-  model: string;
-  providerProfile: ProviderProfile;
-  credentials: SettingsRuntimeCredentials;
-  timeoutMs?: number;
-  outputMaxChars?: number;
-}): Promise<string> {
-  const image = env.CODEX_INTERACTIVE_IMAGE?.trim();
-  if (!image) {
-    throw new CodexUtilityUnavailableError("Codex utility runner is not configured (set CODEX_INTERACTIVE_IMAGE).");
-  }
-  if (!input.credentials.openaiApiKey && !input.credentials.codexAuthJson) {
-    throw new CodexUtilityUnavailableError("Codex credentials are not configured.");
-  }
-
-  const tempDir = path.join(os.tmpdir(), `agentswarm-codex-utility-${randomUUID()}`);
-  await mkdir(tempDir, { recursive: true });
-  await writeFile(path.join(tempDir, "prompt.txt"), input.prompt, "utf8");
-
-  const args = [
-    "run",
-    "--rm",
-    "-e",
-    "HOME=/root",
-    "-e",
-    `CODEX_MODEL=${input.model}`,
-    "-e",
-    `CODEX_REASONING_EFFORT=${codexReasoningEffortForProfile(input.providerProfile)}`,
-    ...(input.credentials.openaiApiKey ? ["-e", `OPENAI_API_KEY=${input.credentials.openaiApiKey}`] : []),
-    ...(input.credentials.codexAuthJson
-      ? ["-e", `CODEX_AUTH_JSON_B64=${Buffer.from(input.credentials.codexAuthJson, "utf8").toString("base64")}`]
-      : []),
-    ...(input.credentials.openaiBaseUrl ? ["-e", `OPENAI_BASE_URL=${input.credentials.openaiBaseUrl}`] : []),
-    "-v",
-    `${tempDir}:${CODEX_UTILITY_WORKDIR}`,
-    "-w",
-    CODEX_UTILITY_WORKDIR,
-    image,
-    "sh",
-    "-lc",
-    codexUtilityScript
-  ];
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
-      let stdout = "";
-      let stderr = "";
-      let settled = false;
-      const timeout = setTimeout(() => {
-        settled = true;
-        child.kill("SIGKILL");
-        reject(new CodexUtilityError("Codex utility run timed out.", 504));
-      }, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (chunk) => {
-        stdout += String(chunk);
-      });
-      child.stderr.on("data", (chunk) => {
-        stderr += String(chunk);
-      });
-      child.on("error", (error) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        reject(new CodexUtilityUnavailableError(`Failed to start Codex utility runner: ${error.message}`));
-      });
-      child.on("close", (code) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        if (code === 0) {
-          resolve();
-          return;
-        }
-        const details = trimProcessOutput(stderr || stdout);
-        reject(new CodexUtilityError(details || `Codex utility run failed with exit code ${code ?? "unknown"}.`));
-      });
-    });
-
-    const output = (await readFile(path.join(tempDir, "output.txt"), "utf8")).trim();
-    if (!output) {
-      throw new CodexUtilityError("Codex utility run returned empty output.");
-    }
-    return output.slice(0, input.outputMaxChars ?? DEFAULT_OUTPUT_MAX_CHARS);
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
-}
-````
-
-## File: apps/server/src/services/credential-store.ts
-````typescript
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import type Redis from "ioredis";
-import type { Pool } from "pg";
-import type { UpdateCredentialSettingsInput } from "@agentswarm/shared-types";
-import { env } from "../config/env.js";
-
-const CREDENTIALS_KEY = "agentswarm:credential_settings";
-const nowIso = (): string => new Date().toISOString();
-
-interface StoredCredentials {
-  githubToken: string | null;
-  openaiApiKey: string | null;
-  codexAuthJson: string | null;
-  anthropicApiKey: string | null;
-  codexAuthJsonByUserId: Record<string, string>;
-}
-
-interface EncryptedPayload {
-  version: 1;
-  iv: string;
-  tag: string;
-  ciphertext: string;
-}
-
-export interface RuntimeCredentials {
-  githubToken: string | null;
-  openaiApiKey: string | null;
-  anthropicApiKey: string | null;
-  codexAuthJson?: string | null;
-}
-
-export interface CredentialStatus {
-  githubTokenConfigured: boolean;
-  openaiApiKeyConfigured: boolean;
-  codexAuthJsonConfigured: boolean;
-  anthropicApiKeyConfigured: boolean;
-}
-
-export interface CredentialStore {
-  getCredentials(): Promise<RuntimeCredentials>;
-  getCredentialStatus(): Promise<CredentialStatus>;
-  updateCredentials(input: UpdateCredentialSettingsInput): Promise<CredentialStatus>;
-  getCodexAuthJsonForUser(userId: string): Promise<string | null>;
-  setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void>;
-  hasCodexAuthJsonForUser(userId: string): Promise<boolean>;
-}
-
-export class RedisCredentialStore implements CredentialStore {
-  private keyPromise: Promise<Buffer> | null = null;
-
-  constructor(private readonly redis: Redis) {}
-
-  private async getEncryptionKey(): Promise<Buffer> {
-    if (this.keyPromise) {
-      return this.keyPromise;
-    }
-
-    this.keyPromise = (async () => {
-      await mkdir(path.dirname(env.SECRET_KEY_PATH), { recursive: true });
-
-      try {
-        const existing = (await readFile(env.SECRET_KEY_PATH, "utf8")).trim();
-        const key = Buffer.from(existing, "base64");
-        if (key.length === 32) {
-          return key;
-        }
-      } catch {
-        // Fall through and create a new key.
-      }
-
-      const key = randomBytes(32);
-      await writeFile(env.SECRET_KEY_PATH, key.toString("base64"), { encoding: "utf8", mode: 0o600 });
-      await chmod(env.SECRET_KEY_PATH, 0o600);
-      return key;
-    })();
-
-    return this.keyPromise;
-  }
-
-  private async encrypt(value: string): Promise<string> {
-    const key = await this.getEncryptionKey();
-    const iv = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", key, iv);
-    const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
-    const payload: EncryptedPayload = {
-      version: 1,
-      iv: iv.toString("base64"),
-      tag: cipher.getAuthTag().toString("base64"),
-      ciphertext: ciphertext.toString("base64")
-    };
-    return JSON.stringify(payload);
-  }
-
-  private async decrypt(value: string): Promise<string> {
-    const key = await this.getEncryptionKey();
-    const payload = JSON.parse(value) as EncryptedPayload;
-    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(payload.iv, "base64"));
-    decipher.setAuthTag(Buffer.from(payload.tag, "base64"));
-    const plaintext = Buffer.concat([
-      decipher.update(Buffer.from(payload.ciphertext, "base64")),
-      decipher.final()
-    ]);
-    return plaintext.toString("utf8");
-  }
-
-  private normalizeCodexAuthJsonByUserId(value: Record<string, unknown> | undefined): Record<string, string> {
-    const next: Record<string, string> = {};
-    for (const [key, raw] of Object.entries(value ?? {})) {
-      const userId = key.trim();
-      const authJson = typeof raw === "string" ? raw.trim() : "";
-      if (!userId || !authJson) {
-        continue;
-      }
-      next[userId] = authJson;
-    }
-    return next;
-  }
-
-  private async readStoredCredentials(): Promise<StoredCredentials> {
-    const raw = await this.redis.get(CREDENTIALS_KEY);
-    if (!raw) {
-      return {
-        githubToken: null,
-        openaiApiKey: null,
-        codexAuthJson: null,
-        anthropicApiKey: null,
-        codexAuthJsonByUserId: {}
-      };
-    }
-
-    try {
-      const decrypted = await this.decrypt(raw);
-      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials> & {
-        codexAuthJsonByUserId?: Record<string, unknown>;
-      };
-      return {
-        githubToken: parsed.githubToken?.trim() || null,
-        openaiApiKey: parsed.openaiApiKey?.trim() || null,
-        codexAuthJson: parsed.codexAuthJson?.trim() || null,
-        anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
-        codexAuthJsonByUserId: this.normalizeCodexAuthJsonByUserId(parsed.codexAuthJsonByUserId)
-      };
-    } catch {
-      return {
-        githubToken: null,
-        openaiApiKey: null,
-        codexAuthJson: null,
-        anthropicApiKey: null,
-        codexAuthJsonByUserId: {}
-      };
-    }
-  }
-
-  private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
-    if (!next.githubToken && !next.openaiApiKey && !next.codexAuthJson && !next.anthropicApiKey && Object.keys(next.codexAuthJsonByUserId).length === 0) {
-      await this.redis.del(CREDENTIALS_KEY);
-      return;
-    }
-
-    const encrypted = await this.encrypt(JSON.stringify(next));
-    await this.redis.set(CREDENTIALS_KEY, encrypted);
-  }
-
-  async getCredentials(): Promise<RuntimeCredentials> {
-    const current = await this.readStoredCredentials();
-    return {
-      githubToken: current.githubToken,
-      openaiApiKey: current.openaiApiKey,
-      anthropicApiKey: current.anthropicApiKey,
-      codexAuthJson: current.codexAuthJson
-    };
-  }
-
-  async getCredentialStatus(): Promise<CredentialStatus> {
-    const credentials = await this.getCredentials();
-    return {
-      githubTokenConfigured: Boolean(credentials.githubToken),
-      openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
-      codexAuthJsonConfigured: Boolean(credentials.codexAuthJson),
-      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
-    };
-  }
-
-  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<CredentialStatus> {
-    const current = await this.readStoredCredentials();
-    const next: StoredCredentials = {
-      githubToken: input.clearGithubToken
-        ? null
-        : input.githubToken?.trim()
-          ? input.githubToken.trim()
-          : current.githubToken,
-      openaiApiKey: input.clearOpenAiApiKey
-        ? null
-        : input.openaiApiKey?.trim()
-          ? input.openaiApiKey.trim()
-          : current.openaiApiKey,
-      codexAuthJson: input.clearCodexAuthJson
-        ? null
-        : input.codexAuthJson?.trim()
-          ? input.codexAuthJson.trim()
-          : current.codexAuthJson,
-      anthropicApiKey: input.clearAnthropicApiKey
-        ? null
-        : input.anthropicApiKey?.trim()
-          ? input.anthropicApiKey.trim()
-          : current.anthropicApiKey,
-      codexAuthJsonByUserId: current.codexAuthJsonByUserId
-    };
-    await this.writeStoredCredentials(next);
-
-    return this.getCredentialStatus();
-  }
-
-  async getCodexAuthJsonForUser(userId: string): Promise<string | null> {
-    const key = userId.trim();
-    if (!key) {
-      return null;
-    }
-    const current = await this.readStoredCredentials();
-    return current.codexAuthJsonByUserId[key]?.trim() || null;
-  }
-
-  async setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void> {
-    const key = userId.trim();
-    if (!key) {
-      return;
-    }
-    const current = await this.readStoredCredentials();
-    const nextByUserId = { ...current.codexAuthJsonByUserId };
-    const normalized = codexAuthJson?.trim() || null;
-    if (normalized) {
-      nextByUserId[key] = normalized;
-    } else {
-      delete nextByUserId[key];
-    }
-    await this.writeStoredCredentials({
-      ...current,
-      codexAuthJsonByUserId: nextByUserId
-    });
-  }
-
-  async hasCodexAuthJsonForUser(userId: string): Promise<boolean> {
-    return Boolean(await this.getCodexAuthJsonForUser(userId));
-  }
-}
-
-export class PostgresCredentialStore implements CredentialStore {
-  private keyPromise: Promise<Buffer> | null = null;
-
-  constructor(private readonly pool: Pool) {}
-
-  private async getEncryptionKey(): Promise<Buffer> {
-    if (this.keyPromise) {
-      return this.keyPromise;
-    }
-
-    this.keyPromise = (async () => {
-      await mkdir(path.dirname(env.SECRET_KEY_PATH), { recursive: true });
-
-      try {
-        const existing = (await readFile(env.SECRET_KEY_PATH, "utf8")).trim();
-        const key = Buffer.from(existing, "base64");
-        if (key.length === 32) {
-          return key;
-        }
-      } catch {
-        // Fall through and create a new key.
-      }
-
-      const key = randomBytes(32);
-      await writeFile(env.SECRET_KEY_PATH, key.toString("base64"), { encoding: "utf8", mode: 0o600 });
-      await chmod(env.SECRET_KEY_PATH, 0o600);
-      return key;
-    })();
-
-    return this.keyPromise;
-  }
-
-  private async encrypt(value: string): Promise<string> {
-    const key = await this.getEncryptionKey();
-    const iv = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", key, iv);
-    const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
-    const payload: EncryptedPayload = {
-      version: 1,
-      iv: iv.toString("base64"),
-      tag: cipher.getAuthTag().toString("base64"),
-      ciphertext: ciphertext.toString("base64")
-    };
-    return JSON.stringify(payload);
-  }
-
-  private async decrypt(value: string): Promise<string> {
-    const key = await this.getEncryptionKey();
-    const payload = JSON.parse(value) as EncryptedPayload;
-    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(payload.iv, "base64"));
-    decipher.setAuthTag(Buffer.from(payload.tag, "base64"));
-    const plaintext = Buffer.concat([
-      decipher.update(Buffer.from(payload.ciphertext, "base64")),
-      decipher.final()
-    ]);
-    return plaintext.toString("utf8");
-  }
-
-  private normalizeCodexAuthJsonByUserId(value: Record<string, unknown> | undefined): Record<string, string> {
-    const next: Record<string, string> = {};
-    for (const [key, raw] of Object.entries(value ?? {})) {
-      const userId = key.trim();
-      const authJson = typeof raw === "string" ? raw.trim() : "";
-      if (!userId || !authJson) {
-        continue;
-      }
-      next[userId] = authJson;
-    }
-    return next;
-  }
-
-  private async readStoredCredentials(): Promise<StoredCredentials> {
-    const result = await this.pool.query<{ payload_encrypted: string }>(
-      "SELECT payload_encrypted FROM credentials WHERE singleton_id = 1"
-    );
-
-    const row = result.rows[0];
-    if (!row) {
-      return {
-        githubToken: null,
-        openaiApiKey: null,
-        codexAuthJson: null,
-        anthropicApiKey: null,
-        codexAuthJsonByUserId: {}
-      };
-    }
-
-    try {
-      const decrypted = await this.decrypt(row.payload_encrypted);
-      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials> & {
-        codexAuthJsonByUserId?: Record<string, unknown>;
-      };
-      return {
-        githubToken: parsed.githubToken?.trim() || null,
-        openaiApiKey: parsed.openaiApiKey?.trim() || null,
-        codexAuthJson: parsed.codexAuthJson?.trim() || null,
-        anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
-        codexAuthJsonByUserId: this.normalizeCodexAuthJsonByUserId(parsed.codexAuthJsonByUserId)
-      };
-    } catch {
-      return {
-        githubToken: null,
-        openaiApiKey: null,
-        codexAuthJson: null,
-        anthropicApiKey: null,
-        codexAuthJsonByUserId: {}
-      };
-    }
-  }
-
-  private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
-    if (!next.githubToken && !next.openaiApiKey && !next.codexAuthJson && !next.anthropicApiKey && Object.keys(next.codexAuthJsonByUserId).length === 0) {
-      await this.pool.query("DELETE FROM credentials WHERE singleton_id = 1");
-      return;
-    }
-
-    const encrypted = await this.encrypt(JSON.stringify(next));
-    await this.pool.query(
-      `
-          INSERT INTO credentials (
-            singleton_id,
-            payload_encrypted,
-            updated_at
-          )
-          VALUES (1, $1, $2)
-          ON CONFLICT (singleton_id) DO UPDATE
-          SET
-            payload_encrypted = EXCLUDED.payload_encrypted,
-            updated_at = EXCLUDED.updated_at
-        `,
-      [encrypted, nowIso()]
-    );
-  }
-
-  async getCredentials(): Promise<RuntimeCredentials> {
-    const current = await this.readStoredCredentials();
-    return {
-      githubToken: current.githubToken,
-      openaiApiKey: current.openaiApiKey,
-      anthropicApiKey: current.anthropicApiKey,
-      codexAuthJson: current.codexAuthJson
-    };
-  }
-
-  async getCredentialStatus(): Promise<CredentialStatus> {
-    const credentials = await this.getCredentials();
-    return {
-      githubTokenConfigured: Boolean(credentials.githubToken),
-      openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
-      codexAuthJsonConfigured: Boolean(credentials.codexAuthJson),
-      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
-    };
-  }
-
-  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<CredentialStatus> {
-    const current = await this.readStoredCredentials();
-    const next: StoredCredentials = {
-      githubToken: input.clearGithubToken
-        ? null
-        : input.githubToken?.trim()
-          ? input.githubToken.trim()
-          : current.githubToken,
-      openaiApiKey: input.clearOpenAiApiKey
-        ? null
-        : input.openaiApiKey?.trim()
-          ? input.openaiApiKey.trim()
-          : current.openaiApiKey,
-      codexAuthJson: input.clearCodexAuthJson
-        ? null
-        : input.codexAuthJson?.trim()
-          ? input.codexAuthJson.trim()
-          : current.codexAuthJson,
-      anthropicApiKey: input.clearAnthropicApiKey
-        ? null
-        : input.anthropicApiKey?.trim()
-          ? input.anthropicApiKey.trim()
-          : current.anthropicApiKey,
-      codexAuthJsonByUserId: current.codexAuthJsonByUserId
-    };
-    await this.writeStoredCredentials(next);
-
-    return this.getCredentialStatus();
-  }
-
-  async getCodexAuthJsonForUser(userId: string): Promise<string | null> {
-    const key = userId.trim();
-    if (!key) {
-      return null;
-    }
-    const current = await this.readStoredCredentials();
-    return current.codexAuthJsonByUserId[key]?.trim() || null;
-  }
-
-  async setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void> {
-    const key = userId.trim();
-    if (!key) {
-      return;
-    }
-    const current = await this.readStoredCredentials();
-    const nextByUserId = { ...current.codexAuthJsonByUserId };
-    const normalized = codexAuthJson?.trim() || null;
-    if (normalized) {
-      nextByUserId[key] = normalized;
-    } else {
-      delete nextByUserId[key];
-    }
-    await this.writeStoredCredentials({
-      ...current,
-      codexAuthJsonByUserId: nextByUserId
-    });
-  }
-
-  async hasCodexAuthJsonForUser(userId: string): Promise<boolean> {
-    return Boolean(await this.getCodexAuthJsonForUser(userId));
-  }
-}
-````
-
 ## File: apps/server/src/services/github-outbound-queue-store.ts
 ````typescript
 import { randomUUID } from "node:crypto";
@@ -4358,170 +3721,6 @@ export class GitHubOutboundService {
       this.draining = false;
     }
   }
-}
-````
-
-## File: apps/server/src/services/openai-diff-assist-service.ts
-````typescript
-import { access } from "node:fs/promises";
-import path from "node:path";
-import type { OpenAiDiffAssistResult, ProviderProfile } from "@agentswarm/shared-types";
-import { env } from "../config/env.js";
-import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
-import { readSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
-
-const MAX_SNIPPET = 48_000;
-const MAX_USER_PROMPT = 16_000;
-const MAX_FILE_IN_PROMPT = 120_000;
-
-function openAiChatBase(openaiBaseUrl: string | null): string {
-  return (openaiBaseUrl?.replace(/\/$/, "") ?? "https://api.openai.com") + "/v1";
-}
-
-export function normalizeDiffFilePath(filePath: string): string {
-  let p = filePath.trim().replace(/\\/g, "/");
-  if (p.startsWith("a/") || p.startsWith("b/")) {
-    p = p.slice(2);
-  }
-  return p.replace(/^\/+/, "");
-}
-
-function extractCompletionText(data: unknown): string {
-  const d = data as {
-    choices?: Array<{ message?: { content?: unknown } }>;
-  };
-  const content = d.choices?.[0]?.message?.content;
-  if (typeof content === "string") {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === "object" && part !== null && "text" in part) {
-          return String((part as { text: string }).text);
-        }
-        return "";
-      })
-      .join("");
-  }
-  return "";
-}
-
-async function postChatCompletions(
-  base: string,
-  apiKey: string,
-  body: Record<string, unknown>
-): Promise<{ ok: true; data: unknown } | { ok: false; status: number; message: string }> {
-  const res = await fetch(`${base}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
-  const raw = await res.text();
-  if (!res.ok) {
-    return { ok: false, status: res.status, message: raw.slice(0, 2000) };
-  }
-  try {
-    return { ok: true, data: JSON.parse(raw) as unknown };
-  } catch {
-    return { ok: false, status: 502, message: "Invalid JSON from OpenAI" };
-  }
-}
-
-async function chatReadWithRetries(
-  base: string,
-  apiKey: string,
-  model: string,
-  messages: Array<{ role: string; content: string }>,
-  reasoningEffort: string
-): Promise<unknown> {
-  let lastError = "OpenAI request failed";
-  for (const useReasoning of [true, false]) {
-    const body: Record<string, unknown> = { model, messages };
-    if (useReasoning) {
-      body.reasoning_effort = reasoningEffort;
-    }
-    const result = await postChatCompletions(base, apiKey, body);
-    if (result.ok) {
-      return result.data;
-    }
-    lastError = result.message;
-    if (result.status !== 400) {
-      break;
-    }
-  }
-  throw Object.assign(new Error(lastError), { status: 502 });
-}
-
-export async function executeOpenAiDiffAssist(input: {
-  taskId: string;
-  model: string;
-  providerProfile: ProviderProfile;
-  userPrompt: string;
-  filePath: string;
-  selectedSnippet: string;
-  openaiApiKey: string;
-  openaiBaseUrl: string | null;
-}): Promise<OpenAiDiffAssistResult> {
-  const userContent = await buildDiffAssistPromptContext(input);
-  const reasoningEffort = codexReasoningEffortForProfile(input.providerProfile);
-  const base = openAiChatBase(input.openaiBaseUrl);
-  const messages: Array<{ role: string; content: string }> = [
-    {
-      role: "system",
-      content:
-        "You are a careful code assistant. Answer using the provided context. Be concise and accurate."
-    },
-    { role: "user", content: userContent }
-  ];
-
-  const data = await chatReadWithRetries(base, input.openaiApiKey, input.model, messages, reasoningEffort);
-
-  return { text: extractCompletionText(data) };
-}
-
-export async function buildDiffAssistPromptContext(input: {
-  taskId: string;
-  filePath: string;
-  selectedSnippet: string;
-  userPrompt: string;
-}): Promise<string> {
-  const relativePath = normalizeDiffFilePath(input.filePath);
-  if (!relativePath) {
-    throw Object.assign(new Error("Invalid file path."), { status: 400 });
-  }
-
-  const workspaceRoot = path.join(env.TASK_WORKSPACE_ROOT, input.taskId);
-  try {
-    await access(workspaceRoot);
-  } catch {
-    throw Object.assign(new Error("No local workspace for this task."), { status: 409 });
-  }
-
-  const currentFile = await readSafeWorkspaceFile(workspaceRoot, relativePath);
-  const snippet = input.selectedSnippet.slice(0, MAX_SNIPPET);
-  const userPrompt = input.userPrompt.trim().slice(0, MAX_USER_PROMPT);
-
-  const contextParts = [
-    `File path (repository-relative): ${relativePath}`,
-    "",
-    "Selected diff lines (unified diff excerpt):",
-    "```",
-    snippet,
-    "```",
-    "",
-    currentFile !== null
-      ? "Current file contents in the task workspace:\n```\n" + currentFile.slice(0, MAX_FILE_IN_PROMPT) + "\n```"
-      : "(File is not present in the workspace yet, or could not be read.)",
-    "",
-    "User request:",
-    userPrompt
-  ];
-
-  return contextParts.join("\n");
 }
 ````
 
@@ -6858,426 +6057,6 @@ export function TaskBrowserNotifications() {
     >
       Enable Notifications
     </Button>
-  );
-}
-````
-
-## File: apps/web/components/task-diff-openai-panel.tsx
-````typescript
-"use client";
-
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import {
-  getDefaultModelForProvider,
-  getEffortOptionsForProvider,
-  type ProviderProfile,
-  type TaskLiveDiff
-} from "@agentswarm/shared-types";
-import { Alert, Button, Card, Collapse, Flex, Input, Modal, Select, Space, Spin, Typography, message } from "antd";
-import { Diff, Hunk, getChangeKey, type ChangeData, type FileData } from "react-diff-view";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { api } from "../src/api/client";
-import { useProviderModels } from "../src/hooks/useProviderModels";
-import { normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
-import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
-
-function buildSnippetFromSelection(file: FileData, selectedKeys: string[]): string {
-  const selected = new Set(selectedKeys);
-  const lines: string[] = [];
-  for (const hunk of file.hunks) {
-    for (const change of hunk.changes) {
-      const key = getChangeKey(change);
-      if (selected.has(key)) {
-        const prefix = change.type === "insert" ? "+" : change.type === "delete" ? "-" : " ";
-        lines.push(prefix + (change.content ?? ""));
-      }
-    }
-  }
-  return lines.join("\n");
-}
-
-function buildSnippetFromFile(file: FileData): string {
-  const lines: string[] = [];
-  for (const hunk of file.hunks) {
-    for (const change of hunk.changes) {
-      const prefix = change.type === "insert" ? "+" : change.type === "delete" ? "-" : " ";
-      lines.push(prefix + (change.content ?? ""));
-    }
-  }
-  return lines.join("\n");
-}
-
-/** Keeps selection across live-diff polling when the underlying change keys are unchanged. */
-function usePersistentChangeSelect(file: FileData, selectionResetToken: string) {
-  const [selected, setSelected] = useState<string[]>([]);
-  const lastValidSigRef = useRef("");
-  const lastResetTokenRef = useRef(selectionResetToken);
-
-  const toggleSelection = useCallback((args: { change: ChangeData | null }) => {
-    if (!args.change) {
-      return;
-    }
-    const key = getChangeKey(args.change);
-    setSelected((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
-  }, []);
-
-  useEffect(() => {
-    const valid = new Set<string>();
-    for (const h of file.hunks) {
-      for (const c of h.changes) {
-        valid.add(getChangeKey(c));
-      }
-    }
-    const sig = [...valid].sort().join("|");
-
-    if (selectionResetToken !== lastResetTokenRef.current) {
-      lastResetTokenRef.current = selectionResetToken;
-      lastValidSigRef.current = sig;
-      setSelected([]);
-      return;
-    }
-
-    if (sig === lastValidSigRef.current) {
-      return;
-    }
-    lastValidSigRef.current = sig;
-    setSelected((prev) => prev.filter((k) => valid.has(k)));
-  }, [file, selectionResetToken]);
-
-  return [selected, toggleSelection] as const;
-}
-
-function getDiffFilePath(file: Pick<FileData, "newPath" | "oldPath">): string {
-  return file.newPath || file.oldPath || "";
-}
-
-function getDiffFileLabel(file: Pick<FileData, "newPath" | "oldPath">): string {
-  return getDiffFilePath(file) || "Changed file";
-}
-
-function DiffFileOpenAiCard({
-  file,
-  collapseFiles,
-  workspaceReady,
-  selectionResetToken,
-  onOpenConfig
-}: {
-  file: FileData;
-  collapseFiles: boolean;
-  workspaceReady: boolean;
-  selectionResetToken: string;
-  onOpenConfig: (filePath: string, snippet: string) => void;
-}) {
-  const [selectedChanges, toggleSelection] = usePersistentChangeSelect(file, selectionResetToken);
-  const filePath = getDiffFilePath(file);
-  const fileLabel = getDiffFileLabel(file);
-
-  const openConfig = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const snippet =
-      selectedChanges.length > 0 ? buildSnippetFromSelection(file, selectedChanges) : buildSnippetFromFile(file);
-    onOpenConfig(filePath, snippet);
-  };
-
-  const diffEl = (
-    <Diff
-      viewType="unified"
-      diffType={file.type}
-      hunks={file.hunks}
-      selectedChanges={selectedChanges}
-      gutterEvents={{ onClick: toggleSelection }}
-      codeEvents={{ onClick: toggleSelection }}
-    >
-      {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
-    </Diff>
-  );
-
-  const actions = (
-    <Space wrap size="small" onClick={(e) => e.stopPropagation()}>
-      <Button
-        size="small"
-        type="primary"
-        disabled={!workspaceReady}
-        onClick={openConfig}
-      >
-        Ask
-      </Button>
-    </Space>
-  );
-
-  if (collapseFiles) {
-    return (
-      <Collapse
-        size="small"
-        defaultActiveKey={[]}
-        items={[
-          {
-            key: "file",
-            label: (
-              <Flex align="center" justify="space-between" gap={12} wrap="wrap">
-                <Typography.Text style={{ wordBreak: "break-all" }}>{fileLabel}</Typography.Text>
-                {actions}
-              </Flex>
-            ),
-            children: diffEl
-          }
-        ]}
-      />
-    );
-  }
-
-  return (
-    <Card
-      size="small"
-      title={
-        <Flex align="center" justify="space-between" gap={12} wrap="wrap">
-          <Typography.Text style={{ wordBreak: "break-all" }}>{fileLabel}</Typography.Text>
-          {actions}
-        </Flex>
-      }
-    >
-      {diffEl}
-    </Card>
-  );
-}
-
-
-export interface TaskDiffOpenAiPanelProps {
-  diffText: string;
-  emptyMessage: string;
-  collapseFiles: boolean;
-  taskId: string;
-  liveDiff: TaskLiveDiff | null;
-  previewRefs: TaskDiffPreviewRefs | null;
-  /** Clears line selection when this value changes (e.g. compare vs working toggle). */
-  selectionResetToken: string;
-}
-
-export function TaskDiffOpenAiPanel({
-  diffText,
-  emptyMessage,
-  collapseFiles,
-  taskId,
-  liveDiff,
-  previewRefs,
-  selectionResetToken
-}: TaskDiffOpenAiPanelProps): ReactNode {
-  const [openAiModel, setOpenAiModel] = useState<string>("gpt-5.4");
-  const [openAiEffort, setOpenAiEffort] = useState<ProviderProfile>("high");
-  const [instruction, setInstruction] = useState("");
-  const { models: codexModels, loading: codexModelsLoading } = useProviderModels("codex");
-
-  const [configOpen, setConfigOpen] = useState(false);
-  const [pendingFilePath, setPendingFilePath] = useState("");
-  const [pendingSnippet, setPendingSnippet] = useState("");
-
-  const [resultOpen, setResultOpen] = useState(false);
-  const [resultLoading, setResultLoading] = useState(false);
-  const [resultMarkdown, setResultMarkdown] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .getSettings()
-      .then((s) => {
-        if (!cancelled) {
-          setOpenAiModel(s.codexDefaultModel || getDefaultModelForProvider("codex") || "gpt-5.4");
-          setOpenAiEffort(s.codexDefaultEffort);
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const workspaceReady = liveDiff?.live === true;
-
-  const openConfigModal = useCallback((filePath: string, snippet: string) => {
-    setPendingFilePath(filePath);
-    setPendingSnippet(snippet);
-    setConfigOpen(true);
-  }, []);
-
-  const runAssist = useCallback(async () => {
-    setConfigOpen(false);
-    setResultOpen(true);
-    setResultLoading(true);
-    setResultMarkdown("");
-    try {
-      const res = await api.openAiDiffAssist(taskId, {
-        model: openAiModel,
-        providerProfile: openAiEffort,
-        userPrompt: instruction,
-        filePath: pendingFilePath,
-        selectedSnippet: pendingSnippet
-      });
-      setResultMarkdown(res.text.trim() || "_Empty response._");
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Request failed";
-      message.error(msg);
-      setResultOpen(false);
-    } finally {
-      setResultLoading(false);
-    }
-  }, [
-    taskId,
-    openAiModel,
-    openAiEffort,
-    instruction,
-    pendingFilePath,
-    pendingSnippet
-  ]);
-
-  if (!diffText.trim()) {
-    return (
-      <Card size="small">
-        <Typography.Paragraph
-          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "\"SFMono-Regular\", Consolas, monospace" }}
-        >
-          {emptyMessage}
-        </Typography.Paragraph>
-      </Card>
-    );
-  }
-
-  let files: FileData[];
-  try {
-    files = parseRenderableDiff(diffText);
-    if (files.length === 0) {
-      throw new Error("No diff files parsed");
-    }
-  } catch {
-    return (
-      <Card size="small">
-        <Typography.Paragraph
-          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "\"SFMono-Regular\", Consolas, monospace" }}
-        >
-          {normalizeDiffForRendering(diffText) || diffText}
-        </Typography.Paragraph>
-      </Card>
-    );
-  }
-
-  return (
-    <>
-      {!workspaceReady ? (
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="AI diff assist needs a live workspace"
-          description="Wait until the task workspace is available, then ask about selected lines or the whole file."
-        />
-      ) : null}
-
-      <Space direction="vertical" size={12} style={{ width: "100%" }}>
-        {files.map((file) => (
-          file.hunks.length > 0 ? (
-            <DiffFileOpenAiCard
-              key={`${file.oldRevision}-${file.newRevision}-${file.oldPath}-${file.newPath}`}
-              file={file}
-              collapseFiles={collapseFiles}
-              workspaceReady={workspaceReady}
-              selectionResetToken={selectionResetToken}
-              onOpenConfig={openConfigModal}
-            />
-          ) : (
-            <TaskBinaryDiffCard
-              key={`${file.oldRevision}-${file.newRevision}-${file.oldPath}-${file.newPath}`}
-              file={file}
-              collapseFiles={collapseFiles}
-              taskId={taskId}
-              previewRefs={previewRefs}
-              previewUnavailableMessage="Image previews are available when a live workspace diff is open."
-            />
-          )
-        ))}
-      </Space>
-
-      <Modal
-        title="AI diff assist"
-        open={configOpen}
-        onCancel={() => setConfigOpen(false)}
-        onOk={() => void runAssist()}
-        okText="Ask"
-        okButtonProps={{ disabled: !workspaceReady }}
-        width={560}
-        destroyOnClose={false}
-      >
-        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-          {pendingSnippet.trim().length > 0
-            ? "Sends the selected diff lines or file diff context together with the current workspace file to the model. Nothing is written to disk."
-            : "Asks about the current workspace file. Nothing is written to disk."}
-        </Typography.Paragraph>
-        <Typography.Text type="secondary" style={{ display: "block", marginBottom: 4 }}>
-          File
-        </Typography.Text>
-        <Typography.Paragraph copyable style={{ marginBottom: 12, wordBreak: "break-all" }}>
-          {pendingFilePath || "—"}
-        </Typography.Paragraph>
-        <Flex gap={16} wrap="wrap" style={{ marginBottom: 12 }}>
-          <div style={{ minWidth: 160, flex: "1 1 180px" }}>
-            <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
-              Model
-            </Typography.Text>
-            <Select
-              value={openAiModel}
-              options={codexModels}
-              loading={codexModelsLoading}
-              showSearch
-              optionFilterProp="label"
-              onChange={(v) => setOpenAiModel(v)}
-              style={{ width: "100%" }}
-            />
-          </div>
-          <div style={{ minWidth: 140, flex: "0 1 160px" }}>
-            <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
-              Effort
-            </Typography.Text>
-            <Select
-              value={openAiEffort}
-              options={getEffortOptionsForProvider("codex")}
-              onChange={(v) => setOpenAiEffort(v)}
-              style={{ width: "100%" }}
-            />
-          </div>
-        </Flex>
-        <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
-          Instruction (optional)
-        </Typography.Text>
-        <Input.TextArea
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          rows={3}
-          placeholder="What should the model do with the selected lines?"
-        />
-      </Modal>
-
-      <Modal
-        title="AI result"
-        open={resultOpen}
-        onCancel={() => setResultOpen(false)}
-        footer={[
-          <Button key="close" type="primary" onClick={() => setResultOpen(false)}>
-            Close
-          </Button>
-        ]}
-        width={720}
-        destroyOnClose
-      >
-        {resultLoading ? (
-          <Flex justify="center" style={{ padding: 32 }}>
-            <Spin />
-          </Flex>
-        ) : (
-          <div className="task-diff-openai-result">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{resultMarkdown}</ReactMarkdown>
-          </div>
-        )}
-      </Modal>
-    </>
   );
 }
 ````
@@ -15058,6 +13837,660 @@ export const registerUserRoutes = (
 };
 ````
 
+## File: apps/server/src/services/codex-utility-service.ts
+````typescript
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import type { ProviderProfile } from "@agentswarm/shared-types";
+import { env } from "../config/env.js";
+import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
+import type { SettingsRuntimeCredentials } from "./settings-store.js";
+
+const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_OUTPUT_MAX_CHARS = 12_000;
+const CODEX_UTILITY_DIR_NAME = "codex-utility";
+
+export class CodexUtilityUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CodexUtilityUnavailableError";
+  }
+}
+
+export class CodexUtilityError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode = 502
+  ) {
+    super(message);
+    this.name = "CodexUtilityError";
+  }
+}
+
+const codexUtilityScript = `
+set -eu
+mkdir -p "$HOME/.codex"
+cat > "$HOME/.codex/config.toml" <<'EOF'
+sandbox_mode = "read-only"
+approval_policy = "never"
+
+[notice]
+hide_rate_limit_model_nudge = true
+hide_gpt5_1_migration_prompt = true
+"hide_gpt-5.1-codex-max_migration_prompt" = true
+EOF
+if [ -n "\${CODEX_AUTH_JSON_B64:-}" ]; then
+  printf %s "$CODEX_AUTH_JSON_B64" | base64 -d > "$HOME/.codex/auth.json"
+elif [ -n "\${OPENAI_API_KEY:-}" ]; then
+  printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file
+else
+  echo "Codex credentials are not configured." >&2
+  exit 64
+fi
+codex exec \\
+  --ephemeral \\
+  --skip-git-repo-check \\
+  --ignore-rules \\
+  --sandbox read-only \\
+  -C "$CODEX_UTILITY_WORKDIR" \\
+  -m "$CODEX_MODEL" \\
+  -c cli_auth_credentials_store=file \\
+  -c "model_reasoning_effort=\\"$CODEX_REASONING_EFFORT\\"" \\
+  -o "$CODEX_UTILITY_WORKDIR/output.txt" \\
+  - < "$CODEX_UTILITY_WORKDIR/prompt.txt"
+`;
+
+const trimProcessOutput = (value: string, maxChars = 4000): string => {
+  const trimmed = value.trim();
+  return trimmed.length > maxChars ? `${trimmed.slice(0, maxChars)}...` : trimmed;
+};
+
+const isDockerRunnerUnavailable = (code: number | null, output: string): boolean => {
+  const normalized = output.toLowerCase();
+  return (
+    code === 125 ||
+    normalized.includes("cannot connect to the docker daemon") ||
+    normalized.includes("unable to find image") ||
+    normalized.includes("pull access denied") ||
+    normalized.includes("no such image") ||
+    normalized.includes("manifest unknown")
+  );
+};
+
+export async function executeCodexUtility(input: {
+  prompt: string;
+  model: string;
+  providerProfile: ProviderProfile;
+  credentials: SettingsRuntimeCredentials;
+  timeoutMs?: number;
+  outputMaxChars?: number;
+}): Promise<string> {
+  const image = env.CODEX_INTERACTIVE_IMAGE?.trim();
+  if (!image) {
+    throw new CodexUtilityUnavailableError("Codex utility runner is not configured (set CODEX_INTERACTIVE_IMAGE).");
+  }
+  if (!input.credentials.openaiApiKey && !input.credentials.codexAuthJson) {
+    throw new CodexUtilityUnavailableError("Codex credentials are not configured.");
+  }
+
+  const tempDir = path.join(env.RUNTIME_PAYLOAD_ROOT, CODEX_UTILITY_DIR_NAME, randomUUID());
+  await mkdir(tempDir, { recursive: true });
+  await writeFile(path.join(tempDir, "prompt.txt"), input.prompt, "utf8");
+
+  const args = [
+    "run",
+    "--rm",
+    "-e",
+    "HOME=/root",
+    "-e",
+    `CODEX_MODEL=${input.model}`,
+    "-e",
+    `CODEX_REASONING_EFFORT=${codexReasoningEffortForProfile(input.providerProfile)}`,
+    "-e",
+    `CODEX_UTILITY_WORKDIR=${tempDir}`,
+    ...(input.credentials.openaiApiKey ? ["-e", `OPENAI_API_KEY=${input.credentials.openaiApiKey}`] : []),
+    ...(input.credentials.codexAuthJson
+      ? ["-e", `CODEX_AUTH_JSON_B64=${Buffer.from(input.credentials.codexAuthJson, "utf8").toString("base64")}`]
+      : []),
+    ...(input.credentials.openaiBaseUrl ? ["-e", `OPENAI_BASE_URL=${input.credentials.openaiBaseUrl}`] : []),
+    "-v",
+    `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
+    "-w",
+    tempDir,
+    image,
+    "sh",
+    "-lc",
+    codexUtilityScript
+  ];
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const timeout = setTimeout(() => {
+        settled = true;
+        child.kill("SIGKILL");
+        reject(new CodexUtilityError("Codex utility run timed out.", 504));
+      }, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        stdout += String(chunk);
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += String(chunk);
+      });
+      child.on("error", (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        reject(new CodexUtilityUnavailableError(`Failed to start Codex utility runner: ${error.message}`));
+      });
+      child.on("close", (code) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        const details = trimProcessOutput(stderr || stdout);
+        if (isDockerRunnerUnavailable(code, details)) {
+          reject(new CodexUtilityUnavailableError(details || "Codex utility runner Docker image is unavailable."));
+          return;
+        }
+        reject(new CodexUtilityError(details || `Codex utility run failed with exit code ${code ?? "unknown"}.`));
+      });
+    });
+
+    const output = (await readFile(path.join(tempDir, "output.txt"), "utf8")).trim();
+    if (!output) {
+      throw new CodexUtilityError("Codex utility run returned empty output.");
+    }
+    return output.slice(0, input.outputMaxChars ?? DEFAULT_OUTPUT_MAX_CHARS);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+````
+
+## File: apps/server/src/services/credential-store.ts
+````typescript
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import type Redis from "ioredis";
+import type { Pool } from "pg";
+import type { UpdateCredentialSettingsInput } from "@agentswarm/shared-types";
+import { env } from "../config/env.js";
+
+const CREDENTIALS_KEY = "agentswarm:credential_settings";
+const nowIso = (): string => new Date().toISOString();
+
+interface StoredCredentials {
+  githubToken: string | null;
+  openaiApiKey: string | null;
+  codexAuthJson: string | null;
+  anthropicApiKey: string | null;
+  codexAuthJsonByUserId: Record<string, string>;
+}
+
+interface EncryptedPayload {
+  version: 1;
+  iv: string;
+  tag: string;
+  ciphertext: string;
+}
+
+export interface RuntimeCredentials {
+  githubToken: string | null;
+  openaiApiKey: string | null;
+  anthropicApiKey: string | null;
+  codexAuthJson?: string | null;
+}
+
+export interface CredentialStatus {
+  githubTokenConfigured: boolean;
+  openaiApiKeyConfigured: boolean;
+  codexAuthJsonConfigured: boolean;
+  anthropicApiKeyConfigured: boolean;
+}
+
+export interface CredentialStore {
+  getCredentials(): Promise<RuntimeCredentials>;
+  getCredentialStatus(): Promise<CredentialStatus>;
+  updateCredentials(input: UpdateCredentialSettingsInput): Promise<CredentialStatus>;
+  getCodexAuthJsonForUser(userId: string): Promise<string | null>;
+  setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void>;
+  hasCodexAuthJsonForUser(userId: string): Promise<boolean>;
+}
+
+export class RedisCredentialStore implements CredentialStore {
+  private keyPromise: Promise<Buffer> | null = null;
+
+  constructor(private readonly redis: Redis) {}
+
+  private async getEncryptionKey(): Promise<Buffer> {
+    if (this.keyPromise) {
+      return this.keyPromise;
+    }
+
+    this.keyPromise = (async () => {
+      await mkdir(path.dirname(env.SECRET_KEY_PATH), { recursive: true });
+
+      try {
+        const existing = (await readFile(env.SECRET_KEY_PATH, "utf8")).trim();
+        const key = Buffer.from(existing, "base64");
+        if (key.length === 32) {
+          return key;
+        }
+      } catch {
+        // Fall through and create a new key.
+      }
+
+      const key = randomBytes(32);
+      await writeFile(env.SECRET_KEY_PATH, key.toString("base64"), { encoding: "utf8", mode: 0o600 });
+      await chmod(env.SECRET_KEY_PATH, 0o600);
+      return key;
+    })();
+
+    return this.keyPromise;
+  }
+
+  private async encrypt(value: string): Promise<string> {
+    const key = await this.getEncryptionKey();
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", key, iv);
+    const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+    const payload: EncryptedPayload = {
+      version: 1,
+      iv: iv.toString("base64"),
+      tag: cipher.getAuthTag().toString("base64"),
+      ciphertext: ciphertext.toString("base64")
+    };
+    return JSON.stringify(payload);
+  }
+
+  private async decrypt(value: string): Promise<string> {
+    const key = await this.getEncryptionKey();
+    const payload = JSON.parse(value) as EncryptedPayload;
+    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(payload.iv, "base64"));
+    decipher.setAuthTag(Buffer.from(payload.tag, "base64"));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(payload.ciphertext, "base64")),
+      decipher.final()
+    ]);
+    return plaintext.toString("utf8");
+  }
+
+  private normalizeCodexAuthJsonByUserId(value: Record<string, unknown> | undefined): Record<string, string> {
+    const next: Record<string, string> = {};
+    for (const [key, raw] of Object.entries(value ?? {})) {
+      const userId = key.trim();
+      const authJson = typeof raw === "string" ? raw.trim() : "";
+      if (!userId || !authJson) {
+        continue;
+      }
+      next[userId] = authJson;
+    }
+    return next;
+  }
+
+  private async readStoredCredentials(): Promise<StoredCredentials> {
+    const raw = await this.redis.get(CREDENTIALS_KEY);
+    if (!raw) {
+      return {
+        githubToken: null,
+        openaiApiKey: null,
+        codexAuthJson: null,
+        anthropicApiKey: null,
+        codexAuthJsonByUserId: {}
+      };
+    }
+
+    try {
+      const decrypted = await this.decrypt(raw);
+      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials> & {
+        codexAuthJsonByUserId?: Record<string, unknown>;
+      };
+      return {
+        githubToken: parsed.githubToken?.trim() || null,
+        openaiApiKey: parsed.openaiApiKey?.trim() || null,
+        codexAuthJson: parsed.codexAuthJson?.trim() || null,
+        anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
+        codexAuthJsonByUserId: this.normalizeCodexAuthJsonByUserId(parsed.codexAuthJsonByUserId)
+      };
+    } catch {
+      return {
+        githubToken: null,
+        openaiApiKey: null,
+        codexAuthJson: null,
+        anthropicApiKey: null,
+        codexAuthJsonByUserId: {}
+      };
+    }
+  }
+
+  private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
+    if (!next.githubToken && !next.openaiApiKey && !next.codexAuthJson && !next.anthropicApiKey && Object.keys(next.codexAuthJsonByUserId).length === 0) {
+      await this.redis.del(CREDENTIALS_KEY);
+      return;
+    }
+
+    const encrypted = await this.encrypt(JSON.stringify(next));
+    await this.redis.set(CREDENTIALS_KEY, encrypted);
+  }
+
+  async getCredentials(): Promise<RuntimeCredentials> {
+    const current = await this.readStoredCredentials();
+    return {
+      githubToken: current.githubToken,
+      openaiApiKey: current.openaiApiKey,
+      anthropicApiKey: current.anthropicApiKey,
+      codexAuthJson: current.codexAuthJson
+    };
+  }
+
+  async getCredentialStatus(): Promise<CredentialStatus> {
+    const credentials = await this.getCredentials();
+    return {
+      githubTokenConfigured: Boolean(credentials.githubToken),
+      openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
+      codexAuthJsonConfigured: Boolean(credentials.codexAuthJson),
+      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
+    };
+  }
+
+  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<CredentialStatus> {
+    const current = await this.readStoredCredentials();
+    const next: StoredCredentials = {
+      githubToken: input.clearGithubToken
+        ? null
+        : input.githubToken?.trim()
+          ? input.githubToken.trim()
+          : current.githubToken,
+      openaiApiKey: input.clearOpenAiApiKey
+        ? null
+        : input.openaiApiKey?.trim()
+          ? input.openaiApiKey.trim()
+          : current.openaiApiKey,
+      codexAuthJson: input.clearCodexAuthJson
+        ? null
+        : input.codexAuthJson?.trim()
+          ? input.codexAuthJson.trim()
+          : current.codexAuthJson,
+      anthropicApiKey: input.clearAnthropicApiKey
+        ? null
+        : input.anthropicApiKey?.trim()
+          ? input.anthropicApiKey.trim()
+          : current.anthropicApiKey,
+      codexAuthJsonByUserId: current.codexAuthJsonByUserId
+    };
+    await this.writeStoredCredentials(next);
+
+    return this.getCredentialStatus();
+  }
+
+  async getCodexAuthJsonForUser(userId: string): Promise<string | null> {
+    const key = userId.trim();
+    if (!key) {
+      return null;
+    }
+    const current = await this.readStoredCredentials();
+    return current.codexAuthJsonByUserId[key]?.trim() || null;
+  }
+
+  async setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void> {
+    const key = userId.trim();
+    if (!key) {
+      return;
+    }
+    const current = await this.readStoredCredentials();
+    const nextByUserId = { ...current.codexAuthJsonByUserId };
+    const normalized = codexAuthJson?.trim() || null;
+    if (normalized) {
+      nextByUserId[key] = normalized;
+    } else {
+      delete nextByUserId[key];
+    }
+    await this.writeStoredCredentials({
+      ...current,
+      codexAuthJsonByUserId: nextByUserId
+    });
+  }
+
+  async hasCodexAuthJsonForUser(userId: string): Promise<boolean> {
+    return Boolean(await this.getCodexAuthJsonForUser(userId));
+  }
+}
+
+export class PostgresCredentialStore implements CredentialStore {
+  private keyPromise: Promise<Buffer> | null = null;
+
+  constructor(private readonly pool: Pool) {}
+
+  private async getEncryptionKey(): Promise<Buffer> {
+    if (this.keyPromise) {
+      return this.keyPromise;
+    }
+
+    this.keyPromise = (async () => {
+      await mkdir(path.dirname(env.SECRET_KEY_PATH), { recursive: true });
+
+      try {
+        const existing = (await readFile(env.SECRET_KEY_PATH, "utf8")).trim();
+        const key = Buffer.from(existing, "base64");
+        if (key.length === 32) {
+          return key;
+        }
+      } catch {
+        // Fall through and create a new key.
+      }
+
+      const key = randomBytes(32);
+      await writeFile(env.SECRET_KEY_PATH, key.toString("base64"), { encoding: "utf8", mode: 0o600 });
+      await chmod(env.SECRET_KEY_PATH, 0o600);
+      return key;
+    })();
+
+    return this.keyPromise;
+  }
+
+  private async encrypt(value: string): Promise<string> {
+    const key = await this.getEncryptionKey();
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", key, iv);
+    const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+    const payload: EncryptedPayload = {
+      version: 1,
+      iv: iv.toString("base64"),
+      tag: cipher.getAuthTag().toString("base64"),
+      ciphertext: ciphertext.toString("base64")
+    };
+    return JSON.stringify(payload);
+  }
+
+  private async decrypt(value: string): Promise<string> {
+    const key = await this.getEncryptionKey();
+    const payload = JSON.parse(value) as EncryptedPayload;
+    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(payload.iv, "base64"));
+    decipher.setAuthTag(Buffer.from(payload.tag, "base64"));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(payload.ciphertext, "base64")),
+      decipher.final()
+    ]);
+    return plaintext.toString("utf8");
+  }
+
+  private normalizeCodexAuthJsonByUserId(value: Record<string, unknown> | undefined): Record<string, string> {
+    const next: Record<string, string> = {};
+    for (const [key, raw] of Object.entries(value ?? {})) {
+      const userId = key.trim();
+      const authJson = typeof raw === "string" ? raw.trim() : "";
+      if (!userId || !authJson) {
+        continue;
+      }
+      next[userId] = authJson;
+    }
+    return next;
+  }
+
+  private async readStoredCredentials(): Promise<StoredCredentials> {
+    const result = await this.pool.query<{ payload_encrypted: string }>(
+      "SELECT payload_encrypted FROM credentials WHERE singleton_id = 1"
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      return {
+        githubToken: null,
+        openaiApiKey: null,
+        codexAuthJson: null,
+        anthropicApiKey: null,
+        codexAuthJsonByUserId: {}
+      };
+    }
+
+    try {
+      const decrypted = await this.decrypt(row.payload_encrypted);
+      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials> & {
+        codexAuthJsonByUserId?: Record<string, unknown>;
+      };
+      return {
+        githubToken: parsed.githubToken?.trim() || null,
+        openaiApiKey: parsed.openaiApiKey?.trim() || null,
+        codexAuthJson: parsed.codexAuthJson?.trim() || null,
+        anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
+        codexAuthJsonByUserId: this.normalizeCodexAuthJsonByUserId(parsed.codexAuthJsonByUserId)
+      };
+    } catch {
+      return {
+        githubToken: null,
+        openaiApiKey: null,
+        codexAuthJson: null,
+        anthropicApiKey: null,
+        codexAuthJsonByUserId: {}
+      };
+    }
+  }
+
+  private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
+    if (!next.githubToken && !next.openaiApiKey && !next.codexAuthJson && !next.anthropicApiKey && Object.keys(next.codexAuthJsonByUserId).length === 0) {
+      await this.pool.query("DELETE FROM credentials WHERE singleton_id = 1");
+      return;
+    }
+
+    const encrypted = await this.encrypt(JSON.stringify(next));
+    await this.pool.query(
+      `
+          INSERT INTO credentials (
+            singleton_id,
+            payload_encrypted,
+            updated_at
+          )
+          VALUES (1, $1, $2)
+          ON CONFLICT (singleton_id) DO UPDATE
+          SET
+            payload_encrypted = EXCLUDED.payload_encrypted,
+            updated_at = EXCLUDED.updated_at
+        `,
+      [encrypted, nowIso()]
+    );
+  }
+
+  async getCredentials(): Promise<RuntimeCredentials> {
+    const current = await this.readStoredCredentials();
+    return {
+      githubToken: current.githubToken,
+      openaiApiKey: current.openaiApiKey,
+      anthropicApiKey: current.anthropicApiKey,
+      codexAuthJson: current.codexAuthJson
+    };
+  }
+
+  async getCredentialStatus(): Promise<CredentialStatus> {
+    const credentials = await this.getCredentials();
+    return {
+      githubTokenConfigured: Boolean(credentials.githubToken),
+      openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
+      codexAuthJsonConfigured: Boolean(credentials.codexAuthJson),
+      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
+    };
+  }
+
+  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<CredentialStatus> {
+    const current = await this.readStoredCredentials();
+    const next: StoredCredentials = {
+      githubToken: input.clearGithubToken
+        ? null
+        : input.githubToken?.trim()
+          ? input.githubToken.trim()
+          : current.githubToken,
+      openaiApiKey: input.clearOpenAiApiKey
+        ? null
+        : input.openaiApiKey?.trim()
+          ? input.openaiApiKey.trim()
+          : current.openaiApiKey,
+      codexAuthJson: input.clearCodexAuthJson
+        ? null
+        : input.codexAuthJson?.trim()
+          ? input.codexAuthJson.trim()
+          : current.codexAuthJson,
+      anthropicApiKey: input.clearAnthropicApiKey
+        ? null
+        : input.anthropicApiKey?.trim()
+          ? input.anthropicApiKey.trim()
+          : current.anthropicApiKey,
+      codexAuthJsonByUserId: current.codexAuthJsonByUserId
+    };
+    await this.writeStoredCredentials(next);
+
+    return this.getCredentialStatus();
+  }
+
+  async getCodexAuthJsonForUser(userId: string): Promise<string | null> {
+    const key = userId.trim();
+    if (!key) {
+      return null;
+    }
+    const current = await this.readStoredCredentials();
+    return current.codexAuthJsonByUserId[key]?.trim() || null;
+  }
+
+  async setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void> {
+    const key = userId.trim();
+    if (!key) {
+      return;
+    }
+    const current = await this.readStoredCredentials();
+    const nextByUserId = { ...current.codexAuthJsonByUserId };
+    const normalized = codexAuthJson?.trim() || null;
+    if (normalized) {
+      nextByUserId[key] = normalized;
+    } else {
+      delete nextByUserId[key];
+    }
+    await this.writeStoredCredentials({
+      ...current,
+      codexAuthJsonByUserId: nextByUserId
+    });
+  }
+
+  async hasCodexAuthJsonForUser(userId: string): Promise<boolean> {
+    return Boolean(await this.getCodexAuthJsonForUser(userId));
+  }
+}
+````
+
 ## File: apps/server/src/services/github-status-sync-service.ts
 ````typescript
 import type { RealtimeEvent, Task, TaskStatus } from "@agentswarm/shared-types";
@@ -15193,6 +14626,170 @@ export class GitHubStatusSyncService {
     }
     return statusRank(previousStatus) !== statusRank(nextStatus);
   }
+}
+````
+
+## File: apps/server/src/services/openai-diff-assist-service.ts
+````typescript
+import { access } from "node:fs/promises";
+import path from "node:path";
+import type { OpenAiDiffAssistResult, ProviderProfile } from "@agentswarm/shared-types";
+import { env } from "../config/env.js";
+import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
+import { readSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
+
+const MAX_SNIPPET = 48_000;
+const MAX_USER_PROMPT = 16_000;
+const MAX_FILE_IN_PROMPT = 120_000;
+
+function openAiChatBase(openaiBaseUrl: string | null): string {
+  return (openaiBaseUrl?.replace(/\/$/, "") ?? "https://api.openai.com") + "/v1";
+}
+
+export function normalizeDiffFilePath(filePath: string): string {
+  let p = filePath.trim().replace(/\\/g, "/");
+  if (p.startsWith("a/") || p.startsWith("b/")) {
+    p = p.slice(2);
+  }
+  return p.replace(/^\/+/, "");
+}
+
+function extractCompletionText(data: unknown): string {
+  const d = data as {
+    choices?: Array<{ message?: { content?: unknown } }>;
+  };
+  const content = d.choices?.[0]?.message?.content;
+  if (typeof content === "string") {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "object" && part !== null && "text" in part) {
+          return String((part as { text: string }).text);
+        }
+        return "";
+      })
+      .join("");
+  }
+  return "";
+}
+
+async function postChatCompletions(
+  base: string,
+  apiKey: string,
+  body: Record<string, unknown>
+): Promise<{ ok: true; data: unknown } | { ok: false; status: number; message: string }> {
+  const res = await fetch(`${base}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  const raw = await res.text();
+  if (!res.ok) {
+    return { ok: false, status: res.status, message: raw.slice(0, 2000) };
+  }
+  try {
+    return { ok: true, data: JSON.parse(raw) as unknown };
+  } catch {
+    return { ok: false, status: 502, message: "Invalid JSON from OpenAI" };
+  }
+}
+
+async function chatReadWithRetries(
+  base: string,
+  apiKey: string,
+  model: string,
+  messages: Array<{ role: string; content: string }>,
+  reasoningEffort: string
+): Promise<unknown> {
+  let lastError = "OpenAI request failed";
+  for (const useReasoning of [true, false]) {
+    const body: Record<string, unknown> = { model, messages };
+    if (useReasoning) {
+      body.reasoning_effort = reasoningEffort;
+    }
+    const result = await postChatCompletions(base, apiKey, body);
+    if (result.ok) {
+      return result.data;
+    }
+    lastError = result.message;
+    if (result.status !== 400) {
+      break;
+    }
+  }
+  throw Object.assign(new Error(lastError), { status: 502 });
+}
+
+export async function executeOpenAiDiffAssist(input: {
+  taskId: string;
+  model: string;
+  providerProfile: ProviderProfile;
+  userPrompt: string;
+  filePath: string;
+  selectedSnippet: string;
+  openaiApiKey: string;
+  openaiBaseUrl: string | null;
+}): Promise<OpenAiDiffAssistResult> {
+  const userContent = await buildDiffAssistPromptContext(input);
+  const reasoningEffort = codexReasoningEffortForProfile(input.providerProfile);
+  const base = openAiChatBase(input.openaiBaseUrl);
+  const messages: Array<{ role: string; content: string }> = [
+    {
+      role: "system",
+      content:
+        "You are a careful code assistant. Answer using the provided context. Be concise and accurate."
+    },
+    { role: "user", content: userContent }
+  ];
+
+  const data = await chatReadWithRetries(base, input.openaiApiKey, input.model, messages, reasoningEffort);
+
+  return { text: extractCompletionText(data) };
+}
+
+export async function buildDiffAssistPromptContext(input: {
+  taskId: string;
+  filePath: string;
+  selectedSnippet: string;
+  userPrompt: string;
+}): Promise<string> {
+  const relativePath = normalizeDiffFilePath(input.filePath);
+  if (!relativePath) {
+    throw Object.assign(new Error("Invalid file path."), { status: 400 });
+  }
+
+  const workspaceRoot = path.join(env.TASK_WORKSPACE_ROOT, input.taskId);
+  try {
+    await access(workspaceRoot);
+  } catch {
+    throw Object.assign(new Error("No local workspace for this task."), { status: 409 });
+  }
+
+  const currentFile = await readSafeWorkspaceFile(workspaceRoot, relativePath);
+  const snippet = input.selectedSnippet.slice(0, MAX_SNIPPET);
+  const userPrompt = input.userPrompt.trim().slice(0, MAX_USER_PROMPT);
+
+  const contextParts = [
+    `File path (repository-relative): ${relativePath}`,
+    "",
+    "Selected diff lines (unified diff excerpt):",
+    "```",
+    snippet,
+    "```",
+    "",
+    currentFile !== null
+      ? "Current file contents in the task workspace:\n```\n" + currentFile.slice(0, MAX_FILE_IN_PROMPT) + "\n```"
+      : "(File is not present in the workspace yet, or could not be read.)",
+    "",
+    "User request:",
+    userPrompt
+  ];
+
+  return contextParts.join("\n");
 }
 ````
 
@@ -18227,6 +17824,426 @@ export function NotesMarkdownEditor({ value, onChange, disabled = false }: Notes
         plugins={notesEditorPlugins}
       />
     </div>
+  );
+}
+````
+
+## File: apps/web/components/task-diff-openai-panel.tsx
+````typescript
+"use client";
+
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  getDefaultModelForProvider,
+  getEffortOptionsForProvider,
+  type ProviderProfile,
+  type TaskLiveDiff
+} from "@agentswarm/shared-types";
+import { Alert, Button, Card, Collapse, Flex, Input, Modal, Select, Space, Spin, Typography, message } from "antd";
+import { Diff, Hunk, getChangeKey, type ChangeData, type FileData } from "react-diff-view";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { api } from "../src/api/client";
+import { useProviderModels } from "../src/hooks/useProviderModels";
+import { normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
+import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
+
+function buildSnippetFromSelection(file: FileData, selectedKeys: string[]): string {
+  const selected = new Set(selectedKeys);
+  const lines: string[] = [];
+  for (const hunk of file.hunks) {
+    for (const change of hunk.changes) {
+      const key = getChangeKey(change);
+      if (selected.has(key)) {
+        const prefix = change.type === "insert" ? "+" : change.type === "delete" ? "-" : " ";
+        lines.push(prefix + (change.content ?? ""));
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
+function buildSnippetFromFile(file: FileData): string {
+  const lines: string[] = [];
+  for (const hunk of file.hunks) {
+    for (const change of hunk.changes) {
+      const prefix = change.type === "insert" ? "+" : change.type === "delete" ? "-" : " ";
+      lines.push(prefix + (change.content ?? ""));
+    }
+  }
+  return lines.join("\n");
+}
+
+/** Keeps selection across live-diff polling when the underlying change keys are unchanged. */
+function usePersistentChangeSelect(file: FileData, selectionResetToken: string) {
+  const [selected, setSelected] = useState<string[]>([]);
+  const lastValidSigRef = useRef("");
+  const lastResetTokenRef = useRef(selectionResetToken);
+
+  const toggleSelection = useCallback((args: { change: ChangeData | null }) => {
+    if (!args.change) {
+      return;
+    }
+    const key = getChangeKey(args.change);
+    setSelected((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
+  }, []);
+
+  useEffect(() => {
+    const valid = new Set<string>();
+    for (const h of file.hunks) {
+      for (const c of h.changes) {
+        valid.add(getChangeKey(c));
+      }
+    }
+    const sig = [...valid].sort().join("|");
+
+    if (selectionResetToken !== lastResetTokenRef.current) {
+      lastResetTokenRef.current = selectionResetToken;
+      lastValidSigRef.current = sig;
+      setSelected([]);
+      return;
+    }
+
+    if (sig === lastValidSigRef.current) {
+      return;
+    }
+    lastValidSigRef.current = sig;
+    setSelected((prev) => prev.filter((k) => valid.has(k)));
+  }, [file, selectionResetToken]);
+
+  return [selected, toggleSelection] as const;
+}
+
+function getDiffFilePath(file: Pick<FileData, "newPath" | "oldPath">): string {
+  return file.newPath || file.oldPath || "";
+}
+
+function getDiffFileLabel(file: Pick<FileData, "newPath" | "oldPath">): string {
+  return getDiffFilePath(file) || "Changed file";
+}
+
+function DiffFileOpenAiCard({
+  file,
+  collapseFiles,
+  workspaceReady,
+  selectionResetToken,
+  onOpenConfig
+}: {
+  file: FileData;
+  collapseFiles: boolean;
+  workspaceReady: boolean;
+  selectionResetToken: string;
+  onOpenConfig: (filePath: string, snippet: string) => void;
+}) {
+  const [selectedChanges, toggleSelection] = usePersistentChangeSelect(file, selectionResetToken);
+  const filePath = getDiffFilePath(file);
+  const fileLabel = getDiffFileLabel(file);
+
+  const openConfig = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const snippet =
+      selectedChanges.length > 0 ? buildSnippetFromSelection(file, selectedChanges) : buildSnippetFromFile(file);
+    onOpenConfig(filePath, snippet);
+  };
+
+  const diffEl = (
+    <Diff
+      viewType="unified"
+      diffType={file.type}
+      hunks={file.hunks}
+      selectedChanges={selectedChanges}
+      gutterEvents={{ onClick: toggleSelection }}
+      codeEvents={{ onClick: toggleSelection }}
+    >
+      {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}
+    </Diff>
+  );
+
+  const actions = (
+    <Space wrap size="small" onClick={(e) => e.stopPropagation()}>
+      <Button
+        size="small"
+        type="primary"
+        disabled={!workspaceReady}
+        onClick={openConfig}
+      >
+        Ask
+      </Button>
+    </Space>
+  );
+
+  if (collapseFiles) {
+    return (
+      <Collapse
+        size="small"
+        defaultActiveKey={[]}
+        items={[
+          {
+            key: "file",
+            label: (
+              <Flex align="center" justify="space-between" gap={12} wrap="wrap">
+                <Typography.Text style={{ wordBreak: "break-all" }}>{fileLabel}</Typography.Text>
+                {actions}
+              </Flex>
+            ),
+            children: diffEl
+          }
+        ]}
+      />
+    );
+  }
+
+  return (
+    <Card
+      size="small"
+      title={
+        <Flex align="center" justify="space-between" gap={12} wrap="wrap">
+          <Typography.Text style={{ wordBreak: "break-all" }}>{fileLabel}</Typography.Text>
+          {actions}
+        </Flex>
+      }
+    >
+      {diffEl}
+    </Card>
+  );
+}
+
+
+export interface TaskDiffOpenAiPanelProps {
+  diffText: string;
+  emptyMessage: string;
+  collapseFiles: boolean;
+  taskId: string;
+  liveDiff: TaskLiveDiff | null;
+  previewRefs: TaskDiffPreviewRefs | null;
+  /** Clears line selection when this value changes (e.g. compare vs working toggle). */
+  selectionResetToken: string;
+}
+
+export function TaskDiffOpenAiPanel({
+  diffText,
+  emptyMessage,
+  collapseFiles,
+  taskId,
+  liveDiff,
+  previewRefs,
+  selectionResetToken
+}: TaskDiffOpenAiPanelProps): ReactNode {
+  const [openAiModel, setOpenAiModel] = useState<string>("gpt-5.4");
+  const [openAiEffort, setOpenAiEffort] = useState<ProviderProfile>("high");
+  const [instruction, setInstruction] = useState("");
+  const { models: codexModels, loading: codexModelsLoading } = useProviderModels("codex");
+
+  const [configOpen, setConfigOpen] = useState(false);
+  const [pendingFilePath, setPendingFilePath] = useState("");
+  const [pendingSnippet, setPendingSnippet] = useState("");
+
+  const [resultOpen, setResultOpen] = useState(false);
+  const [resultLoading, setResultLoading] = useState(false);
+  const [resultMarkdown, setResultMarkdown] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getSettings()
+      .then((s) => {
+        if (!cancelled) {
+          setOpenAiModel(s.codexDefaultModel || getDefaultModelForProvider("codex") || "gpt-5.4");
+          setOpenAiEffort(s.codexDefaultEffort);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const workspaceReady = liveDiff?.live === true;
+
+  const openConfigModal = useCallback((filePath: string, snippet: string) => {
+    setPendingFilePath(filePath);
+    setPendingSnippet(snippet);
+    setConfigOpen(true);
+  }, []);
+
+  const runAssist = useCallback(async () => {
+    setConfigOpen(false);
+    setResultOpen(true);
+    setResultLoading(true);
+    setResultMarkdown("");
+    try {
+      const res = await api.openAiDiffAssist(taskId, {
+        model: openAiModel,
+        providerProfile: openAiEffort,
+        userPrompt: instruction,
+        filePath: pendingFilePath,
+        selectedSnippet: pendingSnippet
+      });
+      setResultMarkdown(res.text.trim() || "_Empty response._");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Request failed";
+      message.error(msg);
+      setResultOpen(false);
+    } finally {
+      setResultLoading(false);
+    }
+  }, [
+    taskId,
+    openAiModel,
+    openAiEffort,
+    instruction,
+    pendingFilePath,
+    pendingSnippet
+  ]);
+
+  if (!diffText.trim()) {
+    return (
+      <Card size="small">
+        <Typography.Paragraph
+          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "\"SFMono-Regular\", Consolas, monospace" }}
+        >
+          {emptyMessage}
+        </Typography.Paragraph>
+      </Card>
+    );
+  }
+
+  let files: FileData[];
+  try {
+    files = parseRenderableDiff(diffText);
+    if (files.length === 0) {
+      throw new Error("No diff files parsed");
+    }
+  } catch {
+    return (
+      <Card size="small">
+        <Typography.Paragraph
+          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "\"SFMono-Regular\", Consolas, monospace" }}
+        >
+          {normalizeDiffForRendering(diffText) || diffText}
+        </Typography.Paragraph>
+      </Card>
+    );
+  }
+
+  return (
+    <>
+      {!workspaceReady ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="AI diff assist needs a live workspace"
+          description="Wait until the task workspace is available, then ask about selected lines or the whole file."
+        />
+      ) : null}
+
+      <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        {files.map((file) => (
+          file.hunks.length > 0 ? (
+            <DiffFileOpenAiCard
+              key={`${file.oldRevision}-${file.newRevision}-${file.oldPath}-${file.newPath}`}
+              file={file}
+              collapseFiles={collapseFiles}
+              workspaceReady={workspaceReady}
+              selectionResetToken={selectionResetToken}
+              onOpenConfig={openConfigModal}
+            />
+          ) : (
+            <TaskBinaryDiffCard
+              key={`${file.oldRevision}-${file.newRevision}-${file.oldPath}-${file.newPath}`}
+              file={file}
+              collapseFiles={collapseFiles}
+              taskId={taskId}
+              previewRefs={previewRefs}
+              previewUnavailableMessage="Image previews are available when a live workspace diff is open."
+            />
+          )
+        ))}
+      </Space>
+
+      <Modal
+        title="AI diff assist"
+        open={configOpen}
+        onCancel={() => setConfigOpen(false)}
+        onOk={() => void runAssist()}
+        okText="Ask"
+        okButtonProps={{ disabled: !workspaceReady }}
+        width={560}
+        destroyOnClose={false}
+      >
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+          {pendingSnippet.trim().length > 0
+            ? "Sends the selected diff lines or file diff context together with the current workspace file to the model. Nothing is written to disk."
+            : "Asks about the current workspace file. Nothing is written to disk."}
+        </Typography.Paragraph>
+        <Typography.Text type="secondary" style={{ display: "block", marginBottom: 4 }}>
+          File
+        </Typography.Text>
+        <Typography.Paragraph copyable style={{ marginBottom: 12, wordBreak: "break-all" }}>
+          {pendingFilePath || "—"}
+        </Typography.Paragraph>
+        <Flex gap={16} wrap="wrap" style={{ marginBottom: 12 }}>
+          <div style={{ minWidth: 160, flex: "1 1 180px" }}>
+            <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
+              Model
+            </Typography.Text>
+            <Select
+              value={openAiModel}
+              options={codexModels}
+              loading={codexModelsLoading}
+              showSearch
+              optionFilterProp="label"
+              onChange={(v) => setOpenAiModel(v)}
+              style={{ width: "100%" }}
+            />
+          </div>
+          <div style={{ minWidth: 140, flex: "0 1 160px" }}>
+            <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
+              Effort
+            </Typography.Text>
+            <Select
+              value={openAiEffort}
+              options={getEffortOptionsForProvider("codex")}
+              onChange={(v) => setOpenAiEffort(v)}
+              style={{ width: "100%" }}
+            />
+          </div>
+        </Flex>
+        <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
+          Instruction (optional)
+        </Typography.Text>
+        <Input.TextArea
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          rows={3}
+          placeholder="What should the model do with the selected lines?"
+        />
+      </Modal>
+
+      <Modal
+        title="AI result"
+        open={resultOpen}
+        onCancel={() => setResultOpen(false)}
+        footer={[
+          <Button key="close" type="primary" onClick={() => setResultOpen(false)}>
+            Close
+          </Button>
+        ]}
+        width={720}
+        destroyOnClose
+      >
+        {resultLoading ? (
+          <Flex justify="center" style={{ padding: 32 }}>
+            <Spin />
+          </Flex>
+        ) : (
+          <div className="task-diff-openai-result">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{resultMarkdown}</ReactMarkdown>
+          </div>
+        )}
+      </Modal>
+    </>
   );
 }
 ````
@@ -22599,214 +22616,6 @@ export function buildGitTerminalDockerEnvEntries(options: {
 }
 ````
 
-## File: apps/server/src/routes/settings.ts
-````typescript
-import { z } from "zod";
-import type { FastifyInstance } from "fastify";
-import type { AgentProvider } from "@agentswarm/shared-types";
-import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
-import type { AuthService } from "../lib/auth.js";
-import type { SchedulerService } from "../services/scheduler.js";
-import type { SettingsStore } from "../services/settings-store.js";
-
-interface ProviderModelEntry {
-  label: string;
-  value: string;
-}
-
-async function fetchOpenAiModels(apiKey: string, baseUrl: string | null): Promise<ProviderModelEntry[]> {
-  const base = (baseUrl?.replace(/\/$/, "") ?? "https://api.openai.com") + "/v1";
-  const response = await fetch(`${base}/models`, {
-    headers: { Authorization: `Bearer ${apiKey}` }
-  });
-
-  if (!response.ok) {
-    throw new Error(`OpenAI models API returned ${response.status}`);
-  }
-
-  const data = await response.json() as { data: Array<{ id: string }> };
-  return data.data
-    .map((m) => ({ label: m.id, value: m.id }))
-    .sort((a, b) => a.value.localeCompare(b.value));
-}
-
-async function fetchAnthropicModels(apiKey: string): Promise<ProviderModelEntry[]> {
-  const response = await fetch("https://api.anthropic.com/v1/models", {
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01"
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`Anthropic models API returned ${response.status}`);
-  }
-
-  const data = await response.json() as { data: Array<{ id: string; display_name: string }> };
-  return data.data
-    .map((m) => ({ label: m.display_name || m.id, value: m.id }))
-    .sort((a, b) => a.value.localeCompare(b.value));
-}
-
-const mcpServerSchema = z.discriminatedUnion("transport", [
-  z.object({
-    name: z.string().trim().min(1).max(120),
-    enabled: z.boolean(),
-    transport: z.literal("stdio"),
-    command: z.string().trim().min(1).max(300),
-    args: z.array(z.string().trim().min(1).max(300)).max(40).optional()
-  }),
-  z.object({
-    name: z.string().trim().min(1).max(120),
-    enabled: z.boolean(),
-    transport: z.literal("http"),
-    url: z.string().trim().url(),
-    bearerTokenEnvVar: z
-      .string()
-      .trim()
-      .min(1)
-      .max(120)
-      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
-      .nullable()
-      .optional()
-  })
-]);
-
-const providerProfileEnum = z.enum(["low", "medium", "high", "max"]);
-const responsePreferenceSchema = z
-  .object({
-    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
-    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
-    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
-    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
-    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
-    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
-    extraInstructions: z.string().trim().max(2000).optional()
-  });
-const responsePreferencePresetSchema = z.object({
-  id: z.string().trim().min(1).max(120).optional(),
-  name: z.string().trim().min(1).max(120),
-  description: z.string().trim().max(500).optional(),
-  preference: responsePreferenceSchema
-});
-
-const updateSettingsSchema = z.object({
-  defaultProvider: z.enum(["codex", "claude"]).optional(),
-  maxAgents: z.coerce.number().int().min(1).max(20).optional(),
-  branchPrefix: z.string().trim().min(1).max(80).optional(),
-  workspaceProvisioningMode: z.enum(["clone_only", "hybrid"]).optional(),
-  gitUsername: z.string().trim().min(1).max(120).optional(),
-  mcpServers: z.array(mcpServerSchema).max(25).optional(),
-  openaiBaseUrl: z.string().trim().url().nullable().optional(),
-  taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
-  taskPromptMagicTemplate: z.string().trim().min(1).max(12_000).optional(),
-  codexDefaultModel: z.string().trim().min(1).max(120).optional(),
-  codexDefaultEffort: providerProfileEnum.optional(),
-  claudeDefaultModel: z.string().trim().min(1).max(120).optional(),
-  claudeDefaultEffort: providerProfileEnum.optional(),
-  responsePreferencePresets: z.array(responsePreferencePresetSchema).max(50).optional()
-});
-
-const updateCredentialsSchema = z.object({
-  githubToken: z.string().trim().min(1).optional(),
-  openaiApiKey: z.string().trim().min(1).optional(),
-  codexAuthJson: z.string().trim().min(1).optional(),
-  anthropicApiKey: z.string().trim().min(1).optional(),
-  clearGithubToken: z.boolean().optional(),
-  clearOpenAiApiKey: z.boolean().optional(),
-  clearCodexAuthJson: z.boolean().optional(),
-  clearAnthropicApiKey: z.boolean().optional()
-});
-
-const updateUserNotesSchema = z.object({
-  notes: z.string().max(200_000)
-});
-
-export const registerSettingsRoutes = (
-  app: FastifyInstance,
-  deps: {
-    settingsStore: SettingsStore;
-    scheduler: SchedulerService;
-    auth: AuthService;
-  }
-): void => {
-  app.get("/settings", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => deps.settingsStore.getSettings());
-
-  app.get("/settings/models", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async (request, reply) => {
-    const providerParam = (request.query as Record<string, string>).provider as AgentProvider | undefined;
-    const provider = providerParam === "claude" ? "claude" : "codex";
-
-    const credentials = await deps.settingsStore.getRuntimeCredentials();
-    const settings = await deps.settingsStore.getSettings();
-    const fallback = provider === "claude" ? [...CLAUDE_MODELS] : [...CODEX_MODELS];
-
-    try {
-      if (provider === "claude") {
-        if (!credentials.anthropicApiKey) {
-          return reply.send({ models: fallback, source: "static" });
-        }
-        const models = await fetchAnthropicModels(credentials.anthropicApiKey);
-        return reply.send({ models, source: "api" });
-      }
-
-      if (!credentials.openaiApiKey) {
-        return reply.send({ models: fallback, source: "static" });
-      }
-      const models = await fetchOpenAiModels(credentials.openaiApiKey, settings.openaiBaseUrl);
-      return reply.send({ models, source: "api" });
-    } catch {
-      return reply.send({ models: fallback, source: "static" });
-    }
-  });
-
-  app.patch("/settings", { preHandler: deps.auth.requireAllScopes(["settings:edit"]) }, async (request, reply) => {
-    const parsed = updateSettingsSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const settings = await deps.settingsStore.updateSettings(parsed.data);
-    await deps.scheduler.onSettingsChanged();
-    return reply.send(settings);
-  });
-
-  app.patch("/settings/credentials", { preHandler: deps.auth.requireAllScopes(["settings:edit"]) }, async (request, reply) => {
-    const parsed = updateCredentialsSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    if (parsed.data.codexAuthJson !== undefined && !parsed.data.clearCodexAuthJson) {
-      try {
-        const parsedJson = JSON.parse(parsed.data.codexAuthJson) as unknown;
-        if (!parsedJson || typeof parsedJson !== "object" || Array.isArray(parsedJson)) {
-          return reply.status(400).send({ message: "Codex auth.json must be a JSON object" });
-        }
-      } catch {
-        return reply.status(400).send({ message: "Codex auth.json must be valid JSON" });
-      }
-    }
-
-    const settings = await deps.settingsStore.updateCredentials(parsed.data);
-    return reply.send(settings);
-  });
-
-  app.get("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request) =>
-    deps.settingsStore.getUserNotes(request.auth!.user.id)
-  );
-
-  app.patch("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const parsed = updateUserNotesSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const next = await deps.settingsStore.updateUserNotes(request.auth!.user.id, parsed.data.notes);
-    return reply.send(next);
-  });
-};
-````
-
 ## File: apps/server/src/services/openai-task-prompt-magic-service.ts
 ````typescript
 import type { TaskPromptMagicResult } from "@agentswarm/shared-types";
@@ -25575,6 +25384,214 @@ export const normalizeTaskLifecycleStatus = (
   }
 
   return resolveTaskReadyStatus(hasPendingCheckpoint);
+};
+````
+
+## File: apps/server/src/routes/settings.ts
+````typescript
+import { z } from "zod";
+import type { FastifyInstance } from "fastify";
+import type { AgentProvider } from "@agentswarm/shared-types";
+import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
+import type { AuthService } from "../lib/auth.js";
+import type { SchedulerService } from "../services/scheduler.js";
+import type { SettingsStore } from "../services/settings-store.js";
+
+interface ProviderModelEntry {
+  label: string;
+  value: string;
+}
+
+async function fetchOpenAiModels(apiKey: string, baseUrl: string | null): Promise<ProviderModelEntry[]> {
+  const base = (baseUrl?.replace(/\/$/, "") ?? "https://api.openai.com") + "/v1";
+  const response = await fetch(`${base}/models`, {
+    headers: { Authorization: `Bearer ${apiKey}` }
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenAI models API returned ${response.status}`);
+  }
+
+  const data = await response.json() as { data: Array<{ id: string }> };
+  return data.data
+    .map((m) => ({ label: m.id, value: m.id }))
+    .sort((a, b) => a.value.localeCompare(b.value));
+}
+
+async function fetchAnthropicModels(apiKey: string): Promise<ProviderModelEntry[]> {
+  const response = await fetch("https://api.anthropic.com/v1/models", {
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01"
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Anthropic models API returned ${response.status}`);
+  }
+
+  const data = await response.json() as { data: Array<{ id: string; display_name: string }> };
+  return data.data
+    .map((m) => ({ label: m.display_name || m.id, value: m.id }))
+    .sort((a, b) => a.value.localeCompare(b.value));
+}
+
+const mcpServerSchema = z.discriminatedUnion("transport", [
+  z.object({
+    name: z.string().trim().min(1).max(120),
+    enabled: z.boolean(),
+    transport: z.literal("stdio"),
+    command: z.string().trim().min(1).max(300),
+    args: z.array(z.string().trim().min(1).max(300)).max(40).optional()
+  }),
+  z.object({
+    name: z.string().trim().min(1).max(120),
+    enabled: z.boolean(),
+    transport: z.literal("http"),
+    url: z.string().trim().url(),
+    bearerTokenEnvVar: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
+      .nullable()
+      .optional()
+  })
+]);
+
+const providerProfileEnum = z.enum(["low", "medium", "high", "max"]);
+const responsePreferenceSchema = z
+  .object({
+    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
+    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
+    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
+    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
+    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
+    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
+    extraInstructions: z.string().trim().max(2000).optional()
+  });
+const responsePreferencePresetSchema = z.object({
+  id: z.string().trim().min(1).max(120).optional(),
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).optional(),
+  preference: responsePreferenceSchema
+});
+
+const updateSettingsSchema = z.object({
+  defaultProvider: z.enum(["codex", "claude"]).optional(),
+  maxAgents: z.coerce.number().int().min(1).max(20).optional(),
+  branchPrefix: z.string().trim().min(1).max(80).optional(),
+  workspaceProvisioningMode: z.enum(["clone_only", "hybrid"]).optional(),
+  gitUsername: z.string().trim().min(1).max(120).optional(),
+  mcpServers: z.array(mcpServerSchema).max(25).optional(),
+  openaiBaseUrl: z.string().trim().url().nullable().optional(),
+  taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
+  taskPromptMagicTemplate: z.string().trim().min(1).max(12_000).optional(),
+  codexDefaultModel: z.string().trim().min(1).max(120).optional(),
+  codexDefaultEffort: providerProfileEnum.optional(),
+  claudeDefaultModel: z.string().trim().min(1).max(120).optional(),
+  claudeDefaultEffort: providerProfileEnum.optional(),
+  responsePreferencePresets: z.array(responsePreferencePresetSchema).max(50).optional()
+});
+
+const updateCredentialsSchema = z.object({
+  githubToken: z.string().trim().min(1).optional(),
+  openaiApiKey: z.string().trim().min(1).optional(),
+  codexAuthJson: z.string().trim().min(1).optional(),
+  anthropicApiKey: z.string().trim().min(1).optional(),
+  clearGithubToken: z.boolean().optional(),
+  clearOpenAiApiKey: z.boolean().optional(),
+  clearCodexAuthJson: z.boolean().optional(),
+  clearAnthropicApiKey: z.boolean().optional()
+});
+
+const updateUserNotesSchema = z.object({
+  notes: z.string().max(200_000)
+});
+
+export const registerSettingsRoutes = (
+  app: FastifyInstance,
+  deps: {
+    settingsStore: SettingsStore;
+    scheduler: SchedulerService;
+    auth: AuthService;
+  }
+): void => {
+  app.get("/settings", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => deps.settingsStore.getSettings());
+
+  app.get("/settings/models", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async (request, reply) => {
+    const providerParam = (request.query as Record<string, string>).provider as AgentProvider | undefined;
+    const provider = providerParam === "claude" ? "claude" : "codex";
+
+    const credentials = await deps.settingsStore.getRuntimeCredentials();
+    const settings = await deps.settingsStore.getSettings();
+    const fallback = provider === "claude" ? [...CLAUDE_MODELS] : [...CODEX_MODELS];
+
+    try {
+      if (provider === "claude") {
+        if (!credentials.anthropicApiKey) {
+          return reply.send({ models: fallback, source: "static" });
+        }
+        const models = await fetchAnthropicModels(credentials.anthropicApiKey);
+        return reply.send({ models, source: "api" });
+      }
+
+      if (!credentials.openaiApiKey) {
+        return reply.send({ models: fallback, source: "static" });
+      }
+      const models = await fetchOpenAiModels(credentials.openaiApiKey, settings.openaiBaseUrl);
+      return reply.send({ models, source: "api" });
+    } catch {
+      return reply.send({ models: fallback, source: "static" });
+    }
+  });
+
+  app.patch("/settings", { preHandler: deps.auth.requireAllScopes(["settings:edit"]) }, async (request, reply) => {
+    const parsed = updateSettingsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const settings = await deps.settingsStore.updateSettings(parsed.data);
+    await deps.scheduler.onSettingsChanged();
+    return reply.send(settings);
+  });
+
+  app.patch("/settings/credentials", { preHandler: deps.auth.requireAllScopes(["settings:edit"]) }, async (request, reply) => {
+    const parsed = updateCredentialsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    if (parsed.data.codexAuthJson !== undefined && !parsed.data.clearCodexAuthJson) {
+      try {
+        const parsedJson = JSON.parse(parsed.data.codexAuthJson) as unknown;
+        if (!parsedJson || typeof parsedJson !== "object" || Array.isArray(parsedJson)) {
+          return reply.status(400).send({ message: "Codex auth.json must be a JSON object" });
+        }
+      } catch {
+        return reply.status(400).send({ message: "Codex auth.json must be valid JSON" });
+      }
+    }
+
+    const settings = await deps.settingsStore.updateCredentials(parsed.data);
+    return reply.send(settings);
+  });
+
+  app.get("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request) =>
+    deps.settingsStore.getUserNotes(request.auth!.user.id)
+  );
+
+  app.patch("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateUserNotesSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const next = await deps.settingsStore.updateUserNotes(request.auth!.user.id, parsed.data.notes);
+    return reply.send(next);
+  });
 };
 ````
 
@@ -28552,1186 +28569,6 @@ describe("WebhookDeliveryService", () => {
 });
 ````
 
-## File: apps/web/components/settings-page.tsx
-````typescript
-"use client";
-
-import { useEffect, useState } from "react";
-import type {
-  AgentProvider,
-  AgentClarifyBehavior,
-  AgentCodePreference,
-  AgentExplanationDepth,
-  AgentFormattingStyle,
-  AgentJargonLevel,
-  AudienceType,
-  McpServerTransport,
-  PermissionScope,
-  ProviderProfile,
-  ResponsePreferencePreset,
-  Role,
-  SystemSettings
-} from "@agentswarm/shared-types";
-import {
-  PERMISSION_SCOPE_GROUPS,
-  getAgentProviderLabel,
-  getEffortOptionsForProvider,
-  getModelsForProvider
-} from "@agentswarm/shared-types";
-import { DeleteOutlined, LockOutlined, PlusOutlined } from "@ant-design/icons";
-import {
-  Alert,
-  App,
-  Button,
-  Card,
-  Checkbox,
-  Divider,
-  Flex,
-  Form,
-  Input,
-  InputNumber,
-  Modal,
-  Popconfirm,
-  Select,
-  Space,
-  Switch,
-  Table,
-  Tag,
-  Tooltip,
-  Typography
-} from "antd";
-import { api } from "../src/api/client";
-import { useSettings } from "../src/hooks/useSettings";
-import { useProviderModels } from "../src/hooks/useProviderModels";
-import { useAuth } from "./auth-provider";
-
-interface McpServerFormItem {
-  name: string;
-  enabled: boolean;
-  transport: McpServerTransport;
-  command?: string;
-  argsText?: string;
-  url?: string;
-  bearerTokenEnvVar?: string;
-}
-
-interface GeneralSettingsForm {
-  defaultProvider: AgentProvider;
-  maxAgents: number;
-  branchPrefix: string;
-  gitUsername: string;
-  openaiBaseUrl: string;
-  taskPromptMagicModel: string;
-  taskPromptMagicTemplate: string;
-  mcpServers: McpServerFormItem[];
-  codexDefaultModel: string;
-  codexDefaultEffort: ProviderProfile;
-  claudeDefaultModel: string;
-  claudeDefaultEffort: ProviderProfile;
-}
-
-interface CredentialForm {
-  githubToken?: string;
-  openaiApiKey?: string;
-  codexAuthJson?: string;
-  anthropicApiKey?: string;
-}
-
-interface RoleFormValues {
-  name: string;
-  description: string;
-  scopes: PermissionScope[];
-  allowedProviders: AgentProvider[];
-  allowedModels: string[];
-  allowedEfforts: ProviderProfile[];
-}
-
-interface ResponsePreferencePresetFormValues {
-  name: string;
-  description: string;
-  audience?: AudienceType;
-  explanationDepth?: AgentExplanationDepth;
-  jargonLevel?: AgentJargonLevel;
-  codePreference?: AgentCodePreference;
-  clarifyBehavior?: AgentClarifyBehavior;
-  formattingStyle?: AgentFormattingStyle;
-  extraInstructions?: string;
-}
-
-type ClearCredentialTarget = "github" | "openai" | "codexAuthJson" | "anthropic";
-
-const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
-  { label: "stdio", value: "stdio" },
-  { label: "http", value: "http" }
-];
-
-const providerOptions: Array<{ label: string; value: AgentProvider }> = [
-  { label: getAgentProviderLabel("codex"), value: "codex" },
-  { label: getAgentProviderLabel("claude"), value: "claude" }
-];
-
-const summarizeAllowlist = (label: string, values: string[]): string => `${label}: ${values.length === 0 ? "All" : values.join(", ")}`;
-const toSentenceValue = (value: string): string => value.replace(/_/g, " ");
-const summarizeResponsePreference = (preset: ResponsePreferencePreset): string => {
-  const parts: string[] = [];
-  if (preset.preference.audience) {
-    parts.push(`Audience: ${toSentenceValue(preset.preference.audience)}`);
-  }
-  if (preset.preference.explanationDepth) {
-    parts.push(`Depth: ${toSentenceValue(preset.preference.explanationDepth)}`);
-  }
-  if (preset.preference.jargonLevel) {
-    parts.push(`Jargon: ${toSentenceValue(preset.preference.jargonLevel)}`);
-  }
-  return parts.length > 0 ? parts.join(" | ") : "Neutral";
-};
-
-const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
-  defaultProvider: settings.defaultProvider,
-  maxAgents: settings.maxAgents,
-  branchPrefix: settings.branchPrefix,
-  gitUsername: settings.gitUsername,
-  openaiBaseUrl: settings.openaiBaseUrl ?? "",
-  taskPromptMagicModel: settings.taskPromptMagicModel,
-  taskPromptMagicTemplate: settings.taskPromptMagicTemplate,
-  mcpServers: settings.mcpServers.map((server) => ({
-    name: server.name,
-    enabled: server.enabled,
-    transport: server.transport,
-    command: server.command ?? "",
-    argsText: (server.args ?? []).join("\n"),
-    url: server.url ?? "",
-    bearerTokenEnvVar: server.bearerTokenEnvVar ?? ""
-  })),
-  codexDefaultModel: settings.codexDefaultModel,
-  codexDefaultEffort: settings.codexDefaultEffort,
-  claudeDefaultModel: settings.claudeDefaultModel,
-  claudeDefaultEffort: settings.claudeDefaultEffort
-});
-
-export function SettingsPage() {
-  const { message } = App.useApp();
-  const { can } = useAuth();
-  const { loading, setSettings, settings } = useSettings();
-  const [generalForm] = Form.useForm<GeneralSettingsForm>();
-  const [credentialForm] = Form.useForm<CredentialForm>();
-  const [roleForm] = Form.useForm<RoleFormValues>();
-  const [responsePreferencePresetForm] = Form.useForm<ResponsePreferencePresetFormValues>();
-  const [roles, setRoles] = useState<Role[]>([]);
-  const [rolesLoading, setRolesLoading] = useState(true);
-  const [savingGeneral, setSavingGeneral] = useState(false);
-  const [savingCredentials, setSavingCredentials] = useState(false);
-  const [savingRole, setSavingRole] = useState(false);
-  const [savingResponsePreferencePreset, setSavingResponsePreferencePreset] = useState(false);
-  const [roleModalOpen, setRoleModalOpen] = useState(false);
-  const [editingRole, setEditingRole] = useState<Role | null>(null);
-  const [responsePreferencePresetModalOpen, setResponsePreferencePresetModalOpen] = useState(false);
-  const [editingResponsePreferencePreset, setEditingResponsePreferencePreset] = useState<ResponsePreferencePreset | null>(null);
-  const canEditSettings = can("settings:edit");
-  const { models: codexModels, loading: codexModelsLoading } = useProviderModels("codex");
-  const { models: claudeModels, loading: claudeModelsLoading } = useProviderModels("claude");
-  const allModelOptions = Array.from(
-    new Map(
-      [...codexModels, ...claudeModels, ...getModelsForProvider("codex"), ...getModelsForProvider("claude")].map((option) => [option.value, option])
-    ).values()
-  ).sort((left, right) => left.label.localeCompare(right.label));
-  const allEffortOptions = Array.from(
-    new Map(
-      [...getEffortOptionsForProvider("codex"), ...getEffortOptionsForProvider("claude")].map((option) => [option.value, option])
-    ).values()
-  );
-  const responsePreferencePresets = settings?.responsePreferencePresets ?? [];
-
-  const loadRoles = async () => {
-    setRolesLoading(true);
-    try {
-      setRoles(await api.listRoles());
-    } finally {
-      setRolesLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!settings) {
-      return;
-    }
-
-    generalForm.setFieldsValue(toFormValues(settings));
-  }, [generalForm, settings]);
-
-  useEffect(() => {
-    void loadRoles();
-  }, []);
-
-  const handleClearCredential = async (target: ClearCredentialTarget): Promise<void> => {
-    setSavingCredentials(true);
-    try {
-      if (target === "github") {
-        const nextSettings = await api.updateCredentials({ clearGithubToken: true });
-        setSettings(nextSettings);
-        credentialForm.resetFields(["githubToken"]);
-        message.success("GitHub token cleared");
-        return;
-      }
-
-      if (target === "openai") {
-        const nextSettings = await api.updateCredentials({ clearOpenAiApiKey: true });
-        setSettings(nextSettings);
-        credentialForm.resetFields(["openaiApiKey"]);
-        message.success("OpenAI API key cleared");
-        return;
-      }
-
-      if (target === "codexAuthJson") {
-        const nextSettings = await api.updateCredentials({ clearCodexAuthJson: true });
-        setSettings(nextSettings);
-        credentialForm.resetFields(["codexAuthJson"]);
-        message.success("Codex auth.json cleared");
-        return;
-      }
-
-      const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
-      setSettings(nextSettings);
-      credentialForm.resetFields(["anthropicApiKey"]);
-      message.success("Anthropic API key cleared");
-    } catch (error) {
-      if (target === "github") {
-        message.error(error instanceof Error ? error.message : "Failed to clear GitHub token");
-        return;
-      }
-
-      if (target === "openai") {
-        message.error(error instanceof Error ? error.message : "Failed to clear OpenAI API key");
-        return;
-      }
-
-      if (target === "codexAuthJson") {
-        message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");
-        return;
-      }
-
-      message.error(error instanceof Error ? error.message : "Failed to clear Anthropic API key");
-    } finally {
-      setSavingCredentials(false);
-    }
-  };
-
-  return (
-    <>
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
-        <Flex vertical gap={0}>
-          <Typography.Title level={2} style={{ margin: 0 }}>
-            Settings
-          </Typography.Title>
-          <Typography.Text type="secondary">
-            Concurrency, runtime defaults, provider credentials, and role-based access control.
-          </Typography.Text>
-        </Flex>
-
-        {!canEditSettings ? (
-          <Alert
-            type="info"
-            showIcon
-            message="Read-only access"
-            description="This account can view system configuration and roles, but it cannot change them."
-          />
-        ) : null}
-
-        <Form
-          form={generalForm}
-          layout="vertical"
-          disabled={!canEditSettings}
-          onFinish={async (values) => {
-            setSavingGeneral(true);
-            try {
-              const nextSettings = await api.updateSettings({
-                defaultProvider: values.defaultProvider,
-                maxAgents: values.maxAgents,
-                branchPrefix: values.branchPrefix,
-                gitUsername: values.gitUsername,
-                openaiBaseUrl: values.openaiBaseUrl?.trim() ? values.openaiBaseUrl.trim() : null,
-                taskPromptMagicModel: values.taskPromptMagicModel,
-                taskPromptMagicTemplate: values.taskPromptMagicTemplate,
-                codexDefaultModel: values.codexDefaultModel,
-                codexDefaultEffort: values.codexDefaultEffort,
-                claudeDefaultModel: values.claudeDefaultModel,
-                claudeDefaultEffort: values.claudeDefaultEffort,
-                mcpServers: (values.mcpServers ?? []).map((server) =>
-                  server.transport === "http"
-                    ? {
-                        name: server.name,
-                        enabled: server.enabled,
-                        transport: "http" as const,
-                        url: server.url?.trim() || "",
-                        bearerTokenEnvVar: server.bearerTokenEnvVar?.trim() || null
-                      }
-                    : {
-                        name: server.name,
-                        enabled: server.enabled,
-                        transport: "stdio" as const,
-                        command: server.command?.trim() || "",
-                        args:
-                          server.argsText
-                            ?.split("\n")
-                            .map((item) => item.trim())
-                            .filter(Boolean) ?? []
-                      }
-                )
-              });
-              setSettings(nextSettings);
-              message.success("Settings saved");
-            } catch (error) {
-              message.error(error instanceof Error ? error.message : "Failed to save settings");
-            } finally {
-              setSavingGeneral(false);
-            }
-          }}
-        >
-          <Space direction="vertical" size={16} style={{ width: "100%" }}>
-            <Card bordered={false} loading={loading} title="Runtime Controls">
-              <Flex vertical gap={16} style={{ width: "100%" }}>
-                <Form.Item name="defaultProvider" label="Default Provider" rules={[{ required: true }]}>
-                  <Select options={providerOptions} />
-                </Form.Item>
-                <Form.Item
-                  name="maxAgents"
-                  label="Concurrent Agents"
-                  extra="Hard limit on how many agents can run in parallel."
-                  rules={[{ required: true }]}
-                >
-                  <InputNumber min={1} max={20} style={{ width: "100%" }} />
-                </Form.Item>
-              </Flex>
-            </Card>
-
-            <Card bordered={false} loading={loading} title="Provider Defaults">
-              <Flex vertical gap={24} style={{ width: "100%" }}>
-                <div>
-                  <Typography.Text strong>OpenAI Gateway</Typography.Text>
-                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
-                    <Form.Item
-                      name="openaiBaseUrl"
-                      label="Base URL Override"
-                      extra="Set when pointing to a proxy or self-hosted gateway."
-                      style={{ marginBottom: 0 }}
-                    >
-                      <Input placeholder="https://api.openai.com/v1" />
-                    </Form.Item>
-                    <Form.Item
-                      name="taskPromptMagicModel"
-                      label="Task Prompt Magic Model"
-                      extra="Model used by the Magic Prompt helper in task creation."
-                      style={{ marginBottom: 0 }}
-                    >
-                      <Input placeholder="gpt-5.4-mini" />
-                    </Form.Item>
-                    <Form.Item
-                      name="taskPromptMagicTemplate"
-                      label="Task Prompt Magic Template"
-                      extra="Use {{user_request}} as placeholder for the user's current text."
-                      style={{ marginBottom: 0 }}
-                    >
-                      <Input.TextArea autoSize={{ minRows: 6, maxRows: 16 }} placeholder="Template with {{user_request}} placeholder" />
-                    </Form.Item>
-                  </Flex>
-                </div>
-
-                <div>
-                  <Typography.Text strong>Codex (OpenAI)</Typography.Text>
-                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
-                    <Form.Item name="codexDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
-                      <Select options={codexModels} loading={codexModelsLoading} showSearch optionFilterProp="label" />
-                    </Form.Item>
-                    <Form.Item name="codexDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
-                      <Select options={getEffortOptionsForProvider("codex")} />
-                    </Form.Item>
-                  </Flex>
-                </div>
-
-                <div>
-                  <Typography.Text strong>Claude Code (Anthropic)</Typography.Text>
-                  <Alert
-                    type="warning"
-                    showIcon
-                    style={{ marginTop: 8 }}
-                    message="Experimental"
-                    description="Claude Code in AgentSwarm is experimental; behavior and defaults may change."
-                  />
-                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
-                    <Form.Item name="claudeDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
-                      <Select options={claudeModels} loading={claudeModelsLoading} showSearch optionFilterProp="label" />
-                    </Form.Item>
-                    <Form.Item name="claudeDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
-                      <Select options={getEffortOptionsForProvider("claude")} />
-                    </Form.Item>
-                  </Flex>
-                </div>
-              </Flex>
-            </Card>
-
-            <Card bordered={false} loading={loading} title="Git & Branching">
-              <Flex vertical gap={16} style={{ width: "100%" }}>
-                <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
-                  <Input placeholder="agentswarm" />
-                </Form.Item>
-                <Form.Item
-                  name="gitUsername"
-                  label="Git Username"
-                  extra="Used for authenticated pushes from the runtime."
-                  rules={[{ required: true, whitespace: true }]}
-                >
-                  <Input placeholder="x-access-token" />
-                </Form.Item>
-              </Flex>
-            </Card>
-
-            <Card bordered={false} loading={loading} title="MCP Servers">
-              <Form.List name="mcpServers">
-                {(fields, { add, remove }) => (
-                  <Space direction="vertical" size={16} style={{ width: "100%" }}>
-                    {fields.map((field) => (
-                      <Card
-                        key={field.key}
-                        size="small"
-                        title={`Server ${field.name + 1}`}
-                        extra={
-                          <Button
-                            danger
-                            type="text"
-                            icon={<DeleteOutlined />}
-                            disabled={!canEditSettings}
-                            onClick={() => remove(field.name)}
-                          >
-                            Remove
-                          </Button>
-                        }
-                      >
-                        <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                          <Form.Item name={[field.name, "name"]} label="Name" rules={[{ required: true, whitespace: true }]}>
-                            <Input placeholder="memory" />
-                          </Form.Item>
-                          <Form.Item name={[field.name, "enabled"]} label="Enabled" valuePropName="checked">
-                            <Switch />
-                          </Form.Item>
-                          <Form.Item name={[field.name, "transport"]} label="Transport" rules={[{ required: true }]}>
-                            <Select options={transportOptions} />
-                          </Form.Item>
-                          <Form.Item noStyle shouldUpdate>
-                            {() => {
-                              const transport = generalForm.getFieldValue(["mcpServers", field.name, "transport"]) ?? "stdio";
-                              return transport === "http" ? (
-                                <>
-                                  <Form.Item name={[field.name, "url"]} label="URL" rules={[{ required: true, whitespace: true }]}>
-                                    <Input placeholder="https://example.com/mcp" />
-                                  </Form.Item>
-                                  <Form.Item
-                                    name={[field.name, "bearerTokenEnvVar"]}
-                                    label="Bearer Token Env Var"
-                                    extra="Environment variable name available to the server process (for example MCP_TOKEN)."
-                                    rules={[
-                                      {
-                                        validator: (_rule, value?: string) => {
-                                          if (!value || value.trim().length === 0) {
-                                            return Promise.resolve();
-                                          }
-
-                                          return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.trim())
-                                            ? Promise.resolve()
-                                            : Promise.reject(
-                                                new Error("Use a valid environment variable name (letters, numbers, underscore).")
-                                              );
-                                        }
-                                      }
-                                    ]}
-                                  >
-                                    <Input placeholder="MY_MCP_TOKEN" />
-                                  </Form.Item>
-                                </>
-                              ) : (
-                                <>
-                                  <Form.Item name={[field.name, "command"]} label="Command" rules={[{ required: true, whitespace: true }]}>
-                                    <Input placeholder="docker" />
-                                  </Form.Item>
-                                  <Form.Item name={[field.name, "argsText"]} label="Arguments">
-                                    <Input.TextArea rows={6} placeholder={"run\n-i\n--rm\nmcp/memory"} />
-                                  </Form.Item>
-                                </>
-                              );
-                            }}
-                          </Form.Item>
-                        </Space>
-                      </Card>
-                    ))}
-
-                    <Button
-                      type="dashed"
-                      icon={<PlusOutlined />}
-                      disabled={!canEditSettings}
-                      onClick={() =>
-                        add({
-                          name: "",
-                          enabled: true,
-                          transport: "stdio",
-                          command: "",
-                          argsText: ""
-                        })
-                      }
-                    >
-                      Add MCP Server
-                    </Button>
-                  </Space>
-                )}
-              </Form.List>
-            </Card>
-          </Space>
-
-          <Flex justify="flex-start" style={{ marginTop: 16 }}>
-            <Button type="primary" htmlType="submit" loading={savingGeneral} disabled={!canEditSettings}>
-              Save Settings
-            </Button>
-          </Flex>
-        </Form>
-
-        <Divider />
-
-        <Card
-          bordered={false}
-          loading={loading}
-          title="Credentials"
-          extra={
-            settings ? (
-              <Space>
-                <Tag color={settings.githubTokenConfigured ? "green" : "default"}>
-                  GitHub Token {settings.githubTokenConfigured ? "Configured" : "Missing"}
-                </Tag>
-                <Tag color={settings.openaiApiKeyConfigured ? "green" : "default"}>
-                  OpenAI API Key {settings.openaiApiKeyConfigured ? "Configured" : "Missing"}
-                </Tag>
-                <Tag color={settings.codexAuthJsonConfigured ? "green" : "default"}>
-                  Codex auth.json {settings.codexAuthJsonConfigured ? "Configured" : "Missing"}
-                </Tag>
-                <Tag color={settings.anthropicApiKeyConfigured ? "green" : "default"}>
-                  Anthropic API Key (Claude, experimental) {settings.anthropicApiKeyConfigured ? "Configured" : "Missing"}
-                </Tag>
-              </Space>
-            ) : null
-          }
-        >
-          <Alert
-            type="info"
-            showIcon
-            style={{ marginBottom: 16 }}
-            message="Credentials are write-only"
-            description="Tokens are encrypted on the server and never returned by the API."
-          />
-          <Form
-            form={credentialForm}
-            layout="vertical"
-            disabled={!canEditSettings}
-            onFinish={async (values) => {
-              setSavingCredentials(true);
-              try {
-                const nextSettings = await api.updateCredentials({
-                  githubToken: values.githubToken?.trim() || undefined,
-                  openaiApiKey: values.openaiApiKey?.trim() || undefined,
-                  codexAuthJson: values.codexAuthJson?.trim() || undefined,
-                  anthropicApiKey: values.anthropicApiKey?.trim() || undefined
-                });
-                credentialForm.resetFields();
-                setSettings(nextSettings);
-                message.success("Credentials updated");
-              } catch (error) {
-                message.error(error instanceof Error ? error.message : "Failed to update credentials");
-              } finally {
-                setSavingCredentials(false);
-              }
-            }}
-          >
-            <Form.Item name="githubToken" label="GitHub Token">
-              <Input.Password placeholder={settings?.githubTokenConfigured ? "Configured. Enter a new token to replace it." : "github_pat_..."} />
-            </Form.Item>
-            <Form.Item name="openaiApiKey" label="OpenAI API Key">
-              <Input.Password placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."} />
-            </Form.Item>
-            <Form.Item name="codexAuthJson" label="Global Codex auth.json" extra="Used as the Global Codex credential source and as the Auto fallback after profile auth.json.">
-              <Input.TextArea
-                autoSize={{ minRows: 4, maxRows: 10 }}
-                placeholder={settings?.codexAuthJsonConfigured ? "Configured. Paste a new auth.json to replace it." : "{ ... }"}
-              />
-            </Form.Item>
-            <Form.Item
-              name="anthropicApiKey"
-              label="Anthropic API Key"
-              extra="Used for Claude Code (experimental) runs only."
-            >
-              <Input.Password placeholder={settings?.anthropicApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-ant-..."} />
-            </Form.Item>
-            <Space wrap>
-              <Button type="primary" htmlType="submit" loading={savingCredentials} disabled={!canEditSettings}>
-                Save Credentials
-              </Button>
-              <Popconfirm
-                title="Clear GitHub token?"
-                description="This removes the stored GitHub token from settings."
-                okText="Clear"
-                cancelText="Cancel"
-                okButtonProps={{ danger: true, loading: savingCredentials }}
-                placement="top"
-                disabled={!canEditSettings}
-                onConfirm={() => handleClearCredential("github")}
-              >
-                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                  Clear GitHub Token
-                </Button>
-              </Popconfirm>
-              <Popconfirm
-                title="Clear OpenAI API key?"
-                description="This removes the stored OpenAI API key from settings."
-                okText="Clear"
-                cancelText="Cancel"
-                okButtonProps={{ danger: true, loading: savingCredentials }}
-                placement="top"
-                disabled={!canEditSettings}
-                onConfirm={() => handleClearCredential("openai")}
-              >
-                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                  Clear OpenAI API Key
-                </Button>
-              </Popconfirm>
-              <Popconfirm
-                title="Clear Codex auth.json?"
-                description="This removes the stored global Codex auth.json from settings."
-                okText="Clear"
-                cancelText="Cancel"
-                okButtonProps={{ danger: true, loading: savingCredentials }}
-                placement="top"
-                disabled={!canEditSettings}
-                onConfirm={() => handleClearCredential("codexAuthJson")}
-              >
-                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                  Clear Codex auth.json
-                </Button>
-              </Popconfirm>
-              <Popconfirm
-                title="Clear Anthropic API key?"
-                description="This removes the stored Anthropic API key from settings."
-                okText="Clear"
-                cancelText="Cancel"
-                okButtonProps={{ danger: true, loading: savingCredentials }}
-                placement="top"
-                disabled={!canEditSettings}
-                onConfirm={() => handleClearCredential("anthropic")}
-              >
-                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                  Clear Anthropic API Key
-                </Button>
-              </Popconfirm>
-            </Space>
-          </Form>
-        </Card>
-
-        <Card
-          bordered={false}
-          loading={rolesLoading}
-          title="Roles"
-          extra={
-            <Button
-              type="primary"
-              disabled={!canEditSettings}
-              onClick={() => {
-                setEditingRole(null);
-                roleForm.setFieldsValue({
-                  name: "",
-                  description: "",
-                  scopes: [],
-                  allowedProviders: [],
-                  allowedModels: [],
-                  allowedEfforts: []
-                });
-                setRoleModalOpen(true);
-              }}
-            >
-              Add Role
-            </Button>
-          }
-        >
-          <Table<Role>
-            rowKey="id"
-            pagination={false}
-            dataSource={roles}
-            columns={[
-              {
-                title: "Name",
-                dataIndex: "name",
-                render: (value: string, role) => (
-                  <Space>
-                    <Typography.Text strong>{value}</Typography.Text>
-                    {role.isSystem ? <Tag icon={<LockOutlined />}>System</Tag> : null}
-                  </Space>
-                )
-              },
-              {
-                title: "Description",
-                dataIndex: "description",
-                render: (value: string) => value || <Typography.Text type="secondary">None</Typography.Text>
-              },
-              {
-                title: "Scopes",
-                render: (_, role) => (
-                  <Space size={[4, 4]} wrap>
-                    {role.scopes.map((scope) => (
-                      <Tag key={scope}>{scope}</Tag>
-                    ))}
-                  </Space>
-                )
-              },
-              {
-                title: "Allowlists",
-                render: (_, role) => (
-                  <Space direction="vertical" size={4}>
-                    <Typography.Text type="secondary">{summarizeAllowlist("Providers", role.allowedProviders)}</Typography.Text>
-                    <Typography.Text type="secondary">{summarizeAllowlist("Models", role.allowedModels)}</Typography.Text>
-                    <Typography.Text type="secondary">{summarizeAllowlist("Efforts", role.allowedEfforts)}</Typography.Text>
-                  </Space>
-                )
-              },
-              {
-                title: "Actions",
-                render: (_, role) => (
-                  <Space>
-                    <Button
-                      disabled={!canEditSettings || role.isSystem}
-                      onClick={() => {
-                        setEditingRole(role);
-                        roleForm.setFieldsValue({
-                          name: role.name,
-                          description: role.description,
-                          scopes: role.scopes,
-                          allowedProviders: role.allowedProviders,
-                          allowedModels: role.allowedModels,
-                          allowedEfforts: role.allowedEfforts
-                        });
-                        setRoleModalOpen(true);
-                      }}
-                    >
-                      Edit
-                    </Button>
-                    <Button
-                      danger
-                      disabled={!canEditSettings || role.isSystem}
-                      onClick={async () => {
-                        try {
-                          await api.deleteRole(role.id);
-                          message.success("Role deleted");
-                          await loadRoles();
-                        } catch (error) {
-                          message.error(error instanceof Error ? error.message : "Failed to delete role");
-                        }
-                      }}
-                    >
-                      Delete
-                    </Button>
-                  </Space>
-                )
-              }
-            ]}
-          />
-        </Card>
-
-        <Card
-          bordered={false}
-          loading={loading}
-          title="Response Preferences"
-          extra={
-            <Button
-              type="primary"
-              disabled={!canEditSettings}
-              onClick={() => {
-                setEditingResponsePreferencePreset(null);
-                responsePreferencePresetForm.setFieldsValue({
-                  name: "",
-                  description: "",
-                  audience: undefined,
-                  explanationDepth: undefined,
-                  jargonLevel: undefined,
-                  codePreference: undefined,
-                  clarifyBehavior: undefined,
-                  formattingStyle: undefined,
-                  extraInstructions: ""
-                });
-                setResponsePreferencePresetModalOpen(true);
-              }}
-            >
-              Add Response Preference
-            </Button>
-          }
-        >
-          <Table<ResponsePreferencePreset>
-            rowKey="id"
-            pagination={false}
-            dataSource={responsePreferencePresets}
-            columns={[
-              {
-                title: "Name",
-                dataIndex: "name",
-                render: (value: string, preset) => (
-                  <Space>
-                    <Typography.Text strong>{value}</Typography.Text>
-                    {preset.isSystem ? <Tag icon={<LockOutlined />}>System</Tag> : null}
-                  </Space>
-                )
-              },
-              {
-                title: "Description",
-                dataIndex: "description",
-                render: (value: string) => value || <Typography.Text type="secondary">None</Typography.Text>
-              },
-              {
-                title: "Policy",
-                render: (_, preset) => summarizeResponsePreference(preset)
-              },
-              {
-                title: "Actions",
-                render: (_, preset) => (
-                  <Space>
-                    <Button
-                      disabled={!canEditSettings || preset.isSystem}
-                      onClick={() => {
-                        setEditingResponsePreferencePreset(preset);
-                        responsePreferencePresetForm.setFieldsValue({
-                          name: preset.name,
-                          description: preset.description,
-                          audience: preset.preference.audience,
-                          explanationDepth: preset.preference.explanationDepth,
-                          jargonLevel: preset.preference.jargonLevel,
-                          codePreference: preset.preference.codePreference,
-                          clarifyBehavior: preset.preference.clarifyBehavior,
-                          formattingStyle: preset.preference.formattingStyle,
-                          extraInstructions: preset.preference.extraInstructions ?? ""
-                        });
-                        setResponsePreferencePresetModalOpen(true);
-                      }}
-                    >
-                      Edit
-                    </Button>
-                    <Popconfirm
-                      title="Delete response preference?"
-                      description={`Delete ${preset.name}?`}
-                      disabled={!canEditSettings || preset.isSystem}
-                      onConfirm={async () => {
-                        if (!settings) {
-                          return;
-                        }
-                        try {
-                          const nextSettings = await api.updateSettings({
-                            responsePreferencePresets: responsePreferencePresets.filter((entry) => entry.id !== preset.id)
-                          });
-                          setSettings(nextSettings);
-                          message.success("Response preference deleted");
-                        } catch (error) {
-                          message.error(error instanceof Error ? error.message : "Failed to delete response preference");
-                        }
-                      }}
-                    >
-                      <Button
-                        danger
-                        disabled={!canEditSettings || preset.isSystem}
-                      >
-                        Delete
-                      </Button>
-                    </Popconfirm>
-                  </Space>
-                )
-              }
-            ]}
-          />
-        </Card>
-      </Space>
-
-      <Modal
-        open={roleModalOpen}
-        title={editingRole ? `Edit Role: ${editingRole.name}` : "Add Role"}
-        footer={null}
-        onCancel={() => setRoleModalOpen(false)}
-        destroyOnHidden
-      >
-        <Form
-          form={roleForm}
-          layout="vertical"
-          onFinish={async (values) => {
-            setSavingRole(true);
-            try {
-              if (editingRole) {
-                await api.updateRole(editingRole.id, values);
-                message.success("Role updated");
-              } else {
-                await api.createRole(values);
-                message.success("Role created");
-              }
-
-              setRoleModalOpen(false);
-              await loadRoles();
-            } catch (error) {
-              message.error(error instanceof Error ? error.message : "Failed to save role");
-            } finally {
-              setSavingRole(false);
-            }
-          }}
-        >
-          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a role name" }]}>
-            <Input disabled={!canEditSettings || editingRole?.isSystem} />
-          </Form.Item>
-          <Form.Item name="description" label="Description">
-            <Input.TextArea rows={3} disabled={!canEditSettings || editingRole?.isSystem} />
-          </Form.Item>
-          <Form.Item name="scopes" hidden rules={[{ required: true, message: "Select at least one scope" }]}>
-            <Select mode="multiple" options={[]} />
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate>
-            {() => {
-              const selectedScopes = (roleForm.getFieldValue("scopes") ?? []) as PermissionScope[];
-              return (
-                <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                  {PERMISSION_SCOPE_GROUPS.map((group) => (
-                    <Card key={group.label} size="small" title={group.label}>
-                      <Checkbox.Group
-                        style={{ width: "100%" }}
-                        disabled={!canEditSettings || editingRole?.isSystem}
-                        value={group.scopes.filter((scope) => selectedScopes.includes(scope))}
-                        options={group.scopes.map((scope) => ({
-                          label: scope,
-                          value: scope
-                        }))}
-                        onChange={(checkedValues) => {
-                          const currentScopes = (roleForm.getFieldValue("scopes") ?? []) as PermissionScope[];
-                          const groupScopeSet = new Set(group.scopes);
-                          const otherScopes = currentScopes.filter((scope) => !groupScopeSet.has(scope));
-                          roleForm.setFieldValue("scopes", [...otherScopes, ...(checkedValues as PermissionScope[])]);
-                        }}
-                      />
-                    </Card>
-                  ))}
-                </Space>
-              );
-            }}
-          </Form.Item>
-          <Form.Item
-            name="allowedProviders"
-            label="Allowed Providers"
-            extra="Leave empty to allow all providers."
-          >
-            <Select
-              mode="multiple"
-              options={providerOptions}
-              disabled={!canEditSettings || editingRole?.isSystem}
-            />
-          </Form.Item>
-          <Form.Item
-            name="allowedModels"
-            label="Allowed Models"
-            extra="Leave empty to allow all models."
-          >
-            <Select
-              mode="multiple"
-              options={allModelOptions}
-              loading={codexModelsLoading || claudeModelsLoading}
-              optionFilterProp="label"
-              showSearch
-              disabled={!canEditSettings || editingRole?.isSystem}
-            />
-          </Form.Item>
-          <Form.Item
-            name="allowedEfforts"
-            label="Allowed Efforts"
-            extra="Leave empty to allow all efforts."
-          >
-            <Select
-              mode="multiple"
-              options={allEffortOptions}
-              disabled={!canEditSettings || editingRole?.isSystem}
-            />
-          </Form.Item>
-          <Button
-            type="primary"
-            htmlType="submit"
-            loading={savingRole}
-            disabled={!canEditSettings || editingRole?.isSystem}
-            block
-            style={{ marginTop: 16 }}
-          >
-            {editingRole ? "Save Role" : "Create Role"}
-          </Button>
-        </Form>
-      </Modal>
-
-      <Modal
-        open={responsePreferencePresetModalOpen}
-        title={editingResponsePreferencePreset ? `Edit Response Preference: ${editingResponsePreferencePreset.name}` : "Add Response Preference"}
-        footer={null}
-        onCancel={() => setResponsePreferencePresetModalOpen(false)}
-        destroyOnHidden
-      >
-        <Form
-          form={responsePreferencePresetForm}
-          layout="vertical"
-          onFinish={async (values) => {
-            if (!settings) {
-              return;
-            }
-
-            setSavingResponsePreferencePreset(true);
-            try {
-              const nextPresets = editingResponsePreferencePreset
-                ? responsePreferencePresets.map((preset) =>
-                    preset.id === editingResponsePreferencePreset.id
-                      ? {
-                          ...preset,
-                          name: values.name,
-                          description: values.description,
-                          preference: {
-                            audience: values.audience,
-                            explanationDepth: values.explanationDepth,
-                            jargonLevel: values.jargonLevel,
-                            codePreference: values.codePreference,
-                            clarifyBehavior: values.clarifyBehavior,
-                            formattingStyle: values.formattingStyle,
-                            extraInstructions: values.extraInstructions?.trim() || undefined
-                          }
-                        }
-                      : preset
-                  )
-                : [
-                    ...responsePreferencePresets,
-                    {
-                      name: values.name,
-                      description: values.description,
-                      preference: {
-                        audience: values.audience,
-                        explanationDepth: values.explanationDepth,
-                        jargonLevel: values.jargonLevel,
-                        codePreference: values.codePreference,
-                        clarifyBehavior: values.clarifyBehavior,
-                        formattingStyle: values.formattingStyle,
-                        extraInstructions: values.extraInstructions?.trim() || undefined
-                      }
-                    }
-                  ];
-
-              const nextSettings = await api.updateSettings({
-                responsePreferencePresets: nextPresets
-              });
-              setSettings(nextSettings);
-              setResponsePreferencePresetModalOpen(false);
-              message.success(editingResponsePreferencePreset ? "Response preference updated" : "Response preference created");
-            } catch (error) {
-              message.error(error instanceof Error ? error.message : "Failed to save response preference");
-            } finally {
-              setSavingResponsePreferencePreset(false);
-            }
-          }}
-        >
-          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a name" }]}>
-            <Input disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
-          </Form.Item>
-          <Form.Item name="description" label="Description">
-            <Input.TextArea rows={3} disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
-          </Form.Item>
-          <Form.Item name="audience" label="Audience">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use neutral"
-              options={[
-                { label: "Technical", value: "technical" },
-                { label: "Non-technical", value: "non_technical" },
-                { label: "Mixed", value: "mixed" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="explanationDepth" label="Explanation Depth">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default depth"
-              options={[
-                { label: "Brief", value: "brief" },
-                { label: "Standard", value: "standard" },
-                { label: "Detailed", value: "detailed" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="jargonLevel" label="Jargon Level">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default jargon level"
-              options={[
-                { label: "Avoid", value: "avoid" },
-                { label: "Balanced", value: "balanced" },
-                { label: "Expert", value: "expert" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="codePreference" label="Code Preference">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default code preference"
-              options={[
-                { label: "Only When Needed", value: "only_when_needed" },
-                { label: "Prefer Examples", value: "prefer_examples" },
-                { label: "Avoid Code", value: "avoid_code" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="clarifyBehavior" label="Clarify Behavior">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default clarify behavior"
-              options={[
-                { label: "Ask When Ambiguous", value: "ask_when_ambiguous" },
-                { label: "Make Reasonable Assumptions", value: "make_reasonable_assumptions" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="formattingStyle" label="Formatting Style">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default formatting style"
-              options={[
-                { label: "Direct", value: "direct" },
-                { label: "Teaching", value: "teaching" },
-                { label: "Executive", value: "executive" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="extraInstructions" label="Extra Instructions">
-            <Input.TextArea
-              rows={4}
-              maxLength={2000}
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              placeholder="Optional additional response instructions."
-            />
-          </Form.Item>
-          <Button
-            type="primary"
-            htmlType="submit"
-            loading={savingResponsePreferencePreset}
-            disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-            block
-            style={{ marginTop: 16 }}
-          >
-            {editingResponsePreferencePreset ? "Save Response Preference" : "Create Response Preference"}
-          </Button>
-        </Form>
-      </Modal>
-    </>
-  );
-}
-````
-
 ## File: apps/web/components/snippets-page.tsx
 ````typescript
 "use client";
@@ -31088,1092 +29925,6 @@ void main().catch((error) => {
 });
 ````
 
-## File: apps/server/src/lib/task-interactive-terminal.ts
-````typescript
-import { spawn as spawnChild } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { access, constants, rm } from "node:fs/promises";
-import type { IncomingMessage, Server as HttpServer } from "node:http";
-import path from "node:path";
-import type { Duplex } from "node:stream";
-import { URL } from "node:url";
-
-import { WebSocket, WebSocketServer } from "ws";
-import pty from "node-pty";
-
-import {
-  getTaskStatusLabel,
-  getTaskTerminalSessionLabel,
-  getTaskTerminalSessionSentenceLabel,
-  isActiveTaskStatus,
-  isQueuedTaskStatus,
-  type Task,
-  type TaskTerminalSessionMode
-} from "@agentswarm/shared-types";
-
-import { env } from "../config/env.js";
-import type { AuthService } from "./auth.js";
-import type { SettingsStore } from "../services/settings-store.js";
-import type { SpawnerService } from "../services/spawner.js";
-import type { TaskMetadata, TaskStore } from "../services/task-store.js";
-import type { RepositoryStore } from "../services/repository-store.js";
-import { canUserAccessTask } from "./task-ownership.js";
-import { resolveWorkspaceGitRuntimeMounts } from "./git-runtime-mounts.js";
-import { materializeRepositoryRuntimeEnvEntries } from "./repository-runtime-env.js";
-import {
-  claudeModelSupportsThinkingBudget,
-  claudeThinkingBudgetTokensForProfile,
-  codexReasoningEffortForProfile,
-  defaultModelForProvider
-} from "./provider-config.js";
-import {
-  collectMcpServerEnvEntries,
-  collectMissingMcpServerBearerTokenEnvVars,
-  serializeClaudeMcpConfig,
-  serializeCodexMcpConfig
-} from "./mcp-config.js";
-import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
-import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
-import { resolveTaskGitCommitIdentity, type GitCommitIdentity } from "./task-git-identity.js";
-import {
-  buildGitTerminalDockerEnvEntries,
-  buildGitTerminalEnvEntries,
-  buildInteractiveWorkspaceGitEnvEntries
-} from "./task-interactive-terminal-git-env.js";
-import {
-  emitDockerSocketEnabledEventOnce,
-  emitNestedContainerSpawnedEvent,
-  resolveDockerSocketAccessPolicy,
-  resolveDockerSocketEnvEntries,
-  resolveDockerSocketMountArgs
-} from "./docker-socket-access.js";
-import type { UserStore } from "../services/user-store.js";
-import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js";
-
-const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
-const INTERACTIVE_WORKSPACE_PATH = "/workspace";
-const INTERACTIVE_WS_PING_INTERVAL_MS = 25_000;
-const INTERACTIVE_TRANSCRIPT_LIMIT = 2_000_000;
-const INTERACTIVE_EXIT_WAIT_MS = 1_500;
-const INTERACTIVE_TERMINAL_CLOSE_CODE = 1012;
-const PROVIDER_SESSION_ID_FILE = "agentswarm-session-id.txt";
-const repositoryEnvFileStore = new RepositoryEnvFileStore();
-
-function normalizeTerminalSessionMode(value: string | null | undefined): TaskTerminalSessionMode {
-  return value === "git" ? "git" : "interactive";
-}
-
-function buildCodexUserConfigToml(workspacePath: string, model: string, mcpConfig: string): string {
-  const pathSafe = workspacePath.replace(/"/g, "");
-  const modelSafe = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const modelTomlKey = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  return `model = "${modelSafe}"
-sandbox_mode = "danger-full-access"
-approval_policy = "never"
-
-[projects."${pathSafe}"]
-trust_level = "trusted"
-
-[notice]
-hide_rate_limit_model_nudge = true
-hide_gpt5_1_migration_prompt = true
-"hide_gpt-5.1-codex-max_migration_prompt" = true
-
-[tui]
-show_tooltips = false
-
-[tui.model_availability_nux]
-"${modelTomlKey}" = 1
-
-${mcpConfig}`;
-}
-
-function shellSingleQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
-}
-
-function buildCodexStartScript(
-  configB64: string,
-  model: string,
-  reasoningEffort: string,
-  preferAuthJson: boolean,
-  missingMcpBearerEnvVars: string[]
-): string {
-  const codexArgs = [
-    "--dangerously-bypass-approvals-and-sandbox",
-    '-C "$TASK_INTERACTIVE_WORKSPACE"',
-    "-m",
-    shellSingleQuote(model),
-    "-c cli_auth_credentials_store=file",
-    ...(preferAuthJson ? [] : ["-c forced_login_method=api"]),
-    "-c",
-    shellSingleQuote(`model_reasoning_effort="${reasoningEffort}"`)
-  ];
-
-  const authBootstrap = preferAuthJson
-    ? 'printf %s "$CODEX_AUTH_JSON_B64" | base64 -d > ~/.codex/auth.json'
-    : 'printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file';
-
-  return [
-    ...(missingMcpBearerEnvVars.length > 0
-      ? [
-          `echo ${shellSingleQuote(
-            `[agentswarm] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
-          )} >&2`
-        ]
-      : []),
-    "mkdir -p ~/.codex",
-    `printf '%s' ${shellSingleQuote(configB64)} | base64 -d > ~/.codex/config.toml`,
-    authBootstrap,
-    `SESSION_FILE="$HOME/.codex/${PROVIDER_SESSION_ID_FILE}"`,
-    'SESSION_ID=""',
-    'if [ -f "$SESSION_FILE" ]; then IFS= read -r SESSION_ID < "$SESSION_FILE" || true; fi',
-    `if [ -n "$SESSION_ID" ]; then exec codex resume ${codexArgs.join(" ")} "$SESSION_ID"; fi`,
-    `exec codex ${codexArgs.join(" ")}`,
-  ].join(" && ");
-}
-
-function buildClaudeSettingsJson(): string {
-  return JSON.stringify({
-    autoUpdaterStatus: "disabled",
-    disableBypassPermissionsMode: "disable"
-  });
-}
-
-function buildClaudeStartScript(
-  model: string,
-  settingsJson: string,
-  mcpConfigB64: string,
-  missingMcpBearerEnvVars: string[]
-): string {
-  const claudeArgs = [
-    "--model",
-    shellSingleQuote(model),
-    "--settings",
-    shellSingleQuote(settingsJson),
-    "--mcp-config",
-    '"$HOME/.claude/mcp-config.json"'
-  ];
-
-  return [
-    ...(missingMcpBearerEnvVars.length > 0
-      ? [
-          `echo ${shellSingleQuote(
-            `[agentswarm] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
-          )} >&2`
-        ]
-      : []),
-    'mkdir -p "$HOME/.claude" "$HOME/.local/bin"',
-    'if [ ! -x "$HOME/.local/bin/claude" ] && [ -x "/opt/claude-code/.local/bin/claude" ]; then ln -sf "/opt/claude-code/.local/bin/claude" "$HOME/.local/bin/claude"; fi',
-    'CLAUDE_BIN="$HOME/.local/bin/claude"',
-    'if [ ! -x "$CLAUDE_BIN" ] && [ -x "/opt/claude-code/.local/bin/claude" ]; then CLAUDE_BIN="/opt/claude-code/.local/bin/claude"; fi',
-    'if [ ! -x "$CLAUDE_BIN" ]; then CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"; fi',
-    'if [ -z "$CLAUDE_BIN" ] || [ ! -x "$CLAUDE_BIN" ]; then echo "Claude CLI not found in image." >&2; exit 127; fi',
-    `printf '%s' ${shellSingleQuote(mcpConfigB64)} | base64 -d > "$HOME/.claude/mcp-config.json"`,
-    'cd "$TASK_INTERACTIVE_WORKSPACE"',
-    `SESSION_FILE="$HOME/.claude/${PROVIDER_SESSION_ID_FILE}"`,
-    'SESSION_ID=""',
-    'if [ -f "$SESSION_FILE" ]; then IFS= read -r SESSION_ID < "$SESSION_FILE" || true; fi',
-    "sleep 1",
-    `if [ -n "$SESSION_ID" ]; then exec "$CLAUDE_BIN" --resume "$SESSION_ID" ${claudeArgs.join(" ")}; fi`,
-    `exec "$CLAUDE_BIN" ${claudeArgs.join(" ")}`
-  ].join(" && ");
-}
-
-type InteractiveTerminalRuntimeConfig =
-  | {
-      ok: true;
-      provider: Task["provider"];
-      image: string;
-      providerLabel: string;
-      persistentState?: {
-        containerPath: string;
-        configContainerPath?: string;
-        uid: number;
-        gid: number;
-      };
-      envEntries: Array<[string, string]>;
-      startScript: string;
-    }
-  | {
-      ok: false;
-      reason: string;
-    };
-
-type InteractiveRuntimeSettings = Awaited<ReturnType<SettingsStore["getSettings"]>>;
-type InteractiveRuntimeCredentials = Awaited<ReturnType<SettingsStore["getRuntimeCredentials"]>>;
-
-function resolveGitTerminalRuntimeConfig(
-  credentials: InteractiveRuntimeCredentials,
-  gitIdentity?: GitCommitIdentity | null
-):
-  | {
-      ok: true;
-      image: string;
-      envEntries: Array<[string, string]>;
-      startScript: string;
-    }
-  | {
-      ok: false;
-      reason: string;
-    } {
-  const image = env.GIT_TERMINAL_IMAGE?.trim();
-  if (!image) {
-    return { ok: false, reason: "Terminal is not configured (set GIT_TERMINAL_IMAGE on the server)." };
-  }
-
-  return {
-    ok: true,
-    image,
-    envEntries: buildGitTerminalEnvEntries({
-      workspacePath: INTERACTIVE_WORKSPACE_PATH,
-      githubToken: credentials.githubToken,
-      gitUsername: credentials.gitUsername,
-      gitIdentity
-    }),
-    startScript: buildGitTerminalStartScript()
-  };
-}
-
-function resolveInteractiveTerminalModel(task: Pick<TaskMetadata, "provider" | "providerProfile" | "modelOverride">): string {
-  const configured = task.modelOverride?.trim();
-  if (configured) {
-    return configured;
-  }
-
-  return defaultModelForProvider(task.provider, task.providerProfile) ?? (task.provider === "claude" ? "claude-sonnet-4-5" : "gpt-5.4");
-}
-
-function resolveInteractiveTerminalRuntimeConfig(
-  task: Pick<TaskMetadata, "provider" | "providerProfile" | "modelOverride">,
-  settings: InteractiveRuntimeSettings,
-  credentials: InteractiveRuntimeCredentials
-): InteractiveTerminalRuntimeConfig {
-  const model = resolveInteractiveTerminalModel(task);
-  const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(settings.mcpServers);
-
-  if (task.provider === "claude") {
-    const image = env.CLAUDE_INTERACTIVE_IMAGE?.trim();
-    if (!image) {
-      return { ok: false, reason: "Interactive Claude Code is not configured (set CLAUDE_INTERACTIVE_IMAGE on the server)." };
-    }
-    if (!credentials.anthropicApiKey) {
-      return { ok: false, reason: "Anthropic API key is not configured in Settings." };
-    }
-
-    const thinkingBudgetTokens = claudeModelSupportsThinkingBudget(model)
-      ? claudeThinkingBudgetTokensForProfile(task.providerProfile)
-      : undefined;
-
-    return {
-      ok: true,
-      provider: "claude",
-      image,
-      providerLabel: "Claude Code",
-      persistentState: {
-        containerPath: "/home/claude/.claude",
-        configContainerPath: "/home/claude/.claude.json",
-        uid: 1000,
-        gid: 1000
-      },
-      envEntries: [
-        ["ANTHROPIC_API_KEY", credentials.anthropicApiKey],
-        ["TERM", "xterm-256color"],
-        ["HOME", "/home/claude"],
-        ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
-        ...(typeof thinkingBudgetTokens === "number" ? [["MAX_THINKING_TOKENS", String(thinkingBudgetTokens)] as [string, string]] : []),
-        ...collectMcpServerEnvEntries(settings.mcpServers),
-        ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
-      ],
-      startScript: buildClaudeStartScript(
-        model,
-        buildClaudeSettingsJson(),
-        Buffer.from(serializeClaudeMcpConfig(settings.mcpServers), "utf8").toString("base64"),
-        missingMcpBearerEnvVars
-      )
-    };
-  }
-
-  const image = env.CODEX_INTERACTIVE_IMAGE?.trim();
-  if (!image) {
-    return { ok: false, reason: "Interactive Codex is not configured (set CODEX_INTERACTIVE_IMAGE on the server)." };
-  }
-  if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
-    return { ok: false, reason: "OpenAI API key or Codex auth.json is not configured." };
-  }
-  const useCodexAuthJson = Boolean(credentials.codexAuthJson);
-
-  const envEntries: Array<[string, string]> = [
-    ...(credentials.openaiApiKey ? [["OPENAI_API_KEY", credentials.openaiApiKey] as [string, string]] : []),
-    ...(credentials.codexAuthJson
-      ? [["CODEX_AUTH_JSON_B64", Buffer.from(credentials.codexAuthJson, "utf8").toString("base64")] as [string, string]]
-      : []),
-    ["TERM", "xterm-256color"],
-    ["HOME", "/root"],
-    ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
-    ["CODEX_TRUST_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
-    ...collectMcpServerEnvEntries(settings.mcpServers),
-    ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
-  ];
-  if (settings.openaiBaseUrl?.trim()) {
-    envEntries.push(["OPENAI_BASE_URL", settings.openaiBaseUrl.trim()]);
-  }
-
-  return {
-    ok: true,
-    provider: "codex",
-    image,
-    providerLabel: "Codex",
-    persistentState: {
-      containerPath: "/root/.codex",
-      uid: 0,
-      gid: 0
-    },
-    envEntries,
-    startScript: buildCodexStartScript(
-      Buffer.from(
-        buildCodexUserConfigToml(
-          INTERACTIVE_WORKSPACE_PATH,
-          model,
-          serializeCodexMcpConfig(settings.mcpServers)
-        ),
-        "utf8"
-      ).toString("base64"),
-      model,
-      codexReasoningEffortForProfile(task.providerProfile),
-      useCodexAuthJson,
-      missingMcpBearerEnvVars
-    )
-  };
-}
-
-function forceRemoveDockerSession(containerName: string): void {
-  const child = spawnChild("docker", ["rm", "-f", containerName], {
-    stdio: "ignore",
-    detached: true,
-  });
-  child.unref();
-}
-
-function terminalImageBuildHint(mode: TaskTerminalSessionMode, provider: Task["provider"], image: string): string {
-  const dockerfile =
-    mode === "git" ? "Dockerfile.git" : provider === "claude" ? "Dockerfile.claude" : "Dockerfile.codex";
-  return `docker build -f tools/codex-web-terminal/${dockerfile} -t ${image} tools/codex-web-terminal`;
-}
-
-async function dockerImageExists(image: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const child = spawnChild("docker", ["image", "inspect", image], {
-      stdio: "ignore"
-    });
-
-    child.on("error", () => resolve(false));
-    child.on("close", (code) => resolve(code === 0));
-  });
-}
-
-function denySocket(socket: Duplex, status: number, body: string): void {
-  const reason = status === 401 ? "Unauthorized" : status === 403 ? "Forbidden" : status === 404 ? "Not Found" : "Error";
-  socket.write(
-    `HTTP/1.1 ${status} ${reason}\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n${body}`,
-  );
-  socket.destroy();
-}
-
-export interface TaskInteractiveTerminalDeps {
-  auth: AuthService;
-  taskStore: TaskStore;
-  settingsStore: SettingsStore;
-  spawner: SpawnerService;
-  userStore: Pick<UserStore, "getUser">;
-  repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries">;
-}
-
-interface ActiveInteractiveTerminalController {
-  sessionId: string;
-  mode: TaskTerminalSessionMode;
-  hasAttachedClient: () => boolean;
-  attachClient: (ws: WebSocket) => boolean;
-  terminate: (reason?: string) => Promise<void>;
-}
-
-const activeInteractiveTerminalControllers = new Map<string, ActiveInteractiveTerminalController>();
-
-function getActiveInteractiveTerminalController(
-  taskId: string,
-  sessionId?: string | null
-): ActiveInteractiveTerminalController | null {
-  const active = activeInteractiveTerminalControllers.get(taskId);
-  if (!active) {
-    return null;
-  }
-  if (sessionId && active.sessionId !== sessionId) {
-    return null;
-  }
-  return active;
-}
-
-function registerActiveInteractiveTerminalController(
-  taskId: string,
-  controller: ActiveInteractiveTerminalController
-): void {
-  activeInteractiveTerminalControllers.set(taskId, controller);
-}
-
-function unregisterActiveInteractiveTerminalController(taskId: string, sessionId: string): void {
-  const active = activeInteractiveTerminalControllers.get(taskId);
-  if (active?.sessionId === sessionId) {
-    activeInteractiveTerminalControllers.delete(taskId);
-  }
-}
-
-function sendInteractiveTerminalError(ws: WebSocket, message: string): void {
-  if (ws.readyState !== WebSocket.OPEN) {
-    return;
-  }
-
-  ws.send(JSON.stringify({ type: "error", message }), () => {
-    try {
-      ws.close(1011, "terminal failed");
-    } catch {
-      /* ignore */
-    }
-  });
-}
-
-export async function killTaskInteractiveTerminalSession(taskId: string): Promise<boolean> {
-  const active = activeInteractiveTerminalControllers.get(taskId);
-  if (!active) {
-    return false;
-  }
-
-  await active.terminate();
-  return true;
-}
-
-export type TaskInteractiveTerminalStatusPayload = {
-  available: boolean;
-  reason?: string;
-  /** When true, a browser session is already connected; block duplicate terminals and task composer sends. */
-  activeInteractiveSession?: boolean;
-  /** Present when a terminal session is active for the task. */
-  terminalMode?: TaskTerminalSessionMode;
-};
-
-export async function getTaskInteractiveTerminalStatus(
-  taskStore: TaskStore,
-  settingsStore: SettingsStore,
-  taskId: string,
-  mode: TaskTerminalSessionMode = "interactive",
-  userId?: string | null
-): Promise<TaskInteractiveTerminalStatusPayload> {
-  const task = await taskStore.getTaskMetadata(taskId);
-  if (!task) {
-    return { available: false, reason: "Task not found." };
-  }
-
-  if (task.status === "archived") {
-    return { available: false, reason: "Archived tasks are read-only." };
-  }
-
-  if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
-    return {
-      available: false,
-      reason: "Terminal unavailable while the task is queued or running. Finish or cancel that run first (one action at a time)."
-    };
-  }
-
-  const activeInteractiveSession = await taskStore.getActiveInteractiveSession(taskId);
-  if (activeInteractiveSession) {
-    const controller = getActiveInteractiveTerminalController(taskId, activeInteractiveSession.sessionId);
-    const activeModeLabel = getTaskTerminalSessionLabel(activeInteractiveSession.mode);
-    if (!controller) {
-      return {
-        available: false,
-        reason: `${activeModeLabel} session is active but unavailable from this server process. Use Kill Terminal to clear it.`,
-        activeInteractiveSession: true,
-        terminalMode: activeInteractiveSession.mode
-      };
-    }
-    if (activeInteractiveSession.mode !== mode) {
-      return {
-        available: false,
-        reason: `${activeModeLabel} session is already active for this task. Stop it before opening ${getTaskTerminalSessionLabel(mode)}.`,
-        activeInteractiveSession: true,
-        terminalMode: activeInteractiveSession.mode
-      };
-    }
-    if (controller.hasAttachedClient()) {
-      return {
-        available: false,
-        reason: `${activeModeLabel} session is already open in another window.`,
-        activeInteractiveSession: true,
-        terminalMode: activeInteractiveSession.mode
-      };
-    }
-    return {
-      available: false,
-      reason: `The ${getTaskTerminalSessionSentenceLabel(mode)} session is shutting down.`,
-      activeInteractiveSession: true,
-      terminalMode: activeInteractiveSession.mode
-    };
-  }
-
-  if (mode !== "git" && await taskStore.hasPendingChangeProposal(taskId)) {
-    return { available: false, reason: "Apply or reject the pending checkpoint before opening a terminal." };
-  }
-
-  const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
-  try {
-    await access(workspaceOnServer, constants.R_OK | constants.X_OK);
-  } catch {
-    return { available: false, reason: "No workspace folder on disk for this task yet." };
-  }
-
-  if (mode === "git") {
-    const credentials = await settingsStore.getRuntimeCredentials(userId);
-    const runtime = resolveGitTerminalRuntimeConfig(credentials);
-    if (!runtime.ok) {
-      return { available: false, reason: runtime.reason };
-    }
-    if (!(await dockerImageExists(runtime.image))) {
-      return {
-        available: false,
-        reason: `Terminal image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("git", task.provider, runtime.image)}`
-      };
-    }
-    return { available: true };
-  }
-
-  const [settings, credentials] = await Promise.all([
-    settingsStore.getSettings(),
-    settingsStore.getRuntimeCredentials(userId)
-  ]);
-  const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
-  if (!runtime.ok) {
-    return { available: false, reason: runtime.reason };
-  }
-  if (!(await dockerImageExists(runtime.image))) {
-    return {
-      available: false,
-      reason: `Interactive ${runtime.providerLabel} image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("interactive", task.provider, runtime.image)}`
-    };
-  }
-
-  return { available: true };
-}
-
-/**
- * Handles WebSocket upgrades for `/tasks/:taskId/interactive-terminal`.
- * Prepended so Socket.io still receives `/socket.io/` upgrades.
- */
-export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, deps: TaskInteractiveTerminalDeps): void {
-  const wss = new WebSocketServer({ noServer: true });
-
-  httpServer.prependListener("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
-    const host = request.headers.host ?? "127.0.0.1";
-    const requestUrl = new URL(request.url ?? "/", `http://${host}`);
-    const pathOnly = requestUrl.pathname;
-    const terminalMode = normalizeTerminalSessionMode(requestUrl.searchParams.get("mode"));
-    const match = pathOnly.match(WS_PATH_RE);
-    if (!match) {
-      return;
-    }
-
-    const taskId = match[1];
-    if (!taskId) {
-      return;
-    }
-
-    void (async () => {
-      const auth = await deps.auth.authenticateCookieHeader(request.headers);
-      if (!auth) {
-        denySocket(socket, 401, "Authentication required");
-        return;
-      }
-      if (!auth.scopes.has("task:edit")) {
-        denySocket(socket, 403, "task:edit scope required");
-        return;
-      }
-      if (!auth.scopes.has("task:interactive")) {
-        denySocket(socket, 403, "task:interactive scope required");
-        return;
-      }
-
-      const task = await deps.taskStore.getTask(taskId);
-      if (!task || !canUserAccessTask(auth.user, task)) {
-        denySocket(socket, 404, "Task not found");
-        return;
-      }
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        void initializeTaskInteractiveTerminalWebSocket(ws, task, deps, terminalMode, auth.user.id).catch(() => {
-          sendInteractiveTerminalError(ws, `${getTaskTerminalSessionLabel(terminalMode)} initialization failed.`);
-        });
-      });
-    })().catch(() => {
-      try {
-        denySocket(socket, 500, "Internal error");
-      } catch {
-        /* ignore */
-      }
-    });
-  });
-}
-
-async function initializeTaskInteractiveTerminalWebSocket(
-  ws: WebSocket,
-  task: Task,
-  deps: TaskInteractiveTerminalDeps,
-  mode: TaskTerminalSessionMode,
-  userId?: string | null
-): Promise<void> {
-  const taskId = task.id;
-  const activeInteractiveSession = await deps.taskStore.getActiveInteractiveSession(taskId);
-  if (activeInteractiveSession) {
-    const controller = getActiveInteractiveTerminalController(taskId, activeInteractiveSession.sessionId);
-    const activeModeLabel = getTaskTerminalSessionLabel(activeInteractiveSession.mode);
-    if (!controller) {
-      sendInteractiveTerminalError(
-        ws,
-        `${activeModeLabel} session is active but unavailable from this server process. Use Kill Terminal to clear it.`
-      );
-      return;
-    }
-    if (activeInteractiveSession.mode !== mode) {
-      sendInteractiveTerminalError(
-        ws,
-        `${activeModeLabel} session is already active for this task. Stop it before opening ${getTaskTerminalSessionLabel(mode)}.`
-      );
-      return;
-    }
-    if (controller.hasAttachedClient()) {
-      sendInteractiveTerminalError(ws, `${activeModeLabel} session is already open in another window.`);
-      return;
-    }
-    if (!controller.attachClient(ws)) {
-      sendInteractiveTerminalError(ws, `The ${getTaskTerminalSessionSentenceLabel(mode)} session is shutting down.`);
-      return;
-    }
-    return;
-  }
-
-  const status = await getTaskInteractiveTerminalStatus(deps.taskStore, deps.settingsStore, taskId, mode, userId);
-  if (!status.available) {
-    sendInteractiveTerminalError(ws, status.reason ?? `${getTaskTerminalSessionLabel(mode)} is unavailable`);
-    return;
-  }
-
-  let interactiveSessionId: string | null = null;
-  let sessionRepositoryEnvDir: string | null = null;
-
-  try {
-    const started = await deps.spawner.beginInteractiveTerminalSession(taskId, mode);
-    interactiveSessionId = started.sessionId;
-    const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
-    const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
-    const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
-    if (mode === "git") {
-      const [credentials, gitIdentity, repositoryRuntimeEnvEntries] = await Promise.all([
-        deps.settingsStore.getRuntimeCredentials(userId),
-        resolveTaskGitCommitIdentity(task, deps.userStore, {
-          name: env.GIT_USER_NAME,
-          email: env.GIT_USER_EMAIL
-        }),
-        deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
-      ]);
-      const runtime = resolveGitTerminalRuntimeConfig(credentials, gitIdentity);
-      if (!runtime.ok) {
-        throw new Error(runtime.reason);
-      }
-
-      const sessionName = `aswgit-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
-      const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "interactive-env", taskId, interactiveSessionId);
-      sessionRepositoryEnvDir = repositoryEnvDir;
-      const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
-        destinationDir: repositoryEnvDir,
-        entries: repositoryRuntimeEnvEntries,
-        fileStore: repositoryEnvFileStore
-      });
-      const dockerEnv: string[] = [];
-      for (const [name, value] of buildGitTerminalDockerEnvEntries({
-        runtimeEnvEntries: runtime.envEntries,
-        repositoryEnvEntries: repositoryRuntimeEnv
-      })) {
-        dockerEnv.push("-e", `${name}=${value}`);
-      }
-      dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
-
-      const dockerArgs = [
-        "run",
-        "-i",
-        "-t",
-        "--rm",
-        "--name",
-        sessionName,
-        "-v",
-        `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
-        "-v",
-        `${dockerBindSource}:/workspace:rw`,
-        ...gitRuntimeMounts,
-        ...dockerEnv,
-        runtime.image,
-        "sh",
-        "-lc",
-        runtime.startScript
-      ];
-
-      const child = pty.spawn("docker", dockerArgs, {
-        name: "xterm-256color",
-        cols: 80,
-        rows: 24,
-        cwd: process.env.HOME || "/",
-        env: { ...process.env, TERM: "xterm-256color", AGENTSWARM_TERMINAL_MODE: mode }
-      });
-
-      wireTerminalWebSocket(ws, child, {
-        taskId,
-        sessionId: interactiveSessionId,
-        spawner: deps.spawner,
-        taskStore: deps.taskStore,
-        mode,
-        cleanup: async () => {
-          forceRemoveDockerSession(sessionName);
-          await rm(repositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
-        }
-      });
-      return;
-    }
-
-    const [credentials, settings, repositoryRuntimeEnvEntries] = await Promise.all([
-      deps.settingsStore.getRuntimeCredentials(userId),
-      deps.settingsStore.getSettings(),
-      deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
-    ]);
-    const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
-    if (!runtime.ok) {
-      throw new Error(runtime.reason);
-    }
-    const dockerSocketPolicy = resolveDockerSocketAccessPolicy(runtime.provider);
-    const dockerSocketMountArgs = resolveDockerSocketMountArgs(dockerSocketPolicy);
-    if (dockerSocketPolicy.enabled) {
-      emitDockerSocketEnabledEventOnce({ provider: runtime.provider, policy: dockerSocketPolicy });
-    }
-
-    const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
-    const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "interactive-env", taskId, interactiveSessionId);
-    sessionRepositoryEnvDir = repositoryEnvDir;
-    const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
-      destinationDir: repositoryEnvDir,
-      entries: repositoryRuntimeEnvEntries,
-      fileStore: repositoryEnvFileStore
-    });
-    const statePaths = runtime.persistentState
-      ? await ensureTaskProviderStatePaths(task.id, runtime.provider, {
-          uid: runtime.persistentState.uid,
-          gid: runtime.persistentState.gid
-        })
-      : null;
-    const dockerEnv: string[] = [];
-    for (const [name, value] of runtime.envEntries) {
-      dockerEnv.push("-e", `${name}=${value}`);
-    }
-    for (const [name, value] of repositoryRuntimeEnv) {
-      dockerEnv.push("-e", `${name}=${value}`);
-    }
-    for (const [name, value] of resolveDockerSocketEnvEntries(dockerSocketPolicy)) {
-      dockerEnv.push("-e", `${name}=${value}`);
-    }
-    dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
-
-    const dockerArgs = [
-      "run",
-      "-i",
-      "-t",
-      "--rm",
-      "--name",
-      sessionName,
-      "-v",
-      `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
-      "-v",
-      `${dockerBindSource}:/workspace:rw`,
-      ...dockerSocketMountArgs,
-      ...gitRuntimeMounts,
-      ...(statePaths && runtime.persistentState
-        ? ["-v", `${statePaths.hostPath}:${runtime.persistentState.containerPath}:rw`]
-        : []),
-      ...(statePaths && runtime.persistentState?.configContainerPath && statePaths.configHostPath
-        ? ["-v", `${statePaths.configHostPath}:${runtime.persistentState.configContainerPath}:rw`]
-        : []),
-      ...dockerEnv,
-      runtime.image,
-      "sh",
-      "-lc",
-      runtime.startScript,
-    ];
-    emitNestedContainerSpawnedEvent({
-      source: "interactive_terminal",
-      taskId,
-      provider: runtime.provider,
-      policy: dockerSocketPolicy
-    });
-
-    const child = pty.spawn("docker", dockerArgs, {
-      name: "xterm-256color",
-      cols: 80,
-      rows: 24,
-      cwd: process.env.HOME || "/",
-      env: { ...process.env, TERM: "xterm-256color", AGENTSWARM_TERMINAL_MODE: mode },
-    });
-
-    wireTerminalWebSocket(ws, child, {
-      taskId,
-      sessionId: interactiveSessionId,
-      spawner: deps.spawner,
-      taskStore: deps.taskStore,
-      mode,
-      cleanup: async () => {
-        forceRemoveDockerSession(sessionName);
-        await rm(repositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
-      }
-    });
-  } catch (error) {
-    if (sessionRepositoryEnvDir) {
-      await rm(sessionRepositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
-    }
-    if (interactiveSessionId) {
-      await deps.spawner.endInteractiveTerminalSession(taskId, interactiveSessionId).catch(() => undefined);
-    }
-    const message = error instanceof Error ? error.message : `Could not start ${getTaskTerminalSessionSentenceLabel(mode)} session`;
-    sendInteractiveTerminalError(ws, message);
-  }
-}
-
-function wireTerminalWebSocket(
-  ws: WebSocket,
-  child: pty.IPty,
-  proposalCtx: {
-    taskId: string;
-    sessionId: string;
-    spawner: SpawnerService;
-    taskStore: TaskStore;
-    mode: TaskTerminalSessionMode;
-    cleanup?: () => Promise<void> | void;
-  }
-): void {
-  let sawTerminalOutput = false;
-  let transcriptBuffer = "";
-  let transcriptTruncated = false;
-  let transcriptSaved = false;
-  let currentWs: WebSocket | null = null;
-  let currentWsCleanup: (() => void) | null = null;
-  let cleanupPromise: Promise<void> | null = null;
-  let resolveChildExit: (() => void) | null = null;
-  const childExitPromise = new Promise<void>((resolve) => {
-    resolveChildExit = resolve;
-  });
-  const terminalLabel = getTaskTerminalSessionLabel(proposalCtx.mode);
-  const terminalSentenceLabel = getTaskTerminalSessionSentenceLabel(proposalCtx.mode);
-
-  const logLifecycle = (message: string): void => {
-    const taskMessage = `${terminalSentenceLabel} (${proposalCtx.sessionId}): ${message}`;
-    console.info(`[interactive-terminal][${proposalCtx.taskId}][${proposalCtx.sessionId}] ${message}`);
-    void proposalCtx.taskStore.appendLog(proposalCtx.taskId, taskMessage).catch(() => undefined);
-  };
-
-  const appendTranscriptChunk = (chunk: string): void => {
-    if (transcriptTruncated || chunk.length === 0) {
-      return;
-    }
-
-    const remaining = INTERACTIVE_TRANSCRIPT_LIMIT - transcriptBuffer.length;
-    if (remaining <= 0) {
-      transcriptTruncated = true;
-      return;
-    }
-
-    if (chunk.length > remaining) {
-      transcriptBuffer += chunk.slice(0, remaining);
-      transcriptTruncated = true;
-      return;
-    }
-
-    transcriptBuffer += chunk;
-  };
-
-  const persistTranscriptIfNeeded = async (): Promise<void> => {
-    if (transcriptSaved || (!transcriptTruncated && transcriptBuffer.length === 0)) {
-      return;
-    }
-
-    transcriptSaved = true;
-    await proposalCtx.taskStore
-      .saveInteractiveTerminalTranscript(proposalCtx.taskId, proposalCtx.sessionId, transcriptBuffer, transcriptTruncated)
-      .catch(() => undefined);
-  };
-
-  const detachCurrentClient = (): WebSocket | null => {
-    const activeWs = currentWs;
-    currentWs = null;
-    if (currentWsCleanup) {
-      currentWsCleanup();
-      currentWsCleanup = null;
-    }
-    return activeWs;
-  };
-
-  const cleanupSession = (reason = `${terminalLabel} session terminated.`): Promise<void> => {
-    if (cleanupPromise) {
-      return cleanupPromise;
-    }
-
-    cleanupPromise = (async () => {
-      unregisterActiveInteractiveTerminalController(proposalCtx.taskId, proposalCtx.sessionId);
-      const activeWs = detachCurrentClient();
-      logLifecycle(reason);
-      try {
-        if (activeWs && (activeWs.readyState === WebSocket.OPEN || activeWs.readyState === WebSocket.CONNECTING)) {
-          activeWs.close(INTERACTIVE_TERMINAL_CLOSE_CODE, "terminal session terminated");
-        }
-      } catch {
-        /* ignore */
-      }
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* ignore */
-      }
-      await proposalCtx.cleanup?.();
-      await Promise.race([
-        childExitPromise,
-        new Promise<void>((resolve) => setTimeout(resolve, INTERACTIVE_EXIT_WAIT_MS))
-      ]);
-      await persistTranscriptIfNeeded();
-      await proposalCtx.spawner.endInteractiveTerminalSession(proposalCtx.taskId, proposalCtx.sessionId).catch(() => undefined);
-    })();
-
-    return cleanupPromise;
-  };
-
-  const controller: ActiveInteractiveTerminalController = {
-    sessionId: proposalCtx.sessionId,
-    mode: proposalCtx.mode,
-    hasAttachedClient: () => currentWs !== null,
-    attachClient: (nextWs) => {
-      if (cleanupPromise || currentWs) {
-        return false;
-      }
-
-      currentWs = nextWs;
-      let awaitingPong = false;
-
-      const onMessage = (data: WebSocket.RawData, isBinary: boolean) => {
-        if (isBinary) {
-          child.write(Buffer.from(data as Buffer).toString("utf8"));
-          return;
-        }
-        try {
-          const msg = JSON.parse(String(data)) as { type?: string; cols?: number; rows?: number };
-          if (msg.type === "resize") {
-            const cols = Number(msg.cols);
-            const rows = Number(msg.rows);
-            if (Number.isFinite(cols) && Number.isFinite(rows)) {
-              child.resize(
-                Math.max(2, Math.min(512, Math.floor(cols))),
-                Math.max(1, Math.min(256, Math.floor(rows))),
-              );
-            }
-          }
-        } catch {
-          /* ignore */
-        }
-      };
-
-      const onClose = (code: number, reason: Buffer) => {
-        detachCurrentClient();
-        void cleanupSession(`Client disconnected (code ${code}${reason.length > 0 ? `, reason: ${JSON.stringify(reason.toString("utf8"))}` : ""}).`);
-      };
-
-      const onError = (error: Error) => {
-        const message = error instanceof Error && error.message.trim() ? error.message.trim() : "unknown WebSocket error";
-        detachCurrentClient();
-        void cleanupSession(`WebSocket error: ${message}.`);
-      };
-
-      const onPong = () => {
-        awaitingPong = false;
-      };
-
-      const heartbeatInterval = setInterval(() => {
-        if (cleanupPromise || currentWs !== nextWs) {
-          return;
-        }
-        if (awaitingPong) {
-          detachCurrentClient();
-          void cleanupSession("WebSocket ping timeout.");
-          return;
-        }
-        awaitingPong = true;
-        try {
-          nextWs.ping();
-        } catch (error) {
-          const message = error instanceof Error && error.message.trim() ? error.message.trim() : "could not send ping";
-          detachCurrentClient();
-          void cleanupSession(`WebSocket ping failed: ${message}.`);
-        }
-      }, INTERACTIVE_WS_PING_INTERVAL_MS);
-
-      currentWsCleanup = () => {
-        clearInterval(heartbeatInterval);
-        nextWs.off("message", onMessage);
-        nextWs.off("close", onClose);
-        nextWs.off("error", onError);
-        nextWs.off("pong", onPong);
-      };
-
-      nextWs.on("message", onMessage);
-      nextWs.on("close", onClose);
-      nextWs.on("error", onError);
-      nextWs.on("pong", onPong);
-
-      return true;
-    },
-    terminate: (reason?: string) => cleanupSession(reason)
-  };
-
-  registerActiveInteractiveTerminalController(proposalCtx.taskId, controller);
-
-  child.onData((data) => {
-    sawTerminalOutput = true;
-    appendTranscriptChunk(data);
-    if (currentWs?.readyState === WebSocket.OPEN) {
-      currentWs.send(Buffer.from(data, "utf8"), { binary: true });
-    }
-  });
-
-  child.onExit((event) => {
-    resolveChildExit?.();
-    resolveChildExit = null;
-    const exitSummary = `exit code ${event.exitCode}${event.signal ? `, signal ${event.signal}` : ""}`;
-    if (!sawTerminalOutput) {
-      if (currentWs?.readyState === WebSocket.OPEN) {
-        try {
-          currentWs.send(JSON.stringify({ type: "error", message: "Terminal process exited before it produced terminal output." }));
-        } catch {
-          /* ignore */
-        }
-      }
-      void cleanupSession(`Terminal process exited before it produced terminal output (${exitSummary}).`);
-      return;
-    }
-    void cleanupSession(`Terminal process exited (${exitSummary}).`);
-  });
-
-  if (!controller.attachClient(ws)) {
-    void cleanupSession("Could not attach the initial terminal client.");
-  }
-}
-````
-
 ## File: apps/server/src/services/app-stores.ts
 ````typescript
 import type { CredentialStore } from "./credential-store.js";
@@ -33517,6 +31268,1186 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
 }
 ````
 
+## File: apps/web/components/settings-page.tsx
+````typescript
+"use client";
+
+import { useEffect, useState } from "react";
+import type {
+  AgentProvider,
+  AgentClarifyBehavior,
+  AgentCodePreference,
+  AgentExplanationDepth,
+  AgentFormattingStyle,
+  AgentJargonLevel,
+  AudienceType,
+  McpServerTransport,
+  PermissionScope,
+  ProviderProfile,
+  ResponsePreferencePreset,
+  Role,
+  SystemSettings
+} from "@agentswarm/shared-types";
+import {
+  PERMISSION_SCOPE_GROUPS,
+  getAgentProviderLabel,
+  getEffortOptionsForProvider,
+  getModelsForProvider
+} from "@agentswarm/shared-types";
+import { DeleteOutlined, LockOutlined, PlusOutlined } from "@ant-design/icons";
+import {
+  Alert,
+  App,
+  Button,
+  Card,
+  Checkbox,
+  Divider,
+  Flex,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Popconfirm,
+  Select,
+  Space,
+  Switch,
+  Table,
+  Tag,
+  Tooltip,
+  Typography
+} from "antd";
+import { api } from "../src/api/client";
+import { useSettings } from "../src/hooks/useSettings";
+import { useProviderModels } from "../src/hooks/useProviderModels";
+import { useAuth } from "./auth-provider";
+
+interface McpServerFormItem {
+  name: string;
+  enabled: boolean;
+  transport: McpServerTransport;
+  command?: string;
+  argsText?: string;
+  url?: string;
+  bearerTokenEnvVar?: string;
+}
+
+interface GeneralSettingsForm {
+  defaultProvider: AgentProvider;
+  maxAgents: number;
+  branchPrefix: string;
+  gitUsername: string;
+  openaiBaseUrl: string;
+  taskPromptMagicModel: string;
+  taskPromptMagicTemplate: string;
+  mcpServers: McpServerFormItem[];
+  codexDefaultModel: string;
+  codexDefaultEffort: ProviderProfile;
+  claudeDefaultModel: string;
+  claudeDefaultEffort: ProviderProfile;
+}
+
+interface CredentialForm {
+  githubToken?: string;
+  openaiApiKey?: string;
+  codexAuthJson?: string;
+  anthropicApiKey?: string;
+}
+
+interface RoleFormValues {
+  name: string;
+  description: string;
+  scopes: PermissionScope[];
+  allowedProviders: AgentProvider[];
+  allowedModels: string[];
+  allowedEfforts: ProviderProfile[];
+}
+
+interface ResponsePreferencePresetFormValues {
+  name: string;
+  description: string;
+  audience?: AudienceType;
+  explanationDepth?: AgentExplanationDepth;
+  jargonLevel?: AgentJargonLevel;
+  codePreference?: AgentCodePreference;
+  clarifyBehavior?: AgentClarifyBehavior;
+  formattingStyle?: AgentFormattingStyle;
+  extraInstructions?: string;
+}
+
+type ClearCredentialTarget = "github" | "openai" | "codexAuthJson" | "anthropic";
+
+const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
+  { label: "stdio", value: "stdio" },
+  { label: "http", value: "http" }
+];
+
+const providerOptions: Array<{ label: string; value: AgentProvider }> = [
+  { label: getAgentProviderLabel("codex"), value: "codex" },
+  { label: getAgentProviderLabel("claude"), value: "claude" }
+];
+
+const summarizeAllowlist = (label: string, values: string[]): string => `${label}: ${values.length === 0 ? "All" : values.join(", ")}`;
+const toSentenceValue = (value: string): string => value.replace(/_/g, " ");
+const summarizeResponsePreference = (preset: ResponsePreferencePreset): string => {
+  const parts: string[] = [];
+  if (preset.preference.audience) {
+    parts.push(`Audience: ${toSentenceValue(preset.preference.audience)}`);
+  }
+  if (preset.preference.explanationDepth) {
+    parts.push(`Depth: ${toSentenceValue(preset.preference.explanationDepth)}`);
+  }
+  if (preset.preference.jargonLevel) {
+    parts.push(`Jargon: ${toSentenceValue(preset.preference.jargonLevel)}`);
+  }
+  return parts.length > 0 ? parts.join(" | ") : "Neutral";
+};
+
+const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
+  defaultProvider: settings.defaultProvider,
+  maxAgents: settings.maxAgents,
+  branchPrefix: settings.branchPrefix,
+  gitUsername: settings.gitUsername,
+  openaiBaseUrl: settings.openaiBaseUrl ?? "",
+  taskPromptMagicModel: settings.taskPromptMagicModel,
+  taskPromptMagicTemplate: settings.taskPromptMagicTemplate,
+  mcpServers: settings.mcpServers.map((server) => ({
+    name: server.name,
+    enabled: server.enabled,
+    transport: server.transport,
+    command: server.command ?? "",
+    argsText: (server.args ?? []).join("\n"),
+    url: server.url ?? "",
+    bearerTokenEnvVar: server.bearerTokenEnvVar ?? ""
+  })),
+  codexDefaultModel: settings.codexDefaultModel,
+  codexDefaultEffort: settings.codexDefaultEffort,
+  claudeDefaultModel: settings.claudeDefaultModel,
+  claudeDefaultEffort: settings.claudeDefaultEffort
+});
+
+export function SettingsPage() {
+  const { message } = App.useApp();
+  const { can } = useAuth();
+  const { loading, setSettings, settings } = useSettings();
+  const [generalForm] = Form.useForm<GeneralSettingsForm>();
+  const [credentialForm] = Form.useForm<CredentialForm>();
+  const [roleForm] = Form.useForm<RoleFormValues>();
+  const [responsePreferencePresetForm] = Form.useForm<ResponsePreferencePresetFormValues>();
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [rolesLoading, setRolesLoading] = useState(true);
+  const [savingGeneral, setSavingGeneral] = useState(false);
+  const [savingCredentials, setSavingCredentials] = useState(false);
+  const [savingRole, setSavingRole] = useState(false);
+  const [savingResponsePreferencePreset, setSavingResponsePreferencePreset] = useState(false);
+  const [roleModalOpen, setRoleModalOpen] = useState(false);
+  const [editingRole, setEditingRole] = useState<Role | null>(null);
+  const [responsePreferencePresetModalOpen, setResponsePreferencePresetModalOpen] = useState(false);
+  const [editingResponsePreferencePreset, setEditingResponsePreferencePreset] = useState<ResponsePreferencePreset | null>(null);
+  const canEditSettings = can("settings:edit");
+  const { models: codexModels, loading: codexModelsLoading } = useProviderModels("codex");
+  const { models: claudeModels, loading: claudeModelsLoading } = useProviderModels("claude");
+  const allModelOptions = Array.from(
+    new Map(
+      [...codexModels, ...claudeModels, ...getModelsForProvider("codex"), ...getModelsForProvider("claude")].map((option) => [option.value, option])
+    ).values()
+  ).sort((left, right) => left.label.localeCompare(right.label));
+  const allEffortOptions = Array.from(
+    new Map(
+      [...getEffortOptionsForProvider("codex"), ...getEffortOptionsForProvider("claude")].map((option) => [option.value, option])
+    ).values()
+  );
+  const responsePreferencePresets = settings?.responsePreferencePresets ?? [];
+
+  const loadRoles = async () => {
+    setRolesLoading(true);
+    try {
+      setRoles(await api.listRoles());
+    } finally {
+      setRolesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!settings) {
+      return;
+    }
+
+    generalForm.setFieldsValue(toFormValues(settings));
+  }, [generalForm, settings]);
+
+  useEffect(() => {
+    void loadRoles();
+  }, []);
+
+  const handleClearCredential = async (target: ClearCredentialTarget): Promise<void> => {
+    setSavingCredentials(true);
+    try {
+      if (target === "github") {
+        const nextSettings = await api.updateCredentials({ clearGithubToken: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["githubToken"]);
+        message.success("GitHub token cleared");
+        return;
+      }
+
+      if (target === "openai") {
+        const nextSettings = await api.updateCredentials({ clearOpenAiApiKey: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["openaiApiKey"]);
+        message.success("OpenAI API key cleared");
+        return;
+      }
+
+      if (target === "codexAuthJson") {
+        const nextSettings = await api.updateCredentials({ clearCodexAuthJson: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["codexAuthJson"]);
+        message.success("Codex auth.json cleared");
+        return;
+      }
+
+      const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
+      setSettings(nextSettings);
+      credentialForm.resetFields(["anthropicApiKey"]);
+      message.success("Anthropic API key cleared");
+    } catch (error) {
+      if (target === "github") {
+        message.error(error instanceof Error ? error.message : "Failed to clear GitHub token");
+        return;
+      }
+
+      if (target === "openai") {
+        message.error(error instanceof Error ? error.message : "Failed to clear OpenAI API key");
+        return;
+      }
+
+      if (target === "codexAuthJson") {
+        message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");
+        return;
+      }
+
+      message.error(error instanceof Error ? error.message : "Failed to clear Anthropic API key");
+    } finally {
+      setSavingCredentials(false);
+    }
+  };
+
+  return (
+    <>
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Flex vertical gap={0}>
+          <Typography.Title level={2} style={{ margin: 0 }}>
+            Settings
+          </Typography.Title>
+          <Typography.Text type="secondary">
+            Concurrency, runtime defaults, provider credentials, and role-based access control.
+          </Typography.Text>
+        </Flex>
+
+        {!canEditSettings ? (
+          <Alert
+            type="info"
+            showIcon
+            message="Read-only access"
+            description="This account can view system configuration and roles, but it cannot change them."
+          />
+        ) : null}
+
+        <Form
+          form={generalForm}
+          layout="vertical"
+          disabled={!canEditSettings}
+          onFinish={async (values) => {
+            setSavingGeneral(true);
+            try {
+              const nextSettings = await api.updateSettings({
+                defaultProvider: values.defaultProvider,
+                maxAgents: values.maxAgents,
+                branchPrefix: values.branchPrefix,
+                gitUsername: values.gitUsername,
+                openaiBaseUrl: values.openaiBaseUrl?.trim() ? values.openaiBaseUrl.trim() : null,
+                taskPromptMagicModel: values.taskPromptMagicModel,
+                taskPromptMagicTemplate: values.taskPromptMagicTemplate,
+                codexDefaultModel: values.codexDefaultModel,
+                codexDefaultEffort: values.codexDefaultEffort,
+                claudeDefaultModel: values.claudeDefaultModel,
+                claudeDefaultEffort: values.claudeDefaultEffort,
+                mcpServers: (values.mcpServers ?? []).map((server) =>
+                  server.transport === "http"
+                    ? {
+                        name: server.name,
+                        enabled: server.enabled,
+                        transport: "http" as const,
+                        url: server.url?.trim() || "",
+                        bearerTokenEnvVar: server.bearerTokenEnvVar?.trim() || null
+                      }
+                    : {
+                        name: server.name,
+                        enabled: server.enabled,
+                        transport: "stdio" as const,
+                        command: server.command?.trim() || "",
+                        args:
+                          server.argsText
+                            ?.split("\n")
+                            .map((item) => item.trim())
+                            .filter(Boolean) ?? []
+                      }
+                )
+              });
+              setSettings(nextSettings);
+              message.success("Settings saved");
+            } catch (error) {
+              message.error(error instanceof Error ? error.message : "Failed to save settings");
+            } finally {
+              setSavingGeneral(false);
+            }
+          }}
+        >
+          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            <Card bordered={false} loading={loading} title="Runtime Controls">
+              <Flex vertical gap={16} style={{ width: "100%" }}>
+                <Form.Item name="defaultProvider" label="Default Provider" rules={[{ required: true }]}>
+                  <Select options={providerOptions} />
+                </Form.Item>
+                <Form.Item
+                  name="maxAgents"
+                  label="Concurrent Agents"
+                  extra="Hard limit on how many agents can run in parallel."
+                  rules={[{ required: true }]}
+                >
+                  <InputNumber min={1} max={20} style={{ width: "100%" }} />
+                </Form.Item>
+              </Flex>
+            </Card>
+
+            <Card bordered={false} loading={loading} title="Provider Defaults">
+              <Flex vertical gap={24} style={{ width: "100%" }}>
+                <div>
+                  <Typography.Text strong>OpenAI Gateway</Typography.Text>
+                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
+                    <Form.Item
+                      name="openaiBaseUrl"
+                      label="Base URL Override"
+                      extra="Set when pointing to a proxy or self-hosted gateway."
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input placeholder="https://api.openai.com/v1" />
+                    </Form.Item>
+                    <Form.Item
+                      name="taskPromptMagicModel"
+                      label="Task Prompt Magic Model"
+                      extra="Model used by the Magic Prompt helper in task creation."
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input placeholder="gpt-5.4-mini" />
+                    </Form.Item>
+                    <Form.Item
+                      name="taskPromptMagicTemplate"
+                      label="Task Prompt Magic Template"
+                      extra="Use {{user_request}} as placeholder for the user's current text."
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input.TextArea autoSize={{ minRows: 6, maxRows: 16 }} placeholder="Template with {{user_request}} placeholder" />
+                    </Form.Item>
+                  </Flex>
+                </div>
+
+                <div>
+                  <Typography.Text strong>Codex (OpenAI)</Typography.Text>
+                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
+                    <Form.Item name="codexDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
+                      <Select options={codexModels} loading={codexModelsLoading} showSearch optionFilterProp="label" />
+                    </Form.Item>
+                    <Form.Item name="codexDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
+                      <Select options={getEffortOptionsForProvider("codex")} />
+                    </Form.Item>
+                  </Flex>
+                </div>
+
+                <div>
+                  <Typography.Text strong>Claude Code (Anthropic)</Typography.Text>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    style={{ marginTop: 8 }}
+                    message="Experimental"
+                    description="Claude Code in AgentSwarm is experimental; behavior and defaults may change."
+                  />
+                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
+                    <Form.Item name="claudeDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
+                      <Select options={claudeModels} loading={claudeModelsLoading} showSearch optionFilterProp="label" />
+                    </Form.Item>
+                    <Form.Item name="claudeDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
+                      <Select options={getEffortOptionsForProvider("claude")} />
+                    </Form.Item>
+                  </Flex>
+                </div>
+              </Flex>
+            </Card>
+
+            <Card bordered={false} loading={loading} title="Git & Branching">
+              <Flex vertical gap={16} style={{ width: "100%" }}>
+                <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
+                  <Input placeholder="agentswarm" />
+                </Form.Item>
+                <Form.Item
+                  name="gitUsername"
+                  label="Git Username"
+                  extra="Used for authenticated pushes from the runtime."
+                  rules={[{ required: true, whitespace: true }]}
+                >
+                  <Input placeholder="x-access-token" />
+                </Form.Item>
+              </Flex>
+            </Card>
+
+            <Card bordered={false} loading={loading} title="MCP Servers">
+              <Form.List name="mcpServers">
+                {(fields, { add, remove }) => (
+                  <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                    {fields.map((field) => (
+                      <Card
+                        key={field.key}
+                        size="small"
+                        title={`Server ${field.name + 1}`}
+                        extra={
+                          <Button
+                            danger
+                            type="text"
+                            icon={<DeleteOutlined />}
+                            disabled={!canEditSettings}
+                            onClick={() => remove(field.name)}
+                          >
+                            Remove
+                          </Button>
+                        }
+                      >
+                        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                          <Form.Item name={[field.name, "name"]} label="Name" rules={[{ required: true, whitespace: true }]}>
+                            <Input placeholder="memory" />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "enabled"]} label="Enabled" valuePropName="checked">
+                            <Switch />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "transport"]} label="Transport" rules={[{ required: true }]}>
+                            <Select options={transportOptions} />
+                          </Form.Item>
+                          <Form.Item noStyle shouldUpdate>
+                            {() => {
+                              const transport = generalForm.getFieldValue(["mcpServers", field.name, "transport"]) ?? "stdio";
+                              return transport === "http" ? (
+                                <>
+                                  <Form.Item name={[field.name, "url"]} label="URL" rules={[{ required: true, whitespace: true }]}>
+                                    <Input placeholder="https://example.com/mcp" />
+                                  </Form.Item>
+                                  <Form.Item
+                                    name={[field.name, "bearerTokenEnvVar"]}
+                                    label="Bearer Token Env Var"
+                                    extra="Environment variable name available to the server process (for example MCP_TOKEN)."
+                                    rules={[
+                                      {
+                                        validator: (_rule, value?: string) => {
+                                          if (!value || value.trim().length === 0) {
+                                            return Promise.resolve();
+                                          }
+
+                                          return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.trim())
+                                            ? Promise.resolve()
+                                            : Promise.reject(
+                                                new Error("Use a valid environment variable name (letters, numbers, underscore).")
+                                              );
+                                        }
+                                      }
+                                    ]}
+                                  >
+                                    <Input placeholder="MY_MCP_TOKEN" />
+                                  </Form.Item>
+                                </>
+                              ) : (
+                                <>
+                                  <Form.Item name={[field.name, "command"]} label="Command" rules={[{ required: true, whitespace: true }]}>
+                                    <Input placeholder="docker" />
+                                  </Form.Item>
+                                  <Form.Item name={[field.name, "argsText"]} label="Arguments">
+                                    <Input.TextArea rows={6} placeholder={"run\n-i\n--rm\nmcp/memory"} />
+                                  </Form.Item>
+                                </>
+                              );
+                            }}
+                          </Form.Item>
+                        </Space>
+                      </Card>
+                    ))}
+
+                    <Button
+                      type="dashed"
+                      icon={<PlusOutlined />}
+                      disabled={!canEditSettings}
+                      onClick={() =>
+                        add({
+                          name: "",
+                          enabled: true,
+                          transport: "stdio",
+                          command: "",
+                          argsText: ""
+                        })
+                      }
+                    >
+                      Add MCP Server
+                    </Button>
+                  </Space>
+                )}
+              </Form.List>
+            </Card>
+          </Space>
+
+          <Flex justify="flex-start" style={{ marginTop: 16 }}>
+            <Button type="primary" htmlType="submit" loading={savingGeneral} disabled={!canEditSettings}>
+              Save Settings
+            </Button>
+          </Flex>
+        </Form>
+
+        <Divider />
+
+        <Card
+          bordered={false}
+          loading={loading}
+          title="Credentials"
+          extra={
+            settings ? (
+              <Space>
+                <Tag color={settings.githubTokenConfigured ? "green" : "default"}>
+                  GitHub Token {settings.githubTokenConfigured ? "Configured" : "Missing"}
+                </Tag>
+                <Tag color={settings.openaiApiKeyConfigured ? "green" : "default"}>
+                  OpenAI API Key {settings.openaiApiKeyConfigured ? "Configured" : "Missing"}
+                </Tag>
+                <Tag color={settings.codexAuthJsonConfigured ? "green" : "default"}>
+                  Codex auth.json {settings.codexAuthJsonConfigured ? "Configured" : "Missing"}
+                </Tag>
+                <Tag color={settings.anthropicApiKeyConfigured ? "green" : "default"}>
+                  Anthropic API Key (Claude, experimental) {settings.anthropicApiKeyConfigured ? "Configured" : "Missing"}
+                </Tag>
+              </Space>
+            ) : null
+          }
+        >
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Credentials are write-only"
+            description="Tokens are encrypted on the server and never returned by the API."
+          />
+          <Form
+            form={credentialForm}
+            layout="vertical"
+            disabled={!canEditSettings}
+            onFinish={async (values) => {
+              setSavingCredentials(true);
+              try {
+                const nextSettings = await api.updateCredentials({
+                  githubToken: values.githubToken?.trim() || undefined,
+                  openaiApiKey: values.openaiApiKey?.trim() || undefined,
+                  codexAuthJson: values.codexAuthJson?.trim() || undefined,
+                  anthropicApiKey: values.anthropicApiKey?.trim() || undefined
+                });
+                credentialForm.resetFields();
+                setSettings(nextSettings);
+                message.success("Credentials updated");
+              } catch (error) {
+                message.error(error instanceof Error ? error.message : "Failed to update credentials");
+              } finally {
+                setSavingCredentials(false);
+              }
+            }}
+          >
+            <Form.Item name="githubToken" label="GitHub Token">
+              <Input.Password placeholder={settings?.githubTokenConfigured ? "Configured. Enter a new token to replace it." : "github_pat_..."} />
+            </Form.Item>
+            <Form.Item name="openaiApiKey" label="OpenAI API Key">
+              <Input.Password placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."} />
+            </Form.Item>
+            <Form.Item name="codexAuthJson" label="Global Codex auth.json" extra="Used as the Global Codex credential source and as the Auto fallback after profile auth.json.">
+              <Input.TextArea
+                autoSize={{ minRows: 4, maxRows: 10 }}
+                placeholder={settings?.codexAuthJsonConfigured ? "Configured. Paste a new auth.json to replace it." : "{ ... }"}
+              />
+            </Form.Item>
+            <Form.Item
+              name="anthropicApiKey"
+              label="Anthropic API Key"
+              extra="Used for Claude Code (experimental) runs only."
+            >
+              <Input.Password placeholder={settings?.anthropicApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-ant-..."} />
+            </Form.Item>
+            <Space wrap>
+              <Button type="primary" htmlType="submit" loading={savingCredentials} disabled={!canEditSettings}>
+                Save Credentials
+              </Button>
+              <Popconfirm
+                title="Clear GitHub token?"
+                description="This removes the stored GitHub token from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
+                disabled={!canEditSettings}
+                onConfirm={() => handleClearCredential("github")}
+              >
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear GitHub Token
+                </Button>
+              </Popconfirm>
+              <Popconfirm
+                title="Clear OpenAI API key?"
+                description="This removes the stored OpenAI API key from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
+                disabled={!canEditSettings}
+                onConfirm={() => handleClearCredential("openai")}
+              >
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear OpenAI API Key
+                </Button>
+              </Popconfirm>
+              <Popconfirm
+                title="Clear Codex auth.json?"
+                description="This removes the stored global Codex auth.json from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
+                disabled={!canEditSettings}
+                onConfirm={() => handleClearCredential("codexAuthJson")}
+              >
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear Codex auth.json
+                </Button>
+              </Popconfirm>
+              <Popconfirm
+                title="Clear Anthropic API key?"
+                description="This removes the stored Anthropic API key from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
+                disabled={!canEditSettings}
+                onConfirm={() => handleClearCredential("anthropic")}
+              >
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear Anthropic API Key
+                </Button>
+              </Popconfirm>
+            </Space>
+          </Form>
+        </Card>
+
+        <Card
+          bordered={false}
+          loading={rolesLoading}
+          title="Roles"
+          extra={
+            <Button
+              type="primary"
+              disabled={!canEditSettings}
+              onClick={() => {
+                setEditingRole(null);
+                roleForm.setFieldsValue({
+                  name: "",
+                  description: "",
+                  scopes: [],
+                  allowedProviders: [],
+                  allowedModels: [],
+                  allowedEfforts: []
+                });
+                setRoleModalOpen(true);
+              }}
+            >
+              Add Role
+            </Button>
+          }
+        >
+          <Table<Role>
+            rowKey="id"
+            pagination={false}
+            dataSource={roles}
+            columns={[
+              {
+                title: "Name",
+                dataIndex: "name",
+                render: (value: string, role) => (
+                  <Space>
+                    <Typography.Text strong>{value}</Typography.Text>
+                    {role.isSystem ? <Tag icon={<LockOutlined />}>System</Tag> : null}
+                  </Space>
+                )
+              },
+              {
+                title: "Description",
+                dataIndex: "description",
+                render: (value: string) => value || <Typography.Text type="secondary">None</Typography.Text>
+              },
+              {
+                title: "Scopes",
+                render: (_, role) => (
+                  <Space size={[4, 4]} wrap>
+                    {role.scopes.map((scope) => (
+                      <Tag key={scope}>{scope}</Tag>
+                    ))}
+                  </Space>
+                )
+              },
+              {
+                title: "Allowlists",
+                render: (_, role) => (
+                  <Space direction="vertical" size={4}>
+                    <Typography.Text type="secondary">{summarizeAllowlist("Providers", role.allowedProviders)}</Typography.Text>
+                    <Typography.Text type="secondary">{summarizeAllowlist("Models", role.allowedModels)}</Typography.Text>
+                    <Typography.Text type="secondary">{summarizeAllowlist("Efforts", role.allowedEfforts)}</Typography.Text>
+                  </Space>
+                )
+              },
+              {
+                title: "Actions",
+                render: (_, role) => (
+                  <Space>
+                    <Button
+                      disabled={!canEditSettings || role.isSystem}
+                      onClick={() => {
+                        setEditingRole(role);
+                        roleForm.setFieldsValue({
+                          name: role.name,
+                          description: role.description,
+                          scopes: role.scopes,
+                          allowedProviders: role.allowedProviders,
+                          allowedModels: role.allowedModels,
+                          allowedEfforts: role.allowedEfforts
+                        });
+                        setRoleModalOpen(true);
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      danger
+                      disabled={!canEditSettings || role.isSystem}
+                      onClick={async () => {
+                        try {
+                          await api.deleteRole(role.id);
+                          message.success("Role deleted");
+                          await loadRoles();
+                        } catch (error) {
+                          message.error(error instanceof Error ? error.message : "Failed to delete role");
+                        }
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  </Space>
+                )
+              }
+            ]}
+          />
+        </Card>
+
+        <Card
+          bordered={false}
+          loading={loading}
+          title="Response Preferences"
+          extra={
+            <Button
+              type="primary"
+              disabled={!canEditSettings}
+              onClick={() => {
+                setEditingResponsePreferencePreset(null);
+                responsePreferencePresetForm.setFieldsValue({
+                  name: "",
+                  description: "",
+                  audience: undefined,
+                  explanationDepth: undefined,
+                  jargonLevel: undefined,
+                  codePreference: undefined,
+                  clarifyBehavior: undefined,
+                  formattingStyle: undefined,
+                  extraInstructions: ""
+                });
+                setResponsePreferencePresetModalOpen(true);
+              }}
+            >
+              Add Response Preference
+            </Button>
+          }
+        >
+          <Table<ResponsePreferencePreset>
+            rowKey="id"
+            pagination={false}
+            dataSource={responsePreferencePresets}
+            columns={[
+              {
+                title: "Name",
+                dataIndex: "name",
+                render: (value: string, preset) => (
+                  <Space>
+                    <Typography.Text strong>{value}</Typography.Text>
+                    {preset.isSystem ? <Tag icon={<LockOutlined />}>System</Tag> : null}
+                  </Space>
+                )
+              },
+              {
+                title: "Description",
+                dataIndex: "description",
+                render: (value: string) => value || <Typography.Text type="secondary">None</Typography.Text>
+              },
+              {
+                title: "Policy",
+                render: (_, preset) => summarizeResponsePreference(preset)
+              },
+              {
+                title: "Actions",
+                render: (_, preset) => (
+                  <Space>
+                    <Button
+                      disabled={!canEditSettings || preset.isSystem}
+                      onClick={() => {
+                        setEditingResponsePreferencePreset(preset);
+                        responsePreferencePresetForm.setFieldsValue({
+                          name: preset.name,
+                          description: preset.description,
+                          audience: preset.preference.audience,
+                          explanationDepth: preset.preference.explanationDepth,
+                          jargonLevel: preset.preference.jargonLevel,
+                          codePreference: preset.preference.codePreference,
+                          clarifyBehavior: preset.preference.clarifyBehavior,
+                          formattingStyle: preset.preference.formattingStyle,
+                          extraInstructions: preset.preference.extraInstructions ?? ""
+                        });
+                        setResponsePreferencePresetModalOpen(true);
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Popconfirm
+                      title="Delete response preference?"
+                      description={`Delete ${preset.name}?`}
+                      disabled={!canEditSettings || preset.isSystem}
+                      onConfirm={async () => {
+                        if (!settings) {
+                          return;
+                        }
+                        try {
+                          const nextSettings = await api.updateSettings({
+                            responsePreferencePresets: responsePreferencePresets.filter((entry) => entry.id !== preset.id)
+                          });
+                          setSettings(nextSettings);
+                          message.success("Response preference deleted");
+                        } catch (error) {
+                          message.error(error instanceof Error ? error.message : "Failed to delete response preference");
+                        }
+                      }}
+                    >
+                      <Button
+                        danger
+                        disabled={!canEditSettings || preset.isSystem}
+                      >
+                        Delete
+                      </Button>
+                    </Popconfirm>
+                  </Space>
+                )
+              }
+            ]}
+          />
+        </Card>
+      </Space>
+
+      <Modal
+        open={roleModalOpen}
+        title={editingRole ? `Edit Role: ${editingRole.name}` : "Add Role"}
+        footer={null}
+        onCancel={() => setRoleModalOpen(false)}
+        destroyOnHidden
+      >
+        <Form
+          form={roleForm}
+          layout="vertical"
+          onFinish={async (values) => {
+            setSavingRole(true);
+            try {
+              if (editingRole) {
+                await api.updateRole(editingRole.id, values);
+                message.success("Role updated");
+              } else {
+                await api.createRole(values);
+                message.success("Role created");
+              }
+
+              setRoleModalOpen(false);
+              await loadRoles();
+            } catch (error) {
+              message.error(error instanceof Error ? error.message : "Failed to save role");
+            } finally {
+              setSavingRole(false);
+            }
+          }}
+        >
+          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a role name" }]}>
+            <Input disabled={!canEditSettings || editingRole?.isSystem} />
+          </Form.Item>
+          <Form.Item name="description" label="Description">
+            <Input.TextArea rows={3} disabled={!canEditSettings || editingRole?.isSystem} />
+          </Form.Item>
+          <Form.Item name="scopes" hidden rules={[{ required: true, message: "Select at least one scope" }]}>
+            <Select mode="multiple" options={[]} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate>
+            {() => {
+              const selectedScopes = (roleForm.getFieldValue("scopes") ?? []) as PermissionScope[];
+              return (
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  {PERMISSION_SCOPE_GROUPS.map((group) => (
+                    <Card key={group.label} size="small" title={group.label}>
+                      <Checkbox.Group
+                        style={{ width: "100%" }}
+                        disabled={!canEditSettings || editingRole?.isSystem}
+                        value={group.scopes.filter((scope) => selectedScopes.includes(scope))}
+                        options={group.scopes.map((scope) => ({
+                          label: scope,
+                          value: scope
+                        }))}
+                        onChange={(checkedValues) => {
+                          const currentScopes = (roleForm.getFieldValue("scopes") ?? []) as PermissionScope[];
+                          const groupScopeSet = new Set(group.scopes);
+                          const otherScopes = currentScopes.filter((scope) => !groupScopeSet.has(scope));
+                          roleForm.setFieldValue("scopes", [...otherScopes, ...(checkedValues as PermissionScope[])]);
+                        }}
+                      />
+                    </Card>
+                  ))}
+                </Space>
+              );
+            }}
+          </Form.Item>
+          <Form.Item
+            name="allowedProviders"
+            label="Allowed Providers"
+            extra="Leave empty to allow all providers."
+          >
+            <Select
+              mode="multiple"
+              options={providerOptions}
+              disabled={!canEditSettings || editingRole?.isSystem}
+            />
+          </Form.Item>
+          <Form.Item
+            name="allowedModels"
+            label="Allowed Models"
+            extra="Leave empty to allow all models."
+          >
+            <Select
+              mode="multiple"
+              options={allModelOptions}
+              loading={codexModelsLoading || claudeModelsLoading}
+              optionFilterProp="label"
+              showSearch
+              disabled={!canEditSettings || editingRole?.isSystem}
+            />
+          </Form.Item>
+          <Form.Item
+            name="allowedEfforts"
+            label="Allowed Efforts"
+            extra="Leave empty to allow all efforts."
+          >
+            <Select
+              mode="multiple"
+              options={allEffortOptions}
+              disabled={!canEditSettings || editingRole?.isSystem}
+            />
+          </Form.Item>
+          <Button
+            type="primary"
+            htmlType="submit"
+            loading={savingRole}
+            disabled={!canEditSettings || editingRole?.isSystem}
+            block
+            style={{ marginTop: 16 }}
+          >
+            {editingRole ? "Save Role" : "Create Role"}
+          </Button>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={responsePreferencePresetModalOpen}
+        title={editingResponsePreferencePreset ? `Edit Response Preference: ${editingResponsePreferencePreset.name}` : "Add Response Preference"}
+        footer={null}
+        onCancel={() => setResponsePreferencePresetModalOpen(false)}
+        destroyOnHidden
+      >
+        <Form
+          form={responsePreferencePresetForm}
+          layout="vertical"
+          onFinish={async (values) => {
+            if (!settings) {
+              return;
+            }
+
+            setSavingResponsePreferencePreset(true);
+            try {
+              const nextPresets = editingResponsePreferencePreset
+                ? responsePreferencePresets.map((preset) =>
+                    preset.id === editingResponsePreferencePreset.id
+                      ? {
+                          ...preset,
+                          name: values.name,
+                          description: values.description,
+                          preference: {
+                            audience: values.audience,
+                            explanationDepth: values.explanationDepth,
+                            jargonLevel: values.jargonLevel,
+                            codePreference: values.codePreference,
+                            clarifyBehavior: values.clarifyBehavior,
+                            formattingStyle: values.formattingStyle,
+                            extraInstructions: values.extraInstructions?.trim() || undefined
+                          }
+                        }
+                      : preset
+                  )
+                : [
+                    ...responsePreferencePresets,
+                    {
+                      name: values.name,
+                      description: values.description,
+                      preference: {
+                        audience: values.audience,
+                        explanationDepth: values.explanationDepth,
+                        jargonLevel: values.jargonLevel,
+                        codePreference: values.codePreference,
+                        clarifyBehavior: values.clarifyBehavior,
+                        formattingStyle: values.formattingStyle,
+                        extraInstructions: values.extraInstructions?.trim() || undefined
+                      }
+                    }
+                  ];
+
+              const nextSettings = await api.updateSettings({
+                responsePreferencePresets: nextPresets
+              });
+              setSettings(nextSettings);
+              setResponsePreferencePresetModalOpen(false);
+              message.success(editingResponsePreferencePreset ? "Response preference updated" : "Response preference created");
+            } catch (error) {
+              message.error(error instanceof Error ? error.message : "Failed to save response preference");
+            } finally {
+              setSavingResponsePreferencePreset(false);
+            }
+          }}
+        >
+          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a name" }]}>
+            <Input disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
+          </Form.Item>
+          <Form.Item name="description" label="Description">
+            <Input.TextArea rows={3} disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
+          </Form.Item>
+          <Form.Item name="audience" label="Audience">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use neutral"
+              options={[
+                { label: "Technical", value: "technical" },
+                { label: "Non-technical", value: "non_technical" },
+                { label: "Mixed", value: "mixed" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="explanationDepth" label="Explanation Depth">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default depth"
+              options={[
+                { label: "Brief", value: "brief" },
+                { label: "Standard", value: "standard" },
+                { label: "Detailed", value: "detailed" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="jargonLevel" label="Jargon Level">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default jargon level"
+              options={[
+                { label: "Avoid", value: "avoid" },
+                { label: "Balanced", value: "balanced" },
+                { label: "Expert", value: "expert" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="codePreference" label="Code Preference">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default code preference"
+              options={[
+                { label: "Only When Needed", value: "only_when_needed" },
+                { label: "Prefer Examples", value: "prefer_examples" },
+                { label: "Avoid Code", value: "avoid_code" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="clarifyBehavior" label="Clarify Behavior">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default clarify behavior"
+              options={[
+                { label: "Ask When Ambiguous", value: "ask_when_ambiguous" },
+                { label: "Make Reasonable Assumptions", value: "make_reasonable_assumptions" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="formattingStyle" label="Formatting Style">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default formatting style"
+              options={[
+                { label: "Direct", value: "direct" },
+                { label: "Teaching", value: "teaching" },
+                { label: "Executive", value: "executive" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="extraInstructions" label="Extra Instructions">
+            <Input.TextArea
+              rows={4}
+              maxLength={2000}
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              placeholder="Optional additional response instructions."
+            />
+          </Form.Item>
+          <Button
+            type="primary"
+            htmlType="submit"
+            loading={savingResponsePreferencePreset}
+            disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+            block
+            style={{ marginTop: 16 }}
+          >
+            {editingResponsePreferencePreset ? "Save Response Preference" : "Create Response Preference"}
+          </Button>
+        </Form>
+      </Modal>
+    </>
+  );
+}
+````
+
 ## File: apps/web/components/task-create-page.tsx
 ````typescript
 "use client";
@@ -34367,6 +33298,1092 @@ export const buildTaskLifecycleViewModel = (task: Task | null | undefined): Task
 };
 ````
 
+## File: apps/server/src/lib/task-interactive-terminal.ts
+````typescript
+import { spawn as spawnChild } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { access, constants, rm } from "node:fs/promises";
+import type { IncomingMessage, Server as HttpServer } from "node:http";
+import path from "node:path";
+import type { Duplex } from "node:stream";
+import { URL } from "node:url";
+
+import { WebSocket, WebSocketServer } from "ws";
+import pty from "node-pty";
+
+import {
+  getTaskStatusLabel,
+  getTaskTerminalSessionLabel,
+  getTaskTerminalSessionSentenceLabel,
+  isActiveTaskStatus,
+  isQueuedTaskStatus,
+  type Task,
+  type TaskTerminalSessionMode
+} from "@agentswarm/shared-types";
+
+import { env } from "../config/env.js";
+import type { AuthService } from "./auth.js";
+import type { SettingsStore } from "../services/settings-store.js";
+import type { SpawnerService } from "../services/spawner.js";
+import type { TaskMetadata, TaskStore } from "../services/task-store.js";
+import type { RepositoryStore } from "../services/repository-store.js";
+import { canUserAccessTask } from "./task-ownership.js";
+import { resolveWorkspaceGitRuntimeMounts } from "./git-runtime-mounts.js";
+import { materializeRepositoryRuntimeEnvEntries } from "./repository-runtime-env.js";
+import {
+  claudeModelSupportsThinkingBudget,
+  claudeThinkingBudgetTokensForProfile,
+  codexReasoningEffortForProfile,
+  defaultModelForProvider
+} from "./provider-config.js";
+import {
+  collectMcpServerEnvEntries,
+  collectMissingMcpServerBearerTokenEnvVars,
+  serializeClaudeMcpConfig,
+  serializeCodexMcpConfig
+} from "./mcp-config.js";
+import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
+import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
+import { resolveTaskGitCommitIdentity, type GitCommitIdentity } from "./task-git-identity.js";
+import {
+  buildGitTerminalDockerEnvEntries,
+  buildGitTerminalEnvEntries,
+  buildInteractiveWorkspaceGitEnvEntries
+} from "./task-interactive-terminal-git-env.js";
+import {
+  emitDockerSocketEnabledEventOnce,
+  emitNestedContainerSpawnedEvent,
+  resolveDockerSocketAccessPolicy,
+  resolveDockerSocketEnvEntries,
+  resolveDockerSocketMountArgs
+} from "./docker-socket-access.js";
+import type { UserStore } from "../services/user-store.js";
+import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js";
+
+const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
+const INTERACTIVE_WORKSPACE_PATH = "/workspace";
+const INTERACTIVE_WS_PING_INTERVAL_MS = 25_000;
+const INTERACTIVE_TRANSCRIPT_LIMIT = 2_000_000;
+const INTERACTIVE_EXIT_WAIT_MS = 1_500;
+const INTERACTIVE_TERMINAL_CLOSE_CODE = 1012;
+const PROVIDER_SESSION_ID_FILE = "agentswarm-session-id.txt";
+const repositoryEnvFileStore = new RepositoryEnvFileStore();
+
+function normalizeTerminalSessionMode(value: string | null | undefined): TaskTerminalSessionMode {
+  return value === "git" ? "git" : "interactive";
+}
+
+function buildCodexUserConfigToml(workspacePath: string, model: string, mcpConfig: string): string {
+  const pathSafe = workspacePath.replace(/"/g, "");
+  const modelSafe = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const modelTomlKey = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `model = "${modelSafe}"
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+
+[projects."${pathSafe}"]
+trust_level = "trusted"
+
+[notice]
+hide_rate_limit_model_nudge = true
+hide_gpt5_1_migration_prompt = true
+"hide_gpt-5.1-codex-max_migration_prompt" = true
+
+[tui]
+show_tooltips = false
+
+[tui.model_availability_nux]
+"${modelTomlKey}" = 1
+
+${mcpConfig}`;
+}
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function buildCodexStartScript(
+  configB64: string,
+  model: string,
+  reasoningEffort: string,
+  preferAuthJson: boolean,
+  missingMcpBearerEnvVars: string[]
+): string {
+  const codexArgs = [
+    "--dangerously-bypass-approvals-and-sandbox",
+    '-C "$TASK_INTERACTIVE_WORKSPACE"',
+    "-m",
+    shellSingleQuote(model),
+    "-c cli_auth_credentials_store=file",
+    ...(preferAuthJson ? [] : ["-c forced_login_method=api"]),
+    "-c",
+    shellSingleQuote(`model_reasoning_effort="${reasoningEffort}"`)
+  ];
+
+  const authBootstrap = preferAuthJson
+    ? 'printf %s "$CODEX_AUTH_JSON_B64" | base64 -d > ~/.codex/auth.json'
+    : 'printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file';
+
+  return [
+    ...(missingMcpBearerEnvVars.length > 0
+      ? [
+          `echo ${shellSingleQuote(
+            `[agentswarm] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
+          )} >&2`
+        ]
+      : []),
+    "mkdir -p ~/.codex",
+    `printf '%s' ${shellSingleQuote(configB64)} | base64 -d > ~/.codex/config.toml`,
+    authBootstrap,
+    `SESSION_FILE="$HOME/.codex/${PROVIDER_SESSION_ID_FILE}"`,
+    'SESSION_ID=""',
+    'if [ -f "$SESSION_FILE" ]; then IFS= read -r SESSION_ID < "$SESSION_FILE" || true; fi',
+    `if [ -n "$SESSION_ID" ]; then exec codex resume ${codexArgs.join(" ")} "$SESSION_ID"; fi`,
+    `exec codex ${codexArgs.join(" ")}`,
+  ].join(" && ");
+}
+
+function buildClaudeSettingsJson(): string {
+  return JSON.stringify({
+    autoUpdaterStatus: "disabled",
+    disableBypassPermissionsMode: "disable"
+  });
+}
+
+function buildClaudeStartScript(
+  model: string,
+  settingsJson: string,
+  mcpConfigB64: string,
+  missingMcpBearerEnvVars: string[]
+): string {
+  const claudeArgs = [
+    "--model",
+    shellSingleQuote(model),
+    "--settings",
+    shellSingleQuote(settingsJson),
+    "--mcp-config",
+    '"$HOME/.claude/mcp-config.json"'
+  ];
+
+  return [
+    ...(missingMcpBearerEnvVars.length > 0
+      ? [
+          `echo ${shellSingleQuote(
+            `[agentswarm] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
+          )} >&2`
+        ]
+      : []),
+    'mkdir -p "$HOME/.claude" "$HOME/.local/bin"',
+    'if [ ! -x "$HOME/.local/bin/claude" ] && [ -x "/opt/claude-code/.local/bin/claude" ]; then ln -sf "/opt/claude-code/.local/bin/claude" "$HOME/.local/bin/claude"; fi',
+    'CLAUDE_BIN="$HOME/.local/bin/claude"',
+    'if [ ! -x "$CLAUDE_BIN" ] && [ -x "/opt/claude-code/.local/bin/claude" ]; then CLAUDE_BIN="/opt/claude-code/.local/bin/claude"; fi',
+    'if [ ! -x "$CLAUDE_BIN" ]; then CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"; fi',
+    'if [ -z "$CLAUDE_BIN" ] || [ ! -x "$CLAUDE_BIN" ]; then echo "Claude CLI not found in image." >&2; exit 127; fi',
+    `printf '%s' ${shellSingleQuote(mcpConfigB64)} | base64 -d > "$HOME/.claude/mcp-config.json"`,
+    'cd "$TASK_INTERACTIVE_WORKSPACE"',
+    `SESSION_FILE="$HOME/.claude/${PROVIDER_SESSION_ID_FILE}"`,
+    'SESSION_ID=""',
+    'if [ -f "$SESSION_FILE" ]; then IFS= read -r SESSION_ID < "$SESSION_FILE" || true; fi',
+    "sleep 1",
+    `if [ -n "$SESSION_ID" ]; then exec "$CLAUDE_BIN" --resume "$SESSION_ID" ${claudeArgs.join(" ")}; fi`,
+    `exec "$CLAUDE_BIN" ${claudeArgs.join(" ")}`
+  ].join(" && ");
+}
+
+type InteractiveTerminalRuntimeConfig =
+  | {
+      ok: true;
+      provider: Task["provider"];
+      image: string;
+      providerLabel: string;
+      persistentState?: {
+        containerPath: string;
+        configContainerPath?: string;
+        uid: number;
+        gid: number;
+      };
+      envEntries: Array<[string, string]>;
+      startScript: string;
+    }
+  | {
+      ok: false;
+      reason: string;
+    };
+
+type InteractiveRuntimeSettings = Awaited<ReturnType<SettingsStore["getSettings"]>>;
+type InteractiveRuntimeCredentials = Awaited<ReturnType<SettingsStore["getRuntimeCredentials"]>>;
+
+function resolveGitTerminalRuntimeConfig(
+  credentials: InteractiveRuntimeCredentials,
+  gitIdentity?: GitCommitIdentity | null
+):
+  | {
+      ok: true;
+      image: string;
+      envEntries: Array<[string, string]>;
+      startScript: string;
+    }
+  | {
+      ok: false;
+      reason: string;
+    } {
+  const image = env.GIT_TERMINAL_IMAGE?.trim();
+  if (!image) {
+    return { ok: false, reason: "Terminal is not configured (set GIT_TERMINAL_IMAGE on the server)." };
+  }
+
+  return {
+    ok: true,
+    image,
+    envEntries: buildGitTerminalEnvEntries({
+      workspacePath: INTERACTIVE_WORKSPACE_PATH,
+      githubToken: credentials.githubToken,
+      gitUsername: credentials.gitUsername,
+      gitIdentity
+    }),
+    startScript: buildGitTerminalStartScript()
+  };
+}
+
+function resolveInteractiveTerminalModel(task: Pick<TaskMetadata, "provider" | "providerProfile" | "modelOverride">): string {
+  const configured = task.modelOverride?.trim();
+  if (configured) {
+    return configured;
+  }
+
+  return defaultModelForProvider(task.provider, task.providerProfile) ?? (task.provider === "claude" ? "claude-sonnet-4-5" : "gpt-5.4");
+}
+
+function resolveInteractiveTerminalRuntimeConfig(
+  task: Pick<TaskMetadata, "provider" | "providerProfile" | "modelOverride">,
+  settings: InteractiveRuntimeSettings,
+  credentials: InteractiveRuntimeCredentials
+): InteractiveTerminalRuntimeConfig {
+  const model = resolveInteractiveTerminalModel(task);
+  const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(settings.mcpServers);
+
+  if (task.provider === "claude") {
+    const image = env.CLAUDE_INTERACTIVE_IMAGE?.trim();
+    if (!image) {
+      return { ok: false, reason: "Interactive Claude Code is not configured (set CLAUDE_INTERACTIVE_IMAGE on the server)." };
+    }
+    if (!credentials.anthropicApiKey) {
+      return { ok: false, reason: "Anthropic API key is not configured in Settings." };
+    }
+
+    const thinkingBudgetTokens = claudeModelSupportsThinkingBudget(model)
+      ? claudeThinkingBudgetTokensForProfile(task.providerProfile)
+      : undefined;
+
+    return {
+      ok: true,
+      provider: "claude",
+      image,
+      providerLabel: "Claude Code",
+      persistentState: {
+        containerPath: "/home/claude/.claude",
+        configContainerPath: "/home/claude/.claude.json",
+        uid: 1000,
+        gid: 1000
+      },
+      envEntries: [
+        ["ANTHROPIC_API_KEY", credentials.anthropicApiKey],
+        ["TERM", "xterm-256color"],
+        ["HOME", "/home/claude"],
+        ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
+        ...(typeof thinkingBudgetTokens === "number" ? [["MAX_THINKING_TOKENS", String(thinkingBudgetTokens)] as [string, string]] : []),
+        ...collectMcpServerEnvEntries(settings.mcpServers),
+        ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
+      ],
+      startScript: buildClaudeStartScript(
+        model,
+        buildClaudeSettingsJson(),
+        Buffer.from(serializeClaudeMcpConfig(settings.mcpServers), "utf8").toString("base64"),
+        missingMcpBearerEnvVars
+      )
+    };
+  }
+
+  const image = env.CODEX_INTERACTIVE_IMAGE?.trim();
+  if (!image) {
+    return { ok: false, reason: "Interactive Codex is not configured (set CODEX_INTERACTIVE_IMAGE on the server)." };
+  }
+  if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
+    return { ok: false, reason: "OpenAI API key or Codex auth.json is not configured." };
+  }
+  const useCodexAuthJson = Boolean(credentials.codexAuthJson);
+
+  const envEntries: Array<[string, string]> = [
+    ...(credentials.openaiApiKey ? [["OPENAI_API_KEY", credentials.openaiApiKey] as [string, string]] : []),
+    ...(credentials.codexAuthJson
+      ? [["CODEX_AUTH_JSON_B64", Buffer.from(credentials.codexAuthJson, "utf8").toString("base64")] as [string, string]]
+      : []),
+    ["TERM", "xterm-256color"],
+    ["HOME", "/root"],
+    ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
+    ["CODEX_TRUST_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
+    ...collectMcpServerEnvEntries(settings.mcpServers),
+    ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
+  ];
+  if (settings.openaiBaseUrl?.trim()) {
+    envEntries.push(["OPENAI_BASE_URL", settings.openaiBaseUrl.trim()]);
+  }
+
+  return {
+    ok: true,
+    provider: "codex",
+    image,
+    providerLabel: "Codex",
+    persistentState: {
+      containerPath: "/root/.codex",
+      uid: 0,
+      gid: 0
+    },
+    envEntries,
+    startScript: buildCodexStartScript(
+      Buffer.from(
+        buildCodexUserConfigToml(
+          INTERACTIVE_WORKSPACE_PATH,
+          model,
+          serializeCodexMcpConfig(settings.mcpServers)
+        ),
+        "utf8"
+      ).toString("base64"),
+      model,
+      codexReasoningEffortForProfile(task.providerProfile),
+      useCodexAuthJson,
+      missingMcpBearerEnvVars
+    )
+  };
+}
+
+function forceRemoveDockerSession(containerName: string): void {
+  const child = spawnChild("docker", ["rm", "-f", containerName], {
+    stdio: "ignore",
+    detached: true,
+  });
+  child.unref();
+}
+
+function terminalImageBuildHint(mode: TaskTerminalSessionMode, provider: Task["provider"], image: string): string {
+  const dockerfile =
+    mode === "git" ? "Dockerfile.git" : provider === "claude" ? "Dockerfile.claude" : "Dockerfile.codex";
+  return `docker build -f tools/codex-web-terminal/${dockerfile} -t ${image} tools/codex-web-terminal`;
+}
+
+async function dockerImageExists(image: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawnChild("docker", ["image", "inspect", image], {
+      stdio: "ignore"
+    });
+
+    child.on("error", () => resolve(false));
+    child.on("close", (code) => resolve(code === 0));
+  });
+}
+
+function denySocket(socket: Duplex, status: number, body: string): void {
+  const reason = status === 401 ? "Unauthorized" : status === 403 ? "Forbidden" : status === 404 ? "Not Found" : "Error";
+  socket.write(
+    `HTTP/1.1 ${status} ${reason}\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n${body}`,
+  );
+  socket.destroy();
+}
+
+export interface TaskInteractiveTerminalDeps {
+  auth: AuthService;
+  taskStore: TaskStore;
+  settingsStore: SettingsStore;
+  spawner: SpawnerService;
+  userStore: Pick<UserStore, "getUser">;
+  repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries">;
+}
+
+interface ActiveInteractiveTerminalController {
+  sessionId: string;
+  mode: TaskTerminalSessionMode;
+  hasAttachedClient: () => boolean;
+  attachClient: (ws: WebSocket) => boolean;
+  terminate: (reason?: string) => Promise<void>;
+}
+
+const activeInteractiveTerminalControllers = new Map<string, ActiveInteractiveTerminalController>();
+
+function getActiveInteractiveTerminalController(
+  taskId: string,
+  sessionId?: string | null
+): ActiveInteractiveTerminalController | null {
+  const active = activeInteractiveTerminalControllers.get(taskId);
+  if (!active) {
+    return null;
+  }
+  if (sessionId && active.sessionId !== sessionId) {
+    return null;
+  }
+  return active;
+}
+
+function registerActiveInteractiveTerminalController(
+  taskId: string,
+  controller: ActiveInteractiveTerminalController
+): void {
+  activeInteractiveTerminalControllers.set(taskId, controller);
+}
+
+function unregisterActiveInteractiveTerminalController(taskId: string, sessionId: string): void {
+  const active = activeInteractiveTerminalControllers.get(taskId);
+  if (active?.sessionId === sessionId) {
+    activeInteractiveTerminalControllers.delete(taskId);
+  }
+}
+
+function sendInteractiveTerminalError(ws: WebSocket, message: string): void {
+  if (ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  ws.send(JSON.stringify({ type: "error", message }), () => {
+    try {
+      ws.close(1011, "terminal failed");
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
+export async function killTaskInteractiveTerminalSession(taskId: string): Promise<boolean> {
+  const active = activeInteractiveTerminalControllers.get(taskId);
+  if (!active) {
+    return false;
+  }
+
+  await active.terminate();
+  return true;
+}
+
+export type TaskInteractiveTerminalStatusPayload = {
+  available: boolean;
+  reason?: string;
+  /** When true, a browser session is already connected; block duplicate terminals and task composer sends. */
+  activeInteractiveSession?: boolean;
+  /** Present when a terminal session is active for the task. */
+  terminalMode?: TaskTerminalSessionMode;
+};
+
+export async function getTaskInteractiveTerminalStatus(
+  taskStore: TaskStore,
+  settingsStore: SettingsStore,
+  taskId: string,
+  mode: TaskTerminalSessionMode = "interactive",
+  userId?: string | null
+): Promise<TaskInteractiveTerminalStatusPayload> {
+  const task = await taskStore.getTaskMetadata(taskId);
+  if (!task) {
+    return { available: false, reason: "Task not found." };
+  }
+
+  if (task.status === "archived") {
+    return { available: false, reason: "Archived tasks are read-only." };
+  }
+
+  if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
+    return {
+      available: false,
+      reason: "Terminal unavailable while the task is queued or running. Finish or cancel that run first (one action at a time)."
+    };
+  }
+
+  const activeInteractiveSession = await taskStore.getActiveInteractiveSession(taskId);
+  if (activeInteractiveSession) {
+    const controller = getActiveInteractiveTerminalController(taskId, activeInteractiveSession.sessionId);
+    const activeModeLabel = getTaskTerminalSessionLabel(activeInteractiveSession.mode);
+    if (!controller) {
+      return {
+        available: false,
+        reason: `${activeModeLabel} session is active but unavailable from this server process. Use Kill Terminal to clear it.`,
+        activeInteractiveSession: true,
+        terminalMode: activeInteractiveSession.mode
+      };
+    }
+    if (activeInteractiveSession.mode !== mode) {
+      return {
+        available: false,
+        reason: `${activeModeLabel} session is already active for this task. Stop it before opening ${getTaskTerminalSessionLabel(mode)}.`,
+        activeInteractiveSession: true,
+        terminalMode: activeInteractiveSession.mode
+      };
+    }
+    if (controller.hasAttachedClient()) {
+      return {
+        available: false,
+        reason: `${activeModeLabel} session is already open in another window.`,
+        activeInteractiveSession: true,
+        terminalMode: activeInteractiveSession.mode
+      };
+    }
+    return {
+      available: false,
+      reason: `The ${getTaskTerminalSessionSentenceLabel(mode)} session is shutting down.`,
+      activeInteractiveSession: true,
+      terminalMode: activeInteractiveSession.mode
+    };
+  }
+
+  if (mode !== "git" && await taskStore.hasPendingChangeProposal(taskId)) {
+    return { available: false, reason: "Apply or reject the pending checkpoint before opening a terminal." };
+  }
+
+  const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
+  try {
+    await access(workspaceOnServer, constants.R_OK | constants.X_OK);
+  } catch {
+    return { available: false, reason: "No workspace folder on disk for this task yet." };
+  }
+
+  if (mode === "git") {
+    const credentials = await settingsStore.getRuntimeCredentials(userId);
+    const runtime = resolveGitTerminalRuntimeConfig(credentials);
+    if (!runtime.ok) {
+      return { available: false, reason: runtime.reason };
+    }
+    if (!(await dockerImageExists(runtime.image))) {
+      return {
+        available: false,
+        reason: `Terminal image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("git", task.provider, runtime.image)}`
+      };
+    }
+    return { available: true };
+  }
+
+  const [settings, credentials] = await Promise.all([
+    settingsStore.getSettings(),
+    settingsStore.getRuntimeCredentials(userId)
+  ]);
+  const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
+  if (!runtime.ok) {
+    return { available: false, reason: runtime.reason };
+  }
+  if (!(await dockerImageExists(runtime.image))) {
+    return {
+      available: false,
+      reason: `Interactive ${runtime.providerLabel} image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("interactive", task.provider, runtime.image)}`
+    };
+  }
+
+  return { available: true };
+}
+
+/**
+ * Handles WebSocket upgrades for `/tasks/:taskId/interactive-terminal`.
+ * Prepended so Socket.io still receives `/socket.io/` upgrades.
+ */
+export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, deps: TaskInteractiveTerminalDeps): void {
+  const wss = new WebSocketServer({ noServer: true });
+
+  httpServer.prependListener("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+    const host = request.headers.host ?? "127.0.0.1";
+    const requestUrl = new URL(request.url ?? "/", `http://${host}`);
+    const pathOnly = requestUrl.pathname;
+    const terminalMode = normalizeTerminalSessionMode(requestUrl.searchParams.get("mode"));
+    const match = pathOnly.match(WS_PATH_RE);
+    if (!match) {
+      return;
+    }
+
+    const taskId = match[1];
+    if (!taskId) {
+      return;
+    }
+
+    void (async () => {
+      const auth = await deps.auth.authenticateCookieHeader(request.headers);
+      if (!auth) {
+        denySocket(socket, 401, "Authentication required");
+        return;
+      }
+      if (!auth.scopes.has("task:edit")) {
+        denySocket(socket, 403, "task:edit scope required");
+        return;
+      }
+      if (!auth.scopes.has("task:interactive")) {
+        denySocket(socket, 403, "task:interactive scope required");
+        return;
+      }
+
+      const task = await deps.taskStore.getTask(taskId);
+      if (!task || !canUserAccessTask(auth.user, task)) {
+        denySocket(socket, 404, "Task not found");
+        return;
+      }
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        void initializeTaskInteractiveTerminalWebSocket(ws, task, deps, terminalMode, auth.user.id).catch(() => {
+          sendInteractiveTerminalError(ws, `${getTaskTerminalSessionLabel(terminalMode)} initialization failed.`);
+        });
+      });
+    })().catch(() => {
+      try {
+        denySocket(socket, 500, "Internal error");
+      } catch {
+        /* ignore */
+      }
+    });
+  });
+}
+
+async function initializeTaskInteractiveTerminalWebSocket(
+  ws: WebSocket,
+  task: Task,
+  deps: TaskInteractiveTerminalDeps,
+  mode: TaskTerminalSessionMode,
+  userId?: string | null
+): Promise<void> {
+  const taskId = task.id;
+  const activeInteractiveSession = await deps.taskStore.getActiveInteractiveSession(taskId);
+  if (activeInteractiveSession) {
+    const controller = getActiveInteractiveTerminalController(taskId, activeInteractiveSession.sessionId);
+    const activeModeLabel = getTaskTerminalSessionLabel(activeInteractiveSession.mode);
+    if (!controller) {
+      sendInteractiveTerminalError(
+        ws,
+        `${activeModeLabel} session is active but unavailable from this server process. Use Kill Terminal to clear it.`
+      );
+      return;
+    }
+    if (activeInteractiveSession.mode !== mode) {
+      sendInteractiveTerminalError(
+        ws,
+        `${activeModeLabel} session is already active for this task. Stop it before opening ${getTaskTerminalSessionLabel(mode)}.`
+      );
+      return;
+    }
+    if (controller.hasAttachedClient()) {
+      sendInteractiveTerminalError(ws, `${activeModeLabel} session is already open in another window.`);
+      return;
+    }
+    if (!controller.attachClient(ws)) {
+      sendInteractiveTerminalError(ws, `The ${getTaskTerminalSessionSentenceLabel(mode)} session is shutting down.`);
+      return;
+    }
+    return;
+  }
+
+  const status = await getTaskInteractiveTerminalStatus(deps.taskStore, deps.settingsStore, taskId, mode, userId);
+  if (!status.available) {
+    sendInteractiveTerminalError(ws, status.reason ?? `${getTaskTerminalSessionLabel(mode)} is unavailable`);
+    return;
+  }
+
+  let interactiveSessionId: string | null = null;
+  let sessionRepositoryEnvDir: string | null = null;
+
+  try {
+    const started = await deps.spawner.beginInteractiveTerminalSession(taskId, mode);
+    interactiveSessionId = started.sessionId;
+    const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
+    const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
+    const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
+    if (mode === "git") {
+      const [credentials, gitIdentity, repositoryRuntimeEnvEntries] = await Promise.all([
+        deps.settingsStore.getRuntimeCredentials(userId),
+        resolveTaskGitCommitIdentity(task, deps.userStore, {
+          name: env.GIT_USER_NAME,
+          email: env.GIT_USER_EMAIL
+        }),
+        deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
+      ]);
+      const runtime = resolveGitTerminalRuntimeConfig(credentials, gitIdentity);
+      if (!runtime.ok) {
+        throw new Error(runtime.reason);
+      }
+
+      const sessionName = `aswgit-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
+      const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "interactive-env", taskId, interactiveSessionId);
+      sessionRepositoryEnvDir = repositoryEnvDir;
+      const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
+        destinationDir: repositoryEnvDir,
+        entries: repositoryRuntimeEnvEntries,
+        fileStore: repositoryEnvFileStore
+      });
+      const dockerEnv: string[] = [];
+      for (const [name, value] of buildGitTerminalDockerEnvEntries({
+        runtimeEnvEntries: runtime.envEntries,
+        repositoryEnvEntries: repositoryRuntimeEnv
+      })) {
+        dockerEnv.push("-e", `${name}=${value}`);
+      }
+      dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
+
+      const dockerArgs = [
+        "run",
+        "-i",
+        "-t",
+        "--rm",
+        "--name",
+        sessionName,
+        "-v",
+        `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
+        "-v",
+        `${dockerBindSource}:/workspace:rw`,
+        ...gitRuntimeMounts,
+        ...dockerEnv,
+        runtime.image,
+        "sh",
+        "-lc",
+        runtime.startScript
+      ];
+
+      const child = pty.spawn("docker", dockerArgs, {
+        name: "xterm-256color",
+        cols: 80,
+        rows: 24,
+        cwd: process.env.HOME || "/",
+        env: { ...process.env, TERM: "xterm-256color", AGENTSWARM_TERMINAL_MODE: mode }
+      });
+
+      wireTerminalWebSocket(ws, child, {
+        taskId,
+        sessionId: interactiveSessionId,
+        spawner: deps.spawner,
+        taskStore: deps.taskStore,
+        mode,
+        cleanup: async () => {
+          forceRemoveDockerSession(sessionName);
+          await rm(repositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
+        }
+      });
+      return;
+    }
+
+    const [credentials, settings, repositoryRuntimeEnvEntries] = await Promise.all([
+      deps.settingsStore.getRuntimeCredentials(userId),
+      deps.settingsStore.getSettings(),
+      deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
+    ]);
+    const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
+    if (!runtime.ok) {
+      throw new Error(runtime.reason);
+    }
+    const dockerSocketPolicy = resolveDockerSocketAccessPolicy(runtime.provider);
+    const dockerSocketMountArgs = resolveDockerSocketMountArgs(dockerSocketPolicy);
+    if (dockerSocketPolicy.enabled) {
+      emitDockerSocketEnabledEventOnce({ provider: runtime.provider, policy: dockerSocketPolicy });
+    }
+
+    const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
+    const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "interactive-env", taskId, interactiveSessionId);
+    sessionRepositoryEnvDir = repositoryEnvDir;
+    const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
+      destinationDir: repositoryEnvDir,
+      entries: repositoryRuntimeEnvEntries,
+      fileStore: repositoryEnvFileStore
+    });
+    const statePaths = runtime.persistentState
+      ? await ensureTaskProviderStatePaths(task.id, runtime.provider, {
+          uid: runtime.persistentState.uid,
+          gid: runtime.persistentState.gid
+        })
+      : null;
+    const dockerEnv: string[] = [];
+    for (const [name, value] of runtime.envEntries) {
+      dockerEnv.push("-e", `${name}=${value}`);
+    }
+    for (const [name, value] of repositoryRuntimeEnv) {
+      dockerEnv.push("-e", `${name}=${value}`);
+    }
+    for (const [name, value] of resolveDockerSocketEnvEntries(dockerSocketPolicy)) {
+      dockerEnv.push("-e", `${name}=${value}`);
+    }
+    dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
+
+    const dockerArgs = [
+      "run",
+      "-i",
+      "-t",
+      "--rm",
+      "--name",
+      sessionName,
+      "-v",
+      `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
+      "-v",
+      `${dockerBindSource}:/workspace:rw`,
+      ...dockerSocketMountArgs,
+      ...gitRuntimeMounts,
+      ...(statePaths && runtime.persistentState
+        ? ["-v", `${statePaths.hostPath}:${runtime.persistentState.containerPath}:rw`]
+        : []),
+      ...(statePaths && runtime.persistentState?.configContainerPath && statePaths.configHostPath
+        ? ["-v", `${statePaths.configHostPath}:${runtime.persistentState.configContainerPath}:rw`]
+        : []),
+      ...dockerEnv,
+      runtime.image,
+      "sh",
+      "-lc",
+      runtime.startScript,
+    ];
+    emitNestedContainerSpawnedEvent({
+      source: "interactive_terminal",
+      taskId,
+      provider: runtime.provider,
+      policy: dockerSocketPolicy
+    });
+
+    const child = pty.spawn("docker", dockerArgs, {
+      name: "xterm-256color",
+      cols: 80,
+      rows: 24,
+      cwd: process.env.HOME || "/",
+      env: { ...process.env, TERM: "xterm-256color", AGENTSWARM_TERMINAL_MODE: mode },
+    });
+
+    wireTerminalWebSocket(ws, child, {
+      taskId,
+      sessionId: interactiveSessionId,
+      spawner: deps.spawner,
+      taskStore: deps.taskStore,
+      mode,
+      cleanup: async () => {
+        forceRemoveDockerSession(sessionName);
+        await rm(repositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    });
+  } catch (error) {
+    if (sessionRepositoryEnvDir) {
+      await rm(sessionRepositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+    if (interactiveSessionId) {
+      await deps.spawner.endInteractiveTerminalSession(taskId, interactiveSessionId).catch(() => undefined);
+    }
+    const message = error instanceof Error ? error.message : `Could not start ${getTaskTerminalSessionSentenceLabel(mode)} session`;
+    sendInteractiveTerminalError(ws, message);
+  }
+}
+
+function wireTerminalWebSocket(
+  ws: WebSocket,
+  child: pty.IPty,
+  proposalCtx: {
+    taskId: string;
+    sessionId: string;
+    spawner: SpawnerService;
+    taskStore: TaskStore;
+    mode: TaskTerminalSessionMode;
+    cleanup?: () => Promise<void> | void;
+  }
+): void {
+  let sawTerminalOutput = false;
+  let transcriptBuffer = "";
+  let transcriptTruncated = false;
+  let transcriptSaved = false;
+  let currentWs: WebSocket | null = null;
+  let currentWsCleanup: (() => void) | null = null;
+  let cleanupPromise: Promise<void> | null = null;
+  let resolveChildExit: (() => void) | null = null;
+  const childExitPromise = new Promise<void>((resolve) => {
+    resolveChildExit = resolve;
+  });
+  const terminalLabel = getTaskTerminalSessionLabel(proposalCtx.mode);
+  const terminalSentenceLabel = getTaskTerminalSessionSentenceLabel(proposalCtx.mode);
+
+  const logLifecycle = (message: string): void => {
+    const taskMessage = `${terminalSentenceLabel} (${proposalCtx.sessionId}): ${message}`;
+    console.info(`[interactive-terminal][${proposalCtx.taskId}][${proposalCtx.sessionId}] ${message}`);
+    void proposalCtx.taskStore.appendLog(proposalCtx.taskId, taskMessage).catch(() => undefined);
+  };
+
+  const appendTranscriptChunk = (chunk: string): void => {
+    if (transcriptTruncated || chunk.length === 0) {
+      return;
+    }
+
+    const remaining = INTERACTIVE_TRANSCRIPT_LIMIT - transcriptBuffer.length;
+    if (remaining <= 0) {
+      transcriptTruncated = true;
+      return;
+    }
+
+    if (chunk.length > remaining) {
+      transcriptBuffer += chunk.slice(0, remaining);
+      transcriptTruncated = true;
+      return;
+    }
+
+    transcriptBuffer += chunk;
+  };
+
+  const persistTranscriptIfNeeded = async (): Promise<void> => {
+    if (transcriptSaved || (!transcriptTruncated && transcriptBuffer.length === 0)) {
+      return;
+    }
+
+    transcriptSaved = true;
+    await proposalCtx.taskStore
+      .saveInteractiveTerminalTranscript(proposalCtx.taskId, proposalCtx.sessionId, transcriptBuffer, transcriptTruncated)
+      .catch(() => undefined);
+  };
+
+  const detachCurrentClient = (): WebSocket | null => {
+    const activeWs = currentWs;
+    currentWs = null;
+    if (currentWsCleanup) {
+      currentWsCleanup();
+      currentWsCleanup = null;
+    }
+    return activeWs;
+  };
+
+  const cleanupSession = (reason = `${terminalLabel} session terminated.`): Promise<void> => {
+    if (cleanupPromise) {
+      return cleanupPromise;
+    }
+
+    cleanupPromise = (async () => {
+      unregisterActiveInteractiveTerminalController(proposalCtx.taskId, proposalCtx.sessionId);
+      const activeWs = detachCurrentClient();
+      logLifecycle(reason);
+      try {
+        if (activeWs && (activeWs.readyState === WebSocket.OPEN || activeWs.readyState === WebSocket.CONNECTING)) {
+          activeWs.close(INTERACTIVE_TERMINAL_CLOSE_CODE, "terminal session terminated");
+        }
+      } catch {
+        /* ignore */
+      }
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+      await proposalCtx.cleanup?.();
+      await Promise.race([
+        childExitPromise,
+        new Promise<void>((resolve) => setTimeout(resolve, INTERACTIVE_EXIT_WAIT_MS))
+      ]);
+      await persistTranscriptIfNeeded();
+      await proposalCtx.spawner.endInteractiveTerminalSession(proposalCtx.taskId, proposalCtx.sessionId).catch(() => undefined);
+    })();
+
+    return cleanupPromise;
+  };
+
+  const controller: ActiveInteractiveTerminalController = {
+    sessionId: proposalCtx.sessionId,
+    mode: proposalCtx.mode,
+    hasAttachedClient: () => currentWs !== null,
+    attachClient: (nextWs) => {
+      if (cleanupPromise || currentWs) {
+        return false;
+      }
+
+      currentWs = nextWs;
+      let awaitingPong = false;
+
+      const onMessage = (data: WebSocket.RawData, isBinary: boolean) => {
+        if (isBinary) {
+          child.write(Buffer.from(data as Buffer).toString("utf8"));
+          return;
+        }
+        try {
+          const msg = JSON.parse(String(data)) as { type?: string; cols?: number; rows?: number };
+          if (msg.type === "resize") {
+            const cols = Number(msg.cols);
+            const rows = Number(msg.rows);
+            if (Number.isFinite(cols) && Number.isFinite(rows)) {
+              child.resize(
+                Math.max(2, Math.min(512, Math.floor(cols))),
+                Math.max(1, Math.min(256, Math.floor(rows))),
+              );
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      };
+
+      const onClose = (code: number, reason: Buffer) => {
+        detachCurrentClient();
+        void cleanupSession(`Client disconnected (code ${code}${reason.length > 0 ? `, reason: ${JSON.stringify(reason.toString("utf8"))}` : ""}).`);
+      };
+
+      const onError = (error: Error) => {
+        const message = error instanceof Error && error.message.trim() ? error.message.trim() : "unknown WebSocket error";
+        detachCurrentClient();
+        void cleanupSession(`WebSocket error: ${message}.`);
+      };
+
+      const onPong = () => {
+        awaitingPong = false;
+      };
+
+      const heartbeatInterval = setInterval(() => {
+        if (cleanupPromise || currentWs !== nextWs) {
+          return;
+        }
+        if (awaitingPong) {
+          detachCurrentClient();
+          void cleanupSession("WebSocket ping timeout.");
+          return;
+        }
+        awaitingPong = true;
+        try {
+          nextWs.ping();
+        } catch (error) {
+          const message = error instanceof Error && error.message.trim() ? error.message.trim() : "could not send ping";
+          detachCurrentClient();
+          void cleanupSession(`WebSocket ping failed: ${message}.`);
+        }
+      }, INTERACTIVE_WS_PING_INTERVAL_MS);
+
+      currentWsCleanup = () => {
+        clearInterval(heartbeatInterval);
+        nextWs.off("message", onMessage);
+        nextWs.off("close", onClose);
+        nextWs.off("error", onError);
+        nextWs.off("pong", onPong);
+      };
+
+      nextWs.on("message", onMessage);
+      nextWs.on("close", onClose);
+      nextWs.on("error", onError);
+      nextWs.on("pong", onPong);
+
+      return true;
+    },
+    terminate: (reason?: string) => cleanupSession(reason)
+  };
+
+  registerActiveInteractiveTerminalController(proposalCtx.taskId, controller);
+
+  child.onData((data) => {
+    sawTerminalOutput = true;
+    appendTranscriptChunk(data);
+    if (currentWs?.readyState === WebSocket.OPEN) {
+      currentWs.send(Buffer.from(data, "utf8"), { binary: true });
+    }
+  });
+
+  child.onExit((event) => {
+    resolveChildExit?.();
+    resolveChildExit = null;
+    const exitSummary = `exit code ${event.exitCode}${event.signal ? `, signal ${event.signal}` : ""}`;
+    if (!sawTerminalOutput) {
+      if (currentWs?.readyState === WebSocket.OPEN) {
+        try {
+          currentWs.send(JSON.stringify({ type: "error", message: "Terminal process exited before it produced terminal output." }));
+        } catch {
+          /* ignore */
+        }
+      }
+      void cleanupSession(`Terminal process exited before it produced terminal output (${exitSummary}).`);
+      return;
+    }
+    void cleanupSession(`Terminal process exited (${exitSummary}).`);
+  });
+
+  if (!controller.attachClient(ws)) {
+    void cleanupSession("Could not attach the initial terminal client.");
+  }
+}
+````
+
 ## File: apps/server/src/lib/task-start-orchestrator.test.ts
 ````typescript
 import assert from "node:assert/strict";
@@ -34907,726 +34924,6 @@ export const registerRepositoryRoutes = (
     return reply.status(204).send();
   });
 };
-````
-
-## File: apps/server/src/services/settings-store.ts
-````typescript
-import { randomUUID } from "node:crypto";
-import type Redis from "ioredis";
-import type { Pool } from "pg";
-import type {
-  AgentProvider,
-  AgentResponsePreference,
-  AudienceType,
-  SystemDataStores,
-  McpServerConfig,
-  ProviderProfile,
-  WorkspaceProvisioningMode,
-  ResponsePreferencePreset,
-  ResponsePreferencePresetInput,
-  SystemSettings,
-  UserNotes,
-  UpdateCredentialSettingsInput,
-  UpdateSettingsInput
-} from "@agentswarm/shared-types";
-import { EventBus } from "../lib/events.js";
-import { normalizeProvider, DEFAULT_PROVIDER, normalizeProviderProfile } from "../lib/provider-config.js";
-import { defaultModelForProvider } from "../lib/provider-config.js";
-import type { CredentialStore, RuntimeCredentials } from "./credential-store.js";
-
-const SETTINGS_KEY = "agentswarm:settings";
-const USER_NOTES_KEY_PREFIX = "agentswarm:user-notes:";
-const SYSTEM_RESPONSE_PREFERENCE_PRESET_ID = "neutral";
-
-const DEFAULT_CODEX_EFFORT: ProviderProfile = "high";
-const DEFAULT_CLAUDE_EFFORT: ProviderProfile = "high";
-const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
-
-const nowIso = (): string => new Date().toISOString();
-
-const buildSystemResponsePreferencePreset = (): ResponsePreferencePreset => ({
-  id: SYSTEM_RESPONSE_PREFERENCE_PRESET_ID,
-  name: "Neutral",
-  description: "No tailored response style. The agent responds normally.",
-  preference: DEFAULT_AGENT_RESPONSE_PREFERENCE,
-  isSystem: true,
-  createdAt: "2026-05-07T00:00:00.000Z",
-  updatedAt: "2026-05-07T00:00:00.000Z"
-});
-
-const buildSystemDataStores = (): SystemDataStores => ({
-  taskStore: "postgres",
-  snippetStore: "postgres",
-  repositoryStore: "postgres",
-  credentialStore: "postgres",
-  roleStore: "postgres",
-  userStore: "postgres",
-  settingsStore: "postgres",
-  taskQueueStore: "redis",
-  webhookDeliveryStore: "redis",
-  sessionStore: "redis",
-  eventBus: "redis"
-});
-
-const defaultSettings: SystemSettings = {
-  defaultProvider: DEFAULT_PROVIDER,
-  maxAgents: 2,
-  branchPrefix: "agentswarm",
-  workspaceProvisioningMode: "clone_only",
-  gitUsername: "x-access-token",
-  mcpServers: [],
-  openaiBaseUrl: null,
-  taskPromptMagicModel: "gpt-5.4-mini",
-  taskPromptMagicTemplate:
-    "You are an expert prompt editor for software engineering tasks.\nRewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.\n\nRequirements:\n- Preserve intent and constraints.\n- Make it specific and actionable.\n- Include acceptance criteria when implied.\n- Avoid changing requested scope.\n- Return plain text only, no markdown fences.\n\nUser request:\n{{user_request}}\n",
-  githubTokenConfigured: false,
-  openaiApiKeyConfigured: false,
-  codexAuthJsonConfigured: false,
-  anthropicApiKeyConfigured: false,
-  codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.4",
-  codexDefaultEffort: DEFAULT_CODEX_EFFORT,
-  claudeDefaultModel: defaultModelForProvider("claude", DEFAULT_CLAUDE_EFFORT) ?? "claude-sonnet-4-5",
-  claudeDefaultEffort: DEFAULT_CLAUDE_EFFORT,
-  responsePreferencePresets: [buildSystemResponsePreferencePreset()],
-  dataStores: buildSystemDataStores()
-};
-
-const normalizeBranchPrefix = (value: string | undefined): string => {
-  const cleaned = (value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9/_-]+/g, "-")
-    .replace(/\/+/g, "/")
-    .replace(/^\/+|\/+$/g, "");
-
-  return cleaned || defaultSettings.branchPrefix;
-};
-
-const normalizeGitUsername = (value: string | undefined): string => {
-  const cleaned = (value ?? "").trim();
-  return cleaned || defaultSettings.gitUsername;
-};
-
-const normalizeDefaultProvider = (value: AgentProvider | string | undefined): AgentProvider =>
-  normalizeProvider(value ?? defaultSettings.defaultProvider);
-
-const normalizeWorkspaceProvisioningMode = (value: WorkspaceProvisioningMode | string | undefined): WorkspaceProvisioningMode =>
-  value === "hybrid" ? "hybrid" : "clone_only";
-
-const normalizeMcpServerName = (value: string | undefined): string =>
-  (value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-const normalizeMcpServerArgs = (value: string[] | undefined): string[] =>
-  (value ?? []).map((item) => item.trim()).filter(Boolean);
-
-const MCP_BEARER_TOKEN_ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-const normalizeMcpBearerTokenEnvVar = (value: string | null | undefined): string | null => {
-  const trimmed = value?.trim() ?? "";
-  if (!trimmed || !MCP_BEARER_TOKEN_ENV_VAR_PATTERN.test(trimmed)) {
-    return null;
-  }
-  return trimmed;
-};
-
-const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerConfig[] => {
-  const normalized: McpServerConfig[] = [];
-  const seenNames = new Set<string>();
-
-  for (const server of value ?? []) {
-    const name = normalizeMcpServerName(server.name);
-    if (!name || seenNames.has(name)) {
-      continue;
-    }
-
-    const transport = server.transport === "http" ? "http" : "stdio";
-    const baseServer: McpServerConfig = {
-      name,
-      enabled: server.enabled !== false,
-      transport
-    };
-
-    if (transport === "http") {
-      const url = server.url?.trim() || null;
-      if (!url) {
-        continue;
-      }
-
-      normalized.push({
-        ...baseServer,
-        url,
-        bearerTokenEnvVar: normalizeMcpBearerTokenEnvVar(server.bearerTokenEnvVar)
-      });
-    } else {
-      const command = server.command?.trim() || null;
-      if (!command) {
-        continue;
-      }
-
-      normalized.push({
-        ...baseServer,
-        command,
-        args: normalizeMcpServerArgs(server.args)
-      });
-    }
-
-    seenNames.add(name);
-  }
-
-  return normalized;
-};
-
-const normalizeResponsePreferencePresetName = (value: string | undefined): string =>
-  (value ?? "").trim().replace(/\s+/g, " ");
-
-const normalizeResponsePreferencePresetDescription = (value: string | undefined): string => (value ?? "").trim();
-
-const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
-const RESPONSE_EXPLANATION_DEPTH = new Set(["one_line", "brief", "standard", "detailed", "deep_dive"]);
-const RESPONSE_JARGON_LEVEL = new Set(["avoid", "balanced", "expert"]);
-const RESPONSE_CODE_PREFERENCE = new Set(["only_when_needed", "prefer_examples", "avoid_code"]);
-const RESPONSE_CLARIFY_BEHAVIOR = new Set(["ask_when_ambiguous", "make_reasonable_assumptions"]);
-const RESPONSE_FORMATTING_STYLE = new Set(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]);
-
-const normalizeAgentResponsePreference = (
-  value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined
-): AgentResponsePreference => ({
-  audience: (() => {
-    if (typeof value?.audience === "string" && RESPONSE_AUDIENCES.has(value.audience as AudienceType)) {
-      return value.audience as AudienceType;
-    }
-    if ((value as { style?: string } | undefined)?.style === "technical" || (value as { style?: string } | undefined)?.style === "non_technical") {
-      return (value as { style?: AudienceType }).style;
-    }
-    return undefined;
-  })(),
-  explanationDepth:
-    typeof value?.explanationDepth === "string" && RESPONSE_EXPLANATION_DEPTH.has(value.explanationDepth)
-      ? value.explanationDepth
-      : undefined,
-  jargonLevel:
-    typeof value?.jargonLevel === "string" && RESPONSE_JARGON_LEVEL.has(value.jargonLevel)
-      ? value.jargonLevel
-      : undefined,
-  codePreference:
-    typeof value?.codePreference === "string" && RESPONSE_CODE_PREFERENCE.has(value.codePreference)
-      ? value.codePreference
-      : undefined,
-  clarifyBehavior:
-    typeof value?.clarifyBehavior === "string" && RESPONSE_CLARIFY_BEHAVIOR.has(value.clarifyBehavior)
-      ? value.clarifyBehavior
-      : undefined,
-  formattingStyle:
-    typeof value?.formattingStyle === "string" && RESPONSE_FORMATTING_STYLE.has(value.formattingStyle)
-      ? value.formattingStyle
-      : undefined,
-  extraInstructions: value?.extraInstructions?.trim() || undefined
-});
-
-const normalizeResponsePreferencePresets = (
-  value: ResponsePreferencePresetInput[] | ResponsePreferencePreset[] | undefined
-): ResponsePreferencePreset[] => {
-  const systemPreset = buildSystemResponsePreferencePreset();
-  const presets: ResponsePreferencePreset[] = [];
-  const seenIds = new Set<string>([systemPreset.id]);
-  const seenNames = new Set<string>([systemPreset.name.toLowerCase()]);
-
-  for (const rawPreset of value ?? []) {
-    const presetId = typeof rawPreset.id === "string" && rawPreset.id.trim() ? rawPreset.id.trim() : randomUUID();
-    if (presetId === systemPreset.id || seenIds.has(presetId)) {
-      continue;
-    }
-
-    const name = normalizeResponsePreferencePresetName(rawPreset.name);
-    const normalizedNameKey = name.toLowerCase();
-    if (!name || seenNames.has(normalizedNameKey)) {
-      continue;
-    }
-
-    presets.push({
-      id: presetId,
-      name,
-      description: normalizeResponsePreferencePresetDescription(rawPreset.description),
-      preference: normalizeAgentResponsePreference(rawPreset.preference),
-      isSystem: false,
-      createdAt: "createdAt" in rawPreset && typeof rawPreset.createdAt === "string" ? rawPreset.createdAt : nowIso(),
-      updatedAt: nowIso()
-    });
-    seenIds.add(presetId);
-    seenNames.add(normalizedNameKey);
-  }
-
-  return [systemPreset, ...presets].sort((left, right) => {
-    if (left.isSystem !== right.isSystem) {
-      return left.isSystem ? -1 : 1;
-    }
-    return left.name.localeCompare(right.name);
-  });
-};
-
-export interface SettingsRuntimeCredentials extends RuntimeCredentials {
-  gitUsername: string;
-  openaiBaseUrl: string | null;
-  defaultProvider: AgentProvider;
-}
-
-export interface SettingsStore {
-  getSettings(): Promise<SystemSettings>;
-  updateSettings(input: UpdateSettingsInput): Promise<SystemSettings>;
-  updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings>;
-  getRuntimeCredentials(userId?: string | null, codexCredentialSource?: "auto" | "profile" | "global"): Promise<SettingsRuntimeCredentials>;
-  getUserNotes(userId: string): Promise<UserNotes>;
-  updateUserNotes(userId: string, notes: string): Promise<UserNotes>;
-}
-
-export class RedisSettingsStore implements SettingsStore {
-  constructor(
-    private readonly redis: Redis,
-    private readonly eventBus: EventBus,
-    private readonly credentialStore: CredentialStore
-  ) {}
-
-  private async publishSettings(settings: SystemSettings): Promise<void> {
-    await this.eventBus.publish({ type: "settings:updated", payload: settings });
-  }
-
-  async getSettings(): Promise<SystemSettings> {
-    const raw = await this.redis.get(SETTINGS_KEY);
-    if (!raw) {
-      const baseSettings = {
-        defaultProvider: defaultSettings.defaultProvider,
-        maxAgents: defaultSettings.maxAgents,
-        branchPrefix: defaultSettings.branchPrefix,
-        workspaceProvisioningMode: defaultSettings.workspaceProvisioningMode,
-        gitUsername: defaultSettings.gitUsername,
-        mcpServers: defaultSettings.mcpServers,
-        openaiBaseUrl: defaultSettings.openaiBaseUrl,
-        taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
-        taskPromptMagicTemplate: defaultSettings.taskPromptMagicTemplate,
-        codexDefaultModel: defaultSettings.codexDefaultModel,
-        codexDefaultEffort: defaultSettings.codexDefaultEffort,
-        claudeDefaultModel: defaultSettings.claudeDefaultModel,
-        claudeDefaultEffort: defaultSettings.claudeDefaultEffort,
-        responsePreferencePresets: defaultSettings.responsePreferencePresets
-      };
-      await this.redis.set(SETTINGS_KEY, JSON.stringify(baseSettings));
-    }
-
-    const parsed = raw ? (JSON.parse(raw) as Partial<SystemSettings> & { agentRules?: string; autoModeEnabled?: boolean }) : {};
-    const normalizedBase = {
-      defaultProvider: normalizeDefaultProvider(parsed.defaultProvider),
-      maxAgents: parsed.maxAgents ?? defaultSettings.maxAgents,
-      branchPrefix: normalizeBranchPrefix(parsed.branchPrefix),
-      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(parsed.workspaceProvisioningMode),
-      gitUsername: normalizeGitUsername(parsed.gitUsername),
-      mcpServers: normalizeMcpServers(parsed.mcpServers),
-      openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null,
-      taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
-      taskPromptMagicTemplate: parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate,
-      codexDefaultModel: parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel,
-      codexDefaultEffort: normalizeProviderProfile(parsed.codexDefaultEffort) ?? defaultSettings.codexDefaultEffort,
-      claudeDefaultModel: parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(parsed.claudeDefaultEffort) ?? defaultSettings.claudeDefaultEffort,
-      responsePreferencePresets: normalizeResponsePreferencePresets(parsed.responsePreferencePresets)
-    };
-
-    if (
-      Object.prototype.hasOwnProperty.call(parsed, "autoModeEnabled") ||
-      Object.prototype.hasOwnProperty.call(parsed, "agentRules") ||
-      parsed.defaultProvider !== normalizedBase.defaultProvider ||
-      parsed.maxAgents !== normalizedBase.maxAgents ||
-      parsed.branchPrefix !== normalizedBase.branchPrefix ||
-      parsed.workspaceProvisioningMode !== normalizedBase.workspaceProvisioningMode ||
-      parsed.gitUsername !== normalizedBase.gitUsername ||
-      JSON.stringify(parsed.mcpServers ?? []) !== JSON.stringify(normalizedBase.mcpServers) ||
-      (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl ||
-      (parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel) !== normalizedBase.taskPromptMagicModel ||
-      (parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate) !== normalizedBase.taskPromptMagicTemplate ||
-      JSON.stringify(parsed.responsePreferencePresets ?? []) !== JSON.stringify(normalizedBase.responsePreferencePresets)
-    ) {
-      await this.redis.set(SETTINGS_KEY, JSON.stringify(normalizedBase));
-    }
-
-    const credentialStatus = await this.credentialStore.getCredentialStatus();
-    return {
-      ...normalizedBase,
-      ...credentialStatus,
-      dataStores: buildSystemDataStores()
-    };
-  }
-
-  async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
-    const current = await this.getSettings();
-    const nextBase = {
-      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
-      maxAgents: input.maxAgents ?? current.maxAgents,
-      branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
-      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
-        input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
-      ),
-      gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
-      mcpServers:
-        input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
-      openaiBaseUrl:
-        input.openaiBaseUrl === undefined
-          ? current.openaiBaseUrl
-          : input.openaiBaseUrl?.trim()
-            ? input.openaiBaseUrl.trim()
-            : null,
-      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
-      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
-      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
-      codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
-      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
-      responsePreferencePresets:
-        input.responsePreferencePresets === undefined
-          ? current.responsePreferencePresets
-          : normalizeResponsePreferencePresets(input.responsePreferencePresets)
-    };
-
-    await this.redis.set(SETTINGS_KEY, JSON.stringify(nextBase));
-    const next = await this.getSettings();
-    await this.publishSettings(next);
-    return next;
-  }
-
-  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings> {
-    await this.credentialStore.updateCredentials(input);
-    const settings = await this.getSettings();
-    await this.publishSettings(settings);
-    return settings;
-  }
-
-  async getRuntimeCredentials(userId?: string | null, codexCredentialSource: "auto" | "profile" | "global" = "auto"): Promise<SettingsRuntimeCredentials> {
-    const [credentials, settings] = await Promise.all([
-      this.credentialStore.getCredentials(),
-      this.getSettings()
-    ]);
-    const profileCodexAuthJson = userId?.trim()
-      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
-      : null;
-    const globalCodexAuthJson = credentials.codexAuthJson ?? null;
-    const codexAuthJson =
-      codexCredentialSource === "profile"
-        ? profileCodexAuthJson
-        : codexCredentialSource === "global"
-          ? globalCodexAuthJson
-          : profileCodexAuthJson || globalCodexAuthJson;
-
-    return {
-      ...credentials,
-      codexAuthJson: codexAuthJson || null,
-      gitUsername: settings.gitUsername,
-      openaiBaseUrl: settings.openaiBaseUrl,
-      defaultProvider: settings.defaultProvider
-    };
-  }
-
-  async getUserNotes(userId: string): Promise<UserNotes> {
-    const key = `${USER_NOTES_KEY_PREFIX}${userId}`;
-    const raw = await this.redis.get(key);
-    if (!raw) {
-      const initial: UserNotes = { notes: "", updatedAt: nowIso() };
-      await this.redis.set(key, JSON.stringify(initial));
-      return initial;
-    }
-
-    const parsed = JSON.parse(raw) as Partial<UserNotes> | null;
-    return {
-      notes: typeof parsed?.notes === "string" ? parsed.notes : "",
-      updatedAt: typeof parsed?.updatedAt === "string" && parsed.updatedAt.trim().length > 0 ? parsed.updatedAt : nowIso()
-    };
-  }
-
-  async updateUserNotes(userId: string, notes: string): Promise<UserNotes> {
-    const key = `${USER_NOTES_KEY_PREFIX}${userId}`;
-    const next: UserNotes = {
-      notes,
-      updatedAt: nowIso()
-    };
-    await this.redis.set(key, JSON.stringify(next));
-    return next;
-  }
-}
-
-export class PostgresSettingsStore implements SettingsStore {
-  constructor(
-    private readonly pool: Pool,
-    private readonly eventBus: EventBus,
-    private readonly credentialStore: CredentialStore
-  ) {}
-
-  private async publishSettings(settings: SystemSettings): Promise<void> {
-    await this.eventBus.publish({ type: "settings:updated", payload: settings });
-  }
-
-  private async ensureBaseSettingsRow(): Promise<void> {
-    await this.pool.query(
-      `
-        INSERT INTO system_settings (
-          singleton_id,
-          default_provider,
-          max_agents,
-          branch_prefix,
-          workspace_provisioning_mode,
-          git_username,
-          mcp_servers,
-          openai_base_url,
-          task_prompt_magic_model,
-          task_prompt_magic_template,
-          codex_default_model,
-          codex_default_effort,
-          claude_default_model,
-          claude_default_effort,
-          response_preference_presets
-        )
-        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
-        ON CONFLICT (singleton_id) DO NOTHING
-      `,
-      [
-        defaultSettings.defaultProvider,
-        defaultSettings.maxAgents,
-        defaultSettings.branchPrefix,
-        defaultSettings.workspaceProvisioningMode,
-        defaultSettings.gitUsername,
-        JSON.stringify(defaultSettings.mcpServers),
-        defaultSettings.openaiBaseUrl,
-        defaultSettings.taskPromptMagicModel,
-        defaultSettings.taskPromptMagicTemplate,
-        defaultSettings.codexDefaultModel,
-        defaultSettings.codexDefaultEffort,
-        defaultSettings.claudeDefaultModel,
-        defaultSettings.claudeDefaultEffort,
-        JSON.stringify(defaultSettings.responsePreferencePresets)
-      ]
-    );
-  }
-
-  async getSettings(): Promise<SystemSettings> {
-    await this.ensureBaseSettingsRow();
-    const result = await this.pool.query(
-      `
-        SELECT
-          default_provider,
-          max_agents,
-          branch_prefix,
-          workspace_provisioning_mode,
-          git_username,
-          mcp_servers,
-          openai_base_url,
-          task_prompt_magic_model,
-          task_prompt_magic_template,
-          codex_default_model,
-          codex_default_effort,
-          claude_default_model,
-          claude_default_effort,
-          response_preference_presets
-        FROM system_settings
-        WHERE singleton_id = 1
-      `
-    );
-    const row = result.rows[0];
-    const normalizedBase = {
-      defaultProvider: normalizeDefaultProvider(row?.default_provider),
-      maxAgents: typeof row?.max_agents === "number" ? row.max_agents : defaultSettings.maxAgents,
-      branchPrefix: normalizeBranchPrefix(typeof row?.branch_prefix === "string" ? row.branch_prefix : undefined),
-      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(row?.workspace_provisioning_mode),
-      gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
-      mcpServers: normalizeMcpServers(Array.isArray(row?.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined),
-      openaiBaseUrl: typeof row?.openai_base_url === "string" && row.openai_base_url.trim().length > 0 ? row.openai_base_url.trim() : null,
-      taskPromptMagicModel:
-        typeof row?.task_prompt_magic_model === "string" && row.task_prompt_magic_model.trim().length > 0
-          ? row.task_prompt_magic_model.trim()
-          : defaultSettings.taskPromptMagicModel,
-      taskPromptMagicTemplate:
-        typeof row?.task_prompt_magic_template === "string" && row.task_prompt_magic_template.trim().length > 0
-          ? row.task_prompt_magic_template.trim()
-          : defaultSettings.taskPromptMagicTemplate,
-      codexDefaultModel:
-        typeof row?.codex_default_model === "string" && row.codex_default_model.trim().length > 0
-          ? row.codex_default_model.trim()
-          : defaultSettings.codexDefaultModel,
-      codexDefaultEffort: normalizeProviderProfile(row?.codex_default_effort) ?? defaultSettings.codexDefaultEffort,
-      claudeDefaultModel:
-        typeof row?.claude_default_model === "string" && row.claude_default_model.trim().length > 0
-          ? row.claude_default_model.trim()
-          : defaultSettings.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(row?.claude_default_effort) ?? defaultSettings.claudeDefaultEffort,
-      responsePreferencePresets: normalizeResponsePreferencePresets(
-        Array.isArray(row?.response_preference_presets) ? (row.response_preference_presets as ResponsePreferencePreset[]) : undefined
-      )
-    };
-
-    const credentialStatus = await this.credentialStore.getCredentialStatus();
-    return {
-      ...normalizedBase,
-      ...credentialStatus,
-      dataStores: buildSystemDataStores()
-    };
-  }
-
-  async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
-    const current = await this.getSettings();
-    const nextBase = {
-      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
-      maxAgents: input.maxAgents ?? current.maxAgents,
-      branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
-      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
-        input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
-      ),
-      gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
-      mcpServers: input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
-      openaiBaseUrl:
-        input.openaiBaseUrl === undefined
-          ? current.openaiBaseUrl
-          : input.openaiBaseUrl?.trim()
-            ? input.openaiBaseUrl.trim()
-            : null,
-      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
-      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
-      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
-      codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
-      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
-      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
-      responsePreferencePresets:
-        input.responsePreferencePresets === undefined
-          ? current.responsePreferencePresets
-          : normalizeResponsePreferencePresets(input.responsePreferencePresets)
-    };
-
-    await this.pool.query(
-      `
-        INSERT INTO system_settings (
-          singleton_id,
-          default_provider,
-          max_agents,
-          branch_prefix,
-          workspace_provisioning_mode,
-          git_username,
-          mcp_servers,
-          openai_base_url,
-          task_prompt_magic_model,
-          task_prompt_magic_template,
-          codex_default_model,
-          codex_default_effort,
-          claude_default_model,
-          claude_default_effort,
-          response_preference_presets
-        )
-        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
-        ON CONFLICT (singleton_id) DO UPDATE
-        SET
-          default_provider = EXCLUDED.default_provider,
-          max_agents = EXCLUDED.max_agents,
-          branch_prefix = EXCLUDED.branch_prefix,
-          workspace_provisioning_mode = EXCLUDED.workspace_provisioning_mode,
-          git_username = EXCLUDED.git_username,
-          mcp_servers = EXCLUDED.mcp_servers,
-          openai_base_url = EXCLUDED.openai_base_url,
-          task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
-          task_prompt_magic_template = EXCLUDED.task_prompt_magic_template,
-          codex_default_model = EXCLUDED.codex_default_model,
-          codex_default_effort = EXCLUDED.codex_default_effort,
-          claude_default_model = EXCLUDED.claude_default_model,
-          claude_default_effort = EXCLUDED.claude_default_effort,
-          response_preference_presets = EXCLUDED.response_preference_presets
-      `,
-      [
-        nextBase.defaultProvider,
-        nextBase.maxAgents,
-        nextBase.branchPrefix,
-        nextBase.workspaceProvisioningMode,
-        nextBase.gitUsername,
-        JSON.stringify(nextBase.mcpServers),
-        nextBase.openaiBaseUrl,
-        nextBase.taskPromptMagicModel,
-        nextBase.taskPromptMagicTemplate,
-        nextBase.codexDefaultModel,
-        nextBase.codexDefaultEffort,
-        nextBase.claudeDefaultModel,
-        nextBase.claudeDefaultEffort,
-        JSON.stringify(nextBase.responsePreferencePresets)
-      ]
-    );
-    const next = await this.getSettings();
-    await this.publishSettings(next);
-    return next;
-  }
-
-  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings> {
-    await this.credentialStore.updateCredentials(input);
-    const settings = await this.getSettings();
-    await this.publishSettings(settings);
-    return settings;
-  }
-
-  async getRuntimeCredentials(userId?: string | null, codexCredentialSource: "auto" | "profile" | "global" = "auto"): Promise<SettingsRuntimeCredentials> {
-    const [credentials, settings] = await Promise.all([
-      this.credentialStore.getCredentials(),
-      this.getSettings()
-    ]);
-    const profileCodexAuthJson = userId?.trim()
-      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
-      : null;
-    const globalCodexAuthJson = credentials.codexAuthJson ?? null;
-    const codexAuthJson =
-      codexCredentialSource === "profile"
-        ? profileCodexAuthJson
-        : codexCredentialSource === "global"
-          ? globalCodexAuthJson
-          : profileCodexAuthJson || globalCodexAuthJson;
-
-    return {
-      ...credentials,
-      codexAuthJson: codexAuthJson || null,
-      gitUsername: settings.gitUsername,
-      openaiBaseUrl: settings.openaiBaseUrl,
-      defaultProvider: settings.defaultProvider
-    };
-  }
-
-  async getUserNotes(userId: string): Promise<UserNotes> {
-    const result = await this.pool.query(
-      `
-        SELECT notes, updated_at
-        FROM user_notes
-        WHERE user_id = $1
-      `,
-      [userId]
-    );
-    const row = result.rows[0];
-    return {
-      notes: typeof row?.notes === "string" ? row.notes : "",
-      updatedAt:
-        typeof row?.updated_at === "string" && row.updated_at.trim().length > 0
-          ? row.updated_at
-          : nowIso()
-    };
-  }
-
-  async updateUserNotes(userId: string, notes: string): Promise<UserNotes> {
-    const next: UserNotes = {
-      notes,
-      updatedAt: nowIso()
-    };
-    await this.pool.query(
-      `
-        INSERT INTO user_notes (user_id, notes, updated_at)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (user_id) DO UPDATE
-        SET notes = EXCLUDED.notes, updated_at = EXCLUDED.updated_at
-      `,
-      [userId, next.notes, next.updatedAt]
-    );
-    return next;
-  }
-}
 ````
 
 ## File: apps/web/app/globals.css
@@ -36746,6 +36043,1462 @@ test("shows active auto runs as grouped cards before summary or diff exist", () 
 });
 ````
 
+## File: apps/server/src/services/settings-store.ts
+````typescript
+import { randomUUID } from "node:crypto";
+import type Redis from "ioredis";
+import type { Pool } from "pg";
+import type {
+  AgentProvider,
+  AgentResponsePreference,
+  AudienceType,
+  SystemDataStores,
+  McpServerConfig,
+  ProviderProfile,
+  WorkspaceProvisioningMode,
+  ResponsePreferencePreset,
+  ResponsePreferencePresetInput,
+  SystemSettings,
+  UserNotes,
+  UpdateCredentialSettingsInput,
+  UpdateSettingsInput
+} from "@agentswarm/shared-types";
+import { EventBus } from "../lib/events.js";
+import { normalizeProvider, DEFAULT_PROVIDER, normalizeProviderProfile } from "../lib/provider-config.js";
+import { defaultModelForProvider } from "../lib/provider-config.js";
+import type { CredentialStore, RuntimeCredentials } from "./credential-store.js";
+
+const SETTINGS_KEY = "agentswarm:settings";
+const USER_NOTES_KEY_PREFIX = "agentswarm:user-notes:";
+const SYSTEM_RESPONSE_PREFERENCE_PRESET_ID = "neutral";
+
+const DEFAULT_CODEX_EFFORT: ProviderProfile = "high";
+const DEFAULT_CLAUDE_EFFORT: ProviderProfile = "high";
+const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
+
+const nowIso = (): string => new Date().toISOString();
+
+const buildSystemResponsePreferencePreset = (): ResponsePreferencePreset => ({
+  id: SYSTEM_RESPONSE_PREFERENCE_PRESET_ID,
+  name: "Neutral",
+  description: "No tailored response style. The agent responds normally.",
+  preference: DEFAULT_AGENT_RESPONSE_PREFERENCE,
+  isSystem: true,
+  createdAt: "2026-05-07T00:00:00.000Z",
+  updatedAt: "2026-05-07T00:00:00.000Z"
+});
+
+const buildSystemDataStores = (): SystemDataStores => ({
+  taskStore: "postgres",
+  snippetStore: "postgres",
+  repositoryStore: "postgres",
+  credentialStore: "postgres",
+  roleStore: "postgres",
+  userStore: "postgres",
+  settingsStore: "postgres",
+  taskQueueStore: "redis",
+  webhookDeliveryStore: "redis",
+  sessionStore: "redis",
+  eventBus: "redis"
+});
+
+const defaultSettings: SystemSettings = {
+  defaultProvider: DEFAULT_PROVIDER,
+  maxAgents: 2,
+  branchPrefix: "agentswarm",
+  workspaceProvisioningMode: "clone_only",
+  gitUsername: "x-access-token",
+  mcpServers: [],
+  openaiBaseUrl: null,
+  taskPromptMagicModel: "gpt-5.4-mini",
+  taskPromptMagicTemplate:
+    "You are an expert prompt editor for software engineering tasks.\nRewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.\n\nRequirements:\n- Preserve intent and constraints.\n- Make it specific and actionable.\n- Include acceptance criteria when implied.\n- Avoid changing requested scope.\n- Return plain text only, no markdown fences.\n\nUser request:\n{{user_request}}\n",
+  githubTokenConfigured: false,
+  openaiApiKeyConfigured: false,
+  codexAuthJsonConfigured: false,
+  anthropicApiKeyConfigured: false,
+  codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.4",
+  codexDefaultEffort: DEFAULT_CODEX_EFFORT,
+  claudeDefaultModel: defaultModelForProvider("claude", DEFAULT_CLAUDE_EFFORT) ?? "claude-sonnet-4-5",
+  claudeDefaultEffort: DEFAULT_CLAUDE_EFFORT,
+  responsePreferencePresets: [buildSystemResponsePreferencePreset()],
+  dataStores: buildSystemDataStores()
+};
+
+const normalizeBranchPrefix = (value: string | undefined): string => {
+  const cleaned = (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9/_-]+/g, "-")
+    .replace(/\/+/g, "/")
+    .replace(/^\/+|\/+$/g, "");
+
+  return cleaned || defaultSettings.branchPrefix;
+};
+
+const normalizeGitUsername = (value: string | undefined): string => {
+  const cleaned = (value ?? "").trim();
+  return cleaned || defaultSettings.gitUsername;
+};
+
+const normalizeDefaultProvider = (value: AgentProvider | string | undefined): AgentProvider =>
+  normalizeProvider(value ?? defaultSettings.defaultProvider);
+
+const normalizeWorkspaceProvisioningMode = (value: WorkspaceProvisioningMode | string | undefined): WorkspaceProvisioningMode =>
+  value === "hybrid" ? "hybrid" : "clone_only";
+
+const normalizeMcpServerName = (value: string | undefined): string =>
+  (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const normalizeMcpServerArgs = (value: string[] | undefined): string[] =>
+  (value ?? []).map((item) => item.trim()).filter(Boolean);
+
+const MCP_BEARER_TOKEN_ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+const normalizeMcpBearerTokenEnvVar = (value: string | null | undefined): string | null => {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed || !MCP_BEARER_TOKEN_ENV_VAR_PATTERN.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+};
+
+const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerConfig[] => {
+  const normalized: McpServerConfig[] = [];
+  const seenNames = new Set<string>();
+
+  for (const server of value ?? []) {
+    const name = normalizeMcpServerName(server.name);
+    if (!name || seenNames.has(name)) {
+      continue;
+    }
+
+    const transport = server.transport === "http" ? "http" : "stdio";
+    const baseServer: McpServerConfig = {
+      name,
+      enabled: server.enabled !== false,
+      transport
+    };
+
+    if (transport === "http") {
+      const url = server.url?.trim() || null;
+      if (!url) {
+        continue;
+      }
+
+      normalized.push({
+        ...baseServer,
+        url,
+        bearerTokenEnvVar: normalizeMcpBearerTokenEnvVar(server.bearerTokenEnvVar)
+      });
+    } else {
+      const command = server.command?.trim() || null;
+      if (!command) {
+        continue;
+      }
+
+      normalized.push({
+        ...baseServer,
+        command,
+        args: normalizeMcpServerArgs(server.args)
+      });
+    }
+
+    seenNames.add(name);
+  }
+
+  return normalized;
+};
+
+const normalizeResponsePreferencePresetName = (value: string | undefined): string =>
+  (value ?? "").trim().replace(/\s+/g, " ");
+
+const normalizeResponsePreferencePresetDescription = (value: string | undefined): string => (value ?? "").trim();
+
+const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
+const RESPONSE_EXPLANATION_DEPTH = new Set(["one_line", "brief", "standard", "detailed", "deep_dive"]);
+const RESPONSE_JARGON_LEVEL = new Set(["avoid", "balanced", "expert"]);
+const RESPONSE_CODE_PREFERENCE = new Set(["only_when_needed", "prefer_examples", "avoid_code"]);
+const RESPONSE_CLARIFY_BEHAVIOR = new Set(["ask_when_ambiguous", "make_reasonable_assumptions"]);
+const RESPONSE_FORMATTING_STYLE = new Set(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]);
+
+const normalizeAgentResponsePreference = (
+  value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined
+): AgentResponsePreference => ({
+  audience: (() => {
+    if (typeof value?.audience === "string" && RESPONSE_AUDIENCES.has(value.audience as AudienceType)) {
+      return value.audience as AudienceType;
+    }
+    if ((value as { style?: string } | undefined)?.style === "technical" || (value as { style?: string } | undefined)?.style === "non_technical") {
+      return (value as { style?: AudienceType }).style;
+    }
+    return undefined;
+  })(),
+  explanationDepth:
+    typeof value?.explanationDepth === "string" && RESPONSE_EXPLANATION_DEPTH.has(value.explanationDepth)
+      ? value.explanationDepth
+      : undefined,
+  jargonLevel:
+    typeof value?.jargonLevel === "string" && RESPONSE_JARGON_LEVEL.has(value.jargonLevel)
+      ? value.jargonLevel
+      : undefined,
+  codePreference:
+    typeof value?.codePreference === "string" && RESPONSE_CODE_PREFERENCE.has(value.codePreference)
+      ? value.codePreference
+      : undefined,
+  clarifyBehavior:
+    typeof value?.clarifyBehavior === "string" && RESPONSE_CLARIFY_BEHAVIOR.has(value.clarifyBehavior)
+      ? value.clarifyBehavior
+      : undefined,
+  formattingStyle:
+    typeof value?.formattingStyle === "string" && RESPONSE_FORMATTING_STYLE.has(value.formattingStyle)
+      ? value.formattingStyle
+      : undefined,
+  extraInstructions: value?.extraInstructions?.trim() || undefined
+});
+
+const normalizeResponsePreferencePresets = (
+  value: ResponsePreferencePresetInput[] | ResponsePreferencePreset[] | undefined
+): ResponsePreferencePreset[] => {
+  const systemPreset = buildSystemResponsePreferencePreset();
+  const presets: ResponsePreferencePreset[] = [];
+  const seenIds = new Set<string>([systemPreset.id]);
+  const seenNames = new Set<string>([systemPreset.name.toLowerCase()]);
+
+  for (const rawPreset of value ?? []) {
+    const presetId = typeof rawPreset.id === "string" && rawPreset.id.trim() ? rawPreset.id.trim() : randomUUID();
+    if (presetId === systemPreset.id || seenIds.has(presetId)) {
+      continue;
+    }
+
+    const name = normalizeResponsePreferencePresetName(rawPreset.name);
+    const normalizedNameKey = name.toLowerCase();
+    if (!name || seenNames.has(normalizedNameKey)) {
+      continue;
+    }
+
+    presets.push({
+      id: presetId,
+      name,
+      description: normalizeResponsePreferencePresetDescription(rawPreset.description),
+      preference: normalizeAgentResponsePreference(rawPreset.preference),
+      isSystem: false,
+      createdAt: "createdAt" in rawPreset && typeof rawPreset.createdAt === "string" ? rawPreset.createdAt : nowIso(),
+      updatedAt: nowIso()
+    });
+    seenIds.add(presetId);
+    seenNames.add(normalizedNameKey);
+  }
+
+  return [systemPreset, ...presets].sort((left, right) => {
+    if (left.isSystem !== right.isSystem) {
+      return left.isSystem ? -1 : 1;
+    }
+    return left.name.localeCompare(right.name);
+  });
+};
+
+export interface SettingsRuntimeCredentials extends RuntimeCredentials {
+  gitUsername: string;
+  openaiBaseUrl: string | null;
+  defaultProvider: AgentProvider;
+}
+
+export interface SettingsStore {
+  getSettings(): Promise<SystemSettings>;
+  updateSettings(input: UpdateSettingsInput): Promise<SystemSettings>;
+  updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings>;
+  getRuntimeCredentials(userId?: string | null, codexCredentialSource?: "auto" | "profile" | "global"): Promise<SettingsRuntimeCredentials>;
+  getUserNotes(userId: string): Promise<UserNotes>;
+  updateUserNotes(userId: string, notes: string): Promise<UserNotes>;
+}
+
+export class RedisSettingsStore implements SettingsStore {
+  constructor(
+    private readonly redis: Redis,
+    private readonly eventBus: EventBus,
+    private readonly credentialStore: CredentialStore
+  ) {}
+
+  private async publishSettings(settings: SystemSettings): Promise<void> {
+    await this.eventBus.publish({ type: "settings:updated", payload: settings });
+  }
+
+  async getSettings(): Promise<SystemSettings> {
+    const raw = await this.redis.get(SETTINGS_KEY);
+    if (!raw) {
+      const baseSettings = {
+        defaultProvider: defaultSettings.defaultProvider,
+        maxAgents: defaultSettings.maxAgents,
+        branchPrefix: defaultSettings.branchPrefix,
+        workspaceProvisioningMode: defaultSettings.workspaceProvisioningMode,
+        gitUsername: defaultSettings.gitUsername,
+        mcpServers: defaultSettings.mcpServers,
+        openaiBaseUrl: defaultSettings.openaiBaseUrl,
+        taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
+        taskPromptMagicTemplate: defaultSettings.taskPromptMagicTemplate,
+        codexDefaultModel: defaultSettings.codexDefaultModel,
+        codexDefaultEffort: defaultSettings.codexDefaultEffort,
+        claudeDefaultModel: defaultSettings.claudeDefaultModel,
+        claudeDefaultEffort: defaultSettings.claudeDefaultEffort,
+        responsePreferencePresets: defaultSettings.responsePreferencePresets
+      };
+      await this.redis.set(SETTINGS_KEY, JSON.stringify(baseSettings));
+    }
+
+    const parsed = raw ? (JSON.parse(raw) as Partial<SystemSettings> & { agentRules?: string; autoModeEnabled?: boolean }) : {};
+    const normalizedBase = {
+      defaultProvider: normalizeDefaultProvider(parsed.defaultProvider),
+      maxAgents: parsed.maxAgents ?? defaultSettings.maxAgents,
+      branchPrefix: normalizeBranchPrefix(parsed.branchPrefix),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(parsed.workspaceProvisioningMode),
+      gitUsername: normalizeGitUsername(parsed.gitUsername),
+      mcpServers: normalizeMcpServers(parsed.mcpServers),
+      openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null,
+      taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
+      taskPromptMagicTemplate: parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate,
+      codexDefaultModel: parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(parsed.codexDefaultEffort) ?? defaultSettings.codexDefaultEffort,
+      claudeDefaultModel: parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(parsed.claudeDefaultEffort) ?? defaultSettings.claudeDefaultEffort,
+      responsePreferencePresets: normalizeResponsePreferencePresets(parsed.responsePreferencePresets)
+    };
+
+    if (
+      Object.prototype.hasOwnProperty.call(parsed, "autoModeEnabled") ||
+      Object.prototype.hasOwnProperty.call(parsed, "agentRules") ||
+      parsed.defaultProvider !== normalizedBase.defaultProvider ||
+      parsed.maxAgents !== normalizedBase.maxAgents ||
+      parsed.branchPrefix !== normalizedBase.branchPrefix ||
+      parsed.workspaceProvisioningMode !== normalizedBase.workspaceProvisioningMode ||
+      parsed.gitUsername !== normalizedBase.gitUsername ||
+      JSON.stringify(parsed.mcpServers ?? []) !== JSON.stringify(normalizedBase.mcpServers) ||
+      (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl ||
+      (parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel) !== normalizedBase.taskPromptMagicModel ||
+      (parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate) !== normalizedBase.taskPromptMagicTemplate ||
+      JSON.stringify(parsed.responsePreferencePresets ?? []) !== JSON.stringify(normalizedBase.responsePreferencePresets)
+    ) {
+      await this.redis.set(SETTINGS_KEY, JSON.stringify(normalizedBase));
+    }
+
+    const credentialStatus = await this.credentialStore.getCredentialStatus();
+    return {
+      ...normalizedBase,
+      ...credentialStatus,
+      dataStores: buildSystemDataStores()
+    };
+  }
+
+  async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
+    const current = await this.getSettings();
+    const nextBase = {
+      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
+      maxAgents: input.maxAgents ?? current.maxAgents,
+      branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
+        input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
+      ),
+      gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
+      mcpServers:
+        input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
+      openaiBaseUrl:
+        input.openaiBaseUrl === undefined
+          ? current.openaiBaseUrl
+          : input.openaiBaseUrl?.trim()
+            ? input.openaiBaseUrl.trim()
+            : null,
+      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
+      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
+      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
+      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
+      responsePreferencePresets:
+        input.responsePreferencePresets === undefined
+          ? current.responsePreferencePresets
+          : normalizeResponsePreferencePresets(input.responsePreferencePresets)
+    };
+
+    await this.redis.set(SETTINGS_KEY, JSON.stringify(nextBase));
+    const next = await this.getSettings();
+    await this.publishSettings(next);
+    return next;
+  }
+
+  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings> {
+    await this.credentialStore.updateCredentials(input);
+    const settings = await this.getSettings();
+    await this.publishSettings(settings);
+    return settings;
+  }
+
+  async getRuntimeCredentials(userId?: string | null, codexCredentialSource: "auto" | "profile" | "global" = "auto"): Promise<SettingsRuntimeCredentials> {
+    const [credentials, settings] = await Promise.all([
+      this.credentialStore.getCredentials(),
+      this.getSettings()
+    ]);
+    const profileCodexAuthJson = userId?.trim()
+      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
+      : null;
+    const globalCodexAuthJson = credentials.codexAuthJson ?? null;
+    const codexAuthJson =
+      codexCredentialSource === "profile"
+        ? profileCodexAuthJson
+        : codexCredentialSource === "global"
+          ? globalCodexAuthJson
+          : profileCodexAuthJson || globalCodexAuthJson;
+
+    return {
+      ...credentials,
+      codexAuthJson: codexAuthJson || null,
+      gitUsername: settings.gitUsername,
+      openaiBaseUrl: settings.openaiBaseUrl,
+      defaultProvider: settings.defaultProvider
+    };
+  }
+
+  async getUserNotes(userId: string): Promise<UserNotes> {
+    const key = `${USER_NOTES_KEY_PREFIX}${userId}`;
+    const raw = await this.redis.get(key);
+    if (!raw) {
+      const initial: UserNotes = { notes: "", updatedAt: nowIso() };
+      await this.redis.set(key, JSON.stringify(initial));
+      return initial;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<UserNotes> | null;
+    return {
+      notes: typeof parsed?.notes === "string" ? parsed.notes : "",
+      updatedAt: typeof parsed?.updatedAt === "string" && parsed.updatedAt.trim().length > 0 ? parsed.updatedAt : nowIso()
+    };
+  }
+
+  async updateUserNotes(userId: string, notes: string): Promise<UserNotes> {
+    const key = `${USER_NOTES_KEY_PREFIX}${userId}`;
+    const next: UserNotes = {
+      notes,
+      updatedAt: nowIso()
+    };
+    await this.redis.set(key, JSON.stringify(next));
+    return next;
+  }
+}
+
+export class PostgresSettingsStore implements SettingsStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly eventBus: EventBus,
+    private readonly credentialStore: CredentialStore
+  ) {}
+
+  private async publishSettings(settings: SystemSettings): Promise<void> {
+    await this.eventBus.publish({ type: "settings:updated", payload: settings });
+  }
+
+  private async ensureBaseSettingsRow(): Promise<void> {
+    await this.pool.query(
+      `
+        INSERT INTO system_settings (
+          singleton_id,
+          default_provider,
+          max_agents,
+          branch_prefix,
+          workspace_provisioning_mode,
+          git_username,
+          mcp_servers,
+          openai_base_url,
+          task_prompt_magic_model,
+          task_prompt_magic_template,
+          codex_default_model,
+          codex_default_effort,
+          claude_default_model,
+          claude_default_effort,
+          response_preference_presets
+        )
+        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+        ON CONFLICT (singleton_id) DO NOTHING
+      `,
+      [
+        defaultSettings.defaultProvider,
+        defaultSettings.maxAgents,
+        defaultSettings.branchPrefix,
+        defaultSettings.workspaceProvisioningMode,
+        defaultSettings.gitUsername,
+        JSON.stringify(defaultSettings.mcpServers),
+        defaultSettings.openaiBaseUrl,
+        defaultSettings.taskPromptMagicModel,
+        defaultSettings.taskPromptMagicTemplate,
+        defaultSettings.codexDefaultModel,
+        defaultSettings.codexDefaultEffort,
+        defaultSettings.claudeDefaultModel,
+        defaultSettings.claudeDefaultEffort,
+        JSON.stringify(defaultSettings.responsePreferencePresets)
+      ]
+    );
+  }
+
+  async getSettings(): Promise<SystemSettings> {
+    await this.ensureBaseSettingsRow();
+    const result = await this.pool.query(
+      `
+        SELECT
+          default_provider,
+          max_agents,
+          branch_prefix,
+          workspace_provisioning_mode,
+          git_username,
+          mcp_servers,
+          openai_base_url,
+          task_prompt_magic_model,
+          task_prompt_magic_template,
+          codex_default_model,
+          codex_default_effort,
+          claude_default_model,
+          claude_default_effort,
+          response_preference_presets
+        FROM system_settings
+        WHERE singleton_id = 1
+      `
+    );
+    const row = result.rows[0];
+    const normalizedBase = {
+      defaultProvider: normalizeDefaultProvider(row?.default_provider),
+      maxAgents: typeof row?.max_agents === "number" ? row.max_agents : defaultSettings.maxAgents,
+      branchPrefix: normalizeBranchPrefix(typeof row?.branch_prefix === "string" ? row.branch_prefix : undefined),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(row?.workspace_provisioning_mode),
+      gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
+      mcpServers: normalizeMcpServers(Array.isArray(row?.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined),
+      openaiBaseUrl: typeof row?.openai_base_url === "string" && row.openai_base_url.trim().length > 0 ? row.openai_base_url.trim() : null,
+      taskPromptMagicModel:
+        typeof row?.task_prompt_magic_model === "string" && row.task_prompt_magic_model.trim().length > 0
+          ? row.task_prompt_magic_model.trim()
+          : defaultSettings.taskPromptMagicModel,
+      taskPromptMagicTemplate:
+        typeof row?.task_prompt_magic_template === "string" && row.task_prompt_magic_template.trim().length > 0
+          ? row.task_prompt_magic_template.trim()
+          : defaultSettings.taskPromptMagicTemplate,
+      codexDefaultModel:
+        typeof row?.codex_default_model === "string" && row.codex_default_model.trim().length > 0
+          ? row.codex_default_model.trim()
+          : defaultSettings.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(row?.codex_default_effort) ?? defaultSettings.codexDefaultEffort,
+      claudeDefaultModel:
+        typeof row?.claude_default_model === "string" && row.claude_default_model.trim().length > 0
+          ? row.claude_default_model.trim()
+          : defaultSettings.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(row?.claude_default_effort) ?? defaultSettings.claudeDefaultEffort,
+      responsePreferencePresets: normalizeResponsePreferencePresets(
+        Array.isArray(row?.response_preference_presets) ? (row.response_preference_presets as ResponsePreferencePreset[]) : undefined
+      )
+    };
+
+    const credentialStatus = await this.credentialStore.getCredentialStatus();
+    return {
+      ...normalizedBase,
+      ...credentialStatus,
+      dataStores: buildSystemDataStores()
+    };
+  }
+
+  async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
+    const current = await this.getSettings();
+    const nextBase = {
+      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
+      maxAgents: input.maxAgents ?? current.maxAgents,
+      branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
+      workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
+        input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
+      ),
+      gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
+      mcpServers: input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
+      openaiBaseUrl:
+        input.openaiBaseUrl === undefined
+          ? current.openaiBaseUrl
+          : input.openaiBaseUrl?.trim()
+            ? input.openaiBaseUrl.trim()
+            : null,
+      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
+      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
+      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
+      codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
+      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
+      claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
+      responsePreferencePresets:
+        input.responsePreferencePresets === undefined
+          ? current.responsePreferencePresets
+          : normalizeResponsePreferencePresets(input.responsePreferencePresets)
+    };
+
+    await this.pool.query(
+      `
+        INSERT INTO system_settings (
+          singleton_id,
+          default_provider,
+          max_agents,
+          branch_prefix,
+          workspace_provisioning_mode,
+          git_username,
+          mcp_servers,
+          openai_base_url,
+          task_prompt_magic_model,
+          task_prompt_magic_template,
+          codex_default_model,
+          codex_default_effort,
+          claude_default_model,
+          claude_default_effort,
+          response_preference_presets
+        )
+        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+        ON CONFLICT (singleton_id) DO UPDATE
+        SET
+          default_provider = EXCLUDED.default_provider,
+          max_agents = EXCLUDED.max_agents,
+          branch_prefix = EXCLUDED.branch_prefix,
+          workspace_provisioning_mode = EXCLUDED.workspace_provisioning_mode,
+          git_username = EXCLUDED.git_username,
+          mcp_servers = EXCLUDED.mcp_servers,
+          openai_base_url = EXCLUDED.openai_base_url,
+          task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
+          task_prompt_magic_template = EXCLUDED.task_prompt_magic_template,
+          codex_default_model = EXCLUDED.codex_default_model,
+          codex_default_effort = EXCLUDED.codex_default_effort,
+          claude_default_model = EXCLUDED.claude_default_model,
+          claude_default_effort = EXCLUDED.claude_default_effort,
+          response_preference_presets = EXCLUDED.response_preference_presets
+      `,
+      [
+        nextBase.defaultProvider,
+        nextBase.maxAgents,
+        nextBase.branchPrefix,
+        nextBase.workspaceProvisioningMode,
+        nextBase.gitUsername,
+        JSON.stringify(nextBase.mcpServers),
+        nextBase.openaiBaseUrl,
+        nextBase.taskPromptMagicModel,
+        nextBase.taskPromptMagicTemplate,
+        nextBase.codexDefaultModel,
+        nextBase.codexDefaultEffort,
+        nextBase.claudeDefaultModel,
+        nextBase.claudeDefaultEffort,
+        JSON.stringify(nextBase.responsePreferencePresets)
+      ]
+    );
+    const next = await this.getSettings();
+    await this.publishSettings(next);
+    return next;
+  }
+
+  async updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings> {
+    await this.credentialStore.updateCredentials(input);
+    const settings = await this.getSettings();
+    await this.publishSettings(settings);
+    return settings;
+  }
+
+  async getRuntimeCredentials(userId?: string | null, codexCredentialSource: "auto" | "profile" | "global" = "auto"): Promise<SettingsRuntimeCredentials> {
+    const [credentials, settings] = await Promise.all([
+      this.credentialStore.getCredentials(),
+      this.getSettings()
+    ]);
+    const profileCodexAuthJson = userId?.trim()
+      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
+      : null;
+    const globalCodexAuthJson = credentials.codexAuthJson ?? null;
+    const codexAuthJson =
+      codexCredentialSource === "profile"
+        ? profileCodexAuthJson
+        : codexCredentialSource === "global"
+          ? globalCodexAuthJson
+          : profileCodexAuthJson || globalCodexAuthJson;
+
+    return {
+      ...credentials,
+      codexAuthJson: codexAuthJson || null,
+      gitUsername: settings.gitUsername,
+      openaiBaseUrl: settings.openaiBaseUrl,
+      defaultProvider: settings.defaultProvider
+    };
+  }
+
+  async getUserNotes(userId: string): Promise<UserNotes> {
+    const result = await this.pool.query(
+      `
+        SELECT notes, updated_at
+        FROM user_notes
+        WHERE user_id = $1
+      `,
+      [userId]
+    );
+    const row = result.rows[0];
+    return {
+      notes: typeof row?.notes === "string" ? row.notes : "",
+      updatedAt:
+        typeof row?.updated_at === "string" && row.updated_at.trim().length > 0
+          ? row.updated_at
+          : nowIso()
+    };
+  }
+
+  async updateUserNotes(userId: string, notes: string): Promise<UserNotes> {
+    const next: UserNotes = {
+      notes,
+      updatedAt: nowIso()
+    };
+    await this.pool.query(
+      `
+        INSERT INTO user_notes (user_id, notes, updated_at)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id) DO UPDATE
+        SET notes = EXCLUDED.notes, updated_at = EXCLUDED.updated_at
+      `,
+      [userId, next.notes, next.updatedAt]
+    );
+    return next;
+  }
+}
+````
+
+## File: apps/web/components/app-shell.tsx
+````typescript
+"use client";
+
+import { useMemo, useEffect, useRef, useState, type ReactNode } from "react";
+import { App, Button, Card, Divider, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Skeleton, Spin, Typography, message, theme as antTheme } from "antd";
+import {
+  AppstoreOutlined,
+  CopyOutlined,
+  DatabaseOutlined,
+  LeftOutlined,
+  LogoutOutlined,
+  MenuOutlined,
+  RightOutlined,
+  SettingOutlined,
+  TeamOutlined,
+  UnorderedListOutlined
+} from "@ant-design/icons";
+import { usePathname, useRouter } from "next/navigation";
+import { AppLogo } from "./app-logo";
+import { AppSidebar } from "./app-sidebar";
+import { AppFooterNote } from "./app-footer-note";
+import { ResponsePolicyFields } from "./response-policy-fields";
+import { useAuth } from "./auth-provider";
+import { TaskBrowserNotifications } from "./task-browser-notifications";
+import { useThemeMode } from "./theme-provider";
+import { appThemeOptions, type AppThemeMode } from "../src/theme/antd-theme";
+import { api } from "../src/api/client";
+import { trackEvent } from "../src/utils/analytics";
+import { AppRightPanelProvider, type AppRightPanelConfig } from "./app-right-panel-context";
+import { NotesMarkdownEditor } from "./notes-markdown-editor";
+import type {
+  AgentClarifyBehavior,
+  AgentCodePreference,
+  AgentExplanationDepth,
+  AgentFormattingStyle,
+  AgentJargonLevel,
+  AudienceType,
+  UserNotes
+} from "@agentswarm/shared-types";
+import {
+  getRequiredScopesForPathname,
+  getSelectedNavigationKey,
+  isPublicPathname,
+  isTaskInteractiveFullscreenPath,
+  navigationRoutes,
+  resolveDefaultPath
+} from "../src/auth/access";
+
+const menuIconByPath: Record<string, ReactNode> = {
+  "/tasks": <UnorderedListOutlined />,
+  "/tasks/board": <AppstoreOutlined />,
+  "/snippets": <CopyOutlined />,
+  "/repositories": <DatabaseOutlined />,
+  "/settings": <SettingOutlined />,
+  "/users": <TeamOutlined />
+};
+
+const NOTES_PANEL_STATE_STORAGE_KEY_PREFIX = "agentswarm:notes-sidebar-state:v1";
+const DEFAULT_NOTES_PANEL_WIDTH = 420;
+const NOTES_PANEL_MIN_WIDTH = 320;
+const NOTES_PANEL_MAX_WIDTH = 720;
+const NOTES_PANEL_COLLAPSED_RAIL_WIDTH = 56;
+
+export function AppShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const { canAll, loading, logout, session, setSessionUser } = useAuth();
+  const { mode, setMode } = useThemeMode();
+  const contentMaxWidth = 1760;
+  const headerHeight = 64;
+  const sidebarWidth = 320;
+  const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_NOTES_PANEL_WIDTH);
+  const [notesSidebarCollapsed, setNotesSidebarCollapsed] = useState(false);
+  const notesResizeSessionRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const [notesResizing, setNotesResizing] = useState(false);
+  const { token } = antTheme.useToken();
+  const screens = Grid.useBreakpoint();
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileCodexConfigured, setProfileCodexConfigured] = useState(false);
+  const [rightPanel, setRightPanel] = useState<AppRightPanelConfig | null>(null);
+  const [workspaceNotes, setWorkspaceNotes] = useState<UserNotes | null>(null);
+  const [workspaceNotesDraft, setWorkspaceNotesDraft] = useState("");
+  const [workspaceNotesLoading, setWorkspaceNotesLoading] = useState(true);
+  const [workspaceNotesSaving, setWorkspaceNotesSaving] = useState(false);
+  const [workspaceNotesStatus, setWorkspaceNotesStatus] = useState<"saved" | "saving" | "error">("saved");
+  const workspaceNotesAutosaveTimeoutRef = useRef<number | null>(null);
+  const workspaceNotesSaveRequestIdRef = useRef(0);
+  const [profileForm] = Form.useForm<{
+    name: string;
+    gitAuthorName?: string;
+    gitAuthorEmail?: string;
+    codexAuthJson?: string;
+    audience?: AudienceType;
+    explanationDepth?: AgentExplanationDepth;
+    jargonLevel?: AgentJargonLevel;
+    codePreference?: AgentCodePreference;
+    clarifyBehavior?: AgentClarifyBehavior;
+    formattingStyle?: AgentFormattingStyle;
+    extraInstructions?: string;
+  }>();
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const publicPath = isPublicPathname(pathname);
+  const desktopSidebar = screens.lg ?? false;
+  const selectedNavigationKey = getSelectedNavigationKey(pathname);
+  const defaultPath = session ? resolveDefaultPath(session.user.scopes) : null;
+  const menuItems = navigationRoutes
+    .filter((route) => canAll(route.requiredScopes))
+    .map((route) => ({
+      key: route.key,
+      icon: menuIconByPath[route.key],
+      label: route.label
+    }));
+  const hasRouteAccess = session ? canAll(getRequiredScopesForPathname(pathname)) : false;
+  const rightPanelContextValue = useMemo(() => ({ setRightPanel }), []);
+  const notesPanelId = "workspace-notes-panel";
+  const notesPanelStorageKey = useMemo(
+    () => `${NOTES_PANEL_STATE_STORAGE_KEY_PREFIX}:${session?.user.id ?? "anonymous"}`,
+    [session?.user.id]
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(notesPanelStorageKey);
+      if (!raw) {
+        return;
+      }
+      const parsed = JSON.parse(raw) as { collapsed?: boolean; width?: number };
+      if (typeof parsed.collapsed === "boolean") {
+        setNotesSidebarCollapsed(parsed.collapsed);
+      }
+      if (typeof parsed.width === "number" && Number.isFinite(parsed.width)) {
+        setRightPanelWidth(Math.min(NOTES_PANEL_MAX_WIDTH, Math.max(NOTES_PANEL_MIN_WIDTH, Math.round(parsed.width))));
+      }
+    } catch {
+      // Ignore localStorage read/parse errors.
+    }
+  }, [notesPanelStorageKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(
+        notesPanelStorageKey,
+        JSON.stringify({ collapsed: notesSidebarCollapsed, width: rightPanelWidth })
+      );
+    } catch {
+      // Ignore localStorage write errors.
+    }
+  }, [notesPanelStorageKey, notesSidebarCollapsed, rightPanelWidth]);
+
+  useEffect(() => {
+    if (!notesResizing) {
+      return;
+    }
+
+    const handleMouseMove = (event: MouseEvent): void => {
+      const session = notesResizeSessionRef.current;
+      if (!session) {
+        return;
+      }
+      const deltaX = session.startX - event.clientX;
+      const nextWidth = Math.min(NOTES_PANEL_MAX_WIDTH, Math.max(NOTES_PANEL_MIN_WIDTH, session.startWidth + deltaX));
+      setRightPanelWidth(nextWidth);
+    };
+
+    const stopResizing = (): void => {
+      notesResizeSessionRef.current = null;
+      setNotesResizing(false);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", stopResizing);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", stopResizing);
+    };
+  }, [notesResizing]);
+
+  useEffect(() => {
+    if (loading || publicPath) {
+      return;
+    }
+
+    if (!session) {
+      router.replace("/login");
+    }
+  }, [loading, publicPath, router, session]);
+
+  useEffect(() => {
+    if (desktopSidebar) {
+      setMobileSidebarOpen(false);
+    }
+  }, [desktopSidebar]);
+
+  const toggleNotesSidebar = (nextCollapsed: boolean): void => {
+    setNotesSidebarCollapsed(nextCollapsed);
+    trackEvent(nextCollapsed ? "notes_sidebar_collapsed" : "notes_sidebar_expanded", {
+      surface: "app_shell",
+      width: rightPanelWidth
+    });
+  };
+
+  useEffect(() => {
+    if (publicPath || !session) {
+      return;
+    }
+
+    setWorkspaceNotesLoading(true);
+    void api
+      .getUserNotes()
+      .then((next) => {
+        setWorkspaceNotes(next);
+        setWorkspaceNotesDraft(next.notes);
+        setWorkspaceNotesStatus("saved");
+      })
+      .catch((error) => {
+        const messageText = error instanceof Error ? error.message : "Failed to load notes";
+        setWorkspaceNotesStatus("error");
+        message.error(messageText);
+      })
+      .finally(() => {
+        setWorkspaceNotesLoading(false);
+      });
+  }, [publicPath, session]);
+
+  useEffect(() => {
+    if (workspaceNotesAutosaveTimeoutRef.current !== null) {
+      window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
+      workspaceNotesAutosaveTimeoutRef.current = null;
+    }
+    if (!workspaceNotes || workspaceNotesDraft === workspaceNotes.notes) {
+      setWorkspaceNotesStatus("saved");
+      return;
+    }
+
+    setWorkspaceNotesStatus("saving");
+    workspaceNotesAutosaveTimeoutRef.current = window.setTimeout(() => {
+      workspaceNotesAutosaveTimeoutRef.current = null;
+      const requestId = workspaceNotesSaveRequestIdRef.current + 1;
+      workspaceNotesSaveRequestIdRef.current = requestId;
+      setWorkspaceNotesSaving(true);
+      void api
+        .updateUserNotes({ notes: workspaceNotesDraft })
+        .then((next) => {
+          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
+            return;
+          }
+          setWorkspaceNotes(next);
+          setWorkspaceNotesDraft(next.notes);
+          setWorkspaceNotesStatus("saved");
+        })
+        .catch((error) => {
+          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
+            return;
+          }
+          const messageText = error instanceof Error ? error.message : "Failed to save notes";
+          setWorkspaceNotesStatus("error");
+          message.error(messageText);
+        })
+        .finally(() => {
+          if (workspaceNotesSaveRequestIdRef.current === requestId) {
+            setWorkspaceNotesSaving(false);
+          }
+        });
+    }, 700);
+
+    return () => {
+      if (workspaceNotesAutosaveTimeoutRef.current !== null) {
+        window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
+        workspaceNotesAutosaveTimeoutRef.current = null;
+      }
+    };
+  }, [workspaceNotes, workspaceNotesDraft]);
+
+  if (publicPath) {
+    return <App>{children}</App>;
+  }
+
+  if (loading || !session) {
+    return <Spin fullscreen tip="Loading session" />;
+  }
+
+  const openProfile = async (): Promise<void> => {
+    setProfileOpen(true);
+    setProfileLoading(true);
+    try {
+      const profile = await api.getProfile();
+      profileForm.setFieldsValue({
+        name: profile.name,
+        gitAuthorName: profile.gitAuthorName ?? "",
+        gitAuthorEmail: profile.gitAuthorEmail ?? "",
+        codexAuthJson: "",
+        audience: profile.agentResponsePreference.audience,
+        explanationDepth: profile.agentResponsePreference.explanationDepth,
+        jargonLevel: profile.agentResponsePreference.jargonLevel,
+        codePreference: profile.agentResponsePreference.codePreference,
+        clarifyBehavior: profile.agentResponsePreference.clarifyBehavior,
+        formattingStyle: profile.agentResponsePreference.formattingStyle,
+        extraInstructions: profile.agentResponsePreference.extraInstructions ?? ""
+      });
+      setProfileCodexConfigured(profile.codexAuthJsonConfigured);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to load profile");
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+
+  const saveProfile = async (): Promise<void> => {
+    try {
+      const values = await profileForm.validateFields();
+      setSavingProfile(true);
+      const next = await api.updateProfile({
+        name: values.name,
+        gitAuthorName: values.gitAuthorName?.trim() || null,
+        gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
+        codexAuthJson: values.codexAuthJson?.trim() || undefined,
+        agentResponsePreference: {
+          audience: values.audience,
+          explanationDepth: values.explanationDepth,
+          jargonLevel: values.jargonLevel,
+          codePreference: values.codePreference,
+          clarifyBehavior: values.clarifyBehavior,
+          formattingStyle: values.formattingStyle,
+          extraInstructions: values.extraInstructions?.trim() || undefined
+        }
+      });
+      setProfileCodexConfigured(next.codexAuthJsonConfigured);
+      profileForm.setFieldValue("codexAuthJson", "");
+      setSessionUser({
+        name: next.name,
+        gitAuthorName: next.gitAuthorName,
+        gitAuthorEmail: next.gitAuthorEmail,
+        agentResponsePreference: next.agentResponsePreference,
+        codexAuthJsonConfigured: next.codexAuthJsonConfigured
+      });
+      message.success("Profile updated");
+    } catch (error) {
+      if (error && typeof error === "object" && "errorFields" in error) {
+        return;
+      }
+      message.error(error instanceof Error ? error.message : "Failed to update profile");
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const clearCodexAuthJson = async (): Promise<void> => {
+    setSavingProfile(true);
+    try {
+      const next = await api.updateProfile({ clearCodexAuthJson: true });
+      setProfileCodexConfigured(next.codexAuthJsonConfigured);
+      profileForm.setFieldValue("codexAuthJson", "");
+      setSessionUser({
+        agentResponsePreference: next.agentResponsePreference,
+        codexAuthJsonConfigured: next.codexAuthJsonConfigured
+      });
+      message.success("Codex auth.json cleared");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  if (isTaskInteractiveFullscreenPath(pathname)) {
+    return (
+      <App>
+        {hasRouteAccess ? (
+          <div style={{ height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>{children}</div>
+        ) : (
+          <Result
+            status="403"
+            title="403"
+            subTitle="This account does not have access to the requested page."
+            extra={
+              defaultPath ? (
+                <Button type="primary" onClick={() => router.push(defaultPath)}>
+                  Go To An Allowed Page
+                </Button>
+              ) : null
+            }
+          />
+        )}
+      </App>
+    );
+  }
+
+  const shellContent = (
+    <>
+      <AppRightPanelProvider value={rightPanelContextValue}>
+        <Layout style={{ minHeight: "100vh", background: token.colorBgLayout }}>
+        <Layout.Header
+          style={{
+            position: "sticky",
+            top: 0,
+            zIndex: 20,
+            paddingInline: 24,
+            background: token.colorBgContainer,
+            borderBottom: `1px solid ${token.colorBorderSecondary}`,
+            boxShadow: token.boxShadowSecondary
+          }}
+        >
+          <Flex
+            align="center"
+            justify="space-between"
+            style={{ height: "100%", width: "100%", gap: 24 }}
+          >
+            <Flex align="center" gap={12}>
+              {!desktopSidebar ? (
+                <Button
+                  type="text"
+                  icon={<MenuOutlined />}
+                  aria-label="Open navigation"
+                  onClick={() => setMobileSidebarOpen(true)}
+                />
+              ) : null}
+              <AppLogo width={28} height={40} />
+              <Flex vertical gap={0}>
+                <Typography.Title level={4} style={{ margin: 0, color: token.colorText }}>
+                  AgentSwarm
+                </Typography.Title>
+              </Flex>
+            </Flex>
+            <Menu
+              mode="horizontal"
+              selectedKeys={[selectedNavigationKey]}
+              items={menuItems}
+              onClick={({ key }) => router.push(key)}
+              selectable
+              style={{ minWidth: 0, borderBottom: 0, flex: 1, background: "transparent" }}
+            />
+            <Flex align="center" gap={12}>
+              <TaskBrowserNotifications />
+              <Flex vertical gap={0} style={{ minWidth: 0 }}>
+                <Button type="text" style={{ paddingInline: 6 }} onClick={() => { void openProfile(); }}>
+                  <Typography.Text strong>{`Hi, ${session.user.name || "Administrator"}`}</Typography.Text>
+                </Button>
+              </Flex>
+              <Select
+                value={mode}
+                onChange={(value) => setMode(value as AppThemeMode)}
+                options={appThemeOptions}
+                style={{ minWidth: 180 }}
+              />
+              <Button
+                icon={<LogoutOutlined />}
+                loading={loggingOut}
+                onClick={async () => {
+                  setLoggingOut(true);
+                  try {
+                    await logout();
+                    router.replace("/login");
+                  } finally {
+                    setLoggingOut(false);
+                  }
+                }}
+              >
+                Logout
+              </Button>
+            </Flex>
+          </Flex>
+        </Layout.Header>
+        <Layout style={{ flex: 1, minHeight: 0, background: token.colorBgLayout }}>
+          {desktopSidebar ? (
+            <Layout.Sider
+              width={sidebarWidth}
+              theme="light"
+              style={{
+                position: "sticky",
+                top: headerHeight,
+                alignSelf: "flex-start",
+                height: `calc(100vh - ${headerHeight}px)`,
+                background: token.colorBgContainer,
+                borderRight: `1px solid ${token.colorBorderSecondary}`,
+                overflow: "hidden"
+              }}
+            >
+              <AppSidebar pathname={pathname} onNavigate={(path) => router.push(path)} />
+            </Layout.Sider>
+          ) : null}
+          <Layout style={{ minWidth: 0, background: token.colorBgLayout }}>
+            <Layout.Content style={{ padding: 24, minHeight: 0, overflow: "auto", background: token.colorBgLayout }}>
+              <div style={{ width: "100%", maxWidth: contentMaxWidth, marginInline: "auto", minHeight: "100%" }}>
+                {hasRouteAccess ? (
+                  children
+                ) : (
+                  <Result
+                    status="403"
+                    title="403"
+                    subTitle="This account does not have access to the requested page."
+                    extra={
+                      defaultPath ? (
+                        <Button type="primary" onClick={() => router.push(defaultPath)}>
+                          Go To An Allowed Page
+                        </Button>
+                      ) : null
+                    }
+                  />
+                )}
+              </div>
+            </Layout.Content>
+            <Layout.Footer
+              style={{
+                padding: "8px 24px 18px",
+                background: token.colorBgLayout
+              }}
+            >
+              <div style={{ width: "100%", maxWidth: contentMaxWidth, marginInline: "auto" }}>
+                <AppFooterNote />
+              </div>
+            </Layout.Footer>
+          </Layout>
+          {desktopSidebar && !notesSidebarCollapsed ? (
+            <Layout.Sider
+              id={notesPanelId}
+              width={rightPanelWidth}
+              theme="light"
+              style={{
+                position: "sticky",
+                top: headerHeight,
+                alignSelf: "flex-start",
+                height: `calc(100vh - ${headerHeight}px)`,
+                background: token.colorBgContainer,
+                borderLeft: `1px solid ${token.colorBorderSecondary}`,
+                overflow: "hidden",
+                userSelect: notesResizing ? "none" : undefined
+              }}
+            >
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize notes sidebar"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  notesResizeSessionRef.current = { startX: event.clientX, startWidth: rightPanelWidth };
+                  setNotesResizing(true);
+                }}
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  width: 8,
+                  height: "100%",
+                  cursor: "col-resize",
+                  zIndex: 2
+                }}
+              />
+              <Flex vertical style={{ height: "100%", minHeight: 0 }}>
+                <Flex
+                  justify="space-between"
+                  align="center"
+                  style={{
+                    padding: "16px 16px 12px",
+                    borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                    gap: 12
+                  }}
+                >
+                  <Typography.Title level={5} style={{ margin: 0 }}>
+                    {rightPanel?.title ?? "Notes"}
+                  </Typography.Title>
+                  <Flex align="center" gap={8}>
+                    {rightPanel?.extra ?? null}
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<RightOutlined />}
+                      onClick={() => toggleNotesSidebar(true)}
+                      aria-label="Collapse notes"
+                      aria-controls={notesPanelId}
+                      aria-expanded={!notesSidebarCollapsed}
+                    >
+                      Collapse notes
+                    </Button>
+                  </Flex>
+                </Flex>
+                <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16 }}>
+                  {rightPanel?.content ?? (
+                    <Flex vertical gap={12}>
+                      <Typography.Text type={workspaceNotesStatus === "error" ? "danger" : "secondary"}>
+                        {workspaceNotesStatus === "saving"
+                          ? "Saving…"
+                          : workspaceNotesStatus === "error"
+                            ? "Save failed. Keep this page open; retrying on next edit."
+                            : "Saved"}
+                      </Typography.Text>
+                      {workspaceNotesLoading ? (
+                        <Skeleton active title={false} paragraph={{ rows: 12 }} />
+                      ) : (
+                        <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={workspaceNotesSaving} />
+                      )}
+                    </Flex>
+                  )}
+                </div>
+              </Flex>
+            </Layout.Sider>
+          ) : null}
+          {desktopSidebar && notesSidebarCollapsed ? (
+            <Layout.Sider
+              width={NOTES_PANEL_COLLAPSED_RAIL_WIDTH}
+              theme="light"
+              style={{
+                position: "sticky",
+                top: headerHeight,
+                alignSelf: "flex-start",
+                height: `calc(100vh - ${headerHeight}px)`,
+                background: token.colorBgContainer,
+                borderLeft: `1px solid ${token.colorBorderSecondary}`,
+                overflow: "hidden"
+              }}
+            >
+              <Flex vertical justify="flex-start" align="center" style={{ height: "100%", paddingTop: 12 }}>
+                <Button
+                  type="text"
+                  icon={<LeftOutlined />}
+                  onClick={() => toggleNotesSidebar(false)}
+                  aria-label="Expand notes"
+                  aria-controls={notesPanelId}
+                  aria-expanded={!notesSidebarCollapsed}
+                  title="Expand notes"
+                />
+              </Flex>
+            </Layout.Sider>
+          ) : null}
+        </Layout>
+      </Layout>
+      </AppRightPanelProvider>
+      <Drawer
+        placement="left"
+        open={!desktopSidebar && mobileSidebarOpen}
+        onClose={() => setMobileSidebarOpen(false)}
+        width={sidebarWidth}
+        styles={{ body: { padding: 0 } }}
+      >
+        <AppSidebar
+          pathname={pathname}
+          onNavigate={(path) => {
+            setMobileSidebarOpen(false);
+            router.push(path);
+          }}
+        />
+      </Drawer>
+      <Modal
+        title="Profile"
+        open={profileOpen}
+        onCancel={() => setProfileOpen(false)}
+        onOk={() => {
+          void saveProfile();
+        }}
+        okText="Save"
+        confirmLoading={savingProfile}
+        destroyOnClose
+      >
+        <Spin spinning={profileLoading}>
+          <Form
+            form={profileForm}
+            layout="vertical"
+            initialValues={{
+              name: session.user.name,
+              gitAuthorName: session.user.gitAuthorName ?? "",
+              gitAuthorEmail: session.user.gitAuthorEmail ?? "",
+              codexAuthJson: "",
+              audience: session.user.agentResponsePreference.audience,
+              explanationDepth: session.user.agentResponsePreference.explanationDepth,
+              jargonLevel: session.user.agentResponsePreference.jargonLevel,
+              codePreference: session.user.agentResponsePreference.codePreference,
+              clarifyBehavior: session.user.agentResponsePreference.clarifyBehavior,
+              formattingStyle: session.user.agentResponsePreference.formattingStyle,
+              extraInstructions: session.user.agentResponsePreference.extraInstructions ?? ""
+            }}
+          >
+            <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
+              <Input />
+            </Form.Item>
+            <Divider orientation="left" plain>
+              Git Commit Identity
+            </Divider>
+            <Form.Item
+              name="gitAuthorName"
+              label="Git Author Name"
+              extra="Leave blank to use your profile name."
+            >
+              <Input placeholder={session.user.name} />
+            </Form.Item>
+            <Form.Item
+              name="gitAuthorEmail"
+              label="Git Author Email"
+              rules={[{ type: "email", message: "Enter a valid email address" }]}
+              extra="Leave blank to use your profile email."
+            >
+              <Input placeholder={session.user.email} />
+            </Form.Item>
+            <Divider orientation="left" plain>
+              Response Format Preferences
+            </Divider>
+            <Card size="small">
+              <ResponsePolicyFields />
+            </Card>
+            <Divider orientation="left" plain>
+              Credentials
+            </Divider>
+            <Form.Item name="codexAuthJson" label="Codex auth.json">
+              <Input.TextArea
+                autoSize={{ minRows: 6, maxRows: 14 }}
+                placeholder={profileCodexConfigured ? "Configured. Paste new JSON to replace." : "{\"...\": \"...\"}"}
+              />
+            </Form.Item>
+            <Typography.Text type="secondary">
+              Stored write-only and encrypted. Existing value is never returned.
+            </Typography.Text>
+            <div style={{ marginTop: 12 }}>
+              <Button danger onClick={() => { void clearCodexAuthJson(); }} loading={savingProfile}>
+                Clear Codex auth.json
+              </Button>
+            </div>
+          </Form>
+        </Spin>
+      </Modal>
+    </>
+  );
+
+  return <App>{shellContent}</App>;
+}
+````
+
 ## File: apps/web/src/auth/access.ts
 ````typescript
 import type { PermissionScope } from "@agentswarm/shared-types";
@@ -37720,742 +38473,6 @@ void bootstrap().catch((error) => {
   );
   process.exit(1);
 });
-````
-
-## File: apps/web/components/app-shell.tsx
-````typescript
-"use client";
-
-import { useMemo, useEffect, useRef, useState, type ReactNode } from "react";
-import { App, Button, Card, Divider, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Skeleton, Spin, Typography, message, theme as antTheme } from "antd";
-import {
-  AppstoreOutlined,
-  CopyOutlined,
-  DatabaseOutlined,
-  LeftOutlined,
-  LogoutOutlined,
-  MenuOutlined,
-  RightOutlined,
-  SettingOutlined,
-  TeamOutlined,
-  UnorderedListOutlined
-} from "@ant-design/icons";
-import { usePathname, useRouter } from "next/navigation";
-import { AppLogo } from "./app-logo";
-import { AppSidebar } from "./app-sidebar";
-import { AppFooterNote } from "./app-footer-note";
-import { ResponsePolicyFields } from "./response-policy-fields";
-import { useAuth } from "./auth-provider";
-import { TaskBrowserNotifications } from "./task-browser-notifications";
-import { useThemeMode } from "./theme-provider";
-import { appThemeOptions, type AppThemeMode } from "../src/theme/antd-theme";
-import { api } from "../src/api/client";
-import { trackEvent } from "../src/utils/analytics";
-import { AppRightPanelProvider, type AppRightPanelConfig } from "./app-right-panel-context";
-import { NotesMarkdownEditor } from "./notes-markdown-editor";
-import type {
-  AgentClarifyBehavior,
-  AgentCodePreference,
-  AgentExplanationDepth,
-  AgentFormattingStyle,
-  AgentJargonLevel,
-  AudienceType,
-  UserNotes
-} from "@agentswarm/shared-types";
-import {
-  getRequiredScopesForPathname,
-  getSelectedNavigationKey,
-  isPublicPathname,
-  isTaskInteractiveFullscreenPath,
-  navigationRoutes,
-  resolveDefaultPath
-} from "../src/auth/access";
-
-const menuIconByPath: Record<string, ReactNode> = {
-  "/tasks": <UnorderedListOutlined />,
-  "/tasks/board": <AppstoreOutlined />,
-  "/snippets": <CopyOutlined />,
-  "/repositories": <DatabaseOutlined />,
-  "/settings": <SettingOutlined />,
-  "/users": <TeamOutlined />
-};
-
-const NOTES_PANEL_STATE_STORAGE_KEY_PREFIX = "agentswarm:notes-sidebar-state:v1";
-const DEFAULT_NOTES_PANEL_WIDTH = 420;
-const NOTES_PANEL_MIN_WIDTH = 320;
-const NOTES_PANEL_MAX_WIDTH = 720;
-const NOTES_PANEL_COLLAPSED_RAIL_WIDTH = 56;
-
-export function AppShell({ children }: { children: ReactNode }) {
-  const pathname = usePathname();
-  const router = useRouter();
-  const { canAll, loading, logout, session, setSessionUser } = useAuth();
-  const { mode, setMode } = useThemeMode();
-  const contentMaxWidth = 1760;
-  const headerHeight = 64;
-  const sidebarWidth = 320;
-  const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_NOTES_PANEL_WIDTH);
-  const [notesSidebarCollapsed, setNotesSidebarCollapsed] = useState(false);
-  const notesResizeSessionRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const [notesResizing, setNotesResizing] = useState(false);
-  const { token } = antTheme.useToken();
-  const screens = Grid.useBreakpoint();
-  const [loggingOut, setLoggingOut] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [savingProfile, setSavingProfile] = useState(false);
-  const [profileLoading, setProfileLoading] = useState(false);
-  const [profileCodexConfigured, setProfileCodexConfigured] = useState(false);
-  const [rightPanel, setRightPanel] = useState<AppRightPanelConfig | null>(null);
-  const [workspaceNotes, setWorkspaceNotes] = useState<UserNotes | null>(null);
-  const [workspaceNotesDraft, setWorkspaceNotesDraft] = useState("");
-  const [workspaceNotesLoading, setWorkspaceNotesLoading] = useState(true);
-  const [workspaceNotesSaving, setWorkspaceNotesSaving] = useState(false);
-  const [workspaceNotesStatus, setWorkspaceNotesStatus] = useState<"saved" | "saving" | "error">("saved");
-  const workspaceNotesAutosaveTimeoutRef = useRef<number | null>(null);
-  const workspaceNotesSaveRequestIdRef = useRef(0);
-  const [profileForm] = Form.useForm<{
-    name: string;
-    gitAuthorName?: string;
-    gitAuthorEmail?: string;
-    codexAuthJson?: string;
-    audience?: AudienceType;
-    explanationDepth?: AgentExplanationDepth;
-    jargonLevel?: AgentJargonLevel;
-    codePreference?: AgentCodePreference;
-    clarifyBehavior?: AgentClarifyBehavior;
-    formattingStyle?: AgentFormattingStyle;
-    extraInstructions?: string;
-  }>();
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const publicPath = isPublicPathname(pathname);
-  const desktopSidebar = screens.lg ?? false;
-  const selectedNavigationKey = getSelectedNavigationKey(pathname);
-  const defaultPath = session ? resolveDefaultPath(session.user.scopes) : null;
-  const menuItems = navigationRoutes
-    .filter((route) => canAll(route.requiredScopes))
-    .map((route) => ({
-      key: route.key,
-      icon: menuIconByPath[route.key],
-      label: route.label
-    }));
-  const hasRouteAccess = session ? canAll(getRequiredScopesForPathname(pathname)) : false;
-  const rightPanelContextValue = useMemo(() => ({ setRightPanel }), []);
-  const notesPanelId = "workspace-notes-panel";
-  const notesPanelStorageKey = useMemo(
-    () => `${NOTES_PANEL_STATE_STORAGE_KEY_PREFIX}:${session?.user.id ?? "anonymous"}`,
-    [session?.user.id]
-  );
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    try {
-      const raw = window.localStorage.getItem(notesPanelStorageKey);
-      if (!raw) {
-        return;
-      }
-      const parsed = JSON.parse(raw) as { collapsed?: boolean; width?: number };
-      if (typeof parsed.collapsed === "boolean") {
-        setNotesSidebarCollapsed(parsed.collapsed);
-      }
-      if (typeof parsed.width === "number" && Number.isFinite(parsed.width)) {
-        setRightPanelWidth(Math.min(NOTES_PANEL_MAX_WIDTH, Math.max(NOTES_PANEL_MIN_WIDTH, Math.round(parsed.width))));
-      }
-    } catch {
-      // Ignore localStorage read/parse errors.
-    }
-  }, [notesPanelStorageKey]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    try {
-      window.localStorage.setItem(
-        notesPanelStorageKey,
-        JSON.stringify({ collapsed: notesSidebarCollapsed, width: rightPanelWidth })
-      );
-    } catch {
-      // Ignore localStorage write errors.
-    }
-  }, [notesPanelStorageKey, notesSidebarCollapsed, rightPanelWidth]);
-
-  useEffect(() => {
-    if (!notesResizing) {
-      return;
-    }
-
-    const handleMouseMove = (event: MouseEvent): void => {
-      const session = notesResizeSessionRef.current;
-      if (!session) {
-        return;
-      }
-      const deltaX = session.startX - event.clientX;
-      const nextWidth = Math.min(NOTES_PANEL_MAX_WIDTH, Math.max(NOTES_PANEL_MIN_WIDTH, session.startWidth + deltaX));
-      setRightPanelWidth(nextWidth);
-    };
-
-    const stopResizing = (): void => {
-      notesResizeSessionRef.current = null;
-      setNotesResizing(false);
-    };
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", stopResizing);
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", stopResizing);
-    };
-  }, [notesResizing]);
-
-  useEffect(() => {
-    if (loading || publicPath) {
-      return;
-    }
-
-    if (!session) {
-      router.replace("/login");
-    }
-  }, [loading, publicPath, router, session]);
-
-  useEffect(() => {
-    if (desktopSidebar) {
-      setMobileSidebarOpen(false);
-    }
-  }, [desktopSidebar]);
-
-  const toggleNotesSidebar = (nextCollapsed: boolean): void => {
-    setNotesSidebarCollapsed(nextCollapsed);
-    trackEvent(nextCollapsed ? "notes_sidebar_collapsed" : "notes_sidebar_expanded", {
-      surface: "app_shell",
-      width: rightPanelWidth
-    });
-  };
-
-  useEffect(() => {
-    if (publicPath || !session) {
-      return;
-    }
-
-    setWorkspaceNotesLoading(true);
-    void api
-      .getUserNotes()
-      .then((next) => {
-        setWorkspaceNotes(next);
-        setWorkspaceNotesDraft(next.notes);
-        setWorkspaceNotesStatus("saved");
-      })
-      .catch((error) => {
-        const messageText = error instanceof Error ? error.message : "Failed to load notes";
-        setWorkspaceNotesStatus("error");
-        message.error(messageText);
-      })
-      .finally(() => {
-        setWorkspaceNotesLoading(false);
-      });
-  }, [publicPath, session]);
-
-  useEffect(() => {
-    if (workspaceNotesAutosaveTimeoutRef.current !== null) {
-      window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
-      workspaceNotesAutosaveTimeoutRef.current = null;
-    }
-    if (!workspaceNotes || workspaceNotesDraft === workspaceNotes.notes) {
-      setWorkspaceNotesStatus("saved");
-      return;
-    }
-
-    setWorkspaceNotesStatus("saving");
-    workspaceNotesAutosaveTimeoutRef.current = window.setTimeout(() => {
-      workspaceNotesAutosaveTimeoutRef.current = null;
-      const requestId = workspaceNotesSaveRequestIdRef.current + 1;
-      workspaceNotesSaveRequestIdRef.current = requestId;
-      setWorkspaceNotesSaving(true);
-      void api
-        .updateUserNotes({ notes: workspaceNotesDraft })
-        .then((next) => {
-          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
-            return;
-          }
-          setWorkspaceNotes(next);
-          setWorkspaceNotesDraft(next.notes);
-          setWorkspaceNotesStatus("saved");
-        })
-        .catch((error) => {
-          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
-            return;
-          }
-          const messageText = error instanceof Error ? error.message : "Failed to save notes";
-          setWorkspaceNotesStatus("error");
-          message.error(messageText);
-        })
-        .finally(() => {
-          if (workspaceNotesSaveRequestIdRef.current === requestId) {
-            setWorkspaceNotesSaving(false);
-          }
-        });
-    }, 700);
-
-    return () => {
-      if (workspaceNotesAutosaveTimeoutRef.current !== null) {
-        window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
-        workspaceNotesAutosaveTimeoutRef.current = null;
-      }
-    };
-  }, [workspaceNotes, workspaceNotesDraft]);
-
-  if (publicPath) {
-    return <App>{children}</App>;
-  }
-
-  if (loading || !session) {
-    return <Spin fullscreen tip="Loading session" />;
-  }
-
-  const openProfile = async (): Promise<void> => {
-    setProfileOpen(true);
-    setProfileLoading(true);
-    try {
-      const profile = await api.getProfile();
-      profileForm.setFieldsValue({
-        name: profile.name,
-        gitAuthorName: profile.gitAuthorName ?? "",
-        gitAuthorEmail: profile.gitAuthorEmail ?? "",
-        codexAuthJson: "",
-        audience: profile.agentResponsePreference.audience,
-        explanationDepth: profile.agentResponsePreference.explanationDepth,
-        jargonLevel: profile.agentResponsePreference.jargonLevel,
-        codePreference: profile.agentResponsePreference.codePreference,
-        clarifyBehavior: profile.agentResponsePreference.clarifyBehavior,
-        formattingStyle: profile.agentResponsePreference.formattingStyle,
-        extraInstructions: profile.agentResponsePreference.extraInstructions ?? ""
-      });
-      setProfileCodexConfigured(profile.codexAuthJsonConfigured);
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "Failed to load profile");
-    } finally {
-      setProfileLoading(false);
-    }
-  };
-
-  const saveProfile = async (): Promise<void> => {
-    try {
-      const values = await profileForm.validateFields();
-      setSavingProfile(true);
-      const next = await api.updateProfile({
-        name: values.name,
-        gitAuthorName: values.gitAuthorName?.trim() || null,
-        gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
-        codexAuthJson: values.codexAuthJson?.trim() || undefined,
-        agentResponsePreference: {
-          audience: values.audience,
-          explanationDepth: values.explanationDepth,
-          jargonLevel: values.jargonLevel,
-          codePreference: values.codePreference,
-          clarifyBehavior: values.clarifyBehavior,
-          formattingStyle: values.formattingStyle,
-          extraInstructions: values.extraInstructions?.trim() || undefined
-        }
-      });
-      setProfileCodexConfigured(next.codexAuthJsonConfigured);
-      profileForm.setFieldValue("codexAuthJson", "");
-      setSessionUser({
-        name: next.name,
-        gitAuthorName: next.gitAuthorName,
-        gitAuthorEmail: next.gitAuthorEmail,
-        agentResponsePreference: next.agentResponsePreference,
-        codexAuthJsonConfigured: next.codexAuthJsonConfigured
-      });
-      message.success("Profile updated");
-    } catch (error) {
-      if (error && typeof error === "object" && "errorFields" in error) {
-        return;
-      }
-      message.error(error instanceof Error ? error.message : "Failed to update profile");
-    } finally {
-      setSavingProfile(false);
-    }
-  };
-
-  const clearCodexAuthJson = async (): Promise<void> => {
-    setSavingProfile(true);
-    try {
-      const next = await api.updateProfile({ clearCodexAuthJson: true });
-      setProfileCodexConfigured(next.codexAuthJsonConfigured);
-      profileForm.setFieldValue("codexAuthJson", "");
-      setSessionUser({
-        agentResponsePreference: next.agentResponsePreference,
-        codexAuthJsonConfigured: next.codexAuthJsonConfigured
-      });
-      message.success("Codex auth.json cleared");
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");
-    } finally {
-      setSavingProfile(false);
-    }
-  };
-
-  if (isTaskInteractiveFullscreenPath(pathname)) {
-    return (
-      <App>
-        {hasRouteAccess ? (
-          <div style={{ height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden" }}>{children}</div>
-        ) : (
-          <Result
-            status="403"
-            title="403"
-            subTitle="This account does not have access to the requested page."
-            extra={
-              defaultPath ? (
-                <Button type="primary" onClick={() => router.push(defaultPath)}>
-                  Go To An Allowed Page
-                </Button>
-              ) : null
-            }
-          />
-        )}
-      </App>
-    );
-  }
-
-  const shellContent = (
-    <>
-      <AppRightPanelProvider value={rightPanelContextValue}>
-        <Layout style={{ minHeight: "100vh", background: token.colorBgLayout }}>
-        <Layout.Header
-          style={{
-            position: "sticky",
-            top: 0,
-            zIndex: 20,
-            paddingInline: 24,
-            background: token.colorBgContainer,
-            borderBottom: `1px solid ${token.colorBorderSecondary}`,
-            boxShadow: token.boxShadowSecondary
-          }}
-        >
-          <Flex
-            align="center"
-            justify="space-between"
-            style={{ height: "100%", width: "100%", gap: 24 }}
-          >
-            <Flex align="center" gap={12}>
-              {!desktopSidebar ? (
-                <Button
-                  type="text"
-                  icon={<MenuOutlined />}
-                  aria-label="Open navigation"
-                  onClick={() => setMobileSidebarOpen(true)}
-                />
-              ) : null}
-              <AppLogo width={28} height={40} />
-              <Flex vertical gap={0}>
-                <Typography.Title level={4} style={{ margin: 0, color: token.colorText }}>
-                  AgentSwarm
-                </Typography.Title>
-              </Flex>
-            </Flex>
-            <Menu
-              mode="horizontal"
-              selectedKeys={[selectedNavigationKey]}
-              items={menuItems}
-              onClick={({ key }) => router.push(key)}
-              selectable
-              style={{ minWidth: 0, borderBottom: 0, flex: 1, background: "transparent" }}
-            />
-            <Flex align="center" gap={12}>
-              <TaskBrowserNotifications />
-              <Flex vertical gap={0} style={{ minWidth: 0 }}>
-                <Button type="text" style={{ paddingInline: 6 }} onClick={() => { void openProfile(); }}>
-                  <Typography.Text strong>{`Hi, ${session.user.name || "Administrator"}`}</Typography.Text>
-                </Button>
-              </Flex>
-              <Select
-                value={mode}
-                onChange={(value) => setMode(value as AppThemeMode)}
-                options={appThemeOptions}
-                style={{ minWidth: 180 }}
-              />
-              <Button
-                icon={<LogoutOutlined />}
-                loading={loggingOut}
-                onClick={async () => {
-                  setLoggingOut(true);
-                  try {
-                    await logout();
-                    router.replace("/login");
-                  } finally {
-                    setLoggingOut(false);
-                  }
-                }}
-              >
-                Logout
-              </Button>
-            </Flex>
-          </Flex>
-        </Layout.Header>
-        <Layout style={{ flex: 1, minHeight: 0, background: token.colorBgLayout }}>
-          {desktopSidebar ? (
-            <Layout.Sider
-              width={sidebarWidth}
-              theme="light"
-              style={{
-                position: "sticky",
-                top: headerHeight,
-                alignSelf: "flex-start",
-                height: `calc(100vh - ${headerHeight}px)`,
-                background: token.colorBgContainer,
-                borderRight: `1px solid ${token.colorBorderSecondary}`,
-                overflow: "hidden"
-              }}
-            >
-              <AppSidebar pathname={pathname} onNavigate={(path) => router.push(path)} />
-            </Layout.Sider>
-          ) : null}
-          <Layout style={{ minWidth: 0, background: token.colorBgLayout }}>
-            <Layout.Content style={{ padding: 24, minHeight: 0, overflow: "auto", background: token.colorBgLayout }}>
-              <div style={{ width: "100%", maxWidth: contentMaxWidth, marginInline: "auto", minHeight: "100%" }}>
-                {hasRouteAccess ? (
-                  children
-                ) : (
-                  <Result
-                    status="403"
-                    title="403"
-                    subTitle="This account does not have access to the requested page."
-                    extra={
-                      defaultPath ? (
-                        <Button type="primary" onClick={() => router.push(defaultPath)}>
-                          Go To An Allowed Page
-                        </Button>
-                      ) : null
-                    }
-                  />
-                )}
-              </div>
-            </Layout.Content>
-            <Layout.Footer
-              style={{
-                padding: "8px 24px 18px",
-                background: token.colorBgLayout
-              }}
-            >
-              <div style={{ width: "100%", maxWidth: contentMaxWidth, marginInline: "auto" }}>
-                <AppFooterNote />
-              </div>
-            </Layout.Footer>
-          </Layout>
-          {desktopSidebar && !notesSidebarCollapsed ? (
-            <Layout.Sider
-              id={notesPanelId}
-              width={rightPanelWidth}
-              theme="light"
-              style={{
-                position: "sticky",
-                top: headerHeight,
-                alignSelf: "flex-start",
-                height: `calc(100vh - ${headerHeight}px)`,
-                background: token.colorBgContainer,
-                borderLeft: `1px solid ${token.colorBorderSecondary}`,
-                overflow: "hidden",
-                userSelect: notesResizing ? "none" : undefined
-              }}
-            >
-              <div
-                role="separator"
-                aria-orientation="vertical"
-                aria-label="Resize notes sidebar"
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  notesResizeSessionRef.current = { startX: event.clientX, startWidth: rightPanelWidth };
-                  setNotesResizing(true);
-                }}
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  top: 0,
-                  width: 8,
-                  height: "100%",
-                  cursor: "col-resize",
-                  zIndex: 2
-                }}
-              />
-              <Flex vertical style={{ height: "100%", minHeight: 0 }}>
-                <Flex
-                  justify="space-between"
-                  align="center"
-                  style={{
-                    padding: "16px 16px 12px",
-                    borderBottom: `1px solid ${token.colorBorderSecondary}`,
-                    gap: 12
-                  }}
-                >
-                  <Typography.Title level={5} style={{ margin: 0 }}>
-                    {rightPanel?.title ?? "Notes"}
-                  </Typography.Title>
-                  <Flex align="center" gap={8}>
-                    {rightPanel?.extra ?? null}
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<RightOutlined />}
-                      onClick={() => toggleNotesSidebar(true)}
-                      aria-label="Collapse notes"
-                      aria-controls={notesPanelId}
-                      aria-expanded={!notesSidebarCollapsed}
-                    >
-                      Collapse notes
-                    </Button>
-                  </Flex>
-                </Flex>
-                <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16 }}>
-                  {rightPanel?.content ?? (
-                    <Flex vertical gap={12}>
-                      <Typography.Text type={workspaceNotesStatus === "error" ? "danger" : "secondary"}>
-                        {workspaceNotesStatus === "saving"
-                          ? "Saving…"
-                          : workspaceNotesStatus === "error"
-                            ? "Save failed. Keep this page open; retrying on next edit."
-                            : "Saved"}
-                      </Typography.Text>
-                      {workspaceNotesLoading ? (
-                        <Skeleton active title={false} paragraph={{ rows: 12 }} />
-                      ) : (
-                        <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={workspaceNotesSaving} />
-                      )}
-                    </Flex>
-                  )}
-                </div>
-              </Flex>
-            </Layout.Sider>
-          ) : null}
-          {desktopSidebar && notesSidebarCollapsed ? (
-            <Layout.Sider
-              width={NOTES_PANEL_COLLAPSED_RAIL_WIDTH}
-              theme="light"
-              style={{
-                position: "sticky",
-                top: headerHeight,
-                alignSelf: "flex-start",
-                height: `calc(100vh - ${headerHeight}px)`,
-                background: token.colorBgContainer,
-                borderLeft: `1px solid ${token.colorBorderSecondary}`,
-                overflow: "hidden"
-              }}
-            >
-              <Flex vertical justify="flex-start" align="center" style={{ height: "100%", paddingTop: 12 }}>
-                <Button
-                  type="text"
-                  icon={<LeftOutlined />}
-                  onClick={() => toggleNotesSidebar(false)}
-                  aria-label="Expand notes"
-                  aria-controls={notesPanelId}
-                  aria-expanded={!notesSidebarCollapsed}
-                  title="Expand notes"
-                />
-              </Flex>
-            </Layout.Sider>
-          ) : null}
-        </Layout>
-      </Layout>
-      </AppRightPanelProvider>
-      <Drawer
-        placement="left"
-        open={!desktopSidebar && mobileSidebarOpen}
-        onClose={() => setMobileSidebarOpen(false)}
-        width={sidebarWidth}
-        styles={{ body: { padding: 0 } }}
-      >
-        <AppSidebar
-          pathname={pathname}
-          onNavigate={(path) => {
-            setMobileSidebarOpen(false);
-            router.push(path);
-          }}
-        />
-      </Drawer>
-      <Modal
-        title="Profile"
-        open={profileOpen}
-        onCancel={() => setProfileOpen(false)}
-        onOk={() => {
-          void saveProfile();
-        }}
-        okText="Save"
-        confirmLoading={savingProfile}
-        destroyOnClose
-      >
-        <Spin spinning={profileLoading}>
-          <Form
-            form={profileForm}
-            layout="vertical"
-            initialValues={{
-              name: session.user.name,
-              gitAuthorName: session.user.gitAuthorName ?? "",
-              gitAuthorEmail: session.user.gitAuthorEmail ?? "",
-              codexAuthJson: "",
-              audience: session.user.agentResponsePreference.audience,
-              explanationDepth: session.user.agentResponsePreference.explanationDepth,
-              jargonLevel: session.user.agentResponsePreference.jargonLevel,
-              codePreference: session.user.agentResponsePreference.codePreference,
-              clarifyBehavior: session.user.agentResponsePreference.clarifyBehavior,
-              formattingStyle: session.user.agentResponsePreference.formattingStyle,
-              extraInstructions: session.user.agentResponsePreference.extraInstructions ?? ""
-            }}
-          >
-            <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
-              <Input />
-            </Form.Item>
-            <Divider orientation="left" plain>
-              Git Commit Identity
-            </Divider>
-            <Form.Item
-              name="gitAuthorName"
-              label="Git Author Name"
-              extra="Leave blank to use your profile name."
-            >
-              <Input placeholder={session.user.name} />
-            </Form.Item>
-            <Form.Item
-              name="gitAuthorEmail"
-              label="Git Author Email"
-              rules={[{ type: "email", message: "Enter a valid email address" }]}
-              extra="Leave blank to use your profile email."
-            >
-              <Input placeholder={session.user.email} />
-            </Form.Item>
-            <Divider orientation="left" plain>
-              Response Format Preferences
-            </Divider>
-            <Card size="small">
-              <ResponsePolicyFields />
-            </Card>
-            <Divider orientation="left" plain>
-              Credentials
-            </Divider>
-            <Form.Item name="codexAuthJson" label="Codex auth.json">
-              <Input.TextArea
-                autoSize={{ minRows: 6, maxRows: 14 }}
-                placeholder={profileCodexConfigured ? "Configured. Paste new JSON to replace." : "{\"...\": \"...\"}"}
-              />
-            </Form.Item>
-            <Typography.Text type="secondary">
-              Stored write-only and encrypted. Existing value is never returned.
-            </Typography.Text>
-            <div style={{ marginTop: 12 }}>
-              <Button danger onClick={() => { void clearCodexAuthJson(); }} loading={savingProfile}>
-                Clear Codex auth.json
-              </Button>
-            </div>
-          </Form>
-        </Spin>
-      </Modal>
-    </>
-  );
-
-  return <App>{shellContent}</App>;
-}
 ````
 
 ## File: apps/web/src/utils/task-definition-submit.ts
