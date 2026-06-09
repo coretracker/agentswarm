@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import type { TaskSourceType, TaskType } from "@agentswarm/shared-types";
+import type { TaskType } from "@agentswarm/shared-types";
 import { Button, Flex, Form, Space, Typography, message } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
 import { trackEvent } from "../src/utils/analytics";
@@ -22,28 +22,18 @@ export function TaskCreatePage() {
   const [submitting, setSubmitting] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
-  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
   const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
-  const isIssueSource = selectedSourceType === "issue";
-  const isPullRequestSource = selectedSourceType === "pull_request";
   const canCreateAnyTaskMode = can("task:build") || can("task:ask");
 
-  const pageTitle =
-    selectedSourceType === "issue"
-      ? "New Task From Issue"
-      : selectedSourceType === "pull_request"
-        ? "New Task From Pull Request"
-        : selectedTaskType === "ask"
-            ? "New Ask Task"
-            : "New Build Task";
+  const pageTitle = selectedTaskType === "ask" ? "New Ask Task" : "New Build Task";
 
   const handleSubmit = async (values: TaskDefinitionFormValues) => {
     setSubmitting(true);
     try {
       const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
       const definition = buildTaskDefinitionInput(values, encodedAttachments);
-      trackEvent("task_create_submitted", { source: definition.sourceType });
+      trackEvent("task_create_submitted", { task_type: definition.taskType });
       const task = await createTaskFromDefinition(definition);
 
       messageApi.success(startMessageForDefinition(definition));
@@ -97,7 +87,7 @@ export function TaskCreatePage() {
                 Save Draft
               </Button>
               <Button type="primary" htmlType="submit" loading={submitting} disabled={!canCreateAnyTaskMode}>
-                {isIssueSource ? "Create Task From Issue" : isPullRequestSource ? "Create Task From Pull Request" : "Create Task"}
+                Create Task
               </Button>
             </Space>
           </Flex>

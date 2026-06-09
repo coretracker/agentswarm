@@ -219,11 +219,7 @@ export class GitHubImportService {
           return null;
         }
 
-        return [
-          `### @${comment.user?.login ?? "unknown"} (${comment.created_at})`,
-          body,
-          `Source: ${comment.html_url}`
-        ].join("\n");
+        return [`### @${comment.user?.login ?? "unknown"} (${comment.created_at})`, body, `Source: ${comment.html_url}`].join("\n");
       })
       .filter((value): value is string => Boolean(value));
 
@@ -251,6 +247,7 @@ export class GitHubImportService {
       provider: input.provider,
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,
+      codexCredentialSource: input.codexCredentialSource,
       baseBranch: input.baseBranch?.trim() || repository.defaultBranch,
       branchStrategy: taskType === "build" ? input.branchStrategy ?? "feature_branch" : "feature_branch",
       model: input.model,
@@ -315,11 +312,7 @@ export class GitHubImportService {
               return null;
             }
 
-            const parts = [
-              `- @${comment.author?.login ?? "unknown"} (${comment.createdAt})`,
-              `  ${body.replace(/\n/g, "\n  ")}`,
-              `  Source: ${comment.url}`
-            ];
+            const parts = [`- @${comment.author?.login ?? "unknown"} (${comment.createdAt})`, `  ${body.replace(/\n/g, "\n  ")}`, `  Source: ${comment.url}`];
 
             const diffHunk = cleanMarkdownBlock(comment.diffHunk, 1200);
             if (diffHunk) {
@@ -357,6 +350,7 @@ export class GitHubImportService {
       provider: input.provider,
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,
+      codexCredentialSource: input.codexCredentialSource,
       baseBranch: pullRequest.head.ref,
       branchStrategy: "work_on_branch",
       model: input.model,

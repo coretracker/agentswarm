@@ -656,11 +656,7 @@ export class RedisTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
-    const taskSource = input.task_source === "snippet" ? input.task_source : "blank";
-    const snippetId =
-      taskSource === "snippet" && typeof input.snippet_id === "string" && input.snippet_id.trim().length > 0
-        ? input.snippet_id.trim()
-        : undefined;
+    const taskSource = "blank";
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
     const initialStatus: TaskStatus = isDraft ? "draft" : "open";
@@ -683,7 +679,6 @@ export class RedisTaskStore implements TaskStore {
       modelOverride,
       codexCredentialSource,
       taskSource,
-      ...(snippetId ? { snippetId } : {}),
       baseBranch,
       branchStrategy,
       complexity,
@@ -1978,11 +1973,7 @@ export class PostgresTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
-    const taskSource = input.task_source === "snippet" ? input.task_source : "blank";
-    const snippetId =
-      taskSource === "snippet" && typeof input.snippet_id === "string" && input.snippet_id.trim().length > 0
-        ? input.snippet_id.trim()
-        : undefined;
+    const taskSource = "blank";
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
     const initialStatus: TaskStatus = isDraft ? "draft" : "open";
@@ -2005,7 +1996,6 @@ export class PostgresTaskStore implements TaskStore {
       modelOverride,
       codexCredentialSource,
       taskSource,
-      ...(snippetId ? { snippetId } : {}),
       baseBranch,
       branchStrategy,
       complexity,

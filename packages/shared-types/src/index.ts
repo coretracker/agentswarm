@@ -216,11 +216,9 @@ export const hasRequiredTaskCapabilities = (
 };
 
 export const getRequiredTaskCapabilityScopesForDefinition = (definition: TaskDefinitionInput): TaskCapabilityScope[] =>
-  definition.sourceType === "pull_request"
-    ? getRequiredTaskCapabilityScopes({ taskType: "build" })
-    : getRequiredTaskCapabilityScopes({
-        taskType: definition.taskType
-      });
+  getRequiredTaskCapabilityScopes({
+    taskType: definition.taskType
+  });
 
 export const hasRequiredTaskCapabilitiesForDefinition = (
   grantedScopes: Iterable<PermissionScope>,
@@ -469,7 +467,7 @@ export interface Task {
   providerProfile: ProviderProfile;
   modelOverride: string | null;
   codexCredentialSource?: CodexCredentialSource;
-  taskSource?: Extract<TaskSourceType, "blank" | "snippet">;
+  taskSource?: "blank" | "snippet";
   snippetId?: string;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
@@ -894,14 +892,9 @@ export interface CreateTaskInput {
   branchStrategy?: TaskBranchStrategy;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
-  task_source?: "blank" | "snippet";
-  snippet_id?: string;
 }
 
-export type TaskSourceType = "blank" | "snippet" | "issue" | "pull_request";
-
-export interface BlankTaskDefinitionInput {
-  sourceType: "blank";
+export interface TaskDefinitionInput {
   title: string;
   deadline?: string | null;
   repoId: string;
@@ -916,60 +909,6 @@ export interface BlankTaskDefinitionInput {
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
 }
-
-export interface IssueTaskDefinitionInput {
-  sourceType: "issue";
-  title?: string;
-  deadline?: string | null;
-  notes?: string;
-  repoId: string;
-  issueNumber: number;
-  includeComments: boolean;
-  taskType: Extract<TaskType, "build" | "ask">;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
-export interface PullRequestTaskDefinitionInput {
-  sourceType: "pull_request";
-  title?: string;
-  deadline?: string | null;
-  notes?: string;
-  repoId: string;
-  pullRequestNumber: number;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-}
-
-export interface SnippetTaskDefinitionInput {
-  sourceType: "snippet";
-  title: string;
-  deadline?: string | null;
-  repoId: string;
-  snippetId: string;
-  prompt: string;
-  notes?: string;
-  attachments?: CreateTaskPromptAttachmentInput[];
-  taskType: TaskType;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
-export type TaskDefinitionInput =
-  | BlankTaskDefinitionInput
-  | SnippetTaskDefinitionInput
-  | IssueTaskDefinitionInput
-  | PullRequestTaskDefinitionInput;
 
 export interface Snippet {
   id: string;

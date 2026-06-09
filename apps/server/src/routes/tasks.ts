@@ -71,21 +71,10 @@ const createTaskSchema = z
     baseBranch: z.string().min(1).optional(),
     branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
     model: z.string().min(1).optional(),
-    reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
-    task_source: z.enum(["blank", "snippet"]).optional(),
-    snippet_id: z.string().trim().min(1).optional()
+    reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
   })
   .strict()
   .superRefine((data, ctx) => {
-    if (data.task_source === "snippet") {
-      if (!data.snippet_id) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "snippet_id is required when task_source is snippet",
-          path: ["snippet_id"]
-        });
-      }
-    }
     if (data.prompt.trim().length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

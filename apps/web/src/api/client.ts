@@ -6,14 +6,11 @@ import type {
   AuthSession,
   CreateRoleInput,
   CreateSnippetInput,
-  CreateTaskFromIssueInput,
-  CreateTaskFromPullRequestInput,
   CreateTaskMessageInput,
   CreateRepositoryInput,
   CreateTaskInput,
   CreateUserInput,
   GitHubBranchReference,
-  GitHubIssueReference,
   GitHubPullRequestReference,
   LoginInput,
   ProviderModelOption,
@@ -407,18 +404,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  createTaskFromIssue: (input: CreateTaskFromIssueInput) =>
-    request<Task>("/imports/issue", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  createTaskFromPullRequest: (input: CreateTaskFromPullRequestInput) =>
-    request<Task>("/imports/pull-request", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  listGitHubIssues: (repoId: string) =>
-    request<GitHubIssueReference[]>(`/imports/github/issues?repoId=${encodeURIComponent(repoId)}`),
   listGitHubPullRequests: (repoId: string) =>
     request<GitHubPullRequestReference[]>(`/imports/github/pull-requests?repoId=${encodeURIComponent(repoId)}`),
   listGitHubBranches: (repoId: string) =>

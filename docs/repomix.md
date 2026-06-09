@@ -2330,109 +2330,6 @@ export function buildTaskCommitSubject(taskTitle: string, files: string[]): stri
 }
 ````
 
-## File: apps/server/src/lib/task-git-identity.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { resolveTaskGitCommitIdentity } from "./task-git-identity.js";
-
-const fallback = { name: "AgentSwarm Bot", email: "agentswarm@local.dev" };
-
-describe("resolveTaskGitCommitIdentity", () => {
-  it("uses the task owner's name and email when available", async () => {
-    const identity = await resolveTaskGitCommitIdentity(
-      { ownerUserId: "user-1" },
-      {
-        getUser: async (userId) =>
-          userId === "user-1"
-            ? { name: "Ada Lovelace", email: "ada@example.com", gitAuthorName: null, gitAuthorEmail: null }
-            : null
-      },
-      fallback
-    );
-
-    assert.deepEqual(identity, { name: "Ada Lovelace", email: "ada@example.com" });
-  });
-
-  it("prefers the task owner's configured git author identity", async () => {
-    const identity = await resolveTaskGitCommitIdentity(
-      { ownerUserId: "user-1" },
-      {
-        getUser: async (userId) =>
-          userId === "user-1"
-            ? {
-                name: "Ada Lovelace",
-                email: "ada@example.com",
-                gitAuthorName: "Countess Lovelace",
-                gitAuthorEmail: "commits@example.dev"
-              }
-            : null
-      },
-      fallback
-    );
-
-    assert.deepEqual(identity, { name: "Countess Lovelace", email: "commits@example.dev" });
-  });
-
-  it("falls back when the task has no owner", async () => {
-    const identity = await resolveTaskGitCommitIdentity(
-      { ownerUserId: null },
-      { getUser: async () => ({ name: "Ignored", email: "ignored@example.com", gitAuthorName: null, gitAuthorEmail: null }) },
-      fallback
-    );
-
-    assert.deepEqual(identity, fallback);
-  });
-
-  it("falls back when the owner record no longer exists", async () => {
-    const identity = await resolveTaskGitCommitIdentity(
-      { ownerUserId: "missing-user" },
-      { getUser: async () => null },
-      fallback
-    );
-
-    assert.deepEqual(identity, fallback);
-  });
-});
-````
-
-## File: apps/server/src/lib/task-git-identity.ts
-````typescript
-import type { Task, User } from "@agentswarm/shared-types";
-
-export interface GitCommitIdentity {
-  name: string;
-  email: string;
-}
-
-type UserLookup = {
-  getUser(userId: string): Promise<Pick<User, "name" | "email" | "gitAuthorName" | "gitAuthorEmail"> | null>;
-};
-
-export async function resolveTaskGitCommitIdentity(
-  task: Pick<Task, "ownerUserId">,
-  userLookup: UserLookup,
-  fallback: GitCommitIdentity
-): Promise<GitCommitIdentity> {
-  if (!task.ownerUserId) {
-    return fallback;
-  }
-
-  const user = await userLookup.getUser(task.ownerUserId);
-  if (!user) {
-    return fallback;
-  }
-
-  const name = (user.gitAuthorName?.trim() || user.name.trim());
-  const email = (user.gitAuthorEmail?.trim() || user.email.trim());
-  if (!name || !email) {
-    return fallback;
-  }
-
-  return { name, email };
-}
-````
-
 ## File: apps/server/src/lib/task-intelligence.ts
 ````typescript
 import type { TaskComplexity } from "@agentswarm/shared-types";
@@ -2527,24 +2424,6 @@ export function buildExecutionSummaryFromPrompt(title: string, prompt: string): 
   }
 
   return sections.join("\n").trim();
-}
-````
-
-## File: apps/server/src/lib/task-interactive-terminal-start-script.ts
-````typescript
-export function buildGitTerminalStartScript(): string {
-  return [
-    'cd "$TASK_INTERACTIVE_WORKSPACE"',
-    'printf "\\033[90mTerminal ready in %s. The shell is restricted to this workspace and only exposes git, nvim, vim, vi, and diff3.\\033[0m\\n" "$PWD"',
-    [
-      'if [ -n "${GIT_TOKEN:-}" ]; then',
-      "  printf '%s\\n' '#!/bin/sh' 'case \"$1\" in' '  *sername*) echo \"${GIT_USERNAME:-x-access-token}\" ;;' '  *assword*) echo \"${GIT_TOKEN:-}\" ;;' '  *) echo \"\" ;;' 'esac' > /tmp/agentswarm-git-askpass.sh",
-      "  chmod 700 /tmp/agentswarm-git-askpass.sh",
-      '  export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/tmp/agentswarm-git-askpass.sh',
-      "fi"
-    ].join("\n"),
-    "exec git-terminal-shell"
-  ].join(" && ");
 }
 ````
 
@@ -3011,143 +2890,6 @@ export const getProviderRuntimeDefinition = (provider: AgentProvider): ProviderR
   providerRuntimeDefinitions[provider];
 ````
 
-## File: apps/server/src/routes/auth.ts
-````typescript
-import { z } from "zod";
-import type { FastifyInstance } from "fastify";
-import type { AuthService } from "../lib/auth.js";
-import type { CredentialStore } from "../services/credential-store.js";
-import type { SessionStore } from "../services/session-store.js";
-import type { UserStore } from "../services/user-store.js";
-
-const loginSchema = z.object({
-  email: z.string().trim().email(),
-  password: z.string().min(1)
-});
-
-const responsePreferenceSchema = z
-  .object({
-    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
-    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
-    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
-    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
-    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
-    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
-    extraInstructions: z.string().trim().max(2000).optional()
-  });
-
-const updateProfileSchema = z.object({
-  name: z.string().trim().min(1).optional(),
-  gitAuthorName: z.string().trim().max(120).nullable().optional(),
-  gitAuthorEmail: z.string().trim().email().nullable().optional(),
-  codexAuthJson: z.string().min(1).optional(),
-  clearCodexAuthJson: z.boolean().optional(),
-  agentResponsePreference: responsePreferenceSchema.optional()
-});
-
-export const registerAuthRoutes = (
-  app: FastifyInstance,
-  deps: {
-    auth: AuthService;
-    userStore: UserStore;
-    sessionStore: SessionStore;
-    credentialStore: CredentialStore;
-  }
-): void => {
-  app.post("/auth/login", async (request, reply) => {
-    const parsed = loginSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const user = await deps.userStore.authenticate(parsed.data.email, parsed.data.password);
-    if (!user) {
-      return reply.status(401).send({ message: "Invalid email or password" });
-    }
-
-    const session = await deps.sessionStore.createSession(user.id);
-    deps.auth.setSessionCookie(reply, session.token, session.expiresAt);
-    return reply.send(await deps.auth.buildSessionResponse(user.id, session.expiresAt));
-  });
-
-  app.post("/auth/logout", async (request, reply) => {
-    await deps.auth.clearSessionFromRequest(request);
-    deps.auth.clearSessionCookie(reply);
-    return reply.status(204).send();
-  });
-
-  app.get("/auth/session", { preHandler: deps.auth.requireAuth() }, async (request) => request.auth!.session);
-
-  app.get("/auth/profile", { preHandler: deps.auth.requireAuth() }, async (request) => {
-    const authUser = request.auth!.user;
-    return {
-      name: authUser.name,
-      email: authUser.email,
-      gitAuthorName: authUser.gitAuthorName,
-      gitAuthorEmail: authUser.gitAuthorEmail,
-      agentResponsePreference: authUser.agentResponsePreference,
-      codexAuthJsonConfigured: await deps.credentialStore.hasCodexAuthJsonForUser(authUser.id)
-    };
-  });
-
-  app.patch("/auth/profile", { preHandler: deps.auth.requireAuth() }, async (request, reply) => {
-    const parsed = updateProfileSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const userId = request.auth!.user.id;
-    if (
-      parsed.data.name !== undefined ||
-      parsed.data.gitAuthorName !== undefined ||
-      parsed.data.gitAuthorEmail !== undefined ||
-      parsed.data.agentResponsePreference !== undefined
-    ) {
-      const updated = await deps.userStore.updateUser(userId, {
-        ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
-        ...(parsed.data.gitAuthorName !== undefined ? { gitAuthorName: parsed.data.gitAuthorName } : {}),
-        ...(parsed.data.gitAuthorEmail !== undefined ? { gitAuthorEmail: parsed.data.gitAuthorEmail } : {}),
-        ...(parsed.data.agentResponsePreference !== undefined ? { agentResponsePreference: parsed.data.agentResponsePreference } : {})
-      });
-      if (!updated) {
-        return reply.status(404).send({ message: "User not found" });
-      }
-    }
-
-    if (parsed.data.codexAuthJson !== undefined || parsed.data.clearCodexAuthJson) {
-      if (parsed.data.clearCodexAuthJson) {
-        await deps.credentialStore.setCodexAuthJsonForUser(userId, null);
-      } else {
-        const raw = parsed.data.codexAuthJson ?? "";
-        try {
-          const parsedJson = JSON.parse(raw) as unknown;
-          if (!parsedJson || typeof parsedJson !== "object" || Array.isArray(parsedJson)) {
-            return reply.status(400).send({ message: "Codex auth.json must be a JSON object" });
-          }
-        } catch {
-          return reply.status(400).send({ message: "Codex auth.json must be valid JSON" });
-        }
-        await deps.credentialStore.setCodexAuthJsonForUser(userId, raw);
-      }
-    }
-
-    const refreshedUser = await deps.userStore.getAuthSessionUser(userId);
-    if (!refreshedUser) {
-      return reply.status(404).send({ message: "User not found" });
-    }
-
-    return reply.send({
-      name: refreshedUser.name,
-      email: refreshedUser.email,
-      gitAuthorName: refreshedUser.gitAuthorName,
-      gitAuthorEmail: refreshedUser.gitAuthorEmail,
-      agentResponsePreference: refreshedUser.agentResponsePreference,
-      codexAuthJsonConfigured: await deps.credentialStore.hasCodexAuthJsonForUser(userId)
-    });
-  });
-};
-````
-
 ## File: apps/server/src/routes/github-webhooks.test.ts
 ````typescript
 import assert from "node:assert/strict";
@@ -3357,181 +3099,6 @@ export const registerRoleRoutes = (
 
       try {
         await deps.roleStore.deleteRole(request.params.id);
-        return reply.status(204).send();
-      } catch (error) {
-        const sent = sendHttpError(reply, error);
-        if (sent) {
-          return sent;
-        }
-
-        throw error;
-      }
-    }
-  );
-};
-````
-
-## File: apps/server/src/routes/users.ts
-````typescript
-import { z } from "zod";
-import type { FastifyInstance } from "fastify";
-import type { AuthService } from "../lib/auth.js";
-import { sendHttpError } from "../lib/http-error.js";
-import type { RoleStore } from "../services/role-store.js";
-import type { SessionStore } from "../services/session-store.js";
-import type { UserStore } from "../services/user-store.js";
-
-const responsePreferenceSchema = z
-  .object({
-    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
-    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
-    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
-    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
-    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
-    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
-    extraInstructions: z.string().trim().max(2000).optional()
-  });
-
-const createUserSchema = z.object({
-  name: z.string().trim().min(1),
-  email: z.string().trim().email(),
-  gitAuthorName: z.string().trim().max(120).nullable().optional(),
-  gitAuthorEmail: z.string().trim().email().nullable().optional(),
-  password: z.string().min(1),
-  active: z.boolean().optional(),
-  roleIds: z.array(z.string().trim().min(1)).optional(),
-  repositoryIds: z.array(z.string().trim().min(1)).optional(),
-  agentResponsePreference: responsePreferenceSchema.optional()
-});
-
-const updateUserSchema = z.object({
-  name: z.string().trim().min(1).optional(),
-  email: z.string().trim().email().optional(),
-  gitAuthorName: z.string().trim().max(120).nullable().optional(),
-  gitAuthorEmail: z.string().trim().email().nullable().optional(),
-  password: z.string().min(1).optional(),
-  active: z.boolean().optional(),
-  roleIds: z.array(z.string().trim().min(1)).optional(),
-  repositoryIds: z.array(z.string().trim().min(1)).optional(),
-  agentResponsePreference: responsePreferenceSchema.optional()
-});
-
-export const registerUserRoutes = (
-  app: FastifyInstance,
-  deps: {
-    auth: AuthService;
-    userStore: UserStore;
-    roleStore: RoleStore;
-    sessionStore: SessionStore;
-  }
-): void => {
-  app.get("/users", { preHandler: deps.auth.requireAllScopes(["user:list"]) }, async () => deps.userStore.listUsers());
-
-  app.get<{ Params: { id: string } }>(
-    "/users/:id",
-    { preHandler: deps.auth.requireAllScopes(["user:read"]) },
-    async (request, reply) => {
-      const user = await deps.userStore.getUser(request.params.id);
-      if (!user) {
-        return reply.status(404).send({ message: "User not found" });
-      }
-
-      return user;
-    }
-  );
-
-  app.post(
-    "/users",
-    { preHandler: deps.auth.requireAllScopes(["user:create"]) },
-    async (request, reply) => {
-      const parsed = createUserSchema.safeParse(request.body);
-      if (!parsed.success) {
-        return reply.status(400).send({ message: parsed.error.message });
-      }
-
-      if (
-        (parsed.data.roleIds !== undefined || parsed.data.repositoryIds !== undefined) &&
-        !request.auth!.scopes.has("settings:edit")
-      ) {
-        return reply.status(403).send({ message: "Role or repository assignment requires settings:edit" });
-      }
-
-      try {
-        const user = await deps.userStore.createUser(parsed.data);
-        return reply.status(201).send(user);
-      } catch (error) {
-        const sent = sendHttpError(reply, error);
-        if (sent) {
-          return sent;
-        }
-
-        throw error;
-      }
-    }
-  );
-
-  app.patch<{ Params: { id: string } }>(
-    "/users/:id",
-    { preHandler: deps.auth.requireAllScopes(["user:edit"]) },
-    async (request, reply) => {
-      const parsed = updateUserSchema.safeParse(request.body);
-      if (!parsed.success) {
-        return reply.status(400).send({ message: parsed.error.message });
-      }
-
-      if (
-        (parsed.data.roleIds !== undefined || parsed.data.repositoryIds !== undefined) &&
-        !request.auth!.scopes.has("settings:edit")
-      ) {
-        return reply.status(403).send({ message: "Role or repository assignment requires settings:edit" });
-      }
-
-      if (parsed.data.active === false && request.params.id === request.auth!.user.id) {
-        return reply.status(409).send({ message: "You cannot disable your own account" });
-      }
-
-      try {
-        const user = await deps.userStore.updateUser(request.params.id, parsed.data);
-        if (!user) {
-          return reply.status(404).send({ message: "User not found" });
-        }
-
-        if (
-          parsed.data.active === false ||
-          parsed.data.roleIds !== undefined ||
-          parsed.data.repositoryIds !== undefined ||
-          parsed.data.agentResponsePreference !== undefined
-        ) {
-          await deps.sessionStore.deleteSessionsForUser(user.id);
-        }
-
-        return reply.send(user);
-      } catch (error) {
-        const sent = sendHttpError(reply, error);
-        if (sent) {
-          return sent;
-        }
-
-        throw error;
-      }
-    }
-  );
-
-  app.delete<{ Params: { id: string } }>(
-    "/users/:id",
-    { preHandler: deps.auth.requireAllScopes(["user:delete"]) },
-    async (request, reply) => {
-      if (request.params.id === request.auth!.user.id) {
-        return reply.status(409).send({ message: "You cannot delete your own account" });
-      }
-
-      try {
-        const deleted = await deps.userStore.deleteUser(request.params.id);
-        if (!deleted) {
-          return reply.status(404).send({ message: "User not found" });
-        }
-
-        await deps.sessionStore.deleteSessionsForUser(request.params.id);
         return reply.status(204).send();
       } catch (error) {
         const sent = sendHttpError(reply, error);
@@ -5298,1191 +4865,6 @@ export class RedisTaskQueueStore implements TaskQueueStore {
 }
 ````
 
-## File: apps/server/src/services/user-store.ts
-````typescript
-import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
-import { promisify } from "node:util";
-import { nanoid } from "nanoid";
-import type Redis from "ioredis";
-import type { Pool } from "pg";
-import {
-  ALL_PERMISSION_SCOPES,
-  type AgentProvider,
-  type AgentResponsePreference,
-  type AudienceType,
-  type AuthSessionUser,
-  type CreateUserInput,
-  type PermissionScope,
-  type ProviderProfile,
-  type Role,
-  type User,
-  type UserRoleRef,
-  type UpdateUserInput
-} from "@agentswarm/shared-types";
-import { HttpError } from "../lib/http-error.js";
-import { type PostgresQueryable, withPostgresTransaction } from "../lib/postgres.js";
-import type { RepositoryStore } from "./repository-store.js";
-import { SYSTEM_ADMIN_ROLE_ID, type RoleStore } from "./role-store.js";
-
-const USER_KEY_PREFIX = "agentswarm:user:";
-const USER_IDS_KEY = "agentswarm:user_ids";
-const USER_EMAIL_KEY_PREFIX = "agentswarm:user_email:";
-const BOOTSTRAP_ADMIN_MARKER_KEY = "agentswarm:bootstrap_admin_user_id";
-
-const scrypt = promisify(scryptCallback);
-const nowIso = (): string => new Date().toISOString();
-const scopeOrder = new Map(ALL_PERMISSION_SCOPES.map((scope, index) => [scope, index]));
-
-export interface BootstrapAdminInput {
-  name: string;
-  email: string;
-  password: string;
-}
-
-export interface StoredUserRecord {
-  id: string;
-  name: string;
-  email: string;
-  gitAuthorName: string | null;
-  gitAuthorEmail: string | null;
-  active: boolean;
-  agentResponsePreference: AgentResponsePreference;
-  roleIds: string[];
-  repositoryIds: string[];
-  passwordHash: string;
-  passwordSalt: string;
-  lastLoginAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-const normalizeUserName = (value: string | undefined): string => (value ?? "").trim().replace(/\s+/g, " ");
-const normalizeUserEmail = (value: string | undefined): string => (value ?? "").trim().toLowerCase();
-const normalizeOptionalGitAuthorName = (value: string | null | undefined): string | null => {
-  const normalized = (value ?? "").trim().replace(/\s+/g, " ");
-  return normalized || null;
-};
-const normalizeOptionalGitAuthorEmail = (value: string | null | undefined): string | null => {
-  const normalized = (value ?? "").trim().toLowerCase();
-  return normalized || null;
-};
-const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
-const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
-const RESPONSE_EXPLANATION_DEPTH = new Set(["one_line", "brief", "standard", "detailed", "deep_dive"]);
-const RESPONSE_JARGON_LEVEL = new Set(["avoid", "balanced", "expert"]);
-const RESPONSE_CODE_PREFERENCE = new Set(["only_when_needed", "prefer_examples", "avoid_code"]);
-const RESPONSE_CLARIFY_BEHAVIOR = new Set(["ask_when_ambiguous", "make_reasonable_assumptions"]);
-const RESPONSE_FORMATTING_STYLE = new Set(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]);
-
-const normalizeAgentResponsePreference = (
-  value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined,
-  fallback: AgentResponsePreference = DEFAULT_AGENT_RESPONSE_PREFERENCE
-): AgentResponsePreference => ({
-  audience:
-    (() => {
-      const nextAudience = value?.audience ?? fallback.audience;
-      if (typeof nextAudience === "string" && RESPONSE_AUDIENCES.has(nextAudience as AudienceType)) {
-        return nextAudience as AudienceType;
-      }
-      const legacyStyle = (value as { style?: string } | undefined)?.style ?? (fallback as { style?: string } | undefined)?.style;
-      if (legacyStyle === "technical" || legacyStyle === "non_technical") {
-        return legacyStyle;
-      }
-      return undefined;
-    })(),
-  explanationDepth:
-    typeof (value?.explanationDepth ?? fallback.explanationDepth) === "string" &&
-    RESPONSE_EXPLANATION_DEPTH.has((value?.explanationDepth ?? fallback.explanationDepth) as string)
-      ? (value?.explanationDepth ?? fallback.explanationDepth)
-      : undefined,
-  jargonLevel:
-    typeof (value?.jargonLevel ?? fallback.jargonLevel) === "string" &&
-    RESPONSE_JARGON_LEVEL.has((value?.jargonLevel ?? fallback.jargonLevel) as string)
-      ? (value?.jargonLevel ?? fallback.jargonLevel)
-      : undefined,
-  codePreference:
-    typeof (value?.codePreference ?? fallback.codePreference) === "string" &&
-    RESPONSE_CODE_PREFERENCE.has((value?.codePreference ?? fallback.codePreference) as string)
-      ? (value?.codePreference ?? fallback.codePreference)
-      : undefined,
-  clarifyBehavior:
-    typeof (value?.clarifyBehavior ?? fallback.clarifyBehavior) === "string" &&
-    RESPONSE_CLARIFY_BEHAVIOR.has((value?.clarifyBehavior ?? fallback.clarifyBehavior) as string)
-      ? (value?.clarifyBehavior ?? fallback.clarifyBehavior)
-      : undefined,
-  formattingStyle:
-    typeof (value?.formattingStyle ?? fallback.formattingStyle) === "string" &&
-    RESPONSE_FORMATTING_STYLE.has((value?.formattingStyle ?? fallback.formattingStyle) as string)
-      ? (value?.formattingStyle ?? fallback.formattingStyle)
-      : undefined,
-  extraInstructions: (value?.extraInstructions ?? fallback.extraInstructions)?.trim() || undefined
-});
-
-const sortScopes = (scopes: PermissionScope[]): PermissionScope[] =>
-  Array.from(new Set(scopes)).sort((left, right) => (scopeOrder.get(left) ?? 0) - (scopeOrder.get(right) ?? 0));
-
-const mergeRoleAllowlist = <T extends string>(roles: Role[], selector: (role: Role) => T[]): T[] => {
-  if (roles.every((role) => selector(role).length === 0)) {
-    return [];
-  }
-  return Array.from(new Set(roles.flatMap((role) => selector(role)))).sort((left, right) => left.localeCompare(right));
-};
-
-const hashPassword = async (
-  password: string
-): Promise<Pick<StoredUserRecord, "passwordHash" | "passwordSalt">> => {
-  const passwordSalt = randomBytes(16).toString("hex");
-  const passwordHash = (await scrypt(password, passwordSalt, 64)) as Buffer;
-  return {
-    passwordHash: passwordHash.toString("hex"),
-    passwordSalt
-  };
-};
-
-const verifyPassword = async (
-  password: string,
-  passwordSalt: string,
-  passwordHash: string
-): Promise<boolean> => {
-  const providedHash = (await scrypt(password, passwordSalt, 64)) as Buffer;
-  const storedHash = Buffer.from(passwordHash, "hex");
-  if (providedHash.byteLength !== storedHash.byteLength) {
-    return false;
-  }
-
-  return timingSafeEqual(storedHash, providedHash);
-};
-
-export interface UserStore {
-  ensureDefaultAdminUser(input: BootstrapAdminInput): Promise<User>;
-  listUsers(): Promise<User[]>;
-  getUser(userId: string): Promise<User | null>;
-  getAuthSessionUser(userId: string): Promise<AuthSessionUser | null>;
-  authenticate(email: string, password: string): Promise<User | null>;
-  createUser(input: CreateUserInput): Promise<User>;
-  updateUser(userId: string, input: UpdateUserInput): Promise<User | null>;
-  deleteUser(userId: string): Promise<boolean>;
-  hasUsersWithRole(roleId: string): Promise<boolean>;
-  listUserIdsByRoleId(roleId: string): Promise<string[]>;
-}
-
-export class RedisUserStore implements UserStore {
-  constructor(
-    private readonly redis: Redis,
-    private readonly roleStore: RoleStore,
-    private readonly repositoryStore: RepositoryStore
-  ) {}
-
-  private userKey(userId: string): string {
-    return `${USER_KEY_PREFIX}${userId}`;
-  }
-
-  private userEmailKey(email: string): string {
-    return `${USER_EMAIL_KEY_PREFIX}${normalizeUserEmail(email)}`;
-  }
-
-  private normalizeStoredUser(user: StoredUserRecord): StoredUserRecord {
-    return {
-      ...user,
-      name: normalizeUserName(user.name),
-      email: normalizeUserEmail(user.email),
-      gitAuthorName: normalizeOptionalGitAuthorName(user.gitAuthorName),
-      gitAuthorEmail: normalizeOptionalGitAuthorEmail(user.gitAuthorEmail),
-      active: user.active !== false,
-      agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
-      roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
-      repositoryIds: Array.from(new Set((user.repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean))),
-      lastLoginAt: user.lastLoginAt ?? null
-    };
-  }
-
-  private async getStoredUser(userId: string): Promise<StoredUserRecord | null> {
-    const raw = await this.redis.get(this.userKey(userId));
-    if (!raw) {
-      return null;
-    }
-
-    return this.normalizeStoredUser(JSON.parse(raw) as StoredUserRecord);
-  }
-
-  private async getStoredUsers(userIds: string[]): Promise<StoredUserRecord[]> {
-    if (userIds.length === 0) {
-      return [];
-    }
-
-    const pipeline = this.redis.pipeline();
-    for (const userId of userIds) {
-      pipeline.get(this.userKey(userId));
-    }
-
-    const result = await pipeline.exec();
-    const users: StoredUserRecord[] = [];
-    for (const row of result ?? []) {
-      const raw = row[1];
-      if (typeof raw === "string") {
-        users.push(this.normalizeStoredUser(JSON.parse(raw) as StoredUserRecord));
-      }
-    }
-
-    return users;
-  }
-
-  private async normalizeRoleIds(roleIds: string[] | undefined): Promise<string[]> {
-    const uniqueRoleIds = Array.from(new Set((roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean)));
-    if (uniqueRoleIds.length === 0) {
-      return [];
-    }
-
-    const roles = await this.roleStore.getRolesByIds(uniqueRoleIds);
-    if (roles.length !== uniqueRoleIds.length) {
-      const missingRoleId = uniqueRoleIds.find((roleId) => !roles.some((role) => role.id === roleId));
-      throw new HttpError(400, `Unknown role: ${missingRoleId ?? "unknown"}`);
-    }
-
-    return uniqueRoleIds;
-  }
-
-  private async normalizeRepositoryIds(repositoryIds: string[] | undefined): Promise<string[]> {
-    const uniqueRepositoryIds = Array.from(new Set((repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean)));
-    if (uniqueRepositoryIds.length === 0) {
-      return [];
-    }
-
-    const repositories = await Promise.all(uniqueRepositoryIds.map((repositoryId) => this.repositoryStore.getRepository(repositoryId)));
-    const missingRepositoryId = uniqueRepositoryIds.find((repositoryId, index) => !repositories[index]);
-    if (missingRepositoryId) {
-      throw new HttpError(400, `Unknown repository: ${missingRepositoryId}`);
-    }
-
-    return uniqueRepositoryIds;
-  }
-
-  private buildRoleRefs(roles: Role[]): UserRoleRef[] {
-    return roles.map((role) => ({
-      id: role.id,
-      name: role.name,
-      isSystem: role.isSystem
-    }));
-  }
-
-  private async sanitizeUser(user: StoredUserRecord): Promise<User> {
-    const roles = await this.roleStore.getRolesByIds(user.roleIds);
-    return {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      gitAuthorName: user.gitAuthorName,
-      gitAuthorEmail: user.gitAuthorEmail,
-      active: user.active,
-      agentResponsePreference: user.agentResponsePreference,
-      roles: this.buildRoleRefs(roles),
-      repositoryIds: user.repositoryIds,
-      lastLoginAt: user.lastLoginAt,
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt
-    };
-  }
-
-  private async countOtherActiveAdmins(excludedUserId: string): Promise<number> {
-    const userIds = await this.redis.smembers(USER_IDS_KEY);
-    const users = await this.getStoredUsers(userIds);
-    return users.filter(
-      (user) =>
-        user.id !== excludedUserId &&
-        user.active &&
-        user.roleIds.includes(SYSTEM_ADMIN_ROLE_ID)
-    ).length;
-  }
-
-  private async assertAdminUserStillExists(
-    current: StoredUserRecord,
-    nextRoleIds: string[],
-    nextActive: boolean
-  ): Promise<void> {
-    if (
-      current.active &&
-      current.roleIds.includes(SYSTEM_ADMIN_ROLE_ID) &&
-      (!nextActive || !nextRoleIds.includes(SYSTEM_ADMIN_ROLE_ID))
-    ) {
-      const otherActiveAdmins = await this.countOtherActiveAdmins(current.id);
-      if (otherActiveAdmins === 0) {
-        throw new HttpError(409, "At least one active admin user is required");
-      }
-    }
-  }
-
-  private async persistUser(nextUser: StoredUserRecord, previousUser?: StoredUserRecord): Promise<void> {
-    const pipeline = this.redis
-      .multi()
-      .set(this.userKey(nextUser.id), JSON.stringify(nextUser))
-      .sadd(USER_IDS_KEY, nextUser.id)
-      .set(this.userEmailKey(nextUser.email), nextUser.id);
-
-    if (previousUser && previousUser.email !== nextUser.email) {
-      pipeline.del(this.userEmailKey(previousUser.email));
-    }
-
-    await pipeline.exec();
-  }
-
-  private async setBootstrapAdminRoleIfMissing(user: StoredUserRecord): Promise<StoredUserRecord> {
-    if (user.roleIds.includes(SYSTEM_ADMIN_ROLE_ID)) {
-      return user;
-    }
-
-    const next: StoredUserRecord = {
-      ...user,
-      roleIds: [...user.roleIds, SYSTEM_ADMIN_ROLE_ID],
-      updatedAt: nowIso()
-    };
-    await this.persistUser(next, user);
-    return next;
-  }
-
-  async ensureDefaultAdminUser(input: BootstrapAdminInput): Promise<User> {
-    const markerUserId = await this.redis.get(BOOTSTRAP_ADMIN_MARKER_KEY);
-    if (markerUserId) {
-      const markedUser = await this.getStoredUser(markerUserId);
-      if (markedUser) {
-        const repairedUser = await this.setBootstrapAdminRoleIfMissing(markedUser);
-        return this.sanitizeUser(repairedUser);
-      }
-    }
-
-    const existingUserId = await this.redis.get(this.userEmailKey(input.email));
-    if (existingUserId) {
-      const existingUser = await this.getStoredUser(existingUserId);
-      if (existingUser) {
-        const repairedUser = await this.setBootstrapAdminRoleIfMissing(existingUser);
-        await this.redis.set(BOOTSTRAP_ADMIN_MARKER_KEY, repairedUser.id);
-        return this.sanitizeUser(repairedUser);
-      }
-    }
-
-    const createdUser = await this.createUser({
-      name: input.name,
-      email: input.email,
-      password: input.password,
-      active: true,
-      roleIds: [SYSTEM_ADMIN_ROLE_ID]
-    });
-    await this.redis.set(BOOTSTRAP_ADMIN_MARKER_KEY, createdUser.id);
-    return createdUser;
-  }
-
-  async listUsers(): Promise<User[]> {
-    const userIds = await this.redis.smembers(USER_IDS_KEY);
-    const users = await this.getStoredUsers(userIds);
-    const sanitizedUsers = await Promise.all(users.map((user) => this.sanitizeUser(user)));
-    return sanitizedUsers.sort((left, right) => {
-      const nameCompare = left.name.localeCompare(right.name);
-      if (nameCompare !== 0) {
-        return nameCompare;
-      }
-
-      return left.email.localeCompare(right.email);
-    });
-  }
-
-  async getUser(userId: string): Promise<User | null> {
-    const user = await this.getStoredUser(userId);
-    if (!user) {
-      return null;
-    }
-
-    return this.sanitizeUser(user);
-  }
-
-  async getAuthSessionUser(userId: string): Promise<AuthSessionUser | null> {
-    const user = await this.getStoredUser(userId);
-    if (!user || !user.active) {
-      return null;
-    }
-
-    const roles = await this.roleStore.getRolesByIds(user.roleIds);
-    const scopes = sortScopes(roles.flatMap((role) => role.scopes));
-    const allowedProviders = mergeRoleAllowlist<AgentProvider>(roles, (role) => role.allowedProviders);
-    const allowedModels = mergeRoleAllowlist<string>(roles, (role) => role.allowedModels);
-    const allowedEfforts = mergeRoleAllowlist<ProviderProfile>(roles, (role) => role.allowedEfforts);
-    return {
-      ...(await this.sanitizeUser(user)),
-      scopes,
-      allowedProviders,
-      allowedModels,
-      allowedEfforts,
-      agentResponsePreference: user.agentResponsePreference
-    };
-  }
-
-  async authenticate(email: string, password: string): Promise<User | null> {
-    const normalizedEmail = normalizeUserEmail(email);
-    if (!normalizedEmail || !password) {
-      return null;
-    }
-
-    const userId = await this.redis.get(this.userEmailKey(normalizedEmail));
-    if (!userId) {
-      return null;
-    }
-
-    const user = await this.getStoredUser(userId);
-    if (!user || !user.active) {
-      return null;
-    }
-
-    const validPassword = await verifyPassword(password, user.passwordSalt, user.passwordHash);
-    if (!validPassword) {
-      return null;
-    }
-
-    const next: StoredUserRecord = {
-      ...user,
-      lastLoginAt: nowIso(),
-      updatedAt: nowIso()
-    };
-    await this.persistUser(next, user);
-    return this.sanitizeUser(next);
-  }
-
-  async createUser(input: CreateUserInput): Promise<User> {
-    const name = normalizeUserName(input.name);
-    const email = normalizeUserEmail(input.email);
-    const gitAuthorName = normalizeOptionalGitAuthorName(input.gitAuthorName);
-    const gitAuthorEmail = normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
-    const password = input.password.trim();
-
-    if (!name) {
-      throw new HttpError(400, "User name is required");
-    }
-
-    if (!email) {
-      throw new HttpError(400, "User email is required");
-    }
-
-    if (!password) {
-      throw new HttpError(400, "Password is required");
-    }
-
-    const existingUserId = await this.redis.get(this.userEmailKey(email));
-    if (existingUserId) {
-      throw new HttpError(409, "A user with that email already exists");
-    }
-
-    const [roleIds, repositoryIds] = await Promise.all([
-      this.normalizeRoleIds(input.roleIds),
-      this.normalizeRepositoryIds(input.repositoryIds)
-    ]);
-    const timestamp = nowIso();
-    const passwordState = await hashPassword(password);
-    const user: StoredUserRecord = {
-      id: nanoid(),
-      name,
-      email,
-      gitAuthorName,
-      gitAuthorEmail,
-      active: input.active !== false,
-      agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
-      roleIds,
-      repositoryIds,
-      passwordHash: passwordState.passwordHash,
-      passwordSalt: passwordState.passwordSalt,
-      lastLoginAt: null,
-      createdAt: timestamp,
-      updatedAt: timestamp
-    };
-
-    await this.persistUser(user);
-    return this.sanitizeUser(user);
-  }
-
-  async updateUser(userId: string, input: UpdateUserInput): Promise<User | null> {
-    const current = await this.getStoredUser(userId);
-    if (!current) {
-      return null;
-    }
-
-    const nextName = input.name === undefined ? current.name : normalizeUserName(input.name);
-    const nextEmail = input.email === undefined ? current.email : normalizeUserEmail(input.email);
-    const nextGitAuthorName =
-      input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName);
-    const nextGitAuthorEmail =
-      input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
-    if (!nextName) {
-      throw new HttpError(400, "User name is required");
-    }
-
-    if (!nextEmail) {
-      throw new HttpError(400, "User email is required");
-    }
-
-    if (nextEmail !== current.email) {
-      const existingUserId = await this.redis.get(this.userEmailKey(nextEmail));
-      if (existingUserId && existingUserId !== userId) {
-        throw new HttpError(409, "A user with that email already exists");
-      }
-    }
-
-    const [nextRoleIds, nextRepositoryIds] = await Promise.all([
-      input.roleIds === undefined ? Promise.resolve(current.roleIds) : this.normalizeRoleIds(input.roleIds),
-      input.repositoryIds === undefined ? Promise.resolve(current.repositoryIds) : this.normalizeRepositoryIds(input.repositoryIds)
-    ]);
-    const nextActive = input.active ?? current.active;
-    await this.assertAdminUserStillExists(current, nextRoleIds, nextActive);
-
-    let passwordHash = current.passwordHash;
-    let passwordSalt = current.passwordSalt;
-    if (input.password !== undefined) {
-      const nextPassword = input.password.trim();
-      if (!nextPassword) {
-        throw new HttpError(400, "Password is required");
-      }
-
-      const passwordState = await hashPassword(nextPassword);
-      passwordHash = passwordState.passwordHash;
-      passwordSalt = passwordState.passwordSalt;
-    }
-
-    const next: StoredUserRecord = {
-      ...current,
-      name: nextName,
-      email: nextEmail,
-      gitAuthorName: nextGitAuthorName,
-      gitAuthorEmail: nextGitAuthorEmail,
-      active: nextActive,
-      agentResponsePreference:
-        input.agentResponsePreference === undefined
-          ? current.agentResponsePreference
-          : normalizeAgentResponsePreference(input.agentResponsePreference, current.agentResponsePreference),
-      roleIds: nextRoleIds,
-      repositoryIds: nextRepositoryIds,
-      passwordHash,
-      passwordSalt,
-      updatedAt: nowIso()
-    };
-
-    await this.persistUser(next, current);
-    return this.sanitizeUser(next);
-  }
-
-  async deleteUser(userId: string): Promise<boolean> {
-    const current = await this.getStoredUser(userId);
-    if (!current) {
-      return false;
-    }
-
-    if (current.active && current.roleIds.includes(SYSTEM_ADMIN_ROLE_ID)) {
-      const otherActiveAdmins = await this.countOtherActiveAdmins(current.id);
-      if (otherActiveAdmins === 0) {
-        throw new HttpError(409, "At least one active admin user is required");
-      }
-    }
-
-    await this.redis
-      .multi()
-      .del(this.userKey(userId))
-      .srem(USER_IDS_KEY, userId)
-      .del(this.userEmailKey(current.email))
-      .exec();
-
-    return true;
-  }
-
-  async hasUsersWithRole(roleId: string): Promise<boolean> {
-    const userIds = await this.redis.smembers(USER_IDS_KEY);
-    const users = await this.getStoredUsers(userIds);
-    return users.some((user) => user.roleIds.includes(roleId));
-  }
-
-  async listUserIdsByRoleId(roleId: string): Promise<string[]> {
-    const userIds = await this.redis.smembers(USER_IDS_KEY);
-    const users = await this.getStoredUsers(userIds);
-    return users.filter((user) => user.roleIds.includes(roleId)).map((user) => user.id);
-  }
-}
-
-export class PostgresUserStore implements UserStore {
-  constructor(
-    private readonly pool: Pool,
-    private readonly roleStore: RoleStore,
-    private readonly repositoryStore: RepositoryStore
-  ) {}
-
-  private mapUserRow(row: Record<string, unknown>, roleIds: string[], repositoryIds: string[]): StoredUserRecord {
-    return this.normalizeStoredUser({
-      id: String(row.id),
-      name: String(row.name ?? ""),
-      email: String(row.email ?? ""),
-      gitAuthorName: typeof row.git_author_name === "string" ? row.git_author_name : null,
-      gitAuthorEmail: typeof row.git_author_email === "string" ? row.git_author_email : null,
-      active: row.active !== false,
-      agentResponsePreference: normalizeAgentResponsePreference(
-        row.agent_response_preference && typeof row.agent_response_preference === "object"
-          ? (row.agent_response_preference as Partial<AgentResponsePreference>)
-          : undefined
-      ),
-      roleIds,
-      repositoryIds,
-      passwordHash: String(row.password_hash ?? ""),
-      passwordSalt: String(row.password_salt ?? ""),
-      lastLoginAt: typeof row.last_login_at === "string" ? row.last_login_at : null,
-      createdAt: String(row.created_at),
-      updatedAt: String(row.updated_at)
-    });
-  }
-
-  private normalizeStoredUser(user: StoredUserRecord): StoredUserRecord {
-    return {
-      ...user,
-      name: normalizeUserName(user.name),
-      email: normalizeUserEmail(user.email),
-      gitAuthorName: normalizeOptionalGitAuthorName(user.gitAuthorName),
-      gitAuthorEmail: normalizeOptionalGitAuthorEmail(user.gitAuthorEmail),
-      active: user.active !== false,
-      agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
-      roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
-      repositoryIds: Array.from(new Set((user.repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean))),
-      lastLoginAt: user.lastLoginAt ?? null
-    };
-  }
-
-  private async getRoleIdsForUsers(
-    userIds: string[],
-    db: PostgresQueryable = this.pool
-  ): Promise<Map<string, string[]>> {
-    if (userIds.length === 0) {
-      return new Map();
-    }
-
-    const result = await db.query<{ user_id: string; role_id: string }>(
-      "SELECT user_id, role_id FROM user_roles WHERE user_id = ANY($1::text[]) ORDER BY role_id ASC",
-      [userIds]
-    );
-    const roleIdsByUser = new Map<string, string[]>();
-    for (const row of result.rows) {
-      const roleIds = roleIdsByUser.get(row.user_id) ?? [];
-      roleIds.push(row.role_id);
-      roleIdsByUser.set(row.user_id, roleIds);
-    }
-    return roleIdsByUser;
-  }
-
-  private async getRepositoryIdsForUsers(
-    userIds: string[],
-    db: PostgresQueryable = this.pool
-  ): Promise<Map<string, string[]>> {
-    if (userIds.length === 0) {
-      return new Map();
-    }
-
-    const result = await db.query<{ user_id: string; repository_id: string }>(
-      "SELECT user_id, repository_id FROM user_repositories WHERE user_id = ANY($1::text[]) ORDER BY repository_id ASC",
-      [userIds]
-    );
-    const repositoryIdsByUser = new Map<string, string[]>();
-    for (const row of result.rows) {
-      const repositoryIds = repositoryIdsByUser.get(row.user_id) ?? [];
-      repositoryIds.push(row.repository_id);
-      repositoryIdsByUser.set(row.user_id, repositoryIds);
-    }
-    return repositoryIdsByUser;
-  }
-
-  private async getStoredUsers(userIds: string[], db: PostgresQueryable = this.pool): Promise<StoredUserRecord[]> {
-    if (userIds.length === 0) {
-      return [];
-    }
-
-    const result = await db.query("SELECT * FROM users WHERE id = ANY($1::text[])", [userIds]);
-    const roleIdsByUser = await this.getRoleIdsForUsers(userIds, db);
-    const repositoryIdsByUser = await this.getRepositoryIdsForUsers(userIds, db);
-    const usersById = new Map<string, StoredUserRecord>();
-    for (const row of result.rows) {
-      const userId = String(row.id);
-      usersById.set(userId, this.mapUserRow(row, roleIdsByUser.get(userId) ?? [], repositoryIdsByUser.get(userId) ?? []));
-    }
-
-    return userIds.flatMap((userId) => {
-      const user = usersById.get(userId);
-      return user ? [user] : [];
-    });
-  }
-
-  private async getStoredUser(userId: string, db: PostgresQueryable = this.pool): Promise<StoredUserRecord | null> {
-    const users = await this.getStoredUsers([userId], db);
-    return users[0] ?? null;
-  }
-
-  private async normalizeRoleIds(roleIds: string[] | undefined): Promise<string[]> {
-    const uniqueRoleIds = Array.from(new Set((roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean)));
-    if (uniqueRoleIds.length === 0) {
-      return [];
-    }
-
-    const roles = await this.roleStore.getRolesByIds(uniqueRoleIds);
-    if (roles.length !== uniqueRoleIds.length) {
-      const missingRoleId = uniqueRoleIds.find((roleId) => !roles.some((role) => role.id === roleId));
-      throw new HttpError(400, `Unknown role: ${missingRoleId ?? "unknown"}`);
-    }
-
-    return uniqueRoleIds;
-  }
-
-  private async normalizeRepositoryIds(repositoryIds: string[] | undefined): Promise<string[]> {
-    const uniqueRepositoryIds = Array.from(new Set((repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean)));
-    if (uniqueRepositoryIds.length === 0) {
-      return [];
-    }
-
-    const repositories = await Promise.all(uniqueRepositoryIds.map((repositoryId) => this.repositoryStore.getRepository(repositoryId)));
-    const missingRepositoryId = uniqueRepositoryIds.find((repositoryId, index) => !repositories[index]);
-    if (missingRepositoryId) {
-      throw new HttpError(400, `Unknown repository: ${missingRepositoryId}`);
-    }
-
-    return uniqueRepositoryIds;
-  }
-
-  private buildRoleRefs(roles: Role[]): UserRoleRef[] {
-    return roles.map((role) => ({
-      id: role.id,
-      name: role.name,
-      isSystem: role.isSystem
-    }));
-  }
-
-  private async sanitizeUser(user: StoredUserRecord): Promise<User> {
-    const roles = await this.roleStore.getRolesByIds(user.roleIds);
-    return {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      gitAuthorName: user.gitAuthorName,
-      gitAuthorEmail: user.gitAuthorEmail,
-      active: user.active,
-      agentResponsePreference: user.agentResponsePreference,
-      roles: this.buildRoleRefs(roles),
-      repositoryIds: user.repositoryIds,
-      lastLoginAt: user.lastLoginAt,
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt
-    };
-  }
-
-  private async countOtherActiveAdmins(excludedUserId: string): Promise<number> {
-    const result = await this.pool.query<{ count: string }>(
-      `
-        SELECT COUNT(*)::text AS count
-        FROM users
-        INNER JOIN user_roles ON user_roles.user_id = users.id
-        WHERE users.id <> $1
-          AND users.active = TRUE
-          AND user_roles.role_id = $2
-      `,
-      [excludedUserId, SYSTEM_ADMIN_ROLE_ID]
-    );
-    return Number(result.rows[0]?.count ?? 0);
-  }
-
-  private async assertAdminUserStillExists(
-    current: StoredUserRecord,
-    nextRoleIds: string[],
-    nextActive: boolean
-  ): Promise<void> {
-    if (
-      current.active &&
-      current.roleIds.includes(SYSTEM_ADMIN_ROLE_ID) &&
-      (!nextActive || !nextRoleIds.includes(SYSTEM_ADMIN_ROLE_ID))
-    ) {
-      const otherActiveAdmins = await this.countOtherActiveAdmins(current.id);
-      if (otherActiveAdmins === 0) {
-        throw new HttpError(409, "At least one active admin user is required");
-      }
-    }
-  }
-
-  private async persistUser(
-    nextUser: StoredUserRecord,
-    previousUser?: StoredUserRecord,
-    db: PostgresQueryable = this.pool
-  ): Promise<void> {
-    await db.query(
-      `
-        INSERT INTO users (
-          id,
-          name,
-          email,
-          git_author_name,
-          git_author_email,
-          active,
-          agent_response_preference,
-          password_hash,
-          password_salt,
-          last_login_at,
-          created_at,
-          updated_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
-        ON CONFLICT (id) DO UPDATE
-        SET
-          name = EXCLUDED.name,
-          email = EXCLUDED.email,
-          git_author_name = EXCLUDED.git_author_name,
-          git_author_email = EXCLUDED.git_author_email,
-          active = EXCLUDED.active,
-          agent_response_preference = EXCLUDED.agent_response_preference,
-          password_hash = EXCLUDED.password_hash,
-          password_salt = EXCLUDED.password_salt,
-          last_login_at = EXCLUDED.last_login_at,
-          created_at = EXCLUDED.created_at,
-          updated_at = EXCLUDED.updated_at
-      `,
-      [
-        nextUser.id,
-        nextUser.name,
-        nextUser.email,
-        nextUser.gitAuthorName,
-        nextUser.gitAuthorEmail,
-        nextUser.active,
-        JSON.stringify(nextUser.agentResponsePreference),
-        nextUser.passwordHash,
-        nextUser.passwordSalt,
-        nextUser.lastLoginAt,
-        nextUser.createdAt,
-        nextUser.updatedAt
-      ]
-    );
-    await db.query("DELETE FROM user_roles WHERE user_id = $1", [nextUser.id]);
-    await db.query("DELETE FROM user_repositories WHERE user_id = $1", [nextUser.id]);
-    if (nextUser.roleIds.length > 0) {
-      await db.query(
-        `
-          INSERT INTO user_roles (user_id, role_id)
-          SELECT $1, role_id
-          FROM unnest($2::text[]) AS role_id
-          ON CONFLICT DO NOTHING
-        `,
-        [nextUser.id, nextUser.roleIds]
-      );
-    }
-    if (nextUser.repositoryIds.length > 0) {
-      await db.query(
-        `
-          INSERT INTO user_repositories (user_id, repository_id)
-          SELECT $1, repository_id
-          FROM unnest($2::text[]) AS repository_id
-          ON CONFLICT DO NOTHING
-        `,
-        [nextUser.id, nextUser.repositoryIds]
-      );
-    }
-  }
-
-  private async setBootstrapAdminRoleIfMissing(user: StoredUserRecord): Promise<StoredUserRecord> {
-    if (user.roleIds.includes(SYSTEM_ADMIN_ROLE_ID)) {
-      return user;
-    }
-
-    const next: StoredUserRecord = {
-      ...user,
-      roleIds: [...user.roleIds, SYSTEM_ADMIN_ROLE_ID],
-      updatedAt: nowIso()
-    };
-    await withPostgresTransaction(this.pool, async (client) => {
-      await this.persistUser(next, user, client);
-    });
-    return next;
-  }
-
-  async ensureDefaultAdminUser(input: BootstrapAdminInput): Promise<User> {
-    const markerResult = await this.pool.query<{ value: string }>(
-      "SELECT value FROM app_metadata WHERE key = $1",
-      [BOOTSTRAP_ADMIN_MARKER_KEY]
-    );
-    const markerUserId = markerResult.rows[0]?.value ?? null;
-    if (markerUserId) {
-      const markedUser = await this.getStoredUser(markerUserId);
-      if (markedUser) {
-        const repairedUser = await this.setBootstrapAdminRoleIfMissing(markedUser);
-        return this.sanitizeUser(repairedUser);
-      }
-    }
-
-    const normalizedEmail = normalizeUserEmail(input.email);
-    const existingUserResult = await this.pool.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [normalizedEmail]);
-    const existingUserId = existingUserResult.rows[0]?.id ?? null;
-    if (existingUserId) {
-      const existingUser = await this.getStoredUser(existingUserId);
-      if (existingUser) {
-        const repairedUser = await this.setBootstrapAdminRoleIfMissing(existingUser);
-        await this.pool.query(
-          `
-            INSERT INTO app_metadata (key, value, updated_at)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (key) DO UPDATE
-            SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
-          `,
-          [BOOTSTRAP_ADMIN_MARKER_KEY, repairedUser.id, nowIso()]
-        );
-        return this.sanitizeUser(repairedUser);
-      }
-    }
-
-    const createdUser = await this.createUser({
-      name: input.name,
-      email: input.email,
-      password: input.password,
-      active: true,
-      roleIds: [SYSTEM_ADMIN_ROLE_ID]
-    });
-    await this.pool.query(
-      `
-        INSERT INTO app_metadata (key, value, updated_at)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (key) DO UPDATE
-        SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
-      `,
-      [BOOTSTRAP_ADMIN_MARKER_KEY, createdUser.id, nowIso()]
-    );
-    return createdUser;
-  }
-
-  async listUsers(): Promise<User[]> {
-    const result = await this.pool.query<{ id: string }>("SELECT id FROM users ORDER BY name ASC, email ASC");
-    const users = await this.getStoredUsers(result.rows.map((row) => row.id));
-    const sanitizedUsers = await Promise.all(users.map((user) => this.sanitizeUser(user)));
-    return sanitizedUsers.sort((left, right) => {
-      const nameCompare = left.name.localeCompare(right.name);
-      if (nameCompare !== 0) {
-        return nameCompare;
-      }
-
-      return left.email.localeCompare(right.email);
-    });
-  }
-
-  async getUser(userId: string): Promise<User | null> {
-    const user = await this.getStoredUser(userId);
-    if (!user) {
-      return null;
-    }
-
-    return this.sanitizeUser(user);
-  }
-
-  async getAuthSessionUser(userId: string): Promise<AuthSessionUser | null> {
-    const user = await this.getStoredUser(userId);
-    if (!user || !user.active) {
-      return null;
-    }
-
-    const roles = await this.roleStore.getRolesByIds(user.roleIds);
-    const scopes = sortScopes(roles.flatMap((role) => role.scopes));
-    const allowedProviders = mergeRoleAllowlist<AgentProvider>(roles, (role) => role.allowedProviders);
-    const allowedModels = mergeRoleAllowlist<string>(roles, (role) => role.allowedModels);
-    const allowedEfforts = mergeRoleAllowlist<ProviderProfile>(roles, (role) => role.allowedEfforts);
-    return {
-      ...(await this.sanitizeUser(user)),
-      scopes,
-      allowedProviders,
-      allowedModels,
-      allowedEfforts,
-      agentResponsePreference: user.agentResponsePreference
-    };
-  }
-
-  async authenticate(email: string, password: string): Promise<User | null> {
-    const normalizedEmail = normalizeUserEmail(email);
-    if (!normalizedEmail || !password) {
-      return null;
-    }
-
-    const result = await this.pool.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [normalizedEmail]);
-    const userId = result.rows[0]?.id ?? null;
-    if (!userId) {
-      return null;
-    }
-
-    const user = await this.getStoredUser(userId);
-    if (!user || !user.active) {
-      return null;
-    }
-
-    const validPassword = await verifyPassword(password, user.passwordSalt, user.passwordHash);
-    if (!validPassword) {
-      return null;
-    }
-
-    const next: StoredUserRecord = {
-      ...user,
-      lastLoginAt: nowIso(),
-      updatedAt: nowIso()
-    };
-    await withPostgresTransaction(this.pool, async (client) => {
-      await this.persistUser(next, user, client);
-    });
-    return this.sanitizeUser(next);
-  }
-
-  async createUser(input: CreateUserInput): Promise<User> {
-    const name = normalizeUserName(input.name);
-    const email = normalizeUserEmail(input.email);
-    const gitAuthorName = normalizeOptionalGitAuthorName(input.gitAuthorName);
-    const gitAuthorEmail = normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
-    const password = input.password.trim();
-
-    if (!name) {
-      throw new HttpError(400, "User name is required");
-    }
-
-    if (!email) {
-      throw new HttpError(400, "User email is required");
-    }
-
-    if (!password) {
-      throw new HttpError(400, "Password is required");
-    }
-
-    const existingUserResult = await this.pool.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [email]);
-    if (existingUserResult.rowCount) {
-      throw new HttpError(409, "A user with that email already exists");
-    }
-
-    const [roleIds, repositoryIds] = await Promise.all([
-      this.normalizeRoleIds(input.roleIds),
-      this.normalizeRepositoryIds(input.repositoryIds)
-    ]);
-    const timestamp = nowIso();
-    const passwordState = await hashPassword(password);
-    const user: StoredUserRecord = {
-      id: nanoid(),
-      name,
-      email,
-      gitAuthorName,
-      gitAuthorEmail,
-      active: input.active !== false,
-      agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
-      roleIds,
-      repositoryIds,
-      passwordHash: passwordState.passwordHash,
-      passwordSalt: passwordState.passwordSalt,
-      lastLoginAt: null,
-      createdAt: timestamp,
-      updatedAt: timestamp
-    };
-
-    await withPostgresTransaction(this.pool, async (client) => {
-      await this.persistUser(user, undefined, client);
-    });
-    return this.sanitizeUser(user);
-  }
-
-  async updateUser(userId: string, input: UpdateUserInput): Promise<User | null> {
-    const current = await this.getStoredUser(userId);
-    if (!current) {
-      return null;
-    }
-
-    const nextName = input.name === undefined ? current.name : normalizeUserName(input.name);
-    const nextEmail = input.email === undefined ? current.email : normalizeUserEmail(input.email);
-    const nextGitAuthorName =
-      input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName);
-    const nextGitAuthorEmail =
-      input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
-    if (!nextName) {
-      throw new HttpError(400, "User name is required");
-    }
-
-    if (!nextEmail) {
-      throw new HttpError(400, "User email is required");
-    }
-
-    if (nextEmail !== current.email) {
-      const existingUserResult = await this.pool.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [nextEmail]);
-      const existingUserId = existingUserResult.rows[0]?.id ?? null;
-      if (existingUserId && existingUserId !== userId) {
-        throw new HttpError(409, "A user with that email already exists");
-      }
-    }
-
-    const [nextRoleIds, nextRepositoryIds] = await Promise.all([
-      input.roleIds === undefined ? Promise.resolve(current.roleIds) : this.normalizeRoleIds(input.roleIds),
-      input.repositoryIds === undefined ? Promise.resolve(current.repositoryIds) : this.normalizeRepositoryIds(input.repositoryIds)
-    ]);
-    const nextActive = input.active ?? current.active;
-    await this.assertAdminUserStillExists(current, nextRoleIds, nextActive);
-
-    let passwordHash = current.passwordHash;
-    let passwordSalt = current.passwordSalt;
-    if (input.password !== undefined) {
-      const nextPassword = input.password.trim();
-      if (!nextPassword) {
-        throw new HttpError(400, "Password is required");
-      }
-
-      const passwordState = await hashPassword(nextPassword);
-      passwordHash = passwordState.passwordHash;
-      passwordSalt = passwordState.passwordSalt;
-    }
-
-    const next: StoredUserRecord = {
-      ...current,
-      name: nextName,
-      email: nextEmail,
-      gitAuthorName: nextGitAuthorName,
-      gitAuthorEmail: nextGitAuthorEmail,
-      active: nextActive,
-      agentResponsePreference:
-        input.agentResponsePreference === undefined
-          ? current.agentResponsePreference
-          : normalizeAgentResponsePreference(input.agentResponsePreference, current.agentResponsePreference),
-      roleIds: nextRoleIds,
-      repositoryIds: nextRepositoryIds,
-      passwordHash,
-      passwordSalt,
-      updatedAt: nowIso()
-    };
-
-    await withPostgresTransaction(this.pool, async (client) => {
-      await this.persistUser(next, current, client);
-    });
-    return this.sanitizeUser(next);
-  }
-
-  async deleteUser(userId: string): Promise<boolean> {
-    const current = await this.getStoredUser(userId);
-    if (!current) {
-      return false;
-    }
-
-    if (current.active && current.roleIds.includes(SYSTEM_ADMIN_ROLE_ID)) {
-      const otherActiveAdmins = await this.countOtherActiveAdmins(current.id);
-      if (otherActiveAdmins === 0) {
-        throw new HttpError(409, "At least one active admin user is required");
-      }
-    }
-
-    await this.pool.query("DELETE FROM users WHERE id = $1", [userId]);
-    return true;
-  }
-
-  async hasUsersWithRole(roleId: string): Promise<boolean> {
-    const result = await this.pool.query<{ exists: boolean }>(
-      "SELECT EXISTS(SELECT 1 FROM user_roles WHERE role_id = $1) AS exists",
-      [roleId]
-    );
-    return result.rows[0]?.exists === true;
-  }
-
-  async listUserIdsByRoleId(roleId: string): Promise<string[]> {
-    const result = await this.pool.query<{ user_id: string }>(
-      "SELECT user_id FROM user_roles WHERE role_id = $1 ORDER BY user_id ASC",
-      [roleId]
-    );
-    return result.rows.map((row) => row.user_id);
-  }
-}
-````
-
 ## File: apps/server/src/services/webhook-delivery-service.ts
 ````typescript
 import { createHmac } from "node:crypto";
@@ -6923,83 +5305,6 @@ import { SnippetsPage } from "../../components/snippets-page";
 
 export default function SnippetsRoute() {
   return <SnippetsPage />;
-}
-````
-
-## File: apps/web/app/tasks/[id]/interactive/page.tsx
-````typescript
-"use client";
-
-import Link from "next/link";
-import { useParams, useSearchParams } from "next/navigation";
-import {
-  getAgentProviderLabel,
-  getDefaultModelForProvider,
-  getProviderProfileLabel,
-  getTaskTerminalSessionLabel,
-  type TaskTerminalSessionMode
-} from "@agentswarm/shared-types";
-import { Flex, Typography, theme as antTheme } from "antd";
-import { TaskInteractiveTerminalView } from "../../../../components/task-interactive-terminal-view";
-import { useTask } from "../../../../src/hooks/useTask";
-
-export default function TaskInteractiveRoutePage() {
-  const params = useParams();
-  const searchParams = useSearchParams();
-  const taskId = typeof params.id === "string" ? params.id : "";
-  const mode: TaskTerminalSessionMode = searchParams.get("mode") === "git" ? "git" : "interactive";
-  const { token } = antTheme.useToken();
-  const { task } = useTask(taskId);
-
-  if (!taskId) {
-    return null;
-  }
-
-  const providerLabel = task ? getAgentProviderLabel(task.provider) : "Interactive Terminal";
-  const modelLabel = task ? task.modelOverride ?? getDefaultModelForProvider(task.provider) : null;
-  const effortLabel = task ? getProviderProfileLabel(task.providerProfile) : null;
-  const terminalLabel = getTaskTerminalSessionLabel(mode);
-
-  return (
-    <Flex vertical style={{ height: "100%", minHeight: 0, overflow: "hidden" }}>
-      <Flex
-        align="center"
-        justify="space-between"
-        style={{
-          flexShrink: 0,
-          padding: "8px 12px",
-          borderBottom: `1px solid ${token.colorBorderSecondary}`,
-          background: token.colorBgContainer,
-          gap: 12
-        }}
-      >
-        <Flex vertical gap={0} style={{ minWidth: 0 }}>
-          <Typography.Text strong style={{ color: token.colorText }}>
-            {mode === "git"
-              ? task
-                ? `Terminal · ${task.branchName ?? task.repoDefaultBranch} in task workspace`
-                : terminalLabel
-              : task
-                ? `Interactive · ${providerLabel} in task workspace`
-                : terminalLabel}
-          </Typography.Text>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {mode === "interactive" && task && modelLabel && effortLabel
-              ? `Model: ${modelLabel} · Effort: ${effortLabel} · Terminal font: Ctrl/⌘ + +/− (numpad works); Ctrl/⌘ + 0 resets.`
-              : mode === "git"
-                ? "Workspace shell for manual git commands. Terminal font: Ctrl/⌘ + +/− (numpad works); Ctrl/⌘ + 0 resets."
-                : "Terminal font: Ctrl/⌘ + +/− (numpad works); Ctrl/⌘ + 0 resets."}
-          </Typography.Text>
-        </Flex>
-        <Link href={`/tasks/${taskId}`} style={{ color: token.colorLink, flexShrink: 0 }}>
-          ← Back to task
-        </Link>
-      </Flex>
-      <div style={{ flex: 1, minHeight: 0, padding: 8, background: "#1e1e1e" }}>
-        <TaskInteractiveTerminalView taskId={taskId} mode={mode} />
-      </div>
-    </Flex>
-  );
 }
 ````
 
@@ -9429,456 +7734,6 @@ export function useThemeMode(): ThemeModeContextValue {
   }
 
   return context;
-}
-````
-
-## File: apps/web/components/users-page.tsx
-````typescript
-"use client";
-
-import { useEffect, useState } from "react";
-import type {
-  AgentClarifyBehavior,
-  AgentCodePreference,
-  AgentExplanationDepth,
-  AgentFormattingStyle,
-  AgentJargonLevel,
-  AudienceType,
-  Repository,
-  ResponsePreferencePreset,
-  Role,
-  User
-} from "@agentswarm/shared-types";
-import {
-  App,
-  Button,
-  Card,
-  Divider,
-  Flex,
-  Form,
-  Input,
-  Modal,
-  Popconfirm,
-  Select,
-  Space,
-  Switch,
-  Table,
-  Tag,
-  Tooltip,
-  Typography
-} from "antd";
-import dayjs from "dayjs";
-import { api } from "../src/api/client";
-import { useAuth } from "./auth-provider";
-import { ResponsePolicyFields } from "./response-policy-fields";
-
-interface UserFormValues {
-  name: string;
-  email: string;
-  gitAuthorName?: string;
-  gitAuthorEmail?: string;
-  password?: string;
-  active: boolean;
-  audience?: AudienceType;
-  explanationDepth?: AgentExplanationDepth;
-  jargonLevel?: AgentJargonLevel;
-  codePreference?: AgentCodePreference;
-  clarifyBehavior?: AgentClarifyBehavior;
-  formattingStyle?: AgentFormattingStyle;
-  extraInstructions?: string;
-  responsePreferencePresetId?: string;
-  roleIds: string[];
-  repositoryIds: string[];
-}
-
-const SYSTEM_ADMIN_ROLE_ID = "admin";
-
-export function UsersPage() {
-  const { message } = App.useApp();
-  const { can, session } = useAuth();
-  const [form] = Form.useForm<UserFormValues>();
-  const [users, setUsers] = useState<User[]>([]);
-  const [roles, setRoles] = useState<Role[]>([]);
-  const [repositories, setRepositories] = useState<Repository[]>([]);
-  const [responsePreferencePresets, setResponsePreferencePresets] = useState<ResponsePreferencePreset[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editingUser, setEditingUser] = useState<User | null>(null);
-
-  const canCreateUsers = can("user:create");
-  const canEditUsers = can("user:edit");
-  const canDeleteUsers = can("user:delete");
-  const canReadRoles = can("settings:read");
-  const canReadSettings = can("settings:read");
-  const canEditRoles = can("settings:edit");
-  const canReadRepositories = can("repo:list");
-  const formatLabel = (value: string): string => value.replace(/_/g, " ");
-
-  const loadUsers = async () => {
-    setLoading(true);
-    try {
-      const [nextUsers, nextRoles, nextRepositories, nextSettings] = await Promise.all([
-        api.listUsers(),
-        canReadRoles ? api.listRoles().catch(() => []) : Promise.resolve([]),
-        canEditRoles && canReadRepositories ? api.listRepositories().catch(() => []) : Promise.resolve([]),
-        canReadSettings ? api.getSettings().catch(() => null) : Promise.resolve(null)
-      ]);
-      setUsers(nextUsers);
-      setRoles(nextRoles);
-      setRepositories(nextRepositories);
-      setResponsePreferencePresets(nextSettings?.responsePreferencePresets ?? []);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void loadUsers();
-  }, [canEditRoles, canReadRepositories, canReadRoles, canReadSettings]);
-
-  const openCreateModal = () => {
-    setEditingUser(null);
-    form.setFieldsValue({
-      name: "",
-      email: "",
-      gitAuthorName: "",
-      gitAuthorEmail: "",
-      password: "",
-      active: true,
-      audience: undefined,
-      explanationDepth: undefined,
-      jargonLevel: undefined,
-      codePreference: undefined,
-      clarifyBehavior: undefined,
-      formattingStyle: undefined,
-      extraInstructions: "",
-      responsePreferencePresetId: undefined,
-      roleIds: [],
-      repositoryIds: []
-    });
-    setModalOpen(true);
-  };
-
-  const openEditModal = (user: User) => {
-    setEditingUser(user);
-    form.setFieldsValue({
-      name: user.name,
-      email: user.email,
-      gitAuthorName: user.gitAuthorName ?? "",
-      gitAuthorEmail: user.gitAuthorEmail ?? "",
-      password: "",
-      active: user.active,
-      audience: user.agentResponsePreference.audience,
-      explanationDepth: user.agentResponsePreference.explanationDepth,
-      jargonLevel: user.agentResponsePreference.jargonLevel,
-      codePreference: user.agentResponsePreference.codePreference,
-      clarifyBehavior: user.agentResponsePreference.clarifyBehavior,
-      formattingStyle: user.agentResponsePreference.formattingStyle,
-      extraInstructions: user.agentResponsePreference.extraInstructions ?? "",
-      responsePreferencePresetId:
-        responsePreferencePresets.find(
-          (preset) =>
-            preset.preference.audience === user.agentResponsePreference.audience &&
-            preset.preference.explanationDepth === user.agentResponsePreference.explanationDepth &&
-            preset.preference.jargonLevel === user.agentResponsePreference.jargonLevel &&
-            preset.preference.codePreference === user.agentResponsePreference.codePreference &&
-            preset.preference.clarifyBehavior === user.agentResponsePreference.clarifyBehavior &&
-            preset.preference.formattingStyle === user.agentResponsePreference.formattingStyle &&
-            (preset.preference.extraInstructions ?? "") === (user.agentResponsePreference.extraInstructions ?? "")
-        )?.id,
-      roleIds: user.roles.map((role) => role.id),
-      repositoryIds: user.repositoryIds ?? []
-    });
-    setModalOpen(true);
-  };
-
-  const currentUserId = session?.user.id ?? null;
-  const selectedRoleIds = Form.useWatch("roleIds", form) ?? [];
-  const adminRoleSelected = selectedRoleIds.includes(SYSTEM_ADMIN_ROLE_ID);
-
-  return (
-    <>
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
-        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-          <Flex vertical gap={0}>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              Users
-            </Typography.Title>
-            <Typography.Text type="secondary">
-              Manage application access, activation state, and role assignments.
-            </Typography.Text>
-          </Flex>
-          {canCreateUsers ? (
-            <Button type="primary" onClick={openCreateModal}>
-              Add User
-            </Button>
-          ) : null}
-        </Flex>
-
-        <Card bordered={false}>
-          <Table<User>
-            rowKey="id"
-            loading={loading}
-            dataSource={users}
-            pagination={{ pageSize: 10 }}
-            columns={[
-              { title: "Name", dataIndex: "name" },
-              { title: "Email", dataIndex: "email" },
-              {
-                title: "Status",
-                dataIndex: "active",
-                render: (active: boolean) => <Tag color={active ? "green" : "default"}>{active ? "Active" : "Disabled"}</Tag>
-              },
-              {
-                title: "Roles",
-                render: (_, user) => {
-                  const roleNameById = new Map(roles.map((role) => [role.id, role.name]));
-                  if (user.roles.length === 0) {
-                    return <Typography.Text type="secondary">No roles</Typography.Text>;
-                  }
-
-                  return (
-                    <Space size={[4, 4]} wrap>
-                      {user.roles.map((role) => (
-                        <Tag key={role.id}>{roleNameById.get(role.id) ?? role.name}</Tag>
-                      ))}
-                    </Space>
-                  );
-                }
-              },
-              {
-                title: "Response Style",
-                render: (_, user) => {
-                  if (!user.agentResponsePreference.audience) {
-                    return <Typography.Text type="secondary">Neutral</Typography.Text>;
-                  }
-
-                  return <Tag>{formatLabel(user.agentResponsePreference.audience)}</Tag>;
-                }
-              },
-              {
-                title: "Last Login",
-                dataIndex: "lastLoginAt",
-                render: (value: string | null) =>
-                  value ? dayjs(value).format("YYYY-MM-DD HH:mm") : <Typography.Text type="secondary">Never</Typography.Text>
-              },
-              {
-                title: "Actions",
-                render: (_, user) => {
-                  const isSelf = user.id === currentUserId;
-                  return (
-                    <Space>
-                      {canEditUsers ? (
-                        <Button onClick={() => openEditModal(user)}>Edit</Button>
-                      ) : null}
-                      {canDeleteUsers ? (
-                        <Tooltip title={isSelf ? "You cannot delete your own account" : undefined}>
-                          <Popconfirm
-                            title="Delete user?"
-                            description={`Delete ${user.email}?`}
-                            disabled={isSelf}
-                            onConfirm={async () => {
-                              try {
-                                await api.deleteUser(user.id);
-                                message.success("User deleted");
-                                await loadUsers();
-                              } catch (error) {
-                                message.error(error instanceof Error ? error.message : "Failed to delete user");
-                              }
-                            }}
-                          >
-                            <Button danger disabled={isSelf}>
-                              Delete
-                            </Button>
-                          </Popconfirm>
-                        </Tooltip>
-                      ) : null}
-                    </Space>
-                  );
-                }
-              }
-            ]}
-          />
-        </Card>
-      </Space>
-
-      <Modal
-        open={modalOpen}
-        title={editingUser ? "Edit User" : "Add User"}
-        footer={null}
-        onCancel={() => setModalOpen(false)}
-        destroyOnHidden
-      >
-        <Form
-          form={form}
-          layout="vertical"
-          onFinish={async (values) => {
-            setSubmitting(true);
-            try {
-              if (editingUser) {
-                await api.updateUser(editingUser.id, {
-                  name: values.name,
-                  email: values.email,
-                  gitAuthorName: values.gitAuthorName?.trim() || null,
-                  gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
-                  password: values.password?.trim() || undefined,
-                  active: values.active,
-                  agentResponsePreference: {
-                    audience: values.audience,
-                    explanationDepth: values.explanationDepth,
-                    jargonLevel: values.jargonLevel,
-                    codePreference: values.codePreference,
-                    clarifyBehavior: values.clarifyBehavior,
-                    formattingStyle: values.formattingStyle,
-                    extraInstructions: values.extraInstructions?.trim() || undefined
-                  },
-                  roleIds: canEditRoles ? values.roleIds : undefined,
-                  repositoryIds: canEditRoles ? values.repositoryIds : undefined
-                });
-                message.success("User updated");
-              } else {
-                await api.createUser({
-                  name: values.name,
-                  email: values.email,
-                  gitAuthorName: values.gitAuthorName?.trim() || null,
-                  gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
-                  password: values.password?.trim() || "",
-                  active: values.active,
-                  agentResponsePreference: {
-                    audience: values.audience,
-                    explanationDepth: values.explanationDepth,
-                    jargonLevel: values.jargonLevel,
-                    codePreference: values.codePreference,
-                    clarifyBehavior: values.clarifyBehavior,
-                    formattingStyle: values.formattingStyle,
-                    extraInstructions: values.extraInstructions?.trim() || undefined
-                  },
-                  roleIds: canEditRoles ? values.roleIds : undefined,
-                  repositoryIds: canEditRoles ? values.repositoryIds : undefined
-                });
-                message.success("User created");
-              }
-
-              setModalOpen(false);
-              await loadUsers();
-            } catch (error) {
-              message.error(error instanceof Error ? error.message : "Failed to save user");
-            } finally {
-              setSubmitting(false);
-            }
-          }}
-        >
-          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a user name" }]}>
-            <Input />
-          </Form.Item>
-          <Form.Item name="email" label="Email" rules={[{ required: true, message: "Enter an email address" }]}>
-            <Input />
-          </Form.Item>
-          <Divider orientation="left" plain>
-            Git Commit Identity
-          </Divider>
-          <Form.Item
-            name="gitAuthorName"
-            label="Git Author Name"
-            extra="Leave blank to use the user's profile name."
-          >
-            <Input placeholder="Profile name" />
-          </Form.Item>
-          <Form.Item
-            name="gitAuthorEmail"
-            label="Git Author Email"
-            rules={[{ type: "email", message: "Enter a valid email address" }]}
-            extra="Leave blank to use the user's profile email."
-          >
-            <Input placeholder="Profile email" />
-          </Form.Item>
-          <Form.Item
-            name="password"
-            label={editingUser ? "Password" : "Password"}
-            rules={editingUser ? [] : [{ required: true, message: "Enter a password" }]}
-            extra={editingUser ? "Leave blank to keep the current password." : undefined}
-          >
-            <Input.Password />
-          </Form.Item>
-          <Form.Item
-            name="active"
-            label="Active"
-            valuePropName="checked"
-            extra={editingUser?.id === currentUserId ? "Your own account cannot be disabled." : undefined}
-          >
-            <Switch disabled={editingUser?.id === currentUserId} />
-          </Form.Item>
-          <Form.Item
-            name="responsePreferencePresetId"
-            label="Response Preference Preset"
-            extra="Optional shortcut for applying a saved response preference."
-          >
-            <Select
-              allowClear
-              placeholder="Select a preset"
-              options={responsePreferencePresets.map((preset) => ({
-                label: preset.name,
-                value: preset.id
-              }))}
-              onChange={(value) => {
-                const preset = responsePreferencePresets.find((entry) => entry.id === value);
-                if (!preset) {
-                  return;
-                }
-                form.setFieldsValue({
-                  audience: preset.preference.audience,
-                  explanationDepth: preset.preference.explanationDepth,
-                  jargonLevel: preset.preference.jargonLevel,
-                  codePreference: preset.preference.codePreference,
-                  clarifyBehavior: preset.preference.clarifyBehavior,
-                  formattingStyle: preset.preference.formattingStyle,
-                  extraInstructions: preset.preference.extraInstructions ?? ""
-                });
-              }}
-            />
-          </Form.Item>
-          <Divider orientation="left" plain>
-            Response Format Preferences
-          </Divider>
-          <Card size="small">
-            <ResponsePolicyFields onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)} />
-          </Card>
-          {canEditRoles ? (
-            <Form.Item name="roleIds" label="Roles">
-              <Select
-                mode="multiple"
-                options={roles.map((role) => ({
-                  label: role.name,
-                  value: role.id
-                }))}
-              />
-            </Form.Item>
-          ) : null}
-          {canEditRoles ? (
-            <Form.Item
-              name="repositoryIds"
-              label="Repositories"
-              extra={adminRoleSelected ? "All repositories (via Admin role)." : "Choose repositories this user can access."}
-            >
-              <Select
-                mode="multiple"
-                disabled={adminRoleSelected}
-                placeholder={adminRoleSelected ? "All repositories (via Admin role)" : "Select repositories"}
-                options={repositories.map((repository) => ({
-                  label: repository.name,
-                  value: repository.id
-                }))}
-              />
-            </Form.Item>
-          ) : null}
-          <Button type="primary" htmlType="submit" loading={submitting} block>
-            {editingUser ? "Save Changes" : "Create User"}
-          </Button>
-        </Form>
-      </Modal>
-    </>
-  );
 }
 ````
 
@@ -16365,6 +14220,127 @@ export const requireTaskExecutionConfigAccess = (
 };
 ````
 
+## File: apps/server/src/lib/task-git-identity.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { resolveTaskGitCommitIdentity } from "./task-git-identity.js";
+
+const fallback = { name: "AgentSwarm Bot", email: "agentswarm@local.dev" };
+
+describe("resolveTaskGitCommitIdentity", () => {
+  it("uses the task owner's name and email when available", async () => {
+    const identity = await resolveTaskGitCommitIdentity(
+      { ownerUserId: "user-1" },
+      {
+        getUser: async (userId) =>
+          userId === "user-1"
+            ? { name: "Ada Lovelace", email: "ada@example.com", gitAuthorName: null, gitAuthorEmail: null }
+            : null
+      },
+      fallback
+    );
+
+    assert.deepEqual(identity, { name: "Ada Lovelace", email: "ada@example.com" });
+  });
+
+  it("prefers the task owner's configured git author identity", async () => {
+    const identity = await resolveTaskGitCommitIdentity(
+      { ownerUserId: "user-1" },
+      {
+        getUser: async (userId) =>
+          userId === "user-1"
+            ? {
+                name: "Ada Lovelace",
+                email: "ada@example.com",
+                gitAuthorName: "Countess Lovelace",
+                gitAuthorEmail: "commits@example.dev"
+              }
+            : null
+      },
+      fallback
+    );
+
+    assert.deepEqual(identity, { name: "Countess Lovelace", email: "commits@example.dev" });
+  });
+
+  it("falls back when the task has no owner", async () => {
+    const identity = await resolveTaskGitCommitIdentity(
+      { ownerUserId: null },
+      { getUser: async () => ({ name: "Ignored", email: "ignored@example.com", gitAuthorName: null, gitAuthorEmail: null }) },
+      fallback
+    );
+
+    assert.deepEqual(identity, fallback);
+  });
+
+  it("falls back when the owner record no longer exists", async () => {
+    const identity = await resolveTaskGitCommitIdentity(
+      { ownerUserId: "missing-user" },
+      { getUser: async () => null },
+      fallback
+    );
+
+    assert.deepEqual(identity, fallback);
+  });
+});
+````
+
+## File: apps/server/src/lib/task-git-identity.ts
+````typescript
+import type { Task, User } from "@agentswarm/shared-types";
+
+export interface GitCommitIdentity {
+  name: string;
+  email: string;
+}
+
+type UserLookup = {
+  getUser(userId: string): Promise<Pick<User, "name" | "email" | "gitAuthorName" | "gitAuthorEmail"> | null>;
+};
+
+export async function resolveTaskGitCommitIdentity(
+  task: Pick<Task, "ownerUserId">,
+  userLookup: UserLookup,
+  fallback: GitCommitIdentity
+): Promise<GitCommitIdentity> {
+  if (!task.ownerUserId) {
+    return fallback;
+  }
+
+  const user = await userLookup.getUser(task.ownerUserId);
+  if (!user) {
+    return fallback;
+  }
+
+  const name = (user.gitAuthorName?.trim() || user.name.trim());
+  const email = (user.gitAuthorEmail?.trim() || user.email.trim());
+  if (!name || !email) {
+    return fallback;
+  }
+
+  return { name, email };
+}
+````
+
+## File: apps/server/src/lib/task-interactive-terminal-start-script.ts
+````typescript
+export function buildGitTerminalStartScript(): string {
+  return [
+    'cd "$TASK_INTERACTIVE_WORKSPACE"',
+    'printf "\\033[90mTerminal ready in %s. The shell is restricted to this workspace and only exposes git, nvim, vim, vi, and diff3.\\033[0m\\n" "$PWD"',
+    [
+      'if [ -n "${GIT_TOKEN:-}" ]; then',
+      "  printf '%s\\n' '#!/bin/sh' 'case \"$1\" in' '  *sername*) echo \"${GIT_USERNAME:-x-access-token}\" ;;' '  *assword*) echo \"${GIT_TOKEN:-}\" ;;' '  *) echo \"\" ;;' 'esac' > /tmp/agentswarm-git-askpass.sh",
+      "  chmod 700 /tmp/agentswarm-git-askpass.sh",
+      '  export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/tmp/agentswarm-git-askpass.sh',
+      "fi"
+    ].join("\n"),
+    "exec git-terminal-shell"
+  ].join(" && ");
+}
+````
+
 ## File: apps/server/src/lib/task-mutation-guards.test.ts
 ````typescript
 import assert from "node:assert/strict";
@@ -16470,6 +14446,143 @@ export async function getMutationBlockedReason(taskStore: TaskStore, taskId: str
 }
 ````
 
+## File: apps/server/src/routes/auth.ts
+````typescript
+import { z } from "zod";
+import type { FastifyInstance } from "fastify";
+import type { AuthService } from "../lib/auth.js";
+import type { CredentialStore } from "../services/credential-store.js";
+import type { SessionStore } from "../services/session-store.js";
+import type { UserStore } from "../services/user-store.js";
+
+const loginSchema = z.object({
+  email: z.string().trim().email(),
+  password: z.string().min(1)
+});
+
+const responsePreferenceSchema = z
+  .object({
+    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
+    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
+    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
+    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
+    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
+    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
+    extraInstructions: z.string().trim().max(2000).optional()
+  });
+
+const updateProfileSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  gitAuthorName: z.string().trim().max(120).nullable().optional(),
+  gitAuthorEmail: z.string().trim().email().nullable().optional(),
+  codexAuthJson: z.string().min(1).optional(),
+  clearCodexAuthJson: z.boolean().optional(),
+  agentResponsePreference: responsePreferenceSchema.optional()
+});
+
+export const registerAuthRoutes = (
+  app: FastifyInstance,
+  deps: {
+    auth: AuthService;
+    userStore: UserStore;
+    sessionStore: SessionStore;
+    credentialStore: CredentialStore;
+  }
+): void => {
+  app.post("/auth/login", async (request, reply) => {
+    const parsed = loginSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const user = await deps.userStore.authenticate(parsed.data.email, parsed.data.password);
+    if (!user) {
+      return reply.status(401).send({ message: "Invalid email or password" });
+    }
+
+    const session = await deps.sessionStore.createSession(user.id);
+    deps.auth.setSessionCookie(reply, session.token, session.expiresAt);
+    return reply.send(await deps.auth.buildSessionResponse(user.id, session.expiresAt));
+  });
+
+  app.post("/auth/logout", async (request, reply) => {
+    await deps.auth.clearSessionFromRequest(request);
+    deps.auth.clearSessionCookie(reply);
+    return reply.status(204).send();
+  });
+
+  app.get("/auth/session", { preHandler: deps.auth.requireAuth() }, async (request) => request.auth!.session);
+
+  app.get("/auth/profile", { preHandler: deps.auth.requireAuth() }, async (request) => {
+    const authUser = request.auth!.user;
+    return {
+      name: authUser.name,
+      email: authUser.email,
+      gitAuthorName: authUser.gitAuthorName,
+      gitAuthorEmail: authUser.gitAuthorEmail,
+      agentResponsePreference: authUser.agentResponsePreference,
+      codexAuthJsonConfigured: await deps.credentialStore.hasCodexAuthJsonForUser(authUser.id)
+    };
+  });
+
+  app.patch("/auth/profile", { preHandler: deps.auth.requireAuth() }, async (request, reply) => {
+    const parsed = updateProfileSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const userId = request.auth!.user.id;
+    if (
+      parsed.data.name !== undefined ||
+      parsed.data.gitAuthorName !== undefined ||
+      parsed.data.gitAuthorEmail !== undefined ||
+      parsed.data.agentResponsePreference !== undefined
+    ) {
+      const updated = await deps.userStore.updateUser(userId, {
+        ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+        ...(parsed.data.gitAuthorName !== undefined ? { gitAuthorName: parsed.data.gitAuthorName } : {}),
+        ...(parsed.data.gitAuthorEmail !== undefined ? { gitAuthorEmail: parsed.data.gitAuthorEmail } : {}),
+        ...(parsed.data.agentResponsePreference !== undefined ? { agentResponsePreference: parsed.data.agentResponsePreference } : {})
+      });
+      if (!updated) {
+        return reply.status(404).send({ message: "User not found" });
+      }
+    }
+
+    if (parsed.data.codexAuthJson !== undefined || parsed.data.clearCodexAuthJson) {
+      if (parsed.data.clearCodexAuthJson) {
+        await deps.credentialStore.setCodexAuthJsonForUser(userId, null);
+      } else {
+        const raw = parsed.data.codexAuthJson ?? "";
+        try {
+          const parsedJson = JSON.parse(raw) as unknown;
+          if (!parsedJson || typeof parsedJson !== "object" || Array.isArray(parsedJson)) {
+            return reply.status(400).send({ message: "Codex auth.json must be a JSON object" });
+          }
+        } catch {
+          return reply.status(400).send({ message: "Codex auth.json must be valid JSON" });
+        }
+        await deps.credentialStore.setCodexAuthJsonForUser(userId, raw);
+      }
+    }
+
+    const refreshedUser = await deps.userStore.getAuthSessionUser(userId);
+    if (!refreshedUser) {
+      return reply.status(404).send({ message: "User not found" });
+    }
+
+    return reply.send({
+      name: refreshedUser.name,
+      email: refreshedUser.email,
+      gitAuthorName: refreshedUser.gitAuthorName,
+      gitAuthorEmail: refreshedUser.gitAuthorEmail,
+      agentResponsePreference: refreshedUser.agentResponsePreference,
+      codexAuthJsonConfigured: await deps.credentialStore.hasCodexAuthJsonForUser(userId)
+    });
+  });
+};
+````
+
 ## File: apps/server/src/routes/snippets.ts
 ````typescript
 import type { FastifyInstance } from "fastify";
@@ -16568,6 +14681,181 @@ export const registerSnippetRoutes = (
 
     return reply.status(204).send();
   });
+};
+````
+
+## File: apps/server/src/routes/users.ts
+````typescript
+import { z } from "zod";
+import type { FastifyInstance } from "fastify";
+import type { AuthService } from "../lib/auth.js";
+import { sendHttpError } from "../lib/http-error.js";
+import type { RoleStore } from "../services/role-store.js";
+import type { SessionStore } from "../services/session-store.js";
+import type { UserStore } from "../services/user-store.js";
+
+const responsePreferenceSchema = z
+  .object({
+    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
+    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
+    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
+    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
+    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
+    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
+    extraInstructions: z.string().trim().max(2000).optional()
+  });
+
+const createUserSchema = z.object({
+  name: z.string().trim().min(1),
+  email: z.string().trim().email(),
+  gitAuthorName: z.string().trim().max(120).nullable().optional(),
+  gitAuthorEmail: z.string().trim().email().nullable().optional(),
+  password: z.string().min(1),
+  active: z.boolean().optional(),
+  roleIds: z.array(z.string().trim().min(1)).optional(),
+  repositoryIds: z.array(z.string().trim().min(1)).optional(),
+  agentResponsePreference: responsePreferenceSchema.optional()
+});
+
+const updateUserSchema = z.object({
+  name: z.string().trim().min(1).optional(),
+  email: z.string().trim().email().optional(),
+  gitAuthorName: z.string().trim().max(120).nullable().optional(),
+  gitAuthorEmail: z.string().trim().email().nullable().optional(),
+  password: z.string().min(1).optional(),
+  active: z.boolean().optional(),
+  roleIds: z.array(z.string().trim().min(1)).optional(),
+  repositoryIds: z.array(z.string().trim().min(1)).optional(),
+  agentResponsePreference: responsePreferenceSchema.optional()
+});
+
+export const registerUserRoutes = (
+  app: FastifyInstance,
+  deps: {
+    auth: AuthService;
+    userStore: UserStore;
+    roleStore: RoleStore;
+    sessionStore: SessionStore;
+  }
+): void => {
+  app.get("/users", { preHandler: deps.auth.requireAllScopes(["user:list"]) }, async () => deps.userStore.listUsers());
+
+  app.get<{ Params: { id: string } }>(
+    "/users/:id",
+    { preHandler: deps.auth.requireAllScopes(["user:read"]) },
+    async (request, reply) => {
+      const user = await deps.userStore.getUser(request.params.id);
+      if (!user) {
+        return reply.status(404).send({ message: "User not found" });
+      }
+
+      return user;
+    }
+  );
+
+  app.post(
+    "/users",
+    { preHandler: deps.auth.requireAllScopes(["user:create"]) },
+    async (request, reply) => {
+      const parsed = createUserSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+
+      if (
+        (parsed.data.roleIds !== undefined || parsed.data.repositoryIds !== undefined) &&
+        !request.auth!.scopes.has("settings:edit")
+      ) {
+        return reply.status(403).send({ message: "Role or repository assignment requires settings:edit" });
+      }
+
+      try {
+        const user = await deps.userStore.createUser(parsed.data);
+        return reply.status(201).send(user);
+      } catch (error) {
+        const sent = sendHttpError(reply, error);
+        if (sent) {
+          return sent;
+        }
+
+        throw error;
+      }
+    }
+  );
+
+  app.patch<{ Params: { id: string } }>(
+    "/users/:id",
+    { preHandler: deps.auth.requireAllScopes(["user:edit"]) },
+    async (request, reply) => {
+      const parsed = updateUserSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+
+      if (
+        (parsed.data.roleIds !== undefined || parsed.data.repositoryIds !== undefined) &&
+        !request.auth!.scopes.has("settings:edit")
+      ) {
+        return reply.status(403).send({ message: "Role or repository assignment requires settings:edit" });
+      }
+
+      if (parsed.data.active === false && request.params.id === request.auth!.user.id) {
+        return reply.status(409).send({ message: "You cannot disable your own account" });
+      }
+
+      try {
+        const user = await deps.userStore.updateUser(request.params.id, parsed.data);
+        if (!user) {
+          return reply.status(404).send({ message: "User not found" });
+        }
+
+        if (
+          parsed.data.active === false ||
+          parsed.data.roleIds !== undefined ||
+          parsed.data.repositoryIds !== undefined ||
+          parsed.data.agentResponsePreference !== undefined
+        ) {
+          await deps.sessionStore.deleteSessionsForUser(user.id);
+        }
+
+        return reply.send(user);
+      } catch (error) {
+        const sent = sendHttpError(reply, error);
+        if (sent) {
+          return sent;
+        }
+
+        throw error;
+      }
+    }
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    "/users/:id",
+    { preHandler: deps.auth.requireAllScopes(["user:delete"]) },
+    async (request, reply) => {
+      if (request.params.id === request.auth!.user.id) {
+        return reply.status(409).send({ message: "You cannot delete your own account" });
+      }
+
+      try {
+        const deleted = await deps.userStore.deleteUser(request.params.id);
+        if (!deleted) {
+          return reply.status(404).send({ message: "User not found" });
+        }
+
+        await deps.sessionStore.deleteSessionsForUser(request.params.id);
+        return reply.status(204).send();
+      } catch (error) {
+        const sent = sendHttpError(reply, error);
+        if (sent) {
+          return sent;
+        }
+
+        throw error;
+      }
+    }
+  );
 };
 ````
 
@@ -17742,6 +16030,1191 @@ describe("SchedulerService.triggerAction", () => {
 });
 ````
 
+## File: apps/server/src/services/user-store.ts
+````typescript
+import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
+import { nanoid } from "nanoid";
+import type Redis from "ioredis";
+import type { Pool } from "pg";
+import {
+  ALL_PERMISSION_SCOPES,
+  type AgentProvider,
+  type AgentResponsePreference,
+  type AudienceType,
+  type AuthSessionUser,
+  type CreateUserInput,
+  type PermissionScope,
+  type ProviderProfile,
+  type Role,
+  type User,
+  type UserRoleRef,
+  type UpdateUserInput
+} from "@agentswarm/shared-types";
+import { HttpError } from "../lib/http-error.js";
+import { type PostgresQueryable, withPostgresTransaction } from "../lib/postgres.js";
+import type { RepositoryStore } from "./repository-store.js";
+import { SYSTEM_ADMIN_ROLE_ID, type RoleStore } from "./role-store.js";
+
+const USER_KEY_PREFIX = "agentswarm:user:";
+const USER_IDS_KEY = "agentswarm:user_ids";
+const USER_EMAIL_KEY_PREFIX = "agentswarm:user_email:";
+const BOOTSTRAP_ADMIN_MARKER_KEY = "agentswarm:bootstrap_admin_user_id";
+
+const scrypt = promisify(scryptCallback);
+const nowIso = (): string => new Date().toISOString();
+const scopeOrder = new Map(ALL_PERMISSION_SCOPES.map((scope, index) => [scope, index]));
+
+export interface BootstrapAdminInput {
+  name: string;
+  email: string;
+  password: string;
+}
+
+export interface StoredUserRecord {
+  id: string;
+  name: string;
+  email: string;
+  gitAuthorName: string | null;
+  gitAuthorEmail: string | null;
+  active: boolean;
+  agentResponsePreference: AgentResponsePreference;
+  roleIds: string[];
+  repositoryIds: string[];
+  passwordHash: string;
+  passwordSalt: string;
+  lastLoginAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const normalizeUserName = (value: string | undefined): string => (value ?? "").trim().replace(/\s+/g, " ");
+const normalizeUserEmail = (value: string | undefined): string => (value ?? "").trim().toLowerCase();
+const normalizeOptionalGitAuthorName = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim().replace(/\s+/g, " ");
+  return normalized || null;
+};
+const normalizeOptionalGitAuthorEmail = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  return normalized || null;
+};
+const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
+const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
+const RESPONSE_EXPLANATION_DEPTH = new Set(["one_line", "brief", "standard", "detailed", "deep_dive"]);
+const RESPONSE_JARGON_LEVEL = new Set(["avoid", "balanced", "expert"]);
+const RESPONSE_CODE_PREFERENCE = new Set(["only_when_needed", "prefer_examples", "avoid_code"]);
+const RESPONSE_CLARIFY_BEHAVIOR = new Set(["ask_when_ambiguous", "make_reasonable_assumptions"]);
+const RESPONSE_FORMATTING_STYLE = new Set(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]);
+
+const normalizeAgentResponsePreference = (
+  value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined,
+  fallback: AgentResponsePreference = DEFAULT_AGENT_RESPONSE_PREFERENCE
+): AgentResponsePreference => ({
+  audience:
+    (() => {
+      const nextAudience = value?.audience ?? fallback.audience;
+      if (typeof nextAudience === "string" && RESPONSE_AUDIENCES.has(nextAudience as AudienceType)) {
+        return nextAudience as AudienceType;
+      }
+      const legacyStyle = (value as { style?: string } | undefined)?.style ?? (fallback as { style?: string } | undefined)?.style;
+      if (legacyStyle === "technical" || legacyStyle === "non_technical") {
+        return legacyStyle;
+      }
+      return undefined;
+    })(),
+  explanationDepth:
+    typeof (value?.explanationDepth ?? fallback.explanationDepth) === "string" &&
+    RESPONSE_EXPLANATION_DEPTH.has((value?.explanationDepth ?? fallback.explanationDepth) as string)
+      ? (value?.explanationDepth ?? fallback.explanationDepth)
+      : undefined,
+  jargonLevel:
+    typeof (value?.jargonLevel ?? fallback.jargonLevel) === "string" &&
+    RESPONSE_JARGON_LEVEL.has((value?.jargonLevel ?? fallback.jargonLevel) as string)
+      ? (value?.jargonLevel ?? fallback.jargonLevel)
+      : undefined,
+  codePreference:
+    typeof (value?.codePreference ?? fallback.codePreference) === "string" &&
+    RESPONSE_CODE_PREFERENCE.has((value?.codePreference ?? fallback.codePreference) as string)
+      ? (value?.codePreference ?? fallback.codePreference)
+      : undefined,
+  clarifyBehavior:
+    typeof (value?.clarifyBehavior ?? fallback.clarifyBehavior) === "string" &&
+    RESPONSE_CLARIFY_BEHAVIOR.has((value?.clarifyBehavior ?? fallback.clarifyBehavior) as string)
+      ? (value?.clarifyBehavior ?? fallback.clarifyBehavior)
+      : undefined,
+  formattingStyle:
+    typeof (value?.formattingStyle ?? fallback.formattingStyle) === "string" &&
+    RESPONSE_FORMATTING_STYLE.has((value?.formattingStyle ?? fallback.formattingStyle) as string)
+      ? (value?.formattingStyle ?? fallback.formattingStyle)
+      : undefined,
+  extraInstructions: (value?.extraInstructions ?? fallback.extraInstructions)?.trim() || undefined
+});
+
+const sortScopes = (scopes: PermissionScope[]): PermissionScope[] =>
+  Array.from(new Set(scopes)).sort((left, right) => (scopeOrder.get(left) ?? 0) - (scopeOrder.get(right) ?? 0));
+
+const mergeRoleAllowlist = <T extends string>(roles: Role[], selector: (role: Role) => T[]): T[] => {
+  if (roles.every((role) => selector(role).length === 0)) {
+    return [];
+  }
+  return Array.from(new Set(roles.flatMap((role) => selector(role)))).sort((left, right) => left.localeCompare(right));
+};
+
+const hashPassword = async (
+  password: string
+): Promise<Pick<StoredUserRecord, "passwordHash" | "passwordSalt">> => {
+  const passwordSalt = randomBytes(16).toString("hex");
+  const passwordHash = (await scrypt(password, passwordSalt, 64)) as Buffer;
+  return {
+    passwordHash: passwordHash.toString("hex"),
+    passwordSalt
+  };
+};
+
+const verifyPassword = async (
+  password: string,
+  passwordSalt: string,
+  passwordHash: string
+): Promise<boolean> => {
+  const providedHash = (await scrypt(password, passwordSalt, 64)) as Buffer;
+  const storedHash = Buffer.from(passwordHash, "hex");
+  if (providedHash.byteLength !== storedHash.byteLength) {
+    return false;
+  }
+
+  return timingSafeEqual(storedHash, providedHash);
+};
+
+export interface UserStore {
+  ensureDefaultAdminUser(input: BootstrapAdminInput): Promise<User>;
+  listUsers(): Promise<User[]>;
+  getUser(userId: string): Promise<User | null>;
+  getAuthSessionUser(userId: string): Promise<AuthSessionUser | null>;
+  authenticate(email: string, password: string): Promise<User | null>;
+  createUser(input: CreateUserInput): Promise<User>;
+  updateUser(userId: string, input: UpdateUserInput): Promise<User | null>;
+  deleteUser(userId: string): Promise<boolean>;
+  hasUsersWithRole(roleId: string): Promise<boolean>;
+  listUserIdsByRoleId(roleId: string): Promise<string[]>;
+}
+
+export class RedisUserStore implements UserStore {
+  constructor(
+    private readonly redis: Redis,
+    private readonly roleStore: RoleStore,
+    private readonly repositoryStore: RepositoryStore
+  ) {}
+
+  private userKey(userId: string): string {
+    return `${USER_KEY_PREFIX}${userId}`;
+  }
+
+  private userEmailKey(email: string): string {
+    return `${USER_EMAIL_KEY_PREFIX}${normalizeUserEmail(email)}`;
+  }
+
+  private normalizeStoredUser(user: StoredUserRecord): StoredUserRecord {
+    return {
+      ...user,
+      name: normalizeUserName(user.name),
+      email: normalizeUserEmail(user.email),
+      gitAuthorName: normalizeOptionalGitAuthorName(user.gitAuthorName),
+      gitAuthorEmail: normalizeOptionalGitAuthorEmail(user.gitAuthorEmail),
+      active: user.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
+      roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
+      repositoryIds: Array.from(new Set((user.repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean))),
+      lastLoginAt: user.lastLoginAt ?? null
+    };
+  }
+
+  private async getStoredUser(userId: string): Promise<StoredUserRecord | null> {
+    const raw = await this.redis.get(this.userKey(userId));
+    if (!raw) {
+      return null;
+    }
+
+    return this.normalizeStoredUser(JSON.parse(raw) as StoredUserRecord);
+  }
+
+  private async getStoredUsers(userIds: string[]): Promise<StoredUserRecord[]> {
+    if (userIds.length === 0) {
+      return [];
+    }
+
+    const pipeline = this.redis.pipeline();
+    for (const userId of userIds) {
+      pipeline.get(this.userKey(userId));
+    }
+
+    const result = await pipeline.exec();
+    const users: StoredUserRecord[] = [];
+    for (const row of result ?? []) {
+      const raw = row[1];
+      if (typeof raw === "string") {
+        users.push(this.normalizeStoredUser(JSON.parse(raw) as StoredUserRecord));
+      }
+    }
+
+    return users;
+  }
+
+  private async normalizeRoleIds(roleIds: string[] | undefined): Promise<string[]> {
+    const uniqueRoleIds = Array.from(new Set((roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean)));
+    if (uniqueRoleIds.length === 0) {
+      return [];
+    }
+
+    const roles = await this.roleStore.getRolesByIds(uniqueRoleIds);
+    if (roles.length !== uniqueRoleIds.length) {
+      const missingRoleId = uniqueRoleIds.find((roleId) => !roles.some((role) => role.id === roleId));
+      throw new HttpError(400, `Unknown role: ${missingRoleId ?? "unknown"}`);
+    }
+
+    return uniqueRoleIds;
+  }
+
+  private async normalizeRepositoryIds(repositoryIds: string[] | undefined): Promise<string[]> {
+    const uniqueRepositoryIds = Array.from(new Set((repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean)));
+    if (uniqueRepositoryIds.length === 0) {
+      return [];
+    }
+
+    const repositories = await Promise.all(uniqueRepositoryIds.map((repositoryId) => this.repositoryStore.getRepository(repositoryId)));
+    const missingRepositoryId = uniqueRepositoryIds.find((repositoryId, index) => !repositories[index]);
+    if (missingRepositoryId) {
+      throw new HttpError(400, `Unknown repository: ${missingRepositoryId}`);
+    }
+
+    return uniqueRepositoryIds;
+  }
+
+  private buildRoleRefs(roles: Role[]): UserRoleRef[] {
+    return roles.map((role) => ({
+      id: role.id,
+      name: role.name,
+      isSystem: role.isSystem
+    }));
+  }
+
+  private async sanitizeUser(user: StoredUserRecord): Promise<User> {
+    const roles = await this.roleStore.getRolesByIds(user.roleIds);
+    return {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      gitAuthorName: user.gitAuthorName,
+      gitAuthorEmail: user.gitAuthorEmail,
+      active: user.active,
+      agentResponsePreference: user.agentResponsePreference,
+      roles: this.buildRoleRefs(roles),
+      repositoryIds: user.repositoryIds,
+      lastLoginAt: user.lastLoginAt,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt
+    };
+  }
+
+  private async countOtherActiveAdmins(excludedUserId: string): Promise<number> {
+    const userIds = await this.redis.smembers(USER_IDS_KEY);
+    const users = await this.getStoredUsers(userIds);
+    return users.filter(
+      (user) =>
+        user.id !== excludedUserId &&
+        user.active &&
+        user.roleIds.includes(SYSTEM_ADMIN_ROLE_ID)
+    ).length;
+  }
+
+  private async assertAdminUserStillExists(
+    current: StoredUserRecord,
+    nextRoleIds: string[],
+    nextActive: boolean
+  ): Promise<void> {
+    if (
+      current.active &&
+      current.roleIds.includes(SYSTEM_ADMIN_ROLE_ID) &&
+      (!nextActive || !nextRoleIds.includes(SYSTEM_ADMIN_ROLE_ID))
+    ) {
+      const otherActiveAdmins = await this.countOtherActiveAdmins(current.id);
+      if (otherActiveAdmins === 0) {
+        throw new HttpError(409, "At least one active admin user is required");
+      }
+    }
+  }
+
+  private async persistUser(nextUser: StoredUserRecord, previousUser?: StoredUserRecord): Promise<void> {
+    const pipeline = this.redis
+      .multi()
+      .set(this.userKey(nextUser.id), JSON.stringify(nextUser))
+      .sadd(USER_IDS_KEY, nextUser.id)
+      .set(this.userEmailKey(nextUser.email), nextUser.id);
+
+    if (previousUser && previousUser.email !== nextUser.email) {
+      pipeline.del(this.userEmailKey(previousUser.email));
+    }
+
+    await pipeline.exec();
+  }
+
+  private async setBootstrapAdminRoleIfMissing(user: StoredUserRecord): Promise<StoredUserRecord> {
+    if (user.roleIds.includes(SYSTEM_ADMIN_ROLE_ID)) {
+      return user;
+    }
+
+    const next: StoredUserRecord = {
+      ...user,
+      roleIds: [...user.roleIds, SYSTEM_ADMIN_ROLE_ID],
+      updatedAt: nowIso()
+    };
+    await this.persistUser(next, user);
+    return next;
+  }
+
+  async ensureDefaultAdminUser(input: BootstrapAdminInput): Promise<User> {
+    const markerUserId = await this.redis.get(BOOTSTRAP_ADMIN_MARKER_KEY);
+    if (markerUserId) {
+      const markedUser = await this.getStoredUser(markerUserId);
+      if (markedUser) {
+        const repairedUser = await this.setBootstrapAdminRoleIfMissing(markedUser);
+        return this.sanitizeUser(repairedUser);
+      }
+    }
+
+    const existingUserId = await this.redis.get(this.userEmailKey(input.email));
+    if (existingUserId) {
+      const existingUser = await this.getStoredUser(existingUserId);
+      if (existingUser) {
+        const repairedUser = await this.setBootstrapAdminRoleIfMissing(existingUser);
+        await this.redis.set(BOOTSTRAP_ADMIN_MARKER_KEY, repairedUser.id);
+        return this.sanitizeUser(repairedUser);
+      }
+    }
+
+    const createdUser = await this.createUser({
+      name: input.name,
+      email: input.email,
+      password: input.password,
+      active: true,
+      roleIds: [SYSTEM_ADMIN_ROLE_ID]
+    });
+    await this.redis.set(BOOTSTRAP_ADMIN_MARKER_KEY, createdUser.id);
+    return createdUser;
+  }
+
+  async listUsers(): Promise<User[]> {
+    const userIds = await this.redis.smembers(USER_IDS_KEY);
+    const users = await this.getStoredUsers(userIds);
+    const sanitizedUsers = await Promise.all(users.map((user) => this.sanitizeUser(user)));
+    return sanitizedUsers.sort((left, right) => {
+      const nameCompare = left.name.localeCompare(right.name);
+      if (nameCompare !== 0) {
+        return nameCompare;
+      }
+
+      return left.email.localeCompare(right.email);
+    });
+  }
+
+  async getUser(userId: string): Promise<User | null> {
+    const user = await this.getStoredUser(userId);
+    if (!user) {
+      return null;
+    }
+
+    return this.sanitizeUser(user);
+  }
+
+  async getAuthSessionUser(userId: string): Promise<AuthSessionUser | null> {
+    const user = await this.getStoredUser(userId);
+    if (!user || !user.active) {
+      return null;
+    }
+
+    const roles = await this.roleStore.getRolesByIds(user.roleIds);
+    const scopes = sortScopes(roles.flatMap((role) => role.scopes));
+    const allowedProviders = mergeRoleAllowlist<AgentProvider>(roles, (role) => role.allowedProviders);
+    const allowedModels = mergeRoleAllowlist<string>(roles, (role) => role.allowedModels);
+    const allowedEfforts = mergeRoleAllowlist<ProviderProfile>(roles, (role) => role.allowedEfforts);
+    return {
+      ...(await this.sanitizeUser(user)),
+      scopes,
+      allowedProviders,
+      allowedModels,
+      allowedEfforts,
+      agentResponsePreference: user.agentResponsePreference
+    };
+  }
+
+  async authenticate(email: string, password: string): Promise<User | null> {
+    const normalizedEmail = normalizeUserEmail(email);
+    if (!normalizedEmail || !password) {
+      return null;
+    }
+
+    const userId = await this.redis.get(this.userEmailKey(normalizedEmail));
+    if (!userId) {
+      return null;
+    }
+
+    const user = await this.getStoredUser(userId);
+    if (!user || !user.active) {
+      return null;
+    }
+
+    const validPassword = await verifyPassword(password, user.passwordSalt, user.passwordHash);
+    if (!validPassword) {
+      return null;
+    }
+
+    const next: StoredUserRecord = {
+      ...user,
+      lastLoginAt: nowIso(),
+      updatedAt: nowIso()
+    };
+    await this.persistUser(next, user);
+    return this.sanitizeUser(next);
+  }
+
+  async createUser(input: CreateUserInput): Promise<User> {
+    const name = normalizeUserName(input.name);
+    const email = normalizeUserEmail(input.email);
+    const gitAuthorName = normalizeOptionalGitAuthorName(input.gitAuthorName);
+    const gitAuthorEmail = normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
+    const password = input.password.trim();
+
+    if (!name) {
+      throw new HttpError(400, "User name is required");
+    }
+
+    if (!email) {
+      throw new HttpError(400, "User email is required");
+    }
+
+    if (!password) {
+      throw new HttpError(400, "Password is required");
+    }
+
+    const existingUserId = await this.redis.get(this.userEmailKey(email));
+    if (existingUserId) {
+      throw new HttpError(409, "A user with that email already exists");
+    }
+
+    const [roleIds, repositoryIds] = await Promise.all([
+      this.normalizeRoleIds(input.roleIds),
+      this.normalizeRepositoryIds(input.repositoryIds)
+    ]);
+    const timestamp = nowIso();
+    const passwordState = await hashPassword(password);
+    const user: StoredUserRecord = {
+      id: nanoid(),
+      name,
+      email,
+      gitAuthorName,
+      gitAuthorEmail,
+      active: input.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
+      roleIds,
+      repositoryIds,
+      passwordHash: passwordState.passwordHash,
+      passwordSalt: passwordState.passwordSalt,
+      lastLoginAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+
+    await this.persistUser(user);
+    return this.sanitizeUser(user);
+  }
+
+  async updateUser(userId: string, input: UpdateUserInput): Promise<User | null> {
+    const current = await this.getStoredUser(userId);
+    if (!current) {
+      return null;
+    }
+
+    const nextName = input.name === undefined ? current.name : normalizeUserName(input.name);
+    const nextEmail = input.email === undefined ? current.email : normalizeUserEmail(input.email);
+    const nextGitAuthorName =
+      input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName);
+    const nextGitAuthorEmail =
+      input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
+    if (!nextName) {
+      throw new HttpError(400, "User name is required");
+    }
+
+    if (!nextEmail) {
+      throw new HttpError(400, "User email is required");
+    }
+
+    if (nextEmail !== current.email) {
+      const existingUserId = await this.redis.get(this.userEmailKey(nextEmail));
+      if (existingUserId && existingUserId !== userId) {
+        throw new HttpError(409, "A user with that email already exists");
+      }
+    }
+
+    const [nextRoleIds, nextRepositoryIds] = await Promise.all([
+      input.roleIds === undefined ? Promise.resolve(current.roleIds) : this.normalizeRoleIds(input.roleIds),
+      input.repositoryIds === undefined ? Promise.resolve(current.repositoryIds) : this.normalizeRepositoryIds(input.repositoryIds)
+    ]);
+    const nextActive = input.active ?? current.active;
+    await this.assertAdminUserStillExists(current, nextRoleIds, nextActive);
+
+    let passwordHash = current.passwordHash;
+    let passwordSalt = current.passwordSalt;
+    if (input.password !== undefined) {
+      const nextPassword = input.password.trim();
+      if (!nextPassword) {
+        throw new HttpError(400, "Password is required");
+      }
+
+      const passwordState = await hashPassword(nextPassword);
+      passwordHash = passwordState.passwordHash;
+      passwordSalt = passwordState.passwordSalt;
+    }
+
+    const next: StoredUserRecord = {
+      ...current,
+      name: nextName,
+      email: nextEmail,
+      gitAuthorName: nextGitAuthorName,
+      gitAuthorEmail: nextGitAuthorEmail,
+      active: nextActive,
+      agentResponsePreference:
+        input.agentResponsePreference === undefined
+          ? current.agentResponsePreference
+          : normalizeAgentResponsePreference(input.agentResponsePreference, current.agentResponsePreference),
+      roleIds: nextRoleIds,
+      repositoryIds: nextRepositoryIds,
+      passwordHash,
+      passwordSalt,
+      updatedAt: nowIso()
+    };
+
+    await this.persistUser(next, current);
+    return this.sanitizeUser(next);
+  }
+
+  async deleteUser(userId: string): Promise<boolean> {
+    const current = await this.getStoredUser(userId);
+    if (!current) {
+      return false;
+    }
+
+    if (current.active && current.roleIds.includes(SYSTEM_ADMIN_ROLE_ID)) {
+      const otherActiveAdmins = await this.countOtherActiveAdmins(current.id);
+      if (otherActiveAdmins === 0) {
+        throw new HttpError(409, "At least one active admin user is required");
+      }
+    }
+
+    await this.redis
+      .multi()
+      .del(this.userKey(userId))
+      .srem(USER_IDS_KEY, userId)
+      .del(this.userEmailKey(current.email))
+      .exec();
+
+    return true;
+  }
+
+  async hasUsersWithRole(roleId: string): Promise<boolean> {
+    const userIds = await this.redis.smembers(USER_IDS_KEY);
+    const users = await this.getStoredUsers(userIds);
+    return users.some((user) => user.roleIds.includes(roleId));
+  }
+
+  async listUserIdsByRoleId(roleId: string): Promise<string[]> {
+    const userIds = await this.redis.smembers(USER_IDS_KEY);
+    const users = await this.getStoredUsers(userIds);
+    return users.filter((user) => user.roleIds.includes(roleId)).map((user) => user.id);
+  }
+}
+
+export class PostgresUserStore implements UserStore {
+  constructor(
+    private readonly pool: Pool,
+    private readonly roleStore: RoleStore,
+    private readonly repositoryStore: RepositoryStore
+  ) {}
+
+  private mapUserRow(row: Record<string, unknown>, roleIds: string[], repositoryIds: string[]): StoredUserRecord {
+    return this.normalizeStoredUser({
+      id: String(row.id),
+      name: String(row.name ?? ""),
+      email: String(row.email ?? ""),
+      gitAuthorName: typeof row.git_author_name === "string" ? row.git_author_name : null,
+      gitAuthorEmail: typeof row.git_author_email === "string" ? row.git_author_email : null,
+      active: row.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(
+        row.agent_response_preference && typeof row.agent_response_preference === "object"
+          ? (row.agent_response_preference as Partial<AgentResponsePreference>)
+          : undefined
+      ),
+      roleIds,
+      repositoryIds,
+      passwordHash: String(row.password_hash ?? ""),
+      passwordSalt: String(row.password_salt ?? ""),
+      lastLoginAt: typeof row.last_login_at === "string" ? row.last_login_at : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at)
+    });
+  }
+
+  private normalizeStoredUser(user: StoredUserRecord): StoredUserRecord {
+    return {
+      ...user,
+      name: normalizeUserName(user.name),
+      email: normalizeUserEmail(user.email),
+      gitAuthorName: normalizeOptionalGitAuthorName(user.gitAuthorName),
+      gitAuthorEmail: normalizeOptionalGitAuthorEmail(user.gitAuthorEmail),
+      active: user.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
+      roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
+      repositoryIds: Array.from(new Set((user.repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean))),
+      lastLoginAt: user.lastLoginAt ?? null
+    };
+  }
+
+  private async getRoleIdsForUsers(
+    userIds: string[],
+    db: PostgresQueryable = this.pool
+  ): Promise<Map<string, string[]>> {
+    if (userIds.length === 0) {
+      return new Map();
+    }
+
+    const result = await db.query<{ user_id: string; role_id: string }>(
+      "SELECT user_id, role_id FROM user_roles WHERE user_id = ANY($1::text[]) ORDER BY role_id ASC",
+      [userIds]
+    );
+    const roleIdsByUser = new Map<string, string[]>();
+    for (const row of result.rows) {
+      const roleIds = roleIdsByUser.get(row.user_id) ?? [];
+      roleIds.push(row.role_id);
+      roleIdsByUser.set(row.user_id, roleIds);
+    }
+    return roleIdsByUser;
+  }
+
+  private async getRepositoryIdsForUsers(
+    userIds: string[],
+    db: PostgresQueryable = this.pool
+  ): Promise<Map<string, string[]>> {
+    if (userIds.length === 0) {
+      return new Map();
+    }
+
+    const result = await db.query<{ user_id: string; repository_id: string }>(
+      "SELECT user_id, repository_id FROM user_repositories WHERE user_id = ANY($1::text[]) ORDER BY repository_id ASC",
+      [userIds]
+    );
+    const repositoryIdsByUser = new Map<string, string[]>();
+    for (const row of result.rows) {
+      const repositoryIds = repositoryIdsByUser.get(row.user_id) ?? [];
+      repositoryIds.push(row.repository_id);
+      repositoryIdsByUser.set(row.user_id, repositoryIds);
+    }
+    return repositoryIdsByUser;
+  }
+
+  private async getStoredUsers(userIds: string[], db: PostgresQueryable = this.pool): Promise<StoredUserRecord[]> {
+    if (userIds.length === 0) {
+      return [];
+    }
+
+    const result = await db.query("SELECT * FROM users WHERE id = ANY($1::text[])", [userIds]);
+    const roleIdsByUser = await this.getRoleIdsForUsers(userIds, db);
+    const repositoryIdsByUser = await this.getRepositoryIdsForUsers(userIds, db);
+    const usersById = new Map<string, StoredUserRecord>();
+    for (const row of result.rows) {
+      const userId = String(row.id);
+      usersById.set(userId, this.mapUserRow(row, roleIdsByUser.get(userId) ?? [], repositoryIdsByUser.get(userId) ?? []));
+    }
+
+    return userIds.flatMap((userId) => {
+      const user = usersById.get(userId);
+      return user ? [user] : [];
+    });
+  }
+
+  private async getStoredUser(userId: string, db: PostgresQueryable = this.pool): Promise<StoredUserRecord | null> {
+    const users = await this.getStoredUsers([userId], db);
+    return users[0] ?? null;
+  }
+
+  private async normalizeRoleIds(roleIds: string[] | undefined): Promise<string[]> {
+    const uniqueRoleIds = Array.from(new Set((roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean)));
+    if (uniqueRoleIds.length === 0) {
+      return [];
+    }
+
+    const roles = await this.roleStore.getRolesByIds(uniqueRoleIds);
+    if (roles.length !== uniqueRoleIds.length) {
+      const missingRoleId = uniqueRoleIds.find((roleId) => !roles.some((role) => role.id === roleId));
+      throw new HttpError(400, `Unknown role: ${missingRoleId ?? "unknown"}`);
+    }
+
+    return uniqueRoleIds;
+  }
+
+  private async normalizeRepositoryIds(repositoryIds: string[] | undefined): Promise<string[]> {
+    const uniqueRepositoryIds = Array.from(new Set((repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean)));
+    if (uniqueRepositoryIds.length === 0) {
+      return [];
+    }
+
+    const repositories = await Promise.all(uniqueRepositoryIds.map((repositoryId) => this.repositoryStore.getRepository(repositoryId)));
+    const missingRepositoryId = uniqueRepositoryIds.find((repositoryId, index) => !repositories[index]);
+    if (missingRepositoryId) {
+      throw new HttpError(400, `Unknown repository: ${missingRepositoryId}`);
+    }
+
+    return uniqueRepositoryIds;
+  }
+
+  private buildRoleRefs(roles: Role[]): UserRoleRef[] {
+    return roles.map((role) => ({
+      id: role.id,
+      name: role.name,
+      isSystem: role.isSystem
+    }));
+  }
+
+  private async sanitizeUser(user: StoredUserRecord): Promise<User> {
+    const roles = await this.roleStore.getRolesByIds(user.roleIds);
+    return {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      gitAuthorName: user.gitAuthorName,
+      gitAuthorEmail: user.gitAuthorEmail,
+      active: user.active,
+      agentResponsePreference: user.agentResponsePreference,
+      roles: this.buildRoleRefs(roles),
+      repositoryIds: user.repositoryIds,
+      lastLoginAt: user.lastLoginAt,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt
+    };
+  }
+
+  private async countOtherActiveAdmins(excludedUserId: string): Promise<number> {
+    const result = await this.pool.query<{ count: string }>(
+      `
+        SELECT COUNT(*)::text AS count
+        FROM users
+        INNER JOIN user_roles ON user_roles.user_id = users.id
+        WHERE users.id <> $1
+          AND users.active = TRUE
+          AND user_roles.role_id = $2
+      `,
+      [excludedUserId, SYSTEM_ADMIN_ROLE_ID]
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
+  private async assertAdminUserStillExists(
+    current: StoredUserRecord,
+    nextRoleIds: string[],
+    nextActive: boolean
+  ): Promise<void> {
+    if (
+      current.active &&
+      current.roleIds.includes(SYSTEM_ADMIN_ROLE_ID) &&
+      (!nextActive || !nextRoleIds.includes(SYSTEM_ADMIN_ROLE_ID))
+    ) {
+      const otherActiveAdmins = await this.countOtherActiveAdmins(current.id);
+      if (otherActiveAdmins === 0) {
+        throw new HttpError(409, "At least one active admin user is required");
+      }
+    }
+  }
+
+  private async persistUser(
+    nextUser: StoredUserRecord,
+    previousUser?: StoredUserRecord,
+    db: PostgresQueryable = this.pool
+  ): Promise<void> {
+    await db.query(
+      `
+        INSERT INTO users (
+          id,
+          name,
+          email,
+          git_author_name,
+          git_author_email,
+          active,
+          agent_response_preference,
+          password_hash,
+          password_salt,
+          last_login_at,
+          created_at,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
+        ON CONFLICT (id) DO UPDATE
+        SET
+          name = EXCLUDED.name,
+          email = EXCLUDED.email,
+          git_author_name = EXCLUDED.git_author_name,
+          git_author_email = EXCLUDED.git_author_email,
+          active = EXCLUDED.active,
+          agent_response_preference = EXCLUDED.agent_response_preference,
+          password_hash = EXCLUDED.password_hash,
+          password_salt = EXCLUDED.password_salt,
+          last_login_at = EXCLUDED.last_login_at,
+          created_at = EXCLUDED.created_at,
+          updated_at = EXCLUDED.updated_at
+      `,
+      [
+        nextUser.id,
+        nextUser.name,
+        nextUser.email,
+        nextUser.gitAuthorName,
+        nextUser.gitAuthorEmail,
+        nextUser.active,
+        JSON.stringify(nextUser.agentResponsePreference),
+        nextUser.passwordHash,
+        nextUser.passwordSalt,
+        nextUser.lastLoginAt,
+        nextUser.createdAt,
+        nextUser.updatedAt
+      ]
+    );
+    await db.query("DELETE FROM user_roles WHERE user_id = $1", [nextUser.id]);
+    await db.query("DELETE FROM user_repositories WHERE user_id = $1", [nextUser.id]);
+    if (nextUser.roleIds.length > 0) {
+      await db.query(
+        `
+          INSERT INTO user_roles (user_id, role_id)
+          SELECT $1, role_id
+          FROM unnest($2::text[]) AS role_id
+          ON CONFLICT DO NOTHING
+        `,
+        [nextUser.id, nextUser.roleIds]
+      );
+    }
+    if (nextUser.repositoryIds.length > 0) {
+      await db.query(
+        `
+          INSERT INTO user_repositories (user_id, repository_id)
+          SELECT $1, repository_id
+          FROM unnest($2::text[]) AS repository_id
+          ON CONFLICT DO NOTHING
+        `,
+        [nextUser.id, nextUser.repositoryIds]
+      );
+    }
+  }
+
+  private async setBootstrapAdminRoleIfMissing(user: StoredUserRecord): Promise<StoredUserRecord> {
+    if (user.roleIds.includes(SYSTEM_ADMIN_ROLE_ID)) {
+      return user;
+    }
+
+    const next: StoredUserRecord = {
+      ...user,
+      roleIds: [...user.roleIds, SYSTEM_ADMIN_ROLE_ID],
+      updatedAt: nowIso()
+    };
+    await withPostgresTransaction(this.pool, async (client) => {
+      await this.persistUser(next, user, client);
+    });
+    return next;
+  }
+
+  async ensureDefaultAdminUser(input: BootstrapAdminInput): Promise<User> {
+    const markerResult = await this.pool.query<{ value: string }>(
+      "SELECT value FROM app_metadata WHERE key = $1",
+      [BOOTSTRAP_ADMIN_MARKER_KEY]
+    );
+    const markerUserId = markerResult.rows[0]?.value ?? null;
+    if (markerUserId) {
+      const markedUser = await this.getStoredUser(markerUserId);
+      if (markedUser) {
+        const repairedUser = await this.setBootstrapAdminRoleIfMissing(markedUser);
+        return this.sanitizeUser(repairedUser);
+      }
+    }
+
+    const normalizedEmail = normalizeUserEmail(input.email);
+    const existingUserResult = await this.pool.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [normalizedEmail]);
+    const existingUserId = existingUserResult.rows[0]?.id ?? null;
+    if (existingUserId) {
+      const existingUser = await this.getStoredUser(existingUserId);
+      if (existingUser) {
+        const repairedUser = await this.setBootstrapAdminRoleIfMissing(existingUser);
+        await this.pool.query(
+          `
+            INSERT INTO app_metadata (key, value, updated_at)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+          `,
+          [BOOTSTRAP_ADMIN_MARKER_KEY, repairedUser.id, nowIso()]
+        );
+        return this.sanitizeUser(repairedUser);
+      }
+    }
+
+    const createdUser = await this.createUser({
+      name: input.name,
+      email: input.email,
+      password: input.password,
+      active: true,
+      roleIds: [SYSTEM_ADMIN_ROLE_ID]
+    });
+    await this.pool.query(
+      `
+        INSERT INTO app_metadata (key, value, updated_at)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (key) DO UPDATE
+        SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+      `,
+      [BOOTSTRAP_ADMIN_MARKER_KEY, createdUser.id, nowIso()]
+    );
+    return createdUser;
+  }
+
+  async listUsers(): Promise<User[]> {
+    const result = await this.pool.query<{ id: string }>("SELECT id FROM users ORDER BY name ASC, email ASC");
+    const users = await this.getStoredUsers(result.rows.map((row) => row.id));
+    const sanitizedUsers = await Promise.all(users.map((user) => this.sanitizeUser(user)));
+    return sanitizedUsers.sort((left, right) => {
+      const nameCompare = left.name.localeCompare(right.name);
+      if (nameCompare !== 0) {
+        return nameCompare;
+      }
+
+      return left.email.localeCompare(right.email);
+    });
+  }
+
+  async getUser(userId: string): Promise<User | null> {
+    const user = await this.getStoredUser(userId);
+    if (!user) {
+      return null;
+    }
+
+    return this.sanitizeUser(user);
+  }
+
+  async getAuthSessionUser(userId: string): Promise<AuthSessionUser | null> {
+    const user = await this.getStoredUser(userId);
+    if (!user || !user.active) {
+      return null;
+    }
+
+    const roles = await this.roleStore.getRolesByIds(user.roleIds);
+    const scopes = sortScopes(roles.flatMap((role) => role.scopes));
+    const allowedProviders = mergeRoleAllowlist<AgentProvider>(roles, (role) => role.allowedProviders);
+    const allowedModels = mergeRoleAllowlist<string>(roles, (role) => role.allowedModels);
+    const allowedEfforts = mergeRoleAllowlist<ProviderProfile>(roles, (role) => role.allowedEfforts);
+    return {
+      ...(await this.sanitizeUser(user)),
+      scopes,
+      allowedProviders,
+      allowedModels,
+      allowedEfforts,
+      agentResponsePreference: user.agentResponsePreference
+    };
+  }
+
+  async authenticate(email: string, password: string): Promise<User | null> {
+    const normalizedEmail = normalizeUserEmail(email);
+    if (!normalizedEmail || !password) {
+      return null;
+    }
+
+    const result = await this.pool.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [normalizedEmail]);
+    const userId = result.rows[0]?.id ?? null;
+    if (!userId) {
+      return null;
+    }
+
+    const user = await this.getStoredUser(userId);
+    if (!user || !user.active) {
+      return null;
+    }
+
+    const validPassword = await verifyPassword(password, user.passwordSalt, user.passwordHash);
+    if (!validPassword) {
+      return null;
+    }
+
+    const next: StoredUserRecord = {
+      ...user,
+      lastLoginAt: nowIso(),
+      updatedAt: nowIso()
+    };
+    await withPostgresTransaction(this.pool, async (client) => {
+      await this.persistUser(next, user, client);
+    });
+    return this.sanitizeUser(next);
+  }
+
+  async createUser(input: CreateUserInput): Promise<User> {
+    const name = normalizeUserName(input.name);
+    const email = normalizeUserEmail(input.email);
+    const gitAuthorName = normalizeOptionalGitAuthorName(input.gitAuthorName);
+    const gitAuthorEmail = normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
+    const password = input.password.trim();
+
+    if (!name) {
+      throw new HttpError(400, "User name is required");
+    }
+
+    if (!email) {
+      throw new HttpError(400, "User email is required");
+    }
+
+    if (!password) {
+      throw new HttpError(400, "Password is required");
+    }
+
+    const existingUserResult = await this.pool.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [email]);
+    if (existingUserResult.rowCount) {
+      throw new HttpError(409, "A user with that email already exists");
+    }
+
+    const [roleIds, repositoryIds] = await Promise.all([
+      this.normalizeRoleIds(input.roleIds),
+      this.normalizeRepositoryIds(input.repositoryIds)
+    ]);
+    const timestamp = nowIso();
+    const passwordState = await hashPassword(password);
+    const user: StoredUserRecord = {
+      id: nanoid(),
+      name,
+      email,
+      gitAuthorName,
+      gitAuthorEmail,
+      active: input.active !== false,
+      agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
+      roleIds,
+      repositoryIds,
+      passwordHash: passwordState.passwordHash,
+      passwordSalt: passwordState.passwordSalt,
+      lastLoginAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+
+    await withPostgresTransaction(this.pool, async (client) => {
+      await this.persistUser(user, undefined, client);
+    });
+    return this.sanitizeUser(user);
+  }
+
+  async updateUser(userId: string, input: UpdateUserInput): Promise<User | null> {
+    const current = await this.getStoredUser(userId);
+    if (!current) {
+      return null;
+    }
+
+    const nextName = input.name === undefined ? current.name : normalizeUserName(input.name);
+    const nextEmail = input.email === undefined ? current.email : normalizeUserEmail(input.email);
+    const nextGitAuthorName =
+      input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName);
+    const nextGitAuthorEmail =
+      input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
+    if (!nextName) {
+      throw new HttpError(400, "User name is required");
+    }
+
+    if (!nextEmail) {
+      throw new HttpError(400, "User email is required");
+    }
+
+    if (nextEmail !== current.email) {
+      const existingUserResult = await this.pool.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [nextEmail]);
+      const existingUserId = existingUserResult.rows[0]?.id ?? null;
+      if (existingUserId && existingUserId !== userId) {
+        throw new HttpError(409, "A user with that email already exists");
+      }
+    }
+
+    const [nextRoleIds, nextRepositoryIds] = await Promise.all([
+      input.roleIds === undefined ? Promise.resolve(current.roleIds) : this.normalizeRoleIds(input.roleIds),
+      input.repositoryIds === undefined ? Promise.resolve(current.repositoryIds) : this.normalizeRepositoryIds(input.repositoryIds)
+    ]);
+    const nextActive = input.active ?? current.active;
+    await this.assertAdminUserStillExists(current, nextRoleIds, nextActive);
+
+    let passwordHash = current.passwordHash;
+    let passwordSalt = current.passwordSalt;
+    if (input.password !== undefined) {
+      const nextPassword = input.password.trim();
+      if (!nextPassword) {
+        throw new HttpError(400, "Password is required");
+      }
+
+      const passwordState = await hashPassword(nextPassword);
+      passwordHash = passwordState.passwordHash;
+      passwordSalt = passwordState.passwordSalt;
+    }
+
+    const next: StoredUserRecord = {
+      ...current,
+      name: nextName,
+      email: nextEmail,
+      gitAuthorName: nextGitAuthorName,
+      gitAuthorEmail: nextGitAuthorEmail,
+      active: nextActive,
+      agentResponsePreference:
+        input.agentResponsePreference === undefined
+          ? current.agentResponsePreference
+          : normalizeAgentResponsePreference(input.agentResponsePreference, current.agentResponsePreference),
+      roleIds: nextRoleIds,
+      repositoryIds: nextRepositoryIds,
+      passwordHash,
+      passwordSalt,
+      updatedAt: nowIso()
+    };
+
+    await withPostgresTransaction(this.pool, async (client) => {
+      await this.persistUser(next, current, client);
+    });
+    return this.sanitizeUser(next);
+  }
+
+  async deleteUser(userId: string): Promise<boolean> {
+    const current = await this.getStoredUser(userId);
+    if (!current) {
+      return false;
+    }
+
+    if (current.active && current.roleIds.includes(SYSTEM_ADMIN_ROLE_ID)) {
+      const otherActiveAdmins = await this.countOtherActiveAdmins(current.id);
+      if (otherActiveAdmins === 0) {
+        throw new HttpError(409, "At least one active admin user is required");
+      }
+    }
+
+    await this.pool.query("DELETE FROM users WHERE id = $1", [userId]);
+    return true;
+  }
+
+  async hasUsersWithRole(roleId: string): Promise<boolean> {
+    const result = await this.pool.query<{ exists: boolean }>(
+      "SELECT EXISTS(SELECT 1 FROM user_roles WHERE role_id = $1) AS exists",
+      [roleId]
+    );
+    return result.rows[0]?.exists === true;
+  }
+
+  async listUserIdsByRoleId(roleId: string): Promise<string[]> {
+    const result = await this.pool.query<{ user_id: string }>(
+      "SELECT user_id FROM user_roles WHERE role_id = $1 ORDER BY user_id ASC",
+      [roleId]
+    );
+    return result.rows.map((row) => row.user_id);
+  }
+}
+````
+
 ## File: apps/web/app/repositories/[id]/edit/page.tsx
 ````typescript
 import { RepositoryEditorPage } from "../../../../components/repository-editor-page";
@@ -17775,6 +17248,83 @@ import { SnippetEditorPage } from "../../../components/snippet-editor-page";
 
 export default function NewSnippetRoute() {
   return <SnippetEditorPage mode="create" />;
+}
+````
+
+## File: apps/web/app/tasks/[id]/interactive/page.tsx
+````typescript
+"use client";
+
+import Link from "next/link";
+import { useParams, useSearchParams } from "next/navigation";
+import {
+  getAgentProviderLabel,
+  getDefaultModelForProvider,
+  getProviderProfileLabel,
+  getTaskTerminalSessionLabel,
+  type TaskTerminalSessionMode
+} from "@agentswarm/shared-types";
+import { Flex, Typography, theme as antTheme } from "antd";
+import { TaskInteractiveTerminalView } from "../../../../components/task-interactive-terminal-view";
+import { useTask } from "../../../../src/hooks/useTask";
+
+export default function TaskInteractiveRoutePage() {
+  const params = useParams();
+  const searchParams = useSearchParams();
+  const taskId = typeof params.id === "string" ? params.id : "";
+  const mode: TaskTerminalSessionMode = searchParams.get("mode") === "git" ? "git" : "interactive";
+  const { token } = antTheme.useToken();
+  const { task } = useTask(taskId);
+
+  if (!taskId) {
+    return null;
+  }
+
+  const providerLabel = task ? getAgentProviderLabel(task.provider) : "Interactive Terminal";
+  const modelLabel = task ? task.modelOverride ?? getDefaultModelForProvider(task.provider) : null;
+  const effortLabel = task ? getProviderProfileLabel(task.providerProfile) : null;
+  const terminalLabel = getTaskTerminalSessionLabel(mode);
+
+  return (
+    <Flex vertical style={{ height: "100%", minHeight: 0, overflow: "hidden" }}>
+      <Flex
+        align="center"
+        justify="space-between"
+        style={{
+          flexShrink: 0,
+          padding: "8px 12px",
+          borderBottom: `1px solid ${token.colorBorderSecondary}`,
+          background: token.colorBgContainer,
+          gap: 12
+        }}
+      >
+        <Flex vertical gap={0} style={{ minWidth: 0 }}>
+          <Typography.Text strong style={{ color: token.colorText }}>
+            {mode === "git"
+              ? task
+                ? `Terminal · ${task.branchName ?? task.repoDefaultBranch} in task workspace`
+                : terminalLabel
+              : task
+                ? `Interactive · ${providerLabel} in task workspace`
+                : terminalLabel}
+          </Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {mode === "interactive" && task && modelLabel && effortLabel
+              ? `Model: ${modelLabel} · Effort: ${effortLabel} · Terminal font: Ctrl/⌘ + +/− (numpad works); Ctrl/⌘ + 0 resets.`
+              : mode === "git"
+                ? "Workspace shell for manual git commands. Terminal font: Ctrl/⌘ + +/− (numpad works); Ctrl/⌘ + 0 resets."
+                : "Terminal font: Ctrl/⌘ + +/− (numpad works); Ctrl/⌘ + 0 resets."}
+          </Typography.Text>
+        </Flex>
+        <Link href={`/tasks/${taskId}`} style={{ color: token.colorLink, flexShrink: 0 }}>
+          ← Back to task
+        </Link>
+      </Flex>
+      <div style={{ flex: 1, minHeight: 0, padding: 8, background: "#1e1e1e" }}>
+        <TaskInteractiveTerminalView taskId={taskId} mode={mode} />
+      </div>
+    </Flex>
+  );
 }
 ````
 
@@ -19112,6 +18662,456 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
         </Flex>
       </Flex>
     </div>
+  );
+}
+````
+
+## File: apps/web/components/users-page.tsx
+````typescript
+"use client";
+
+import { useEffect, useState } from "react";
+import type {
+  AgentClarifyBehavior,
+  AgentCodePreference,
+  AgentExplanationDepth,
+  AgentFormattingStyle,
+  AgentJargonLevel,
+  AudienceType,
+  Repository,
+  ResponsePreferencePreset,
+  Role,
+  User
+} from "@agentswarm/shared-types";
+import {
+  App,
+  Button,
+  Card,
+  Divider,
+  Flex,
+  Form,
+  Input,
+  Modal,
+  Popconfirm,
+  Select,
+  Space,
+  Switch,
+  Table,
+  Tag,
+  Tooltip,
+  Typography
+} from "antd";
+import dayjs from "dayjs";
+import { api } from "../src/api/client";
+import { useAuth } from "./auth-provider";
+import { ResponsePolicyFields } from "./response-policy-fields";
+
+interface UserFormValues {
+  name: string;
+  email: string;
+  gitAuthorName?: string;
+  gitAuthorEmail?: string;
+  password?: string;
+  active: boolean;
+  audience?: AudienceType;
+  explanationDepth?: AgentExplanationDepth;
+  jargonLevel?: AgentJargonLevel;
+  codePreference?: AgentCodePreference;
+  clarifyBehavior?: AgentClarifyBehavior;
+  formattingStyle?: AgentFormattingStyle;
+  extraInstructions?: string;
+  responsePreferencePresetId?: string;
+  roleIds: string[];
+  repositoryIds: string[];
+}
+
+const SYSTEM_ADMIN_ROLE_ID = "admin";
+
+export function UsersPage() {
+  const { message } = App.useApp();
+  const { can, session } = useAuth();
+  const [form] = Form.useForm<UserFormValues>();
+  const [users, setUsers] = useState<User[]>([]);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [repositories, setRepositories] = useState<Repository[]>([]);
+  const [responsePreferencePresets, setResponsePreferencePresets] = useState<ResponsePreferencePreset[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+
+  const canCreateUsers = can("user:create");
+  const canEditUsers = can("user:edit");
+  const canDeleteUsers = can("user:delete");
+  const canReadRoles = can("settings:read");
+  const canReadSettings = can("settings:read");
+  const canEditRoles = can("settings:edit");
+  const canReadRepositories = can("repo:list");
+  const formatLabel = (value: string): string => value.replace(/_/g, " ");
+
+  const loadUsers = async () => {
+    setLoading(true);
+    try {
+      const [nextUsers, nextRoles, nextRepositories, nextSettings] = await Promise.all([
+        api.listUsers(),
+        canReadRoles ? api.listRoles().catch(() => []) : Promise.resolve([]),
+        canEditRoles && canReadRepositories ? api.listRepositories().catch(() => []) : Promise.resolve([]),
+        canReadSettings ? api.getSettings().catch(() => null) : Promise.resolve(null)
+      ]);
+      setUsers(nextUsers);
+      setRoles(nextRoles);
+      setRepositories(nextRepositories);
+      setResponsePreferencePresets(nextSettings?.responsePreferencePresets ?? []);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadUsers();
+  }, [canEditRoles, canReadRepositories, canReadRoles, canReadSettings]);
+
+  const openCreateModal = () => {
+    setEditingUser(null);
+    form.setFieldsValue({
+      name: "",
+      email: "",
+      gitAuthorName: "",
+      gitAuthorEmail: "",
+      password: "",
+      active: true,
+      audience: undefined,
+      explanationDepth: undefined,
+      jargonLevel: undefined,
+      codePreference: undefined,
+      clarifyBehavior: undefined,
+      formattingStyle: undefined,
+      extraInstructions: "",
+      responsePreferencePresetId: undefined,
+      roleIds: [],
+      repositoryIds: []
+    });
+    setModalOpen(true);
+  };
+
+  const openEditModal = (user: User) => {
+    setEditingUser(user);
+    form.setFieldsValue({
+      name: user.name,
+      email: user.email,
+      gitAuthorName: user.gitAuthorName ?? "",
+      gitAuthorEmail: user.gitAuthorEmail ?? "",
+      password: "",
+      active: user.active,
+      audience: user.agentResponsePreference.audience,
+      explanationDepth: user.agentResponsePreference.explanationDepth,
+      jargonLevel: user.agentResponsePreference.jargonLevel,
+      codePreference: user.agentResponsePreference.codePreference,
+      clarifyBehavior: user.agentResponsePreference.clarifyBehavior,
+      formattingStyle: user.agentResponsePreference.formattingStyle,
+      extraInstructions: user.agentResponsePreference.extraInstructions ?? "",
+      responsePreferencePresetId:
+        responsePreferencePresets.find(
+          (preset) =>
+            preset.preference.audience === user.agentResponsePreference.audience &&
+            preset.preference.explanationDepth === user.agentResponsePreference.explanationDepth &&
+            preset.preference.jargonLevel === user.agentResponsePreference.jargonLevel &&
+            preset.preference.codePreference === user.agentResponsePreference.codePreference &&
+            preset.preference.clarifyBehavior === user.agentResponsePreference.clarifyBehavior &&
+            preset.preference.formattingStyle === user.agentResponsePreference.formattingStyle &&
+            (preset.preference.extraInstructions ?? "") === (user.agentResponsePreference.extraInstructions ?? "")
+        )?.id,
+      roleIds: user.roles.map((role) => role.id),
+      repositoryIds: user.repositoryIds ?? []
+    });
+    setModalOpen(true);
+  };
+
+  const currentUserId = session?.user.id ?? null;
+  const selectedRoleIds = Form.useWatch("roleIds", form) ?? [];
+  const adminRoleSelected = selectedRoleIds.includes(SYSTEM_ADMIN_ROLE_ID);
+
+  return (
+    <>
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
+          <Flex vertical gap={0}>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              Users
+            </Typography.Title>
+            <Typography.Text type="secondary">
+              Manage application access, activation state, and role assignments.
+            </Typography.Text>
+          </Flex>
+          {canCreateUsers ? (
+            <Button type="primary" onClick={openCreateModal}>
+              Add User
+            </Button>
+          ) : null}
+        </Flex>
+
+        <Card bordered={false}>
+          <Table<User>
+            rowKey="id"
+            loading={loading}
+            dataSource={users}
+            pagination={{ pageSize: 10 }}
+            columns={[
+              { title: "Name", dataIndex: "name" },
+              { title: "Email", dataIndex: "email" },
+              {
+                title: "Status",
+                dataIndex: "active",
+                render: (active: boolean) => <Tag color={active ? "green" : "default"}>{active ? "Active" : "Disabled"}</Tag>
+              },
+              {
+                title: "Roles",
+                render: (_, user) => {
+                  const roleNameById = new Map(roles.map((role) => [role.id, role.name]));
+                  if (user.roles.length === 0) {
+                    return <Typography.Text type="secondary">No roles</Typography.Text>;
+                  }
+
+                  return (
+                    <Space size={[4, 4]} wrap>
+                      {user.roles.map((role) => (
+                        <Tag key={role.id}>{roleNameById.get(role.id) ?? role.name}</Tag>
+                      ))}
+                    </Space>
+                  );
+                }
+              },
+              {
+                title: "Response Style",
+                render: (_, user) => {
+                  if (!user.agentResponsePreference.audience) {
+                    return <Typography.Text type="secondary">Neutral</Typography.Text>;
+                  }
+
+                  return <Tag>{formatLabel(user.agentResponsePreference.audience)}</Tag>;
+                }
+              },
+              {
+                title: "Last Login",
+                dataIndex: "lastLoginAt",
+                render: (value: string | null) =>
+                  value ? dayjs(value).format("YYYY-MM-DD HH:mm") : <Typography.Text type="secondary">Never</Typography.Text>
+              },
+              {
+                title: "Actions",
+                render: (_, user) => {
+                  const isSelf = user.id === currentUserId;
+                  return (
+                    <Space>
+                      {canEditUsers ? (
+                        <Button onClick={() => openEditModal(user)}>Edit</Button>
+                      ) : null}
+                      {canDeleteUsers ? (
+                        <Tooltip title={isSelf ? "You cannot delete your own account" : undefined}>
+                          <Popconfirm
+                            title="Delete user?"
+                            description={`Delete ${user.email}?`}
+                            disabled={isSelf}
+                            onConfirm={async () => {
+                              try {
+                                await api.deleteUser(user.id);
+                                message.success("User deleted");
+                                await loadUsers();
+                              } catch (error) {
+                                message.error(error instanceof Error ? error.message : "Failed to delete user");
+                              }
+                            }}
+                          >
+                            <Button danger disabled={isSelf}>
+                              Delete
+                            </Button>
+                          </Popconfirm>
+                        </Tooltip>
+                      ) : null}
+                    </Space>
+                  );
+                }
+              }
+            ]}
+          />
+        </Card>
+      </Space>
+
+      <Modal
+        open={modalOpen}
+        title={editingUser ? "Edit User" : "Add User"}
+        footer={null}
+        onCancel={() => setModalOpen(false)}
+        destroyOnHidden
+      >
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={async (values) => {
+            setSubmitting(true);
+            try {
+              if (editingUser) {
+                await api.updateUser(editingUser.id, {
+                  name: values.name,
+                  email: values.email,
+                  gitAuthorName: values.gitAuthorName?.trim() || null,
+                  gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
+                  password: values.password?.trim() || undefined,
+                  active: values.active,
+                  agentResponsePreference: {
+                    audience: values.audience,
+                    explanationDepth: values.explanationDepth,
+                    jargonLevel: values.jargonLevel,
+                    codePreference: values.codePreference,
+                    clarifyBehavior: values.clarifyBehavior,
+                    formattingStyle: values.formattingStyle,
+                    extraInstructions: values.extraInstructions?.trim() || undefined
+                  },
+                  roleIds: canEditRoles ? values.roleIds : undefined,
+                  repositoryIds: canEditRoles ? values.repositoryIds : undefined
+                });
+                message.success("User updated");
+              } else {
+                await api.createUser({
+                  name: values.name,
+                  email: values.email,
+                  gitAuthorName: values.gitAuthorName?.trim() || null,
+                  gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
+                  password: values.password?.trim() || "",
+                  active: values.active,
+                  agentResponsePreference: {
+                    audience: values.audience,
+                    explanationDepth: values.explanationDepth,
+                    jargonLevel: values.jargonLevel,
+                    codePreference: values.codePreference,
+                    clarifyBehavior: values.clarifyBehavior,
+                    formattingStyle: values.formattingStyle,
+                    extraInstructions: values.extraInstructions?.trim() || undefined
+                  },
+                  roleIds: canEditRoles ? values.roleIds : undefined,
+                  repositoryIds: canEditRoles ? values.repositoryIds : undefined
+                });
+                message.success("User created");
+              }
+
+              setModalOpen(false);
+              await loadUsers();
+            } catch (error) {
+              message.error(error instanceof Error ? error.message : "Failed to save user");
+            } finally {
+              setSubmitting(false);
+            }
+          }}
+        >
+          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a user name" }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="email" label="Email" rules={[{ required: true, message: "Enter an email address" }]}>
+            <Input />
+          </Form.Item>
+          <Divider orientation="left" plain>
+            Git Commit Identity
+          </Divider>
+          <Form.Item
+            name="gitAuthorName"
+            label="Git Author Name"
+            extra="Leave blank to use the user's profile name."
+          >
+            <Input placeholder="Profile name" />
+          </Form.Item>
+          <Form.Item
+            name="gitAuthorEmail"
+            label="Git Author Email"
+            rules={[{ type: "email", message: "Enter a valid email address" }]}
+            extra="Leave blank to use the user's profile email."
+          >
+            <Input placeholder="Profile email" />
+          </Form.Item>
+          <Form.Item
+            name="password"
+            label={editingUser ? "Password" : "Password"}
+            rules={editingUser ? [] : [{ required: true, message: "Enter a password" }]}
+            extra={editingUser ? "Leave blank to keep the current password." : undefined}
+          >
+            <Input.Password />
+          </Form.Item>
+          <Form.Item
+            name="active"
+            label="Active"
+            valuePropName="checked"
+            extra={editingUser?.id === currentUserId ? "Your own account cannot be disabled." : undefined}
+          >
+            <Switch disabled={editingUser?.id === currentUserId} />
+          </Form.Item>
+          <Form.Item
+            name="responsePreferencePresetId"
+            label="Response Preference Preset"
+            extra="Optional shortcut for applying a saved response preference."
+          >
+            <Select
+              allowClear
+              placeholder="Select a preset"
+              options={responsePreferencePresets.map((preset) => ({
+                label: preset.name,
+                value: preset.id
+              }))}
+              onChange={(value) => {
+                const preset = responsePreferencePresets.find((entry) => entry.id === value);
+                if (!preset) {
+                  return;
+                }
+                form.setFieldsValue({
+                  audience: preset.preference.audience,
+                  explanationDepth: preset.preference.explanationDepth,
+                  jargonLevel: preset.preference.jargonLevel,
+                  codePreference: preset.preference.codePreference,
+                  clarifyBehavior: preset.preference.clarifyBehavior,
+                  formattingStyle: preset.preference.formattingStyle,
+                  extraInstructions: preset.preference.extraInstructions ?? ""
+                });
+              }}
+            />
+          </Form.Item>
+          <Divider orientation="left" plain>
+            Response Format Preferences
+          </Divider>
+          <Card size="small">
+            <ResponsePolicyFields onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)} />
+          </Card>
+          {canEditRoles ? (
+            <Form.Item name="roleIds" label="Roles">
+              <Select
+                mode="multiple"
+                options={roles.map((role) => ({
+                  label: role.name,
+                  value: role.id
+                }))}
+              />
+            </Form.Item>
+          ) : null}
+          {canEditRoles ? (
+            <Form.Item
+              name="repositoryIds"
+              label="Repositories"
+              extra={adminRoleSelected ? "All repositories (via Admin role)." : "Choose repositories this user can access."}
+            >
+              <Select
+                mode="multiple"
+                disabled={adminRoleSelected}
+                placeholder={adminRoleSelected ? "All repositories (via Admin role)" : "Select repositories"}
+                options={repositories.map((repository) => ({
+                  label: repository.name,
+                  value: repository.id
+                }))}
+              />
+            </Form.Item>
+          ) : null}
+          <Button type="primary" htmlType="submit" loading={submitting} block>
+            {editingUser ? "Save Changes" : "Create User"}
+          </Button>
+        </Form>
+      </Modal>
+    </>
   );
 }
 ````
@@ -22818,11 +22818,7 @@ export class GitHubImportService {
           return null;
         }
 
-        return [
-          `### @${comment.user?.login ?? "unknown"} (${comment.created_at})`,
-          body,
-          `Source: ${comment.html_url}`
-        ].join("\n");
+        return [`### @${comment.user?.login ?? "unknown"} (${comment.created_at})`, body, `Source: ${comment.html_url}`].join("\n");
       })
       .filter((value): value is string => Boolean(value));
 
@@ -22850,6 +22846,7 @@ export class GitHubImportService {
       provider: input.provider,
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,
+      codexCredentialSource: input.codexCredentialSource,
       baseBranch: input.baseBranch?.trim() || repository.defaultBranch,
       branchStrategy: taskType === "build" ? input.branchStrategy ?? "feature_branch" : "feature_branch",
       model: input.model,
@@ -22914,11 +22911,7 @@ export class GitHubImportService {
               return null;
             }
 
-            const parts = [
-              `- @${comment.author?.login ?? "unknown"} (${comment.createdAt})`,
-              `  ${body.replace(/\n/g, "\n  ")}`,
-              `  Source: ${comment.url}`
-            ];
+            const parts = [`- @${comment.author?.login ?? "unknown"} (${comment.createdAt})`, `  ${body.replace(/\n/g, "\n  ")}`, `  Source: ${comment.url}`];
 
             const diffHunk = cleanMarkdownBlock(comment.diffHunk, 1200);
             if (diffHunk) {
@@ -22956,6 +22949,7 @@ export class GitHubImportService {
       provider: input.provider,
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,
+      codexCredentialSource: input.codexCredentialSource,
       baseBranch: pullRequest.head.ref,
       branchStrategy: "work_on_branch",
       model: input.model,
@@ -25794,1827 +25788,112 @@ The terms below come from current repository docs and code.
 - TODO: Confirm final user-facing wording for “checkpoint” vs “change proposal” in product UI copy.
 ````
 
-## File: apps/server/src/db/backfill-redis-to-postgres.ts
-````typescript
-import type Redis from "ioredis";
-import { env } from "../config/env.js";
-import { createPostgresPool, runPostgresMigrations, withPostgresTransaction } from "../lib/postgres.js";
-import { createRedisClients } from "../lib/redis.js";
-
-const ROLE_KEY_PREFIX = "agentswarm:role:";
-const ROLE_IDS_KEY = "agentswarm:role_ids";
-
-const USER_KEY_PREFIX = "agentswarm:user:";
-const USER_IDS_KEY = "agentswarm:user_ids";
-const BOOTSTRAP_ADMIN_MARKER_KEY = "agentswarm:bootstrap_admin_user_id";
-
-const REPO_KEY_PREFIX = "agentswarm:repo:";
-const REPO_IDS_KEY = "agentswarm:repo_ids";
-
-const SNIPPET_KEY_PREFIX = "agentswarm:snippet:";
-const SNIPPET_IDS_KEY = "agentswarm:snippet_ids";
-
-const SETTINGS_KEY = "agentswarm:settings";
-const CREDENTIALS_KEY = "agentswarm:credential_settings";
-
-const TASK_KEY_PREFIX = "agentswarm:task:";
-const TASK_LOG_KEY_PREFIX = "agentswarm:task_logs:";
-const TASK_MESSAGE_KEY_PREFIX = "agentswarm:task_messages:";
-const TASK_RUN_KEY_PREFIX = "agentswarm:task_run:";
-const TASK_RUN_LOG_KEY_PREFIX = "agentswarm:task_run_logs:";
-const TASK_RUN_IDS_KEY_PREFIX = "agentswarm:task_run_ids:";
-const TASK_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_change_proposal:";
-const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "agentswarm:task_change_proposal_ids:";
-const TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX = "agentswarm:task_active_interactive_session:";
-const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "agentswarm:task_interactive_terminal_transcript:";
-const TASK_IDS_KEY = "agentswarm:task_ids";
-
-type JsonRecord = Record<string, unknown>;
-
-interface RoleRecord extends JsonRecord {
-  id: string;
-  name: string;
-  description?: string;
-  scopes?: unknown[];
-  allowedProviders?: unknown[];
-  allowedModels?: unknown[];
-  allowedEfforts?: unknown[];
-  scopeVersion?: number;
-  isSystem?: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface UserRecord extends JsonRecord {
-  id: string;
-  name: string;
-  email: string;
-  active?: boolean;
-  roleIds?: string[];
-  repositoryIds?: string[];
-  passwordHash: string;
-  passwordSalt: string;
-  lastLoginAt?: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface RepositoryRecord extends JsonRecord {
-  id: string;
-  name: string;
-  url: string;
-  defaultBranch?: string;
-  envVars?: unknown[];
-  envSecrets?: unknown[];
-  webhookUrl?: string | null;
-  webhookEnabled?: boolean;
-  webhookSecret?: string | null;
-  webhookLastAttemptAt?: string | null;
-  webhookLastStatus?: string | null;
-  webhookLastError?: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface SnippetRecord extends JsonRecord {
-  id: string;
-  name: string;
-  content: string;
-  variables?: unknown[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-interface SettingsRecord extends JsonRecord {
-  defaultProvider?: string;
-  maxAgents?: number;
-  branchPrefix?: string;
-  gitUsername?: string;
-  mcpServers?: unknown[];
-  openaiBaseUrl?: string | null;
-  codexDefaultModel?: string;
-  codexDefaultEffort?: string;
-  claudeDefaultModel?: string;
-  claudeDefaultEffort?: string;
-}
-
-interface TaskRecord extends JsonRecord {
-  id: string;
-  ownerUserId?: string | null;
-  status?: string;
-  pinned?: boolean;
-  createdAt: string;
-}
-
-const nowIso = (): string => new Date().toISOString();
-
-const parseJson = <T>(raw: string | null): T | null => {
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-};
-
-const getJson = async <T>(redis: Redis, key: string): Promise<T | null> => parseJson<T>(await redis.get(key));
-
-const trimString = (value: unknown): string | null => {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const normalized = value.trim();
-  return normalized.length > 0 ? normalized : null;
-};
-
-const repositoryEnvVarArray = (
-  value: unknown
-): Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const normalized: Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> = [];
-  const seen = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-    const rawKey = (entry as Record<string, unknown>).key;
-    const key = typeof rawKey === "string" ? rawKey.trim() : "";
-    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || seen.has(key)) {
-      continue;
-    }
-    const type = (entry as Record<string, unknown>).type === "file" ? "file" : "text";
-    if (type === "file") {
-      const fileId = trimString((entry as Record<string, unknown>).fileId);
-      if (!fileId) {
-        continue;
-      }
-      const fileName = trimString((entry as Record<string, unknown>).fileName) ?? `${key}.bin`;
-      const sizeBytesRaw = (entry as Record<string, unknown>).sizeBytes;
-      const sizeBytes = typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0 ? Math.floor(sizeBytesRaw) : 0;
-      normalized.push({ key, type: "file", fileId, fileName, sizeBytes });
-      seen.add(key);
-      continue;
-    }
-    const rawValue = (entry as Record<string, unknown>).value;
-    const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
-    normalized.push({ key, type: "text", value: normalizedValue });
-    seen.add(key);
-  }
-  return normalized;
-};
-
-const repositoryEnvSecretArray = (
-  value: unknown
-): Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const normalized: Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> = [];
-  const seen = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-    const rawKey = (entry as Record<string, unknown>).key;
-    const key = typeof rawKey === "string" ? rawKey.trim() : "";
-    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || seen.has(key)) {
-      continue;
-    }
-    const type = (entry as Record<string, unknown>).type === "file" ? "file" : "text";
-    if (type === "file") {
-      const fileId = trimString((entry as Record<string, unknown>).fileId);
-      if (!fileId) {
-        continue;
-      }
-      const fileName = trimString((entry as Record<string, unknown>).fileName) ?? `${key}.bin`;
-      const sizeBytesRaw = (entry as Record<string, unknown>).sizeBytes;
-      const sizeBytes = typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0 ? Math.floor(sizeBytesRaw) : 0;
-      normalized.push({ key, type: "file", fileId, fileName, sizeBytes });
-      seen.add(key);
-      continue;
-    }
-    const rawValue = (entry as Record<string, unknown>).value;
-    const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
-    if (!normalizedValue) {
-      continue;
-    }
-    normalized.push({ key, type: "text", value: normalizedValue });
-    seen.add(key);
-  }
-  return normalized;
-};
-
-const stringArray = (value: unknown): string[] =>
-  Array.isArray(value)
-    ? Array.from(
-        new Set(
-          value
-            .filter((entry): entry is string => typeof entry === "string")
-            .map((entry) => entry.trim())
-            .filter(Boolean)
-        )
-      )
-    : [];
-
-const loadRoles = async (redis: Redis): Promise<RoleRecord[]> => {
-  const roleIds = await redis.smembers(ROLE_IDS_KEY);
-  const roles: RoleRecord[] = [];
-  for (const roleId of roleIds) {
-    const role = await getJson<RoleRecord>(redis, `${ROLE_KEY_PREFIX}${roleId}`);
-    if (role?.id) {
-      roles.push(role);
-    }
-  }
-  return roles;
-};
-
-const loadUsers = async (redis: Redis): Promise<UserRecord[]> => {
-  const userIds = await redis.smembers(USER_IDS_KEY);
-  const users: UserRecord[] = [];
-  for (const userId of userIds) {
-    const user = await getJson<UserRecord>(redis, `${USER_KEY_PREFIX}${userId}`);
-    if (user?.id) {
-      users.push(user);
-    }
-  }
-  return users;
-};
-
-const loadRepositories = async (redis: Redis): Promise<RepositoryRecord[]> => {
-  const repositoryIds = await redis.smembers(REPO_IDS_KEY);
-  const repositories: RepositoryRecord[] = [];
-  for (const repositoryId of repositoryIds) {
-    const repository = await getJson<RepositoryRecord>(redis, `${REPO_KEY_PREFIX}${repositoryId}`);
-    if (repository?.id) {
-      repositories.push(repository);
-    }
-  }
-  return repositories;
-};
-
-const loadSnippets = async (redis: Redis): Promise<SnippetRecord[]> => {
-  const snippetIds = await redis.smembers(SNIPPET_IDS_KEY);
-  const snippets: SnippetRecord[] = [];
-  for (const snippetId of snippetIds) {
-    const snippet = await getJson<SnippetRecord>(redis, `${SNIPPET_KEY_PREFIX}${snippetId}`);
-    if (snippet?.id) {
-      snippets.push(snippet);
-    }
-  }
-  return snippets;
-};
-
-interface TaskSnapshot {
-  task: TaskRecord;
-  logs: string[];
-  messages: JsonRecord[];
-  runs: Array<{ run: JsonRecord; logs: string[] }>;
-  proposals: JsonRecord[];
-  activeInteractiveSession: JsonRecord | null;
-  transcripts: JsonRecord[];
-}
-
-const loadTaskSnapshots = async (redis: Redis): Promise<TaskSnapshot[]> => {
-  const taskIds = await redis.smembers(TASK_IDS_KEY);
-  const snapshots: TaskSnapshot[] = [];
-
-  for (const taskId of taskIds) {
-    const task = await getJson<TaskRecord>(redis, `${TASK_KEY_PREFIX}${taskId}`);
-    if (!task?.id) {
-      continue;
-    }
-
-    const [logs, rawMessages, runIds, proposalIds, activeInteractiveSession] = await Promise.all([
-      redis.lrange(`${TASK_LOG_KEY_PREFIX}${taskId}`, 0, -1),
-      redis.lrange(`${TASK_MESSAGE_KEY_PREFIX}${taskId}`, 0, -1),
-      redis.lrange(`${TASK_RUN_IDS_KEY_PREFIX}${taskId}`, 0, -1),
-      redis.lrange(`${TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX}${taskId}`, 0, -1),
-      getJson<JsonRecord>(redis, `${TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX}${taskId}`)
-    ]);
-
-    const messages = rawMessages
-      .map((raw) => parseJson<JsonRecord>(raw))
-      .filter((message): message is JsonRecord => message !== null);
-
-    const runs: Array<{ run: JsonRecord; logs: string[] }> = [];
-    for (const runId of runIds) {
-      const run = await getJson<JsonRecord>(redis, `${TASK_RUN_KEY_PREFIX}${runId}`);
-      if (!run) {
-        continue;
-      }
-
-      const runLogs = await redis.lrange(`${TASK_RUN_LOG_KEY_PREFIX}${runId}`, 0, -1);
-      runs.push({ run, logs: runLogs });
-    }
-
-    const proposals: JsonRecord[] = [];
-    for (const proposalId of proposalIds) {
-      const proposal = await getJson<JsonRecord>(redis, `${TASK_CHANGE_PROPOSAL_KEY_PREFIX}${proposalId}`);
-      if (proposal) {
-        proposals.push(proposal);
-      }
-    }
-
-    const transcriptsBySessionId = new Map<string, JsonRecord>();
-    for (const message of messages) {
-      const sessionId = trimString(message.sessionId);
-      if (!sessionId) {
-        continue;
-      }
-
-      const transcript = await getJson<JsonRecord>(redis, `${TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX}${sessionId}`);
-      if (transcript) {
-        transcriptsBySessionId.set(sessionId, transcript);
-      }
-    }
-
-    snapshots.push({
-      task,
-      logs,
-      messages,
-      runs,
-      proposals,
-      activeInteractiveSession,
-      transcripts: Array.from(transcriptsBySessionId.values())
-    });
-  }
-
-  return snapshots;
-};
-
-const main = async (): Promise<void> => {
-  const redisClients = createRedisClients(env.REDIS_URL);
-  const postgresPool = createPostgresPool(env.DATABASE_URL);
-
-  try {
-    await runPostgresMigrations(postgresPool);
-
-    const redis = redisClients.command;
-    const [roles, users, repositories, snippets, settings, credentialsRaw, taskSnapshots, bootstrapAdminUserId] = await Promise.all([
-      loadRoles(redis),
-      loadUsers(redis),
-      loadRepositories(redis),
-      loadSnippets(redis),
-      getJson<SettingsRecord>(redis, SETTINGS_KEY),
-      redis.get(CREDENTIALS_KEY),
-      loadTaskSnapshots(redis),
-      redis.get(BOOTSTRAP_ADMIN_MARKER_KEY)
-    ]);
-    const repositoryIds = new Set(repositories.map((repository) => repository.id));
-    let skippedUserRepositoryAssignments = 0;
-
-    await withPostgresTransaction(postgresPool, async (client) => {
-      await client.query(`
-        TRUNCATE TABLE
-          task_run_logs,
-          task_messages,
-          task_logs,
-          task_change_proposals,
-          task_active_interactive_sessions,
-          task_interactive_terminal_transcripts,
-          task_runs,
-          tasks,
-          user_repositories,
-          user_roles,
-          users,
-          roles,
-          repositories,
-          snippets,
-          system_settings,
-          credentials,
-          app_metadata
-        RESTART IDENTITY CASCADE
-      `);
-
-      if (bootstrapAdminUserId) {
-        await client.query(
-          "INSERT INTO app_metadata (key, value, updated_at) VALUES ($1, $2, $3)",
-          [BOOTSTRAP_ADMIN_MARKER_KEY, bootstrapAdminUserId, nowIso()]
-        );
-      }
-
-      for (const role of roles) {
-        await client.query(
-          `
-            INSERT INTO roles (
-              id,
-              name,
-              name_key,
-              description,
-              scopes,
-              allowed_providers,
-              allowed_models,
-              allowed_efforts,
-              scope_version,
-              is_system,
-              created_at,
-              updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12)
-          `,
-          [
-            role.id,
-            String(role.name ?? "").trim(),
-            String(role.name ?? "").trim().toLowerCase(),
-            String(role.description ?? "").trim(),
-            JSON.stringify(Array.isArray(role.scopes) ? role.scopes : []),
-            JSON.stringify(Array.isArray(role.allowedProviders) ? role.allowedProviders : []),
-            JSON.stringify(Array.isArray(role.allowedModels) ? role.allowedModels : []),
-            JSON.stringify(Array.isArray(role.allowedEfforts) ? role.allowedEfforts : []),
-            typeof role.scopeVersion === "number" ? role.scopeVersion : 0,
-            role.isSystem === true,
-            role.createdAt,
-            role.updatedAt
-          ]
-        );
-      }
-
-      for (const user of users) {
-        await client.query(
-          `
-            INSERT INTO users (
-              id,
-              name,
-              email,
-              git_author_name,
-              git_author_email,
-              active,
-              agent_response_preference,
-              password_hash,
-              password_salt,
-              last_login_at,
-              created_at,
-              updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
-          `,
-          [
-            user.id,
-            String(user.name ?? "").trim(),
-            String(user.email ?? "").trim().toLowerCase(),
-            trimString((user as { gitAuthorName?: string }).gitAuthorName),
-            trimString((user as { gitAuthorEmail?: string }).gitAuthorEmail)?.toLowerCase() ?? null,
-            user.active !== false,
-            JSON.stringify(
-              user.agentResponsePreference &&
-                typeof user.agentResponsePreference === "object"
-                ? user.agentResponsePreference
-                : { enabled: false, style: null }
-            ),
-            user.passwordHash,
-            user.passwordSalt,
-            user.lastLoginAt ?? null,
-            user.createdAt,
-            user.updatedAt
-          ]
-        );
-
-        for (const roleId of stringArray(user.roleIds)) {
-          await client.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)", [user.id, roleId]);
-        }
-      }
-
-      for (const repository of repositories) {
-        await client.query(
-          `
-            INSERT INTO repositories (
-              id,
-              name,
-              url,
-              default_branch,
-              env_vars,
-              env_secrets,
-              webhook_url,
-              webhook_enabled,
-              webhook_secret,
-              webhook_last_attempt_at,
-              webhook_last_status,
-              webhook_last_error,
-              created_at,
-              updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14)
-          `,
-          [
-            repository.id,
-            String(repository.name ?? "").trim(),
-            String(repository.url ?? "").trim(),
-            trimString(repository.defaultBranch) ?? "develop",
-            JSON.stringify(repositoryEnvVarArray(repository.envVars)),
-            JSON.stringify(repositoryEnvSecretArray(repository.envSecrets)),
-            trimString(repository.webhookUrl),
-            repository.webhookEnabled === true,
-            trimString(repository.webhookSecret),
-            repository.webhookLastAttemptAt ?? null,
-            trimString(repository.webhookLastStatus),
-            trimString(repository.webhookLastError),
-            repository.createdAt,
-            repository.updatedAt
-          ]
-        );
-      }
-
-      for (const user of users) {
-        for (const repositoryId of stringArray(user.repositoryIds)) {
-          if (!repositoryIds.has(repositoryId)) {
-            skippedUserRepositoryAssignments += 1;
-            continue;
-          }
-          await client.query("INSERT INTO user_repositories (user_id, repository_id) VALUES ($1, $2)", [user.id, repositoryId]);
-        }
-      }
-
-      for (const snippet of snippets) {
-        await client.query(
-          "INSERT INTO snippets (id, name, content, created_at, updated_at, variables) VALUES ($1, $2, $3, $4, $5, $6::jsonb)",
-          [
-            snippet.id,
-            String(snippet.name ?? "").trim(),
-            String(snippet.content ?? "").trim(),
-            snippet.createdAt,
-            snippet.updatedAt,
-            JSON.stringify(Array.isArray(snippet.variables) ? snippet.variables : [])
-          ]
-        );
-      }
-
-      if (settings) {
-        await client.query(
-          `
-            INSERT INTO system_settings (
-              singleton_id,
-              default_provider,
-              max_agents,
-              branch_prefix,
-              workspace_provisioning_mode,
-              git_username,
-              mcp_servers,
-              openai_base_url,
-              task_prompt_magic_model,
-              task_prompt_magic_template,
-              codex_default_model,
-              codex_default_effort,
-              claude_default_model,
-              claude_default_effort,
-              response_preference_presets
-            )
-            VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13::jsonb)
-          `,
-          [
-            trimString(settings.defaultProvider) ?? "codex",
-            typeof settings.maxAgents === "number" ? settings.maxAgents : 2,
-            trimString(settings.branchPrefix) ?? "agentswarm",
-            trimString((settings as { workspaceProvisioningMode?: string }).workspaceProvisioningMode) ?? "clone_only",
-            trimString(settings.gitUsername) ?? "x-access-token",
-            JSON.stringify(Array.isArray(settings.mcpServers) ? settings.mcpServers : []),
-            trimString(settings.openaiBaseUrl),
-            trimString((settings as { taskPromptMagicModel?: string }).taskPromptMagicModel) ?? "gpt-5.4-mini",
-            trimString((settings as { taskPromptMagicTemplate?: string }).taskPromptMagicTemplate) ?? "",
-            trimString(settings.codexDefaultModel) ?? "gpt-5.4",
-            trimString(settings.codexDefaultEffort) ?? "high",
-            trimString(settings.claudeDefaultModel) ?? "claude-sonnet-4-5",
-            trimString(settings.claudeDefaultEffort) ?? "high",
-            JSON.stringify(Array.isArray(settings.responsePreferencePresets) ? settings.responsePreferencePresets : [])
-          ]
-        );
-      }
-
-      if (credentialsRaw) {
-        await client.query(
-          "INSERT INTO credentials (singleton_id, payload_encrypted, updated_at) VALUES (1, $1, $2)",
-          [credentialsRaw, nowIso()]
-        );
-      }
-
-      for (const snapshot of taskSnapshots) {
-        const { task, logs, messages, runs, proposals, activeInteractiveSession, transcripts } = snapshot;
-
-        await client.query(
-          `
-            INSERT INTO tasks (id, owner_user_id, status, pinned, created_at, task_data)
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-          `,
-          [
-            task.id,
-            trimString(task.ownerUserId),
-            trimString(task.status) ?? "open",
-            task.pinned === true,
-            task.createdAt,
-            JSON.stringify(task)
-          ]
-        );
-
-        for (const line of logs) {
-          await client.query("INSERT INTO task_logs (task_id, line) VALUES ($1, $2)", [task.id, line]);
-        }
-
-        for (const message of messages) {
-          const messageId = trimString(message.id);
-          const createdAt = trimString(message.createdAt);
-          if (!messageId || !createdAt) {
-            continue;
-          }
-
-          await client.query(
-            `
-              INSERT INTO task_messages (message_id, task_id, created_at, message_data)
-              VALUES ($1, $2, $3, $4::jsonb)
-            `,
-            [messageId, task.id, createdAt, JSON.stringify(message)]
-          );
-        }
-
-        for (const { run, logs: runLogs } of runs) {
-          const runId = trimString(run.id);
-          const startedAt = trimString(run.startedAt);
-          if (!runId || !startedAt) {
-            continue;
-          }
-
-          await client.query(
-            "INSERT INTO task_runs (id, task_id, started_at, run_data) VALUES ($1, $2, $3, $4::jsonb)",
-            [runId, task.id, startedAt, JSON.stringify(run)]
-          );
-
-          for (const line of runLogs) {
-            await client.query("INSERT INTO task_run_logs (run_id, line) VALUES ($1, $2)", [runId, line]);
-          }
-        }
-
-        for (const proposal of proposals) {
-          const proposalId = trimString(proposal.id);
-          const createdAt = trimString(proposal.createdAt);
-          if (!proposalId || !createdAt) {
-            continue;
-          }
-
-          await client.query(
-            `
-              INSERT INTO task_change_proposals (id, task_id, status, created_at, resolved_at, proposal_data)
-              VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-            `,
-            [
-              proposalId,
-              task.id,
-              trimString(proposal.status) ?? "pending",
-              createdAt,
-              trimString(proposal.resolvedAt),
-              JSON.stringify(proposal)
-            ]
-          );
-        }
-
-        if (activeInteractiveSession) {
-          await client.query(
-            "INSERT INTO task_active_interactive_sessions (task_id, session_data) VALUES ($1, $2::jsonb)",
-            [task.id, JSON.stringify(activeInteractiveSession)]
-          );
-        }
-
-        for (const transcript of transcripts) {
-          const sessionId = trimString(transcript.sessionId);
-          if (!sessionId) {
-            continue;
-          }
-
-          await client.query(
-            `
-              INSERT INTO task_interactive_terminal_transcripts (session_id, task_id, transcript_data)
-              VALUES ($1, $2, $3::jsonb)
-              ON CONFLICT (session_id) DO UPDATE
-              SET
-                task_id = EXCLUDED.task_id,
-                transcript_data = EXCLUDED.transcript_data
-            `,
-            [sessionId, task.id, JSON.stringify(transcript)]
-          );
-        }
-      }
-    });
-
-    console.log(
-      JSON.stringify(
-        {
-          ok: true,
-          roles: roles.length,
-          users: users.length,
-          repositories: repositories.length,
-          skippedUserRepositoryAssignments,
-          snippets: snippets.length,
-          tasks: taskSnapshots.length
-        },
-        null,
-        2
-      )
-    );
-  } finally {
-    await Promise.all([
-      postgresPool.end(),
-      redisClients.command.quit(),
-      redisClients.pub.quit(),
-      redisClients.sub.quit()
-    ]);
-  }
-};
-
-void main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
-````
-
-## File: apps/server/src/lib/task-interactive-terminal.ts
-````typescript
-import { spawn as spawnChild } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { access, constants, rm } from "node:fs/promises";
-import type { IncomingMessage, Server as HttpServer } from "node:http";
-import path from "node:path";
-import type { Duplex } from "node:stream";
-import { URL } from "node:url";
-
-import { WebSocket, WebSocketServer } from "ws";
-import pty from "node-pty";
-
-import {
-  getTaskStatusLabel,
-  getTaskTerminalSessionLabel,
-  getTaskTerminalSessionSentenceLabel,
-  isActiveTaskStatus,
-  isQueuedTaskStatus,
-  type Task,
-  type TaskTerminalSessionMode
-} from "@agentswarm/shared-types";
-
-import { env } from "../config/env.js";
-import type { AuthService } from "./auth.js";
-import type { SettingsStore } from "../services/settings-store.js";
-import type { SpawnerService } from "../services/spawner.js";
-import type { TaskMetadata, TaskStore } from "../services/task-store.js";
-import type { RepositoryStore } from "../services/repository-store.js";
-import { canUserAccessTask } from "./task-ownership.js";
-import { resolveWorkspaceGitRuntimeMounts } from "./git-runtime-mounts.js";
-import { materializeRepositoryRuntimeEnvEntries } from "./repository-runtime-env.js";
-import {
-  claudeModelSupportsThinkingBudget,
-  claudeThinkingBudgetTokensForProfile,
-  codexReasoningEffortForProfile,
-  defaultModelForProvider
-} from "./provider-config.js";
-import {
-  collectMcpServerEnvEntries,
-  collectMissingMcpServerBearerTokenEnvVars,
-  serializeClaudeMcpConfig,
-  serializeCodexMcpConfig
-} from "./mcp-config.js";
-import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
-import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
-import { resolveTaskGitCommitIdentity, type GitCommitIdentity } from "./task-git-identity.js";
-import {
-  buildGitTerminalDockerEnvEntries,
-  buildGitTerminalEnvEntries,
-  buildInteractiveWorkspaceGitEnvEntries
-} from "./task-interactive-terminal-git-env.js";
-import {
-  emitDockerSocketEnabledEventOnce,
-  emitNestedContainerSpawnedEvent,
-  resolveDockerSocketAccessPolicy,
-  resolveDockerSocketEnvEntries,
-  resolveDockerSocketMountArgs
-} from "./docker-socket-access.js";
-import type { UserStore } from "../services/user-store.js";
-import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js";
-
-const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
-const INTERACTIVE_WORKSPACE_PATH = "/workspace";
-const INTERACTIVE_WS_PING_INTERVAL_MS = 25_000;
-const INTERACTIVE_TRANSCRIPT_LIMIT = 2_000_000;
-const INTERACTIVE_EXIT_WAIT_MS = 1_500;
-const INTERACTIVE_TERMINAL_CLOSE_CODE = 1012;
-const PROVIDER_SESSION_ID_FILE = "agentswarm-session-id.txt";
-const repositoryEnvFileStore = new RepositoryEnvFileStore();
-
-function normalizeTerminalSessionMode(value: string | null | undefined): TaskTerminalSessionMode {
-  return value === "git" ? "git" : "interactive";
-}
-
-function buildCodexUserConfigToml(workspacePath: string, model: string, mcpConfig: string): string {
-  const pathSafe = workspacePath.replace(/"/g, "");
-  const modelSafe = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const modelTomlKey = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  return `model = "${modelSafe}"
-sandbox_mode = "danger-full-access"
-approval_policy = "never"
-
-[projects."${pathSafe}"]
-trust_level = "trusted"
-
-[notice]
-hide_rate_limit_model_nudge = true
-hide_gpt5_1_migration_prompt = true
-"hide_gpt-5.1-codex-max_migration_prompt" = true
-
-[tui]
-show_tooltips = false
-
-[tui.model_availability_nux]
-"${modelTomlKey}" = 1
-
-${mcpConfig}`;
-}
-
-function shellSingleQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
-}
-
-function buildCodexStartScript(
-  configB64: string,
-  model: string,
-  reasoningEffort: string,
-  preferAuthJson: boolean,
-  missingMcpBearerEnvVars: string[]
-): string {
-  const codexArgs = [
-    "--dangerously-bypass-approvals-and-sandbox",
-    '-C "$TASK_INTERACTIVE_WORKSPACE"',
-    "-m",
-    shellSingleQuote(model),
-    "-c cli_auth_credentials_store=file",
-    ...(preferAuthJson ? [] : ["-c forced_login_method=api"]),
-    "-c",
-    shellSingleQuote(`model_reasoning_effort="${reasoningEffort}"`)
-  ];
-
-  const authBootstrap = preferAuthJson
-    ? 'printf %s "$CODEX_AUTH_JSON_B64" | base64 -d > ~/.codex/auth.json'
-    : 'printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file';
-
-  return [
-    ...(missingMcpBearerEnvVars.length > 0
-      ? [
-          `echo ${shellSingleQuote(
-            `[agentswarm] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
-          )} >&2`
-        ]
-      : []),
-    "mkdir -p ~/.codex",
-    `printf '%s' ${shellSingleQuote(configB64)} | base64 -d > ~/.codex/config.toml`,
-    authBootstrap,
-    `SESSION_FILE="$HOME/.codex/${PROVIDER_SESSION_ID_FILE}"`,
-    'SESSION_ID=""',
-    'if [ -f "$SESSION_FILE" ]; then IFS= read -r SESSION_ID < "$SESSION_FILE" || true; fi',
-    `if [ -n "$SESSION_ID" ]; then exec codex resume ${codexArgs.join(" ")} "$SESSION_ID"; fi`,
-    `exec codex ${codexArgs.join(" ")}`,
-  ].join(" && ");
-}
-
-function buildClaudeSettingsJson(): string {
-  return JSON.stringify({
-    autoUpdaterStatus: "disabled",
-    disableBypassPermissionsMode: "disable"
-  });
-}
-
-function buildClaudeStartScript(
-  model: string,
-  settingsJson: string,
-  mcpConfigB64: string,
-  missingMcpBearerEnvVars: string[]
-): string {
-  const claudeArgs = [
-    "--model",
-    shellSingleQuote(model),
-    "--settings",
-    shellSingleQuote(settingsJson),
-    "--mcp-config",
-    '"$HOME/.claude/mcp-config.json"'
-  ];
-
-  return [
-    ...(missingMcpBearerEnvVars.length > 0
-      ? [
-          `echo ${shellSingleQuote(
-            `[agentswarm] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
-          )} >&2`
-        ]
-      : []),
-    'mkdir -p "$HOME/.claude" "$HOME/.local/bin"',
-    'if [ ! -x "$HOME/.local/bin/claude" ] && [ -x "/opt/claude-code/.local/bin/claude" ]; then ln -sf "/opt/claude-code/.local/bin/claude" "$HOME/.local/bin/claude"; fi',
-    'CLAUDE_BIN="$HOME/.local/bin/claude"',
-    'if [ ! -x "$CLAUDE_BIN" ] && [ -x "/opt/claude-code/.local/bin/claude" ]; then CLAUDE_BIN="/opt/claude-code/.local/bin/claude"; fi',
-    'if [ ! -x "$CLAUDE_BIN" ]; then CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"; fi',
-    'if [ -z "$CLAUDE_BIN" ] || [ ! -x "$CLAUDE_BIN" ]; then echo "Claude CLI not found in image." >&2; exit 127; fi',
-    `printf '%s' ${shellSingleQuote(mcpConfigB64)} | base64 -d > "$HOME/.claude/mcp-config.json"`,
-    'cd "$TASK_INTERACTIVE_WORKSPACE"',
-    `SESSION_FILE="$HOME/.claude/${PROVIDER_SESSION_ID_FILE}"`,
-    'SESSION_ID=""',
-    'if [ -f "$SESSION_FILE" ]; then IFS= read -r SESSION_ID < "$SESSION_FILE" || true; fi',
-    "sleep 1",
-    `if [ -n "$SESSION_ID" ]; then exec "$CLAUDE_BIN" --resume "$SESSION_ID" ${claudeArgs.join(" ")}; fi`,
-    `exec "$CLAUDE_BIN" ${claudeArgs.join(" ")}`
-  ].join(" && ");
-}
-
-type InteractiveTerminalRuntimeConfig =
-  | {
-      ok: true;
-      provider: Task["provider"];
-      image: string;
-      providerLabel: string;
-      persistentState?: {
-        containerPath: string;
-        configContainerPath?: string;
-        uid: number;
-        gid: number;
-      };
-      envEntries: Array<[string, string]>;
-      startScript: string;
-    }
-  | {
-      ok: false;
-      reason: string;
-    };
-
-type InteractiveRuntimeSettings = Awaited<ReturnType<SettingsStore["getSettings"]>>;
-type InteractiveRuntimeCredentials = Awaited<ReturnType<SettingsStore["getRuntimeCredentials"]>>;
-
-function resolveGitTerminalRuntimeConfig(
-  credentials: InteractiveRuntimeCredentials,
-  gitIdentity?: GitCommitIdentity | null
-):
-  | {
-      ok: true;
-      image: string;
-      envEntries: Array<[string, string]>;
-      startScript: string;
-    }
-  | {
-      ok: false;
-      reason: string;
-    } {
-  const image = env.GIT_TERMINAL_IMAGE?.trim();
-  if (!image) {
-    return { ok: false, reason: "Terminal is not configured (set GIT_TERMINAL_IMAGE on the server)." };
-  }
-
-  return {
-    ok: true,
-    image,
-    envEntries: buildGitTerminalEnvEntries({
-      workspacePath: INTERACTIVE_WORKSPACE_PATH,
-      githubToken: credentials.githubToken,
-      gitUsername: credentials.gitUsername,
-      gitIdentity
-    }),
-    startScript: buildGitTerminalStartScript()
-  };
-}
-
-function resolveInteractiveTerminalModel(task: Pick<TaskMetadata, "provider" | "providerProfile" | "modelOverride">): string {
-  const configured = task.modelOverride?.trim();
-  if (configured) {
-    return configured;
-  }
-
-  return defaultModelForProvider(task.provider, task.providerProfile) ?? (task.provider === "claude" ? "claude-sonnet-4-5" : "gpt-5.4");
-}
-
-function resolveInteractiveTerminalRuntimeConfig(
-  task: Pick<TaskMetadata, "provider" | "providerProfile" | "modelOverride">,
-  settings: InteractiveRuntimeSettings,
-  credentials: InteractiveRuntimeCredentials
-): InteractiveTerminalRuntimeConfig {
-  const model = resolveInteractiveTerminalModel(task);
-  const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(settings.mcpServers);
-
-  if (task.provider === "claude") {
-    const image = env.CLAUDE_INTERACTIVE_IMAGE?.trim();
-    if (!image) {
-      return { ok: false, reason: "Interactive Claude Code is not configured (set CLAUDE_INTERACTIVE_IMAGE on the server)." };
-    }
-    if (!credentials.anthropicApiKey) {
-      return { ok: false, reason: "Anthropic API key is not configured in Settings." };
-    }
-
-    const thinkingBudgetTokens = claudeModelSupportsThinkingBudget(model)
-      ? claudeThinkingBudgetTokensForProfile(task.providerProfile)
-      : undefined;
-
-    return {
-      ok: true,
-      provider: "claude",
-      image,
-      providerLabel: "Claude Code",
-      persistentState: {
-        containerPath: "/home/claude/.claude",
-        configContainerPath: "/home/claude/.claude.json",
-        uid: 1000,
-        gid: 1000
-      },
-      envEntries: [
-        ["ANTHROPIC_API_KEY", credentials.anthropicApiKey],
-        ["TERM", "xterm-256color"],
-        ["HOME", "/home/claude"],
-        ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
-        ...(typeof thinkingBudgetTokens === "number" ? [["MAX_THINKING_TOKENS", String(thinkingBudgetTokens)] as [string, string]] : []),
-        ...collectMcpServerEnvEntries(settings.mcpServers),
-        ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
-      ],
-      startScript: buildClaudeStartScript(
-        model,
-        buildClaudeSettingsJson(),
-        Buffer.from(serializeClaudeMcpConfig(settings.mcpServers), "utf8").toString("base64"),
-        missingMcpBearerEnvVars
-      )
-    };
-  }
-
-  const image = env.CODEX_INTERACTIVE_IMAGE?.trim();
-  if (!image) {
-    return { ok: false, reason: "Interactive Codex is not configured (set CODEX_INTERACTIVE_IMAGE on the server)." };
-  }
-  if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
-    return { ok: false, reason: "OpenAI API key or profile Codex auth.json is not configured." };
-  }
-  const useCodexAuthJson = Boolean(credentials.codexAuthJson);
-
-  const envEntries: Array<[string, string]> = [
-    ...(credentials.openaiApiKey ? [["OPENAI_API_KEY", credentials.openaiApiKey] as [string, string]] : []),
-    ...(credentials.codexAuthJson
-      ? [["CODEX_AUTH_JSON_B64", Buffer.from(credentials.codexAuthJson, "utf8").toString("base64")] as [string, string]]
-      : []),
-    ["TERM", "xterm-256color"],
-    ["HOME", "/root"],
-    ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
-    ["CODEX_TRUST_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
-    ...collectMcpServerEnvEntries(settings.mcpServers),
-    ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
-  ];
-  if (settings.openaiBaseUrl?.trim()) {
-    envEntries.push(["OPENAI_BASE_URL", settings.openaiBaseUrl.trim()]);
-  }
-
-  return {
-    ok: true,
-    provider: "codex",
-    image,
-    providerLabel: "Codex",
-    persistentState: {
-      containerPath: "/root/.codex",
-      uid: 0,
-      gid: 0
-    },
-    envEntries,
-    startScript: buildCodexStartScript(
-      Buffer.from(
-        buildCodexUserConfigToml(
-          INTERACTIVE_WORKSPACE_PATH,
-          model,
-          serializeCodexMcpConfig(settings.mcpServers)
-        ),
-        "utf8"
-      ).toString("base64"),
-      model,
-      codexReasoningEffortForProfile(task.providerProfile),
-      useCodexAuthJson,
-      missingMcpBearerEnvVars
-    )
-  };
-}
-
-function forceRemoveDockerSession(containerName: string): void {
-  const child = spawnChild("docker", ["rm", "-f", containerName], {
-    stdio: "ignore",
-    detached: true,
-  });
-  child.unref();
-}
-
-function terminalImageBuildHint(mode: TaskTerminalSessionMode, provider: Task["provider"], image: string): string {
-  const dockerfile =
-    mode === "git" ? "Dockerfile.git" : provider === "claude" ? "Dockerfile.claude" : "Dockerfile.codex";
-  return `docker build -f tools/codex-web-terminal/${dockerfile} -t ${image} tools/codex-web-terminal`;
-}
-
-async function dockerImageExists(image: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const child = spawnChild("docker", ["image", "inspect", image], {
-      stdio: "ignore"
-    });
-
-    child.on("error", () => resolve(false));
-    child.on("close", (code) => resolve(code === 0));
-  });
-}
-
-function denySocket(socket: Duplex, status: number, body: string): void {
-  const reason = status === 401 ? "Unauthorized" : status === 403 ? "Forbidden" : status === 404 ? "Not Found" : "Error";
-  socket.write(
-    `HTTP/1.1 ${status} ${reason}\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n${body}`,
-  );
-  socket.destroy();
-}
-
-export interface TaskInteractiveTerminalDeps {
-  auth: AuthService;
-  taskStore: TaskStore;
-  settingsStore: SettingsStore;
-  spawner: SpawnerService;
-  userStore: Pick<UserStore, "getUser">;
-  repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries">;
-}
-
-interface ActiveInteractiveTerminalController {
-  sessionId: string;
-  mode: TaskTerminalSessionMode;
-  hasAttachedClient: () => boolean;
-  attachClient: (ws: WebSocket) => boolean;
-  terminate: (reason?: string) => Promise<void>;
-}
-
-const activeInteractiveTerminalControllers = new Map<string, ActiveInteractiveTerminalController>();
-
-function getActiveInteractiveTerminalController(
-  taskId: string,
-  sessionId?: string | null
-): ActiveInteractiveTerminalController | null {
-  const active = activeInteractiveTerminalControllers.get(taskId);
-  if (!active) {
-    return null;
-  }
-  if (sessionId && active.sessionId !== sessionId) {
-    return null;
-  }
-  return active;
-}
-
-function registerActiveInteractiveTerminalController(
-  taskId: string,
-  controller: ActiveInteractiveTerminalController
-): void {
-  activeInteractiveTerminalControllers.set(taskId, controller);
-}
-
-function unregisterActiveInteractiveTerminalController(taskId: string, sessionId: string): void {
-  const active = activeInteractiveTerminalControllers.get(taskId);
-  if (active?.sessionId === sessionId) {
-    activeInteractiveTerminalControllers.delete(taskId);
-  }
-}
-
-function sendInteractiveTerminalError(ws: WebSocket, message: string): void {
-  if (ws.readyState !== WebSocket.OPEN) {
-    return;
-  }
-
-  ws.send(JSON.stringify({ type: "error", message }), () => {
-    try {
-      ws.close(1011, "terminal failed");
-    } catch {
-      /* ignore */
-    }
-  });
-}
-
-export async function killTaskInteractiveTerminalSession(taskId: string): Promise<boolean> {
-  const active = activeInteractiveTerminalControllers.get(taskId);
-  if (!active) {
-    return false;
-  }
-
-  await active.terminate();
-  return true;
-}
-
-export type TaskInteractiveTerminalStatusPayload = {
-  available: boolean;
-  reason?: string;
-  /** When true, a browser session is already connected; block duplicate terminals and task composer sends. */
-  activeInteractiveSession?: boolean;
-  /** Present when a terminal session is active for the task. */
-  terminalMode?: TaskTerminalSessionMode;
-};
-
-export async function getTaskInteractiveTerminalStatus(
-  taskStore: TaskStore,
-  settingsStore: SettingsStore,
-  taskId: string,
-  mode: TaskTerminalSessionMode = "interactive",
-  userId?: string | null
-): Promise<TaskInteractiveTerminalStatusPayload> {
-  const task = await taskStore.getTaskMetadata(taskId);
-  if (!task) {
-    return { available: false, reason: "Task not found." };
-  }
-
-  if (task.status === "archived") {
-    return { available: false, reason: "Archived tasks are read-only." };
-  }
-
-  if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
-    return {
-      available: false,
-      reason: "Terminal unavailable while the task is queued or running. Finish or cancel that run first (one action at a time)."
-    };
-  }
-
-  const activeInteractiveSession = await taskStore.getActiveInteractiveSession(taskId);
-  if (activeInteractiveSession) {
-    const controller = getActiveInteractiveTerminalController(taskId, activeInteractiveSession.sessionId);
-    const activeModeLabel = getTaskTerminalSessionLabel(activeInteractiveSession.mode);
-    if (!controller) {
-      return {
-        available: false,
-        reason: `${activeModeLabel} session is active but unavailable from this server process. Use Kill Terminal to clear it.`,
-        activeInteractiveSession: true,
-        terminalMode: activeInteractiveSession.mode
-      };
-    }
-    if (activeInteractiveSession.mode !== mode) {
-      return {
-        available: false,
-        reason: `${activeModeLabel} session is already active for this task. Stop it before opening ${getTaskTerminalSessionLabel(mode)}.`,
-        activeInteractiveSession: true,
-        terminalMode: activeInteractiveSession.mode
-      };
-    }
-    if (controller.hasAttachedClient()) {
-      return {
-        available: false,
-        reason: `${activeModeLabel} session is already open in another window.`,
-        activeInteractiveSession: true,
-        terminalMode: activeInteractiveSession.mode
-      };
-    }
-    return {
-      available: false,
-      reason: `The ${getTaskTerminalSessionSentenceLabel(mode)} session is shutting down.`,
-      activeInteractiveSession: true,
-      terminalMode: activeInteractiveSession.mode
-    };
-  }
-
-  if (mode !== "git" && await taskStore.hasPendingChangeProposal(taskId)) {
-    return { available: false, reason: "Apply or reject the pending checkpoint before opening a terminal." };
-  }
-
-  const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
-  try {
-    await access(workspaceOnServer, constants.R_OK | constants.X_OK);
-  } catch {
-    return { available: false, reason: "No workspace folder on disk for this task yet." };
-  }
-
-  if (mode === "git") {
-    const credentials = await settingsStore.getRuntimeCredentials(userId);
-    const runtime = resolveGitTerminalRuntimeConfig(credentials);
-    if (!runtime.ok) {
-      return { available: false, reason: runtime.reason };
-    }
-    if (!(await dockerImageExists(runtime.image))) {
-      return {
-        available: false,
-        reason: `Terminal image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("git", task.provider, runtime.image)}`
-      };
-    }
-    return { available: true };
-  }
-
-  const [settings, credentials] = await Promise.all([
-    settingsStore.getSettings(),
-    settingsStore.getRuntimeCredentials(userId)
-  ]);
-  const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
-  if (!runtime.ok) {
-    return { available: false, reason: runtime.reason };
-  }
-  if (!(await dockerImageExists(runtime.image))) {
-    return {
-      available: false,
-      reason: `Interactive ${runtime.providerLabel} image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("interactive", task.provider, runtime.image)}`
-    };
-  }
-
-  return { available: true };
-}
-
-/**
- * Handles WebSocket upgrades for `/tasks/:taskId/interactive-terminal`.
- * Prepended so Socket.io still receives `/socket.io/` upgrades.
- */
-export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, deps: TaskInteractiveTerminalDeps): void {
-  const wss = new WebSocketServer({ noServer: true });
-
-  httpServer.prependListener("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
-    const host = request.headers.host ?? "127.0.0.1";
-    const requestUrl = new URL(request.url ?? "/", `http://${host}`);
-    const pathOnly = requestUrl.pathname;
-    const terminalMode = normalizeTerminalSessionMode(requestUrl.searchParams.get("mode"));
-    const match = pathOnly.match(WS_PATH_RE);
-    if (!match) {
-      return;
-    }
-
-    const taskId = match[1];
-    if (!taskId) {
-      return;
-    }
-
-    void (async () => {
-      const auth = await deps.auth.authenticateCookieHeader(request.headers);
-      if (!auth) {
-        denySocket(socket, 401, "Authentication required");
-        return;
-      }
-      if (!auth.scopes.has("task:edit")) {
-        denySocket(socket, 403, "task:edit scope required");
-        return;
-      }
-      if (!auth.scopes.has("task:interactive")) {
-        denySocket(socket, 403, "task:interactive scope required");
-        return;
-      }
-
-      const task = await deps.taskStore.getTask(taskId);
-      if (!task || !canUserAccessTask(auth.user, task)) {
-        denySocket(socket, 404, "Task not found");
-        return;
-      }
-      wss.handleUpgrade(request, socket, head, (ws) => {
-        void initializeTaskInteractiveTerminalWebSocket(ws, task, deps, terminalMode, auth.user.id).catch(() => {
-          sendInteractiveTerminalError(ws, `${getTaskTerminalSessionLabel(terminalMode)} initialization failed.`);
-        });
-      });
-    })().catch(() => {
-      try {
-        denySocket(socket, 500, "Internal error");
-      } catch {
-        /* ignore */
-      }
-    });
-  });
-}
-
-async function initializeTaskInteractiveTerminalWebSocket(
-  ws: WebSocket,
-  task: Task,
-  deps: TaskInteractiveTerminalDeps,
-  mode: TaskTerminalSessionMode,
-  userId?: string | null
-): Promise<void> {
-  const taskId = task.id;
-  const activeInteractiveSession = await deps.taskStore.getActiveInteractiveSession(taskId);
-  if (activeInteractiveSession) {
-    const controller = getActiveInteractiveTerminalController(taskId, activeInteractiveSession.sessionId);
-    const activeModeLabel = getTaskTerminalSessionLabel(activeInteractiveSession.mode);
-    if (!controller) {
-      sendInteractiveTerminalError(
-        ws,
-        `${activeModeLabel} session is active but unavailable from this server process. Use Kill Terminal to clear it.`
-      );
-      return;
-    }
-    if (activeInteractiveSession.mode !== mode) {
-      sendInteractiveTerminalError(
-        ws,
-        `${activeModeLabel} session is already active for this task. Stop it before opening ${getTaskTerminalSessionLabel(mode)}.`
-      );
-      return;
-    }
-    if (controller.hasAttachedClient()) {
-      sendInteractiveTerminalError(ws, `${activeModeLabel} session is already open in another window.`);
-      return;
-    }
-    if (!controller.attachClient(ws)) {
-      sendInteractiveTerminalError(ws, `The ${getTaskTerminalSessionSentenceLabel(mode)} session is shutting down.`);
-      return;
-    }
-    return;
-  }
-
-  const status = await getTaskInteractiveTerminalStatus(deps.taskStore, deps.settingsStore, taskId, mode, userId);
-  if (!status.available) {
-    sendInteractiveTerminalError(ws, status.reason ?? `${getTaskTerminalSessionLabel(mode)} is unavailable`);
-    return;
-  }
-
-  let interactiveSessionId: string | null = null;
-  let sessionRepositoryEnvDir: string | null = null;
-
-  try {
-    const started = await deps.spawner.beginInteractiveTerminalSession(taskId, mode);
-    interactiveSessionId = started.sessionId;
-    const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
-    const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
-    const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
-    if (mode === "git") {
-      const [credentials, gitIdentity, repositoryRuntimeEnvEntries] = await Promise.all([
-        deps.settingsStore.getRuntimeCredentials(userId),
-        resolveTaskGitCommitIdentity(task, deps.userStore, {
-          name: env.GIT_USER_NAME,
-          email: env.GIT_USER_EMAIL
-        }),
-        deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
-      ]);
-      const runtime = resolveGitTerminalRuntimeConfig(credentials, gitIdentity);
-      if (!runtime.ok) {
-        throw new Error(runtime.reason);
-      }
-
-      const sessionName = `aswgit-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
-      const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "interactive-env", taskId, interactiveSessionId);
-      sessionRepositoryEnvDir = repositoryEnvDir;
-      const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
-        destinationDir: repositoryEnvDir,
-        entries: repositoryRuntimeEnvEntries,
-        fileStore: repositoryEnvFileStore
-      });
-      const dockerEnv: string[] = [];
-      for (const [name, value] of buildGitTerminalDockerEnvEntries({
-        runtimeEnvEntries: runtime.envEntries,
-        repositoryEnvEntries: repositoryRuntimeEnv
-      })) {
-        dockerEnv.push("-e", `${name}=${value}`);
-      }
-      dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
-
-      const dockerArgs = [
-        "run",
-        "-i",
-        "-t",
-        "--rm",
-        "--name",
-        sessionName,
-        "-v",
-        `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
-        "-v",
-        `${dockerBindSource}:/workspace:rw`,
-        ...gitRuntimeMounts,
-        ...dockerEnv,
-        runtime.image,
-        "sh",
-        "-lc",
-        runtime.startScript
-      ];
-
-      const child = pty.spawn("docker", dockerArgs, {
-        name: "xterm-256color",
-        cols: 80,
-        rows: 24,
-        cwd: process.env.HOME || "/",
-        env: { ...process.env, TERM: "xterm-256color", AGENTSWARM_TERMINAL_MODE: mode }
-      });
-
-      wireTerminalWebSocket(ws, child, {
-        taskId,
-        sessionId: interactiveSessionId,
-        spawner: deps.spawner,
-        taskStore: deps.taskStore,
-        mode,
-        cleanup: async () => {
-          forceRemoveDockerSession(sessionName);
-          await rm(repositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
-        }
-      });
-      return;
-    }
-
-    const [credentials, settings, repositoryRuntimeEnvEntries] = await Promise.all([
-      deps.settingsStore.getRuntimeCredentials(userId),
-      deps.settingsStore.getSettings(),
-      deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
-    ]);
-    const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
-    if (!runtime.ok) {
-      throw new Error(runtime.reason);
-    }
-    const dockerSocketPolicy = resolveDockerSocketAccessPolicy(runtime.provider);
-    const dockerSocketMountArgs = resolveDockerSocketMountArgs(dockerSocketPolicy);
-    if (dockerSocketPolicy.enabled) {
-      emitDockerSocketEnabledEventOnce({ provider: runtime.provider, policy: dockerSocketPolicy });
-    }
-
-    const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
-    const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "interactive-env", taskId, interactiveSessionId);
-    sessionRepositoryEnvDir = repositoryEnvDir;
-    const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
-      destinationDir: repositoryEnvDir,
-      entries: repositoryRuntimeEnvEntries,
-      fileStore: repositoryEnvFileStore
-    });
-    const statePaths = runtime.persistentState
-      ? await ensureTaskProviderStatePaths(task.id, runtime.provider, {
-          uid: runtime.persistentState.uid,
-          gid: runtime.persistentState.gid
-        })
-      : null;
-    const dockerEnv: string[] = [];
-    for (const [name, value] of runtime.envEntries) {
-      dockerEnv.push("-e", `${name}=${value}`);
-    }
-    for (const [name, value] of repositoryRuntimeEnv) {
-      dockerEnv.push("-e", `${name}=${value}`);
-    }
-    for (const [name, value] of resolveDockerSocketEnvEntries(dockerSocketPolicy)) {
-      dockerEnv.push("-e", `${name}=${value}`);
-    }
-    dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
-
-    const dockerArgs = [
-      "run",
-      "-i",
-      "-t",
-      "--rm",
-      "--name",
-      sessionName,
-      "-v",
-      `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
-      "-v",
-      `${dockerBindSource}:/workspace:rw`,
-      ...dockerSocketMountArgs,
-      ...gitRuntimeMounts,
-      ...(statePaths && runtime.persistentState
-        ? ["-v", `${statePaths.hostPath}:${runtime.persistentState.containerPath}:rw`]
-        : []),
-      ...(statePaths && runtime.persistentState?.configContainerPath && statePaths.configHostPath
-        ? ["-v", `${statePaths.configHostPath}:${runtime.persistentState.configContainerPath}:rw`]
-        : []),
-      ...dockerEnv,
-      runtime.image,
-      "sh",
-      "-lc",
-      runtime.startScript,
-    ];
-    emitNestedContainerSpawnedEvent({
-      source: "interactive_terminal",
-      taskId,
-      provider: runtime.provider,
-      policy: dockerSocketPolicy
-    });
-
-    const child = pty.spawn("docker", dockerArgs, {
-      name: "xterm-256color",
-      cols: 80,
-      rows: 24,
-      cwd: process.env.HOME || "/",
-      env: { ...process.env, TERM: "xterm-256color", AGENTSWARM_TERMINAL_MODE: mode },
-    });
-
-    wireTerminalWebSocket(ws, child, {
-      taskId,
-      sessionId: interactiveSessionId,
-      spawner: deps.spawner,
-      taskStore: deps.taskStore,
-      mode,
-      cleanup: async () => {
-        forceRemoveDockerSession(sessionName);
-        await rm(repositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
-      }
-    });
-  } catch (error) {
-    if (sessionRepositoryEnvDir) {
-      await rm(sessionRepositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
-    }
-    if (interactiveSessionId) {
-      await deps.spawner.endInteractiveTerminalSession(taskId, interactiveSessionId).catch(() => undefined);
-    }
-    const message = error instanceof Error ? error.message : `Could not start ${getTaskTerminalSessionSentenceLabel(mode)} session`;
-    sendInteractiveTerminalError(ws, message);
-  }
-}
-
-function wireTerminalWebSocket(
-  ws: WebSocket,
-  child: pty.IPty,
-  proposalCtx: {
-    taskId: string;
-    sessionId: string;
-    spawner: SpawnerService;
-    taskStore: TaskStore;
-    mode: TaskTerminalSessionMode;
-    cleanup?: () => Promise<void> | void;
-  }
-): void {
-  let sawTerminalOutput = false;
-  let transcriptBuffer = "";
-  let transcriptTruncated = false;
-  let transcriptSaved = false;
-  let currentWs: WebSocket | null = null;
-  let currentWsCleanup: (() => void) | null = null;
-  let cleanupPromise: Promise<void> | null = null;
-  let resolveChildExit: (() => void) | null = null;
-  const childExitPromise = new Promise<void>((resolve) => {
-    resolveChildExit = resolve;
-  });
-  const terminalLabel = getTaskTerminalSessionLabel(proposalCtx.mode);
-  const terminalSentenceLabel = getTaskTerminalSessionSentenceLabel(proposalCtx.mode);
-
-  const logLifecycle = (message: string): void => {
-    const taskMessage = `${terminalSentenceLabel} (${proposalCtx.sessionId}): ${message}`;
-    console.info(`[interactive-terminal][${proposalCtx.taskId}][${proposalCtx.sessionId}] ${message}`);
-    void proposalCtx.taskStore.appendLog(proposalCtx.taskId, taskMessage).catch(() => undefined);
-  };
-
-  const appendTranscriptChunk = (chunk: string): void => {
-    if (transcriptTruncated || chunk.length === 0) {
-      return;
-    }
-
-    const remaining = INTERACTIVE_TRANSCRIPT_LIMIT - transcriptBuffer.length;
-    if (remaining <= 0) {
-      transcriptTruncated = true;
-      return;
-    }
-
-    if (chunk.length > remaining) {
-      transcriptBuffer += chunk.slice(0, remaining);
-      transcriptTruncated = true;
-      return;
-    }
-
-    transcriptBuffer += chunk;
-  };
-
-  const persistTranscriptIfNeeded = async (): Promise<void> => {
-    if (transcriptSaved || (!transcriptTruncated && transcriptBuffer.length === 0)) {
-      return;
-    }
-
-    transcriptSaved = true;
-    await proposalCtx.taskStore
-      .saveInteractiveTerminalTranscript(proposalCtx.taskId, proposalCtx.sessionId, transcriptBuffer, transcriptTruncated)
-      .catch(() => undefined);
-  };
-
-  const detachCurrentClient = (): WebSocket | null => {
-    const activeWs = currentWs;
-    currentWs = null;
-    if (currentWsCleanup) {
-      currentWsCleanup();
-      currentWsCleanup = null;
-    }
-    return activeWs;
-  };
-
-  const cleanupSession = (reason = `${terminalLabel} session terminated.`): Promise<void> => {
-    if (cleanupPromise) {
-      return cleanupPromise;
-    }
-
-    cleanupPromise = (async () => {
-      unregisterActiveInteractiveTerminalController(proposalCtx.taskId, proposalCtx.sessionId);
-      const activeWs = detachCurrentClient();
-      logLifecycle(reason);
-      try {
-        if (activeWs && (activeWs.readyState === WebSocket.OPEN || activeWs.readyState === WebSocket.CONNECTING)) {
-          activeWs.close(INTERACTIVE_TERMINAL_CLOSE_CODE, "terminal session terminated");
-        }
-      } catch {
-        /* ignore */
-      }
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* ignore */
-      }
-      await proposalCtx.cleanup?.();
-      await Promise.race([
-        childExitPromise,
-        new Promise<void>((resolve) => setTimeout(resolve, INTERACTIVE_EXIT_WAIT_MS))
-      ]);
-      await persistTranscriptIfNeeded();
-      await proposalCtx.spawner.endInteractiveTerminalSession(proposalCtx.taskId, proposalCtx.sessionId).catch(() => undefined);
-    })();
-
-    return cleanupPromise;
-  };
-
-  const controller: ActiveInteractiveTerminalController = {
-    sessionId: proposalCtx.sessionId,
-    mode: proposalCtx.mode,
-    hasAttachedClient: () => currentWs !== null,
-    attachClient: (nextWs) => {
-      if (cleanupPromise || currentWs) {
-        return false;
-      }
-
-      currentWs = nextWs;
-      let awaitingPong = false;
-
-      const onMessage = (data: WebSocket.RawData, isBinary: boolean) => {
-        if (isBinary) {
-          child.write(Buffer.from(data as Buffer).toString("utf8"));
-          return;
-        }
-        try {
-          const msg = JSON.parse(String(data)) as { type?: string; cols?: number; rows?: number };
-          if (msg.type === "resize") {
-            const cols = Number(msg.cols);
-            const rows = Number(msg.rows);
-            if (Number.isFinite(cols) && Number.isFinite(rows)) {
-              child.resize(
-                Math.max(2, Math.min(512, Math.floor(cols))),
-                Math.max(1, Math.min(256, Math.floor(rows))),
-              );
-            }
-          }
-        } catch {
-          /* ignore */
-        }
-      };
-
-      const onClose = (code: number, reason: Buffer) => {
-        detachCurrentClient();
-        void cleanupSession(`Client disconnected (code ${code}${reason.length > 0 ? `, reason: ${JSON.stringify(reason.toString("utf8"))}` : ""}).`);
-      };
-
-      const onError = (error: Error) => {
-        const message = error instanceof Error && error.message.trim() ? error.message.trim() : "unknown WebSocket error";
-        detachCurrentClient();
-        void cleanupSession(`WebSocket error: ${message}.`);
-      };
-
-      const onPong = () => {
-        awaitingPong = false;
-      };
-
-      const heartbeatInterval = setInterval(() => {
-        if (cleanupPromise || currentWs !== nextWs) {
-          return;
-        }
-        if (awaitingPong) {
-          detachCurrentClient();
-          void cleanupSession("WebSocket ping timeout.");
-          return;
-        }
-        awaitingPong = true;
-        try {
-          nextWs.ping();
-        } catch (error) {
-          const message = error instanceof Error && error.message.trim() ? error.message.trim() : "could not send ping";
-          detachCurrentClient();
-          void cleanupSession(`WebSocket ping failed: ${message}.`);
-        }
-      }, INTERACTIVE_WS_PING_INTERVAL_MS);
-
-      currentWsCleanup = () => {
-        clearInterval(heartbeatInterval);
-        nextWs.off("message", onMessage);
-        nextWs.off("close", onClose);
-        nextWs.off("error", onError);
-        nextWs.off("pong", onPong);
-      };
-
-      nextWs.on("message", onMessage);
-      nextWs.on("close", onClose);
-      nextWs.on("error", onError);
-      nextWs.on("pong", onPong);
-
-      return true;
-    },
-    terminate: (reason?: string) => cleanupSession(reason)
-  };
-
-  registerActiveInteractiveTerminalController(proposalCtx.taskId, controller);
-
-  child.onData((data) => {
-    sawTerminalOutput = true;
-    appendTranscriptChunk(data);
-    if (currentWs?.readyState === WebSocket.OPEN) {
-      currentWs.send(Buffer.from(data, "utf8"), { binary: true });
-    }
-  });
-
-  child.onExit((event) => {
-    resolveChildExit?.();
-    resolveChildExit = null;
-    const exitSummary = `exit code ${event.exitCode}${event.signal ? `, signal ${event.signal}` : ""}`;
-    if (!sawTerminalOutput) {
-      if (currentWs?.readyState === WebSocket.OPEN) {
-        try {
-          currentWs.send(JSON.stringify({ type: "error", message: "Terminal process exited before it produced terminal output." }));
-        } catch {
-          /* ignore */
-        }
-      }
-      void cleanupSession(`Terminal process exited before it produced terminal output (${exitSummary}).`);
-      return;
-    }
-    void cleanupSession(`Terminal process exited (${exitSummary}).`);
-  });
-
-  if (!controller.attachClient(ws)) {
-    void cleanupSession("Could not attach the initial terminal client.");
-  }
-}
+## File: AGENTS.md
+````markdown
+# Agent Harness Guide
+
+This file is a short operating guide for coding agents in this repository.
+
+## Start Here
+- If `REMOTE_BUILD=1`, export `REMOTE_BUILD_IMAGE` first.
+- Run `./scripts/harness/doctor.sh`
+- Run `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh` on clean checkout
+- Run `./scripts/harness/check-human-gated-flow.sh`
+- Run `./scripts/harness/check.sh`
+- Run `./scripts/harness/test.sh` (canonical test command)
+- Run `./scripts/harness/start.sh` (foreground dev mode)
+
+## Expected PR Workflow
+1. Run `./scripts/harness/pr-ready.sh`.
+2. Fix any failing checks.
+3. Complete the agent self-review checklist: `docs/development/agent-review.md`.
+4. Open a PR using `.github/pull_request_template.md`.
+5. Confirm docs are updated when behavior changes.
+
+Note:
+- `pr-ready.sh` includes architecture boundary checks.
+- `test.sh` supports `TEST_SCOPE=unit|integration|e2e|all`.
+
+## Documentation Table of Contents
+- [Architecture Summary](ARCHITECTURE.md)
+- [Docs Home](docs/index.md)
+- [Development Setup](docs/development/setup.md)
+- [Development Commands](docs/development/commands.md)
+- [Human-Gated Flow](docs/development/human-gated-taskwise-delivery-flow.md)
+- [Testing](docs/development/testing.md)
+- [Debugging](docs/development/debugging.md)
+- [Agent Self-Review](docs/development/agent-review.md)
+- [PR Workflow](docs/development/pr-workflow.md)
+- [Architecture Docs](docs/architecture/index.md)
+- [Product Docs](docs/product/index.md)
+- [Quality Docs](docs/quality/scorecard.md)
+- [Golden Principles](docs/quality/golden-principles.md)
+
+## Execution Plans
+- Small tasks can use inline plans in the task conversation.
+- Non-trivial tasks must use the Non-Trivial Task Flow below.
+- Complex tasks must create an execution plan using `docs/exec-plans/template.md`.
+- Plans must be updated during work as steps complete or scope changes.
+- Completed plans move from `docs/exec-plans/active/` to `docs/exec-plans/completed/`.
+- Complex task plans must include the required `Human-Gated Flow Evidence` checklist from the template.
+- Flow reference: `docs/development/human-gated-taskwise-delivery-flow.md`.
+
+## Non-Trivial Task Flow
+Use this flow for any task that requires repository changes beyond a tiny, obvious edit, touches multiple files, changes behavior, affects tests or build output, or has ambiguous requirements.
+
+```mermaid
+flowchart TB
+    A["Read Requirements"] --> B["Quick Repo Research"]
+    B --> C{"Clear Enough?"}
+    C -- No --> D["Ask Clarifying Questions"]
+    D --> A
+    C -- Yes --> E["Create Short Plan + Task List"]
+    E --> F["Human Review / Approval"]
+    F --> G{"Approved?"}
+    G -- No --> A
+    G -- Yes --> H["Run Baseline Checks"]
+    H --> I["Implement Next Task"]
+    I --> J["Run Tests / Build"]
+    J --> K{"Passed?"}
+    K -- No --> I
+    K -- Yes --> L["Self Review"]
+    L --> M{"More Tasks?"}
+    M -- Yes --> I
+    M -- No --> N["Final Verification"]
+    N --> R["Complete"]
+```
+
+## Operating Rules
+- Prefer harness scripts in `scripts/harness/`.
+- Treat non-zero exit codes as failures.
+- Do not assume behavior that is not documented in this repository.
+- Mark missing evidence as `TODO` instead of guessing.
+- Before starting work, inspect `docs/repomix.md` for the current repository context bundle.
+- After any agent run that changes code or repository files, execute `npx repomix --style markdown --output docs/repomix.md` to refresh the repository context bundle.
+- Keep `docs/repomix.md` as the canonical Repomix output referenced by agents.
+
+## Remote Build Runner
+Use `http://host.docker.internal:38127` and call `POST /run` with:
+- `image`
+- `workdir`
+- `cmd` (non-empty string array, for example `["sh","-lc","echo ok"]`)
+
+For `workdir`, prefer `TASK_WORKSPACE_PATH`.
+
+Runner mount support:
+- `dockerSocketContainerPath`: `/var/run/docker.sock` (available for mounting Docker into the runner container)
+
+Harness remote mode:
+- Set `REMOTE_BUILD=1` to force harness scripts to run in Remote Build Runner.
+- Set `REMOTE_BUILD_IMAGE` to the container image used by the runner request.
+- Optional: set `REMOTE_BUILD_RUNNER_URL` (defaults to `http://host.docker.internal:38127`).
+- Harness scripts auto-route to `POST /run` before local execution when remote mode is enabled.
+- Set `REMOTE_BUILD=0` (or unset it) to run harness scripts locally.
+- Use a remote image that has: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
+- `test.sh` auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`) for browser E2E when the remote runner cannot launch Playwright locally.
+
+## Sync Policy Reference
+- GitHub sync ownership and conflict policy: [docs/github-sync-ownership-model.md](docs/github-sync-ownership-model.md)
 ````
 
 ## File: apps/server/src/lib/task-start-orchestrator.ts
@@ -31385,7 +29664,7 @@ export function SnippetsPage() {
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import type { TaskSourceType, TaskType } from "@agentswarm/shared-types";
+import type { TaskType } from "@agentswarm/shared-types";
 import { Button, Flex, Form, Space, Typography, message } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
 import { trackEvent } from "../src/utils/analytics";
@@ -31405,28 +29684,18 @@ export function TaskCreatePage() {
   const [submitting, setSubmitting] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
   const [messageApi, contextHolder] = message.useMessage();
-  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
   const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
-  const isIssueSource = selectedSourceType === "issue";
-  const isPullRequestSource = selectedSourceType === "pull_request";
   const canCreateAnyTaskMode = can("task:build") || can("task:ask");
 
-  const pageTitle =
-    selectedSourceType === "issue"
-      ? "New Task From Issue"
-      : selectedSourceType === "pull_request"
-        ? "New Task From Pull Request"
-        : selectedTaskType === "ask"
-            ? "New Ask Task"
-            : "New Build Task";
+  const pageTitle = selectedTaskType === "ask" ? "New Ask Task" : "New Build Task";
 
   const handleSubmit = async (values: TaskDefinitionFormValues) => {
     setSubmitting(true);
     try {
       const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
       const definition = buildTaskDefinitionInput(values, encodedAttachments);
-      trackEvent("task_create_submitted", { source: definition.sourceType });
+      trackEvent("task_create_submitted", { task_type: definition.taskType });
       const task = await createTaskFromDefinition(definition);
 
       messageApi.success(startMessageForDefinition(definition));
@@ -31480,7 +29749,7 @@ export function TaskCreatePage() {
                 Save Draft
               </Button>
               <Button type="primary" htmlType="submit" loading={submitting} disabled={!canCreateAnyTaskMode}>
-                {isIssueSource ? "Create Task From Issue" : isPullRequestSource ? "Create Task From Pull Request" : "Create Task"}
+                Create Task
               </Button>
             </Space>
           </Flex>
@@ -31537,114 +29806,6 @@ export function TaskCreatePage() {
     "typescript": "^5.6.3"
   }
 }
-````
-
-## File: AGENTS.md
-````markdown
-# Agent Harness Guide
-
-This file is a short operating guide for coding agents in this repository.
-
-## Start Here
-- If `REMOTE_BUILD=1`, export `REMOTE_BUILD_IMAGE` first.
-- Run `./scripts/harness/doctor.sh`
-- Run `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh` on clean checkout
-- Run `./scripts/harness/check-human-gated-flow.sh`
-- Run `./scripts/harness/check.sh`
-- Run `./scripts/harness/test.sh` (canonical test command)
-- Run `./scripts/harness/start.sh` (foreground dev mode)
-
-## Expected PR Workflow
-1. Run `./scripts/harness/pr-ready.sh`.
-2. Fix any failing checks.
-3. Complete the agent self-review checklist: `docs/development/agent-review.md`.
-4. Open a PR using `.github/pull_request_template.md`.
-5. Confirm docs are updated when behavior changes.
-
-Note:
-- `pr-ready.sh` includes architecture boundary checks.
-- `test.sh` supports `TEST_SCOPE=unit|integration|e2e|all`.
-
-## Documentation Table of Contents
-- [Architecture Summary](ARCHITECTURE.md)
-- [Docs Home](docs/index.md)
-- [Development Setup](docs/development/setup.md)
-- [Development Commands](docs/development/commands.md)
-- [Human-Gated Flow](docs/development/human-gated-taskwise-delivery-flow.md)
-- [Testing](docs/development/testing.md)
-- [Debugging](docs/development/debugging.md)
-- [Agent Self-Review](docs/development/agent-review.md)
-- [PR Workflow](docs/development/pr-workflow.md)
-- [Architecture Docs](docs/architecture/index.md)
-- [Product Docs](docs/product/index.md)
-- [Quality Docs](docs/quality/scorecard.md)
-- [Golden Principles](docs/quality/golden-principles.md)
-
-## Execution Plans
-- Small tasks can use inline plans in the task conversation.
-- Non-trivial tasks must use the Non-Trivial Task Flow below.
-- Complex tasks must create an execution plan using `docs/exec-plans/template.md`.
-- Plans must be updated during work as steps complete or scope changes.
-- Completed plans move from `docs/exec-plans/active/` to `docs/exec-plans/completed/`.
-- Complex task plans must include the required `Human-Gated Flow Evidence` checklist from the template.
-- Flow reference: `docs/development/human-gated-taskwise-delivery-flow.md`.
-
-## Non-Trivial Task Flow
-Use this flow for any task that requires repository changes beyond a tiny, obvious edit, touches multiple files, changes behavior, affects tests or build output, or has ambiguous requirements.
-
-```mermaid
-flowchart TB
-    A["Read Requirements"] --> B["Quick Repo Research"]
-    B --> C{"Clear Enough?"}
-    C -- No --> D["Ask Clarifying Questions"]
-    D --> A
-    C -- Yes --> E["Create Short Plan + Task List"]
-    E --> F["Human Review / Approval"]
-    F --> G{"Approved?"}
-    G -- No --> A
-    G -- Yes --> H["Run Baseline Checks"]
-    H --> I["Implement Next Task"]
-    I --> J["Run Tests / Build"]
-    J --> K{"Passed?"}
-    K -- No --> I
-    K -- Yes --> L["Self Review"]
-    L --> M{"More Tasks?"}
-    M -- Yes --> I
-    M -- No --> N["Final Verification"]
-    N --> R["Complete"]
-```
-
-## Operating Rules
-- Prefer harness scripts in `scripts/harness/`.
-- Treat non-zero exit codes as failures.
-- Do not assume behavior that is not documented in this repository.
-- Mark missing evidence as `TODO` instead of guessing.
-- Before starting work, inspect `docs/repomix.md` for the current repository context bundle.
-- After any agent run that changes code or repository files, execute `npx repomix --style markdown --output docs/repomix.md` to refresh the repository context bundle.
-- Keep `docs/repomix.md` as the canonical Repomix output referenced by agents.
-
-## Remote Build Runner
-Use `http://host.docker.internal:38127` and call `POST /run` with:
-- `image`
-- `workdir`
-- `cmd` (non-empty string array, for example `["sh","-lc","echo ok"]`)
-
-For `workdir`, prefer `TASK_WORKSPACE_PATH`.
-
-Runner mount support:
-- `dockerSocketContainerPath`: `/var/run/docker.sock` (available for mounting Docker into the runner container)
-
-Harness remote mode:
-- Set `REMOTE_BUILD=1` to force harness scripts to run in Remote Build Runner.
-- Set `REMOTE_BUILD_IMAGE` to the container image used by the runner request.
-- Optional: set `REMOTE_BUILD_RUNNER_URL` (defaults to `http://host.docker.internal:38127`).
-- Harness scripts auto-route to `POST /run` before local execution when remote mode is enabled.
-- Set `REMOTE_BUILD=0` (or unset it) to run harness scripts locally.
-- Use a remote image that has: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
-- `test.sh` auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`) for browser E2E when the remote runner cannot launch Playwright locally.
-
-## Sync Policy Reference
-- GitHub sync ownership and conflict policy: [docs/github-sync-ownership-model.md](docs/github-sync-ownership-model.md)
 ````
 
 ## File: agent-runtime-codex/run-task.mjs
@@ -32042,6 +30203,1829 @@ await writeFile(
 );
 
 console.log("[runtime] completed");
+````
+
+## File: apps/server/src/db/backfill-redis-to-postgres.ts
+````typescript
+import type Redis from "ioredis";
+import { env } from "../config/env.js";
+import { createPostgresPool, runPostgresMigrations, withPostgresTransaction } from "../lib/postgres.js";
+import { createRedisClients } from "../lib/redis.js";
+
+const ROLE_KEY_PREFIX = "agentswarm:role:";
+const ROLE_IDS_KEY = "agentswarm:role_ids";
+
+const USER_KEY_PREFIX = "agentswarm:user:";
+const USER_IDS_KEY = "agentswarm:user_ids";
+const BOOTSTRAP_ADMIN_MARKER_KEY = "agentswarm:bootstrap_admin_user_id";
+
+const REPO_KEY_PREFIX = "agentswarm:repo:";
+const REPO_IDS_KEY = "agentswarm:repo_ids";
+
+const SNIPPET_KEY_PREFIX = "agentswarm:snippet:";
+const SNIPPET_IDS_KEY = "agentswarm:snippet_ids";
+
+const SETTINGS_KEY = "agentswarm:settings";
+const CREDENTIALS_KEY = "agentswarm:credential_settings";
+
+const TASK_KEY_PREFIX = "agentswarm:task:";
+const TASK_LOG_KEY_PREFIX = "agentswarm:task_logs:";
+const TASK_MESSAGE_KEY_PREFIX = "agentswarm:task_messages:";
+const TASK_RUN_KEY_PREFIX = "agentswarm:task_run:";
+const TASK_RUN_LOG_KEY_PREFIX = "agentswarm:task_run_logs:";
+const TASK_RUN_IDS_KEY_PREFIX = "agentswarm:task_run_ids:";
+const TASK_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_change_proposal:";
+const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "agentswarm:task_change_proposal_ids:";
+const TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX = "agentswarm:task_active_interactive_session:";
+const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "agentswarm:task_interactive_terminal_transcript:";
+const TASK_IDS_KEY = "agentswarm:task_ids";
+
+type JsonRecord = Record<string, unknown>;
+
+interface RoleRecord extends JsonRecord {
+  id: string;
+  name: string;
+  description?: string;
+  scopes?: unknown[];
+  allowedProviders?: unknown[];
+  allowedModels?: unknown[];
+  allowedEfforts?: unknown[];
+  scopeVersion?: number;
+  isSystem?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface UserRecord extends JsonRecord {
+  id: string;
+  name: string;
+  email: string;
+  active?: boolean;
+  roleIds?: string[];
+  repositoryIds?: string[];
+  passwordHash: string;
+  passwordSalt: string;
+  lastLoginAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface RepositoryRecord extends JsonRecord {
+  id: string;
+  name: string;
+  url: string;
+  defaultBranch?: string;
+  envVars?: unknown[];
+  envSecrets?: unknown[];
+  webhookUrl?: string | null;
+  webhookEnabled?: boolean;
+  webhookSecret?: string | null;
+  webhookLastAttemptAt?: string | null;
+  webhookLastStatus?: string | null;
+  webhookLastError?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface SnippetRecord extends JsonRecord {
+  id: string;
+  name: string;
+  content: string;
+  variables?: unknown[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface SettingsRecord extends JsonRecord {
+  defaultProvider?: string;
+  maxAgents?: number;
+  branchPrefix?: string;
+  gitUsername?: string;
+  mcpServers?: unknown[];
+  openaiBaseUrl?: string | null;
+  codexDefaultModel?: string;
+  codexDefaultEffort?: string;
+  claudeDefaultModel?: string;
+  claudeDefaultEffort?: string;
+}
+
+interface TaskRecord extends JsonRecord {
+  id: string;
+  ownerUserId?: string | null;
+  status?: string;
+  pinned?: boolean;
+  createdAt: string;
+}
+
+const nowIso = (): string => new Date().toISOString();
+
+const parseJson = <T>(raw: string | null): T | null => {
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+};
+
+const getJson = async <T>(redis: Redis, key: string): Promise<T | null> => parseJson<T>(await redis.get(key));
+
+const trimString = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const repositoryEnvVarArray = (
+  value: unknown
+): Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized: Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const rawKey = (entry as Record<string, unknown>).key;
+    const key = typeof rawKey === "string" ? rawKey.trim() : "";
+    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || seen.has(key)) {
+      continue;
+    }
+    const type = (entry as Record<string, unknown>).type === "file" ? "file" : "text";
+    if (type === "file") {
+      const fileId = trimString((entry as Record<string, unknown>).fileId);
+      if (!fileId) {
+        continue;
+      }
+      const fileName = trimString((entry as Record<string, unknown>).fileName) ?? `${key}.bin`;
+      const sizeBytesRaw = (entry as Record<string, unknown>).sizeBytes;
+      const sizeBytes = typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0 ? Math.floor(sizeBytesRaw) : 0;
+      normalized.push({ key, type: "file", fileId, fileName, sizeBytes });
+      seen.add(key);
+      continue;
+    }
+    const rawValue = (entry as Record<string, unknown>).value;
+    const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
+    normalized.push({ key, type: "text", value: normalizedValue });
+    seen.add(key);
+  }
+  return normalized;
+};
+
+const repositoryEnvSecretArray = (
+  value: unknown
+): Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized: Array<{ key: string; type: "text"; value: string } | { key: string; type: "file"; fileId: string; fileName: string; sizeBytes: number }> = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const rawKey = (entry as Record<string, unknown>).key;
+    const key = typeof rawKey === "string" ? rawKey.trim() : "";
+    if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || seen.has(key)) {
+      continue;
+    }
+    const type = (entry as Record<string, unknown>).type === "file" ? "file" : "text";
+    if (type === "file") {
+      const fileId = trimString((entry as Record<string, unknown>).fileId);
+      if (!fileId) {
+        continue;
+      }
+      const fileName = trimString((entry as Record<string, unknown>).fileName) ?? `${key}.bin`;
+      const sizeBytesRaw = (entry as Record<string, unknown>).sizeBytes;
+      const sizeBytes = typeof sizeBytesRaw === "number" && Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0 ? Math.floor(sizeBytesRaw) : 0;
+      normalized.push({ key, type: "file", fileId, fileName, sizeBytes });
+      seen.add(key);
+      continue;
+    }
+    const rawValue = (entry as Record<string, unknown>).value;
+    const normalizedValue = typeof rawValue === "string" ? rawValue : String(rawValue ?? "");
+    if (!normalizedValue) {
+      continue;
+    }
+    normalized.push({ key, type: "text", value: normalizedValue });
+    seen.add(key);
+  }
+  return normalized;
+};
+
+const stringArray = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? Array.from(
+        new Set(
+          value
+            .filter((entry): entry is string => typeof entry === "string")
+            .map((entry) => entry.trim())
+            .filter(Boolean)
+        )
+      )
+    : [];
+
+const loadRoles = async (redis: Redis): Promise<RoleRecord[]> => {
+  const roleIds = await redis.smembers(ROLE_IDS_KEY);
+  const roles: RoleRecord[] = [];
+  for (const roleId of roleIds) {
+    const role = await getJson<RoleRecord>(redis, `${ROLE_KEY_PREFIX}${roleId}`);
+    if (role?.id) {
+      roles.push(role);
+    }
+  }
+  return roles;
+};
+
+const loadUsers = async (redis: Redis): Promise<UserRecord[]> => {
+  const userIds = await redis.smembers(USER_IDS_KEY);
+  const users: UserRecord[] = [];
+  for (const userId of userIds) {
+    const user = await getJson<UserRecord>(redis, `${USER_KEY_PREFIX}${userId}`);
+    if (user?.id) {
+      users.push(user);
+    }
+  }
+  return users;
+};
+
+const loadRepositories = async (redis: Redis): Promise<RepositoryRecord[]> => {
+  const repositoryIds = await redis.smembers(REPO_IDS_KEY);
+  const repositories: RepositoryRecord[] = [];
+  for (const repositoryId of repositoryIds) {
+    const repository = await getJson<RepositoryRecord>(redis, `${REPO_KEY_PREFIX}${repositoryId}`);
+    if (repository?.id) {
+      repositories.push(repository);
+    }
+  }
+  return repositories;
+};
+
+const loadSnippets = async (redis: Redis): Promise<SnippetRecord[]> => {
+  const snippetIds = await redis.smembers(SNIPPET_IDS_KEY);
+  const snippets: SnippetRecord[] = [];
+  for (const snippetId of snippetIds) {
+    const snippet = await getJson<SnippetRecord>(redis, `${SNIPPET_KEY_PREFIX}${snippetId}`);
+    if (snippet?.id) {
+      snippets.push(snippet);
+    }
+  }
+  return snippets;
+};
+
+interface TaskSnapshot {
+  task: TaskRecord;
+  logs: string[];
+  messages: JsonRecord[];
+  runs: Array<{ run: JsonRecord; logs: string[] }>;
+  proposals: JsonRecord[];
+  activeInteractiveSession: JsonRecord | null;
+  transcripts: JsonRecord[];
+}
+
+const loadTaskSnapshots = async (redis: Redis): Promise<TaskSnapshot[]> => {
+  const taskIds = await redis.smembers(TASK_IDS_KEY);
+  const snapshots: TaskSnapshot[] = [];
+
+  for (const taskId of taskIds) {
+    const task = await getJson<TaskRecord>(redis, `${TASK_KEY_PREFIX}${taskId}`);
+    if (!task?.id) {
+      continue;
+    }
+
+    const [logs, rawMessages, runIds, proposalIds, activeInteractiveSession] = await Promise.all([
+      redis.lrange(`${TASK_LOG_KEY_PREFIX}${taskId}`, 0, -1),
+      redis.lrange(`${TASK_MESSAGE_KEY_PREFIX}${taskId}`, 0, -1),
+      redis.lrange(`${TASK_RUN_IDS_KEY_PREFIX}${taskId}`, 0, -1),
+      redis.lrange(`${TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX}${taskId}`, 0, -1),
+      getJson<JsonRecord>(redis, `${TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX}${taskId}`)
+    ]);
+
+    const messages = rawMessages
+      .map((raw) => parseJson<JsonRecord>(raw))
+      .filter((message): message is JsonRecord => message !== null);
+
+    const runs: Array<{ run: JsonRecord; logs: string[] }> = [];
+    for (const runId of runIds) {
+      const run = await getJson<JsonRecord>(redis, `${TASK_RUN_KEY_PREFIX}${runId}`);
+      if (!run) {
+        continue;
+      }
+
+      const runLogs = await redis.lrange(`${TASK_RUN_LOG_KEY_PREFIX}${runId}`, 0, -1);
+      runs.push({ run, logs: runLogs });
+    }
+
+    const proposals: JsonRecord[] = [];
+    for (const proposalId of proposalIds) {
+      const proposal = await getJson<JsonRecord>(redis, `${TASK_CHANGE_PROPOSAL_KEY_PREFIX}${proposalId}`);
+      if (proposal) {
+        proposals.push(proposal);
+      }
+    }
+
+    const transcriptsBySessionId = new Map<string, JsonRecord>();
+    for (const message of messages) {
+      const sessionId = trimString(message.sessionId);
+      if (!sessionId) {
+        continue;
+      }
+
+      const transcript = await getJson<JsonRecord>(redis, `${TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX}${sessionId}`);
+      if (transcript) {
+        transcriptsBySessionId.set(sessionId, transcript);
+      }
+    }
+
+    snapshots.push({
+      task,
+      logs,
+      messages,
+      runs,
+      proposals,
+      activeInteractiveSession,
+      transcripts: Array.from(transcriptsBySessionId.values())
+    });
+  }
+
+  return snapshots;
+};
+
+const main = async (): Promise<void> => {
+  const redisClients = createRedisClients(env.REDIS_URL);
+  const postgresPool = createPostgresPool(env.DATABASE_URL);
+
+  try {
+    await runPostgresMigrations(postgresPool);
+
+    const redis = redisClients.command;
+    const [roles, users, repositories, snippets, settings, credentialsRaw, taskSnapshots, bootstrapAdminUserId] = await Promise.all([
+      loadRoles(redis),
+      loadUsers(redis),
+      loadRepositories(redis),
+      loadSnippets(redis),
+      getJson<SettingsRecord>(redis, SETTINGS_KEY),
+      redis.get(CREDENTIALS_KEY),
+      loadTaskSnapshots(redis),
+      redis.get(BOOTSTRAP_ADMIN_MARKER_KEY)
+    ]);
+    const repositoryIds = new Set(repositories.map((repository) => repository.id));
+    let skippedUserRepositoryAssignments = 0;
+
+    await withPostgresTransaction(postgresPool, async (client) => {
+      await client.query(`
+        TRUNCATE TABLE
+          task_run_logs,
+          task_messages,
+          task_logs,
+          task_change_proposals,
+          task_active_interactive_sessions,
+          task_interactive_terminal_transcripts,
+          task_runs,
+          tasks,
+          user_repositories,
+          user_roles,
+          users,
+          roles,
+          repositories,
+          snippets,
+          system_settings,
+          credentials,
+          app_metadata
+        RESTART IDENTITY CASCADE
+      `);
+
+      if (bootstrapAdminUserId) {
+        await client.query(
+          "INSERT INTO app_metadata (key, value, updated_at) VALUES ($1, $2, $3)",
+          [BOOTSTRAP_ADMIN_MARKER_KEY, bootstrapAdminUserId, nowIso()]
+        );
+      }
+
+      for (const role of roles) {
+        await client.query(
+          `
+            INSERT INTO roles (
+              id,
+              name,
+              name_key,
+              description,
+              scopes,
+              allowed_providers,
+              allowed_models,
+              allowed_efforts,
+              scope_version,
+              is_system,
+              created_at,
+              updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12)
+          `,
+          [
+            role.id,
+            String(role.name ?? "").trim(),
+            String(role.name ?? "").trim().toLowerCase(),
+            String(role.description ?? "").trim(),
+            JSON.stringify(Array.isArray(role.scopes) ? role.scopes : []),
+            JSON.stringify(Array.isArray(role.allowedProviders) ? role.allowedProviders : []),
+            JSON.stringify(Array.isArray(role.allowedModels) ? role.allowedModels : []),
+            JSON.stringify(Array.isArray(role.allowedEfforts) ? role.allowedEfforts : []),
+            typeof role.scopeVersion === "number" ? role.scopeVersion : 0,
+            role.isSystem === true,
+            role.createdAt,
+            role.updatedAt
+          ]
+        );
+      }
+
+      for (const user of users) {
+        await client.query(
+          `
+            INSERT INTO users (
+              id,
+              name,
+              email,
+              git_author_name,
+              git_author_email,
+              active,
+              agent_response_preference,
+              password_hash,
+              password_salt,
+              last_login_at,
+              created_at,
+              updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
+          `,
+          [
+            user.id,
+            String(user.name ?? "").trim(),
+            String(user.email ?? "").trim().toLowerCase(),
+            trimString((user as { gitAuthorName?: string }).gitAuthorName),
+            trimString((user as { gitAuthorEmail?: string }).gitAuthorEmail)?.toLowerCase() ?? null,
+            user.active !== false,
+            JSON.stringify(
+              user.agentResponsePreference &&
+                typeof user.agentResponsePreference === "object"
+                ? user.agentResponsePreference
+                : { enabled: false, style: null }
+            ),
+            user.passwordHash,
+            user.passwordSalt,
+            user.lastLoginAt ?? null,
+            user.createdAt,
+            user.updatedAt
+          ]
+        );
+
+        for (const roleId of stringArray(user.roleIds)) {
+          await client.query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)", [user.id, roleId]);
+        }
+      }
+
+      for (const repository of repositories) {
+        await client.query(
+          `
+            INSERT INTO repositories (
+              id,
+              name,
+              url,
+              default_branch,
+              env_vars,
+              env_secrets,
+              webhook_url,
+              webhook_enabled,
+              webhook_secret,
+              webhook_last_attempt_at,
+              webhook_last_status,
+              webhook_last_error,
+              created_at,
+              updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14)
+          `,
+          [
+            repository.id,
+            String(repository.name ?? "").trim(),
+            String(repository.url ?? "").trim(),
+            trimString(repository.defaultBranch) ?? "develop",
+            JSON.stringify(repositoryEnvVarArray(repository.envVars)),
+            JSON.stringify(repositoryEnvSecretArray(repository.envSecrets)),
+            trimString(repository.webhookUrl),
+            repository.webhookEnabled === true,
+            trimString(repository.webhookSecret),
+            repository.webhookLastAttemptAt ?? null,
+            trimString(repository.webhookLastStatus),
+            trimString(repository.webhookLastError),
+            repository.createdAt,
+            repository.updatedAt
+          ]
+        );
+      }
+
+      for (const user of users) {
+        for (const repositoryId of stringArray(user.repositoryIds)) {
+          if (!repositoryIds.has(repositoryId)) {
+            skippedUserRepositoryAssignments += 1;
+            continue;
+          }
+          await client.query("INSERT INTO user_repositories (user_id, repository_id) VALUES ($1, $2)", [user.id, repositoryId]);
+        }
+      }
+
+      for (const snippet of snippets) {
+        await client.query(
+          "INSERT INTO snippets (id, name, content, created_at, updated_at, variables) VALUES ($1, $2, $3, $4, $5, $6::jsonb)",
+          [
+            snippet.id,
+            String(snippet.name ?? "").trim(),
+            String(snippet.content ?? "").trim(),
+            snippet.createdAt,
+            snippet.updatedAt,
+            JSON.stringify(Array.isArray(snippet.variables) ? snippet.variables : [])
+          ]
+        );
+      }
+
+      if (settings) {
+        await client.query(
+          `
+            INSERT INTO system_settings (
+              singleton_id,
+              default_provider,
+              max_agents,
+              branch_prefix,
+              workspace_provisioning_mode,
+              git_username,
+              mcp_servers,
+              openai_base_url,
+              task_prompt_magic_model,
+              task_prompt_magic_template,
+              codex_default_model,
+              codex_default_effort,
+              claude_default_model,
+              claude_default_effort,
+              response_preference_presets
+            )
+            VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13::jsonb)
+          `,
+          [
+            trimString(settings.defaultProvider) ?? "codex",
+            typeof settings.maxAgents === "number" ? settings.maxAgents : 2,
+            trimString(settings.branchPrefix) ?? "agentswarm",
+            trimString((settings as { workspaceProvisioningMode?: string }).workspaceProvisioningMode) ?? "clone_only",
+            trimString(settings.gitUsername) ?? "x-access-token",
+            JSON.stringify(Array.isArray(settings.mcpServers) ? settings.mcpServers : []),
+            trimString(settings.openaiBaseUrl),
+            trimString((settings as { taskPromptMagicModel?: string }).taskPromptMagicModel) ?? "gpt-5.4-mini",
+            trimString((settings as { taskPromptMagicTemplate?: string }).taskPromptMagicTemplate) ?? "",
+            trimString(settings.codexDefaultModel) ?? "gpt-5.4",
+            trimString(settings.codexDefaultEffort) ?? "high",
+            trimString(settings.claudeDefaultModel) ?? "claude-sonnet-4-5",
+            trimString(settings.claudeDefaultEffort) ?? "high",
+            JSON.stringify(Array.isArray(settings.responsePreferencePresets) ? settings.responsePreferencePresets : [])
+          ]
+        );
+      }
+
+      if (credentialsRaw) {
+        await client.query(
+          "INSERT INTO credentials (singleton_id, payload_encrypted, updated_at) VALUES (1, $1, $2)",
+          [credentialsRaw, nowIso()]
+        );
+      }
+
+      for (const snapshot of taskSnapshots) {
+        const { task, logs, messages, runs, proposals, activeInteractiveSession, transcripts } = snapshot;
+
+        await client.query(
+          `
+            INSERT INTO tasks (id, owner_user_id, status, pinned, created_at, task_data)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+          `,
+          [
+            task.id,
+            trimString(task.ownerUserId),
+            trimString(task.status) ?? "open",
+            task.pinned === true,
+            task.createdAt,
+            JSON.stringify(task)
+          ]
+        );
+
+        for (const line of logs) {
+          await client.query("INSERT INTO task_logs (task_id, line) VALUES ($1, $2)", [task.id, line]);
+        }
+
+        for (const message of messages) {
+          const messageId = trimString(message.id);
+          const createdAt = trimString(message.createdAt);
+          if (!messageId || !createdAt) {
+            continue;
+          }
+
+          await client.query(
+            `
+              INSERT INTO task_messages (message_id, task_id, created_at, message_data)
+              VALUES ($1, $2, $3, $4::jsonb)
+            `,
+            [messageId, task.id, createdAt, JSON.stringify(message)]
+          );
+        }
+
+        for (const { run, logs: runLogs } of runs) {
+          const runId = trimString(run.id);
+          const startedAt = trimString(run.startedAt);
+          if (!runId || !startedAt) {
+            continue;
+          }
+
+          await client.query(
+            "INSERT INTO task_runs (id, task_id, started_at, run_data) VALUES ($1, $2, $3, $4::jsonb)",
+            [runId, task.id, startedAt, JSON.stringify(run)]
+          );
+
+          for (const line of runLogs) {
+            await client.query("INSERT INTO task_run_logs (run_id, line) VALUES ($1, $2)", [runId, line]);
+          }
+        }
+
+        for (const proposal of proposals) {
+          const proposalId = trimString(proposal.id);
+          const createdAt = trimString(proposal.createdAt);
+          if (!proposalId || !createdAt) {
+            continue;
+          }
+
+          await client.query(
+            `
+              INSERT INTO task_change_proposals (id, task_id, status, created_at, resolved_at, proposal_data)
+              VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+            `,
+            [
+              proposalId,
+              task.id,
+              trimString(proposal.status) ?? "pending",
+              createdAt,
+              trimString(proposal.resolvedAt),
+              JSON.stringify(proposal)
+            ]
+          );
+        }
+
+        if (activeInteractiveSession) {
+          await client.query(
+            "INSERT INTO task_active_interactive_sessions (task_id, session_data) VALUES ($1, $2::jsonb)",
+            [task.id, JSON.stringify(activeInteractiveSession)]
+          );
+        }
+
+        for (const transcript of transcripts) {
+          const sessionId = trimString(transcript.sessionId);
+          if (!sessionId) {
+            continue;
+          }
+
+          await client.query(
+            `
+              INSERT INTO task_interactive_terminal_transcripts (session_id, task_id, transcript_data)
+              VALUES ($1, $2, $3::jsonb)
+              ON CONFLICT (session_id) DO UPDATE
+              SET
+                task_id = EXCLUDED.task_id,
+                transcript_data = EXCLUDED.transcript_data
+            `,
+            [sessionId, task.id, JSON.stringify(transcript)]
+          );
+        }
+      }
+    });
+
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          roles: roles.length,
+          users: users.length,
+          repositories: repositories.length,
+          skippedUserRepositoryAssignments,
+          snippets: snippets.length,
+          tasks: taskSnapshots.length
+        },
+        null,
+        2
+      )
+    );
+  } finally {
+    await Promise.all([
+      postgresPool.end(),
+      redisClients.command.quit(),
+      redisClients.pub.quit(),
+      redisClients.sub.quit()
+    ]);
+  }
+};
+
+void main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+````
+
+## File: apps/server/src/lib/task-interactive-terminal.ts
+````typescript
+import { spawn as spawnChild } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { access, constants, rm } from "node:fs/promises";
+import type { IncomingMessage, Server as HttpServer } from "node:http";
+import path from "node:path";
+import type { Duplex } from "node:stream";
+import { URL } from "node:url";
+
+import { WebSocket, WebSocketServer } from "ws";
+import pty from "node-pty";
+
+import {
+  getTaskStatusLabel,
+  getTaskTerminalSessionLabel,
+  getTaskTerminalSessionSentenceLabel,
+  isActiveTaskStatus,
+  isQueuedTaskStatus,
+  type Task,
+  type TaskTerminalSessionMode
+} from "@agentswarm/shared-types";
+
+import { env } from "../config/env.js";
+import type { AuthService } from "./auth.js";
+import type { SettingsStore } from "../services/settings-store.js";
+import type { SpawnerService } from "../services/spawner.js";
+import type { TaskMetadata, TaskStore } from "../services/task-store.js";
+import type { RepositoryStore } from "../services/repository-store.js";
+import { canUserAccessTask } from "./task-ownership.js";
+import { resolveWorkspaceGitRuntimeMounts } from "./git-runtime-mounts.js";
+import { materializeRepositoryRuntimeEnvEntries } from "./repository-runtime-env.js";
+import {
+  claudeModelSupportsThinkingBudget,
+  claudeThinkingBudgetTokensForProfile,
+  codexReasoningEffortForProfile,
+  defaultModelForProvider
+} from "./provider-config.js";
+import {
+  collectMcpServerEnvEntries,
+  collectMissingMcpServerBearerTokenEnvVars,
+  serializeClaudeMcpConfig,
+  serializeCodexMcpConfig
+} from "./mcp-config.js";
+import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
+import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
+import { resolveTaskGitCommitIdentity, type GitCommitIdentity } from "./task-git-identity.js";
+import {
+  buildGitTerminalDockerEnvEntries,
+  buildGitTerminalEnvEntries,
+  buildInteractiveWorkspaceGitEnvEntries
+} from "./task-interactive-terminal-git-env.js";
+import {
+  emitDockerSocketEnabledEventOnce,
+  emitNestedContainerSpawnedEvent,
+  resolveDockerSocketAccessPolicy,
+  resolveDockerSocketEnvEntries,
+  resolveDockerSocketMountArgs
+} from "./docker-socket-access.js";
+import type { UserStore } from "../services/user-store.js";
+import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js";
+
+const WS_PATH_RE = /^\/tasks\/([^/]+)\/interactive-terminal$/;
+const INTERACTIVE_WORKSPACE_PATH = "/workspace";
+const INTERACTIVE_WS_PING_INTERVAL_MS = 25_000;
+const INTERACTIVE_TRANSCRIPT_LIMIT = 2_000_000;
+const INTERACTIVE_EXIT_WAIT_MS = 1_500;
+const INTERACTIVE_TERMINAL_CLOSE_CODE = 1012;
+const PROVIDER_SESSION_ID_FILE = "agentswarm-session-id.txt";
+const repositoryEnvFileStore = new RepositoryEnvFileStore();
+
+function normalizeTerminalSessionMode(value: string | null | undefined): TaskTerminalSessionMode {
+  return value === "git" ? "git" : "interactive";
+}
+
+function buildCodexUserConfigToml(workspacePath: string, model: string, mcpConfig: string): string {
+  const pathSafe = workspacePath.replace(/"/g, "");
+  const modelSafe = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const modelTomlKey = model.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `model = "${modelSafe}"
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+
+[projects."${pathSafe}"]
+trust_level = "trusted"
+
+[notice]
+hide_rate_limit_model_nudge = true
+hide_gpt5_1_migration_prompt = true
+"hide_gpt-5.1-codex-max_migration_prompt" = true
+
+[tui]
+show_tooltips = false
+
+[tui.model_availability_nux]
+"${modelTomlKey}" = 1
+
+${mcpConfig}`;
+}
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function buildCodexStartScript(
+  configB64: string,
+  model: string,
+  reasoningEffort: string,
+  preferAuthJson: boolean,
+  missingMcpBearerEnvVars: string[]
+): string {
+  const codexArgs = [
+    "--dangerously-bypass-approvals-and-sandbox",
+    '-C "$TASK_INTERACTIVE_WORKSPACE"',
+    "-m",
+    shellSingleQuote(model),
+    "-c cli_auth_credentials_store=file",
+    ...(preferAuthJson ? [] : ["-c forced_login_method=api"]),
+    "-c",
+    shellSingleQuote(`model_reasoning_effort="${reasoningEffort}"`)
+  ];
+
+  const authBootstrap = preferAuthJson
+    ? 'printf %s "$CODEX_AUTH_JSON_B64" | base64 -d > ~/.codex/auth.json'
+    : 'printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file';
+
+  return [
+    ...(missingMcpBearerEnvVars.length > 0
+      ? [
+          `echo ${shellSingleQuote(
+            `[agentswarm] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
+          )} >&2`
+        ]
+      : []),
+    "mkdir -p ~/.codex",
+    `printf '%s' ${shellSingleQuote(configB64)} | base64 -d > ~/.codex/config.toml`,
+    authBootstrap,
+    `SESSION_FILE="$HOME/.codex/${PROVIDER_SESSION_ID_FILE}"`,
+    'SESSION_ID=""',
+    'if [ -f "$SESSION_FILE" ]; then IFS= read -r SESSION_ID < "$SESSION_FILE" || true; fi',
+    `if [ -n "$SESSION_ID" ]; then exec codex resume ${codexArgs.join(" ")} "$SESSION_ID"; fi`,
+    `exec codex ${codexArgs.join(" ")}`,
+  ].join(" && ");
+}
+
+function buildClaudeSettingsJson(): string {
+  return JSON.stringify({
+    autoUpdaterStatus: "disabled",
+    disableBypassPermissionsMode: "disable"
+  });
+}
+
+function buildClaudeStartScript(
+  model: string,
+  settingsJson: string,
+  mcpConfigB64: string,
+  missingMcpBearerEnvVars: string[]
+): string {
+  const claudeArgs = [
+    "--model",
+    shellSingleQuote(model),
+    "--settings",
+    shellSingleQuote(settingsJson),
+    "--mcp-config",
+    '"$HOME/.claude/mcp-config.json"'
+  ];
+
+  return [
+    ...(missingMcpBearerEnvVars.length > 0
+      ? [
+          `echo ${shellSingleQuote(
+            `[agentswarm] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
+          )} >&2`
+        ]
+      : []),
+    'mkdir -p "$HOME/.claude" "$HOME/.local/bin"',
+    'if [ ! -x "$HOME/.local/bin/claude" ] && [ -x "/opt/claude-code/.local/bin/claude" ]; then ln -sf "/opt/claude-code/.local/bin/claude" "$HOME/.local/bin/claude"; fi',
+    'CLAUDE_BIN="$HOME/.local/bin/claude"',
+    'if [ ! -x "$CLAUDE_BIN" ] && [ -x "/opt/claude-code/.local/bin/claude" ]; then CLAUDE_BIN="/opt/claude-code/.local/bin/claude"; fi',
+    'if [ ! -x "$CLAUDE_BIN" ]; then CLAUDE_BIN="$(command -v claude 2>/dev/null || true)"; fi',
+    'if [ -z "$CLAUDE_BIN" ] || [ ! -x "$CLAUDE_BIN" ]; then echo "Claude CLI not found in image." >&2; exit 127; fi',
+    `printf '%s' ${shellSingleQuote(mcpConfigB64)} | base64 -d > "$HOME/.claude/mcp-config.json"`,
+    'cd "$TASK_INTERACTIVE_WORKSPACE"',
+    `SESSION_FILE="$HOME/.claude/${PROVIDER_SESSION_ID_FILE}"`,
+    'SESSION_ID=""',
+    'if [ -f "$SESSION_FILE" ]; then IFS= read -r SESSION_ID < "$SESSION_FILE" || true; fi',
+    "sleep 1",
+    `if [ -n "$SESSION_ID" ]; then exec "$CLAUDE_BIN" --resume "$SESSION_ID" ${claudeArgs.join(" ")}; fi`,
+    `exec "$CLAUDE_BIN" ${claudeArgs.join(" ")}`
+  ].join(" && ");
+}
+
+type InteractiveTerminalRuntimeConfig =
+  | {
+      ok: true;
+      provider: Task["provider"];
+      image: string;
+      providerLabel: string;
+      persistentState?: {
+        containerPath: string;
+        configContainerPath?: string;
+        uid: number;
+        gid: number;
+      };
+      envEntries: Array<[string, string]>;
+      startScript: string;
+    }
+  | {
+      ok: false;
+      reason: string;
+    };
+
+type InteractiveRuntimeSettings = Awaited<ReturnType<SettingsStore["getSettings"]>>;
+type InteractiveRuntimeCredentials = Awaited<ReturnType<SettingsStore["getRuntimeCredentials"]>>;
+
+function resolveGitTerminalRuntimeConfig(
+  credentials: InteractiveRuntimeCredentials,
+  gitIdentity?: GitCommitIdentity | null
+):
+  | {
+      ok: true;
+      image: string;
+      envEntries: Array<[string, string]>;
+      startScript: string;
+    }
+  | {
+      ok: false;
+      reason: string;
+    } {
+  const image = env.GIT_TERMINAL_IMAGE?.trim();
+  if (!image) {
+    return { ok: false, reason: "Terminal is not configured (set GIT_TERMINAL_IMAGE on the server)." };
+  }
+
+  return {
+    ok: true,
+    image,
+    envEntries: buildGitTerminalEnvEntries({
+      workspacePath: INTERACTIVE_WORKSPACE_PATH,
+      githubToken: credentials.githubToken,
+      gitUsername: credentials.gitUsername,
+      gitIdentity
+    }),
+    startScript: buildGitTerminalStartScript()
+  };
+}
+
+function resolveInteractiveTerminalModel(task: Pick<TaskMetadata, "provider" | "providerProfile" | "modelOverride">): string {
+  const configured = task.modelOverride?.trim();
+  if (configured) {
+    return configured;
+  }
+
+  return defaultModelForProvider(task.provider, task.providerProfile) ?? (task.provider === "claude" ? "claude-sonnet-4-5" : "gpt-5.4");
+}
+
+function resolveInteractiveTerminalRuntimeConfig(
+  task: Pick<TaskMetadata, "provider" | "providerProfile" | "modelOverride">,
+  settings: InteractiveRuntimeSettings,
+  credentials: InteractiveRuntimeCredentials
+): InteractiveTerminalRuntimeConfig {
+  const model = resolveInteractiveTerminalModel(task);
+  const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(settings.mcpServers);
+
+  if (task.provider === "claude") {
+    const image = env.CLAUDE_INTERACTIVE_IMAGE?.trim();
+    if (!image) {
+      return { ok: false, reason: "Interactive Claude Code is not configured (set CLAUDE_INTERACTIVE_IMAGE on the server)." };
+    }
+    if (!credentials.anthropicApiKey) {
+      return { ok: false, reason: "Anthropic API key is not configured in Settings." };
+    }
+
+    const thinkingBudgetTokens = claudeModelSupportsThinkingBudget(model)
+      ? claudeThinkingBudgetTokensForProfile(task.providerProfile)
+      : undefined;
+
+    return {
+      ok: true,
+      provider: "claude",
+      image,
+      providerLabel: "Claude Code",
+      persistentState: {
+        containerPath: "/home/claude/.claude",
+        configContainerPath: "/home/claude/.claude.json",
+        uid: 1000,
+        gid: 1000
+      },
+      envEntries: [
+        ["ANTHROPIC_API_KEY", credentials.anthropicApiKey],
+        ["TERM", "xterm-256color"],
+        ["HOME", "/home/claude"],
+        ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
+        ...(typeof thinkingBudgetTokens === "number" ? [["MAX_THINKING_TOKENS", String(thinkingBudgetTokens)] as [string, string]] : []),
+        ...collectMcpServerEnvEntries(settings.mcpServers),
+        ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
+      ],
+      startScript: buildClaudeStartScript(
+        model,
+        buildClaudeSettingsJson(),
+        Buffer.from(serializeClaudeMcpConfig(settings.mcpServers), "utf8").toString("base64"),
+        missingMcpBearerEnvVars
+      )
+    };
+  }
+
+  const image = env.CODEX_INTERACTIVE_IMAGE?.trim();
+  if (!image) {
+    return { ok: false, reason: "Interactive Codex is not configured (set CODEX_INTERACTIVE_IMAGE on the server)." };
+  }
+  if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
+    return { ok: false, reason: "OpenAI API key or profile Codex auth.json is not configured." };
+  }
+  const useCodexAuthJson = Boolean(credentials.codexAuthJson);
+
+  const envEntries: Array<[string, string]> = [
+    ...(credentials.openaiApiKey ? [["OPENAI_API_KEY", credentials.openaiApiKey] as [string, string]] : []),
+    ...(credentials.codexAuthJson
+      ? [["CODEX_AUTH_JSON_B64", Buffer.from(credentials.codexAuthJson, "utf8").toString("base64")] as [string, string]]
+      : []),
+    ["TERM", "xterm-256color"],
+    ["HOME", "/root"],
+    ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
+    ["CODEX_TRUST_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
+    ...collectMcpServerEnvEntries(settings.mcpServers),
+    ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
+  ];
+  if (settings.openaiBaseUrl?.trim()) {
+    envEntries.push(["OPENAI_BASE_URL", settings.openaiBaseUrl.trim()]);
+  }
+
+  return {
+    ok: true,
+    provider: "codex",
+    image,
+    providerLabel: "Codex",
+    persistentState: {
+      containerPath: "/root/.codex",
+      uid: 0,
+      gid: 0
+    },
+    envEntries,
+    startScript: buildCodexStartScript(
+      Buffer.from(
+        buildCodexUserConfigToml(
+          INTERACTIVE_WORKSPACE_PATH,
+          model,
+          serializeCodexMcpConfig(settings.mcpServers)
+        ),
+        "utf8"
+      ).toString("base64"),
+      model,
+      codexReasoningEffortForProfile(task.providerProfile),
+      useCodexAuthJson,
+      missingMcpBearerEnvVars
+    )
+  };
+}
+
+function forceRemoveDockerSession(containerName: string): void {
+  const child = spawnChild("docker", ["rm", "-f", containerName], {
+    stdio: "ignore",
+    detached: true,
+  });
+  child.unref();
+}
+
+function terminalImageBuildHint(mode: TaskTerminalSessionMode, provider: Task["provider"], image: string): string {
+  const dockerfile =
+    mode === "git" ? "Dockerfile.git" : provider === "claude" ? "Dockerfile.claude" : "Dockerfile.codex";
+  return `docker build -f tools/codex-web-terminal/${dockerfile} -t ${image} tools/codex-web-terminal`;
+}
+
+async function dockerImageExists(image: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawnChild("docker", ["image", "inspect", image], {
+      stdio: "ignore"
+    });
+
+    child.on("error", () => resolve(false));
+    child.on("close", (code) => resolve(code === 0));
+  });
+}
+
+function denySocket(socket: Duplex, status: number, body: string): void {
+  const reason = status === 401 ? "Unauthorized" : status === 403 ? "Forbidden" : status === 404 ? "Not Found" : "Error";
+  socket.write(
+    `HTTP/1.1 ${status} ${reason}\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n${body}`,
+  );
+  socket.destroy();
+}
+
+export interface TaskInteractiveTerminalDeps {
+  auth: AuthService;
+  taskStore: TaskStore;
+  settingsStore: SettingsStore;
+  spawner: SpawnerService;
+  userStore: Pick<UserStore, "getUser">;
+  repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries">;
+}
+
+interface ActiveInteractiveTerminalController {
+  sessionId: string;
+  mode: TaskTerminalSessionMode;
+  hasAttachedClient: () => boolean;
+  attachClient: (ws: WebSocket) => boolean;
+  terminate: (reason?: string) => Promise<void>;
+}
+
+const activeInteractiveTerminalControllers = new Map<string, ActiveInteractiveTerminalController>();
+
+function getActiveInteractiveTerminalController(
+  taskId: string,
+  sessionId?: string | null
+): ActiveInteractiveTerminalController | null {
+  const active = activeInteractiveTerminalControllers.get(taskId);
+  if (!active) {
+    return null;
+  }
+  if (sessionId && active.sessionId !== sessionId) {
+    return null;
+  }
+  return active;
+}
+
+function registerActiveInteractiveTerminalController(
+  taskId: string,
+  controller: ActiveInteractiveTerminalController
+): void {
+  activeInteractiveTerminalControllers.set(taskId, controller);
+}
+
+function unregisterActiveInteractiveTerminalController(taskId: string, sessionId: string): void {
+  const active = activeInteractiveTerminalControllers.get(taskId);
+  if (active?.sessionId === sessionId) {
+    activeInteractiveTerminalControllers.delete(taskId);
+  }
+}
+
+function sendInteractiveTerminalError(ws: WebSocket, message: string): void {
+  if (ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  ws.send(JSON.stringify({ type: "error", message }), () => {
+    try {
+      ws.close(1011, "terminal failed");
+    } catch {
+      /* ignore */
+    }
+  });
+}
+
+export async function killTaskInteractiveTerminalSession(taskId: string): Promise<boolean> {
+  const active = activeInteractiveTerminalControllers.get(taskId);
+  if (!active) {
+    return false;
+  }
+
+  await active.terminate();
+  return true;
+}
+
+export type TaskInteractiveTerminalStatusPayload = {
+  available: boolean;
+  reason?: string;
+  /** When true, a browser session is already connected; block duplicate terminals and task composer sends. */
+  activeInteractiveSession?: boolean;
+  /** Present when a terminal session is active for the task. */
+  terminalMode?: TaskTerminalSessionMode;
+};
+
+export async function getTaskInteractiveTerminalStatus(
+  taskStore: TaskStore,
+  settingsStore: SettingsStore,
+  taskId: string,
+  mode: TaskTerminalSessionMode = "interactive",
+  userId?: string | null
+): Promise<TaskInteractiveTerminalStatusPayload> {
+  const task = await taskStore.getTaskMetadata(taskId);
+  if (!task) {
+    return { available: false, reason: "Task not found." };
+  }
+
+  if (task.status === "archived") {
+    return { available: false, reason: "Archived tasks are read-only." };
+  }
+
+  if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
+    return {
+      available: false,
+      reason: "Terminal unavailable while the task is queued or running. Finish or cancel that run first (one action at a time)."
+    };
+  }
+
+  const activeInteractiveSession = await taskStore.getActiveInteractiveSession(taskId);
+  if (activeInteractiveSession) {
+    const controller = getActiveInteractiveTerminalController(taskId, activeInteractiveSession.sessionId);
+    const activeModeLabel = getTaskTerminalSessionLabel(activeInteractiveSession.mode);
+    if (!controller) {
+      return {
+        available: false,
+        reason: `${activeModeLabel} session is active but unavailable from this server process. Use Kill Terminal to clear it.`,
+        activeInteractiveSession: true,
+        terminalMode: activeInteractiveSession.mode
+      };
+    }
+    if (activeInteractiveSession.mode !== mode) {
+      return {
+        available: false,
+        reason: `${activeModeLabel} session is already active for this task. Stop it before opening ${getTaskTerminalSessionLabel(mode)}.`,
+        activeInteractiveSession: true,
+        terminalMode: activeInteractiveSession.mode
+      };
+    }
+    if (controller.hasAttachedClient()) {
+      return {
+        available: false,
+        reason: `${activeModeLabel} session is already open in another window.`,
+        activeInteractiveSession: true,
+        terminalMode: activeInteractiveSession.mode
+      };
+    }
+    return {
+      available: false,
+      reason: `The ${getTaskTerminalSessionSentenceLabel(mode)} session is shutting down.`,
+      activeInteractiveSession: true,
+      terminalMode: activeInteractiveSession.mode
+    };
+  }
+
+  if (mode !== "git" && await taskStore.hasPendingChangeProposal(taskId)) {
+    return { available: false, reason: "Apply or reject the pending checkpoint before opening a terminal." };
+  }
+
+  const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
+  try {
+    await access(workspaceOnServer, constants.R_OK | constants.X_OK);
+  } catch {
+    return { available: false, reason: "No workspace folder on disk for this task yet." };
+  }
+
+  if (mode === "git") {
+    const credentials = await settingsStore.getRuntimeCredentials(userId);
+    const runtime = resolveGitTerminalRuntimeConfig(credentials);
+    if (!runtime.ok) {
+      return { available: false, reason: runtime.reason };
+    }
+    if (!(await dockerImageExists(runtime.image))) {
+      return {
+        available: false,
+        reason: `Terminal image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("git", task.provider, runtime.image)}`
+      };
+    }
+    return { available: true };
+  }
+
+  const [settings, credentials] = await Promise.all([
+    settingsStore.getSettings(),
+    settingsStore.getRuntimeCredentials(userId)
+  ]);
+  const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
+  if (!runtime.ok) {
+    return { available: false, reason: runtime.reason };
+  }
+  if (!(await dockerImageExists(runtime.image))) {
+    return {
+      available: false,
+      reason: `Interactive ${runtime.providerLabel} image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("interactive", task.provider, runtime.image)}`
+    };
+  }
+
+  return { available: true };
+}
+
+/**
+ * Handles WebSocket upgrades for `/tasks/:taskId/interactive-terminal`.
+ * Prepended so Socket.io still receives `/socket.io/` upgrades.
+ */
+export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, deps: TaskInteractiveTerminalDeps): void {
+  const wss = new WebSocketServer({ noServer: true });
+
+  httpServer.prependListener("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+    const host = request.headers.host ?? "127.0.0.1";
+    const requestUrl = new URL(request.url ?? "/", `http://${host}`);
+    const pathOnly = requestUrl.pathname;
+    const terminalMode = normalizeTerminalSessionMode(requestUrl.searchParams.get("mode"));
+    const match = pathOnly.match(WS_PATH_RE);
+    if (!match) {
+      return;
+    }
+
+    const taskId = match[1];
+    if (!taskId) {
+      return;
+    }
+
+    void (async () => {
+      const auth = await deps.auth.authenticateCookieHeader(request.headers);
+      if (!auth) {
+        denySocket(socket, 401, "Authentication required");
+        return;
+      }
+      if (!auth.scopes.has("task:edit")) {
+        denySocket(socket, 403, "task:edit scope required");
+        return;
+      }
+      if (!auth.scopes.has("task:interactive")) {
+        denySocket(socket, 403, "task:interactive scope required");
+        return;
+      }
+
+      const task = await deps.taskStore.getTask(taskId);
+      if (!task || !canUserAccessTask(auth.user, task)) {
+        denySocket(socket, 404, "Task not found");
+        return;
+      }
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        void initializeTaskInteractiveTerminalWebSocket(ws, task, deps, terminalMode, auth.user.id).catch(() => {
+          sendInteractiveTerminalError(ws, `${getTaskTerminalSessionLabel(terminalMode)} initialization failed.`);
+        });
+      });
+    })().catch(() => {
+      try {
+        denySocket(socket, 500, "Internal error");
+      } catch {
+        /* ignore */
+      }
+    });
+  });
+}
+
+async function initializeTaskInteractiveTerminalWebSocket(
+  ws: WebSocket,
+  task: Task,
+  deps: TaskInteractiveTerminalDeps,
+  mode: TaskTerminalSessionMode,
+  userId?: string | null
+): Promise<void> {
+  const taskId = task.id;
+  const activeInteractiveSession = await deps.taskStore.getActiveInteractiveSession(taskId);
+  if (activeInteractiveSession) {
+    const controller = getActiveInteractiveTerminalController(taskId, activeInteractiveSession.sessionId);
+    const activeModeLabel = getTaskTerminalSessionLabel(activeInteractiveSession.mode);
+    if (!controller) {
+      sendInteractiveTerminalError(
+        ws,
+        `${activeModeLabel} session is active but unavailable from this server process. Use Kill Terminal to clear it.`
+      );
+      return;
+    }
+    if (activeInteractiveSession.mode !== mode) {
+      sendInteractiveTerminalError(
+        ws,
+        `${activeModeLabel} session is already active for this task. Stop it before opening ${getTaskTerminalSessionLabel(mode)}.`
+      );
+      return;
+    }
+    if (controller.hasAttachedClient()) {
+      sendInteractiveTerminalError(ws, `${activeModeLabel} session is already open in another window.`);
+      return;
+    }
+    if (!controller.attachClient(ws)) {
+      sendInteractiveTerminalError(ws, `The ${getTaskTerminalSessionSentenceLabel(mode)} session is shutting down.`);
+      return;
+    }
+    return;
+  }
+
+  const status = await getTaskInteractiveTerminalStatus(deps.taskStore, deps.settingsStore, taskId, mode, userId);
+  if (!status.available) {
+    sendInteractiveTerminalError(ws, status.reason ?? `${getTaskTerminalSessionLabel(mode)} is unavailable`);
+    return;
+  }
+
+  let interactiveSessionId: string | null = null;
+  let sessionRepositoryEnvDir: string | null = null;
+
+  try {
+    const started = await deps.spawner.beginInteractiveTerminalSession(taskId, mode);
+    interactiveSessionId = started.sessionId;
+    const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
+    const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
+    const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
+    if (mode === "git") {
+      const [credentials, gitIdentity, repositoryRuntimeEnvEntries] = await Promise.all([
+        deps.settingsStore.getRuntimeCredentials(userId),
+        resolveTaskGitCommitIdentity(task, deps.userStore, {
+          name: env.GIT_USER_NAME,
+          email: env.GIT_USER_EMAIL
+        }),
+        deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
+      ]);
+      const runtime = resolveGitTerminalRuntimeConfig(credentials, gitIdentity);
+      if (!runtime.ok) {
+        throw new Error(runtime.reason);
+      }
+
+      const sessionName = `aswgit-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
+      const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "interactive-env", taskId, interactiveSessionId);
+      sessionRepositoryEnvDir = repositoryEnvDir;
+      const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
+        destinationDir: repositoryEnvDir,
+        entries: repositoryRuntimeEnvEntries,
+        fileStore: repositoryEnvFileStore
+      });
+      const dockerEnv: string[] = [];
+      for (const [name, value] of buildGitTerminalDockerEnvEntries({
+        runtimeEnvEntries: runtime.envEntries,
+        repositoryEnvEntries: repositoryRuntimeEnv
+      })) {
+        dockerEnv.push("-e", `${name}=${value}`);
+      }
+      dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
+
+      const dockerArgs = [
+        "run",
+        "-i",
+        "-t",
+        "--rm",
+        "--name",
+        sessionName,
+        "-v",
+        `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
+        "-v",
+        `${dockerBindSource}:/workspace:rw`,
+        ...gitRuntimeMounts,
+        ...dockerEnv,
+        runtime.image,
+        "sh",
+        "-lc",
+        runtime.startScript
+      ];
+
+      const child = pty.spawn("docker", dockerArgs, {
+        name: "xterm-256color",
+        cols: 80,
+        rows: 24,
+        cwd: process.env.HOME || "/",
+        env: { ...process.env, TERM: "xterm-256color", AGENTSWARM_TERMINAL_MODE: mode }
+      });
+
+      wireTerminalWebSocket(ws, child, {
+        taskId,
+        sessionId: interactiveSessionId,
+        spawner: deps.spawner,
+        taskStore: deps.taskStore,
+        mode,
+        cleanup: async () => {
+          forceRemoveDockerSession(sessionName);
+          await rm(repositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
+        }
+      });
+      return;
+    }
+
+    const [credentials, settings, repositoryRuntimeEnvEntries] = await Promise.all([
+      deps.settingsStore.getRuntimeCredentials(userId),
+      deps.settingsStore.getSettings(),
+      deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
+    ]);
+    const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
+    if (!runtime.ok) {
+      throw new Error(runtime.reason);
+    }
+    const dockerSocketPolicy = resolveDockerSocketAccessPolicy(runtime.provider);
+    const dockerSocketMountArgs = resolveDockerSocketMountArgs(dockerSocketPolicy);
+    if (dockerSocketPolicy.enabled) {
+      emitDockerSocketEnabledEventOnce({ provider: runtime.provider, policy: dockerSocketPolicy });
+    }
+
+    const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
+    const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "interactive-env", taskId, interactiveSessionId);
+    sessionRepositoryEnvDir = repositoryEnvDir;
+    const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
+      destinationDir: repositoryEnvDir,
+      entries: repositoryRuntimeEnvEntries,
+      fileStore: repositoryEnvFileStore
+    });
+    const statePaths = runtime.persistentState
+      ? await ensureTaskProviderStatePaths(task.id, runtime.provider, {
+          uid: runtime.persistentState.uid,
+          gid: runtime.persistentState.gid
+        })
+      : null;
+    const dockerEnv: string[] = [];
+    for (const [name, value] of runtime.envEntries) {
+      dockerEnv.push("-e", `${name}=${value}`);
+    }
+    for (const [name, value] of repositoryRuntimeEnv) {
+      dockerEnv.push("-e", `${name}=${value}`);
+    }
+    for (const [name, value] of resolveDockerSocketEnvEntries(dockerSocketPolicy)) {
+      dockerEnv.push("-e", `${name}=${value}`);
+    }
+    dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
+
+    const dockerArgs = [
+      "run",
+      "-i",
+      "-t",
+      "--rm",
+      "--name",
+      sessionName,
+      "-v",
+      `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
+      "-v",
+      `${dockerBindSource}:/workspace:rw`,
+      ...dockerSocketMountArgs,
+      ...gitRuntimeMounts,
+      ...(statePaths && runtime.persistentState
+        ? ["-v", `${statePaths.hostPath}:${runtime.persistentState.containerPath}:rw`]
+        : []),
+      ...(statePaths && runtime.persistentState?.configContainerPath && statePaths.configHostPath
+        ? ["-v", `${statePaths.configHostPath}:${runtime.persistentState.configContainerPath}:rw`]
+        : []),
+      ...dockerEnv,
+      runtime.image,
+      "sh",
+      "-lc",
+      runtime.startScript,
+    ];
+    emitNestedContainerSpawnedEvent({
+      source: "interactive_terminal",
+      taskId,
+      provider: runtime.provider,
+      policy: dockerSocketPolicy
+    });
+
+    const child = pty.spawn("docker", dockerArgs, {
+      name: "xterm-256color",
+      cols: 80,
+      rows: 24,
+      cwd: process.env.HOME || "/",
+      env: { ...process.env, TERM: "xterm-256color", AGENTSWARM_TERMINAL_MODE: mode },
+    });
+
+    wireTerminalWebSocket(ws, child, {
+      taskId,
+      sessionId: interactiveSessionId,
+      spawner: deps.spawner,
+      taskStore: deps.taskStore,
+      mode,
+      cleanup: async () => {
+        forceRemoveDockerSession(sessionName);
+        await rm(repositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    });
+  } catch (error) {
+    if (sessionRepositoryEnvDir) {
+      await rm(sessionRepositoryEnvDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+    if (interactiveSessionId) {
+      await deps.spawner.endInteractiveTerminalSession(taskId, interactiveSessionId).catch(() => undefined);
+    }
+    const message = error instanceof Error ? error.message : `Could not start ${getTaskTerminalSessionSentenceLabel(mode)} session`;
+    sendInteractiveTerminalError(ws, message);
+  }
+}
+
+function wireTerminalWebSocket(
+  ws: WebSocket,
+  child: pty.IPty,
+  proposalCtx: {
+    taskId: string;
+    sessionId: string;
+    spawner: SpawnerService;
+    taskStore: TaskStore;
+    mode: TaskTerminalSessionMode;
+    cleanup?: () => Promise<void> | void;
+  }
+): void {
+  let sawTerminalOutput = false;
+  let transcriptBuffer = "";
+  let transcriptTruncated = false;
+  let transcriptSaved = false;
+  let currentWs: WebSocket | null = null;
+  let currentWsCleanup: (() => void) | null = null;
+  let cleanupPromise: Promise<void> | null = null;
+  let resolveChildExit: (() => void) | null = null;
+  const childExitPromise = new Promise<void>((resolve) => {
+    resolveChildExit = resolve;
+  });
+  const terminalLabel = getTaskTerminalSessionLabel(proposalCtx.mode);
+  const terminalSentenceLabel = getTaskTerminalSessionSentenceLabel(proposalCtx.mode);
+
+  const logLifecycle = (message: string): void => {
+    const taskMessage = `${terminalSentenceLabel} (${proposalCtx.sessionId}): ${message}`;
+    console.info(`[interactive-terminal][${proposalCtx.taskId}][${proposalCtx.sessionId}] ${message}`);
+    void proposalCtx.taskStore.appendLog(proposalCtx.taskId, taskMessage).catch(() => undefined);
+  };
+
+  const appendTranscriptChunk = (chunk: string): void => {
+    if (transcriptTruncated || chunk.length === 0) {
+      return;
+    }
+
+    const remaining = INTERACTIVE_TRANSCRIPT_LIMIT - transcriptBuffer.length;
+    if (remaining <= 0) {
+      transcriptTruncated = true;
+      return;
+    }
+
+    if (chunk.length > remaining) {
+      transcriptBuffer += chunk.slice(0, remaining);
+      transcriptTruncated = true;
+      return;
+    }
+
+    transcriptBuffer += chunk;
+  };
+
+  const persistTranscriptIfNeeded = async (): Promise<void> => {
+    if (transcriptSaved || (!transcriptTruncated && transcriptBuffer.length === 0)) {
+      return;
+    }
+
+    transcriptSaved = true;
+    await proposalCtx.taskStore
+      .saveInteractiveTerminalTranscript(proposalCtx.taskId, proposalCtx.sessionId, transcriptBuffer, transcriptTruncated)
+      .catch(() => undefined);
+  };
+
+  const detachCurrentClient = (): WebSocket | null => {
+    const activeWs = currentWs;
+    currentWs = null;
+    if (currentWsCleanup) {
+      currentWsCleanup();
+      currentWsCleanup = null;
+    }
+    return activeWs;
+  };
+
+  const cleanupSession = (reason = `${terminalLabel} session terminated.`): Promise<void> => {
+    if (cleanupPromise) {
+      return cleanupPromise;
+    }
+
+    cleanupPromise = (async () => {
+      unregisterActiveInteractiveTerminalController(proposalCtx.taskId, proposalCtx.sessionId);
+      const activeWs = detachCurrentClient();
+      logLifecycle(reason);
+      try {
+        if (activeWs && (activeWs.readyState === WebSocket.OPEN || activeWs.readyState === WebSocket.CONNECTING)) {
+          activeWs.close(INTERACTIVE_TERMINAL_CLOSE_CODE, "terminal session terminated");
+        }
+      } catch {
+        /* ignore */
+      }
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+      await proposalCtx.cleanup?.();
+      await Promise.race([
+        childExitPromise,
+        new Promise<void>((resolve) => setTimeout(resolve, INTERACTIVE_EXIT_WAIT_MS))
+      ]);
+      await persistTranscriptIfNeeded();
+      await proposalCtx.spawner.endInteractiveTerminalSession(proposalCtx.taskId, proposalCtx.sessionId).catch(() => undefined);
+    })();
+
+    return cleanupPromise;
+  };
+
+  const controller: ActiveInteractiveTerminalController = {
+    sessionId: proposalCtx.sessionId,
+    mode: proposalCtx.mode,
+    hasAttachedClient: () => currentWs !== null,
+    attachClient: (nextWs) => {
+      if (cleanupPromise || currentWs) {
+        return false;
+      }
+
+      currentWs = nextWs;
+      let awaitingPong = false;
+
+      const onMessage = (data: WebSocket.RawData, isBinary: boolean) => {
+        if (isBinary) {
+          child.write(Buffer.from(data as Buffer).toString("utf8"));
+          return;
+        }
+        try {
+          const msg = JSON.parse(String(data)) as { type?: string; cols?: number; rows?: number };
+          if (msg.type === "resize") {
+            const cols = Number(msg.cols);
+            const rows = Number(msg.rows);
+            if (Number.isFinite(cols) && Number.isFinite(rows)) {
+              child.resize(
+                Math.max(2, Math.min(512, Math.floor(cols))),
+                Math.max(1, Math.min(256, Math.floor(rows))),
+              );
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      };
+
+      const onClose = (code: number, reason: Buffer) => {
+        detachCurrentClient();
+        void cleanupSession(`Client disconnected (code ${code}${reason.length > 0 ? `, reason: ${JSON.stringify(reason.toString("utf8"))}` : ""}).`);
+      };
+
+      const onError = (error: Error) => {
+        const message = error instanceof Error && error.message.trim() ? error.message.trim() : "unknown WebSocket error";
+        detachCurrentClient();
+        void cleanupSession(`WebSocket error: ${message}.`);
+      };
+
+      const onPong = () => {
+        awaitingPong = false;
+      };
+
+      const heartbeatInterval = setInterval(() => {
+        if (cleanupPromise || currentWs !== nextWs) {
+          return;
+        }
+        if (awaitingPong) {
+          detachCurrentClient();
+          void cleanupSession("WebSocket ping timeout.");
+          return;
+        }
+        awaitingPong = true;
+        try {
+          nextWs.ping();
+        } catch (error) {
+          const message = error instanceof Error && error.message.trim() ? error.message.trim() : "could not send ping";
+          detachCurrentClient();
+          void cleanupSession(`WebSocket ping failed: ${message}.`);
+        }
+      }, INTERACTIVE_WS_PING_INTERVAL_MS);
+
+      currentWsCleanup = () => {
+        clearInterval(heartbeatInterval);
+        nextWs.off("message", onMessage);
+        nextWs.off("close", onClose);
+        nextWs.off("error", onError);
+        nextWs.off("pong", onPong);
+      };
+
+      nextWs.on("message", onMessage);
+      nextWs.on("close", onClose);
+      nextWs.on("error", onError);
+      nextWs.on("pong", onPong);
+
+      return true;
+    },
+    terminate: (reason?: string) => cleanupSession(reason)
+  };
+
+  registerActiveInteractiveTerminalController(proposalCtx.taskId, controller);
+
+  child.onData((data) => {
+    sawTerminalOutput = true;
+    appendTranscriptChunk(data);
+    if (currentWs?.readyState === WebSocket.OPEN) {
+      currentWs.send(Buffer.from(data, "utf8"), { binary: true });
+    }
+  });
+
+  child.onExit((event) => {
+    resolveChildExit?.();
+    resolveChildExit = null;
+    const exitSummary = `exit code ${event.exitCode}${event.signal ? `, signal ${event.signal}` : ""}`;
+    if (!sawTerminalOutput) {
+      if (currentWs?.readyState === WebSocket.OPEN) {
+        try {
+          currentWs.send(JSON.stringify({ type: "error", message: "Terminal process exited before it produced terminal output." }));
+        } catch {
+          /* ignore */
+        }
+      }
+      void cleanupSession(`Terminal process exited before it produced terminal output (${exitSummary}).`);
+      return;
+    }
+    void cleanupSession(`Terminal process exited (${exitSummary}).`);
+  });
+
+  if (!controller.attachClient(ws)) {
+    void cleanupSession("Could not attach the initial terminal client.");
+  }
+}
 ````
 
 ## File: apps/server/src/services/app-stores.ts
@@ -36502,98 +36486,15 @@ test("shows active auto runs as grouped cards before summary or diff exist", () 
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AuthService } from "../lib/auth.js";
-import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
-import type { SettingsStore } from "../services/settings-store.js";
-import type { SpawnerService } from "../services/spawner.js";
-import type { TaskStore } from "../services/task-store.js";
 import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
-import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
-import { requireTaskCapabilityAccess, requireTaskExecutionConfigAccess } from "../lib/task-capability-access.js";
 import { canUserAccessRepository } from "../lib/task-ownership.js";
-import { withBranchSyncCounts, withTaskCreatorName } from "./tasks.js";
-import { normalizeProvider } from "../lib/provider-config.js";
-import type { UserStore } from "../services/user-store.js";
-
-const deadlineSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
-  .nullable();
-
-const issueImportSchema = z.object({
-  repoId: z.string().min(1),
-  draft: z.boolean().optional(),
-  issueNumber: z.coerce.number().int().positive(),
-  includeComments: z.boolean().optional(),
-  notes: z.string().max(40_000).optional(),
-  deadline: deadlineSchema.optional(),
-  taskType: z.enum(["build", "ask"]).optional(),
-  title: z.string().trim().optional(),
-  provider: z.enum(["codex", "claude"]).optional(),
-  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-  modelOverride: z.string().trim().min(1).optional(),
-  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-  baseBranch: z.string().trim().min(1).optional(),
-  branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-  model: z.string().trim().min(1).optional(),
-  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
-}).strict();
-
-const pullRequestImportSchema = z.object({
-  repoId: z.string().min(1),
-  draft: z.boolean().optional(),
-  pullRequestNumber: z.coerce.number().int().positive(),
-  notes: z.string().max(40_000).optional(),
-  deadline: deadlineSchema.optional(),
-  title: z.string().trim().optional(),
-  provider: z.enum(["codex", "claude"]).optional(),
-  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-  modelOverride: z.string().trim().min(1).optional(),
-  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-  model: z.string().trim().min(1).optional(),
-  reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
-});
-
-const applyCreateDefaultsFromSettings = <
-  T extends {
-    provider?: "codex" | "claude";
-    providerProfile?: "low" | "medium" | "high" | "max";
-    modelOverride?: string;
-    model?: string;
-  }
->(
-  payload: T,
-  settings: Awaited<ReturnType<SettingsStore["getSettings"]>>
-): T => {
-  const provider = normalizeProvider(payload.provider ?? settings.defaultProvider);
-  const providerProfile =
-    payload.providerProfile ??
-    (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort);
-  const hasLegacyModel = Boolean(payload.model?.trim());
-  const modelOverride =
-    payload.modelOverride ??
-    (hasLegacyModel ? undefined : provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel);
-
-  return {
-    ...payload,
-    provider,
-    providerProfile,
-    modelOverride
-  };
-};
 
 export const registerImportRoutes = (
   app: FastifyInstance,
   deps: {
     githubImportService: GitHubImportService;
     repositoryStore: RepositoryStore;
-    settingsStore: SettingsStore;
-    taskStore: TaskStore;
-    userStore: UserStore;
-    scheduler: SchedulerService;
-    spawner: SpawnerService;
     auth: AuthService;
   }
 ): void => {
@@ -36610,29 +36511,6 @@ export const registerImportRoutes = (
 
     return repository;
   };
-
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/issues", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repoId = String(request.query.repoId ?? "").trim();
-    if (!repoId) {
-      return reply.status(400).send({ message: "repoId is required" });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const issues = await deps.githubImportService.listOpenIssues(repository);
-      return reply.send(issues);
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
 
   app.get<{ Querystring: { repoId: string } }>("/imports/github/pull-requests", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
     const repoId = String(request.query.repoId ?? "").trim();
@@ -36671,130 +36549,6 @@ export const registerImportRoutes = (
 
       const branches = await deps.githubImportService.listBranches(repository);
       return reply.send(branches);
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.post("/imports/issue", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
-    const parsed = issueImportSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const settings = await deps.settingsStore.getSettings();
-      const issueRest = applyCreateDefaultsFromSettings(parsed.data, settings);
-      if (
-        !requireTaskCapabilityAccess(request, reply, {
-          taskType: issueRest.taskType ?? "build"
-        })
-      ) {
-        return;
-      }
-      if (!requireTaskExecutionConfigAccess(request, reply, issueRest)) {
-        return;
-      }
-
-      const taskInput = {
-        ...(await deps.githubImportService.buildTaskInputFromIssue(repository, issueRest)),
-        ...(issueRest.draft === true ? { draft: true } : {})
-      };
-      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
-      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
-        creatorName: request.auth!.user.name
-      });
-      const createdTask = taskWithCreator ?? {
-        ...task,
-        creatorName: request.auth!.user.name
-      };
-      if (issueRest.draft === true) {
-        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
-      }
-      const startResult = await orchestrateTaskStart(
-        {
-          taskStore: deps.taskStore,
-          scheduler: deps.scheduler,
-          spawner: deps.spawner
-        },
-        {
-          task: createdTask,
-          fallbackMessage: "Imported task execution could not be started"
-        }
-      );
-      if (!startResult.ok) {
-        return reply.status(startResult.statusCode).send({ message: startResult.message });
-      }
-      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.post("/imports/pull-request", { preHandler: deps.auth.requireAllScopes(["task:create", "repo:read"]) }, async (request, reply) => {
-    const parsed = pullRequestImportSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(parsed.data.repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      if (!requireTaskCapabilityAccess(request, reply, { taskType: "build" })) {
-        return;
-      }
-      const settings = await deps.settingsStore.getSettings();
-      const createPayload = applyCreateDefaultsFromSettings(parsed.data, settings);
-      if (!requireTaskExecutionConfigAccess(request, reply, createPayload)) {
-        return;
-      }
-
-      const taskInput = {
-        ...(await deps.githubImportService.buildTaskInputFromPullRequest(repository, createPayload)),
-        ...(createPayload.draft === true ? { draft: true } : {})
-      };
-      const task = await deps.taskStore.createTask(taskInput, repository, request.auth!.user.id);
-      const taskWithCreator = await deps.taskStore.patchTask(task.id, {
-        creatorName: request.auth!.user.name
-      });
-      const createdTask = taskWithCreator ?? {
-        ...task,
-        creatorName: request.auth!.user.name
-      };
-      if (createPayload.draft === true) {
-        return reply.status(201).send(await withTaskCreatorName(deps.userStore, createdTask));
-      }
-      const startResult = await orchestrateTaskStart(
-        {
-          taskStore: deps.taskStore,
-          scheduler: deps.scheduler,
-          spawner: deps.spawner
-        },
-        {
-          task: createdTask,
-          fallbackMessage: "Imported task execution could not be started"
-        }
-      );
-      if (!startResult.ok) {
-        return reply.status(startResult.statusCode).send({ message: startResult.message });
-      }
-      return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
     } catch (error) {
       if (error instanceof GitHubImportError) {
         return reply.status(error.statusCode).send({ message: error.message });
@@ -36990,7 +36744,7 @@ const bootstrap = async (): Promise<void> => {
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
-  registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, userStore, scheduler, spawner, auth });
+  registerImportRoutes(app, { githubImportService, repositoryStore, auth });
   registerGitHubWebhookRoutes(app, {
     repositoryStore,
     githubImportService,
@@ -37143,6 +36897,595 @@ void bootstrap().catch((error) => {
   );
   process.exit(1);
 });
+````
+
+## File: apps/web/src/auth/access.ts
+````typescript
+import type { PermissionScope } from "@agentswarm/shared-types";
+
+export interface NavigationRoute {
+  key: string;
+  label: string;
+  requiredScopes: PermissionScope[];
+}
+
+export const navigationRoutes: NavigationRoute[] = [
+  { key: "/tasks", label: "Tasks", requiredScopes: ["task:list"] },
+  { key: "/tasks/board", label: "Board", requiredScopes: ["task:list"] },
+  { key: "/snippets", label: "Snippets", requiredScopes: ["snippet:list"] },
+  { key: "/repositories", label: "Repositories", requiredScopes: ["repo:list"] },
+  { key: "/settings", label: "Settings", requiredScopes: ["settings:read"] },
+  { key: "/users", label: "Users", requiredScopes: ["user:list"] }
+];
+
+export const isPublicPathname = (pathname: string): boolean => pathname === "/login";
+
+export const isTaskInteractiveFullscreenPath = (pathname: string): boolean =>
+  /^\/tasks\/[^/]+\/interactive$/.test(pathname);
+
+export const getRequiredScopesForPathname = (pathname: string): PermissionScope[] => {
+  if (pathname === "/tasks" || pathname === "/tasks/board") {
+    return ["task:list"];
+  }
+
+  if (pathname === "/tasks/new") {
+    return ["task:create", "repo:list"];
+  }
+
+  if (/^\/tasks\/[^/]+\/interactive$/.test(pathname)) {
+    return ["task:edit", "task:interactive"];
+  }
+
+  if (pathname.startsWith("/tasks/")) {
+    return ["task:read"];
+  }
+
+  if (pathname === "/snippets" || pathname === "/presets") {
+    return ["snippet:list"];
+  }
+
+  if (pathname === "/repositories") {
+    return ["repo:list"];
+  }
+
+  if (pathname === "/settings") {
+    return ["settings:read"];
+  }
+
+  if (pathname === "/users") {
+    return ["user:list"];
+  }
+
+  return [];
+};
+
+export const canAccessScopes = (
+  grantedScopes: Iterable<PermissionScope>,
+  requiredScopes: PermissionScope[]
+): boolean => {
+  const granted = new Set(grantedScopes);
+  return requiredScopes.every((scope) => granted.has(scope));
+};
+
+export const resolveDefaultPath = (grantedScopes: Iterable<PermissionScope>): string | null => {
+  for (const route of navigationRoutes) {
+    if (canAccessScopes(grantedScopes, route.requiredScopes)) {
+      return route.key;
+    }
+  }
+
+  return null;
+};
+
+export const getSelectedNavigationKey = (pathname: string): string => {
+  if (pathname === "/tasks/board") {
+    return "/tasks/board";
+  }
+
+  if (pathname.startsWith("/tasks")) {
+    return "/tasks";
+  }
+
+  if (pathname.startsWith("/snippets") || pathname.startsWith("/presets")) {
+    return "/snippets";
+  }
+
+  if (pathname.startsWith("/repositories")) {
+    return "/repositories";
+  }
+
+  if (pathname.startsWith("/settings")) {
+    return "/settings";
+  }
+
+  if (pathname.startsWith("/users")) {
+    return "/users";
+  }
+
+  return pathname;
+};
+````
+
+## File: apps/web/src/utils/task-definition-submit.ts
+````typescript
+"use client";
+
+import type { Task, TaskDefinitionInput } from "@agentswarm/shared-types";
+import { api } from "../api/client";
+
+export const startMessageForDefinition = (definition: TaskDefinitionInput): string => {
+  return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
+};
+
+export const createTaskFromDefinition = (definition: TaskDefinitionInput, options: { draft?: boolean } = {}): Promise<Task> => {
+  return api.createTask({
+    title: definition.title,
+    draft: options.draft,
+    repoId: definition.repoId,
+    prompt: definition.prompt,
+    notes: definition.notes,
+    deadline: definition.deadline,
+    attachments: definition.attachments,
+    taskType: definition.taskType,
+    provider: definition.provider,
+    providerProfile: definition.providerProfile,
+    modelOverride: definition.model || undefined,
+    codexCredentialSource: definition.codexCredentialSource,
+    baseBranch: definition.baseBranch,
+    branchStrategy: definition.branchStrategy
+  });
+};
+````
+
+## File: apps/web/src/utils/task-lifecycle-view-model.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import type { Task } from "@agentswarm/shared-types";
+import { buildTaskLifecycleViewModel } from "./task-lifecycle-view-model";
+
+const createTask = (overrides: Partial<Task> = {}): Task =>
+  ({
+    id: "task-1",
+    title: "Task",
+    deadline: null,
+    pinned: false,
+    hasPendingCheckpoint: false,
+    activeInteractiveSession: false,
+    activeTerminalSessionMode: null,
+    ownerUserId: null,
+    creatorName: null,
+    repoId: "repo-1",
+    repoName: "repo",
+    repoUrl: "https://github.com/example/repo.git",
+    repoDefaultBranch: "main",
+    taskType: "build",
+    provider: "codex",
+    providerProfile: "high",
+    modelOverride: null,
+    codexCredentialSource: "auto",
+    baseBranch: "main",
+    branchStrategy: "feature_branch",
+    complexity: "normal",
+    branchName: "feature/task-1",
+    workspaceBaseRef: null,
+    prompt: "Do the work",
+    notes: "",
+    executionSummary: "",
+    resultMarkdown: null,
+    branchDiff: null,
+    status: "open",
+    workflowStatus: "ready",
+    executionStatus: "idle",
+    executionAction: "build",
+    reviewReason: null,
+    logs: [],
+    createdAt: "2026-05-24T00:00:00.000Z",
+    updatedAt: "2026-05-24T00:00:00.000Z",
+    startedAt: null,
+    finishedAt: null,
+    errorMessage: null,
+    lastAction: "build",
+    enqueued: false,
+    ...overrides
+  }) satisfies Task as Task;
+
+describe("buildTaskLifecycleViewModel", () => {
+  it("maps preparing workspace state", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "preparing_workspace" }));
+    assert.equal(vm.isPreparingWorkspace, true);
+    assert.equal(vm.resultStatusText, "Preparing workspace");
+  });
+
+  it("maps queued build state", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "build_queued", taskType: "build" }));
+    assert.equal(vm.isQueued, true);
+    assert.equal(vm.resultStatusText, "Build queued");
+  });
+
+  it("maps queued ask state", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "ask_queued", taskType: "ask" }));
+    assert.equal(vm.isQueued, true);
+    assert.equal(vm.resultStatusText, "Question queued");
+  });
+
+  it("marks archived tasks", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "archived" }));
+    assert.equal(vm.isArchived, true);
+  });
+
+  it("marks checkpoint mutations as blocked while the task is running", () => {
+    const vm = buildTaskLifecycleViewModel(createTask({ status: "building" }));
+    assert.equal(vm.checkpointDiffActionsBlocked, true);
+    assert.ok(vm.checkpointDiffActionsBlockedReason);
+  });
+});
+````
+
+## File: README.md
+````markdown
+<p align="center">
+  <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
+</p>
+
+# AgentSwarm
+
+AgentSwarm is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
+
+The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
+
+## Features
+
+- Create build or ask tasks from a blank prompt, reusable snippet, GitHub issue, or pull request.
+- Run Codex and Claude tasks in isolated Docker runtime containers.
+- Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
+- Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
+- Open task workspaces in an interactive browser terminal.
+- Configure repositories, credentials, roles, users, provider defaults, and snippets.
+- Automate task creation from GitHub webhooks and repository automation rules.
+- Add repository-local postflight checks with `.agentswarm/postflight.yml`.
+
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| Docker | Required for the main app stack and agent runtime containers. |
+| Docker Compose | `docker compose` is preferred; `docker-compose` is also supported. |
+| Bash | Required by the helper and harness scripts. |
+| Node.js 20+ and npm | Required for local development, checks, tests, and builds. |
+| Python 3 | Required when installing local npm dependencies because native modules such as `node-pty` may build from source. |
+
+## Installation
+
+Clone the repository:
+
+```bash
+git clone git@github.com:coretracker/agentswarm.git
+cd agentswarm
+```
+
+Create a local environment file:
+
+```bash
+cp .env.example .env
+```
+
+Initialize the Docker stack and runtime images:
+
+```bash
+./agentswarm.sh init
+```
+
+For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
+
+```bash
+HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+```
+
+## Quick Start
+
+Start the app:
+
+```bash
+./agentswarm.sh start
+```
+
+Open the UI:
+
+```text
+http://localhost:3217/login
+```
+
+Bootstrap credentials come from `.env.example` and are used only when the first admin user is created. Review and change them before exposing the app outside a local development environment.
+
+After signing in:
+
+1. Open **Settings** and add provider credentials for OpenAI/Codex and/or Anthropic/Claude.
+2. Open **Repositories** and add a Git repository.
+3. Open **Tasks** and create a build or ask task.
+4. Review task output, logs, diffs, and checkpoints from the task detail page.
+
+Stop the app:
+
+```bash
+./agentswarm.sh stop
+```
+
+## Usage
+
+### Common Commands
+
+| Command | Description |
+| --- | --- |
+| `./agentswarm.sh init` | Build runtime images, rebuild compose images, and start the stack. |
+| `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
+| `./agentswarm.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
+| `./agentswarm.sh stop` | Stop the Docker Compose stack. |
+| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
+
+The health endpoint is available at:
+
+```bash
+curl -fsS http://localhost:3217/api/health
+```
+
+### Creating Tasks
+
+Tasks are the main unit of work in AgentSwarm.
+
+- **Build tasks** ask an agent to make repository changes.
+- **Ask tasks** ask an agent to inspect and answer without changing code.
+- **Snippet tasks** start from reusable prompt templates and variables.
+- **GitHub-imported tasks** can be created from issues, pull requests, review comments, and automation rules.
+
+Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
+
+### GitHub Webhooks
+
+AgentSwarm supports repository-scoped GitHub webhooks that can create tasks automatically.
+
+For each repository, configure this webhook URL in GitHub:
+
+```text
+https://<your-host>/api/webhooks/github/<repositoryId>
+```
+
+Use content type `application/json` and subscribe to the events you want to automate, such as Issues, Pull requests, Pull request review comments, Issue comments, and Reactions.
+
+Example repository automation rule:
+
+```json
+[
+  {
+    "id": "ai-issue-opened",
+    "name": "AI issue to build task",
+    "enabled": true,
+    "trigger": "issue_opened",
+    "syncStatusEnabled": true,
+    "labelFilter": {
+      "labelsAny": ["ai"],
+      "labelsNone": ["wip"]
+    },
+    "task": {
+      "assigneeEmail": "dev@example.com",
+      "taskType": "build",
+      "provider": "codex",
+      "providerProfile": "high",
+      "modelOverride": "gpt-5.4",
+      "codexCredentialSource": "profile"
+    }
+  }
+]
+```
+
+Supported automation triggers include:
+
+- `issue_opened`
+- `pull_request_opened`
+- comment or reaction triggers when rule-level comment automation is enabled
+
+### Postflight Checks
+
+Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
+
+Example:
+
+```yaml
+version: 1
+enabled: true
+
+when:
+  task_types: ["build"]
+  providers: ["codex", "claude"]
+
+runner:
+  image: "mcr.microsoft.com/playwright:v1.52.0-jammy"
+  timeout_seconds: 1800
+
+steps:
+  - run: "npm ci"
+  - run: "npx playwright test tests/mobile-screenshots.spec.ts --project=mobile-web --update-snapshots"
+
+on_failure: "fail_task"
+```
+
+## Configuration
+
+Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the AgentSwarm Settings UI, not in `.env`.
+
+### Core Environment Variables
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
+| `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
+| `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
+| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
+| `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
+| `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
+| `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
+| `APP_ENVIRONMENT` | Runtime environment label. | `local` |
+
+### Storage
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `DATABASE_URL` | Postgres connection string. | see `.env.example` |
+| `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start. | `true` |
+| `REDIS_HOST_PORT` | Host port for Redis in local Docker setups. | `6379` |
+| `POSTGRES_HOST_PORT` | Host port for Postgres in local Docker setups. | `5432` |
+
+Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub.
+
+### Git and Workspaces
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `GIT_USER_NAME` | Git author name used by the server. | `AgentSwarm Bot` |
+| `GIT_USER_EMAIL` | Git author email used by the server. | `agentswarm@local.dev` |
+| `TASK_WORKSPACE_HOST_ROOT` | Absolute host path for task workspaces. | unset |
+| `LOCAL_PLANS_HOST_ROOT` | Absolute host path for local plan storage. | unset |
+
+`TASK_WORKSPACE_HOST_ROOT` is important in Docker setups because the server and runtime containers must mount the same host workspace directory.
+
+### Frontend API Routing
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_URL` | Explicit public API base URL. | empty |
+| `NEXT_PUBLIC_SOCKET_URL` | Explicit public Socket.IO URL. | empty |
+
+Leave these empty to use the bundled same-origin `/api` proxy.
+
+### Runtime Images
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
+| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
+| `GIT_TERMINAL_IMAGE` | Restricted Git terminal image. | `local/git-terminal:latest` |
+| `CODEX_INTERACTIVE_IMAGE` | Interactive Codex terminal image. | `local/codex-interactive:latest` |
+| `CLAUDE_INTERACTIVE_IMAGE` | Interactive Claude terminal image. | `local/claude-interactive:latest` |
+
+### Docker Socket Access
+
+Docker socket access is disabled by default and should stay disabled unless a runtime must start nested containers.
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into Codex/Claude runtime containers. | `false` |
+| `DOCKER_SOCKET_HOST_PATH` | Host Docker socket path. | `/var/run/docker.sock` |
+| `DOCKER_SOCKET_CONTAINER_PATH_CODEX` | In-container socket path for Codex runtimes. | `/var/run/docker.sock` |
+| `DOCKER_SOCKET_CONTAINER_PATH_CLAUDE` | In-container socket path for Claude runtimes. | `/var/run/docker.sock` |
+
+Mounting `docker.sock` is highly privileged and can effectively grant host-level control from inside the runtime container.
+
+## Project Structure
+
+```text
+.
++-- apps/
+|   +-- server/          # Backend API, orchestration, stores, routes, schedulers
+|   +-- web/             # Next.js web app
++-- packages/
+|   +-- shared-types/    # Shared TypeScript types used by server and web
++-- agent-runtime-codex/ # Automated Codex task runtime
++-- agent-runtime-claude/# Automated Claude task runtime
++-- tools/               # Supporting runtime and terminal tooling
++-- docs/                # Architecture, development, product, and quality docs
++-- scripts/harness/     # Canonical setup, check, test, and PR scripts
++-- task-workspaces/     # Runtime task workspaces; do not commit
++-- docker-compose.yml   # Local Docker stack
++-- agentswarm.sh        # Main stack helper script
+```
+
+## Development
+
+Install dependencies on a clean checkout:
+
+```bash
+HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
+```
+
+Useful development commands:
+
+| Command | Description |
+| --- | --- |
+| `./scripts/harness/doctor.sh` | Verify required tooling and harness availability. |
+| `./scripts/harness/setup.sh` | Initialize the Docker stack and runtime folders. |
+| `./scripts/harness/check.sh` | Run docs checks, boundary checks, lint, and build. |
+| `./scripts/harness/test.sh` | Run the canonical test suite. |
+| `./scripts/harness/pr-ready.sh` | Run pull request readiness checks. |
+| `npm run dev` | Run server and web dev processes together. |
+| `npm run lint` | Run TypeScript no-emit checks for server and web. |
+| `npm run build` | Build shared types, server, and web. |
+| `npm run test` | Run `./scripts/harness/test.sh`. |
+
+Workspace-specific commands:
+
+```bash
+npm run dev -w @agentswarm/server
+npm run dev -w @agentswarm/web
+npm run build -w @agentswarm/shared-types
+```
+
+Before opening a pull request, run:
+
+```bash
+./scripts/harness/pr-ready.sh
+```
+
+The repository uses execution-plan and human-gated-flow checks for non-trivial changes. Useful references:
+
+- `docs/development/setup.md`
+- `docs/development/commands.md`
+- `docs/development/testing.md`
+- `docs/development/pr-workflow.md`
+- `docs/development/agent-review.md`
+
+After any agent-generated repository edit, refresh the Repomix context bundle:
+
+```bash
+npx repomix --style markdown --output docs/repomix.md
+```
+
+## FAQ
+
+### Where do I configure API keys?
+
+Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings UI. Credentials are write-only from the UI and are not returned by the API.
+
+### Can I run without Docker?
+
+The documented and supported path is Docker-based. Some server and web commands can run locally with Node.js, but the full task execution flow depends on Docker runtime containers.
+
+### What does a `202` response from a GitHub webhook mean?
+
+It means AgentSwarm accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
+
+### How do I reset local data?
+
+Run setup with a database reset:
+
+```bash
+HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
+```
+
+## Contributing
+
+1. Read the relevant docs in `docs/index.md`.
+2. Keep changes scoped and update docs when behavior changes.
+3. Run the canonical checks before opening a pull request:
+
+   ```bash
+   ./scripts/harness/pr-ready.sh
+   ```
+
+4. Use the pull request template in `.github/pull_request_template.md`.
+
+## License
+
+No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.
 ````
 
 ## File: apps/web/components/app-shell.tsx
@@ -37879,643 +38222,6 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return <App>{shellContent}</App>;
 }
-````
-
-## File: apps/web/src/auth/access.ts
-````typescript
-import type { PermissionScope } from "@agentswarm/shared-types";
-
-export interface NavigationRoute {
-  key: string;
-  label: string;
-  requiredScopes: PermissionScope[];
-}
-
-export const navigationRoutes: NavigationRoute[] = [
-  { key: "/tasks", label: "Tasks", requiredScopes: ["task:list"] },
-  { key: "/tasks/board", label: "Board", requiredScopes: ["task:list"] },
-  { key: "/snippets", label: "Snippets", requiredScopes: ["snippet:list"] },
-  { key: "/repositories", label: "Repositories", requiredScopes: ["repo:list"] },
-  { key: "/settings", label: "Settings", requiredScopes: ["settings:read"] },
-  { key: "/users", label: "Users", requiredScopes: ["user:list"] }
-];
-
-export const isPublicPathname = (pathname: string): boolean => pathname === "/login";
-
-export const isTaskInteractiveFullscreenPath = (pathname: string): boolean =>
-  /^\/tasks\/[^/]+\/interactive$/.test(pathname);
-
-export const getRequiredScopesForPathname = (pathname: string): PermissionScope[] => {
-  if (pathname === "/tasks" || pathname === "/tasks/board") {
-    return ["task:list"];
-  }
-
-  if (pathname === "/tasks/new") {
-    return ["task:create", "repo:list"];
-  }
-
-  if (/^\/tasks\/[^/]+\/interactive$/.test(pathname)) {
-    return ["task:edit", "task:interactive"];
-  }
-
-  if (pathname.startsWith("/tasks/")) {
-    return ["task:read"];
-  }
-
-  if (pathname === "/snippets" || pathname === "/presets") {
-    return ["snippet:list"];
-  }
-
-  if (pathname === "/repositories") {
-    return ["repo:list"];
-  }
-
-  if (pathname === "/settings") {
-    return ["settings:read"];
-  }
-
-  if (pathname === "/users") {
-    return ["user:list"];
-  }
-
-  return [];
-};
-
-export const canAccessScopes = (
-  grantedScopes: Iterable<PermissionScope>,
-  requiredScopes: PermissionScope[]
-): boolean => {
-  const granted = new Set(grantedScopes);
-  return requiredScopes.every((scope) => granted.has(scope));
-};
-
-export const resolveDefaultPath = (grantedScopes: Iterable<PermissionScope>): string | null => {
-  for (const route of navigationRoutes) {
-    if (canAccessScopes(grantedScopes, route.requiredScopes)) {
-      return route.key;
-    }
-  }
-
-  return null;
-};
-
-export const getSelectedNavigationKey = (pathname: string): string => {
-  if (pathname === "/tasks/board") {
-    return "/tasks/board";
-  }
-
-  if (pathname.startsWith("/tasks")) {
-    return "/tasks";
-  }
-
-  if (pathname.startsWith("/snippets") || pathname.startsWith("/presets")) {
-    return "/snippets";
-  }
-
-  if (pathname.startsWith("/repositories")) {
-    return "/repositories";
-  }
-
-  if (pathname.startsWith("/settings")) {
-    return "/settings";
-  }
-
-  if (pathname.startsWith("/users")) {
-    return "/users";
-  }
-
-  return pathname;
-};
-````
-
-## File: apps/web/src/utils/task-definition-submit.ts
-````typescript
-"use client";
-
-import type { Task, TaskDefinitionInput } from "@agentswarm/shared-types";
-import { api } from "../api/client";
-
-export const startMessageForDefinition = (definition: TaskDefinitionInput): string => {
-  if (definition.sourceType === "pull_request") {
-    return "Pull request task created and started";
-  }
-
-  if (definition.sourceType === "issue") {
-    return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
-  }
-
-  return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
-};
-
-export const createTaskFromDefinition = (definition: TaskDefinitionInput, options: { draft?: boolean } = {}): Promise<Task> => {
-  if (definition.sourceType === "issue") {
-    return api.createTaskFromIssue({
-      repoId: definition.repoId,
-      draft: options.draft,
-      issueNumber: definition.issueNumber,
-      includeComments: definition.includeComments,
-      notes: definition.notes,
-      deadline: definition.deadline,
-      taskType: definition.taskType,
-      title: definition.title,
-      provider: definition.provider,
-      providerProfile: definition.providerProfile,
-      modelOverride: definition.model || undefined,
-      codexCredentialSource: definition.codexCredentialSource,
-      baseBranch: definition.baseBranch,
-      branchStrategy: definition.branchStrategy
-    });
-  }
-
-  if (definition.sourceType === "pull_request") {
-    return api.createTaskFromPullRequest({
-      repoId: definition.repoId,
-      draft: options.draft,
-      pullRequestNumber: definition.pullRequestNumber,
-      notes: definition.notes,
-      deadline: definition.deadline,
-      title: definition.title,
-      provider: definition.provider,
-      providerProfile: definition.providerProfile,
-      modelOverride: definition.model || undefined,
-      codexCredentialSource: definition.codexCredentialSource
-    });
-  }
-
-  return api.createTask({
-    title: definition.title,
-    draft: options.draft,
-    repoId: definition.repoId,
-    prompt: definition.prompt,
-    notes: definition.notes,
-    deadline: definition.deadline,
-    attachments: definition.sourceType === "blank" || definition.sourceType === "snippet" ? definition.attachments : undefined,
-    taskType: definition.taskType,
-    provider: definition.provider,
-    providerProfile: definition.providerProfile,
-    modelOverride: definition.model || undefined,
-    codexCredentialSource: definition.codexCredentialSource,
-    baseBranch: definition.baseBranch,
-    branchStrategy: definition.branchStrategy,
-    ...(definition.sourceType === "snippet"
-        ? {
-            task_source: "snippet" as const,
-            snippet_id: definition.snippetId
-          }
-        : { task_source: "blank" as const })
-  });
-};
-````
-
-## File: apps/web/src/utils/task-lifecycle-view-model.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import type { Task } from "@agentswarm/shared-types";
-import { buildTaskLifecycleViewModel } from "./task-lifecycle-view-model";
-
-const createTask = (overrides: Partial<Task> = {}): Task =>
-  ({
-    id: "task-1",
-    title: "Task",
-    deadline: null,
-    pinned: false,
-    hasPendingCheckpoint: false,
-    activeInteractiveSession: false,
-    activeTerminalSessionMode: null,
-    ownerUserId: null,
-    creatorName: null,
-    repoId: "repo-1",
-    repoName: "repo",
-    repoUrl: "https://github.com/example/repo.git",
-    repoDefaultBranch: "main",
-    taskType: "build",
-    provider: "codex",
-    providerProfile: "high",
-    modelOverride: null,
-    codexCredentialSource: "auto",
-    baseBranch: "main",
-    branchStrategy: "feature_branch",
-    complexity: "normal",
-    branchName: "feature/task-1",
-    workspaceBaseRef: null,
-    prompt: "Do the work",
-    notes: "",
-    executionSummary: "",
-    resultMarkdown: null,
-    branchDiff: null,
-    status: "open",
-    workflowStatus: "ready",
-    executionStatus: "idle",
-    executionAction: "build",
-    reviewReason: null,
-    logs: [],
-    createdAt: "2026-05-24T00:00:00.000Z",
-    updatedAt: "2026-05-24T00:00:00.000Z",
-    startedAt: null,
-    finishedAt: null,
-    errorMessage: null,
-    lastAction: "build",
-    enqueued: false,
-    ...overrides
-  }) satisfies Task as Task;
-
-describe("buildTaskLifecycleViewModel", () => {
-  it("maps preparing workspace state", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "preparing_workspace" }));
-    assert.equal(vm.isPreparingWorkspace, true);
-    assert.equal(vm.resultStatusText, "Preparing workspace");
-  });
-
-  it("maps queued build state", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "build_queued", taskType: "build" }));
-    assert.equal(vm.isQueued, true);
-    assert.equal(vm.resultStatusText, "Build queued");
-  });
-
-  it("maps queued ask state", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "ask_queued", taskType: "ask" }));
-    assert.equal(vm.isQueued, true);
-    assert.equal(vm.resultStatusText, "Question queued");
-  });
-
-  it("marks archived tasks", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "archived" }));
-    assert.equal(vm.isArchived, true);
-  });
-
-  it("marks checkpoint mutations as blocked while the task is running", () => {
-    const vm = buildTaskLifecycleViewModel(createTask({ status: "building" }));
-    assert.equal(vm.checkpointDiffActionsBlocked, true);
-    assert.ok(vm.checkpointDiffActionsBlockedReason);
-  });
-});
-````
-
-## File: README.md
-````markdown
-<p align="center">
-  <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
-</p>
-
-# AgentSwarm
-
-AgentSwarm is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
-
-The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
-
-## Features
-
-- Create build or ask tasks from a blank prompt, reusable snippet, GitHub issue, or pull request.
-- Run Codex and Claude tasks in isolated Docker runtime containers.
-- Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
-- Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
-- Open task workspaces in an interactive browser terminal.
-- Configure repositories, credentials, roles, users, provider defaults, and snippets.
-- Automate task creation from GitHub webhooks and repository automation rules.
-- Add repository-local postflight checks with `.agentswarm/postflight.yml`.
-
-## Requirements
-
-| Requirement | Notes |
-| --- | --- |
-| Docker | Required for the main app stack and agent runtime containers. |
-| Docker Compose | `docker compose` is preferred; `docker-compose` is also supported. |
-| Bash | Required by the helper and harness scripts. |
-| Node.js 20+ and npm | Required for local development, checks, tests, and builds. |
-| Python 3 | Required when installing local npm dependencies because native modules such as `node-pty` may build from source. |
-
-## Installation
-
-Clone the repository:
-
-```bash
-git clone git@github.com:coretracker/agentswarm.git
-cd agentswarm
-```
-
-Create a local environment file:
-
-```bash
-cp .env.example .env
-```
-
-Initialize the Docker stack and runtime images:
-
-```bash
-./agentswarm.sh init
-```
-
-For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
-
-```bash
-HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-```
-
-## Quick Start
-
-Start the app:
-
-```bash
-./agentswarm.sh start
-```
-
-Open the UI:
-
-```text
-http://localhost:3217/login
-```
-
-Bootstrap credentials come from `.env.example` and are used only when the first admin user is created. Review and change them before exposing the app outside a local development environment.
-
-After signing in:
-
-1. Open **Settings** and add provider credentials for OpenAI/Codex and/or Anthropic/Claude.
-2. Open **Repositories** and add a Git repository.
-3. Open **Tasks** and create a build or ask task.
-4. Review task output, logs, diffs, and checkpoints from the task detail page.
-
-Stop the app:
-
-```bash
-./agentswarm.sh stop
-```
-
-## Usage
-
-### Common Commands
-
-| Command | Description |
-| --- | --- |
-| `./agentswarm.sh init` | Build runtime images, rebuild compose images, and start the stack. |
-| `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
-| `./agentswarm.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
-| `./agentswarm.sh stop` | Stop the Docker Compose stack. |
-| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
-
-The health endpoint is available at:
-
-```bash
-curl -fsS http://localhost:3217/api/health
-```
-
-### Creating Tasks
-
-Tasks are the main unit of work in AgentSwarm.
-
-- **Build tasks** ask an agent to make repository changes.
-- **Ask tasks** ask an agent to inspect and answer without changing code.
-- **Snippet tasks** start from reusable prompt templates and variables.
-- **GitHub-imported tasks** can be created from issues, pull requests, review comments, and automation rules.
-
-Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
-
-### GitHub Webhooks
-
-AgentSwarm supports repository-scoped GitHub webhooks that can create tasks automatically.
-
-For each repository, configure this webhook URL in GitHub:
-
-```text
-https://<your-host>/api/webhooks/github/<repositoryId>
-```
-
-Use content type `application/json` and subscribe to the events you want to automate, such as Issues, Pull requests, Pull request review comments, Issue comments, and Reactions.
-
-Example repository automation rule:
-
-```json
-[
-  {
-    "id": "ai-issue-opened",
-    "name": "AI issue to build task",
-    "enabled": true,
-    "trigger": "issue_opened",
-    "syncStatusEnabled": true,
-    "labelFilter": {
-      "labelsAny": ["ai"],
-      "labelsNone": ["wip"]
-    },
-    "task": {
-      "assigneeEmail": "dev@example.com",
-      "taskType": "build",
-      "provider": "codex",
-      "providerProfile": "high",
-      "modelOverride": "gpt-5.4",
-      "codexCredentialSource": "profile"
-    }
-  }
-]
-```
-
-Supported automation triggers include:
-
-- `issue_opened`
-- `pull_request_opened`
-- comment or reaction triggers when rule-level comment automation is enabled
-
-### Postflight Checks
-
-Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
-
-Example:
-
-```yaml
-version: 1
-enabled: true
-
-when:
-  task_types: ["build"]
-  providers: ["codex", "claude"]
-
-runner:
-  image: "mcr.microsoft.com/playwright:v1.52.0-jammy"
-  timeout_seconds: 1800
-
-steps:
-  - run: "npm ci"
-  - run: "npx playwright test tests/mobile-screenshots.spec.ts --project=mobile-web --update-snapshots"
-
-on_failure: "fail_task"
-```
-
-## Configuration
-
-Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the AgentSwarm Settings UI, not in `.env`.
-
-### Core Environment Variables
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
-| `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
-| `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
-| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
-| `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
-| `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
-| `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
-| `APP_ENVIRONMENT` | Runtime environment label. | `local` |
-
-### Storage
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `DATABASE_URL` | Postgres connection string. | see `.env.example` |
-| `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start. | `true` |
-| `REDIS_HOST_PORT` | Host port for Redis in local Docker setups. | `6379` |
-| `POSTGRES_HOST_PORT` | Host port for Postgres in local Docker setups. | `5432` |
-
-Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub.
-
-### Git and Workspaces
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `GIT_USER_NAME` | Git author name used by the server. | `AgentSwarm Bot` |
-| `GIT_USER_EMAIL` | Git author email used by the server. | `agentswarm@local.dev` |
-| `TASK_WORKSPACE_HOST_ROOT` | Absolute host path for task workspaces. | unset |
-| `LOCAL_PLANS_HOST_ROOT` | Absolute host path for local plan storage. | unset |
-
-`TASK_WORKSPACE_HOST_ROOT` is important in Docker setups because the server and runtime containers must mount the same host workspace directory.
-
-### Frontend API Routing
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `NEXT_PUBLIC_API_URL` | Explicit public API base URL. | empty |
-| `NEXT_PUBLIC_SOCKET_URL` | Explicit public Socket.IO URL. | empty |
-
-Leave these empty to use the bundled same-origin `/api` proxy.
-
-### Runtime Images
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
-| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
-| `GIT_TERMINAL_IMAGE` | Restricted Git terminal image. | `local/git-terminal:latest` |
-| `CODEX_INTERACTIVE_IMAGE` | Interactive Codex terminal image. | `local/codex-interactive:latest` |
-| `CLAUDE_INTERACTIVE_IMAGE` | Interactive Claude terminal image. | `local/claude-interactive:latest` |
-
-### Docker Socket Access
-
-Docker socket access is disabled by default and should stay disabled unless a runtime must start nested containers.
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into Codex/Claude runtime containers. | `false` |
-| `DOCKER_SOCKET_HOST_PATH` | Host Docker socket path. | `/var/run/docker.sock` |
-| `DOCKER_SOCKET_CONTAINER_PATH_CODEX` | In-container socket path for Codex runtimes. | `/var/run/docker.sock` |
-| `DOCKER_SOCKET_CONTAINER_PATH_CLAUDE` | In-container socket path for Claude runtimes. | `/var/run/docker.sock` |
-
-Mounting `docker.sock` is highly privileged and can effectively grant host-level control from inside the runtime container.
-
-## Project Structure
-
-```text
-.
-+-- apps/
-|   +-- server/          # Backend API, orchestration, stores, routes, schedulers
-|   +-- web/             # Next.js web app
-+-- packages/
-|   +-- shared-types/    # Shared TypeScript types used by server and web
-+-- agent-runtime-codex/ # Automated Codex task runtime
-+-- agent-runtime-claude/# Automated Claude task runtime
-+-- tools/               # Supporting runtime and terminal tooling
-+-- docs/                # Architecture, development, product, and quality docs
-+-- scripts/harness/     # Canonical setup, check, test, and PR scripts
-+-- task-workspaces/     # Runtime task workspaces; do not commit
-+-- docker-compose.yml   # Local Docker stack
-+-- agentswarm.sh        # Main stack helper script
-```
-
-## Development
-
-Install dependencies on a clean checkout:
-
-```bash
-HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-```
-
-Useful development commands:
-
-| Command | Description |
-| --- | --- |
-| `./scripts/harness/doctor.sh` | Verify required tooling and harness availability. |
-| `./scripts/harness/setup.sh` | Initialize the Docker stack and runtime folders. |
-| `./scripts/harness/check.sh` | Run docs checks, boundary checks, lint, and build. |
-| `./scripts/harness/test.sh` | Run the canonical test suite. |
-| `./scripts/harness/pr-ready.sh` | Run pull request readiness checks. |
-| `npm run dev` | Run server and web dev processes together. |
-| `npm run lint` | Run TypeScript no-emit checks for server and web. |
-| `npm run build` | Build shared types, server, and web. |
-| `npm run test` | Run `./scripts/harness/test.sh`. |
-
-Workspace-specific commands:
-
-```bash
-npm run dev -w @agentswarm/server
-npm run dev -w @agentswarm/web
-npm run build -w @agentswarm/shared-types
-```
-
-Before opening a pull request, run:
-
-```bash
-./scripts/harness/pr-ready.sh
-```
-
-The repository uses execution-plan and human-gated-flow checks for non-trivial changes. Useful references:
-
-- `docs/development/setup.md`
-- `docs/development/commands.md`
-- `docs/development/testing.md`
-- `docs/development/pr-workflow.md`
-- `docs/development/agent-review.md`
-
-After any agent-generated repository edit, refresh the Repomix context bundle:
-
-```bash
-npx repomix --style markdown --output docs/repomix.md
-```
-
-## FAQ
-
-### Where do I configure API keys?
-
-Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings UI. Credentials are write-only from the UI and are not returned by the API.
-
-### Can I run without Docker?
-
-The documented and supported path is Docker-based. Some server and web commands can run locally with Node.js, but the full task execution flow depends on Docker runtime containers.
-
-### What does a `202` response from a GitHub webhook mean?
-
-It means AgentSwarm accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
-
-### How do I reset local data?
-
-Run setup with a database reset:
-
-```bash
-HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
-```
-
-## Contributing
-
-1. Read the relevant docs in `docs/index.md`.
-2. Keep changes scoped and update docs when behavior changes.
-3. Run the canonical checks before opening a pull request:
-
-   ```bash
-   ./scripts/harness/pr-ready.sh
-   ```
-
-4. Use the pull request template in `.github/pull_request_template.md`.
-
-## License
-
-No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.
 ````
 
 ## File: apps/server/src/db/migrations.ts
@@ -39801,7 +39507,7 @@ describe("SpawnerService workspace provisioning", () => {
 
 import { useEffect, useState } from "react";
 import dayjs from "dayjs";
-import { getDefaultModelForProvider, type Task, type TaskSourceType, type UpdateTaskDraftInput } from "@agentswarm/shared-types";
+import { getDefaultModelForProvider, type Task, type UpdateTaskDraftInput } from "@agentswarm/shared-types";
 import { App, Button, Form, Modal } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
 import { trackEvent } from "../src/utils/analytics";
@@ -39824,7 +39530,6 @@ interface TaskCreateModalProps {
 }
 
 const getDraftTaskInitialValues = (task: Task): Partial<TaskDefinitionFormValues> => ({
-  sourceType: "blank",
   title: task.title,
   deadline: task.deadline ? dayjs(task.deadline) : null,
   repoId: task.repoId,
@@ -39837,7 +39542,6 @@ const getDraftTaskInitialValues = (task: Task): Partial<TaskDefinitionFormValues
   codexCredentialSource: task.codexCredentialSource ?? "auto",
   baseBranch: task.baseBranch,
   branchStrategy: task.branchStrategy,
-  includeComments: true
 });
 
 const buildDraftUpdateInput = (values: TaskDefinitionFormValues): UpdateTaskDraftInput => ({
@@ -39861,7 +39565,6 @@ export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask
   const [submitting, setSubmitting] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
   const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
-  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const canCreateAnyTaskMode = can("task:build") || can("task:ask");
   const editingDraft = Boolean(draftTask);
   const busy = submitting || savingDraft;
@@ -39908,7 +39611,7 @@ export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask
     try {
       const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
       const definition = buildTaskDefinitionInput(values, encodedAttachments);
-      trackEvent("task_create_submitted", { source: definition.sourceType });
+      trackEvent("task_create_submitted", { task_type: definition.taskType });
 
       const creationPromise = createTaskFromDefinition(definition);
       form.resetFields();
@@ -39967,13 +39670,7 @@ export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask
       disabled={!canCreateAnyTaskMode || savingDraft}
       onClick={() => form.submit()}
     >
-      {editingDraft
-        ? "Save Draft"
-        : selectedSourceType === "issue"
-          ? "Create Task From Issue"
-          : selectedSourceType === "pull_request"
-            ? "Create Task From Pull Request"
-            : "Create Task"}
+      {editingDraft ? "Save Draft" : "Create Task"}
     </Button>
   ];
 
@@ -40004,7 +39701,7 @@ export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask
         <TaskDefinitionFields
           form={form}
           syncSettingsDefaults={!editingDraft}
-          lockSourceAndRepository={editingDraft}
+          lockRepository={editingDraft}
           allowPromptAttachments={!editingDraft}
           promptImageFiles={promptImageFiles}
           onPromptImageFilesChange={setPromptImageFiles}
@@ -40025,14 +39722,11 @@ import type {
   AuthSession,
   CreateRoleInput,
   CreateSnippetInput,
-  CreateTaskFromIssueInput,
-  CreateTaskFromPullRequestInput,
   CreateTaskMessageInput,
   CreateRepositoryInput,
   CreateTaskInput,
   CreateUserInput,
   GitHubBranchReference,
-  GitHubIssueReference,
   GitHubPullRequestReference,
   LoginInput,
   ProviderModelOption,
@@ -40426,18 +40120,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  createTaskFromIssue: (input: CreateTaskFromIssueInput) =>
-    request<Task>("/imports/issue", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  createTaskFromPullRequest: (input: CreateTaskFromPullRequestInput) =>
-    request<Task>("/imports/pull-request", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  listGitHubIssues: (repoId: string) =>
-    request<GitHubIssueReference[]>(`/imports/github/issues?repoId=${encodeURIComponent(repoId)}`),
   listGitHubPullRequests: (repoId: string) =>
     request<GitHubPullRequestReference[]>(`/imports/github/pull-requests?repoId=${encodeURIComponent(repoId)}`),
   listGitHubBranches: (repoId: string) =>
@@ -41225,11 +40907,7 @@ export class RedisTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
-    const taskSource = input.task_source === "snippet" ? input.task_source : "blank";
-    const snippetId =
-      taskSource === "snippet" && typeof input.snippet_id === "string" && input.snippet_id.trim().length > 0
-        ? input.snippet_id.trim()
-        : undefined;
+    const taskSource = "blank";
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
     const initialStatus: TaskStatus = isDraft ? "draft" : "open";
@@ -41252,7 +40930,6 @@ export class RedisTaskStore implements TaskStore {
       modelOverride,
       codexCredentialSource,
       taskSource,
-      ...(snippetId ? { snippetId } : {}),
       baseBranch,
       branchStrategy,
       complexity,
@@ -42547,11 +42224,7 @@ export class PostgresTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
-    const taskSource = input.task_source === "snippet" ? input.task_source : "blank";
-    const snippetId =
-      taskSource === "snippet" && typeof input.snippet_id === "string" && input.snippet_id.trim().length > 0
-        ? input.snippet_id.trim()
-        : undefined;
+    const taskSource = "blank";
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
     const initialStatus: TaskStatus = isDraft ? "draft" : "open";
@@ -42574,7 +42247,6 @@ export class PostgresTaskStore implements TaskStore {
       modelOverride,
       codexCredentialSource,
       taskSource,
-      ...(snippetId ? { snippetId } : {}),
       baseBranch,
       branchStrategy,
       complexity,
@@ -43512,16 +43184,12 @@ import type {
   CodexCredentialSource,
   CreateTaskPromptAttachmentInput,
   GitHubBranchReference,
-  GitHubIssueReference,
-  GitHubPullRequestReference,
   ProviderProfile,
   Repository,
   Snippet,
-  SnippetVariable,
   SystemSettings,
   TaskBranchStrategy,
   TaskDefinitionInput,
-  TaskSourceType,
   TaskType
 } from "@agentswarm/shared-types";
 import {
@@ -43530,7 +43198,7 @@ import {
   getEffortOptionsForProvider,
   getModelsForProvider
 } from "@agentswarm/shared-types";
-import { Alert, Button, Card, Checkbox, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Space, Typography, message } from "antd";
+import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Typography, message } from "antd";
 import { RobotOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -43544,7 +43212,6 @@ import { useAuth } from "./auth-provider";
 import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
 
 export type TaskDefinitionFormValues = {
-  sourceType?: TaskSourceType;
   title?: string;
   deadline?: string | null | Dayjs;
   repoId?: string;
@@ -43557,17 +43224,12 @@ export type TaskDefinitionFormValues = {
   codexCredentialSource?: CodexCredentialSource;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
-  issueNumber?: number;
-  includeComments?: boolean;
-  pullRequestNumber?: number;
-  snippetId?: string;
-  snippetVariables?: Record<string, string>;
 };
 
 export interface TaskDefinitionFieldsProps {
   form: FormInstance<TaskDefinitionFormValues>;
   syncSettingsDefaults?: boolean;
-  lockSourceAndRepository?: boolean;
+  lockRepository?: boolean;
   allowPromptAttachments?: boolean;
   promptImageFiles?: SelectedTaskPromptImageFile[];
   onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
@@ -43628,103 +43290,43 @@ export const getTaskDefinitionInitialValues = (
 ): Partial<TaskDefinitionFormValues> => {
   const provider = settings?.defaultProvider ?? "codex";
   return {
-    sourceType: "blank",
     taskType: "build",
     provider,
     model: getProviderDefaultModel(provider, settings),
     providerProfile: getProviderDefaultProfile(provider, settings),
     codexCredentialSource: "auto",
-    branchStrategy: "feature_branch",
-    includeComments: true
+    branchStrategy: "feature_branch"
   };
 };
 
 export const buildTaskDefinitionInput = (
   values: TaskDefinitionFormValues,
-  promptAttachments: CreateTaskPromptAttachmentInput[] = [],
-  snippetContent?: string,
-  snippetVariablesDefinition: SnippetVariable[] = []
+  promptAttachments: CreateTaskPromptAttachmentInput[] = []
 ): TaskDefinitionInput => {
   const provider = values.provider ?? "codex";
   const codexCredentialSource = provider === "codex" ? (values.codexCredentialSource ?? "auto") : undefined;
 
-  if (values.sourceType === "blank") {
-    return {
-      sourceType: "blank",
-      title: values.title?.trim() ?? "",
-      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
-      repoId: values.repoId ?? "",
-      prompt: values.prompt?.trim() ?? "",
-      notes: values.notes?.trim() ?? "",
-      ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
-      taskType: values.taskType ?? "build",
-      provider,
-      model: values.model?.trim() ?? "",
-      providerProfile: values.providerProfile ?? "high",
-      ...(codexCredentialSource ? { codexCredentialSource } : {}),
-      baseBranch: values.baseBranch?.trim() ?? "",
-      branchStrategy: values.branchStrategy ?? "feature_branch"
-    };
-  }
-
-  if (values.sourceType === "issue") {
-    return {
-      sourceType: "issue",
-      title: values.title?.trim() || undefined,
-      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
-      notes: values.notes?.trim() || undefined,
-      repoId: values.repoId ?? "",
-      issueNumber: values.issueNumber ?? 0,
-      includeComments: values.includeComments ?? true,
-      taskType: values.taskType === "build" || values.taskType === "ask" ? values.taskType : "build",
-      provider,
-      model: values.model?.trim() ?? "",
-      providerProfile: values.providerProfile ?? "high",
-      ...(codexCredentialSource ? { codexCredentialSource } : {}),
-      baseBranch: values.baseBranch?.trim() ?? "",
-      branchStrategy: values.branchStrategy ?? "feature_branch"
-    };
-  }
-
-  if (values.sourceType === "snippet") {
-    const renderedPrompt = applySnippetVariables(snippetContent ?? "", snippetVariablesDefinition, values.snippetVariables ?? {});
-    return {
-      sourceType: "snippet",
-      title: values.title?.trim() ?? "",
-      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
-      repoId: values.repoId ?? "",
-      snippetId: values.snippetId ?? "",
-      prompt: renderedPrompt.trim(),
-      notes: values.notes?.trim() ?? "",
-      ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
-      taskType: values.taskType ?? "build",
-      provider,
-      model: values.model?.trim() ?? "",
-      providerProfile: values.providerProfile ?? "high",
-      ...(codexCredentialSource ? { codexCredentialSource } : {}),
-      baseBranch: values.baseBranch?.trim() ?? "",
-      branchStrategy: values.branchStrategy ?? "feature_branch"
-    };
-  }
-
   return {
-    sourceType: "pull_request",
-    title: values.title?.trim() || undefined,
+    title: values.title?.trim() ?? "",
     deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
-    notes: values.notes?.trim() || undefined,
     repoId: values.repoId ?? "",
-    pullRequestNumber: values.pullRequestNumber ?? 0,
+    prompt: values.prompt?.trim() ?? "",
+    notes: values.notes?.trim() || undefined,
+    ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
+    taskType: values.taskType ?? "build",
     provider,
     model: values.model?.trim() ?? "",
     providerProfile: values.providerProfile ?? "high",
-    ...(codexCredentialSource ? { codexCredentialSource } : {})
+    ...(codexCredentialSource ? { codexCredentialSource } : {}),
+    baseBranch: values.baseBranch?.trim() ?? "",
+    branchStrategy: values.branchStrategy ?? "feature_branch"
   };
 };
 
 export function TaskDefinitionFields({
   form,
   syncSettingsDefaults = true,
-  lockSourceAndRepository = false,
+  lockRepository = false,
   allowPromptAttachments = true,
   promptImageFiles = [],
   onPromptImageFilesChange
@@ -43732,8 +43334,6 @@ export function TaskDefinitionFields({
   const { can, session } = useAuth();
   const { repositories } = useRepositories();
   const { settings } = useSettings();
-  const [githubIssues, setGitHubIssues] = useState<GitHubIssueReference[]>([]);
-  const [githubPullRequests, setGitHubPullRequests] = useState<GitHubPullRequestReference[]>([]);
   const [githubBranches, setGitHubBranches] = useState<GitHubBranchReference[]>([]);
   const [githubOptionsLoading, setGitHubOptionsLoading] = useState(false);
   const [magicPromptLoading, setMagicPromptLoading] = useState(false);
@@ -43749,27 +43349,14 @@ export function TaskDefinitionFields({
 
   const selectedRepoId = Form.useWatch("repoId", form);
   const selectedModel = Form.useWatch("model", form);
-  const selectedBaseBranch = Form.useWatch("baseBranch", form);
-  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
-  const selectedIssueNumber = Form.useWatch("issueNumber", form);
-  const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
-  const selectedSnippetId = Form.useWatch("snippetId", form);
   const selectedPrompt = Form.useWatch("prompt", form);
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(selectedProvider);
   const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
-  const selectedIssue = githubIssues.find((issue) => issue.number === selectedIssueNumber) ?? null;
-  const selectedPullRequest = githubPullRequests.find((pullRequest) => pullRequest.number === selectedPullRequestNumber) ?? null;
-  const isBlankSource = selectedSourceType === "blank";
-  const isSnippetSource = selectedSourceType === "snippet";
-  const isIssueSource = selectedSourceType === "issue";
-  const isPullRequestSource = selectedSourceType === "pull_request";
-  const effectiveTaskType = isPullRequestSource ? "build" : selectedTaskType;
+  const effectiveTaskType = selectedTaskType;
   const isImplementationTask = effectiveTaskType === "build";
-  const baseBranchLabel = isBlankSource || isSnippetSource || isIssueSource ? "Base Branch" : undefined;
-  const selectedSnippet = snippets.find((snippet) => snippet.id === selectedSnippetId) ?? null;
   const providerMissingCredentials =
     selectedProvider === "codex"
       ? !(settings?.openaiApiKeyConfigured || session?.user.codexAuthJsonConfigured)
@@ -43792,34 +43379,10 @@ export function TaskDefinitionFields({
   const allowedEffortOptions = getEffortOptionsForProvider(selectedProvider).filter(
     (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
   );
-  const sourceOptions: Array<{ label: string; value: TaskSourceType }> = [
-    { label: "Blank", value: "blank" },
-    ...(canUseSnippets ? [{ label: "Snippet", value: "snippet" as const }] : []),
-    ...(canReadRepositoryMetadata
-      ? [
-          { label: "From Issue", value: "issue" as const },
-          ...(canBuildTasks ? [{ label: "From Pull Request", value: "pull_request" as const }] : [])
-        ]
-      : [])
-  ];
   const taskTypeOptions: Array<{ label: string; value: TaskType }> = [
     ...(canBuildTasks ? [{ label: "Build", value: "build" as const }] : []),
     ...(canAskTasks ? [{ label: "Ask", value: "ask" as const }] : [])
   ];
-
-  useEffect(() => {
-    if (canReadRepositoryMetadata || selectedSourceType === "blank" || selectedSourceType === "snippet") {
-      return;
-    }
-
-    form.setFieldValue("sourceType", "blank");
-  }, [canReadRepositoryMetadata, form, selectedSourceType]);
-
-  useEffect(() => {
-    if (selectedSourceType === "pull_request" && !canBuildTasks) {
-      form.setFieldValue("sourceType", canReadRepositoryMetadata ? "issue" : "blank");
-    }
-  }, [canBuildTasks, canReadRepositoryMetadata, form, selectedSourceType]);
 
   useEffect(() => {
     if (!settings || !syncSettingsDefaults) {
@@ -43909,17 +43472,7 @@ export function TaskDefinitionFields({
   }, [canAskTasks, canBuildTasks, form, selectedTaskType]);
 
   useEffect(() => {
-    if (!isSnippetSource || !selectedSnippet) {
-      return;
-    }
-    const defaults = Object.fromEntries((selectedSnippet.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""]));
-    form.setFieldValue("snippetVariables", defaults);
-  }, [form, isSnippetSource, selectedSnippet]);
-
-  useEffect(() => {
     if (!selectedRepoId || !canReadRepositoryMetadata) {
-      setGitHubIssues([]);
-      setGitHubPullRequests([]);
       setGitHubBranches([]);
       return;
     }
@@ -43927,18 +43480,12 @@ export function TaskDefinitionFields({
     let active = true;
     setGitHubOptionsLoading(true);
 
-    void Promise.all([
-      api.listGitHubBranches(selectedRepoId).catch(() => []),
-      api.listGitHubIssues(selectedRepoId).catch(() => []),
-      api.listGitHubPullRequests(selectedRepoId).catch(() => [])
-    ]).then(([branches, issues, pullRequests]) => {
+    void api.listGitHubBranches(selectedRepoId).catch(() => []).then((branches) => {
       if (!active) {
         return;
       }
 
       setGitHubBranches(branches);
-      setGitHubIssues(issues);
-      setGitHubPullRequests(pullRequests);
       setGitHubOptionsLoading(false);
     });
 
@@ -43947,13 +43494,9 @@ export function TaskDefinitionFields({
     };
   }, [canReadRepositoryMetadata, selectedRepoId]);
 
-  const promptPanelTitle = isBlankSource
-    ? (effectiveTaskType === "ask" ? "Question" : "Prompt")
-    : isSnippetSource
-      ? "Snippet Variables"
-      : "Imported Context";
-  const canAttachPromptImages = allowPromptAttachments && isBlankSource;
-  const canUsePromptMagic = isBlankSource;
+  const promptPanelTitle = effectiveTaskType === "ask" ? "Question" : "Prompt";
+  const canAttachPromptImages = allowPromptAttachments;
+  const canUsePromptMagic = true;
   const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
 
   const handleGeneratePromptMagic = async (): Promise<void> => {
@@ -44051,442 +43594,196 @@ export function TaskDefinitionFields({
     setSelectedSnippetToInsertId(null);
   };
 
-  useEffect(() => {
-    if (selectedSourceType === "blank") {
-      return;
-    }
-
-    if ((promptImageFiles?.length ?? 0) > 0) {
-      onPromptImageFilesChange?.([]);
-    }
-  }, [onPromptImageFilesChange, promptImageFiles?.length, selectedSourceType]);
-
-  const renderPromptPanel = (repository: Repository | null) => {
-    if (isBlankSource) {
-      return (
-        <>
-          <Form.Item
-            name="title"
-            label="Title"
-            rules={[{ required: true, message: "Enter a task title" }]}
-            style={{ marginBottom: 16 }}
-            extra={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Choose a short, descriptive task title.
-              </Typography.Text>
-            }
-          >
-            <Input placeholder="Your Task Title" size="large" />
-          </Form.Item>
-          <Form.Item
-            label={promptPanelTitle}
-            style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
-          >
-            <Flex vertical gap={12} style={{ flex: 1 }}>
-              <div style={{ position: "relative" }}>
-                <Button
-                  size="small"
-                  type="default"
-                  icon={<RobotOutlined />}
-                  title="Magic Wand"
-                  aria-label="Magic Wand"
-                  loading={magicPromptLoading}
-                  disabled={!canUsePromptMagic || promptIsEmpty || magicPromptLoading}
-                  onClick={() => void handleGeneratePromptMagic()}
-                  style={{
-                    position: "absolute",
-                    right: 10,
-                    bottom: 10,
-                    zIndex: 1
-                  }}
-                />
-                <Form.Item
-                  name="prompt"
-                  style={{ marginBottom: 0 }}
-                  rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]}
-                >
-                  <Input.TextArea
-                    autoSize={{ minRows: 12, maxRows: 28 }}
-                    style={{ resize: "none", paddingRight: 44, paddingBottom: 38 }}
-                    placeholder={
-                      effectiveTaskType === "ask"
-                        ? "Ask a repository question."
-                        : "Describe the goal, constraints, and expected outcome in your prompt."
-                    }
-                  />
-                </Form.Item>
-              </div>
-              {canUseSnippets ? (
-                <Flex gap={8} wrap="wrap">
-                  <Select
-                    showSearch
-                    style={{ minWidth: 220, flex: 1 }}
-                    placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
-                    value={selectedSnippetToInsertId}
-                    onChange={(value) => setSelectedSnippetToInsertId(value)}
-                    optionFilterProp="label"
-                    allowClear
-                    loading={snippetsLoading}
-                    disabled={snippetsLoading || snippets.length === 0}
-                    options={snippets.map((snippet) => ({
-                      label: snippet.name,
-                      value: snippet.id
-                    }))}
-                  />
-                  <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetToInsertId}>
-                    Insert
-                  </Button>
-                </Flex>
-              ) : null}
-              {allowPromptAttachments ? (
-                <TaskPromptAttachmentsInput
-                  files={promptImageFiles}
-                  onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
-                  onError={(errorMessage) => void message.error(errorMessage)}
-                  disabled={!canAttachPromptImages || !onPromptImageFilesChange}
-                />
-              ) : null}
-            </Flex>
-          </Form.Item>
-          <Form.Item
-            name="notes"
-            label="Notes (Markdown)"
-            extra={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Optional. These notes are shown in the task Info tab below current configuration.
-              </Typography.Text>
-            }
-            style={{ marginTop: 16, marginBottom: 0 }}
-          >
-            <Input.TextArea
-              autoSize={{ minRows: 6, maxRows: 16 }}
-              style={{ resize: "none" }}
-              placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
+  const renderPromptPanel = () => (
+    <>
+      <Form.Item
+        name="title"
+        label="Title"
+        rules={[{ required: true, message: "Enter a task title" }]}
+        style={{ marginBottom: 16 }}
+        extra={
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Choose a short, descriptive task title.
+          </Typography.Text>
+        }
+      >
+        <Input placeholder="Your Task Title" size="large" />
+      </Form.Item>
+      <Form.Item
+        label={promptPanelTitle}
+        style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
+      >
+        <Flex vertical gap={12} style={{ flex: 1 }}>
+          <div style={{ position: "relative" }}>
+            <Button
+              size="small"
+              type="default"
+              icon={<RobotOutlined />}
+              title="Magic Wand"
+              aria-label="Magic Wand"
+              loading={magicPromptLoading}
+              disabled={!canUsePromptMagic || promptIsEmpty || magicPromptLoading}
+              onClick={() => void handleGeneratePromptMagic()}
+              style={{
+                position: "absolute",
+                right: 10,
+                bottom: 10,
+                zIndex: 1
+              }}
             />
-          </Form.Item>
-        </>
-      );
-    }
-
-    if (isSnippetSource) {
-      return (
-        <Flex vertical gap={16}>
-          <Form.Item name="title" label="Title" rules={[{ required: true, message: "Enter a task title" }]} style={{ marginBottom: 0 }}>
-            <Input placeholder="Your Task Title" size="large" />
-          </Form.Item>
-          <Alert
-            type="info"
-            showIcon
-            message="Prompt input is replaced by snippet variables"
-            description="Pick a snippet and fill the fields below. This reduces mistakes and keeps setup fast."
-          />
-          <Form.Item name="snippetId" label="Snippet" rules={[{ required: true, message: "Select a snippet" }]} style={{ marginBottom: 0 }}>
-            <Select
-              showSearch
-              loading={snippetsLoading}
-              placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
-              optionFilterProp="label"
-              options={snippets.map((snippet) => ({ label: snippet.name, value: snippet.id }))}
-              onChange={() => trackEvent("snippet_selected")}
-            />
-          </Form.Item>
-          {(selectedSnippet?.variables ?? []).map((variable) => (
             <Form.Item
-              key={variable.name}
-              name={["snippetVariables", variable.name]}
-              label={variable.title || variable.name}
-              rules={[{ required: true, message: `Enter ${variable.title || variable.name}` }]}
-              extra={variable.description || undefined}
+              name="prompt"
               style={{ marginBottom: 0 }}
+              rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]}
             >
-              {variable.type === "multiline" ? (
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 12 }} placeholder={variable.defaultValue || ""} />
-              ) : (
-                <Input placeholder={variable.defaultValue || ""} />
-              )}
+              <Input.TextArea
+                autoSize={{ minRows: 12, maxRows: 28 }}
+                style={{ resize: "none", paddingRight: 44, paddingBottom: 38 }}
+                placeholder={
+                  effectiveTaskType === "ask"
+                    ? "Ask a repository question."
+                    : "Describe the goal, constraints, and expected outcome in your prompt."
+                }
+              />
             </Form.Item>
-          ))}
-          <Form.Item
-            name="notes"
-            label="Notes (Markdown)"
-            extra={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Optional. These notes are shown in the task Info tab below current configuration.
-              </Typography.Text>
-            }
-            style={{ marginBottom: 0 }}
-          >
-            <Input.TextArea
-              autoSize={{ minRows: 6, maxRows: 16 }}
-              style={{ resize: "none" }}
-              placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
-            />
-          </Form.Item>
-        </Flex>
-      );
-    }
-
-    if (isIssueSource) {
-      return (
-        <Flex vertical gap={16}>
-          <Alert
-            type="info"
-            showIcon
-            message="Issue content is imported from GitHub"
-            description="The issue title, body, and optional comments become the task prompt. Use the left-side configuration to select the issue and task behavior."
-          />
-          <Form.Item name="title" label="Task Title Override" style={{ marginBottom: 0 }}>
-            <Input placeholder="Optional. Leave blank to use the issue title." size="large" />
-          </Form.Item>
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            Imported against repository <Typography.Text code>{repository?.name ?? "unknown"}</Typography.Text>.
-          </Typography.Paragraph>
-          {selectedIssue ? (
-            <Alert
-              type="success"
-              showIcon
-              message={`Issue #${selectedIssue.number}: ${selectedIssue.title}`}
-              description={
-                <Typography.Link href={selectedIssue.url} target="_blank">
-                  Open issue in GitHub
-                </Typography.Link>
-              }
+          </div>
+          {canUseSnippets ? (
+            <Flex gap={8} wrap="wrap">
+              <Select
+                showSearch
+                style={{ minWidth: 220, flex: 1 }}
+                placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
+                value={selectedSnippetToInsertId}
+                onChange={(value) => setSelectedSnippetToInsertId(value)}
+                optionFilterProp="label"
+                allowClear
+                loading={snippetsLoading}
+                disabled={snippetsLoading || snippets.length === 0}
+                options={snippets.map((snippet) => ({
+                  label: snippet.name,
+                  value: snippet.id
+                }))}
+              />
+              <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetToInsertId}>
+                Insert
+              </Button>
+            </Flex>
+          ) : null}
+          {allowPromptAttachments ? (
+            <TaskPromptAttachmentsInput
+              files={promptImageFiles}
+              onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
+              onError={(errorMessage) => void message.error(errorMessage)}
+              disabled={!canAttachPromptImages || !onPromptImageFilesChange}
             />
           ) : null}
-          <Form.Item
-            name="notes"
-            label="Notes (Markdown)"
-            extra={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Optional. These notes are shown in the task Info tab below current configuration.
-              </Typography.Text>
-            }
-            style={{ marginBottom: 0 }}
-          >
-            <Input.TextArea
-              autoSize={{ minRows: 6, maxRows: 16 }}
-              style={{ resize: "none" }}
-              placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
-            />
-          </Form.Item>
         </Flex>
-      );
-    }
-
-    return (
-      <Flex vertical gap={16}>
-        <Alert
-          type="info"
-          showIcon
-          message="Pull request review threads are imported from GitHub"
-          description="AgentSwarm will create a build task from unresolved pull request review threads and continue work on the pull request branch."
+      </Form.Item>
+      <Form.Item
+        name="notes"
+        label="Notes (Markdown)"
+        extra={
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Optional. These notes are shown in the task Info tab below current configuration.
+          </Typography.Text>
+        }
+        style={{ marginTop: 16, marginBottom: 0 }}
+      >
+        <Input.TextArea
+          autoSize={{ minRows: 6, maxRows: 16 }}
+          style={{ resize: "none" }}
+          placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
         />
-        <Form.Item name="title" label="Task Title Override" style={{ marginBottom: 0 }}>
-          <Input placeholder="Optional. Leave blank to use the pull request title." size="large" />
-        </Form.Item>
-        <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-          The task targets the pull request head branch and uses <Typography.Text code>work_on_branch</Typography.Text>.
-        </Typography.Paragraph>
-        {selectedPullRequest ? (
-          <Alert
-            type="success"
-            showIcon
-            message={`PR #${selectedPullRequest.number}: ${selectedPullRequest.title}`}
-            description={
-              <Space wrap>
-                <Typography.Link href={selectedPullRequest.url} target="_blank">
-                  Open pull request in GitHub
-                </Typography.Link>
-                <Typography.Text type="secondary">
-                  {selectedPullRequest.baseBranch} {"->"} {selectedPullRequest.headBranch}
-                </Typography.Text>
-              </Space>
-              }
-            />
-          ) : null}
-        <Form.Item
-          name="notes"
-          label="Notes (Markdown)"
-          extra={
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Optional. These notes are shown in the task Info tab below current configuration.
-            </Typography.Text>
-          }
-          style={{ marginBottom: 0 }}
-        >
-          <Input.TextArea
-            autoSize={{ minRows: 6, maxRows: 16 }}
-            style={{ resize: "none" }}
-            placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
-          />
-        </Form.Item>
-      </Flex>
-    );
-  };
+      </Form.Item>
+    </>
+  );
 
   return (
     <>
       <Row gutter={[24, 24]} align="stretch">
         <Col xs={24} xl={8}>
           <Card bordered={false} title="Configuration" styles={{ body: { display: "flex", flexDirection: "column", gap: 0 } }}>
-          <Form.Item name="sourceType" label="Source" rules={[{ required: true }]}>
-            <Select
-              options={sourceOptions}
-              disabled={lockSourceAndRepository}
-              onChange={(value: TaskSourceType) => {
-                trackEvent("task_source_selected", { source: value });
-                if (value === "pull_request") {
-                  form.setFieldValue("taskType", "build");
-                  form.setFieldValue("branchStrategy", "work_on_branch");
-                }
-                if (value === "snippet") {
-                  form.setFieldValue("taskType", "build");
-                }
-                if (value !== "blank") {
-                  form.setFieldValue("prompt", undefined);
-                }
-
-                if (value === "issue" || value === "pull_request") {
-                  form.setFieldValue("title", undefined);
-                  form.setFields([{ name: "title", touched: false }]);
-                }
-                if (value !== "snippet") {
-                  form.setFieldValue("snippetId", undefined);
-                  form.setFieldValue("snippetVariables", undefined);
-                }
-              }}
-            />
-          </Form.Item>
-
-          <Form.Item name="repoId" label="Repository" rules={[{ required: true }]}>
-            <Select
-              options={repositories.map((repository) => ({ label: repository.name, value: repository.id }))}
-              placeholder="Select repository"
-              disabled={lockSourceAndRepository}
-              onChange={(repoId) => {
-                const repository = repositories.find((item) => item.id === repoId);
-                form.setFieldValue("baseBranch", repository?.defaultBranch ?? "");
-                form.setFieldValue("issueNumber", undefined);
-                form.setFieldValue("pullRequestNumber", undefined);
-              }}
-            />
-          </Form.Item>
-
-          <Form.Item name="deadline" label="Deadline">
-            <DatePicker
-              showTime={{ format: "HH:mm" }}
-              format="YYYY-MM-DD HH:mm"
-              placeholder="No deadline"
-              style={{ width: "100%" }}
-              allowClear
-            />
-          </Form.Item>
-
-          {isPullRequestSource ? (
-            <Form.Item name="pullRequestNumber" label="Pull Request" rules={[{ required: true }]}>
+            <Form.Item name="repoId" label="Repository" rules={[{ required: true }]}>
               <Select
-                showSearch
-                loading={githubOptionsLoading}
-                placeholder={selectedRepoId ? "Select open pull request" : "Select repository first"}
-                optionFilterProp="label"
-                disabled={!selectedRepoId}
-                options={githubPullRequests.map((pullRequest) => ({
-                  label: `#${pullRequest.number} ${pullRequest.title}`,
-                  value: pullRequest.number
-                }))}
+                options={repositories.map((repository) => ({ label: repository.name, value: repository.id }))}
+                placeholder="Select repository"
+                disabled={lockRepository}
+                onChange={(repoId) => {
+                  const repository = repositories.find((item) => item.id === repoId);
+                  form.setFieldValue("baseBranch", repository?.defaultBranch ?? "");
+                }}
               />
             </Form.Item>
-          ) : null}
 
-          {isIssueSource ? (
-            <>
-              <Form.Item name="issueNumber" label="Issue" rules={[{ required: true }]}>
-                <Select
-                  showSearch
-                  loading={githubOptionsLoading}
-                  placeholder={selectedRepoId ? "Select open issue" : "Select repository first"}
-                  optionFilterProp="label"
-                  disabled={!selectedRepoId}
-                  options={githubIssues.map((issue) => ({
-                    label: `#${issue.number} ${issue.title}`,
-                    value: issue.number
-                  }))}
-                />
-              </Form.Item>
-              <Form.Item name="includeComments" valuePropName="checked">
-                <Checkbox>Include issue comments</Checkbox>
-              </Form.Item>
-            </>
-          ) : null}
+            <Form.Item name="deadline" label="Deadline">
+              <DatePicker
+                showTime={{ format: "HH:mm" }}
+                format="YYYY-MM-DD HH:mm"
+                placeholder="No deadline"
+                style={{ width: "100%" }}
+                allowClear
+              />
+            </Form.Item>
 
-          {isBlankSource || isSnippetSource ? (
             <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
               <Select options={taskTypeOptions} />
             </Form.Item>
-          ) : null}
 
-          {!canRunAutomatedTask ? (
-            <Alert
-              type="warning"
-              showIcon
-              style={{ marginBottom: 16 }}
-              message="This role cannot create build or ask tasks."
-              description="Ask an administrator to grant task mode permissions in Settings."
-            />
-          ) : null}
+            {!canRunAutomatedTask ? (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message="This role cannot create build or ask tasks."
+                description="Ask an administrator to grant task mode permissions in Settings."
+              />
+            ) : null}
 
-          <Form.Item name="provider" label="Provider" rules={[{ required: true }]}>
-            <Select
-              options={providerSelectOptions}
-              onChange={(value: AgentProvider) => {
-                const nextModels = getModelsForProvider(value).filter(
-                  (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
-                );
-                const nextEfforts = getEffortOptionsForProvider(value).filter(
-                  (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
-                );
-                form.setFieldValue("model", nextModels[0]?.value ?? getProviderDefaultModel(value, settings));
-                form.setFieldValue("providerProfile", nextEfforts[0]?.value ?? getProviderDefaultProfile(value, settings));
-              }}
-            />
-          </Form.Item>
-
-          <Form.Item name="model" label="Model" rules={[{ required: true }]}>
-            <Select options={allowedModelOptions} loading={providerModelsLoading} showSearch optionFilterProp="label" />
-          </Form.Item>
-
-          <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
-            <Select options={allowedEffortOptions} />
-          </Form.Item>
-
-          {selectedProvider === "codex" ? (
-            <Form.Item name="codexCredentialSource" label="Codex Credential Source" rules={[{ required: true }]}>
-              <Select options={codexCredentialSourceOptions} />
+            <Form.Item name="provider" label="Provider" rules={[{ required: true }]}>
+              <Select
+                options={providerSelectOptions}
+                onChange={(value: AgentProvider) => {
+                  const nextModels = getModelsForProvider(value).filter(
+                    (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
+                  );
+                  const nextEfforts = getEffortOptionsForProvider(value).filter(
+                    (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
+                  );
+                  form.setFieldValue("model", nextModels[0]?.value ?? getProviderDefaultModel(value, settings));
+                  form.setFieldValue("providerProfile", nextEfforts[0]?.value ?? getProviderDefaultProfile(value, settings));
+                }}
+              />
             </Form.Item>
-          ) : null}
 
-          {providerMissingCredentials ? (
-            <Alert
-              type="warning"
-              showIcon
-              style={{ marginBottom: 16 }}
-              message={`${selectedProvider === "codex" ? "Codex" : "Anthropic"} credentials are missing`}
-              description={
-                selectedProvider === "codex"
-                  ? "Configure Codex auth.json in your Profile or set an OpenAI API key in Settings before running this task."
-                  : "Configure the provider credential in Settings before running this task."
-              }
-            />
-          ) : null}
-
-          {isIssueSource ? (
-            <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
-              <Select options={taskTypeOptions} />
+            <Form.Item name="model" label="Model" rules={[{ required: true }]}>
+              <Select options={allowedModelOptions} loading={providerModelsLoading} showSearch optionFilterProp="label" />
             </Form.Item>
-          ) : null}
 
-          {(isBlankSource || isSnippetSource || isIssueSource) && baseBranchLabel ? (
-            <Form.Item name="baseBranch" label={baseBranchLabel} rules={[{ required: true }]}>
+            <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
+              <Select options={allowedEffortOptions} />
+            </Form.Item>
+
+            {selectedProvider === "codex" ? (
+              <Form.Item name="codexCredentialSource" label="Codex Credential Source" rules={[{ required: true }]}>
+                <Select options={codexCredentialSourceOptions} />
+              </Form.Item>
+            ) : null}
+
+            {providerMissingCredentials ? (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message={`${selectedProvider === "codex" ? "Codex" : "Anthropic"} credentials are missing`}
+                description={
+                  selectedProvider === "codex"
+                    ? "Configure Codex auth.json in your Profile or set an OpenAI API key in Settings before running this task."
+                    : "Configure the provider credential in Settings before running this task."
+                }
+              />
+            ) : null}
+
+            <Form.Item name="baseBranch" label="Base Branch" rules={[{ required: true }]}>
               <Select
                 showSearch
                 loading={githubOptionsLoading}
@@ -44504,18 +43801,17 @@ export function TaskDefinitionFields({
                 }
               />
             </Form.Item>
-          ) : null}
 
-          {(isBlankSource && isImplementationTask) || (isSnippetSource && isImplementationTask) || (isIssueSource && selectedTaskType === "build") ? (
-            <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]}>
-              <Select
-                options={[
-                  { label: "Create feature branch", value: "feature_branch" },
-                  { label: "Work on existing branch", value: "work_on_branch" }
-                ]}
-              />
-            </Form.Item>
-          ) : null}
+            {isImplementationTask ? (
+              <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]}>
+                <Select
+                  options={[
+                    { label: "Create feature branch", value: "feature_branch" },
+                    { label: "Work on existing branch", value: "work_on_branch" }
+                  ]}
+                />
+              </Form.Item>
+            ) : null}
           </Card>
         </Col>
 
@@ -44531,7 +43827,7 @@ export function TaskDefinitionFields({
               }
             }}
           >
-            {renderPromptPanel(selectedRepository)}
+            {renderPromptPanel()}
           </Card>
         </Col>
       </Row>
@@ -49784,21 +49080,10 @@ const createTaskSchema = z
     baseBranch: z.string().min(1).optional(),
     branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
     model: z.string().min(1).optional(),
-    reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
-    task_source: z.enum(["blank", "snippet"]).optional(),
-    snippet_id: z.string().trim().min(1).optional()
+    reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
   })
   .strict()
   .superRefine((data, ctx) => {
-    if (data.task_source === "snippet") {
-      if (!data.snippet_id) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "snippet_id is required when task_source is snippet",
-          path: ["snippet_id"]
-        });
-      }
-    }
     if (data.prompt.trim().length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -51939,11 +51224,9 @@ export const hasRequiredTaskCapabilities = (
 };
 
 export const getRequiredTaskCapabilityScopesForDefinition = (definition: TaskDefinitionInput): TaskCapabilityScope[] =>
-  definition.sourceType === "pull_request"
-    ? getRequiredTaskCapabilityScopes({ taskType: "build" })
-    : getRequiredTaskCapabilityScopes({
-        taskType: definition.taskType
-      });
+  getRequiredTaskCapabilityScopes({
+    taskType: definition.taskType
+  });
 
 export const hasRequiredTaskCapabilitiesForDefinition = (
   grantedScopes: Iterable<PermissionScope>,
@@ -52192,7 +51475,7 @@ export interface Task {
   providerProfile: ProviderProfile;
   modelOverride: string | null;
   codexCredentialSource?: CodexCredentialSource;
-  taskSource?: Extract<TaskSourceType, "blank" | "snippet">;
+  taskSource?: "blank" | "snippet";
   snippetId?: string;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
@@ -52617,14 +51900,9 @@ export interface CreateTaskInput {
   branchStrategy?: TaskBranchStrategy;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
-  task_source?: "blank" | "snippet";
-  snippet_id?: string;
 }
 
-export type TaskSourceType = "blank" | "snippet" | "issue" | "pull_request";
-
-export interface BlankTaskDefinitionInput {
-  sourceType: "blank";
+export interface TaskDefinitionInput {
   title: string;
   deadline?: string | null;
   repoId: string;
@@ -52639,60 +51917,6 @@ export interface BlankTaskDefinitionInput {
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
 }
-
-export interface IssueTaskDefinitionInput {
-  sourceType: "issue";
-  title?: string;
-  deadline?: string | null;
-  notes?: string;
-  repoId: string;
-  issueNumber: number;
-  includeComments: boolean;
-  taskType: Extract<TaskType, "build" | "ask">;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
-export interface PullRequestTaskDefinitionInput {
-  sourceType: "pull_request";
-  title?: string;
-  deadline?: string | null;
-  notes?: string;
-  repoId: string;
-  pullRequestNumber: number;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-}
-
-export interface SnippetTaskDefinitionInput {
-  sourceType: "snippet";
-  title: string;
-  deadline?: string | null;
-  repoId: string;
-  snippetId: string;
-  prompt: string;
-  notes?: string;
-  attachments?: CreateTaskPromptAttachmentInput[];
-  taskType: TaskType;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
-export type TaskDefinitionInput =
-  | BlankTaskDefinitionInput
-  | SnippetTaskDefinitionInput
-  | IssueTaskDefinitionInput
-  | PullRequestTaskDefinitionInput;
 
 export interface Snippet {
   id: string;

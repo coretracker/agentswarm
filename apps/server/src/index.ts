@@ -180,7 +180,7 @@ const bootstrap = async (): Promise<void> => {
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
-  registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, userStore, scheduler, spawner, auth });
+  registerImportRoutes(app, { githubImportService, repositoryStore, auth });
   registerGitHubWebhookRoutes(app, {
     repositoryStore,
     githubImportService,

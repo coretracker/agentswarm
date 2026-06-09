@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import dayjs from "dayjs";
-import { getDefaultModelForProvider, type Task, type TaskSourceType, type UpdateTaskDraftInput } from "@agentswarm/shared-types";
+import { getDefaultModelForProvider, type Task, type UpdateTaskDraftInput } from "@agentswarm/shared-types";
 import { App, Button, Form, Modal } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
 import { trackEvent } from "../src/utils/analytics";
@@ -25,7 +25,6 @@ interface TaskCreateModalProps {
 }
 
 const getDraftTaskInitialValues = (task: Task): Partial<TaskDefinitionFormValues> => ({
-  sourceType: "blank",
   title: task.title,
   deadline: task.deadline ? dayjs(task.deadline) : null,
   repoId: task.repoId,
@@ -38,7 +37,6 @@ const getDraftTaskInitialValues = (task: Task): Partial<TaskDefinitionFormValues
   codexCredentialSource: task.codexCredentialSource ?? "auto",
   baseBranch: task.baseBranch,
   branchStrategy: task.branchStrategy,
-  includeComments: true
 });
 
 const buildDraftUpdateInput = (values: TaskDefinitionFormValues): UpdateTaskDraftInput => ({
@@ -62,7 +60,6 @@ export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask
   const [submitting, setSubmitting] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
   const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
-  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
   const canCreateAnyTaskMode = can("task:build") || can("task:ask");
   const editingDraft = Boolean(draftTask);
   const busy = submitting || savingDraft;
@@ -109,7 +106,7 @@ export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask
     try {
       const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
       const definition = buildTaskDefinitionInput(values, encodedAttachments);
-      trackEvent("task_create_submitted", { source: definition.sourceType });
+      trackEvent("task_create_submitted", { task_type: definition.taskType });
 
       const creationPromise = createTaskFromDefinition(definition);
       form.resetFields();
@@ -168,13 +165,7 @@ export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask
       disabled={!canCreateAnyTaskMode || savingDraft}
       onClick={() => form.submit()}
     >
-      {editingDraft
-        ? "Save Draft"
-        : selectedSourceType === "issue"
-          ? "Create Task From Issue"
-          : selectedSourceType === "pull_request"
-            ? "Create Task From Pull Request"
-            : "Create Task"}
+      {editingDraft ? "Save Draft" : "Create Task"}
     </Button>
   ];
 
@@ -205,7 +196,7 @@ export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask
         <TaskDefinitionFields
           form={form}
           syncSettingsDefaults={!editingDraft}
-          lockSourceAndRepository={editingDraft}
+          lockRepository={editingDraft}
           allowPromptAttachments={!editingDraft}
           promptImageFiles={promptImageFiles}
           onPromptImageFilesChange={setPromptImageFiles}
