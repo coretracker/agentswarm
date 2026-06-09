@@ -10,14 +10,12 @@ import {
   TASK_PROMPT_ATTACHMENT_MAX_COUNT,
   type Task,
   type TaskAction,
-  type SequenceExecutionMode,
   type TaskPromptAttachment,
   type TaskTerminalSessionMode
 } from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
-import type { SequenceStore } from "../services/sequence-store.js";
 import type { SnippetStore } from "../services/snippet-store.js";
 import type { UserStore } from "../services/user-store.js";
 import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
@@ -28,8 +26,6 @@ import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
-import { SequenceExecutionService } from "../services/sequence-execution-service.js";
-import { resolveSequenceStepPrompts, SequenceValidationError } from "../services/sequence-resolution.js";
 import { buildExecutionSummaryFromPrompt, classifyTaskComplexity } from "../lib/task-intelligence.js";
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
 import { persistTaskPromptAttachments, readTaskPromptAttachmentBuffer } from "../lib/task-prompt-attachments.js";
@@ -76,10 +72,8 @@ const createTaskSchema = z
     branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
     model: z.string().min(1).optional(),
     reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
-    task_source: z.enum(["blank", "snippet", "sequence"]).optional(),
-    snippet_id: z.string().trim().min(1).optional(),
-    sequence_id: z.string().trim().min(1).optional(),
-    sequence_variables: z.record(z.string().max(2000)).optional()
+    task_source: z.enum(["blank", "snippet"]).optional(),
+    snippet_id: z.string().trim().min(1).optional()
   })
   .strict()
   .superRefine((data, ctx) => {
@@ -92,16 +86,7 @@ const createTaskSchema = z
         });
       }
     }
-    if (data.task_source === "sequence") {
-      if (!data.sequence_id) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "sequence_id is required when task_source is sequence",
-          path: ["sequence_id"]
-        });
-      }
-    }
-    if (data.task_source !== "sequence" && data.prompt.trim().length === 0) {
+    if (data.prompt.trim().length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Prompt is required",
@@ -359,96 +344,10 @@ export const registerTaskRoutes = (
     scheduler: SchedulerService;
     spawner: SpawnerService;
     settingsStore: SettingsStore;
-    sequenceStore: SequenceStore;
     snippetStore: SnippetStore;
     auth: AuthService;
   }
 ): void => {
-  const sequenceExecutionService = new SequenceExecutionService(deps.sequenceStore, deps.taskStore, deps.scheduler, deps.spawner);
-  const maybeResumeAutoApplySequence = async (taskId: string): Promise<void> => {
-    const task = await deps.taskStore.getTask(taskId);
-    if (!task || task.status === "archived") {
-      return;
-    }
-    if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
-      return;
-    }
-    if (await deps.taskStore.hasPendingChangeProposal(task.id)) {
-      return;
-    }
-    if (await deps.taskStore.getActiveInteractiveSession(task.id)) {
-      return;
-    }
-
-    const run = await deps.sequenceStore.getRunForTask(task.id);
-    if (!run || run.executionMode !== "auto_apply_changes" || (run.status !== "failed" && run.status !== "waiting_for_checkpoint_resolution")) {
-      return;
-    }
-
-    const blockedByCheckpoint =
-      run.status === "waiting_for_checkpoint_resolution" ||
-      (run.failedStepIndex !== null && (run.steps[run.failedStepIndex]?.errorMessage ?? "").toLowerCase().includes("pending checkpoint"));
-    if (!blockedByCheckpoint) {
-      return;
-    }
-
-    const firstPendingStepIndex = run.steps.findIndex((step) => step.state === "pending");
-    const failedStepIndex = run.failedStepIndex ?? (firstPendingStepIndex >= 0 ? firstPendingStepIndex : null);
-    if (failedStepIndex === null) {
-      return;
-    }
-
-    const stepPrompts = run.steps.map((step) => step.prompt);
-    if (failedStepIndex >= stepPrompts.length) {
-      return;
-    }
-    const initialRuns = await deps.taskStore.listRuns(task.id);
-    const resumed = await deps.sequenceStore.updateRun(run.id, {
-      status: "running",
-      failedStepIndex: null,
-      waitingForApprovalAfterStepIndex: null,
-      finishedAt: null
-    });
-    const runId = resumed?.id ?? run.id;
-    await deps.taskStore.appendLog(
-      task.id,
-      `Sequence auto-apply recovery: resuming step ${failedStepIndex + 1}/${stepPrompts.length} after checkpoint decision.`
-    );
-
-    void sequenceExecutionService
-      .runSteps({
-        runId,
-        taskId: task.id,
-        action: getChatActionForTask(task),
-        stepPrompts,
-        initialKnownRunIds: new Set(initialRuns.map((runItem) => runItem.id)),
-        startStepIndex: failedStepIndex
-      })
-      .catch(async (error) => {
-        try {
-          const message = error instanceof Error ? error.message : "Sequence execution failed.";
-          await deps.taskStore.appendLog(task.id, `Sequence execution failed: ${message}`);
-          const currentRun = await deps.sequenceStore.getRun(runId);
-          if (currentRun?.status === "running") {
-            await sequenceExecutionService.failRunImmediately({
-              runId,
-              failedStepIndex: currentRun.failedStepIndex ?? failedStepIndex,
-              errorMessage: message
-            });
-          }
-        } catch (innerError) {
-          app.log.warn(
-            {
-              taskId: task.id,
-              runId,
-              error: innerError instanceof Error ? innerError.message : String(innerError)
-            },
-            "Sequence recovery handler failed while processing runSteps rejection."
-          );
-        }
-      });
-  };
-
   const resolveCheckpointMutationTransition = async (
     task: Task,
     mutationResult: { ok: true } | { ok: false; message: string }
@@ -456,7 +355,6 @@ export const registerTaskRoutes = (
     if (!mutationResult.ok) {
       return { ok: false, message: mutationResult.message };
     }
-    await maybeResumeAutoApplySequence(task.id);
     const refreshedTask = (await deps.taskStore.getTask(task.id)) ?? task;
     return {
       ok: true,
@@ -720,110 +618,6 @@ export const registerTaskRoutes = (
       reply.header("Content-Length", String(fileStats.size));
       reply.header("Content-Disposition", `attachment; filename="agentswarm-${task.id}-${run.id}-${provider}-raw.jsonl"`);
       return reply.send(createReadStream(rawEventsJsonlPath));
-    }
-  );
-
-  app.get<{ Params: { id: string } }>(
-    "/tasks/:id/sequence-run",
-    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
-    async (request, reply) => {
-      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
-      if (!task) {
-        return;
-      }
-      const run = await deps.sequenceStore.getRunForTask(task.id);
-      if (!run) {
-        return reply.status(404).send({ message: "Sequence run not found for this task." });
-      }
-      return reply.send(run);
-    }
-  );
-
-  app.post<{ Params: { id: string } }>(
-    "/tasks/:id/sequence-run/approve",
-    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
-    async (request, reply) => {
-      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
-      if (!task) {
-        return;
-      }
-
-      if (task.status === "archived") {
-        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
-      }
-
-      const run = await deps.sequenceStore.getRunForTask(task.id);
-      if (!run) {
-        return reply.status(404).send({ message: "Sequence run not found for this task." });
-      }
-      if (run.status !== "waiting_for_approval" || run.waitingForApprovalAfterStepIndex === null) {
-        return reply.status(409).send({ message: "Sequence is not waiting for approval." });
-      }
-
-      if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
-        return reply.status(409).send({ message: "Task is still finishing the previous step. Try again shortly." });
-      }
-      if (await deps.taskStore.hasPendingChangeProposal(task.id)) {
-        return reply.status(409).send({ message: "Apply or reject the pending checkpoint before continuing." });
-      }
-      if (await deps.taskStore.getActiveInteractiveSession(task.id)) {
-        return reply.status(409).send({ message: "Close the terminal session before continuing." });
-      }
-
-      const claimed = await deps.sequenceStore.claimRunWaitingForApproval(run.id);
-      if (!claimed) {
-        return reply.status(409).send({ message: "Sequence is no longer waiting for approval." });
-      }
-
-      const stepPrompts = claimed.run.steps.map((step) => step.prompt);
-      const nextStepIndex = claimed.approvedStepIndex + 1;
-      if (nextStepIndex >= stepPrompts.length) {
-        const completed = await deps.sequenceStore.updateRun(claimed.run.id, {
-          status: "succeeded",
-          waitingForApprovalAfterStepIndex: null,
-          failedStepIndex: null,
-          finishedAt: new Date().toISOString()
-        });
-        return reply.send(completed ?? claimed.run);
-      }
-
-      const initialRuns = await deps.taskStore.listRuns(task.id);
-      await deps.taskStore.appendLog(task.id, `Sequence approval received. Resuming step ${nextStepIndex + 1}/${stepPrompts.length}.`);
-
-      void sequenceExecutionService
-        .runSteps({
-          runId: claimed.run.id,
-          taskId: task.id,
-          action: getChatActionForTask(task),
-          stepPrompts,
-          initialKnownRunIds: new Set(initialRuns.map((runItem) => runItem.id)),
-          startStepIndex: nextStepIndex
-        })
-        .catch(async (error) => {
-          try {
-            const message = error instanceof Error ? error.message : "Sequence execution failed.";
-            await deps.taskStore.appendLog(task.id, `Sequence execution failed: ${message}`);
-            const currentRun = await deps.sequenceStore.getRun(claimed.run.id);
-            if (currentRun?.status === "running") {
-              await sequenceExecutionService.failRunImmediately({
-                runId: claimed.run.id,
-                failedStepIndex: nextStepIndex,
-                errorMessage: message
-              });
-            }
-          } catch (innerError) {
-            app.log.warn(
-              {
-                taskId: task.id,
-                runId: claimed.run.id,
-                error: innerError instanceof Error ? innerError.message : String(innerError)
-              },
-              "Sequence approval resume handler failed while processing runSteps rejection."
-            );
-          }
-        });
-
-      return reply.send(claimed.run);
     }
   );
 
@@ -1263,32 +1057,6 @@ export const registerTaskRoutes = (
     } = parsed.data;
     const settings = await deps.settingsStore.getSettings();
     const createPayload = applyCreateDefaultsFromSettings(rawCreatePayload, settings);
-    let sequenceStepPrompts: string[] = [];
-    let sequenceId: string | null = null;
-    let sequenceExecutionMode: SequenceExecutionMode = "auto_apply_changes";
-    if (createPayload.task_source === "sequence") {
-      const selectedSequenceId = createPayload.sequence_id?.trim() ?? "";
-      const sequence = selectedSequenceId ? await deps.sequenceStore.getSequence(selectedSequenceId) : null;
-      if (!sequence) {
-        return reply.status(400).send({ message: "Sequence not found." });
-      }
-      try {
-        sequenceStepPrompts = await resolveSequenceStepPrompts({
-          sequence,
-          snippetStore: deps.snippetStore,
-          variables: createPayload.sequence_variables
-        });
-      } catch (error) {
-        const message = error instanceof SequenceValidationError ? error.message : "Sequence validation failed.";
-        return reply.status(400).send({ message });
-      }
-      if (sequenceStepPrompts.length === 0) {
-        return reply.status(400).send({ message: "Sequence must contain at least one executable step." });
-      }
-      sequenceId = sequence.id;
-      sequenceExecutionMode = sequence.executionMode;
-      createPayload.prompt = sequenceStepPrompts[0] ?? "";
-    }
     if (
       !requireTaskCapabilityAccess(request, reply, {
         taskType: createPayload.taskType ?? "build"
@@ -1316,20 +1084,6 @@ export const registerTaskRoutes = (
       ...task,
       creatorName: request.auth!.user.name
     };
-    let sequenceRunContext:
-      | { runId: string; action: TaskAction; stepPrompts: string[]; initialKnownRunIds: Set<string> }
-      | null = null;
-    if (createPayload.draft !== true && createPayload.task_source === "sequence" && sequenceId && sequenceStepPrompts.length > 0) {
-      const { runId } = await sequenceExecutionService.initializeRun(sequenceId, createdTask.id, sequenceStepPrompts, sequenceExecutionMode);
-      const initialRuns = await deps.taskStore.listRuns(createdTask.id);
-      await deps.taskStore.appendLog(createdTask.id, `Sequence run started with ${sequenceStepPrompts.length} step(s).`);
-      sequenceRunContext = {
-        runId,
-        action: getTriggerActionForNewTask(createdTask),
-        stepPrompts: sequenceStepPrompts,
-        initialKnownRunIds: new Set(initialRuns.map((run) => run.id))
-      };
-    }
 
     let persistedAttachments: TaskPromptAttachment[] = [];
     if (attachmentUploads.length > 0) {
@@ -1370,48 +1124,7 @@ export const registerTaskRoutes = (
       }
     );
     if (!startResult.ok) {
-      if (sequenceRunContext) {
-        await sequenceExecutionService.failRunImmediately({
-          runId: sequenceRunContext.runId,
-          failedStepIndex: 0,
-          errorMessage: startResult.message
-        });
-      }
       return reply.status(startResult.statusCode).send({ message: startResult.message });
-    }
-
-    if (sequenceRunContext) {
-      void sequenceExecutionService
-        .runSteps({
-          runId: sequenceRunContext.runId,
-          taskId: createdTask.id,
-          action: sequenceRunContext.action,
-          stepPrompts: sequenceRunContext.stepPrompts,
-          initialKnownRunIds: sequenceRunContext.initialKnownRunIds
-        })
-        .catch(async (error) => {
-          try {
-            const message = error instanceof Error ? error.message : "Sequence execution failed.";
-            await deps.taskStore.appendLog(createdTask.id, `Sequence execution failed: ${message}`);
-            const currentRun = await deps.sequenceStore.getRun(sequenceRunContext.runId);
-            if (currentRun?.status === "running") {
-              await sequenceExecutionService.failRunImmediately({
-                runId: sequenceRunContext.runId,
-                failedStepIndex: currentRun.failedStepIndex ?? 0,
-                errorMessage: message
-              });
-            }
-          } catch (innerError) {
-            app.log.warn(
-              {
-                taskId: createdTask.id,
-                runId: sequenceRunContext.runId,
-                error: innerError instanceof Error ? innerError.message : String(innerError)
-              },
-              "Sequence start handler failed while processing runSteps rejection."
-            );
-          }
-        });
     }
 
     return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));

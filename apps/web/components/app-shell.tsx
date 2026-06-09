@@ -21,7 +21,6 @@ import { AppFooterNote } from "./app-footer-note";
 import { ResponsePolicyFields } from "./response-policy-fields";
 import { useAuth } from "./auth-provider";
 import { TaskBrowserNotifications } from "./task-browser-notifications";
-import { SequenceAnalyticsTracker } from "./sequence-analytics-tracker";
 import { useThemeMode } from "./theme-provider";
 import { appThemeOptions, type AppThemeMode } from "../src/theme/antd-theme";
 import { api } from "../src/api/client";
@@ -50,7 +49,6 @@ const menuIconByPath: Record<string, ReactNode> = {
   "/tasks": <UnorderedListOutlined />,
   "/tasks/board": <AppstoreOutlined />,
   "/snippets": <CopyOutlined />,
-  "/sequences": <UnorderedListOutlined />,
   "/repositories": <DatabaseOutlined />,
   "/settings": <SettingOutlined />,
   "/users": <TeamOutlined />
@@ -435,7 +433,6 @@ export function AppShell({ children }: { children: ReactNode }) {
             />
             <Flex align="center" gap={12}>
               <TaskBrowserNotifications />
-              <SequenceAnalyticsTracker />
               <Flex vertical gap={0} style={{ minWidth: 0 }}>
                 <Button type="text" style={{ paddingInline: 6 }} onClick={() => { void openProfile(); }}>
                   <Typography.Text strong>{`Hi, ${session.user.name || "Administrator"}`}</Typography.Text>

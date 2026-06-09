@@ -5,8 +5,7 @@ import {
   type TaskAction,
   type TaskChangeProposal,
   type TaskMessage,
-  type TaskRun,
-  type SequenceRun
+  type TaskRun
 } from "@agentswarm/shared-types";
 
 type RawMessageHistoryEntry = {
@@ -35,9 +34,6 @@ export type GroupedAutoRunHistoryEntry = {
   kind: "grouped_auto_run";
   timestamp: string;
   run: TaskRun;
-  isQueued?: boolean;
-  sequenceRunId?: string;
-  sequenceStepIndex?: number;
   promptText: string;
   promptMessage: TaskMessage | null;
   summaryMessage: TaskMessage | null;
@@ -114,7 +110,6 @@ export function buildTaskHistoryEntries(input: {
   messages: TaskMessage[];
   runs: TaskRun[];
   proposals: TaskChangeProposal[];
-  sequenceRun?: SequenceRun | null;
   interactiveTerminalRunning?: boolean;
 }): TaskHistoryEntry[] {
   const sortedMessages = [...input.messages].sort((left, right) =>
@@ -145,37 +140,6 @@ export function buildTaskHistoryEntries(input: {
       buildProposalByRunId.set(proposal.sourceId, proposal);
     }
   }
-  const sequenceStepPromptByTaskRunId = new Map<string, string>();
-  const sequenceStepIndexByTaskRunId = new Map<string, number>();
-  const sequenceStepIndexByUniquePrompt = new Map<string, number>();
-  if (input.sequenceRun) {
-    const promptCounts = new Map<string, number>();
-    for (const step of input.sequenceRun.steps) {
-      const prompt = step.prompt.trim();
-      if (!prompt) {
-        continue;
-      }
-      promptCounts.set(prompt, (promptCounts.get(prompt) ?? 0) + 1);
-    }
-    for (const step of input.sequenceRun.steps) {
-      const prompt = step.prompt.trim();
-      if (!prompt || (promptCounts.get(prompt) ?? 0) !== 1) {
-        continue;
-      }
-      sequenceStepIndexByUniquePrompt.set(prompt, step.index);
-    }
-
-    for (const step of input.sequenceRun.steps) {
-      const taskRunId = step.taskRunId?.trim();
-      const stepPrompt = step.prompt.trim();
-      if (!taskRunId || !stepPrompt || sequenceStepPromptByTaskRunId.has(taskRunId)) {
-        continue;
-      }
-      sequenceStepPromptByTaskRunId.set(taskRunId, stepPrompt);
-      sequenceStepIndexByTaskRunId.set(taskRunId, step.index);
-    }
-  }
-
   for (const run of sortedRuns) {
     if (!isAutoRunAction(run.action)) {
       continue;
@@ -193,11 +157,7 @@ export function buildTaskHistoryEntries(input: {
     if (promptMessage) {
       consumedMessageIds.add(promptMessage.id);
     }
-    const fallbackSequencePrompt = sequenceStepPromptByTaskRunId.get(run.id) ?? null;
-    const promptText = promptMessage?.content ?? fallbackSequencePrompt ?? "No matched user prompt was found for this run.";
-    const inferredSequenceStepIndex =
-      sequenceStepIndexByTaskRunId.get(run.id) ??
-      sequenceStepIndexByUniquePrompt.get(promptText.trim());
+    const promptText = promptMessage?.content ?? "No matched user prompt was found for this run.";
 
     let summaryMessage: TaskMessage | null = null;
     const normalizedRunSummary = run.summary?.trim() ?? "";
@@ -228,65 +188,11 @@ export function buildTaskHistoryEntries(input: {
       kind: "grouped_auto_run",
       timestamp: run.startedAt,
       run,
-      sequenceRunId: inferredSequenceStepIndex !== undefined ? input.sequenceRun?.id : undefined,
-      sequenceStepIndex: inferredSequenceStepIndex,
       promptText,
       promptMessage,
       summaryMessage,
       proposal
     });
-  }
-
-  if (input.sequenceRun) {
-    const knownRunIds = new Set(sortedRuns.map((run) => run.id));
-    const inferredTemplateRun = sortedRuns.at(-1) ?? null;
-    const queuedSteps = input.sequenceRun.steps.filter((step) => step.state === "pending");
-    const anchorTimestamp =
-      input.sequenceRun.steps.find((step) => step.state === "running")?.startedAt ??
-      input.sequenceRun.steps
-        .slice()
-        .reverse()
-        .find((step) => step.state === "succeeded" || step.state === "failed")?.finishedAt ??
-      input.sequenceRun.startedAt;
-
-    for (const step of queuedSteps) {
-      const stepRunId = step.taskRunId?.trim();
-      if (stepRunId && knownRunIds.has(stepRunId)) {
-        continue;
-      }
-      const syntheticRunId = stepRunId || `sequence-queued-${input.sequenceRun.id}-${step.index + 1}`;
-      const syntheticRun: TaskRun = {
-        id: syntheticRunId,
-        taskId: input.sequenceRun.taskId,
-        action: inferredTemplateRun?.action ?? "build",
-        provider: inferredTemplateRun?.provider ?? "codex",
-        providerProfile: inferredTemplateRun?.providerProfile ?? "high",
-        modelOverride: inferredTemplateRun?.modelOverride ?? null,
-        branchName: inferredTemplateRun?.branchName ?? null,
-        status: "running",
-        startedAt: anchorTimestamp ?? input.sequenceRun.startedAt,
-        finishedAt: null,
-        summary: null,
-        changeOutcome: null,
-        errorMessage: null,
-        changeProposalCheckpointRef: null,
-        changeProposalUntrackedPaths: null,
-        logs: []
-      };
-      groupedAutoEntries.push({
-        key: `grouped-auto-queued-${input.sequenceRun.id}-${step.index + 1}`,
-        kind: "grouped_auto_run",
-        timestamp: syntheticRun.startedAt,
-        run: syntheticRun,
-        isQueued: true,
-        sequenceRunId: input.sequenceRun.id,
-        sequenceStepIndex: step.index,
-        promptText: step.prompt.trim() || "Sequence step queued.",
-        promptMessage: null,
-        summaryMessage: null,
-        proposal: null
-      });
-    }
   }
 
   const terminalStartMessages = sortedMessages.filter(isInteractiveTerminalStartMessage);
@@ -444,22 +350,5 @@ export function buildTaskHistoryEntries(input: {
     )
   ];
 
-  return entries.sort((left, right) => {
-    if (left.kind === "grouped_auto_run" && right.kind === "grouped_auto_run") {
-      const leftSequenceRunId = left.sequenceRunId?.trim() ?? "";
-      const rightSequenceRunId = right.sequenceRunId?.trim() ?? "";
-      const leftSequenceStepIndex = typeof left.sequenceStepIndex === "number" ? left.sequenceStepIndex : null;
-      const rightSequenceStepIndex = typeof right.sequenceStepIndex === "number" ? right.sequenceStepIndex : null;
-      if (
-        leftSequenceRunId.length > 0 &&
-        leftSequenceRunId === rightSequenceRunId &&
-        leftSequenceStepIndex !== null &&
-        rightSequenceStepIndex !== null &&
-        leftSequenceStepIndex !== rightSequenceStepIndex
-      ) {
-        return leftSequenceStepIndex - rightSequenceStepIndex;
-      }
-    }
-    return compareIso(left.timestamp, right.timestamp, left.key, right.key);
-  });
+  return entries.sort((left, right) => compareIso(left.timestamp, right.timestamp, left.key, right.key));
 }

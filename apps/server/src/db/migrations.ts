@@ -346,32 +346,6 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
     `
   },
   {
-    id: "20260526_01_sequences_mvp",
-    sql: `
-      CREATE TABLE IF NOT EXISTS sequences (
-        id text PRIMARY KEY,
-        name text NOT NULL,
-        steps jsonb NOT NULL DEFAULT '[]'::jsonb,
-        variables jsonb NOT NULL DEFAULT '[]'::jsonb,
-        created_at text NOT NULL,
-        updated_at text NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS sequences_updated_at_idx ON sequences(updated_at DESC);
-
-      CREATE TABLE IF NOT EXISTS sequence_runs (
-        id text PRIMARY KEY,
-        sequence_id text NOT NULL REFERENCES sequences(id) ON DELETE CASCADE,
-        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-        started_at text NOT NULL,
-        run_data jsonb NOT NULL
-      );
-
-      CREATE UNIQUE INDEX IF NOT EXISTS sequence_runs_task_id_idx ON sequence_runs(task_id);
-      CREATE INDEX IF NOT EXISTS sequence_runs_sequence_id_started_at_idx ON sequence_runs(sequence_id, started_at DESC, id);
-    `
-  },
-  {
     id: "20260526_02_task_git_operations",
     sql: `
       CREATE TABLE IF NOT EXISTS task_git_operations (
@@ -383,13 +357,6 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
 
       CREATE INDEX IF NOT EXISTS task_git_operations_task_id_started_at_idx
         ON task_git_operations(task_id, started_at DESC, id DESC);
-    `
-  },
-  {
-    id: "20260526_03_sequence_execution_mode",
-    sql: `
-      ALTER TABLE sequences
-      ADD COLUMN IF NOT EXISTS execution_mode text NOT NULL DEFAULT 'auto_apply_changes';
     `
   },
   {
@@ -415,6 +382,13 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       );
 
       CREATE INDEX IF NOT EXISTS task_drafts_owner_updated_at_idx ON task_drafts(owner_user_id, updated_at DESC);
+    `
+  },
+  {
+    id: "20260609_01_remove_sequences",
+    sql: `
+      DROP TABLE IF EXISTS sequence_runs;
+      DROP TABLE IF EXISTS sequences;
     `
   }
 ];

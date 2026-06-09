@@ -42,7 +42,7 @@ flowchart TD
     A5[Prompt returned + textarea/title updated]
     A6[Submit create form]
     A7{Source type}
-    A8[Blank/Snippet/Sequence -> POST /tasks]
+    A8[Blank/Snippet -> POST /tasks]
     A9[Issue -> POST /imports/issue]
     A10[PR -> POST /imports/pull-request]
     A11[Task row created in store]
@@ -74,7 +74,7 @@ flowchart TD
     B11{Changes produced?}
     B12[Create pending checkpoint/change proposal]
     B13[Wait for Apply/Reject/Revert]
-    B14[Continue or stop depending on sequence mode]
+    B14[Apply selected checkpoint action]
     B15[Status -> done/failed/cancelled]
   end
 
@@ -125,7 +125,7 @@ flowchart TD
   end
 
   N1 --> N2 --> N3 --> N4
-  N4 -- blank/snippet/sequence --> N5 --> N8
+  N4 -- blank/snippet --> N5 --> N8
   N4 -- issue --> N6 --> N8
   N4 -- pull_request --> N7 --> N8
   N8 --> N9 --> N10 --> N11 --> N12 --> N14
@@ -203,9 +203,6 @@ flowchart TD
   G22[Checkpoint action apply reject revert]
   G23[POST change proposals action endpoint]
   G24[checkpoint mutation transition helper executes action and refresh]
-  G25{sequence auto apply recovery needed}
-  G26[resume waiting sequence step]
-
   G1 --> G2
 
   G2 -- Pull --> G3 --> G4 --> G5
@@ -220,7 +217,5 @@ flowchart TD
   G16 -- Yes --> G17 --> G18 --> G19 --> G20 --> G21
   G16 -- No --> G21
 
-  G2 -- Checkpoint --> G22 --> G23 --> G24 --> G25
-  G25 -- Yes --> G26
-  G25 -- No --> G24
+  G2 -- Checkpoint --> G22 --> G23 --> G24
 ```

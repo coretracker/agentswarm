@@ -15,7 +15,7 @@ The project is built for developers and teams who want agent-assisted coding wor
 - Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
 - Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
 - Open task workspaces in an interactive browser terminal.
-- Configure repositories, credentials, roles, users, provider defaults, snippets, and prompt sequences.
+- Configure repositories, credentials, roles, users, provider defaults, and snippets.
 - Automate task creation from GitHub webhooks and repository automation rules.
 - Add repository-local postflight checks with `.agentswarm/postflight.yml`.
 

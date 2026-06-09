@@ -12,10 +12,6 @@ export const startMessageForDefinition = (definition: TaskDefinitionInput): stri
     return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
   }
 
-  if (definition.sourceType === "sequence") {
-    return "Sequence task created and started";
-  }
-
   return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
 };
 
@@ -51,28 +47,6 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput, option
       providerProfile: definition.providerProfile,
       modelOverride: definition.model || undefined,
       codexCredentialSource: definition.codexCredentialSource
-    });
-  }
-
-  if (definition.sourceType === "sequence") {
-    return api.createTask({
-      title: definition.title,
-      draft: options.draft,
-      repoId: definition.repoId,
-      prompt: "",
-      notes: definition.notes,
-      deadline: definition.deadline,
-      attachments: definition.attachments,
-      taskType: definition.taskType,
-      provider: definition.provider,
-      providerProfile: definition.providerProfile,
-      modelOverride: definition.model || undefined,
-      codexCredentialSource: definition.codexCredentialSource,
-      baseBranch: definition.baseBranch,
-      branchStrategy: definition.branchStrategy,
-      task_source: "sequence",
-      sequence_id: definition.sequenceId,
-      sequence_variables: definition.sequenceVariables
     });
   }
 

@@ -431,17 +431,12 @@ export class RedisTaskStore implements TaskStore {
       notes?: string;
       taskSource?: Task["taskSource"];
       snippetId?: string;
-      sequenceId?: string;
-      sequenceRunId?: string | null;
       scheduledStartAt?: string | null;
       scheduledEndAt?: string | null;
     };
     const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
     delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
-    const taskSource =
-      legacyTask.taskSource === "snippet" || legacyTask.taskSource === "sequence" || legacyTask.taskSource === "blank"
-        ? legacyTask.taskSource
-        : "blank";
+    const taskSource = legacyTask.taskSource === "snippet" || legacyTask.taskSource === "blank" ? legacyTask.taskSource : "blank";
     const normalizedTask: Task = {
       ...taskWithoutStartMode,
       deadline: normalizeDeadline(legacyTask.deadline),
@@ -465,14 +460,6 @@ export class RedisTaskStore implements TaskStore {
         taskSource === "snippet" && typeof legacyTask.snippetId === "string" && legacyTask.snippetId.trim().length > 0
           ? legacyTask.snippetId.trim()
           : undefined,
-      sequenceId:
-        taskSource === "sequence" && typeof legacyTask.sequenceId === "string" && legacyTask.sequenceId.trim().length > 0
-          ? legacyTask.sequenceId.trim()
-          : undefined,
-      sequenceRunId:
-        taskSource === "sequence" && typeof legacyTask.sequenceRunId === "string" && legacyTask.sequenceRunId.trim().length > 0
-          ? legacyTask.sequenceRunId.trim()
-          : null,
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
@@ -669,14 +656,10 @@ export class RedisTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
-    const taskSource = input.task_source === "snippet" || input.task_source === "sequence" ? input.task_source : "blank";
+    const taskSource = input.task_source === "snippet" ? input.task_source : "blank";
     const snippetId =
       taskSource === "snippet" && typeof input.snippet_id === "string" && input.snippet_id.trim().length > 0
         ? input.snippet_id.trim()
-        : undefined;
-    const sequenceId =
-      taskSource === "sequence" && typeof input.sequence_id === "string" && input.sequence_id.trim().length > 0
-        ? input.sequence_id.trim()
         : undefined;
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
@@ -701,8 +684,6 @@ export class RedisTaskStore implements TaskStore {
       codexCredentialSource,
       taskSource,
       ...(snippetId ? { snippetId } : {}),
-      ...(sequenceId ? { sequenceId } : {}),
-      sequenceRunId: taskSource === "sequence" ? null : undefined,
       baseBranch,
       branchStrategy,
       complexity,
@@ -1686,17 +1667,12 @@ export class PostgresTaskStore implements TaskStore {
       notes?: string;
       taskSource?: Task["taskSource"];
       snippetId?: string;
-      sequenceId?: string;
-      sequenceRunId?: string | null;
       scheduledStartAt?: string | null;
       scheduledEndAt?: string | null;
     };
     const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
     delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
-    const taskSource =
-      legacyTask.taskSource === "snippet" || legacyTask.taskSource === "sequence" || legacyTask.taskSource === "blank"
-        ? legacyTask.taskSource
-        : "blank";
+    const taskSource = legacyTask.taskSource === "snippet" || legacyTask.taskSource === "blank" ? legacyTask.taskSource : "blank";
     const normalizedTask: Task = {
       ...taskWithoutStartMode,
       deadline: normalizeDeadline(legacyTask.deadline),
@@ -1720,14 +1696,6 @@ export class PostgresTaskStore implements TaskStore {
         taskSource === "snippet" && typeof legacyTask.snippetId === "string" && legacyTask.snippetId.trim().length > 0
           ? legacyTask.snippetId.trim()
           : undefined,
-      sequenceId:
-        taskSource === "sequence" && typeof legacyTask.sequenceId === "string" && legacyTask.sequenceId.trim().length > 0
-          ? legacyTask.sequenceId.trim()
-          : undefined,
-      sequenceRunId:
-        taskSource === "sequence" && typeof legacyTask.sequenceRunId === "string" && legacyTask.sequenceRunId.trim().length > 0
-          ? legacyTask.sequenceRunId.trim()
-          : null,
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
@@ -2010,14 +1978,10 @@ export class PostgresTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
-    const taskSource = input.task_source === "snippet" || input.task_source === "sequence" ? input.task_source : "blank";
+    const taskSource = input.task_source === "snippet" ? input.task_source : "blank";
     const snippetId =
       taskSource === "snippet" && typeof input.snippet_id === "string" && input.snippet_id.trim().length > 0
         ? input.snippet_id.trim()
-        : undefined;
-    const sequenceId =
-      taskSource === "sequence" && typeof input.sequence_id === "string" && input.sequence_id.trim().length > 0
-        ? input.sequence_id.trim()
         : undefined;
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
@@ -2042,8 +2006,6 @@ export class PostgresTaskStore implements TaskStore {
       codexCredentialSource,
       taskSource,
       ...(snippetId ? { snippetId } : {}),
-      ...(sequenceId ? { sequenceId } : {}),
-      sequenceRunId: taskSource === "sequence" ? null : undefined,
       baseBranch,
       branchStrategy,
       complexity,

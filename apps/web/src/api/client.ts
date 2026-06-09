@@ -5,7 +5,6 @@ import type {
   AuthProfile,
   AuthSession,
   CreateRoleInput,
-  CreateSequenceInput,
   CreateSnippetInput,
   CreateTaskFromIssueInput,
   CreateTaskFromPullRequestInput,
@@ -20,8 +19,6 @@ import type {
   ProviderModelOption,
   Repository,
   Role,
-  Sequence,
-  SequenceRun,
   Snippet,
   SystemSettings,
   Task,
@@ -49,7 +46,6 @@ import type {
   TaskAction,
   TaskTerminalSessionMode,
   UpdateRoleInput,
-  UpdateSequenceInput,
   UpdateSnippetInput,
   UpdateTaskPinInput,
   UpdateTaskNotesInput,
@@ -218,26 +214,6 @@ export const api = {
     request<Snippet>(`/snippets/${id}/duplicate`, {
       method: "POST"
     }),
-  listSequences: () => request<Sequence[]>("/sequences"),
-  getSequence: (id: string) => request<Sequence>(`/sequences/${id}`),
-  createSequence: (input: CreateSequenceInput) =>
-    request<Sequence>("/sequences", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateSequence: (id: string, input: UpdateSequenceInput) =>
-    request<Sequence>(`/sequences/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteSequence: (id: string) =>
-    request<void>(`/sequences/${id}`, {
-      method: "DELETE"
-    }),
-  duplicateSequence: (id: string) =>
-    request<Sequence>(`/sequences/${id}/duplicate`, {
-      method: "POST"
-    }),
   listTasks: (options?: ListTasksOptions) => {
     const params = new URLSearchParams();
     if (options?.view) {
@@ -252,11 +228,6 @@ export const api = {
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
   startTask: (id: string) =>
     request<Task>(`/tasks/${id}/start`, {
-      method: "POST"
-    }),
-  getTaskSequenceRun: (id: string) => request<SequenceRun>(`/tasks/${id}/sequence-run`),
-  approveTaskSequenceRun: (id: string) =>
-    request<SequenceRun>(`/tasks/${id}/sequence-run/approve`, {
       method: "POST"
     }),
   getTaskBranchSyncCounts: (id: string) => request<TaskBranchSyncCounts>(`/tasks/${id}/branch-sync-counts`),

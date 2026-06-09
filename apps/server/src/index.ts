@@ -25,7 +25,6 @@ import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerImportRoutes } from "./routes/imports.js";
 import { registerSnippetRoutes } from "./routes/snippets.js";
-import { registerSequenceRoutes } from "./routes/sequences.js";
 import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
 
@@ -131,7 +130,6 @@ const bootstrap = async (): Promise<void> => {
     githubOutboundQueueStore,
     webhookDeliveryStore,
     snippetStore,
-    sequenceStore,
     repositoryStore,
     credentialStore,
     roleStore,
@@ -176,12 +174,10 @@ const bootstrap = async (): Promise<void> => {
     scheduler,
     spawner,
     settingsStore,
-    sequenceStore,
     snippetStore,
     auth
   });
   registerSnippetRoutes(app, { snippetStore, auth });
-  registerSequenceRoutes(app, { sequenceStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
   registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, userStore, scheduler, spawner, auth });

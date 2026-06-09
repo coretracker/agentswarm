@@ -116,7 +116,6 @@ apps/
         imports.ts
         repositories.ts
         roles.ts
-        sequences.ts
         settings.ts
         snippets.ts
         tasks.ts
@@ -140,11 +139,6 @@ apps/
         role-store.ts
         scheduler.test.ts
         scheduler.ts
-        sequence-execution-service.test.ts
-        sequence-execution-service.ts
-        sequence-resolution.test.ts
-        sequence-resolution.ts
-        sequence-store.ts
         session-store.ts
         settings-store.ts
         snippet-store.ts
@@ -170,13 +164,6 @@ apps/
       presets/
         page.tsx
       repositories/
-        [id]/
-          edit/
-            page.tsx
-        new/
-          page.tsx
-        page.tsx
-      sequences/
         [id]/
           edit/
             page.tsx
@@ -220,9 +207,6 @@ apps/
       repositories-page.tsx
       repository-editor-page.tsx
       response-policy-fields.tsx
-      sequence-analytics-tracker.tsx
-      sequence-editor-page.tsx
-      sequences-page.tsx
       settings-page.tsx
       snippet-editor-page.tsx
       snippets-page.tsx
@@ -254,7 +238,6 @@ apps/
       hooks/
         useProviderModels.ts
         useRepositories.ts
-        useSequences.ts
         useSettings.ts
         useSnippets.ts
         useSocket.ts
@@ -263,7 +246,6 @@ apps/
         useTaskMessages.ts
         useTaskRuns.ts
         useTasks.ts
-        useTaskSequenceRun.ts
       lib/
         public-url.ts
       theme/
@@ -274,8 +256,6 @@ apps/
         diff.test.ts
         diff.ts
         seen-tasks.ts
-        sequence-variables.test.ts
-        sequence-variables.ts
         snippets.test.ts
         snippets.ts
         task-definition-submit.ts
@@ -4831,10 +4811,11 @@ const ROLE_NAME_KEY_PREFIX = "agentswarm:role_name:";
 export const SYSTEM_ADMIN_ROLE_ID = "admin";
 const SYSTEM_ADMIN_ROLE_NAME = "Admin";
 const SYSTEM_ADMIN_ROLE_DESCRIPTION = "Built-in superuser role with every available permission.";
-const ROLE_SCOPE_VERSION = 4;
+const ROLE_SCOPE_VERSION = 5;
 
 const nowIso = (): string => new Date().toISOString();
 const scopeOrder = new Map(ALL_PERMISSION_SCOPES.map((scope, index) => [scope, index]));
+const deprecatedPermissionScopes = new Set(["sequence:list", "sequence:create", "sequence:read", "sequence:edit", "sequence:delete"]);
 
 const normalizeRoleName = (value: string | undefined): string => (value ?? "").trim().replace(/\s+/g, " ");
 const normalizeRoleNameKey = (value: string | undefined): string => normalizeRoleName(value).toLowerCase();
@@ -4889,8 +4870,12 @@ const normalizeScopes = (
         .filter(Boolean)
     )
   );
-  const uniqueScopes = options?.legacyTaskModes ? expandLegacyTaskModeScopes(uniqueScopesRaw) : uniqueScopesRaw;
+  const expandedScopes = options?.legacyTaskModes ? expandLegacyTaskModeScopes(uniqueScopesRaw) : uniqueScopesRaw;
+  const uniqueScopes = options?.legacyTaskModes ? expandedScopes.filter((scope) => !deprecatedPermissionScopes.has(scope)) : expandedScopes;
   if (uniqueScopes.length === 0) {
+    if (options?.legacyTaskModes && uniqueScopesRaw.some((scope) => deprecatedPermissionScopes.has(scope))) {
+      return [];
+    }
     throw new HttpError(400, "At least one permission scope is required");
   }
 
@@ -14568,6 +14553,196 @@ server {
 }
 ````
 
+## File: docs/github-sync-ownership-model.md
+````markdown
+# GitHub Sync Ownership Model (MVP)
+
+## Goal
+Make GitHub sync behavior predictable by defining exactly which system is authoritative for each field and how conflicts are resolved.
+
+## Models Compared
+
+### 1) `github_authoritative`
+- GitHub is the source of truth for synced fields.
+- Internal edits to synced fields are treated as temporary and will be overwritten by incoming GitHub events.
+
+Pros:
+- Matches what users already expect from GitHub.
+- Lower risk of drift for issue state/metadata.
+
+Cons:
+- Internal edits may appear to "disappear" unless clearly marked as local-only.
+- Requires good webhook reliability.
+
+### 2) `internal_authoritative`
+- Internal task system is the source of truth for synced fields.
+- GitHub changes are informational and do not automatically override internal state.
+
+Pros:
+- Full control inside the product.
+- Works even when GitHub data is delayed.
+
+Cons:
+- High drift risk from GitHub.
+- Harder to explain for GitHub-first teams.
+
+### 3) `hybrid_sync`
+- Ownership differs by field (some GitHub-owned, some internal-owned).
+- Bidirectional updates are allowed only for explicitly shared fields.
+
+Pros:
+- Flexible and practical for mixed workflows.
+- Preserves internal workflow while staying aligned with GitHub metadata.
+
+Cons:
+- More rules to explain.
+- Needs clear UI audit trail.
+
+## Recommended MVP Default
+Use `hybrid_sync` as default, with strict per-field ownership.
+
+Reason:
+- It minimizes user surprise in day-to-day use.
+- It avoids forcing all behavior into a single system.
+- It supports current webhook/import flows and allows gradual expansion.
+
+## Source-of-Truth Mapping (MVP)
+
+| Field | Source of Truth | Direction | Notes |
+|---|---|---|---|
+| GitHub issue/PR number, URL | GitHub | GitHub -> internal | Immutable link fields after task creation. |
+| Title (imported task title) | Internal | Internal -> GitHub (optional later) | Internal title can diverge; show "custom title" badge if changed. |
+| Status/state | Internal (execution), GitHub (issue/PR lifecycle) | Bidirectional with mapping rules | Internal run status and GitHub open/closed are related but not identical. |
+| Labels | GitHub (for GitHub-prefixed labels), Internal (for internal-prefixed labels) | Bidirectional by namespace | Reserve `gh:*` for GitHub mirror, `as:*` for internal-only labels. |
+| Comments | Dual ownership by origin | Bidirectional append-only | Never edit/delete remote comments during MVP sync. |
+| Assignee | Internal | Internal -> GitHub (optional later) | Keep assignment stable for internal permission model. |
+| Description/body snapshot | GitHub at import time | GitHub -> internal (manual refresh only) | Treated as imported context, not live-synced text. |
+
+## Conflict Resolution Rules
+
+### Status
+- Maintain a mapping table:
+  - GitHub `open` -> internal `open` (or keep current running state if actively executing).
+  - GitHub `closed` -> internal `done` only if task is not running.
+- If internal task is running and GitHub closes issue/PR:
+  - Keep internal state unchanged.
+  - Add sync alert: `GitHub closed while task running`.
+  - Ask user to resolve with explicit action (`stop`, `complete`, or `reopen on GitHub`).
+
+### Labels
+- Namespace labels:
+  - `gh:*` labels are GitHub-owned mirrors and are overwritten by latest GitHub payload.
+  - `as:*` labels are internal-owned and never overwritten by GitHub.
+- If same semantic label exists in both systems without prefix:
+  - Convert during sync to `gh:<name>` to prevent future ambiguity.
+
+### Comments
+- Append-only sync for MVP:
+  - GitHub comments import as external entries with source metadata.
+  - Internal comments sync out only when user marks them as "publish to GitHub".
+- Never mutate existing comment content across systems in MVP.
+- On duplicate detection (same source id), keep first and skip duplicates.
+
+## Fallback When Systems Disagree
+
+1. Detect disagreement by field (`status`, `labels`, `comments`) and record timestamp/source.
+2. Apply deterministic winner based on mapping table above.
+3. Store a sync event log entry with:
+   - field
+   - local value
+   - remote value
+   - winning value
+   - rule used
+4. Surface a plain-language UI notice:
+   - Example: `GitHub label set won for gh:* labels at 2026-05-21 14:00 UTC.`
+5. If no rule safely applies, do not auto-merge:
+   - mark as `needs_manual_resolution`
+   - keep both values visible
+   - provide one-click user choice
+
+## UX Transparency Requirements
+- Every sync-driven overwrite must show:
+  - what changed
+  - which system won
+  - why (rule name)
+  - when it happened (UTC timestamp)
+- Users should always be able to filter history by `sync events`.
+- Avoid hidden automatic edits; all automatic conflict outcomes must be auditable.
+
+## Task-to-GitHub Status Mapping (Issue #22)
+
+### Scope
+- This mapping controls when internal task status changes create GitHub updates (labels and comments).
+- Goal: useful progress signals with low noise.
+
+### Repo-Level Switch
+- Add optional repository setting: `sync_status_enabled` (default: `false`).
+- If `sync_status_enabled=false`:
+  - no automatic status label updates are sent to GitHub
+  - no automatic status comments are sent to GitHub
+  - manual user comments can still be posted when explicitly requested
+- If `sync_status_enabled=true`:
+  - apply the milestone-only policy below
+
+### GitHub Labels Used for Status
+- Use exactly one active label from:
+  - `as:queued`
+  - `as:in-progress`
+  - `as:blocked`
+  - `as:done`
+- On change, remove the previous `as:*` status label and apply the new one.
+
+### Milestone-Only Posting Policy
+- Post only on meaningful milestones:
+  - work started
+  - blocked waiting on input/dependency
+  - unblocked and resumed
+  - completed
+  - failed/cancelled with clear outcome
+- Do not post for routine churn:
+  - retries
+  - step-level progress
+  - short-lived state flips
+  - background sync-only adjustments
+
+### Internal Status -> GitHub Action Mapping
+
+| Internal Transition | Update GitHub Label | Post GitHub Comment | Comment Template (short) |
+|---|---|---|---|
+| `queued -> in_progress` | `as:in-progress` | Yes | `Work started.` |
+| `in_progress -> blocked` | `as:blocked` | Yes | `Work blocked: <reason>.` |
+| `blocked -> in_progress` | `as:in-progress` | Yes | `Work resumed after unblock.` |
+| `in_progress -> done` | `as:done` | Yes | `Work completed.` |
+| `in_progress -> failed` | keep `as:in-progress` or set `as:blocked` (team choice) | Yes | `Work stopped: <failure summary>.` |
+| `in_progress -> cancelled` | keep current or set `as:queued` (team choice) | Yes | `Work cancelled.` |
+| `queued -> cancelled` | `as:queued` (unchanged) | No | n/a |
+| `queued -> queued` | none | No | n/a |
+| `in_progress -> in_progress` | none | No | n/a |
+| `blocked -> blocked` | none | No | n/a |
+| `done -> done` | none | No | n/a |
+
+### Transitions That Must Not Post Updates
+- Any transition where source and destination are the same.
+- Automatic retry state changes that return to the same milestone stage.
+- Internal-only housekeeping transitions (for example: scheduler rebalance, worker handoff).
+- Bulk backfill/import reconciliation updates.
+- Any status change while `sync_status_enabled=false`.
+
+### Sample Timeline: Issue Flow
+1. Issue imported -> task created as `queued` (no comment posted).
+2. Agent begins work -> set `as:in-progress`; post `Work started.`
+3. Missing requirement found -> set `as:blocked`; post `Work blocked: waiting for acceptance criteria.`
+4. User provides answer -> set `as:in-progress`; post `Work resumed after unblock.`
+5. Work completes -> set `as:done`; post `Work completed.`
+
+### Sample Timeline: PR Flow
+1. PR imported -> task `queued` (no comment posted).
+2. Agent starts edits -> `as:in-progress`; post `Work started.`
+3. CI failure blocks merge -> `as:blocked`; post `Work blocked: CI failing on test suite.`
+4. Fix applied and CI passes -> `as:in-progress`; post `Work resumed after unblock.`
+5. PR ready/merged -> `as:done`; post `Work completed.`
+````
+
 ## File: packages/shared-types/package.json
 ````json
 {
@@ -16850,6 +17025,144 @@ export const registerSnippetRoutes = (
 };
 ````
 
+## File: apps/server/src/services/github-status-sync-service.ts
+````typescript
+import type { RealtimeEvent, Task, TaskStatus } from "@agentswarm/shared-types";
+import type { RepositoryStore } from "./repository-store.js";
+import type { GitHubOutboundService } from "./github-outbound-service.js";
+import { getGitHubStatusSyncFromNotes } from "../lib/github-status-sync.js";
+
+const STATUS_LABELS = ["as:queued", "as:in-progress", "as:blocked", "as:done"] as const;
+type StatusLabel = (typeof STATUS_LABELS)[number];
+
+type Milestone =
+  | { label: "as:in-progress"; comment: "Work started." }
+  | { label: "as:done"; comment: string }
+  | { label: "as:blocked"; comment: `Work stopped: ${string}.` };
+
+const findGitHubIssueNumber = (task: Task): number | null => {
+  const firstLine = task.prompt.split("\n")[0]?.trim() ?? "";
+  const issueMatch = firstLine.match(/GitHub issue #(\d+)/i);
+  if (issueMatch) {
+    return Number(issueMatch[1]);
+  }
+  const prMatch = firstLine.match(/pull request #(\d+)/i);
+  if (prMatch) {
+    return Number(prMatch[1]);
+  }
+  return null;
+};
+
+const isQueuedStatus = (status: TaskStatus): boolean => status === "build_queued" || status === "ask_queued";
+const isInProgressStatus = (status: TaskStatus): boolean => status === "preparing_workspace" || status === "building" || status === "asking";
+const isDoneStatus = (status: TaskStatus): boolean =>
+  status === "done" || status === "completed" || status === "answered" || status === "accepted";
+
+const toMilestone = (task: Task): Milestone | null => {
+  if (isInProgressStatus(task.status)) {
+    return { label: "as:in-progress", comment: "Work started." };
+  }
+  if (isDoneStatus(task.status)) {
+    const summary = task.resultMarkdown?.trim() ?? "";
+    return { label: "as:done", comment: summary.length > 0 ? summary : "Work completed." };
+  }
+  if (task.status === "failed") {
+    return { label: "as:blocked", comment: "Work stopped: task failed." };
+  }
+  if (task.status === "cancelled") {
+    return { label: "as:blocked", comment: "Work stopped: task cancelled." };
+  }
+  return null;
+};
+
+const statusRank = (status: TaskStatus): number => {
+  if (isQueuedStatus(status)) {
+    return 1;
+  }
+  if (isInProgressStatus(status)) {
+    return 2;
+  }
+  if (isDoneStatus(status)) {
+    return 3;
+  }
+  if (status === "failed" || status === "cancelled") {
+    return 4;
+  }
+  return 0;
+};
+
+export class GitHubStatusSyncService {
+  private readonly lastStatusByTaskId = new Map<string, TaskStatus>();
+
+  constructor(
+    private readonly repositoryStore: RepositoryStore,
+    private readonly githubOutboundService: GitHubOutboundService,
+    private readonly now: () => string = () => new Date().toISOString()
+  ) {}
+
+  async handleRealtimeEvent(event: RealtimeEvent): Promise<void> {
+    if (event.type === "task:created") {
+      this.lastStatusByTaskId.set(event.payload.id, event.payload.status);
+      return;
+    }
+
+    if (event.type !== "task:updated") {
+      return;
+    }
+
+    const task = event.payload;
+    const previousStatus = this.lastStatusByTaskId.get(task.id) ?? null;
+    this.lastStatusByTaskId.set(task.id, task.status);
+    if (!GitHubStatusSyncService.isMeaningfulStatusTransition(previousStatus, task.status)) {
+      return;
+    }
+
+    const issueNumber = findGitHubIssueNumber(task);
+    if (!issueNumber) {
+      return;
+    }
+
+    const repository = await this.repositoryStore.getRepository(task.repoId);
+    if (!repository) {
+      return;
+    }
+
+    const noteOverride = getGitHubStatusSyncFromNotes(task.notes);
+    const syncEnabled = noteOverride ?? (repository.syncStatusEnabled === true);
+    if (!syncEnabled) {
+      return;
+    }
+
+    const milestone = toMilestone(task);
+    if (!milestone) {
+      return;
+    }
+
+    const idPrefix = `${task.id}:${task.status}:${this.now().slice(0, 10)}`;
+    await this.githubOutboundService.enqueueLabelUpdate({
+      repositoryId: task.repoId,
+      issueNumber,
+      add: [milestone.label],
+      remove: STATUS_LABELS.filter((entry) => entry !== milestone.label),
+      idempotencyKey: `status-label:${idPrefix}`
+    });
+    await this.githubOutboundService.enqueueSummaryComment({
+      repositoryId: task.repoId,
+      issueNumber,
+      body: milestone.comment,
+      idempotencyKey: `status-comment:${idPrefix}`
+    });
+  }
+
+  static isMeaningfulStatusTransition(previousStatus: TaskStatus | null, nextStatus: TaskStatus): boolean {
+    if (!previousStatus || previousStatus === nextStatus) {
+      return false;
+    }
+    return statusRank(previousStatus) !== statusRank(nextStatus);
+  }
+}
+````
+
 ## File: apps/server/src/services/repo-sync-manager.ts
 ````typescript
 export type RepoSyncOperation =
@@ -17276,86 +17589,6 @@ describe("SchedulerService.triggerAction", () => {
 });
 ````
 
-## File: apps/server/src/services/sequence-resolution.ts
-````typescript
-import type { Sequence, SnippetVariable } from "@agentswarm/shared-types";
-import type { SnippetStore } from "./snippet-store.js";
-
-const PLACEHOLDER_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
-
-const normalizeVariableValue = (variable: SnippetVariable, value: string): string =>
-  variable.type === "text" ? (value.split(/\r?\n/u)[0] ?? "") : value;
-
-const collectPlaceholders = (value: string): string[] => {
-  const names = new Set<string>();
-  for (const match of value.matchAll(PLACEHOLDER_PATTERN)) {
-    const name = match[1]?.trim();
-    if (name) {
-      names.add(name);
-    }
-  }
-  return Array.from(names);
-};
-
-export class SequenceValidationError extends Error {}
-
-export const resolveSequenceStepPrompts = async (input: {
-  sequence: Sequence;
-  snippetStore: SnippetStore;
-  variables?: Record<string, string>;
-}): Promise<string[]> => {
-  const variablesByName = new Map(input.sequence.variables.map((variable) => [variable.name, variable]));
-  const providedValues = input.variables ?? {};
-  const resolvedValues = new Map<string, string>();
-  for (const variable of input.sequence.variables) {
-    const provided = typeof providedValues[variable.name] === "string" ? providedValues[variable.name]! : "";
-    const selected = provided.length > 0 ? provided : variable.defaultValue ?? "";
-    resolvedValues.set(variable.name, normalizeVariableValue(variable, selected));
-  }
-
-  const stepPrompts: string[] = [];
-  for (const [index, step] of input.sequence.steps.entries()) {
-    const stepLabel = `step ${index + 1}`;
-    let template = step.prompt.trim();
-    if (step.type === "snippet") {
-      if (!step.snippetId) {
-        throw new SequenceValidationError(`Sequence ${stepLabel} is missing its snippet reference.`);
-      }
-      const snippet = await input.snippetStore.getSnippet(step.snippetId);
-      if (!snippet) {
-        throw new SequenceValidationError(`Sequence ${stepLabel} references a deleted snippet (${step.snippetId}).`);
-      }
-      template = snippet.content.trim();
-    }
-
-    if (template.length === 0) {
-      throw new SequenceValidationError(`Sequence ${stepLabel} has empty content.`);
-    }
-
-    const placeholders = collectPlaceholders(template);
-    for (const name of placeholders) {
-      const variable = variablesByName.get(name);
-      if (!variable) {
-        throw new SequenceValidationError(`Sequence ${stepLabel} contains an invalid variable placeholder: {{${name}}}.`);
-      }
-      const provided = typeof providedValues[name] === "string" ? providedValues[name]! : "";
-      const defaultValue = variable.defaultValue ?? "";
-      if (provided.length === 0 && defaultValue.length === 0) {
-        throw new SequenceValidationError(`Missing required variable "${name}" for sequence ${stepLabel}.`);
-      }
-    }
-
-    const rendered = template.replace(PLACEHOLDER_PATTERN, (_match, name: string) => resolvedValues.get(name) ?? `{{${name}}}`);
-    if (rendered.trim().length === 0) {
-      throw new SequenceValidationError(`Sequence ${stepLabel} resolved to empty content.`);
-    }
-    stepPrompts.push(rendered.trim());
-  }
-
-  return stepPrompts;
-};
-````
-
 ## File: apps/web/app/repositories/[id]/edit/page.tsx
 ````typescript
 import { RepositoryEditorPage } from "../../../../components/repository-editor-page";
@@ -17371,33 +17604,6 @@ import { RepositoryEditorPage } from "../../../components/repository-editor-page
 
 export default function NewRepositoryRoute() {
   return <RepositoryEditorPage mode="create" />;
-}
-````
-
-## File: apps/web/app/sequences/[id]/edit/page.tsx
-````typescript
-import { SequenceEditorPage } from "../../../../components/sequence-editor-page";
-
-export default function EditSequenceRoute({ params }: { params: { id: string } }) {
-  return <SequenceEditorPage mode="edit" sequenceId={params.id} />;
-}
-````
-
-## File: apps/web/app/sequences/new/page.tsx
-````typescript
-import { SequenceEditorPage } from "../../../components/sequence-editor-page";
-
-export default function NewSequenceRoute() {
-  return <SequenceEditorPage mode="create" />;
-}
-````
-
-## File: apps/web/app/sequences/page.tsx
-````typescript
-import { SequencesPage } from "../../components/sequences-page";
-
-export default function SequencesRoute() {
-  return <SequencesPage />;
 }
 ````
 
@@ -18799,172 +19005,6 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
 }
 ````
 
-## File: apps/web/src/hooks/useSequences.ts
-````typescript
-"use client";
-
-import { useEffect, useState } from "react";
-import type { Sequence } from "@agentswarm/shared-types";
-import { api } from "../api/client";
-import { useSocket } from "./useSocket";
-
-const sortSequences = (items: Sequence[]): Sequence[] => [...items].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-
-export const useSequences = (enabled = true) => {
-  const socket = useSocket();
-  const [sequences, setSequences] = useState<Sequence[]>([]);
-  const [loading, setLoading] = useState(enabled);
-
-  useEffect(() => {
-    if (!enabled) {
-      setSequences([]);
-      setLoading(false);
-      return;
-    }
-
-    let active = true;
-    setLoading(true);
-
-    void api
-      .listSequences()
-      .then((items) => {
-        if (!active) {
-          return;
-        }
-        setSequences(sortSequences(items));
-        setLoading(false);
-      })
-      .catch(() => {
-        if (!active) {
-          return;
-        }
-        setSequences([]);
-        setLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [enabled]);
-
-  useEffect(() => {
-    if (!enabled || !socket) {
-      return;
-    }
-
-    const onSequenceUpsert = (sequence: Sequence) => {
-      setSequences((current) => {
-        const next = [...current];
-        const index = next.findIndex((item) => item.id === sequence.id);
-        if (index >= 0) {
-          next[index] = sequence;
-        } else {
-          next.push(sequence);
-        }
-        return sortSequences(next);
-      });
-    };
-
-    const onSequenceDelete = (payload: { id: string }) => {
-      setSequences((current) => current.filter((item) => item.id !== payload.id));
-    };
-
-    socket.on("sequence:created", onSequenceUpsert);
-    socket.on("sequence:updated", onSequenceUpsert);
-    socket.on("sequence:deleted", onSequenceDelete);
-
-    return () => {
-      socket.off("sequence:created", onSequenceUpsert);
-      socket.off("sequence:updated", onSequenceUpsert);
-      socket.off("sequence:deleted", onSequenceDelete);
-    };
-  }, [enabled, socket]);
-
-  return { sequences, setSequences, loading };
-};
-````
-
-## File: apps/web/src/hooks/useTaskSequenceRun.ts
-````typescript
-"use client";
-
-import { useCallback, useEffect, useState } from "react";
-import type { SequenceRun } from "@agentswarm/shared-types";
-import { ApiError, api } from "../api/client";
-import { useSocket } from "./useSocket";
-
-interface TaskDeletedPayload {
-  id: string;
-}
-
-export const useTaskSequenceRun = (taskId: string, enabled = true) => {
-  const socket = useSocket();
-  const [sequenceRun, setSequenceRun] = useState<SequenceRun | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const refetch = useCallback(async (): Promise<SequenceRun | null> => {
-    if (!enabled) {
-      setSequenceRun(null);
-      setLoading(false);
-      return null;
-    }
-
-    try {
-      const run = await api.getTaskSequenceRun(taskId);
-      setSequenceRun(run);
-      setLoading(false);
-      return run;
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 404) {
-        setSequenceRun(null);
-        setLoading(false);
-        return null;
-      }
-      setLoading(false);
-      return null;
-    }
-  }, [enabled, taskId]);
-
-  useEffect(() => {
-    setLoading(true);
-    void refetch();
-  }, [refetch]);
-
-  useEffect(() => {
-    if (!socket || !enabled) {
-      return;
-    }
-
-    const onConnect = () => {
-      void refetch();
-    };
-    const onRunUpdated = (run: SequenceRun) => {
-      if (run.taskId !== taskId) {
-        return;
-      }
-      setSequenceRun(run);
-    };
-    const onTaskDelete = (payload: TaskDeletedPayload) => {
-      if (payload.id !== taskId) {
-        return;
-      }
-      setSequenceRun(null);
-    };
-
-    socket.on("connect", onConnect);
-    socket.on("sequence:run_updated", onRunUpdated);
-    socket.on("task:deleted", onTaskDelete);
-    return () => {
-      socket.off("connect", onConnect);
-      socket.off("sequence:run_updated", onRunUpdated);
-      socket.off("task:deleted", onTaskDelete);
-    };
-  }, [enabled, refetch, socket, taskId]);
-
-  return { sequenceRun, loading, refetch };
-};
-````
-
 ## File: apps/web/src/utils/seen-tasks.ts
 ````typescript
 import { isActiveTaskStatus, isQueuedTaskStatus, type Task } from "@agentswarm/shared-types";
@@ -19106,91 +19146,6 @@ export const subscribeToSeenTasks = (onChange: () => void): (() => void) => {
     window.removeEventListener(SEEN_TASKS_UPDATED_EVENT, handleSeenTaskIdsUpdated);
     window.removeEventListener("storage", handleStorage);
   };
-};
-````
-
-## File: apps/web/src/utils/sequence-variables.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import type { SequenceStep, SnippetVariable } from "@agentswarm/shared-types";
-import { mergeSnippetVariables } from "./sequence-variables";
-
-describe("mergeSnippetVariables", () => {
-  it("keeps existing variable order and appends new snippet variables", () => {
-    const current: SnippetVariable[] = [
-      { name: "second", type: "text", title: "", description: "", defaultValue: "" },
-      { name: "first", type: "text", title: "", description: "", defaultValue: "" }
-    ];
-    const steps: SequenceStep[] = [{ id: "step_1", type: "snippet", prompt: "", snippetId: "snippet_a" }];
-    const snippetDefinitions = new Map<string, SnippetVariable[]>([
-      [
-        "snippet_a",
-        [
-          { name: "first", type: "text", title: "From snippet", description: "", defaultValue: "" },
-          { name: "third", type: "multiline", title: "", description: "", defaultValue: "" }
-        ]
-      ]
-    ]);
-
-    const merged = mergeSnippetVariables({ current, steps, snippetDefinitions });
-    assert.deepEqual(
-      merged.next.map((entry) => entry.name),
-      ["second", "first", "third"]
-    );
-    assert.equal(merged.next[1]?.title, "From snippet");
-  });
-});
-````
-
-## File: apps/web/src/utils/sequence-variables.ts
-````typescript
-import type { SequenceStep, SnippetVariable } from "@agentswarm/shared-types";
-
-const normalizeVariable = (value: SnippetVariable): SnippetVariable => ({
-  name: value.name,
-  type: value.type,
-  title: value.title ?? "",
-  description: value.description ?? "",
-  defaultValue: value.defaultValue ?? ""
-});
-
-export const mergeSnippetVariables = (input: {
-  current: SnippetVariable[];
-  steps: SequenceStep[];
-  snippetDefinitions: Map<string, SnippetVariable[]>;
-}): { next: SnippetVariable[]; conflicts: string[]; changed: boolean } => {
-  const next = input.current.map((entry) => normalizeVariable(entry));
-  const byName = new Map(next.map((entry, index) => [entry.name, index]));
-  const conflicts = new Set<string>();
-
-  for (const step of input.steps) {
-    if (step.type !== "snippet" || !step.snippetId) {
-      continue;
-    }
-    const variables = input.snippetDefinitions.get(step.snippetId) ?? [];
-    for (const snippetVariable of variables) {
-      const existingIndex = byName.get(snippetVariable.name);
-      if (existingIndex === undefined) {
-        byName.set(snippetVariable.name, next.length);
-        next.push(normalizeVariable(snippetVariable));
-        continue;
-      }
-      const existing = next[existingIndex]!;
-      if (existing.type !== snippetVariable.type) {
-        conflicts.add(snippetVariable.name);
-      }
-      next[existingIndex] = {
-        ...existing,
-        title: existing.title || snippetVariable.title || "",
-        description: existing.description || snippetVariable.description || "",
-        defaultValue: existing.defaultValue || snippetVariable.defaultValue || ""
-      };
-    }
-  }
-
-  const changed = JSON.stringify(next) !== JSON.stringify(input.current.map((entry) => normalizeVariable(entry)));
-  return { next, conflicts: Array.from(conflicts), changed };
 };
 ````
 
@@ -20340,196 +20295,6 @@ Scale:
 2. Runtime domain has minimal test/observability/security evidence.
 3. Web test depth is still light for core user journeys.
 4. CI does not yet run full PR readiness (`pr-ready.sh` / full harness test scope).
-````
-
-## File: docs/github-sync-ownership-model.md
-````markdown
-# GitHub Sync Ownership Model (MVP)
-
-## Goal
-Make GitHub sync behavior predictable by defining exactly which system is authoritative for each field and how conflicts are resolved.
-
-## Models Compared
-
-### 1) `github_authoritative`
-- GitHub is the source of truth for synced fields.
-- Internal edits to synced fields are treated as temporary and will be overwritten by incoming GitHub events.
-
-Pros:
-- Matches what users already expect from GitHub.
-- Lower risk of drift for issue state/metadata.
-
-Cons:
-- Internal edits may appear to "disappear" unless clearly marked as local-only.
-- Requires good webhook reliability.
-
-### 2) `internal_authoritative`
-- Internal task system is the source of truth for synced fields.
-- GitHub changes are informational and do not automatically override internal state.
-
-Pros:
-- Full control inside the product.
-- Works even when GitHub data is delayed.
-
-Cons:
-- High drift risk from GitHub.
-- Harder to explain for GitHub-first teams.
-
-### 3) `hybrid_sync`
-- Ownership differs by field (some GitHub-owned, some internal-owned).
-- Bidirectional updates are allowed only for explicitly shared fields.
-
-Pros:
-- Flexible and practical for mixed workflows.
-- Preserves internal workflow while staying aligned with GitHub metadata.
-
-Cons:
-- More rules to explain.
-- Needs clear UI audit trail.
-
-## Recommended MVP Default
-Use `hybrid_sync` as default, with strict per-field ownership.
-
-Reason:
-- It minimizes user surprise in day-to-day use.
-- It avoids forcing all behavior into a single system.
-- It supports current webhook/import flows and allows gradual expansion.
-
-## Source-of-Truth Mapping (MVP)
-
-| Field | Source of Truth | Direction | Notes |
-|---|---|---|---|
-| GitHub issue/PR number, URL | GitHub | GitHub -> internal | Immutable link fields after task creation. |
-| Title (imported task title) | Internal | Internal -> GitHub (optional later) | Internal title can diverge; show "custom title" badge if changed. |
-| Status/state | Internal (execution), GitHub (issue/PR lifecycle) | Bidirectional with mapping rules | Internal run status and GitHub open/closed are related but not identical. |
-| Labels | GitHub (for GitHub-prefixed labels), Internal (for internal-prefixed labels) | Bidirectional by namespace | Reserve `gh:*` for GitHub mirror, `as:*` for internal-only labels. |
-| Comments | Dual ownership by origin | Bidirectional append-only | Never edit/delete remote comments during MVP sync. |
-| Assignee | Internal | Internal -> GitHub (optional later) | Keep assignment stable for internal permission model. |
-| Description/body snapshot | GitHub at import time | GitHub -> internal (manual refresh only) | Treated as imported context, not live-synced text. |
-
-## Conflict Resolution Rules
-
-### Status
-- Maintain a mapping table:
-  - GitHub `open` -> internal `open` (or keep current running state if actively executing).
-  - GitHub `closed` -> internal `done` only if task is not running.
-- If internal task is running and GitHub closes issue/PR:
-  - Keep internal state unchanged.
-  - Add sync alert: `GitHub closed while task running`.
-  - Ask user to resolve with explicit action (`stop`, `complete`, or `reopen on GitHub`).
-
-### Labels
-- Namespace labels:
-  - `gh:*` labels are GitHub-owned mirrors and are overwritten by latest GitHub payload.
-  - `as:*` labels are internal-owned and never overwritten by GitHub.
-- If same semantic label exists in both systems without prefix:
-  - Convert during sync to `gh:<name>` to prevent future ambiguity.
-
-### Comments
-- Append-only sync for MVP:
-  - GitHub comments import as external entries with source metadata.
-  - Internal comments sync out only when user marks them as "publish to GitHub".
-- Never mutate existing comment content across systems in MVP.
-- On duplicate detection (same source id), keep first and skip duplicates.
-
-## Fallback When Systems Disagree
-
-1. Detect disagreement by field (`status`, `labels`, `comments`) and record timestamp/source.
-2. Apply deterministic winner based on mapping table above.
-3. Store a sync event log entry with:
-   - field
-   - local value
-   - remote value
-   - winning value
-   - rule used
-4. Surface a plain-language UI notice:
-   - Example: `GitHub label set won for gh:* labels at 2026-05-21 14:00 UTC.`
-5. If no rule safely applies, do not auto-merge:
-   - mark as `needs_manual_resolution`
-   - keep both values visible
-   - provide one-click user choice
-
-## UX Transparency Requirements
-- Every sync-driven overwrite must show:
-  - what changed
-  - which system won
-  - why (rule name)
-  - when it happened (UTC timestamp)
-- Users should always be able to filter history by `sync events`.
-- Avoid hidden automatic edits; all automatic conflict outcomes must be auditable.
-
-## Task-to-GitHub Status Mapping (Issue #22)
-
-### Scope
-- This mapping controls when internal task status changes create GitHub updates (labels and comments).
-- Goal: useful progress signals with low noise.
-
-### Repo-Level Switch
-- Add optional repository setting: `sync_status_enabled` (default: `false`).
-- If `sync_status_enabled=false`:
-  - no automatic status label updates are sent to GitHub
-  - no automatic status comments are sent to GitHub
-  - manual user comments can still be posted when explicitly requested
-- If `sync_status_enabled=true`:
-  - apply the milestone-only policy below
-
-### GitHub Labels Used for Status
-- Use exactly one active label from:
-  - `as:queued`
-  - `as:in-progress`
-  - `as:blocked`
-  - `as:done`
-- On change, remove the previous `as:*` status label and apply the new one.
-
-### Milestone-Only Posting Policy
-- Post only on meaningful milestones:
-  - work started
-  - blocked waiting on input/dependency
-  - unblocked and resumed
-  - completed
-  - failed/cancelled with clear outcome
-- Do not post for routine churn:
-  - retries
-  - step-level progress
-  - short-lived state flips
-  - background sync-only adjustments
-
-### Internal Status -> GitHub Action Mapping
-
-| Internal Transition | Update GitHub Label | Post GitHub Comment | Comment Template (short) |
-|---|---|---|---|
-| `queued -> in_progress` | `as:in-progress` | Yes | `Work started.` |
-| `in_progress -> blocked` | `as:blocked` | Yes | `Work blocked: <reason>.` |
-| `blocked -> in_progress` | `as:in-progress` | Yes | `Work resumed after unblock.` |
-| `in_progress -> done` | `as:done` | Yes | `Work completed.` |
-| `in_progress -> failed` | keep `as:in-progress` or set `as:blocked` (team choice) | Yes | `Work stopped: <failure summary>.` |
-| `in_progress -> cancelled` | keep current or set `as:queued` (team choice) | Yes | `Work cancelled.` |
-| `queued -> cancelled` | `as:queued` (unchanged) | No | n/a |
-| `queued -> queued` | none | No | n/a |
-| `in_progress -> in_progress` | none | No | n/a |
-| `blocked -> blocked` | none | No | n/a |
-| `done -> done` | none | No | n/a |
-
-### Transitions That Must Not Post Updates
-- Any transition where source and destination are the same.
-- Automatic retry state changes that return to the same milestone stage.
-- Internal-only housekeeping transitions (for example: scheduler rebalance, worker handoff).
-- Bulk backfill/import reconciliation updates.
-- Any status change while `sync_status_enabled=false`.
-
-### Sample Timeline: Issue Flow
-1. Issue imported -> task created as `queued` (no comment posted).
-2. Agent begins work -> set `as:in-progress`; post `Work started.`
-3. Missing requirement found -> set `as:blocked`; post `Work blocked: waiting for acceptance criteria.`
-4. User provides answer -> set `as:in-progress`; post `Work resumed after unblock.`
-5. Work completes -> set `as:done`; post `Work completed.`
-
-### Sample Timeline: PR Flow
-1. PR imported -> task `queued` (no comment posted).
-2. Agent starts edits -> `as:in-progress`; post `Work started.`
-3. CI failure blocks merge -> `as:blocked`; post `Work blocked: CI failing on test suite.`
-4. Fix applied and CI passes -> `as:in-progress`; post `Work resumed after unblock.`
-5. PR ready/merged -> `as:done`; post `Work completed.`
 ````
 
 ## File: examples/github-automations.comment-triggers.json
@@ -22481,10 +22246,6 @@ const realtimeScopesByEventType: Record<RealtimeEvent["type"], PermissionScope[]
   "snippet:created": ["snippet:list"],
   "snippet:updated": ["snippet:list"],
   "snippet:deleted": ["snippet:list"],
-  "sequence:created": ["sequence:list"],
-  "sequence:updated": ["sequence:list"],
-  "sequence:deleted": ["sequence:list"],
-  "sequence:run_updated": ["task:read"],
   "repository:created": ["repo:list"],
   "repository:updated": ["repo:list"],
   "repository:deleted": ["repo:list"],
@@ -22657,10 +22418,6 @@ export const createAuthService = ({
         return task?.ownerUserId ?? null;
       }
       case "task:change_proposal": {
-        const task = await taskStore.getTaskMetadata(event.payload.taskId);
-        return task?.ownerUserId ?? null;
-      }
-      case "sequence:run_updated": {
         const task = await taskStore.getTaskMetadata(event.payload.taskId);
         return task?.ownerUserId ?? null;
       }
@@ -23272,144 +23029,6 @@ export class GitHubImportService {
 }
 ````
 
-## File: apps/server/src/services/github-status-sync-service.ts
-````typescript
-import type { RealtimeEvent, Task, TaskStatus } from "@agentswarm/shared-types";
-import type { RepositoryStore } from "./repository-store.js";
-import type { GitHubOutboundService } from "./github-outbound-service.js";
-import { getGitHubStatusSyncFromNotes } from "../lib/github-status-sync.js";
-
-const STATUS_LABELS = ["as:queued", "as:in-progress", "as:blocked", "as:done"] as const;
-type StatusLabel = (typeof STATUS_LABELS)[number];
-
-type Milestone =
-  | { label: "as:in-progress"; comment: "Work started." }
-  | { label: "as:done"; comment: string }
-  | { label: "as:blocked"; comment: `Work stopped: ${string}.` };
-
-const findGitHubIssueNumber = (task: Task): number | null => {
-  const firstLine = task.prompt.split("\n")[0]?.trim() ?? "";
-  const issueMatch = firstLine.match(/GitHub issue #(\d+)/i);
-  if (issueMatch) {
-    return Number(issueMatch[1]);
-  }
-  const prMatch = firstLine.match(/pull request #(\d+)/i);
-  if (prMatch) {
-    return Number(prMatch[1]);
-  }
-  return null;
-};
-
-const isQueuedStatus = (status: TaskStatus): boolean => status === "build_queued" || status === "ask_queued";
-const isInProgressStatus = (status: TaskStatus): boolean => status === "preparing_workspace" || status === "building" || status === "asking";
-const isDoneStatus = (status: TaskStatus): boolean =>
-  status === "done" || status === "completed" || status === "answered" || status === "accepted";
-
-const toMilestone = (task: Task): Milestone | null => {
-  if (isInProgressStatus(task.status)) {
-    return { label: "as:in-progress", comment: "Work started." };
-  }
-  if (isDoneStatus(task.status)) {
-    const summary = task.resultMarkdown?.trim() ?? "";
-    return { label: "as:done", comment: summary.length > 0 ? summary : "Work completed." };
-  }
-  if (task.status === "failed") {
-    return { label: "as:blocked", comment: "Work stopped: task failed." };
-  }
-  if (task.status === "cancelled") {
-    return { label: "as:blocked", comment: "Work stopped: task cancelled." };
-  }
-  return null;
-};
-
-const statusRank = (status: TaskStatus): number => {
-  if (isQueuedStatus(status)) {
-    return 1;
-  }
-  if (isInProgressStatus(status)) {
-    return 2;
-  }
-  if (isDoneStatus(status)) {
-    return 3;
-  }
-  if (status === "failed" || status === "cancelled") {
-    return 4;
-  }
-  return 0;
-};
-
-export class GitHubStatusSyncService {
-  private readonly lastStatusByTaskId = new Map<string, TaskStatus>();
-
-  constructor(
-    private readonly repositoryStore: RepositoryStore,
-    private readonly githubOutboundService: GitHubOutboundService,
-    private readonly now: () => string = () => new Date().toISOString()
-  ) {}
-
-  async handleRealtimeEvent(event: RealtimeEvent): Promise<void> {
-    if (event.type === "task:created") {
-      this.lastStatusByTaskId.set(event.payload.id, event.payload.status);
-      return;
-    }
-
-    if (event.type !== "task:updated") {
-      return;
-    }
-
-    const task = event.payload;
-    const previousStatus = this.lastStatusByTaskId.get(task.id) ?? null;
-    this.lastStatusByTaskId.set(task.id, task.status);
-    if (!GitHubStatusSyncService.isMeaningfulStatusTransition(previousStatus, task.status)) {
-      return;
-    }
-
-    const issueNumber = findGitHubIssueNumber(task);
-    if (!issueNumber) {
-      return;
-    }
-
-    const repository = await this.repositoryStore.getRepository(task.repoId);
-    if (!repository) {
-      return;
-    }
-
-    const noteOverride = getGitHubStatusSyncFromNotes(task.notes);
-    const syncEnabled = noteOverride ?? (repository.syncStatusEnabled === true);
-    if (!syncEnabled) {
-      return;
-    }
-
-    const milestone = toMilestone(task);
-    if (!milestone) {
-      return;
-    }
-
-    const idPrefix = `${task.id}:${task.status}:${this.now().slice(0, 10)}`;
-    await this.githubOutboundService.enqueueLabelUpdate({
-      repositoryId: task.repoId,
-      issueNumber,
-      add: [milestone.label],
-      remove: STATUS_LABELS.filter((entry) => entry !== milestone.label),
-      idempotencyKey: `status-label:${idPrefix}`
-    });
-    await this.githubOutboundService.enqueueSummaryComment({
-      repositoryId: task.repoId,
-      issueNumber,
-      body: milestone.comment,
-      idempotencyKey: `status-comment:${idPrefix}`
-    });
-  }
-
-  static isMeaningfulStatusTransition(previousStatus: TaskStatus | null, nextStatus: TaskStatus): boolean {
-    if (!previousStatus || previousStatus === nextStatus) {
-      return false;
-    }
-    return statusRank(previousStatus) !== statusRank(nextStatus);
-  }
-}
-````
-
 ## File: apps/server/src/services/openai-task-prompt-magic-service.ts
 ````typescript
 import type { TaskPromptMagicResult } from "@agentswarm/shared-types";
@@ -23803,110 +23422,6 @@ export class SchedulerService {
     }
   }
 }
-````
-
-## File: apps/server/src/services/sequence-resolution.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import type { Sequence, Snippet } from "@agentswarm/shared-types";
-import { resolveSequenceStepPrompts, SequenceValidationError } from "./sequence-resolution.js";
-
-const baseSequence: Sequence = {
-  id: "seq-1",
-  name: "Sample",
-  executionMode: "auto_apply_changes",
-  variables: [
-    {
-      name: "ticket",
-      type: "text",
-      title: "Ticket",
-      description: "",
-      defaultValue: ""
-    }
-  ],
-  steps: [
-    {
-      id: "step_1",
-      type: "inline",
-      prompt: "Implement ticket {{ticket}}"
-    }
-  ],
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:00.000Z"
-};
-
-describe("resolveSequenceStepPrompts", () => {
-  it("renders inline variables", async () => {
-    const prompts = await resolveSequenceStepPrompts({
-      sequence: baseSequence,
-      snippetStore: {
-        getSnippet: async () => null
-      } as never,
-      variables: { ticket: "AS-1234" }
-    });
-    assert.deepEqual(prompts, ["Implement ticket AS-1234"]);
-  });
-
-  it("rejects missing required variables", async () => {
-    await assert.rejects(
-      () =>
-        resolveSequenceStepPrompts({
-          sequence: baseSequence,
-          snippetStore: {
-            getSnippet: async () => null
-          } as never,
-          variables: {}
-        }),
-      (error: unknown) => error instanceof SequenceValidationError && error.message.includes("Missing required variable")
-    );
-  });
-
-  it("rejects deleted snippet references", async () => {
-    const sequence: Sequence = {
-      ...baseSequence,
-      steps: [{ id: "step_1", type: "snippet", prompt: "", snippetId: "deleted-snippet" }]
-    };
-    await assert.rejects(
-      () =>
-        resolveSequenceStepPrompts({
-          sequence,
-          snippetStore: {
-            getSnippet: async () => null
-          } as never,
-          variables: { ticket: "AS-1234" }
-        }),
-      (error: unknown) => error instanceof SequenceValidationError && error.message.includes("deleted snippet")
-    );
-  });
-
-  it("rejects invalid placeholders", async () => {
-    const snippet: Snippet = {
-      id: "snippet-1",
-      name: "Bad",
-      content: "Unknown variable {{missing_name}}",
-      variables: [],
-      createdAt: "2026-01-01T00:00:00.000Z",
-      updatedAt: "2026-01-01T00:00:00.000Z"
-    };
-    const sequence: Sequence = {
-      ...baseSequence,
-      steps: [{ id: "step_1", type: "snippet", prompt: "", snippetId: snippet.id }]
-    };
-
-    await assert.rejects(
-      () =>
-        resolveSequenceStepPrompts({
-          sequence,
-          snippetStore: {
-            getSnippet: async () => snippet
-          } as never,
-          variables: { ticket: "AS-1234" }
-        }),
-      (error: unknown) => error instanceof SequenceValidationError && error.message.includes("invalid variable placeholder")
-    );
-  });
-});
 ````
 
 ## File: apps/web/components/repositories-page.tsx
@@ -24493,7 +24008,7 @@ test("happy path: seeded admin can sign in", async ({ page }) => {
   await page.getByLabel("Password").fill(loginPassword);
   await page.getByTestId("login-submit-button").click();
 
-  await expect(page).toHaveURL(/\/(tasks|snippets|sequences|repositories|settings|users)(\/.*)?$/, { timeout: 20_000 });
+  await expect(page).toHaveURL(/\/(tasks|snippets|repositories|settings|users)(\/.*)?$/, { timeout: 20_000 });
   await expect(page.getByRole("button", { name: "Logout" })).toBeVisible();
 });
 ````
@@ -25950,167 +25465,6 @@ export const normalizeTaskLifecycleStatus = (
 };
 ````
 
-## File: apps/server/src/routes/sequences.ts
-````typescript
-import type { FastifyInstance } from "fastify";
-import { z } from "zod";
-import type { AuthService } from "../lib/auth.js";
-import type { SequenceStore } from "../services/sequence-store.js";
-
-const sequenceVariableSchema = z
-  .object({
-    name: z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).max(128),
-    type: z.enum(["text", "multiline"]),
-    title: z.string().trim().max(200).default(""),
-    description: z.string().trim().max(200).default(""),
-    defaultValue: z.string().max(2000).default("")
-  })
-  .superRefine((value, ctx) => {
-    if (value.type === "text" && /[\r\n]/.test(value.defaultValue)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["defaultValue"],
-        message: "Default value for text variables must be a single line."
-      });
-    }
-  });
-
-const sequenceStepSchema = z
-  .object({
-    id: z.string().trim().min(1).max(80).optional(),
-    type: z.enum(["inline", "snippet"]),
-    prompt: z.string().max(20_000).default(""),
-    snippetId: z.string().trim().min(1).max(120).optional()
-  })
-  .superRefine((step, ctx) => {
-    if (step.type === "inline" && step.prompt.trim().length === 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["prompt"],
-        message: "Inline steps must include prompt content."
-      });
-    }
-    if (step.type === "snippet" && !step.snippetId) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["snippetId"],
-        message: "Snippet steps must include snippetId."
-      });
-    }
-  });
-
-const sequenceSchema = z
-  .object({
-    name: z.string().trim().min(1).max(120),
-    executionMode: z.enum(["auto_apply_changes", "approve_before_continuing"]).optional().default("auto_apply_changes"),
-    steps: z.array(sequenceStepSchema).min(1).max(100),
-    variables: z.array(sequenceVariableSchema).max(100).optional()
-  })
-  .superRefine((value, ctx) => {
-    const variableNames = new Set<string>();
-    for (const variable of value.variables ?? []) {
-      if (variableNames.has(variable.name)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["variables"],
-          message: `Duplicate variable name: ${variable.name}`
-        });
-      }
-      variableNames.add(variable.name);
-    }
-    const stepIds = new Set<string>();
-    for (const [index, step] of value.steps.entries()) {
-      const stepId = step.id?.trim();
-      if (!stepId) {
-        continue;
-      }
-      if (stepIds.has(stepId)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["steps", index, "id"],
-          message: `Duplicate step id: ${stepId}`
-        });
-      }
-      stepIds.add(stepId);
-    }
-  });
-
-export const registerSequenceRoutes = (
-  app: FastifyInstance,
-  deps: {
-    sequenceStore: SequenceStore;
-    auth: AuthService;
-  }
-): void => {
-  const normalizeInput = (input: z.infer<typeof sequenceSchema>) => ({
-    ...input,
-    steps: input.steps.map((step, index) => ({
-      ...step,
-      id: step.id?.trim() || `step_${index + 1}`
-    }))
-  });
-
-  app.get("/sequences", { preHandler: deps.auth.requireAllScopes(["sequence:list"]) }, async () => deps.sequenceStore.listSequences());
-
-  app.get<{ Params: { id: string } }>("/sequences/:id", { preHandler: deps.auth.requireAllScopes(["sequence:read"]) }, async (request, reply) => {
-    const sequence = await deps.sequenceStore.getSequence(request.params.id);
-    if (!sequence) {
-      return reply.status(404).send({ message: "Sequence not found" });
-    }
-    return reply.send(sequence);
-  });
-
-  app.post("/sequences", { preHandler: deps.auth.requireAllScopes(["sequence:create"]) }, async (request, reply) => {
-    const parsed = sequenceSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-    const sequence = await deps.sequenceStore.createSequence(normalizeInput(parsed.data));
-    return reply.status(201).send(sequence);
-  });
-
-  app.post<{ Params: { id: string } }>("/sequences/:id/duplicate", { preHandler: deps.auth.requireAllScopes(["sequence:create"]) }, async (request, reply) => {
-    const source = await deps.sequenceStore.getSequence(request.params.id);
-    if (!source) {
-      return reply.status(404).send({ message: "Sequence not found" });
-    }
-
-    const duplicated = await deps.sequenceStore.createSequence({
-      name: `Copy of ${source.name}`,
-      executionMode: source.executionMode,
-      steps: source.steps.map((step) => ({
-        id: step.id,
-        type: step.type,
-        prompt: step.prompt,
-        ...(step.snippetId ? { snippetId: step.snippetId } : {})
-      })),
-      variables: source.variables
-    });
-    return reply.status(201).send(duplicated);
-  });
-
-  app.patch<{ Params: { id: string } }>("/sequences/:id", { preHandler: deps.auth.requireAllScopes(["sequence:edit"]) }, async (request, reply) => {
-    const parsed = sequenceSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-    const sequence = await deps.sequenceStore.updateSequence(request.params.id, normalizeInput(parsed.data));
-    if (!sequence) {
-      return reply.status(404).send({ message: "Sequence not found" });
-    }
-    return reply.send(sequence);
-  });
-
-  app.delete<{ Params: { id: string } }>("/sequences/:id", { preHandler: deps.auth.requireAllScopes(["sequence:delete"]) }, async (request, reply) => {
-    const deleted = await deps.sequenceStore.deleteSequence(request.params.id);
-    if (!deleted) {
-      return reply.status(404).send({ message: "Sequence not found" });
-    }
-    return reply.status(204).send();
-  });
-};
-````
-
 ## File: apps/server/src/routes/settings.ts
 ````typescript
 import { z } from "zod";
@@ -26306,134 +25660,6 @@ export const registerSettingsRoutes = (
 };
 ````
 
-## File: apps/web/components/sequence-analytics-tracker.tsx
-````typescript
-"use client";
-
-import { useEffect, useRef } from "react";
-import type { SequenceRun, TaskRun } from "@agentswarm/shared-types";
-import { useSocket } from "../src/hooks/useSocket";
-import { trackEvent } from "../src/utils/analytics";
-import { useAuth } from "./auth-provider";
-
-interface RunSnapshot {
-  status: SequenceRun["status"];
-  failedStepIndex: number | null;
-  waitingForApprovalAfterStepIndex: number | null;
-  stepStates: SequenceRun["steps"][number]["state"][];
-}
-
-export function SequenceAnalyticsTracker() {
-  const socket = useSocket();
-  const { can } = useAuth();
-  const canReadTasks = can("task:read");
-  const snapshotsRef = useRef(new Map<string, RunSnapshot>());
-  const taskRunsByIdRef = useRef(new Map<string, Pick<TaskRun, "action" | "changeOutcome">>());
-
-  useEffect(() => {
-    if (!socket || !canReadTasks) {
-      return;
-    }
-
-    const onRunUpdated = (run: SequenceRun) => {
-      const previous = snapshotsRef.current.get(run.id);
-      const currentStepStates = run.steps.map((step) => step.state);
-
-      if (!previous && run.status === "running") {
-        trackEvent("sequence_run_started", { step_count: run.stepCount });
-      }
-
-      run.steps.forEach((step, index) => {
-        const previousState = previous?.stepStates[index];
-        if (step.state === "succeeded" && previousState !== "succeeded") {
-          trackEvent("sequence_step_completed", {
-            step_count: run.stepCount,
-            step_index: index
-          });
-
-          const taskRunId = step.taskRunId?.trim();
-          const taskRun = taskRunId ? taskRunsByIdRef.current.get(taskRunId) : undefined;
-          const nextStepIndex = index + 1;
-          if (taskRun?.action === "build" && taskRun.changeOutcome === "no_change") {
-            trackEvent("sequence_no_change", {
-              step_count: run.stepCount,
-              step_index: index
-            });
-          }
-          if (nextStepIndex < run.stepCount && run.executionMode === "auto_apply_changes") {
-            trackEvent("sequence_auto_advanced", {
-              step_count: run.stepCount,
-              from_step_index: index,
-              to_step_index: nextStepIndex
-            });
-          }
-        }
-
-        if (step.state === "failed" && previousState !== "failed") {
-          trackEvent("sequence_step_failed", {
-            step_count: run.stepCount,
-            failed_step_index: index
-          });
-        }
-      });
-
-      if (run.status === "failed" && previous?.status !== "failed") {
-        const failedStep = run.failedStepIndex !== null ? run.steps[run.failedStepIndex] : null;
-        trackEvent("sequence_stalled", {
-          step_count: run.stepCount,
-          failed_step_index: run.failedStepIndex,
-          reason: failedStep?.errorMessage ?? null
-        });
-        trackEvent("sequence_run_failed", {
-          step_count: run.stepCount,
-          failed_step_index: run.failedStepIndex
-        });
-      }
-
-      if (run.status === "succeeded" && previous?.status !== "succeeded") {
-        trackEvent("sequence_run_succeeded", { step_count: run.stepCount });
-      }
-
-      if (run.status === "waiting_for_approval" && previous?.status !== "waiting_for_approval") {
-        trackEvent("sequence_paused_for_approval", {
-          step_count: run.stepCount,
-          after_step_index: run.waitingForApprovalAfterStepIndex
-        });
-      }
-
-      if (run.status === "running" && previous?.status === "waiting_for_approval") {
-        trackEvent("sequence_resumed", {
-          step_count: run.stepCount,
-          after_step_index: previous.waitingForApprovalAfterStepIndex
-        });
-      }
-
-      snapshotsRef.current.set(run.id, {
-        status: run.status,
-        failedStepIndex: run.failedStepIndex,
-        waitingForApprovalAfterStepIndex: run.waitingForApprovalAfterStepIndex,
-        stepStates: currentStepStates
-      });
-    };
-    const onTaskRunUpdated = (run: TaskRun) => {
-      taskRunsByIdRef.current.set(run.id, {
-        action: run.action,
-        changeOutcome: run.changeOutcome ?? null
-      });
-    };
-
-    socket.on("sequence:run_updated", onRunUpdated);
-    socket.on("task:run_updated", onTaskRunUpdated);
-    return () => {
-      socket.off("sequence:run_updated", onRunUpdated);
-      socket.off("task:run_updated", onTaskRunUpdated);
-    };
-  }, [socket, canReadTasks]);
-
-  return null;
-}
-````
-
 ## File: apps/web/package.json
 ````json
 {
@@ -26445,7 +25671,7 @@ export function SequenceAnalyticsTracker() {
     "build": "next build",
     "start": "next start -H 0.0.0.0 -p 3217",
     "lint": "tsc --noEmit",
-    "test": "node --import tsx --test src/utils/task-history.test.ts src/utils/snippets.test.ts src/utils/diff.test.ts src/utils/workspace-file-links.test.ts src/utils/sequence-variables.test.ts src/utils/task-lifecycle-view-model.test.ts"
+    "test": "node --import tsx --test src/utils/task-history.test.ts src/utils/snippets.test.ts src/utils/diff.test.ts src/utils/workspace-file-links.test.ts src/utils/task-lifecycle-view-model.test.ts"
   },
   "dependencies": {
     "@agentswarm/shared-types": "*",
@@ -29088,7 +28314,6 @@ import type { RoleStore } from "./role-store.js";
 import type { SessionStore } from "./session-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { SnippetStore } from "./snippet-store.js";
-import type { SequenceStore } from "./sequence-store.js";
 import type { TaskQueueStore } from "./task-queue-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { UserStore } from "./user-store.js";
@@ -29101,7 +28326,6 @@ export interface AppStores {
   githubOutboundQueueStore: GitHubOutboundQueueStore;
   webhookDeliveryStore: WebhookDeliveryStore;
   snippetStore: SnippetStore;
-  sequenceStore: SequenceStore;
   repositoryStore: RepositoryStore;
   credentialStore: CredentialStore;
   roleStore: RoleStore;
@@ -29123,7 +28347,6 @@ import { PostgresRoleStore } from "./role-store.js";
 import { RedisSessionStore } from "./session-store.js";
 import { PostgresSettingsStore } from "./settings-store.js";
 import { PostgresSnippetStore } from "./snippet-store.js";
-import { PostgresSequenceStore } from "./sequence-store.js";
 import { RedisTaskQueueStore } from "./task-queue-store.js";
 import { PostgresTaskStore } from "./task-store.js";
 import { PostgresUserStore } from "./user-store.js";
@@ -29141,7 +28364,6 @@ export const createPostgresStores = (
   const githubOutboundQueueStore = new RedisGitHubOutboundQueueStore(redisClients.command);
   const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
   const snippetStore = new PostgresSnippetStore(pool, eventBus);
-  const sequenceStore = new PostgresSequenceStore(pool, eventBus);
   const repositoryStore = new PostgresRepositoryStore(pool, eventBus);
   const credentialStore = new PostgresCredentialStore(pool);
   const roleStore = new PostgresRoleStore(pool);
@@ -29155,7 +28377,6 @@ export const createPostgresStores = (
     githubOutboundQueueStore,
     webhookDeliveryStore,
     snippetStore,
-    sequenceStore,
     repositoryStore,
     credentialStore,
     roleStore,
@@ -29164,3724 +28385,6 @@ export const createPostgresStores = (
     settingsStore
   };
 };
-````
-
-## File: apps/server/src/services/sequence-store.ts
-````typescript
-import { nanoid } from "nanoid";
-import type Redis from "ioredis";
-import type { Pool } from "pg";
-import type {
-  CreateSequenceInput,
-  Sequence,
-  SequenceExecutionMode,
-  SequenceRun,
-  SequenceRunStep,
-  SequenceStep,
-  SnippetVariable,
-  UpdateSequenceInput
-} from "@agentswarm/shared-types";
-import { EventBus } from "../lib/events.js";
-import { parseJsonColumn } from "../lib/postgres.js";
-
-const SEQUENCE_KEY_PREFIX = "agentswarm:sequence:";
-const SEQUENCE_IDS_KEY = "agentswarm:sequence_ids";
-const SEQUENCE_RUN_KEY_PREFIX = "agentswarm:sequence_run:";
-const SEQUENCE_RUN_BY_TASK_KEY_PREFIX = "agentswarm:sequence_run_by_task:";
-const SNIPPET_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const SNIPPET_VARIABLE_MAX_COUNT = 100;
-const SNIPPET_VARIABLE_NAME_MAX_LENGTH = 128;
-const SNIPPET_VARIABLE_TEXT_MAX_LENGTH = 200;
-const SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH = 2000;
-const NEWLINE_PATTERN = /\r?\n/u;
-
-const nowIso = (): string => new Date().toISOString();
-const normalizeExecutionMode = (value: unknown): SequenceExecutionMode =>
-  value === "approve_before_continuing" ? "approve_before_continuing" : "auto_apply_changes";
-
-const normalizeRunStatus = (value: unknown): SequenceRun["status"] =>
-  value === "succeeded" || value === "failed" || value === "waiting_for_approval" || value === "waiting_for_checkpoint_resolution"
-    ? value
-    : "running";
-
-const normalizeSnippetVariables = (value: unknown): SnippetVariable[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const variables: SnippetVariable[] = [];
-  const seen = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-
-    const record = entry as Record<string, unknown>;
-    const name = typeof record.name === "string" ? record.name.trim() : "";
-    if (!name || name.length > SNIPPET_VARIABLE_NAME_MAX_LENGTH || !SNIPPET_VARIABLE_NAME_PATTERN.test(name) || seen.has(name)) {
-      continue;
-    }
-
-    const type = record.type === "multiline" ? "multiline" : "text";
-    const title = typeof record.title === "string" ? record.title.trim() : "";
-    const description = typeof record.description === "string" ? record.description.trim() : "";
-    const defaultValue = typeof record.defaultValue === "string" ? record.defaultValue : "";
-    const normalizedDefaultValue = type === "text" ? (defaultValue.split(NEWLINE_PATTERN)[0] ?? "") : defaultValue;
-    variables.push({
-      name,
-      type,
-      title: title.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH),
-      description: description.slice(0, SNIPPET_VARIABLE_TEXT_MAX_LENGTH),
-      defaultValue: normalizedDefaultValue.slice(0, SNIPPET_VARIABLE_DEFAULT_VALUE_MAX_LENGTH)
-    });
-    seen.add(name);
-    if (variables.length >= SNIPPET_VARIABLE_MAX_COUNT) {
-      break;
-    }
-  }
-
-  return variables;
-};
-
-const normalizeSteps = (value: unknown): SequenceStep[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  const steps: SequenceStep[] = [];
-  for (const [index, entry] of value.entries()) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-    const record = entry as Record<string, unknown>;
-    const type = record.type === "snippet" ? "snippet" : "inline";
-    const prompt = typeof record.prompt === "string" ? record.prompt.trim() : "";
-    const snippetId = typeof record.snippetId === "string" && record.snippetId.trim() ? record.snippetId.trim() : undefined;
-    const id = typeof record.id === "string" && record.id.trim() ? record.id.trim() : `step_${index + 1}`;
-    steps.push({
-      id,
-      type,
-      prompt,
-      ...(snippetId ? { snippetId } : {})
-    });
-  }
-  return steps;
-};
-
-const normalizeRunSteps = (value: unknown, stepCount: number, initialPrompts?: string[]): SequenceRunStep[] => {
-  if (!Array.isArray(value)) {
-    return Array.from({ length: stepCount }, (_, index) => ({
-      index,
-      prompt: typeof initialPrompts?.[index] === "string" ? initialPrompts[index]!.trim() : "",
-      state: "pending",
-      taskRunId: null,
-      errorMessage: null,
-      startedAt: null,
-      finishedAt: null
-    }));
-  }
-  return value.flatMap((entry, index) => {
-    if (!entry || typeof entry !== "object") {
-      return [];
-    }
-    const record = entry as Record<string, unknown>;
-    const state =
-      record.state === "running" || record.state === "succeeded" || record.state === "failed" || record.state === "skipped"
-        ? record.state
-        : "pending";
-    return [
-      {
-        index: typeof record.index === "number" ? Math.max(0, Math.floor(record.index)) : index,
-        prompt: typeof record.prompt === "string" ? record.prompt : "",
-        state,
-        taskRunId: typeof record.taskRunId === "string" && record.taskRunId.trim() ? record.taskRunId.trim() : null,
-        errorMessage: typeof record.errorMessage === "string" && record.errorMessage.trim() ? record.errorMessage.trim() : null,
-        startedAt: typeof record.startedAt === "string" && record.startedAt.trim() ? record.startedAt : null,
-        finishedAt: typeof record.finishedAt === "string" && record.finishedAt.trim() ? record.finishedAt : null
-      }
-    ];
-  });
-};
-
-export interface SequenceStore {
-  createSequence(input: CreateSequenceInput): Promise<Sequence>;
-  listSequences(): Promise<Sequence[]>;
-  getSequence(sequenceId: string): Promise<Sequence | null>;
-  updateSequence(sequenceId: string, input: UpdateSequenceInput): Promise<Sequence | null>;
-  deleteSequence(sequenceId: string): Promise<boolean>;
-  createRun(input: {
-    sequenceId: string;
-    taskId: string;
-    stepCount: number;
-    stepPrompts?: string[];
-    executionMode?: SequenceExecutionMode;
-  }): Promise<SequenceRun>;
-  getRun(runId: string): Promise<SequenceRun | null>;
-  getRunForTask(taskId: string): Promise<SequenceRun | null>;
-  claimRunWaitingForApproval(runId: string): Promise<{ run: SequenceRun; approvedStepIndex: number } | null>;
-  updateRun(
-    runId: string,
-    patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps" | "waitingForApprovalAfterStepIndex">>
-  ): Promise<SequenceRun | null>;
-}
-
-export class RedisSequenceStore implements SequenceStore {
-  constructor(
-    private readonly redis: Redis,
-    private readonly eventBus: EventBus
-  ) {}
-
-  private sequenceKey(sequenceId: string): string {
-    return `${SEQUENCE_KEY_PREFIX}${sequenceId}`;
-  }
-
-  private runKey(runId: string): string {
-    return `${SEQUENCE_RUN_KEY_PREFIX}${runId}`;
-  }
-
-  private runByTaskKey(taskId: string): string {
-    return `${SEQUENCE_RUN_BY_TASK_KEY_PREFIX}${taskId}`;
-  }
-
-  private buildSequence(
-    input: CreateSequenceInput | UpdateSequenceInput,
-    current?: Pick<Sequence, "id" | "createdAt" | "executionMode">
-  ): Sequence {
-    const timestamp = nowIso();
-    return {
-      id: current?.id ?? nanoid(),
-      name: input.name.trim(),
-      executionMode: input.executionMode ? normalizeExecutionMode(input.executionMode) : (current?.executionMode ?? "auto_apply_changes"),
-      steps: normalizeSteps(input.steps),
-      variables: normalizeSnippetVariables(input.variables),
-      createdAt: current?.createdAt ?? timestamp,
-      updatedAt: timestamp
-    };
-  }
-
-  async createSequence(input: CreateSequenceInput): Promise<Sequence> {
-    const sequence = this.buildSequence(input);
-    await this.redis
-      .multi()
-      .set(this.sequenceKey(sequence.id), JSON.stringify(sequence))
-      .sadd(SEQUENCE_IDS_KEY, sequence.id)
-      .exec();
-    await this.eventBus.publish({ type: "sequence:created", payload: sequence });
-    return sequence;
-  }
-
-  async listSequences(): Promise<Sequence[]> {
-    const ids = await this.redis.smembers(SEQUENCE_IDS_KEY);
-    if (ids.length === 0) {
-      return [];
-    }
-
-    const pipeline = this.redis.pipeline();
-    for (const id of ids) {
-      pipeline.get(this.sequenceKey(id));
-    }
-
-    const result = await pipeline.exec();
-    const sequences: Sequence[] = [];
-    for (const row of result ?? []) {
-      const raw = row[1];
-      if (typeof raw === "string") {
-        const parsed = JSON.parse(raw) as Sequence;
-        sequences.push({
-          ...parsed,
-          executionMode: normalizeExecutionMode(parsed.executionMode),
-          steps: normalizeSteps(parsed.steps),
-          variables: normalizeSnippetVariables(parsed.variables)
-        });
-      }
-    }
-    return sequences.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  }
-
-  async getSequence(sequenceId: string): Promise<Sequence | null> {
-    const raw = await this.redis.get(this.sequenceKey(sequenceId));
-    if (!raw) {
-      return null;
-    }
-    const parsed = JSON.parse(raw) as Sequence;
-    return {
-      ...parsed,
-      executionMode: normalizeExecutionMode(parsed.executionMode),
-      steps: normalizeSteps(parsed.steps),
-      variables: normalizeSnippetVariables(parsed.variables)
-    };
-  }
-
-  async updateSequence(sequenceId: string, input: UpdateSequenceInput): Promise<Sequence | null> {
-    const current = await this.getSequence(sequenceId);
-    if (!current) {
-      return null;
-    }
-    const next = this.buildSequence(input, current);
-    await this.redis.set(this.sequenceKey(sequenceId), JSON.stringify(next));
-    await this.eventBus.publish({ type: "sequence:updated", payload: next });
-    return next;
-  }
-
-  async deleteSequence(sequenceId: string): Promise<boolean> {
-    const exists = await this.redis.exists(this.sequenceKey(sequenceId));
-    if (!exists) {
-      return false;
-    }
-    await this.redis.multi().del(this.sequenceKey(sequenceId)).srem(SEQUENCE_IDS_KEY, sequenceId).exec();
-    await this.eventBus.publish({ type: "sequence:deleted", payload: { id: sequenceId } });
-    return true;
-  }
-
-  async createRun(input: {
-    sequenceId: string;
-    taskId: string;
-    stepCount: number;
-    stepPrompts?: string[];
-    executionMode?: SequenceExecutionMode;
-  }): Promise<SequenceRun> {
-    const run: SequenceRun = {
-      id: nanoid(),
-      sequenceId: input.sequenceId,
-      taskId: input.taskId,
-      status: "running",
-      executionMode: normalizeExecutionMode(input.executionMode),
-      failPolicy: "fail_fast",
-      stepCount: input.stepCount,
-      waitingForApprovalAfterStepIndex: null,
-      failedStepIndex: null,
-      startedAt: nowIso(),
-      finishedAt: null,
-      steps: normalizeRunSteps(null, input.stepCount, input.stepPrompts)
-    };
-
-    await this.redis
-      .multi()
-      .set(this.runKey(run.id), JSON.stringify(run))
-      .set(this.runByTaskKey(run.taskId), run.id)
-      .exec();
-    await this.eventBus.publish({ type: "sequence:run_updated", payload: run });
-    return run;
-  }
-
-  async getRun(runId: string): Promise<SequenceRun | null> {
-    const raw = await this.redis.get(this.runKey(runId));
-    if (!raw) {
-      return null;
-    }
-    const parsed = JSON.parse(raw) as SequenceRun;
-    const normalizedStepCount = typeof parsed.stepCount === "number" && Number.isFinite(parsed.stepCount) ? Math.max(0, Math.floor(parsed.stepCount)) : 0;
-    return {
-      ...parsed,
-      status: normalizeRunStatus(parsed.status),
-      executionMode: normalizeExecutionMode(parsed.executionMode),
-      stepCount: normalizedStepCount,
-      waitingForApprovalAfterStepIndex:
-        typeof parsed.waitingForApprovalAfterStepIndex === "number" ? Math.max(0, Math.floor(parsed.waitingForApprovalAfterStepIndex)) : null,
-      steps: normalizeRunSteps(parsed.steps, normalizedStepCount)
-    };
-  }
-
-  async getRunForTask(taskId: string): Promise<SequenceRun | null> {
-    const runId = await this.redis.get(this.runByTaskKey(taskId));
-    if (!runId) {
-      return null;
-    }
-    return this.getRun(runId);
-  }
-
-  async claimRunWaitingForApproval(runId: string): Promise<{ run: SequenceRun; approvedStepIndex: number } | null> {
-    const key = this.runKey(runId);
-
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await this.redis.watch(key);
-      const raw = await this.redis.get(key);
-      if (!raw) {
-        await this.redis.unwatch();
-        return null;
-      }
-
-      const parsed = JSON.parse(raw) as SequenceRun;
-      const normalizedStepCount = typeof parsed.stepCount === "number" && Number.isFinite(parsed.stepCount) ? Math.max(0, Math.floor(parsed.stepCount)) : 0;
-      const current: SequenceRun = {
-        ...parsed,
-        status: normalizeRunStatus(parsed.status),
-        executionMode: normalizeExecutionMode(parsed.executionMode),
-        stepCount: normalizedStepCount,
-        waitingForApprovalAfterStepIndex:
-          typeof parsed.waitingForApprovalAfterStepIndex === "number" ? Math.max(0, Math.floor(parsed.waitingForApprovalAfterStepIndex)) : null,
-        steps: normalizeRunSteps(parsed.steps, normalizedStepCount)
-      };
-
-      const approvedStepIndex = current.waitingForApprovalAfterStepIndex;
-      if (current.status !== "waiting_for_approval" || approvedStepIndex === null) {
-        await this.redis.unwatch();
-        return null;
-      }
-
-      const next: SequenceRun = {
-        ...current,
-        status: "running",
-        waitingForApprovalAfterStepIndex: null
-      };
-      const result = await this.redis.multi().set(key, JSON.stringify(next)).exec();
-      if (result === null) {
-        continue;
-      }
-      await this.eventBus.publish({ type: "sequence:run_updated", payload: next });
-      return {
-        run: next,
-        approvedStepIndex
-      };
-    }
-
-    return null;
-  }
-
-  async updateRun(
-    runId: string,
-    patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps" | "waitingForApprovalAfterStepIndex">>
-  ): Promise<SequenceRun | null> {
-    const current = await this.getRun(runId);
-    if (!current) {
-      return null;
-    }
-    const next: SequenceRun = {
-      ...current,
-      ...patch,
-      status: patch.status ? normalizeRunStatus(patch.status) : current.status,
-      waitingForApprovalAfterStepIndex:
-        typeof patch.waitingForApprovalAfterStepIndex === "number"
-          ? Math.max(0, Math.floor(patch.waitingForApprovalAfterStepIndex))
-          : patch.waitingForApprovalAfterStepIndex === null
-            ? null
-            : current.waitingForApprovalAfterStepIndex,
-      steps: patch.steps ? normalizeRunSteps(patch.steps, current.stepCount) : current.steps
-    };
-    await this.redis.set(this.runKey(runId), JSON.stringify(next));
-    await this.eventBus.publish({ type: "sequence:run_updated", payload: next });
-    return next;
-  }
-}
-
-export class PostgresSequenceStore implements SequenceStore {
-  constructor(
-    private readonly pool: Pool,
-    private readonly eventBus: EventBus
-  ) {}
-
-  private buildSequence(
-    input: CreateSequenceInput | UpdateSequenceInput,
-    current?: Pick<Sequence, "id" | "createdAt" | "executionMode">
-  ): Sequence {
-    const timestamp = nowIso();
-    return {
-      id: current?.id ?? nanoid(),
-      name: input.name.trim(),
-      executionMode: input.executionMode ? normalizeExecutionMode(input.executionMode) : (current?.executionMode ?? "auto_apply_changes"),
-      steps: normalizeSteps(input.steps),
-      variables: normalizeSnippetVariables(input.variables),
-      createdAt: current?.createdAt ?? timestamp,
-      updatedAt: timestamp
-    };
-  }
-
-  async createSequence(input: CreateSequenceInput): Promise<Sequence> {
-    const sequence = this.buildSequence(input);
-    await this.pool.query(
-      `
-        INSERT INTO sequences (id, name, execution_mode, steps, variables, created_at, updated_at)
-        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
-      `,
-      [sequence.id, sequence.name, sequence.executionMode, JSON.stringify(sequence.steps), JSON.stringify(sequence.variables), sequence.createdAt, sequence.updatedAt]
-    );
-    await this.eventBus.publish({ type: "sequence:created", payload: sequence });
-    return sequence;
-  }
-
-  async listSequences(): Promise<Sequence[]> {
-    const result = await this.pool.query("SELECT id, name, execution_mode, steps, variables, created_at, updated_at FROM sequences ORDER BY updated_at DESC");
-    return result.rows.map((row) => ({
-      id: String(row.id),
-      name: String(row.name),
-      executionMode: normalizeExecutionMode(row.execution_mode),
-      steps: normalizeSteps(row.steps),
-      variables: normalizeSnippetVariables(row.variables),
-      createdAt: String(row.created_at),
-      updatedAt: String(row.updated_at)
-    }));
-  }
-
-  async getSequence(sequenceId: string): Promise<Sequence | null> {
-    const result = await this.pool.query(
-      "SELECT id, name, execution_mode, steps, variables, created_at, updated_at FROM sequences WHERE id = $1",
-      [sequenceId]
-    );
-    const row = result.rows[0];
-    return row
-      ? {
-          id: String(row.id),
-          name: String(row.name),
-          executionMode: normalizeExecutionMode(row.execution_mode),
-          steps: normalizeSteps(row.steps),
-          variables: normalizeSnippetVariables(row.variables),
-          createdAt: String(row.created_at),
-          updatedAt: String(row.updated_at)
-        }
-      : null;
-  }
-
-  async updateSequence(sequenceId: string, input: UpdateSequenceInput): Promise<Sequence | null> {
-    const current = await this.getSequence(sequenceId);
-    if (!current) {
-      return null;
-    }
-    const next = this.buildSequence(input, current);
-    await this.pool.query(
-      `
-        UPDATE sequences
-        SET name = $2, execution_mode = $3, steps = $4::jsonb, variables = $5::jsonb, updated_at = $6
-        WHERE id = $1
-      `,
-      [sequenceId, next.name, next.executionMode, JSON.stringify(next.steps), JSON.stringify(next.variables), next.updatedAt]
-    );
-    await this.eventBus.publish({ type: "sequence:updated", payload: next });
-    return next;
-  }
-
-  async deleteSequence(sequenceId: string): Promise<boolean> {
-    const result = await this.pool.query("DELETE FROM sequences WHERE id = $1", [sequenceId]);
-    if (result.rowCount === 0) {
-      return false;
-    }
-    await this.eventBus.publish({ type: "sequence:deleted", payload: { id: sequenceId } });
-    return true;
-  }
-
-  async createRun(input: {
-    sequenceId: string;
-    taskId: string;
-    stepCount: number;
-    stepPrompts?: string[];
-    executionMode?: SequenceExecutionMode;
-  }): Promise<SequenceRun> {
-    const run: SequenceRun = {
-      id: nanoid(),
-      sequenceId: input.sequenceId,
-      taskId: input.taskId,
-      status: "running",
-      executionMode: normalizeExecutionMode(input.executionMode),
-      failPolicy: "fail_fast",
-      stepCount: input.stepCount,
-      waitingForApprovalAfterStepIndex: null,
-      failedStepIndex: null,
-      startedAt: nowIso(),
-      finishedAt: null,
-      steps: normalizeRunSteps(null, input.stepCount, input.stepPrompts)
-    };
-    await this.pool.query(
-      `
-        INSERT INTO sequence_runs (id, sequence_id, task_id, started_at, run_data)
-        VALUES ($1, $2, $3, $4, $5::jsonb)
-      `,
-      [run.id, run.sequenceId, run.taskId, run.startedAt, JSON.stringify(run)]
-    );
-    await this.eventBus.publish({ type: "sequence:run_updated", payload: run });
-    return run;
-  }
-
-  async getRun(runId: string): Promise<SequenceRun | null> {
-    const result = await this.pool.query("SELECT run_data FROM sequence_runs WHERE id = $1", [runId]);
-    const row = result.rows[0];
-    if (!row) {
-      return null;
-    }
-    const run = parseJsonColumn<SequenceRun>(row.run_data);
-    const normalizedStepCount = typeof run.stepCount === "number" && Number.isFinite(run.stepCount) ? Math.max(0, Math.floor(run.stepCount)) : 0;
-    return {
-      ...run,
-      status: normalizeRunStatus(run.status),
-      executionMode: normalizeExecutionMode(run.executionMode),
-      stepCount: normalizedStepCount,
-      waitingForApprovalAfterStepIndex:
-        typeof run.waitingForApprovalAfterStepIndex === "number" ? Math.max(0, Math.floor(run.waitingForApprovalAfterStepIndex)) : null,
-      steps: normalizeRunSteps(run.steps, normalizedStepCount)
-    };
-  }
-
-  async getRunForTask(taskId: string): Promise<SequenceRun | null> {
-    const result = await this.pool.query(
-      "SELECT run_data FROM sequence_runs WHERE task_id = $1 ORDER BY started_at DESC, id DESC LIMIT 1",
-      [taskId]
-    );
-    const row = result.rows[0];
-    if (!row) {
-      return null;
-    }
-    const run = parseJsonColumn<SequenceRun>(row.run_data);
-    const normalizedStepCount = typeof run.stepCount === "number" && Number.isFinite(run.stepCount) ? Math.max(0, Math.floor(run.stepCount)) : 0;
-    return {
-      ...run,
-      status: normalizeRunStatus(run.status),
-      executionMode: normalizeExecutionMode(run.executionMode),
-      stepCount: normalizedStepCount,
-      waitingForApprovalAfterStepIndex:
-        typeof run.waitingForApprovalAfterStepIndex === "number" ? Math.max(0, Math.floor(run.waitingForApprovalAfterStepIndex)) : null,
-      steps: normalizeRunSteps(run.steps, normalizedStepCount)
-    };
-  }
-
-  async claimRunWaitingForApproval(runId: string): Promise<{ run: SequenceRun; approvedStepIndex: number } | null> {
-    const result = await this.pool.query<{
-      run_data: unknown;
-      approved_step_index: number;
-    }>(
-      `
-        WITH selected AS (
-          SELECT
-            id,
-            run_data,
-            (run_data->>'waitingForApprovalAfterStepIndex')::int AS approved_step_index
-          FROM sequence_runs
-          WHERE id = $1
-            AND run_data->>'status' = 'waiting_for_approval'
-            AND jsonb_typeof(run_data->'waitingForApprovalAfterStepIndex') = 'number'
-          FOR UPDATE
-        ),
-        updated AS (
-          UPDATE sequence_runs AS sequence_runs
-          SET run_data = jsonb_set(
-            jsonb_set(selected.run_data, '{status}', '"running"'::jsonb, false),
-            '{waitingForApprovalAfterStepIndex}',
-            'null'::jsonb,
-            false
-          )
-          FROM selected
-          WHERE sequence_runs.id = selected.id
-          RETURNING sequence_runs.run_data, selected.approved_step_index
-        )
-        SELECT run_data, approved_step_index
-        FROM updated
-      `,
-      [runId]
-    );
-
-    const row = result.rows[0];
-    if (!row) {
-      return null;
-    }
-
-    const run = parseJsonColumn<SequenceRun>(row.run_data);
-    const normalizedStepCount = typeof run.stepCount === "number" && Number.isFinite(run.stepCount) ? Math.max(0, Math.floor(run.stepCount)) : 0;
-    const nextRun: SequenceRun = {
-      ...run,
-      status: normalizeRunStatus(run.status),
-      executionMode: normalizeExecutionMode(run.executionMode),
-      stepCount: normalizedStepCount,
-      waitingForApprovalAfterStepIndex:
-        typeof run.waitingForApprovalAfterStepIndex === "number" ? Math.max(0, Math.floor(run.waitingForApprovalAfterStepIndex)) : null,
-      steps: normalizeRunSteps(run.steps, normalizedStepCount)
-    };
-    await this.eventBus.publish({ type: "sequence:run_updated", payload: nextRun });
-    return {
-      run: nextRun,
-      approvedStepIndex: Math.max(0, Math.floor(Number(row.approved_step_index)))
-    };
-  }
-
-  async updateRun(
-    runId: string,
-    patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps" | "waitingForApprovalAfterStepIndex">>
-  ): Promise<SequenceRun | null> {
-    const current = await this.getRun(runId);
-    if (!current) {
-      return null;
-    }
-    const next: SequenceRun = {
-      ...current,
-      ...patch,
-      status: patch.status ? normalizeRunStatus(patch.status) : current.status,
-      waitingForApprovalAfterStepIndex:
-        typeof patch.waitingForApprovalAfterStepIndex === "number"
-          ? Math.max(0, Math.floor(patch.waitingForApprovalAfterStepIndex))
-          : patch.waitingForApprovalAfterStepIndex === null
-            ? null
-            : current.waitingForApprovalAfterStepIndex,
-      steps: patch.steps ? normalizeRunSteps(patch.steps, current.stepCount) : current.steps
-    };
-    await this.pool.query("UPDATE sequence_runs SET started_at = $2, run_data = $3::jsonb WHERE id = $1", [
-      runId,
-      next.startedAt,
-      JSON.stringify(next)
-    ]);
-    await this.eventBus.publish({ type: "sequence:run_updated", payload: next });
-    return next;
-  }
-}
-````
-
-## File: apps/server/src/services/webhook-delivery-service.test.ts
-````typescript
-import assert from "node:assert/strict";
-import { afterEach, describe, it } from "node:test";
-import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
-import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
-import { WebhookDeliveryService } from "./webhook-delivery-service.js";
-
-class FakeRedis {
-  private readonly kv = new Map<string, string>();
-  private readonly zsets = new Map<string, Map<string, number>>();
-
-  private getZset(key: string): Map<string, number> {
-    let current = this.zsets.get(key);
-    if (!current) {
-      current = new Map<string, number>();
-      this.zsets.set(key, current);
-    }
-    return current;
-  }
-
-  async set(key: string, value: string): Promise<"OK"> {
-    this.kv.set(key, value);
-    return "OK";
-  }
-
-  async get(key: string): Promise<string | null> {
-    return this.kv.get(key) ?? null;
-  }
-
-  async del(...keys: string[]): Promise<number> {
-    let deleted = 0;
-    for (const key of keys) {
-      if (this.kv.delete(key)) {
-        deleted += 1;
-      }
-    }
-    return deleted;
-  }
-
-  async zadd(key: string, score: number, member: string): Promise<number> {
-    this.getZset(key).set(member, score);
-    return 1;
-  }
-
-  async zrem(key: string, member: string): Promise<number> {
-    const zset = this.getZset(key);
-    const existed = zset.delete(member);
-    return existed ? 1 : 0;
-  }
-
-  async zrangebyscore(
-    key: string,
-    min: number,
-    max: number,
-    _limitKeyword?: string,
-    offset?: number,
-    count?: number
-  ): Promise<string[]> {
-    const parsedOffset = Number.isFinite(offset) ? Number(offset) : 0;
-    const parsedCount = Number.isFinite(count) ? Number(count) : Number.MAX_SAFE_INTEGER;
-    return [...this.getZset(key).entries()]
-      .filter(([, score]) => score >= min && score <= max)
-      .sort((a, b) => a[1] - b[1])
-      .slice(parsedOffset, parsedOffset + parsedCount)
-      .map(([member]) => member);
-  }
-
-  multi(): {
-    set: (key: string, value: string) => unknown;
-    zadd: (key: string, score: number, member: string) => unknown;
-    zrem: (key: string, member: string) => unknown;
-    del: (...keys: string[]) => unknown;
-    exec: () => Promise<unknown[]>;
-  } {
-    const operations: Array<() => void> = [];
-    const chain = {
-      set: (key: string, value: string) => {
-        operations.push(() => {
-          this.kv.set(key, value);
-        });
-        return chain;
-      },
-      zadd: (key: string, score: number, member: string) => {
-        operations.push(() => {
-          this.getZset(key).set(member, score);
-        });
-        return chain;
-      },
-      zrem: (key: string, member: string) => {
-        operations.push(() => {
-          this.getZset(key).delete(member);
-        });
-        return chain;
-      },
-      del: (...keys: string[]) => {
-        operations.push(() => {
-          for (const key of keys) {
-            this.kv.delete(key);
-          }
-        });
-        return chain;
-      },
-      exec: async () => {
-        for (const operation of operations) {
-          operation();
-        }
-        return [] as unknown[];
-      }
-    };
-    return chain;
-  }
-}
-
-const baseTask = (): Task => ({
-  id: "task-1",
-  title: "Example task",
-  deadline: null,
-  pinned: false,
-  hasPendingCheckpoint: false,
-  ownerUserId: "user-1",
-  repoId: "repo-1",
-  repoName: "Repo",
-  repoUrl: "https://github.com/example/repo.git",
-  repoDefaultBranch: "main",
-  taskType: "build",
-  provider: "codex",
-  providerProfile: "medium",
-  modelOverride: null,
-  baseBranch: "main",
-  branchStrategy: "feature_branch",
-  complexity: "normal",
-  branchName: "agentswarm/task-1",
-  workspaceBaseRef: null,
-  prompt: "Do it",
-  resultMarkdown: null,
-  executionSummary: "Do it",
-  branchDiff: null,
-  lastAction: "build",
-  status: "build_queued",
-  workflowStatus: "ready",
-  executionStatus: "queued",
-  executionAction: "build",
-  reviewReason: null,
-  logs: [],
-  enqueued: false,
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:00.000Z",
-  startedAt: null,
-  finishedAt: null,
-  errorMessage: null
-});
-
-const baseRepository = (): Repository => ({
-  id: "repo-1",
-  name: "Repo",
-  url: "https://github.com/example/repo.git",
-  defaultBranch: "main",
-  envVars: [],
-  webhookUrl: "https://example.com/webhook",
-  webhookEnabled: true,
-  webhookSecretConfigured: true,
-  webhookLastAttemptAt: null,
-  webhookLastStatus: null,
-  webhookLastError: null,
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:00.000Z"
-});
-
-describe("WebhookDeliveryService", () => {
-  const originalFetch = globalThis.fetch;
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("delivers created events and records successful delivery", async () => {
-    const redis = new FakeRedis();
-    const deliveryResults: Array<{ status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }> = [];
-    const repositoryStore = {
-      getRepositoryWebhookTarget: async () => ({
-        repository: baseRepository(),
-        webhookUrl: "https://example.com/webhook",
-        webhookSecret: "super-secret"
-      }),
-      recordWebhookDeliveryResult: async (
-        _repoId: string,
-        input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
-      ) => {
-        deliveryResults.push(input);
-        return baseRepository();
-      }
-    };
-    const fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
-    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
-      fetchCalls.push({ url: String(url), init });
-      return new Response("ok", { status: 200 });
-    }) as typeof fetch;
-
-    const store = new RedisWebhookDeliveryStore(redis as never);
-    const event: RealtimeEvent = { type: "task:created", payload: baseTask() };
-    const service = new WebhookDeliveryService(store, repositoryStore as never);
-    await service.handleRealtimeEvent(event);
-    await (service as unknown as { processDueJobs: () => Promise<void> }).processDueJobs();
-
-    assert.equal(fetchCalls.length, 1);
-    assert.equal(fetchCalls[0]?.url, "https://example.com/webhook");
-    const headers = fetchCalls[0]?.init?.headers as Record<string, string>;
-    assert.equal(headers["x-agentswarm-event"], "created");
-    assert.equal(typeof headers["x-agentswarm-signature"], "string");
-    assert.equal(deliveryResults.length, 1);
-    assert.equal(deliveryResults[0]?.status, "success");
-  });
-
-  it("queues updated events only when status changes", async () => {
-    const redis = new FakeRedis();
-    const repositoryStore = {
-      getRepositoryWebhookTarget: async () => null,
-      recordWebhookDeliveryResult: async () => null
-    };
-    const store = new RedisWebhookDeliveryStore(redis as never);
-    const service = new WebhookDeliveryService(store, repositoryStore as never);
-    const task = baseTask();
-
-    await service.handleRealtimeEvent({ type: "task:created", payload: task });
-    await service.handleRealtimeEvent({ type: "task:updated", payload: { ...task, updatedAt: "2026-01-01T00:01:00.000Z" } });
-    await service.handleRealtimeEvent({
-      type: "task:updated",
-      payload: {
-        ...task,
-        status: "building",
-        updatedAt: "2026-01-01T00:02:00.000Z"
-      }
-    });
-
-    const queued = await redis.zrangebyscore("agentswarm:webhook_delivery_queue", 0, Number.MAX_SAFE_INTEGER);
-    assert.equal(queued.length, 2);
-  });
-});
-````
-
-## File: apps/web/components/sequence-editor-page.tsx
-````typescript
-"use client";
-
-import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import type { Sequence, SequenceExecutionMode, SequenceStep, SnippetVariable } from "@agentswarm/shared-types";
-import { ArrowDownOutlined, ArrowUpOutlined, MinusCircleOutlined, PlusOutlined } from "@ant-design/icons";
-import { Alert, Button, Card, Flex, Form, Input, Result, Select, Space, Spin, Typography, message } from "antd";
-import { api } from "../src/api/client";
-import { useSnippets } from "../src/hooks/useSnippets";
-import { useSequences } from "../src/hooks/useSequences";
-import { trackEvent } from "../src/utils/analytics";
-import { mergeSnippetVariables } from "../src/utils/sequence-variables";
-import { useAuth } from "./auth-provider";
-
-interface SequenceEditorPageProps {
-  mode: "create" | "edit";
-  sequenceId?: string;
-}
-
-interface SequenceFormValues {
-  name: string;
-  executionMode: SequenceExecutionMode;
-  steps: SequenceStep[];
-  variables: SnippetVariable[];
-}
-
-const defaultStep = (): SequenceStep => ({ id: "step_1", type: "inline", prompt: "", snippetId: undefined });
-
-export function SequenceEditorPage({ mode, sequenceId }: SequenceEditorPageProps) {
-  const router = useRouter();
-  const { can } = useAuth();
-  const canDuplicateSequence = can("sequence:create");
-  const canListSnippets = can("snippet:list");
-  const canListSequences = can("sequence:list");
-  const { snippets, loading: snippetsLoading } = useSnippets(canListSnippets);
-  const { sequences, loading: sequencesLoading } = useSequences(mode === "edit" && canListSequences);
-  const [form] = Form.useForm<SequenceFormValues>();
-  const [messageApi, contextHolder] = message.useMessage();
-  const [submitting, setSubmitting] = useState(false);
-  const [duplicating, setDuplicating] = useState(false);
-  const [snippetVariableConflicts, setSnippetVariableConflicts] = useState<string[]>([]);
-  const watchedSteps = Form.useWatch("steps", form) as SequenceStep[] | undefined;
-  const editingSequence = useMemo<Sequence | null>(() => {
-    if (mode !== "edit" || !sequenceId) {
-      return null;
-    }
-    return sequences.find((sequence) => sequence.id === sequenceId) ?? null;
-  }, [mode, sequenceId, sequences]);
-
-  const snippetVariablesById = useMemo(
-    () => new Map(snippets.map((snippet) => [snippet.id, snippet.variables ?? []])),
-    [snippets]
-  );
-
-  useEffect(() => {
-    trackEvent("sequence_edit_opened", { mode });
-  }, [mode]);
-
-  useEffect(() => {
-    if (mode === "create") {
-      form.setFieldsValue({
-        name: "",
-        executionMode: "auto_apply_changes",
-        steps: [defaultStep()],
-        variables: []
-      });
-      return;
-    }
-
-    if (!editingSequence) {
-      return;
-    }
-
-    form.setFieldsValue({
-      name: editingSequence.name,
-      executionMode: editingSequence.executionMode,
-      steps: editingSequence.steps,
-      variables: editingSequence.variables
-    });
-  }, [editingSequence, form, mode]);
-
-  useEffect(() => {
-    if (!watchedSteps || watchedSteps.length === 0 || !canListSnippets) {
-      setSnippetVariableConflicts([]);
-      return;
-    }
-
-    const current = (form.getFieldValue("variables") as SnippetVariable[] | undefined) ?? [];
-    const merged = mergeSnippetVariables({
-      current,
-      steps: watchedSteps,
-      snippetDefinitions: snippetVariablesById
-    });
-
-    if (merged.changed) {
-      form.setFieldValue("variables", merged.next);
-    }
-    setSnippetVariableConflicts(merged.conflicts);
-  }, [canListSnippets, form, snippetVariablesById, watchedSteps]);
-
-  if (mode === "edit" && sequencesLoading) {
-    return (
-      <Flex align="center" justify="center" style={{ minHeight: 320 }}>
-        <Spin />
-      </Flex>
-    );
-  }
-
-  if (mode === "edit" && !editingSequence) {
-    return (
-      <Result
-        status="404"
-        title="Sequence not found"
-        subTitle="The sequence may have been deleted or you may not have access to it."
-        extra={<Button onClick={() => router.push("/sequences")}>Back to Sequences</Button>}
-      />
-    );
-  }
-
-  const title = mode === "edit" ? "Edit Sequence" : "Add Sequence";
-  const handleDuplicateSequence = async () => {
-    if (mode !== "edit" || !editingSequence || !canDuplicateSequence) {
-      return;
-    }
-    setDuplicating(true);
-    try {
-      const duplicated = await api.duplicateSequence(editingSequence.id);
-      trackEvent("sequence_duplicated", {
-        source: "editor",
-        sequence_id: editingSequence.id,
-        duplicated_sequence_id: duplicated.id
-      });
-      messageApi.success("Sequence duplicated");
-      router.push(`/sequences/${duplicated.id}/edit`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to duplicate sequence");
-    } finally {
-      setDuplicating(false);
-    }
-  };
-
-  return (
-    <>
-      {contextHolder}
-      <Form
-        form={form}
-        layout="vertical"
-        onFinish={async (values) => {
-          setSubmitting(true);
-          trackEvent("sequence_save_tapped", { mode });
-          try {
-            const payload = {
-              name: values.name,
-              executionMode: values.executionMode ?? "auto_apply_changes",
-              steps: values.steps.map((step, index) => ({
-                id: step.id?.trim() || `step_${index + 1}`,
-                type: step.type,
-                prompt: step.prompt ?? "",
-                snippetId: step.type === "snippet" ? step.snippetId : undefined
-              })),
-              variables: values.variables ?? []
-            };
-            trackEvent("sequence_mode_selected", { execution_mode: payload.executionMode, editor_mode: mode, source: "save" });
-            if (mode === "edit" && editingSequence) {
-              await api.updateSequence(editingSequence.id, payload);
-              messageApi.success("Sequence updated");
-            } else {
-              await api.createSequence(payload);
-              trackEvent("sequence_created", { step_count: payload.steps.length });
-              messageApi.success("Sequence created");
-            }
-            router.push("/sequences");
-          } catch (error) {
-            const messageText = error instanceof Error ? error.message : "Failed to save sequence";
-            if (messageText.toLowerCase().includes("missing required variable")) {
-              trackEvent("sequence_save_failed_missing_variables", { mode });
-            }
-            messageApi.error(messageText);
-          } finally {
-            setSubmitting(false);
-          }
-        }}
-      >
-        <Flex vertical gap={16}>
-          <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-            <Flex vertical gap={0}>
-              <Typography.Title level={2} style={{ margin: 0 }}>
-                {title}
-              </Typography.Title>
-              <Typography.Text type="secondary">
-                Build reusable multi-step prompt flows with clear step order.
-              </Typography.Text>
-            </Flex>
-            <Space>
-              {mode === "edit" && canDuplicateSequence ? (
-                <Button onClick={() => void handleDuplicateSequence()} loading={duplicating}>
-                  Duplicate
-                </Button>
-              ) : null}
-              <Button onClick={() => router.push("/sequences")}>Cancel</Button>
-              <Button type="primary" htmlType="submit" loading={submitting}>
-                {mode === "edit" ? "Save" : "Create"}
-              </Button>
-            </Space>
-          </Flex>
-
-          <Card bordered={false}>
-            <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a sequence name" }]}>
-              <Input placeholder="Feature implementation flow" />
-            </Form.Item>
-            <Form.Item name="executionMode" label="Run Mode" rules={[{ required: true }]}>
-              <Select
-                options={[
-                  { value: "auto_apply_changes", label: "Auto Apply Changes" },
-                  { value: "approve_before_continuing", label: "Approve Before Continuing" }
-                ]}
-                onChange={(value: SequenceExecutionMode) => trackEvent("sequence_mode_selected", { execution_mode: value, editor_mode: mode })}
-              />
-            </Form.Item>
-
-            <Form.List
-              name="steps"
-              rules={[{ validator: async (_, value) => ((value?.length ?? 0) > 0 ? undefined : Promise.reject(new Error("Add at least one step"))) }]}
-            >
-              {(fields, { add, remove, move }) => (
-                <Flex vertical gap={8} style={{ marginBottom: 16 }}>
-                  <Flex justify="space-between" align="center">
-                    <Typography.Text strong>Steps</Typography.Text>
-                    <Button size="small" icon={<PlusOutlined />} onClick={() => add({ type: "inline", prompt: "", snippetId: undefined })}>
-                      Add Step
-                    </Button>
-                  </Flex>
-                  {fields.map((field, index) => (
-                    <Card key={field.key} size="small">
-                      <Flex justify="space-between" align="center" style={{ marginBottom: 8 }}>
-                        <Typography.Text strong>{`Step ${index + 1}`}</Typography.Text>
-                        <Space size={4}>
-                          <Button size="small" icon={<ArrowUpOutlined />} disabled={index === 0} onClick={() => move(index, index - 1)} />
-                          <Button size="small" icon={<ArrowDownOutlined />} disabled={index === fields.length - 1} onClick={() => move(index, index + 1)} />
-                          <Button size="small" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)} />
-                        </Space>
-                      </Flex>
-                      <Form.Item name={[field.name, "type"]} style={{ marginBottom: 8 }} rules={[{ required: true }]}>
-                        <Select
-                          options={[
-                            { label: "Inline Prompt", value: "inline" },
-                            { label: "Snippet Reference", value: "snippet" }
-                          ]}
-                        />
-                      </Form.Item>
-                      <Form.Item noStyle shouldUpdate={(prev, next) => prev?.steps?.[field.name]?.type !== next?.steps?.[field.name]?.type}>
-                        {({ getFieldValue }) => {
-                          const stepType = getFieldValue(["steps", field.name, "type"]) as "inline" | "snippet" | undefined;
-                          if (stepType === "snippet") {
-                            return (
-                              <Form.Item
-                                name={[field.name, "snippetId"]}
-                                style={{ marginBottom: 0 }}
-                                rules={[{ required: true, message: "Select a snippet for this step" }]}
-                              >
-                                <Select
-                                  showSearch
-                                  loading={snippetsLoading}
-                                  placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
-                                  options={snippets.map((snippet) => ({ value: snippet.id, label: snippet.name }))}
-                                  optionFilterProp="label"
-                                  onChange={() => trackEvent("sequence_snippet_added")}
-                                />
-                              </Form.Item>
-                            );
-                          }
-                          return (
-                            <Form.Item
-                              name={[field.name, "prompt"]}
-                              style={{ marginBottom: 0 }}
-                              rules={[{ required: true, message: "Enter prompt content for this step" }]}
-                            >
-                              <Input.TextArea rows={3} placeholder="Prompt text for this step" />
-                            </Form.Item>
-                          );
-                        }}
-                      </Form.Item>
-                    </Card>
-                  ))}
-                </Flex>
-              )}
-            </Form.List>
-
-            {snippetVariableConflicts.length > 0 ? (
-              <Alert
-                type="warning"
-                showIcon
-                style={{ marginBottom: 12 }}
-                message="Variable type conflict"
-                description={`These variables are used with different types across selected snippets: ${snippetVariableConflicts.join(", ")}.`}
-              />
-            ) : null}
-
-            <Form.List
-              name="variables"
-              rules={[
-                {
-                  validator: async (_, value: SequenceFormValues["variables"]) => {
-                    const seen = new Set<string>();
-                    for (const entry of value ?? []) {
-                      const name = typeof entry?.name === "string" ? entry.name.trim() : "";
-                      if (!name) {
-                        continue;
-                      }
-                      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-                        throw new Error(`Invalid variable name: ${name}`);
-                      }
-                      if (seen.has(name)) {
-                        throw new Error(`Duplicate variable name: ${name}`);
-                      }
-                      seen.add(name);
-                    }
-                  }
-                }
-              ]}
-            >
-              {(fields, { add, remove, move }, { errors }) => (
-                <Flex vertical gap={8} style={{ marginBottom: 16 }}>
-                  <Flex justify="space-between" align="center">
-                    <Typography.Text strong>Variables</Typography.Text>
-                    <Button size="small" icon={<PlusOutlined />} onClick={() => add({ name: "", type: "text", title: "", description: "", defaultValue: "" })}>
-                      Add Variable
-                    </Button>
-                  </Flex>
-                  {fields.map((field, index) => (
-                    <Card key={field.key} size="small">
-                      <Flex justify="space-between" align="center" style={{ marginBottom: 8 }}>
-                        <Typography.Text strong>{`Variable ${index + 1}`}</Typography.Text>
-                        <Space size={4}>
-                          <Button
-                            icon={<ArrowUpOutlined />}
-                            disabled={index === 0}
-                            onClick={() => {
-                              const variables = (form.getFieldValue("variables") as SequenceFormValues["variables"] | undefined) ?? [];
-                              const variableName = variables[index]?.name ?? "";
-                              move(index, index - 1);
-                              trackEvent("sequence_variable_reordered", {
-                                variable_name: variableName,
-                                from_index: index,
-                                to_index: index - 1,
-                                editor_mode: mode
-                              });
-                            }}
-                          />
-                          <Button
-                            icon={<ArrowDownOutlined />}
-                            disabled={index === fields.length - 1}
-                            onClick={() => {
-                              const variables = (form.getFieldValue("variables") as SequenceFormValues["variables"] | undefined) ?? [];
-                              const variableName = variables[index]?.name ?? "";
-                              move(index, index + 1);
-                              trackEvent("sequence_variable_reordered", {
-                                variable_name: variableName,
-                                from_index: index,
-                                to_index: index + 1,
-                                editor_mode: mode
-                              });
-                            }}
-                          />
-                          <Button type="text" danger icon={<MinusCircleOutlined />} onClick={() => remove(field.name)} />
-                        </Space>
-                      </Flex>
-                      <Flex gap={8} align="flex-start">
-                        <Form.Item name={[field.name, "name"]} style={{ marginBottom: 8, flex: 1 }} rules={[{ required: true, message: "Name is required" }]}>
-                          <Input placeholder="name ({{name}})" />
-                        </Form.Item>
-                        <Form.Item name={[field.name, "type"]} style={{ marginBottom: 8, width: 140 }} initialValue="text">
-                          <Select
-                            options={[
-                              { label: "Text", value: "text" },
-                              { label: "Multiline", value: "multiline" }
-                            ]}
-                          />
-                        </Form.Item>
-                      </Flex>
-                      <Form.Item name={[field.name, "title"]} style={{ marginBottom: 8 }}>
-                        <Input placeholder="Title (optional)" />
-                      </Form.Item>
-                      <Form.Item name={[field.name, "description"]} style={{ marginBottom: 8 }}>
-                        <Input placeholder="Description (optional)" />
-                      </Form.Item>
-                      <Form.Item noStyle shouldUpdate={(prev, next) => prev?.variables?.[field.name]?.type !== next?.variables?.[field.name]?.type}>
-                        {({ getFieldValue }) => {
-                          const variableType = getFieldValue(["variables", field.name, "type"]) as "text" | "multiline" | undefined;
-                          return (
-                            <Form.Item name={[field.name, "defaultValue"]} style={{ marginBottom: 0 }}>
-                              {variableType === "multiline" ? (
-                                <Input.TextArea rows={2} placeholder="Default value" onBlur={() => trackEvent("sequence_variable_filled")} />
-                              ) : (
-                                <Input placeholder="Default value" onBlur={() => trackEvent("sequence_variable_filled")} />
-                              )}
-                            </Form.Item>
-                          );
-                        }}
-                      </Form.Item>
-                    </Card>
-                  ))}
-                  {errors.length > 0 ? (
-                    <Typography.Text type="danger">{String(errors[0])}</Typography.Text>
-                  ) : null}
-                </Flex>
-              )}
-            </Form.List>
-          </Card>
-        </Flex>
-      </Form>
-    </>
-  );
-}
-````
-
-## File: apps/web/components/settings-page.tsx
-````typescript
-"use client";
-
-import { useEffect, useState } from "react";
-import type {
-  AgentProvider,
-  AgentClarifyBehavior,
-  AgentCodePreference,
-  AgentExplanationDepth,
-  AgentFormattingStyle,
-  AgentJargonLevel,
-  AudienceType,
-  McpServerTransport,
-  PermissionScope,
-  ProviderProfile,
-  ResponsePreferencePreset,
-  Role,
-  SystemSettings
-} from "@agentswarm/shared-types";
-import {
-  PERMISSION_SCOPE_GROUPS,
-  getAgentProviderLabel,
-  getEffortOptionsForProvider,
-  getModelsForProvider
-} from "@agentswarm/shared-types";
-import { DeleteOutlined, LockOutlined, PlusOutlined } from "@ant-design/icons";
-import {
-  Alert,
-  App,
-  Button,
-  Card,
-  Checkbox,
-  Divider,
-  Flex,
-  Form,
-  Input,
-  InputNumber,
-  Modal,
-  Popconfirm,
-  Select,
-  Space,
-  Switch,
-  Table,
-  Tag,
-  Tooltip,
-  Typography
-} from "antd";
-import { api } from "../src/api/client";
-import { useSettings } from "../src/hooks/useSettings";
-import { useProviderModels } from "../src/hooks/useProviderModels";
-import { useAuth } from "./auth-provider";
-
-interface McpServerFormItem {
-  name: string;
-  enabled: boolean;
-  transport: McpServerTransport;
-  command?: string;
-  argsText?: string;
-  url?: string;
-  bearerTokenEnvVar?: string;
-}
-
-interface GeneralSettingsForm {
-  defaultProvider: AgentProvider;
-  maxAgents: number;
-  branchPrefix: string;
-  gitUsername: string;
-  openaiBaseUrl: string;
-  taskPromptMagicModel: string;
-  taskPromptMagicTemplate: string;
-  mcpServers: McpServerFormItem[];
-  codexDefaultModel: string;
-  codexDefaultEffort: ProviderProfile;
-  claudeDefaultModel: string;
-  claudeDefaultEffort: ProviderProfile;
-}
-
-interface CredentialForm {
-  githubToken?: string;
-  openaiApiKey?: string;
-  anthropicApiKey?: string;
-}
-
-interface RoleFormValues {
-  name: string;
-  description: string;
-  scopes: PermissionScope[];
-  allowedProviders: AgentProvider[];
-  allowedModels: string[];
-  allowedEfforts: ProviderProfile[];
-}
-
-interface ResponsePreferencePresetFormValues {
-  name: string;
-  description: string;
-  audience?: AudienceType;
-  explanationDepth?: AgentExplanationDepth;
-  jargonLevel?: AgentJargonLevel;
-  codePreference?: AgentCodePreference;
-  clarifyBehavior?: AgentClarifyBehavior;
-  formattingStyle?: AgentFormattingStyle;
-  extraInstructions?: string;
-}
-
-type ClearCredentialTarget = "github" | "openai" | "anthropic";
-
-const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
-  { label: "stdio", value: "stdio" },
-  { label: "http", value: "http" }
-];
-
-const providerOptions: Array<{ label: string; value: AgentProvider }> = [
-  { label: getAgentProviderLabel("codex"), value: "codex" },
-  { label: getAgentProviderLabel("claude"), value: "claude" }
-];
-
-const summarizeAllowlist = (label: string, values: string[]): string => `${label}: ${values.length === 0 ? "All" : values.join(", ")}`;
-const toSentenceValue = (value: string): string => value.replace(/_/g, " ");
-const summarizeResponsePreference = (preset: ResponsePreferencePreset): string => {
-  const parts: string[] = [];
-  if (preset.preference.audience) {
-    parts.push(`Audience: ${toSentenceValue(preset.preference.audience)}`);
-  }
-  if (preset.preference.explanationDepth) {
-    parts.push(`Depth: ${toSentenceValue(preset.preference.explanationDepth)}`);
-  }
-  if (preset.preference.jargonLevel) {
-    parts.push(`Jargon: ${toSentenceValue(preset.preference.jargonLevel)}`);
-  }
-  return parts.length > 0 ? parts.join(" | ") : "Neutral";
-};
-
-const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
-  defaultProvider: settings.defaultProvider,
-  maxAgents: settings.maxAgents,
-  branchPrefix: settings.branchPrefix,
-  gitUsername: settings.gitUsername,
-  openaiBaseUrl: settings.openaiBaseUrl ?? "",
-  taskPromptMagicModel: settings.taskPromptMagicModel,
-  taskPromptMagicTemplate: settings.taskPromptMagicTemplate,
-  mcpServers: settings.mcpServers.map((server) => ({
-    name: server.name,
-    enabled: server.enabled,
-    transport: server.transport,
-    command: server.command ?? "",
-    argsText: (server.args ?? []).join("\n"),
-    url: server.url ?? "",
-    bearerTokenEnvVar: server.bearerTokenEnvVar ?? ""
-  })),
-  codexDefaultModel: settings.codexDefaultModel,
-  codexDefaultEffort: settings.codexDefaultEffort,
-  claudeDefaultModel: settings.claudeDefaultModel,
-  claudeDefaultEffort: settings.claudeDefaultEffort
-});
-
-export function SettingsPage() {
-  const { message } = App.useApp();
-  const { can } = useAuth();
-  const { loading, setSettings, settings } = useSettings();
-  const [generalForm] = Form.useForm<GeneralSettingsForm>();
-  const [credentialForm] = Form.useForm<CredentialForm>();
-  const [roleForm] = Form.useForm<RoleFormValues>();
-  const [responsePreferencePresetForm] = Form.useForm<ResponsePreferencePresetFormValues>();
-  const [roles, setRoles] = useState<Role[]>([]);
-  const [rolesLoading, setRolesLoading] = useState(true);
-  const [savingGeneral, setSavingGeneral] = useState(false);
-  const [savingCredentials, setSavingCredentials] = useState(false);
-  const [savingRole, setSavingRole] = useState(false);
-  const [savingResponsePreferencePreset, setSavingResponsePreferencePreset] = useState(false);
-  const [roleModalOpen, setRoleModalOpen] = useState(false);
-  const [editingRole, setEditingRole] = useState<Role | null>(null);
-  const [responsePreferencePresetModalOpen, setResponsePreferencePresetModalOpen] = useState(false);
-  const [editingResponsePreferencePreset, setEditingResponsePreferencePreset] = useState<ResponsePreferencePreset | null>(null);
-  const canEditSettings = can("settings:edit");
-  const { models: codexModels, loading: codexModelsLoading } = useProviderModels("codex");
-  const { models: claudeModels, loading: claudeModelsLoading } = useProviderModels("claude");
-  const allModelOptions = Array.from(
-    new Map(
-      [...codexModels, ...claudeModels, ...getModelsForProvider("codex"), ...getModelsForProvider("claude")].map((option) => [option.value, option])
-    ).values()
-  ).sort((left, right) => left.label.localeCompare(right.label));
-  const allEffortOptions = Array.from(
-    new Map(
-      [...getEffortOptionsForProvider("codex"), ...getEffortOptionsForProvider("claude")].map((option) => [option.value, option])
-    ).values()
-  );
-  const responsePreferencePresets = settings?.responsePreferencePresets ?? [];
-
-  const loadRoles = async () => {
-    setRolesLoading(true);
-    try {
-      setRoles(await api.listRoles());
-    } finally {
-      setRolesLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!settings) {
-      return;
-    }
-
-    generalForm.setFieldsValue(toFormValues(settings));
-  }, [generalForm, settings]);
-
-  useEffect(() => {
-    void loadRoles();
-  }, []);
-
-  const handleClearCredential = async (target: ClearCredentialTarget): Promise<void> => {
-    setSavingCredentials(true);
-    try {
-      if (target === "github") {
-        const nextSettings = await api.updateCredentials({ clearGithubToken: true });
-        setSettings(nextSettings);
-        credentialForm.resetFields(["githubToken"]);
-        message.success("GitHub token cleared");
-        return;
-      }
-
-      if (target === "openai") {
-        const nextSettings = await api.updateCredentials({ clearOpenAiApiKey: true });
-        setSettings(nextSettings);
-        credentialForm.resetFields(["openaiApiKey"]);
-        message.success("OpenAI API key cleared");
-        return;
-      }
-
-      const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
-      setSettings(nextSettings);
-      credentialForm.resetFields(["anthropicApiKey"]);
-      message.success("Anthropic API key cleared");
-    } catch (error) {
-      if (target === "github") {
-        message.error(error instanceof Error ? error.message : "Failed to clear GitHub token");
-        return;
-      }
-
-      if (target === "openai") {
-        message.error(error instanceof Error ? error.message : "Failed to clear OpenAI API key");
-        return;
-      }
-
-      message.error(error instanceof Error ? error.message : "Failed to clear Anthropic API key");
-    } finally {
-      setSavingCredentials(false);
-    }
-  };
-
-  return (
-    <>
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
-        <Flex vertical gap={0}>
-          <Typography.Title level={2} style={{ margin: 0 }}>
-            Settings
-          </Typography.Title>
-          <Typography.Text type="secondary">
-            Concurrency, runtime defaults, provider credentials, and role-based access control.
-          </Typography.Text>
-        </Flex>
-
-        {!canEditSettings ? (
-          <Alert
-            type="info"
-            showIcon
-            message="Read-only access"
-            description="This account can view system configuration and roles, but it cannot change them."
-          />
-        ) : null}
-
-        <Form
-          form={generalForm}
-          layout="vertical"
-          disabled={!canEditSettings}
-          onFinish={async (values) => {
-            setSavingGeneral(true);
-            try {
-              const nextSettings = await api.updateSettings({
-                defaultProvider: values.defaultProvider,
-                maxAgents: values.maxAgents,
-                branchPrefix: values.branchPrefix,
-                gitUsername: values.gitUsername,
-                openaiBaseUrl: values.openaiBaseUrl?.trim() ? values.openaiBaseUrl.trim() : null,
-                taskPromptMagicModel: values.taskPromptMagicModel,
-                taskPromptMagicTemplate: values.taskPromptMagicTemplate,
-                codexDefaultModel: values.codexDefaultModel,
-                codexDefaultEffort: values.codexDefaultEffort,
-                claudeDefaultModel: values.claudeDefaultModel,
-                claudeDefaultEffort: values.claudeDefaultEffort,
-                mcpServers: (values.mcpServers ?? []).map((server) =>
-                  server.transport === "http"
-                    ? {
-                        name: server.name,
-                        enabled: server.enabled,
-                        transport: "http" as const,
-                        url: server.url?.trim() || "",
-                        bearerTokenEnvVar: server.bearerTokenEnvVar?.trim() || null
-                      }
-                    : {
-                        name: server.name,
-                        enabled: server.enabled,
-                        transport: "stdio" as const,
-                        command: server.command?.trim() || "",
-                        args:
-                          server.argsText
-                            ?.split("\n")
-                            .map((item) => item.trim())
-                            .filter(Boolean) ?? []
-                      }
-                )
-              });
-              setSettings(nextSettings);
-              message.success("Settings saved");
-            } catch (error) {
-              message.error(error instanceof Error ? error.message : "Failed to save settings");
-            } finally {
-              setSavingGeneral(false);
-            }
-          }}
-        >
-          <Space direction="vertical" size={16} style={{ width: "100%" }}>
-            <Card bordered={false} loading={loading} title="Runtime Controls">
-              <Flex vertical gap={16} style={{ width: "100%" }}>
-                <Form.Item name="defaultProvider" label="Default Provider" rules={[{ required: true }]}>
-                  <Select options={providerOptions} />
-                </Form.Item>
-                <Form.Item
-                  name="maxAgents"
-                  label="Concurrent Agents"
-                  extra="Hard limit on how many agents can run in parallel."
-                  rules={[{ required: true }]}
-                >
-                  <InputNumber min={1} max={20} style={{ width: "100%" }} />
-                </Form.Item>
-              </Flex>
-            </Card>
-
-            <Card bordered={false} loading={loading} title="Provider Defaults">
-              <Flex vertical gap={24} style={{ width: "100%" }}>
-                <div>
-                  <Typography.Text strong>OpenAI Gateway</Typography.Text>
-                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
-                    <Form.Item
-                      name="openaiBaseUrl"
-                      label="Base URL Override"
-                      extra="Set when pointing to a proxy or self-hosted gateway."
-                      style={{ marginBottom: 0 }}
-                    >
-                      <Input placeholder="https://api.openai.com/v1" />
-                    </Form.Item>
-                    <Form.Item
-                      name="taskPromptMagicModel"
-                      label="Task Prompt Magic Model"
-                      extra="Model used by the Magic Prompt helper in task creation."
-                      style={{ marginBottom: 0 }}
-                    >
-                      <Input placeholder="gpt-5.4-mini" />
-                    </Form.Item>
-                    <Form.Item
-                      name="taskPromptMagicTemplate"
-                      label="Task Prompt Magic Template"
-                      extra="Use {{user_request}} as placeholder for the user's current text."
-                      style={{ marginBottom: 0 }}
-                    >
-                      <Input.TextArea autoSize={{ minRows: 6, maxRows: 16 }} placeholder="Template with {{user_request}} placeholder" />
-                    </Form.Item>
-                  </Flex>
-                </div>
-
-                <div>
-                  <Typography.Text strong>Codex (OpenAI)</Typography.Text>
-                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
-                    <Form.Item name="codexDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
-                      <Select options={codexModels} loading={codexModelsLoading} showSearch optionFilterProp="label" />
-                    </Form.Item>
-                    <Form.Item name="codexDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
-                      <Select options={getEffortOptionsForProvider("codex")} />
-                    </Form.Item>
-                  </Flex>
-                </div>
-
-                <div>
-                  <Typography.Text strong>Claude Code (Anthropic)</Typography.Text>
-                  <Alert
-                    type="warning"
-                    showIcon
-                    style={{ marginTop: 8 }}
-                    message="Experimental"
-                    description="Claude Code in AgentSwarm is experimental; behavior and defaults may change."
-                  />
-                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
-                    <Form.Item name="claudeDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
-                      <Select options={claudeModels} loading={claudeModelsLoading} showSearch optionFilterProp="label" />
-                    </Form.Item>
-                    <Form.Item name="claudeDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
-                      <Select options={getEffortOptionsForProvider("claude")} />
-                    </Form.Item>
-                  </Flex>
-                </div>
-              </Flex>
-            </Card>
-
-            <Card bordered={false} loading={loading} title="Git & Branching">
-              <Flex vertical gap={16} style={{ width: "100%" }}>
-                <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
-                  <Input placeholder="agentswarm" />
-                </Form.Item>
-                <Form.Item
-                  name="gitUsername"
-                  label="Git Username"
-                  extra="Used for authenticated pushes from the runtime."
-                  rules={[{ required: true, whitespace: true }]}
-                >
-                  <Input placeholder="x-access-token" />
-                </Form.Item>
-              </Flex>
-            </Card>
-
-            <Card bordered={false} loading={loading} title="MCP Servers">
-              <Form.List name="mcpServers">
-                {(fields, { add, remove }) => (
-                  <Space direction="vertical" size={16} style={{ width: "100%" }}>
-                    {fields.map((field) => (
-                      <Card
-                        key={field.key}
-                        size="small"
-                        title={`Server ${field.name + 1}`}
-                        extra={
-                          <Button
-                            danger
-                            type="text"
-                            icon={<DeleteOutlined />}
-                            disabled={!canEditSettings}
-                            onClick={() => remove(field.name)}
-                          >
-                            Remove
-                          </Button>
-                        }
-                      >
-                        <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                          <Form.Item name={[field.name, "name"]} label="Name" rules={[{ required: true, whitespace: true }]}>
-                            <Input placeholder="memory" />
-                          </Form.Item>
-                          <Form.Item name={[field.name, "enabled"]} label="Enabled" valuePropName="checked">
-                            <Switch />
-                          </Form.Item>
-                          <Form.Item name={[field.name, "transport"]} label="Transport" rules={[{ required: true }]}>
-                            <Select options={transportOptions} />
-                          </Form.Item>
-                          <Form.Item noStyle shouldUpdate>
-                            {() => {
-                              const transport = generalForm.getFieldValue(["mcpServers", field.name, "transport"]) ?? "stdio";
-                              return transport === "http" ? (
-                                <>
-                                  <Form.Item name={[field.name, "url"]} label="URL" rules={[{ required: true, whitespace: true }]}>
-                                    <Input placeholder="https://example.com/mcp" />
-                                  </Form.Item>
-                                  <Form.Item
-                                    name={[field.name, "bearerTokenEnvVar"]}
-                                    label="Bearer Token Env Var"
-                                    extra="Environment variable name available to the server process (for example MCP_TOKEN)."
-                                    rules={[
-                                      {
-                                        validator: (_rule, value?: string) => {
-                                          if (!value || value.trim().length === 0) {
-                                            return Promise.resolve();
-                                          }
-
-                                          return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.trim())
-                                            ? Promise.resolve()
-                                            : Promise.reject(
-                                                new Error("Use a valid environment variable name (letters, numbers, underscore).")
-                                              );
-                                        }
-                                      }
-                                    ]}
-                                  >
-                                    <Input placeholder="MY_MCP_TOKEN" />
-                                  </Form.Item>
-                                </>
-                              ) : (
-                                <>
-                                  <Form.Item name={[field.name, "command"]} label="Command" rules={[{ required: true, whitespace: true }]}>
-                                    <Input placeholder="docker" />
-                                  </Form.Item>
-                                  <Form.Item name={[field.name, "argsText"]} label="Arguments">
-                                    <Input.TextArea rows={6} placeholder={"run\n-i\n--rm\nmcp/memory"} />
-                                  </Form.Item>
-                                </>
-                              );
-                            }}
-                          </Form.Item>
-                        </Space>
-                      </Card>
-                    ))}
-
-                    <Button
-                      type="dashed"
-                      icon={<PlusOutlined />}
-                      disabled={!canEditSettings}
-                      onClick={() =>
-                        add({
-                          name: "",
-                          enabled: true,
-                          transport: "stdio",
-                          command: "",
-                          argsText: ""
-                        })
-                      }
-                    >
-                      Add MCP Server
-                    </Button>
-                  </Space>
-                )}
-              </Form.List>
-            </Card>
-          </Space>
-
-          <Flex justify="flex-start" style={{ marginTop: 16 }}>
-            <Button type="primary" htmlType="submit" loading={savingGeneral} disabled={!canEditSettings}>
-              Save Settings
-            </Button>
-          </Flex>
-        </Form>
-
-        <Divider />
-
-        <Card
-          bordered={false}
-          loading={loading}
-          title="Credentials"
-          extra={
-            settings ? (
-              <Space>
-                <Tag color={settings.githubTokenConfigured ? "green" : "default"}>
-                  GitHub Token {settings.githubTokenConfigured ? "Configured" : "Missing"}
-                </Tag>
-                <Tag color={settings.openaiApiKeyConfigured ? "green" : "default"}>
-                  OpenAI API Key {settings.openaiApiKeyConfigured ? "Configured" : "Missing"}
-                </Tag>
-                <Tag color={settings.anthropicApiKeyConfigured ? "green" : "default"}>
-                  Anthropic API Key (Claude, experimental) {settings.anthropicApiKeyConfigured ? "Configured" : "Missing"}
-                </Tag>
-              </Space>
-            ) : null
-          }
-        >
-          <Alert
-            type="info"
-            showIcon
-            style={{ marginBottom: 16 }}
-            message="Credentials are write-only"
-            description="Tokens are encrypted on the server and never returned by the API."
-          />
-          <Form
-            form={credentialForm}
-            layout="vertical"
-            disabled={!canEditSettings}
-            onFinish={async (values) => {
-              setSavingCredentials(true);
-              try {
-                const nextSettings = await api.updateCredentials({
-                  githubToken: values.githubToken?.trim() || undefined,
-                  openaiApiKey: values.openaiApiKey?.trim() || undefined,
-                  anthropicApiKey: values.anthropicApiKey?.trim() || undefined
-                });
-                credentialForm.resetFields();
-                setSettings(nextSettings);
-                message.success("Credentials updated");
-              } catch (error) {
-                message.error(error instanceof Error ? error.message : "Failed to update credentials");
-              } finally {
-                setSavingCredentials(false);
-              }
-            }}
-          >
-            <Form.Item name="githubToken" label="GitHub Token">
-              <Input.Password placeholder={settings?.githubTokenConfigured ? "Configured. Enter a new token to replace it." : "github_pat_..."} />
-            </Form.Item>
-            <Form.Item name="openaiApiKey" label="OpenAI API Key">
-              <Input.Password placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."} />
-            </Form.Item>
-            <Form.Item
-              name="anthropicApiKey"
-              label="Anthropic API Key"
-              extra="Used for Claude Code (experimental) runs only."
-            >
-              <Input.Password placeholder={settings?.anthropicApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-ant-..."} />
-            </Form.Item>
-            <Space wrap>
-              <Button type="primary" htmlType="submit" loading={savingCredentials} disabled={!canEditSettings}>
-                Save Credentials
-              </Button>
-              <Popconfirm
-                title="Clear GitHub token?"
-                description="This removes the stored GitHub token from settings."
-                okText="Clear"
-                cancelText="Cancel"
-                okButtonProps={{ danger: true, loading: savingCredentials }}
-                placement="top"
-                disabled={!canEditSettings}
-                onConfirm={() => handleClearCredential("github")}
-              >
-                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                  Clear GitHub Token
-                </Button>
-              </Popconfirm>
-              <Popconfirm
-                title="Clear OpenAI API key?"
-                description="This removes the stored OpenAI API key from settings."
-                okText="Clear"
-                cancelText="Cancel"
-                okButtonProps={{ danger: true, loading: savingCredentials }}
-                placement="top"
-                disabled={!canEditSettings}
-                onConfirm={() => handleClearCredential("openai")}
-              >
-                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                  Clear OpenAI API Key
-                </Button>
-              </Popconfirm>
-              <Popconfirm
-                title="Clear Anthropic API key?"
-                description="This removes the stored Anthropic API key from settings."
-                okText="Clear"
-                cancelText="Cancel"
-                okButtonProps={{ danger: true, loading: savingCredentials }}
-                placement="top"
-                disabled={!canEditSettings}
-                onConfirm={() => handleClearCredential("anthropic")}
-              >
-                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                  Clear Anthropic API Key
-                </Button>
-              </Popconfirm>
-            </Space>
-          </Form>
-        </Card>
-
-        <Card
-          bordered={false}
-          loading={rolesLoading}
-          title="Roles"
-          extra={
-            <Button
-              type="primary"
-              disabled={!canEditSettings}
-              onClick={() => {
-                setEditingRole(null);
-                roleForm.setFieldsValue({
-                  name: "",
-                  description: "",
-                  scopes: [],
-                  allowedProviders: [],
-                  allowedModels: [],
-                  allowedEfforts: []
-                });
-                setRoleModalOpen(true);
-              }}
-            >
-              Add Role
-            </Button>
-          }
-        >
-          <Table<Role>
-            rowKey="id"
-            pagination={false}
-            dataSource={roles}
-            columns={[
-              {
-                title: "Name",
-                dataIndex: "name",
-                render: (value: string, role) => (
-                  <Space>
-                    <Typography.Text strong>{value}</Typography.Text>
-                    {role.isSystem ? <Tag icon={<LockOutlined />}>System</Tag> : null}
-                  </Space>
-                )
-              },
-              {
-                title: "Description",
-                dataIndex: "description",
-                render: (value: string) => value || <Typography.Text type="secondary">None</Typography.Text>
-              },
-              {
-                title: "Scopes",
-                render: (_, role) => (
-                  <Space size={[4, 4]} wrap>
-                    {role.scopes.map((scope) => (
-                      <Tag key={scope}>{scope}</Tag>
-                    ))}
-                  </Space>
-                )
-              },
-              {
-                title: "Allowlists",
-                render: (_, role) => (
-                  <Space direction="vertical" size={4}>
-                    <Typography.Text type="secondary">{summarizeAllowlist("Providers", role.allowedProviders)}</Typography.Text>
-                    <Typography.Text type="secondary">{summarizeAllowlist("Models", role.allowedModels)}</Typography.Text>
-                    <Typography.Text type="secondary">{summarizeAllowlist("Efforts", role.allowedEfforts)}</Typography.Text>
-                  </Space>
-                )
-              },
-              {
-                title: "Actions",
-                render: (_, role) => (
-                  <Space>
-                    <Button
-                      disabled={!canEditSettings || role.isSystem}
-                      onClick={() => {
-                        setEditingRole(role);
-                        roleForm.setFieldsValue({
-                          name: role.name,
-                          description: role.description,
-                          scopes: role.scopes,
-                          allowedProviders: role.allowedProviders,
-                          allowedModels: role.allowedModels,
-                          allowedEfforts: role.allowedEfforts
-                        });
-                        setRoleModalOpen(true);
-                      }}
-                    >
-                      Edit
-                    </Button>
-                    <Button
-                      danger
-                      disabled={!canEditSettings || role.isSystem}
-                      onClick={async () => {
-                        try {
-                          await api.deleteRole(role.id);
-                          message.success("Role deleted");
-                          await loadRoles();
-                        } catch (error) {
-                          message.error(error instanceof Error ? error.message : "Failed to delete role");
-                        }
-                      }}
-                    >
-                      Delete
-                    </Button>
-                  </Space>
-                )
-              }
-            ]}
-          />
-        </Card>
-
-        <Card
-          bordered={false}
-          loading={loading}
-          title="Response Preferences"
-          extra={
-            <Button
-              type="primary"
-              disabled={!canEditSettings}
-              onClick={() => {
-                setEditingResponsePreferencePreset(null);
-                responsePreferencePresetForm.setFieldsValue({
-                  name: "",
-                  description: "",
-                  audience: undefined,
-                  explanationDepth: undefined,
-                  jargonLevel: undefined,
-                  codePreference: undefined,
-                  clarifyBehavior: undefined,
-                  formattingStyle: undefined,
-                  extraInstructions: ""
-                });
-                setResponsePreferencePresetModalOpen(true);
-              }}
-            >
-              Add Response Preference
-            </Button>
-          }
-        >
-          <Table<ResponsePreferencePreset>
-            rowKey="id"
-            pagination={false}
-            dataSource={responsePreferencePresets}
-            columns={[
-              {
-                title: "Name",
-                dataIndex: "name",
-                render: (value: string, preset) => (
-                  <Space>
-                    <Typography.Text strong>{value}</Typography.Text>
-                    {preset.isSystem ? <Tag icon={<LockOutlined />}>System</Tag> : null}
-                  </Space>
-                )
-              },
-              {
-                title: "Description",
-                dataIndex: "description",
-                render: (value: string) => value || <Typography.Text type="secondary">None</Typography.Text>
-              },
-              {
-                title: "Policy",
-                render: (_, preset) => summarizeResponsePreference(preset)
-              },
-              {
-                title: "Actions",
-                render: (_, preset) => (
-                  <Space>
-                    <Button
-                      disabled={!canEditSettings || preset.isSystem}
-                      onClick={() => {
-                        setEditingResponsePreferencePreset(preset);
-                        responsePreferencePresetForm.setFieldsValue({
-                          name: preset.name,
-                          description: preset.description,
-                          audience: preset.preference.audience,
-                          explanationDepth: preset.preference.explanationDepth,
-                          jargonLevel: preset.preference.jargonLevel,
-                          codePreference: preset.preference.codePreference,
-                          clarifyBehavior: preset.preference.clarifyBehavior,
-                          formattingStyle: preset.preference.formattingStyle,
-                          extraInstructions: preset.preference.extraInstructions ?? ""
-                        });
-                        setResponsePreferencePresetModalOpen(true);
-                      }}
-                    >
-                      Edit
-                    </Button>
-                    <Popconfirm
-                      title="Delete response preference?"
-                      description={`Delete ${preset.name}?`}
-                      disabled={!canEditSettings || preset.isSystem}
-                      onConfirm={async () => {
-                        if (!settings) {
-                          return;
-                        }
-                        try {
-                          const nextSettings = await api.updateSettings({
-                            responsePreferencePresets: responsePreferencePresets.filter((entry) => entry.id !== preset.id)
-                          });
-                          setSettings(nextSettings);
-                          message.success("Response preference deleted");
-                        } catch (error) {
-                          message.error(error instanceof Error ? error.message : "Failed to delete response preference");
-                        }
-                      }}
-                    >
-                      <Button
-                        danger
-                        disabled={!canEditSettings || preset.isSystem}
-                      >
-                        Delete
-                      </Button>
-                    </Popconfirm>
-                  </Space>
-                )
-              }
-            ]}
-          />
-        </Card>
-      </Space>
-
-      <Modal
-        open={roleModalOpen}
-        title={editingRole ? `Edit Role: ${editingRole.name}` : "Add Role"}
-        footer={null}
-        onCancel={() => setRoleModalOpen(false)}
-        destroyOnHidden
-      >
-        <Form
-          form={roleForm}
-          layout="vertical"
-          onFinish={async (values) => {
-            setSavingRole(true);
-            try {
-              if (editingRole) {
-                await api.updateRole(editingRole.id, values);
-                message.success("Role updated");
-              } else {
-                await api.createRole(values);
-                message.success("Role created");
-              }
-
-              setRoleModalOpen(false);
-              await loadRoles();
-            } catch (error) {
-              message.error(error instanceof Error ? error.message : "Failed to save role");
-            } finally {
-              setSavingRole(false);
-            }
-          }}
-        >
-          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a role name" }]}>
-            <Input disabled={!canEditSettings || editingRole?.isSystem} />
-          </Form.Item>
-          <Form.Item name="description" label="Description">
-            <Input.TextArea rows={3} disabled={!canEditSettings || editingRole?.isSystem} />
-          </Form.Item>
-          <Form.Item name="scopes" hidden rules={[{ required: true, message: "Select at least one scope" }]}>
-            <Select mode="multiple" options={[]} />
-          </Form.Item>
-          <Form.Item noStyle shouldUpdate>
-            {() => {
-              const selectedScopes = (roleForm.getFieldValue("scopes") ?? []) as PermissionScope[];
-              return (
-                <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                  {PERMISSION_SCOPE_GROUPS.map((group) => (
-                    <Card key={group.label} size="small" title={group.label}>
-                      <Checkbox.Group
-                        style={{ width: "100%" }}
-                        disabled={!canEditSettings || editingRole?.isSystem}
-                        value={group.scopes.filter((scope) => selectedScopes.includes(scope))}
-                        options={group.scopes.map((scope) => ({
-                          label: scope,
-                          value: scope
-                        }))}
-                        onChange={(checkedValues) => {
-                          const currentScopes = (roleForm.getFieldValue("scopes") ?? []) as PermissionScope[];
-                          const groupScopeSet = new Set(group.scopes);
-                          const otherScopes = currentScopes.filter((scope) => !groupScopeSet.has(scope));
-                          roleForm.setFieldValue("scopes", [...otherScopes, ...(checkedValues as PermissionScope[])]);
-                        }}
-                      />
-                    </Card>
-                  ))}
-                </Space>
-              );
-            }}
-          </Form.Item>
-          <Form.Item
-            name="allowedProviders"
-            label="Allowed Providers"
-            extra="Leave empty to allow all providers."
-          >
-            <Select
-              mode="multiple"
-              options={providerOptions}
-              disabled={!canEditSettings || editingRole?.isSystem}
-            />
-          </Form.Item>
-          <Form.Item
-            name="allowedModels"
-            label="Allowed Models"
-            extra="Leave empty to allow all models."
-          >
-            <Select
-              mode="multiple"
-              options={allModelOptions}
-              loading={codexModelsLoading || claudeModelsLoading}
-              optionFilterProp="label"
-              showSearch
-              disabled={!canEditSettings || editingRole?.isSystem}
-            />
-          </Form.Item>
-          <Form.Item
-            name="allowedEfforts"
-            label="Allowed Efforts"
-            extra="Leave empty to allow all efforts."
-          >
-            <Select
-              mode="multiple"
-              options={allEffortOptions}
-              disabled={!canEditSettings || editingRole?.isSystem}
-            />
-          </Form.Item>
-          <Button
-            type="primary"
-            htmlType="submit"
-            loading={savingRole}
-            disabled={!canEditSettings || editingRole?.isSystem}
-            block
-            style={{ marginTop: 16 }}
-          >
-            {editingRole ? "Save Role" : "Create Role"}
-          </Button>
-        </Form>
-      </Modal>
-
-      <Modal
-        open={responsePreferencePresetModalOpen}
-        title={editingResponsePreferencePreset ? `Edit Response Preference: ${editingResponsePreferencePreset.name}` : "Add Response Preference"}
-        footer={null}
-        onCancel={() => setResponsePreferencePresetModalOpen(false)}
-        destroyOnHidden
-      >
-        <Form
-          form={responsePreferencePresetForm}
-          layout="vertical"
-          onFinish={async (values) => {
-            if (!settings) {
-              return;
-            }
-
-            setSavingResponsePreferencePreset(true);
-            try {
-              const nextPresets = editingResponsePreferencePreset
-                ? responsePreferencePresets.map((preset) =>
-                    preset.id === editingResponsePreferencePreset.id
-                      ? {
-                          ...preset,
-                          name: values.name,
-                          description: values.description,
-                          preference: {
-                            audience: values.audience,
-                            explanationDepth: values.explanationDepth,
-                            jargonLevel: values.jargonLevel,
-                            codePreference: values.codePreference,
-                            clarifyBehavior: values.clarifyBehavior,
-                            formattingStyle: values.formattingStyle,
-                            extraInstructions: values.extraInstructions?.trim() || undefined
-                          }
-                        }
-                      : preset
-                  )
-                : [
-                    ...responsePreferencePresets,
-                    {
-                      name: values.name,
-                      description: values.description,
-                      preference: {
-                        audience: values.audience,
-                        explanationDepth: values.explanationDepth,
-                        jargonLevel: values.jargonLevel,
-                        codePreference: values.codePreference,
-                        clarifyBehavior: values.clarifyBehavior,
-                        formattingStyle: values.formattingStyle,
-                        extraInstructions: values.extraInstructions?.trim() || undefined
-                      }
-                    }
-                  ];
-
-              const nextSettings = await api.updateSettings({
-                responsePreferencePresets: nextPresets
-              });
-              setSettings(nextSettings);
-              setResponsePreferencePresetModalOpen(false);
-              message.success(editingResponsePreferencePreset ? "Response preference updated" : "Response preference created");
-            } catch (error) {
-              message.error(error instanceof Error ? error.message : "Failed to save response preference");
-            } finally {
-              setSavingResponsePreferencePreset(false);
-            }
-          }}
-        >
-          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a name" }]}>
-            <Input disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
-          </Form.Item>
-          <Form.Item name="description" label="Description">
-            <Input.TextArea rows={3} disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
-          </Form.Item>
-          <Form.Item name="audience" label="Audience">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use neutral"
-              options={[
-                { label: "Technical", value: "technical" },
-                { label: "Non-technical", value: "non_technical" },
-                { label: "Mixed", value: "mixed" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="explanationDepth" label="Explanation Depth">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default depth"
-              options={[
-                { label: "Brief", value: "brief" },
-                { label: "Standard", value: "standard" },
-                { label: "Detailed", value: "detailed" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="jargonLevel" label="Jargon Level">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default jargon level"
-              options={[
-                { label: "Avoid", value: "avoid" },
-                { label: "Balanced", value: "balanced" },
-                { label: "Expert", value: "expert" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="codePreference" label="Code Preference">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default code preference"
-              options={[
-                { label: "Only When Needed", value: "only_when_needed" },
-                { label: "Prefer Examples", value: "prefer_examples" },
-                { label: "Avoid Code", value: "avoid_code" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="clarifyBehavior" label="Clarify Behavior">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default clarify behavior"
-              options={[
-                { label: "Ask When Ambiguous", value: "ask_when_ambiguous" },
-                { label: "Make Reasonable Assumptions", value: "make_reasonable_assumptions" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="formattingStyle" label="Formatting Style">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default formatting style"
-              options={[
-                { label: "Direct", value: "direct" },
-                { label: "Teaching", value: "teaching" },
-                { label: "Executive", value: "executive" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="extraInstructions" label="Extra Instructions">
-            <Input.TextArea
-              rows={4}
-              maxLength={2000}
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              placeholder="Optional additional response instructions."
-            />
-          </Form.Item>
-          <Button
-            type="primary"
-            htmlType="submit"
-            loading={savingResponsePreferencePreset}
-            disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-            block
-            style={{ marginTop: 16 }}
-          >
-            {editingResponsePreferencePreset ? "Save Response Preference" : "Create Response Preference"}
-          </Button>
-        </Form>
-      </Modal>
-    </>
-  );
-}
-````
-
-## File: apps/web/components/snippets-page.tsx
-````typescript
-"use client";
-
-import { useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import dayjs from "dayjs";
-import type { Snippet } from "@agentswarm/shared-types";
-import { CopyOutlined } from "@ant-design/icons";
-import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
-import { api } from "../src/api/client";
-import { useSnippets } from "../src/hooks/useSnippets";
-import { useAuth } from "./auth-provider";
-import { trackEvent } from "../src/utils/analytics";
-
-const summarizeSnippet = (value: string): string => {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return "Empty";
-  }
-  return normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized;
-};
-
-export function SnippetsPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const { snippets, loading } = useSnippets();
-  const { can } = useAuth();
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [messageApi, contextHolder] = message.useMessage();
-  const canCreateSnippet = can("snippet:create");
-  const canEditSnippet = can("snippet:edit");
-  const canDeleteSnippet = can("snippet:delete");
-  const canDuplicateSnippet = can("snippet:create");
-  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
-
-  useEffect(() => {
-    const savedState = searchParams.get("saved");
-    if (!savedState) {
-      return;
-    }
-    if (savedState === "created") {
-      messageApi.success("Snippet created");
-    } else if (savedState === "updated") {
-      messageApi.success("Snippet updated");
-    }
-    router.replace("/snippets");
-  }, [messageApi, router, searchParams]);
-
-  const copySnippetToClipboard = async (content: string, label: string) => {
-    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-      messageApi.error("Clipboard access is unavailable in this browser.");
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(content);
-      messageApi.success(`${label} copied`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to copy snippet");
-    }
-  };
-
-  return (
-    <>
-      {contextHolder}
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
-        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-          <Flex vertical gap={0}>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              Snippets
-            </Typography.Title>
-            <Typography.Text type="secondary">
-              Store reusable text blocks and insert them into task prompts and follow-up messages.
-            </Typography.Text>
-          </Flex>
-          {canCreateSnippet ? (
-            <Button type="primary" onClick={() => router.push("/snippets/new?from=list")}>
-              Add Snippet
-            </Button>
-          ) : null}
-        </Flex>
-
-        <Card bordered={false}>
-          <Table<Snippet>
-            rowKey="id"
-            loading={loading}
-            dataSource={snippets}
-            pagination={{ pageSize: 10 }}
-            columns={[
-              {
-                title: "Name",
-                dataIndex: "name"
-              },
-              {
-                title: "Preview",
-                dataIndex: "content",
-                render: (value: string) => summarizeSnippet(value)
-              },
-              {
-                title: "Updated At",
-                dataIndex: "updatedAt",
-                sorter: (left, right) => left.updatedAt.localeCompare(right.updatedAt),
-                defaultSortOrder: "descend",
-                render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
-              },
-              {
-                title: "Actions",
-                key: "actions",
-                width: 280,
-                render: (_value, snippet) => (
-                  <Space size={8} wrap={false} style={{ whiteSpace: "nowrap" }}>
-                    <Button size="small" icon={<CopyOutlined />} onClick={() => void copySnippetToClipboard(snippet.content, snippet.name)}>
-                      Copy
-                    </Button>
-                    {canEditSnippet ? (
-                      <Button size="small" onClick={() => router.push(`/snippets/${snippet.id}/edit?from=list`)}>
-                        Edit
-                      </Button>
-                    ) : null}
-                    {canDuplicateSnippet ? (
-                      <Button
-                        size="small"
-                        loading={duplicatingId === snippet.id}
-                        onClick={async () => {
-                          setDuplicatingId(snippet.id);
-                          try {
-                            const duplicated = await api.duplicateSnippet(snippet.id);
-                            trackEvent("snippet_duplicated", { source: "list", snippet_id: snippet.id, duplicated_snippet_id: duplicated.id });
-                            messageApi.success("Snippet duplicated");
-                            router.push(`/snippets/${duplicated.id}/edit?from=duplicate`);
-                          } catch (error) {
-                            messageApi.error(error instanceof Error ? error.message : "Failed to duplicate snippet");
-                          } finally {
-                            setDuplicatingId(null);
-                          }
-                        }}
-                      >
-                        Duplicate
-                      </Button>
-                    ) : null}
-                    {canDeleteSnippet ? (
-                      <Popconfirm
-                        title="Delete snippet?"
-                        description={`Delete "${snippet.name}"?`}
-                        okText="Delete"
-                        okButtonProps={{ danger: true, loading: deletingId === snippet.id }}
-                        onConfirm={async () => {
-                          setDeletingId(snippet.id);
-                          try {
-                            await api.deleteSnippet(snippet.id);
-                            messageApi.success("Snippet deleted");
-                          } catch (error) {
-                            messageApi.error(error instanceof Error ? error.message : "Failed to delete snippet");
-                          } finally {
-                            setDeletingId(null);
-                          }
-                        }}
-                      >
-                        <Button danger size="small">
-                          Delete
-                        </Button>
-                      </Popconfirm>
-                    ) : null}
-                  </Space>
-                )
-              }
-            ]}
-          />
-        </Card>
-      </Space>
-    </>
-  );
-}
-````
-
-## File: apps/web/components/task-create-page.tsx
-````typescript
-"use client";
-
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import type { TaskSourceType, TaskType } from "@agentswarm/shared-types";
-import { Button, Flex, Form, Space, Typography, message } from "antd";
-import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
-import { trackEvent } from "../src/utils/analytics";
-import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
-import { useAuth } from "./auth-provider";
-import {
-  TaskDefinitionFields,
-  type TaskDefinitionFormValues,
-  buildTaskDefinitionInput,
-  getTaskDefinitionInitialValues
-} from "./task-definition-fields";
-
-export function TaskCreatePage() {
-  const router = useRouter();
-  const { can } = useAuth();
-  const [form] = Form.useForm<TaskDefinitionFormValues>();
-  const [submitting, setSubmitting] = useState(false);
-  const [savingDraft, setSavingDraft] = useState(false);
-  const [messageApi, contextHolder] = message.useMessage();
-  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
-  const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
-  const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
-  const isIssueSource = selectedSourceType === "issue";
-  const isPullRequestSource = selectedSourceType === "pull_request";
-  const canCreateAnyTaskMode = can("task:build") || can("task:ask");
-
-  const pageTitle =
-    selectedSourceType === "issue"
-      ? "New Task From Issue"
-      : selectedSourceType === "pull_request"
-        ? "New Task From Pull Request"
-        : selectedTaskType === "ask"
-            ? "New Ask Task"
-            : "New Build Task";
-
-  const handleSubmit = async (values: TaskDefinitionFormValues) => {
-    setSubmitting(true);
-    try {
-      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
-      const definition = buildTaskDefinitionInput(values, encodedAttachments);
-      trackEvent("task_create_submitted", { source: definition.sourceType });
-      const task = await createTaskFromDefinition(definition);
-
-      messageApi.success(startMessageForDefinition(definition));
-      setPromptImageFiles([]);
-      router.push(`/tasks/${task.id}`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to create task");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleSaveDraft = async () => {
-    const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
-    setSavingDraft(true);
-    try {
-      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
-      const definition = buildTaskDefinitionInput(values, encodedAttachments);
-      const draft = await createTaskFromDefinition(definition, { draft: true });
-      messageApi.success("Draft saved");
-      router.push(`/tasks/${draft.id}`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to save draft");
-    } finally {
-      setSavingDraft(false);
-    }
-  };
-
-  return (
-    <>
-      {contextHolder}
-      <Form
-        form={form}
-        layout="vertical"
-        initialValues={getTaskDefinitionInitialValues()}
-        onFinish={handleSubmit}
-      >
-        <Flex vertical gap={16}>
-          <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-            <Flex vertical gap={0}>
-              <Typography.Title level={2} style={{ margin: 0 }}>
-                {pageTitle}
-              </Typography.Title>
-              <Typography.Text type="secondary">
-                Configure the task on the left and write the prompt on the right.
-              </Typography.Text>
-            </Flex>
-            <Space>
-              <Button onClick={() => router.push("/tasks")}>Cancel</Button>
-              <Button loading={savingDraft} onClick={() => void handleSaveDraft()}>
-                Save Draft
-              </Button>
-              <Button type="primary" htmlType="submit" loading={submitting} disabled={!canCreateAnyTaskMode}>
-                {isIssueSource ? "Create Task From Issue" : isPullRequestSource ? "Create Task From Pull Request" : "Create Task"}
-              </Button>
-            </Space>
-          </Flex>
-
-          <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
-        </Flex>
-      </Form>
-    </>
-  );
-}
-````
-
-## File: apps/web/src/utils/task-history.ts
-````typescript
-import {
-  getTaskTerminalSessionEndMessage,
-  getTaskTerminalSessionReviewMessage,
-  getTaskTerminalSessionStartMessage,
-  type TaskAction,
-  type TaskChangeProposal,
-  type TaskMessage,
-  type TaskRun,
-  type SequenceRun
-} from "@agentswarm/shared-types";
-
-type RawMessageHistoryEntry = {
-  key: string;
-  kind: "message";
-  timestamp: string;
-  message: TaskMessage;
-};
-
-type RawRunHistoryEntry = {
-  key: string;
-  kind: "run";
-  timestamp: string;
-  run: TaskRun;
-};
-
-type RawProposalHistoryEntry = {
-  key: string;
-  kind: "proposal";
-  timestamp: string;
-  proposal: TaskChangeProposal;
-};
-
-export type GroupedAutoRunHistoryEntry = {
-  key: string;
-  kind: "grouped_auto_run";
-  timestamp: string;
-  run: TaskRun;
-  isQueued?: boolean;
-  sequenceRunId?: string;
-  sequenceStepIndex?: number;
-  promptText: string;
-  promptMessage: TaskMessage | null;
-  summaryMessage: TaskMessage | null;
-  proposal: TaskChangeProposal | null;
-};
-
-export type GroupedTerminalHistoryEntry = {
-  key: string;
-  kind: "grouped_terminal_session";
-  timestamp: string;
-  sessionId: string | null;
-  startMessage: TaskMessage;
-  endMessage: TaskMessage | null;
-  proposal: TaskChangeProposal | null;
-  active: boolean;
-};
-
-export type TaskHistoryEntry =
-  | RawMessageHistoryEntry
-  | RawRunHistoryEntry
-  | RawProposalHistoryEntry
-  | GroupedAutoRunHistoryEntry
-  | GroupedTerminalHistoryEntry;
-
-export const INTERACTIVE_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("interactive");
-export const INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("interactive");
-export const INTERACTIVE_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("interactive").replace(/\.$/, "");
-export const GIT_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("git");
-export const LEGACY_GIT_TERMINAL_START_MESSAGE = "Git terminal session started.";
-export const GIT_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("git");
-export const GIT_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("git").replace(/\.$/, "");
-
-type AutoRunAction = Extract<TaskAction, "ask" | "build">;
-
-function compareIso(leftTimestamp: string, rightTimestamp: string, leftKey: string, rightKey: string): number {
-  if (leftTimestamp === rightTimestamp) {
-    return leftKey.localeCompare(rightKey);
-  }
-
-  return leftTimestamp.localeCompare(rightTimestamp);
-}
-
-function isAutoRunAction(action: TaskRun["action"]): action is AutoRunAction {
-  return action === "ask" || action === "build";
-}
-
-function isAutoPromptMessage(message: TaskMessage): message is TaskMessage & { role: "user"; action: AutoRunAction } {
-  return message.role === "user" && (message.action === "ask" || message.action === "build");
-}
-
-function isAssistantSummaryMessage(message: TaskMessage): message is TaskMessage & { role: "assistant"; action: AutoRunAction } {
-  return message.role === "assistant" && (message.action === "ask" || message.action === "build");
-}
-
-function isInteractiveTerminalStartMessage(message: TaskMessage): boolean {
-  return (
-    message.role === "system" &&
-    (
-      message.content === INTERACTIVE_TERMINAL_START_MESSAGE ||
-      message.content === GIT_TERMINAL_START_MESSAGE ||
-      message.content === LEGACY_GIT_TERMINAL_START_MESSAGE
-    )
-  );
-}
-
-function isInteractiveTerminalEndMessage(message: TaskMessage): boolean {
-  return (
-    message.role === "system" &&
-    (message.content.startsWith(INTERACTIVE_TERMINAL_END_PREFIX) || message.content.startsWith(GIT_TERMINAL_END_PREFIX))
-  );
-}
-
-export function buildTaskHistoryEntries(input: {
-  messages: TaskMessage[];
-  runs: TaskRun[];
-  proposals: TaskChangeProposal[];
-  sequenceRun?: SequenceRun | null;
-  interactiveTerminalRunning?: boolean;
-}): TaskHistoryEntry[] {
-  const sortedMessages = [...input.messages].sort((left, right) =>
-    compareIso(left.createdAt, right.createdAt, left.id, right.id)
-  );
-  const sortedRuns = [...input.runs].sort((left, right) => compareIso(left.startedAt, right.startedAt, left.id, right.id));
-  const sortedProposals = [...input.proposals].sort((left, right) =>
-    compareIso(left.createdAt, right.createdAt, left.id, right.id)
-  );
-
-  const consumedMessageIds = new Set<string>();
-  const consumedRunIds = new Set<string>();
-  const consumedProposalIds = new Set<string>();
-  const groupedAutoEntries: GroupedAutoRunHistoryEntry[] = [];
-  const groupedTerminalEntries: GroupedTerminalHistoryEntry[] = [];
-
-  const autoPromptCandidates = sortedMessages.filter(isAutoPromptMessage);
-  const autoAssistantCandidates = sortedMessages.filter(isAssistantSummaryMessage);
-  const promptQueues: Record<AutoRunAction, TaskMessage[]> = { ask: [], build: [] };
-  let promptCursor = 0;
-
-  const buildProposalByRunId = new Map<string, TaskChangeProposal>();
-  for (const proposal of sortedProposals) {
-    if (proposal.sourceType !== "build_run") {
-      continue;
-    }
-    if (!buildProposalByRunId.has(proposal.sourceId)) {
-      buildProposalByRunId.set(proposal.sourceId, proposal);
-    }
-  }
-  const sequenceStepPromptByTaskRunId = new Map<string, string>();
-  const sequenceStepIndexByTaskRunId = new Map<string, number>();
-  const sequenceStepIndexByUniquePrompt = new Map<string, number>();
-  if (input.sequenceRun) {
-    const promptCounts = new Map<string, number>();
-    for (const step of input.sequenceRun.steps) {
-      const prompt = step.prompt.trim();
-      if (!prompt) {
-        continue;
-      }
-      promptCounts.set(prompt, (promptCounts.get(prompt) ?? 0) + 1);
-    }
-    for (const step of input.sequenceRun.steps) {
-      const prompt = step.prompt.trim();
-      if (!prompt || (promptCounts.get(prompt) ?? 0) !== 1) {
-        continue;
-      }
-      sequenceStepIndexByUniquePrompt.set(prompt, step.index);
-    }
-
-    for (const step of input.sequenceRun.steps) {
-      const taskRunId = step.taskRunId?.trim();
-      const stepPrompt = step.prompt.trim();
-      if (!taskRunId || !stepPrompt || sequenceStepPromptByTaskRunId.has(taskRunId)) {
-        continue;
-      }
-      sequenceStepPromptByTaskRunId.set(taskRunId, stepPrompt);
-      sequenceStepIndexByTaskRunId.set(taskRunId, step.index);
-    }
-  }
-
-  for (const run of sortedRuns) {
-    if (!isAutoRunAction(run.action)) {
-      continue;
-    }
-
-    while (promptCursor < autoPromptCandidates.length && autoPromptCandidates[promptCursor]!.createdAt <= run.startedAt) {
-      const candidate = autoPromptCandidates[promptCursor]!;
-      if (!consumedMessageIds.has(candidate.id)) {
-        promptQueues[candidate.action].push(candidate);
-      }
-      promptCursor += 1;
-    }
-
-    const promptMessage = promptQueues[run.action].shift() ?? null;
-    if (promptMessage) {
-      consumedMessageIds.add(promptMessage.id);
-    }
-    const fallbackSequencePrompt = sequenceStepPromptByTaskRunId.get(run.id) ?? null;
-    const promptText = promptMessage?.content ?? fallbackSequencePrompt ?? "No matched user prompt was found for this run.";
-    const inferredSequenceStepIndex =
-      sequenceStepIndexByTaskRunId.get(run.id) ??
-      sequenceStepIndexByUniquePrompt.get(promptText.trim());
-
-    let summaryMessage: TaskMessage | null = null;
-    const normalizedRunSummary = run.summary?.trim() ?? "";
-    if (normalizedRunSummary) {
-      const summaryThreshold = run.finishedAt ?? run.startedAt;
-      summaryMessage =
-        autoAssistantCandidates.find(
-          (message) =>
-            !consumedMessageIds.has(message.id) &&
-            message.action === run.action &&
-            message.createdAt >= summaryThreshold &&
-            message.content.trim() === normalizedRunSummary
-        ) ?? null;
-
-      if (summaryMessage) {
-        consumedMessageIds.add(summaryMessage.id);
-      }
-    }
-
-    const proposal = buildProposalByRunId.get(run.id) ?? null;
-    if (proposal) {
-      consumedProposalIds.add(proposal.id);
-    }
-
-    consumedRunIds.add(run.id);
-    groupedAutoEntries.push({
-      key: `grouped-auto-${run.id}`,
-      kind: "grouped_auto_run",
-      timestamp: run.startedAt,
-      run,
-      sequenceRunId: inferredSequenceStepIndex !== undefined ? input.sequenceRun?.id : undefined,
-      sequenceStepIndex: inferredSequenceStepIndex,
-      promptText,
-      promptMessage,
-      summaryMessage,
-      proposal
-    });
-  }
-
-  if (input.sequenceRun) {
-    const knownRunIds = new Set(sortedRuns.map((run) => run.id));
-    const inferredTemplateRun = sortedRuns.at(-1) ?? null;
-    const queuedSteps = input.sequenceRun.steps.filter((step) => step.state === "pending");
-    const anchorTimestamp =
-      input.sequenceRun.steps.find((step) => step.state === "running")?.startedAt ??
-      input.sequenceRun.steps
-        .slice()
-        .reverse()
-        .find((step) => step.state === "succeeded" || step.state === "failed")?.finishedAt ??
-      input.sequenceRun.startedAt;
-
-    for (const step of queuedSteps) {
-      const stepRunId = step.taskRunId?.trim();
-      if (stepRunId && knownRunIds.has(stepRunId)) {
-        continue;
-      }
-      const syntheticRunId = stepRunId || `sequence-queued-${input.sequenceRun.id}-${step.index + 1}`;
-      const syntheticRun: TaskRun = {
-        id: syntheticRunId,
-        taskId: input.sequenceRun.taskId,
-        action: inferredTemplateRun?.action ?? "build",
-        provider: inferredTemplateRun?.provider ?? "codex",
-        providerProfile: inferredTemplateRun?.providerProfile ?? "high",
-        modelOverride: inferredTemplateRun?.modelOverride ?? null,
-        branchName: inferredTemplateRun?.branchName ?? null,
-        status: "running",
-        startedAt: anchorTimestamp ?? input.sequenceRun.startedAt,
-        finishedAt: null,
-        summary: null,
-        changeOutcome: null,
-        errorMessage: null,
-        changeProposalCheckpointRef: null,
-        changeProposalUntrackedPaths: null,
-        logs: []
-      };
-      groupedAutoEntries.push({
-        key: `grouped-auto-queued-${input.sequenceRun.id}-${step.index + 1}`,
-        kind: "grouped_auto_run",
-        timestamp: syntheticRun.startedAt,
-        run: syntheticRun,
-        isQueued: true,
-        sequenceRunId: input.sequenceRun.id,
-        sequenceStepIndex: step.index,
-        promptText: step.prompt.trim() || "Sequence step queued.",
-        promptMessage: null,
-        summaryMessage: null,
-        proposal: null
-      });
-    }
-  }
-
-  const terminalStartMessages = sortedMessages.filter(isInteractiveTerminalStartMessage);
-  const terminalEndMessages = sortedMessages.filter(isInteractiveTerminalEndMessage);
-  const interactiveProposals = sortedProposals.filter((proposal) => proposal.sourceType === "interactive_session");
-  const lastTerminalStartMessageId = terminalStartMessages.at(-1)?.id ?? null;
-  const interactiveProposalsBySessionId = new Map<string, TaskChangeProposal>();
-  for (const proposal of interactiveProposals) {
-    if (!interactiveProposalsBySessionId.has(proposal.sourceId)) {
-      interactiveProposalsBySessionId.set(proposal.sourceId, proposal);
-    }
-  }
-  let terminalEndCursor = 0;
-  let interactiveProposalCursor = 0;
-
-  for (const startMessage of terminalStartMessages) {
-    if (consumedMessageIds.has(startMessage.id)) {
-      continue;
-    }
-
-    while (
-      terminalEndCursor < terminalEndMessages.length &&
-      (consumedMessageIds.has(terminalEndMessages[terminalEndCursor]!.id) ||
-        terminalEndMessages[terminalEndCursor]!.createdAt < startMessage.createdAt)
-    ) {
-      terminalEndCursor += 1;
-    }
-
-    const startSessionId = typeof startMessage.sessionId === "string" && startMessage.sessionId.trim().length > 0 ? startMessage.sessionId : null;
-    let endMessage: TaskMessage | null = null;
-
-    if (startSessionId) {
-      endMessage =
-        terminalEndMessages.find(
-          (message) =>
-            !consumedMessageIds.has(message.id) &&
-            message.createdAt >= startMessage.createdAt &&
-            message.sessionId === startSessionId
-        ) ?? null;
-    } else {
-      endMessage = terminalEndCursor < terminalEndMessages.length ? terminalEndMessages[terminalEndCursor]! : null;
-    }
-
-    if (!endMessage) {
-      if (input.interactiveTerminalRunning && startMessage.id === lastTerminalStartMessageId) {
-        consumedMessageIds.add(startMessage.id);
-        groupedTerminalEntries.push({
-          key: `grouped-terminal-${startMessage.id}`,
-          kind: "grouped_terminal_session",
-          timestamp: startMessage.createdAt,
-          sessionId: startSessionId,
-          startMessage,
-          endMessage: null,
-          proposal: null,
-          active: true
-        });
-      }
-      continue;
-    }
-
-    terminalEndCursor += 1;
-    consumedMessageIds.add(startMessage.id);
-    consumedMessageIds.add(endMessage.id);
-
-    const endSessionId = typeof endMessage.sessionId === "string" && endMessage.sessionId.trim().length > 0 ? endMessage.sessionId : null;
-    let sessionId = startSessionId ?? endSessionId;
-    let proposal: TaskChangeProposal | null = null;
-    if (endMessage.content === INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE || endMessage.content === GIT_TERMINAL_END_REVIEW_MESSAGE) {
-      if (sessionId) {
-        const matchedProposal = interactiveProposalsBySessionId.get(sessionId) ?? null;
-        if (matchedProposal && !consumedProposalIds.has(matchedProposal.id)) {
-          proposal = matchedProposal;
-          consumedProposalIds.add(matchedProposal.id);
-        }
-      }
-
-      if (!proposal) {
-        while (
-          interactiveProposalCursor < interactiveProposals.length &&
-          (consumedProposalIds.has(interactiveProposals[interactiveProposalCursor]!.id) ||
-            interactiveProposals[interactiveProposalCursor]!.createdAt < endMessage.createdAt)
-        ) {
-          interactiveProposalCursor += 1;
-        }
-
-        proposal = interactiveProposalCursor < interactiveProposals.length ? interactiveProposals[interactiveProposalCursor]! : null;
-        if (proposal) {
-          consumedProposalIds.add(proposal.id);
-          interactiveProposalCursor += 1;
-        }
-      }
-    }
-
-    sessionId = sessionId ?? proposal?.sourceId ?? null;
-
-    groupedTerminalEntries.push({
-      key: `grouped-terminal-${startMessage.id}`,
-      kind: "grouped_terminal_session",
-      timestamp: startMessage.createdAt,
-      sessionId,
-      startMessage,
-      endMessage,
-      proposal,
-      active: false
-    });
-  }
-
-  const rawRuns = sortedRuns.filter((run) => !consumedRunIds.has(run.id));
-  const rawRunSummaryKeys = new Set(
-    rawRuns.filter((run) => run.summary?.trim()).map((run) => `${run.action}:${run.summary?.trim()}`)
-  );
-
-  const rawMessages = sortedMessages.filter((message) => {
-    if (consumedMessageIds.has(message.id)) {
-      return false;
-    }
-
-    if (message.role === "assistant" && message.action) {
-      const trimmedContent = message.content.trim();
-      if (trimmedContent && rawRunSummaryKeys.has(`${message.action}:${trimmedContent}`)) {
-        return false;
-      }
-    }
-
-    return true;
-  });
-  const rawProposals = sortedProposals.filter((proposal) => !consumedProposalIds.has(proposal.id));
-
-  const entries = [
-    ...groupedAutoEntries,
-    ...groupedTerminalEntries,
-    ...rawMessages.map(
-      (message): RawMessageHistoryEntry => ({
-        key: `message-${message.id}`,
-        kind: "message",
-        timestamp: message.createdAt,
-        message
-      })
-    ),
-    ...rawRuns.map(
-      (run): RawRunHistoryEntry => ({
-        key: `run-${run.id}`,
-        kind: "run",
-        timestamp: run.startedAt,
-        run
-      })
-    ),
-    ...rawProposals.map(
-      (proposal): RawProposalHistoryEntry => ({
-        key: `proposal-${proposal.id}`,
-        kind: "proposal",
-        timestamp: proposal.createdAt,
-        proposal
-      })
-    )
-  ];
-
-  return entries.sort((left, right) => {
-    if (left.kind === "grouped_auto_run" && right.kind === "grouped_auto_run") {
-      const leftSequenceRunId = left.sequenceRunId?.trim() ?? "";
-      const rightSequenceRunId = right.sequenceRunId?.trim() ?? "";
-      const leftSequenceStepIndex = typeof left.sequenceStepIndex === "number" ? left.sequenceStepIndex : null;
-      const rightSequenceStepIndex = typeof right.sequenceStepIndex === "number" ? right.sequenceStepIndex : null;
-      if (
-        leftSequenceRunId.length > 0 &&
-        leftSequenceRunId === rightSequenceRunId &&
-        leftSequenceStepIndex !== null &&
-        rightSequenceStepIndex !== null &&
-        leftSequenceStepIndex !== rightSequenceStepIndex
-      ) {
-        return leftSequenceStepIndex - rightSequenceStepIndex;
-      }
-    }
-    return compareIso(left.timestamp, right.timestamp, left.key, right.key);
-  });
-}
-````
-
-## File: AGENTS.md
-````markdown
-# Agent Harness Guide
-
-This file is a short operating guide for coding agents in this repository.
-
-## Start Here
-- If `REMOTE_BUILD=1`, export `REMOTE_BUILD_IMAGE` first.
-- Run `./scripts/harness/doctor.sh`
-- Run `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh` on clean checkout
-- Run `./scripts/harness/check-human-gated-flow.sh`
-- Run `./scripts/harness/check.sh`
-- Run `./scripts/harness/test.sh` (canonical test command)
-- Run `./scripts/harness/start.sh` (foreground dev mode)
-
-## Expected PR Workflow
-1. Run `./scripts/harness/pr-ready.sh`.
-2. Fix any failing checks.
-3. Complete the agent self-review checklist: `docs/development/agent-review.md`.
-4. Open a PR using `.github/pull_request_template.md`.
-5. Confirm docs are updated when behavior changes.
-
-Note:
-- `pr-ready.sh` includes architecture boundary checks.
-- `test.sh` supports `TEST_SCOPE=unit|integration|e2e|all`.
-
-## Documentation Table of Contents
-- [Architecture Summary](ARCHITECTURE.md)
-- [Docs Home](docs/index.md)
-- [Development Setup](docs/development/setup.md)
-- [Development Commands](docs/development/commands.md)
-- [Human-Gated Flow](docs/development/human-gated-taskwise-delivery-flow.md)
-- [Testing](docs/development/testing.md)
-- [Debugging](docs/development/debugging.md)
-- [Agent Self-Review](docs/development/agent-review.md)
-- [PR Workflow](docs/development/pr-workflow.md)
-- [Architecture Docs](docs/architecture/index.md)
-- [Product Docs](docs/product/index.md)
-- [Quality Docs](docs/quality/scorecard.md)
-- [Golden Principles](docs/quality/golden-principles.md)
-
-## Execution Plans
-- Small tasks can use inline plans in the task conversation.
-- Non-trivial tasks must use the Non-Trivial Task Flow below.
-- Complex tasks must create an execution plan using `docs/exec-plans/template.md`.
-- Plans must be updated during work as steps complete or scope changes.
-- Completed plans move from `docs/exec-plans/active/` to `docs/exec-plans/completed/`.
-- Complex task plans must include the required `Human-Gated Flow Evidence` checklist from the template.
-- Flow reference: `docs/development/human-gated-taskwise-delivery-flow.md`.
-
-## Non-Trivial Task Flow
-Use this flow for any task that requires repository changes beyond a tiny, obvious edit, touches multiple files, changes behavior, affects tests or build output, or has ambiguous requirements.
-
-```mermaid
-flowchart TB
-    A["Read Requirements"] --> B["Quick Repo Research"]
-    B --> C{"Clear Enough?"}
-    C -- No --> D["Ask Clarifying Questions"]
-    D --> A
-    C -- Yes --> E["Create Short Plan + Task List"]
-    E --> F["Human Review / Approval"]
-    F --> G{"Approved?"}
-    G -- No --> A
-    G -- Yes --> H["Run Baseline Checks"]
-    H --> I["Implement Next Task"]
-    I --> J["Run Tests / Build"]
-    J --> K{"Passed?"}
-    K -- No --> I
-    K -- Yes --> L["Self Review"]
-    L --> M{"More Tasks?"}
-    M -- Yes --> I
-    M -- No --> N["Final Verification"]
-    N --> R["Complete"]
-```
-
-## Operating Rules
-- Prefer harness scripts in `scripts/harness/`.
-- Treat non-zero exit codes as failures.
-- Do not assume behavior that is not documented in this repository.
-- Mark missing evidence as `TODO` instead of guessing.
-- Before starting work, inspect `docs/repomix.md` for the current repository context bundle.
-- After any agent run that changes code or repository files, execute `npx repomix --style markdown --output docs/repomix.md` to refresh the repository context bundle.
-- Keep `docs/repomix.md` as the canonical Repomix output referenced by agents.
-
-## Remote Build Runner
-Use `http://host.docker.internal:38127` and call `POST /run` with:
-- `image`
-- `workdir`
-- `cmd` (non-empty string array, for example `["sh","-lc","echo ok"]`)
-
-For `workdir`, prefer `TASK_WORKSPACE_PATH`.
-
-Runner mount support:
-- `dockerSocketContainerPath`: `/var/run/docker.sock` (available for mounting Docker into the runner container)
-
-Harness remote mode:
-- Set `REMOTE_BUILD=1` to force harness scripts to run in Remote Build Runner.
-- Set `REMOTE_BUILD_IMAGE` to the container image used by the runner request.
-- Optional: set `REMOTE_BUILD_RUNNER_URL` (defaults to `http://host.docker.internal:38127`).
-- Harness scripts auto-route to `POST /run` before local execution when remote mode is enabled.
-- Set `REMOTE_BUILD=0` (or unset it) to run harness scripts locally.
-- Use a remote image that has: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
-- `test.sh` auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`) for browser E2E when the remote runner cannot launch Playwright locally.
-
-## Sync Policy Reference
-- GitHub sync ownership and conflict policy: [docs/github-sync-ownership-model.md](docs/github-sync-ownership-model.md)
-````
-
-## File: agent-runtime-codex/run-task.mjs
-````javascript
-import { createWriteStream } from "node:fs";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
-import path from "node:path";
-
-const manifestPath = process.env.TASK_MANIFEST_FILE;
-const providerConfigPath = process.env.PROVIDER_CONFIG_FILE;
-const openAiApiKey = process.env.OPENAI_API_KEY ?? "";
-const openAiBaseUrl = process.env.OPENAI_BASE_URL ?? "";
-const codexAuthJsonB64 = process.env.CODEX_AUTH_JSON_B64 ?? "";
-const codexAuthJson = codexAuthJsonB64.trim()
-  ? Buffer.from(codexAuthJsonB64, "base64").toString("utf8").trim()
-  : "";
-
-if (!manifestPath) {
-  console.error("TASK_MANIFEST_FILE is required");
-  process.exit(1);
-}
-if (!providerConfigPath) {
-  console.error("PROVIDER_CONFIG_FILE is required");
-  process.exit(1);
-}
-if (!openAiApiKey && !codexAuthJson) {
-  console.error("OPENAI_API_KEY or CODEX_AUTH_JSON_B64 is required");
-  process.exit(1);
-}
-
-const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-const providerConfig = await readFile(providerConfigPath, "utf8").catch(() => "");
-const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
-const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
-const codexDir = configuredStatePath && configuredStatePath.length > 0 ? configuredStatePath : path.join("/root", ".codex");
-const homeDir = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : path.dirname(codexDir);
-const lastMessageFile = path.join(path.dirname(manifest.resultJsonPath), "codex-last-message.txt");
-const sessionIdFile = path.join(codexDir, "agentswarm-session-id.txt");
-const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
-  ? manifest.rawEventsJsonlPath.trim()
-  : path.join(path.dirname(manifest.resultJsonPath), "raw-events.jsonl");
-
-const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-const isSessionId = (value) => typeof value === "string" && SESSION_ID_PATTERN.test(value.trim());
-
-const readPersistedSessionId = async () => {
-  const raw = await readFile(sessionIdFile, "utf8").catch(() => "");
-  const candidate = raw.trim();
-  return isSessionId(candidate) ? candidate : null;
-};
-
-const writePersistedSessionId = async (sessionId) => {
-  if (!isSessionId(sessionId)) {
-    return;
-  }
-
-  await writeFile(sessionIdFile, `${sessionId.trim()}\n`, "utf8");
-};
-
-const listRolloutFiles = async (sessionsRoot) => {
-  const pending = [sessionsRoot];
-  const files = [];
-
-  while (pending.length > 0) {
-    const currentDir = pending.pop();
-    if (!currentDir) {
-      continue;
-    }
-
-    const entries = await readdir(currentDir, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name);
-      if (entry.isDirectory()) {
-        pending.push(fullPath);
-        continue;
-      }
-
-      if (entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl")) {
-        files.push(fullPath);
-      }
-    }
-  }
-
-  return files;
-};
-
-const sessionIdFromRolloutFileName = (rolloutPath) => {
-  const match = path.basename(rolloutPath).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
-  return match?.[1] ?? null;
-};
-
-const inferSessionIdFromRolloutFiles = async () => {
-  const sessionsRoot = path.join(codexDir, "sessions");
-  const rolloutFiles = await listRolloutFiles(sessionsRoot);
-  if (rolloutFiles.length === 0) {
-    return null;
-  }
-
-  const withMtime = await Promise.all(
-    rolloutFiles.map(async (rolloutPath) => ({
-      rolloutPath,
-      mtimeMs: (await stat(rolloutPath).catch(() => null))?.mtimeMs ?? 0
-    }))
-  );
-  withMtime.sort((left, right) => right.mtimeMs - left.mtimeMs);
-
-  for (const { rolloutPath } of withMtime) {
-    const candidate = sessionIdFromRolloutFileName(rolloutPath);
-    if (isSessionId(candidate)) {
-      return candidate;
-    }
-  }
-
-  return null;
-};
-
-const extractSessionIdFromJsonEvent = (event) => {
-  if (!event || typeof event !== "object") {
-    return null;
-  }
-
-  const directFields = [event.session_id, event.sessionId, event.thread_id, event.threadId];
-  for (const value of directFields) {
-    if (isSessionId(value)) {
-      return value.trim();
-    }
-  }
-
-  if (event.type === "session_meta" && event.payload && typeof event.payload === "object" && isSessionId(event.payload.id)) {
-    return event.payload.id.trim();
-  }
-
-  return null;
-};
-
-const extractSessionIdFromOutputLine = (line) => {
-  if (!line || !line.trim().startsWith("{")) {
-    return null;
-  }
-
-  try {
-    return extractSessionIdFromJsonEvent(JSON.parse(line));
-  } catch {
-    return null;
-  }
-};
-
-await mkdir(homeDir, { recursive: true });
-await mkdir(codexDir, { recursive: true });
-await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
-await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
-await writeFile(path.join(codexDir, "config.toml"), providerConfig, "utf8");
-if (codexAuthJson) {
-  await writeFile(path.join(codexDir, "auth.json"), codexAuthJson, "utf8");
-}
-console.log("[runtime] wrote Codex config");
-
-if (openAiBaseUrl) {
-  process.env.OPENAI_BASE_URL = openAiBaseUrl;
-}
-if (openAiApiKey) {
-  process.env.OPENAI_API_KEY = openAiApiKey;
-}
-process.env.GIT_OPTIONAL_LOCKS = "0";
-process.env.HOME = homeDir;
-
-const buildResponsePreferencePreamble = () => {
-  const preference = manifest.agentResponsePreference;
-  if (!preference || typeof preference !== "object") {
-    return "";
-  }
-
-  const lines = ["Response style:"];
-  if (preference.audience === "technical") {
-    lines.push("- Audience: technical.");
-  } else if (preference.audience === "non_technical") {
-    lines.push("- Audience: non-technical.");
-  } else if (preference.audience === "mixed") {
-    lines.push("- Audience: mixed.");
-  }
-
-  if (preference.explanationDepth) {
-    lines.push(`- Explanation depth: ${preference.explanationDepth}.`);
-  }
-  if (preference.jargonLevel) {
-    lines.push(`- Jargon level: ${preference.jargonLevel}.`);
-  }
-  if (preference.codePreference) {
-    lines.push(`- Code preference: ${preference.codePreference}.`);
-  }
-  if (preference.clarifyBehavior) {
-    lines.push(`- Clarification behavior: ${preference.clarifyBehavior}.`);
-  }
-  if (preference.formattingStyle) {
-    lines.push(`- Formatting style: ${preference.formattingStyle}.`);
-  }
-  if (typeof preference.extraInstructions === "string" && preference.extraInstructions.trim()) {
-    lines.push(`- Extra instructions: ${preference.extraInstructions.trim()}`);
-  }
-
-  if (lines.length === 1) {
-    return "";
-  }
-
-  return lines.join("\n");
-};
-
-const buildPrompt = () => {
-  const rawContent = typeof manifest.content === "string" && manifest.content.trim().length > 0
-    ? manifest.content.trim()
-    : (typeof manifest.prompt === "string" ? manifest.prompt.trim() : "");
-  const attachments = Array.isArray(manifest.attachments)
-    ? manifest.attachments.filter(
-        (attachment) =>
-          attachment &&
-          typeof attachment === "object" &&
-          typeof attachment.name === "string" &&
-          typeof attachment.absolutePath === "string" &&
-          attachment.name.trim().length > 0 &&
-          attachment.absolutePath.trim().length > 0
-      )
-    : [];
-
-  if (rawContent.length === 0) {
-    throw new Error("Task prompt is empty");
-  }
-
-  const promptSections = [];
-  if (attachments.length > 0) {
-    promptSections.push(
-      "Reference Images:",
-      ...attachments.map((attachment) => `- ${attachment.absolutePath.trim()} (${attachment.name.trim()})`),
-      ""
-    );
-  }
-  const responsePreferencePreamble = buildResponsePreferencePreamble();
-  if (responsePreferencePreamble) {
-    promptSections.push(responsePreferencePreamble, "");
-  }
-  promptSections.push("Current user request:", "", rawContent);
-  return promptSections.join("\n");
-};
-
-if (!codexAuthJson) {
-  await new Promise((resolve, reject) => {
-    const proc = spawn("codex", ["login", "--with-api-key"], {
-      env: process.env,
-      cwd: manifest.workspacePath,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-    proc.stdin.write(openAiApiKey);
-    proc.stdin.end();
-    proc.stdout.on("data", (chunk) => process.stdout.write(chunk));
-    proc.stderr.on("data", (chunk) => process.stderr.write(chunk));
-    proc.on("error", reject);
-    proc.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      reject(new Error(`codex login exited with ${code ?? "unknown"}`));
-    });
-  });
-}
-
-const prompt = buildPrompt();
-const isAsk = manifest.action === "ask";
-const persistedSessionId = await readPersistedSessionId();
-let resolvedSessionId = persistedSessionId;
-
-console.log(
-  `[runtime] running codex action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only instruction)" : ""} session=${persistedSessionId ?? "new"}`
-);
-const args = [
-  "exec",
-  "-C",
-  manifest.workspacePath,
-  "-c",
-  "cli_auth_credentials_store=file",
-  "--color",
-  "never",
-  "--json",
-  "--output-last-message",
-  lastMessageFile
-];
-// Ask-mode immutability is enforced by mounting the workspace as read-only in the spawner.
-// Avoid Codex sandbox flags here because nested bubblewrap can fail on hosts without user namespaces.
-args.push("--dangerously-bypass-approvals-and-sandbox");
-if (manifest.resolvedModel) {
-  args.push("-m", manifest.resolvedModel);
-}
-if (manifest.resolvedReasoningEffort) {
-  args.push("-c", `model_reasoning_effort=\"${manifest.resolvedReasoningEffort}\"`);
-}
-if (persistedSessionId) {
-  args.push("resume", persistedSessionId);
-}
-for (const attachment of Array.isArray(manifest.attachments) ? manifest.attachments : []) {
-  if (typeof attachment?.absolutePath === "string" && attachment.absolutePath.trim().length > 0) {
-    args.push("--image", attachment.absolutePath.trim());
-  }
-}
-if (persistedSessionId) {
-  args.push(prompt);
-} else {
-  args.push("--", prompt);
-}
-
-const execProc = spawn("codex", args, { env: process.env, cwd: manifest.workspacePath, stdio: ["ignore", "pipe", "pipe"] });
-let stdoutBuffer = "";
-let stderrBuffer = "";
-const rawEventsStream = createWriteStream(rawEventsJsonlPath, { flags: "a" });
-
-execProc.stdout.on("data", (chunk) => {
-  rawEventsStream.write(chunk);
-  const text = chunk.toString();
-  stdoutBuffer += text;
-  const lines = stdoutBuffer.split("\n");
-  stdoutBuffer = lines.pop() ?? "";
-  for (const line of lines) {
-    const candidate = extractSessionIdFromOutputLine(line);
-    if (candidate) {
-      resolvedSessionId = candidate;
-    }
-  }
-  process.stdout.write(chunk);
-});
-execProc.stderr.on("data", (chunk) => {
-  stderrBuffer += chunk.toString();
-  process.stderr.write(chunk);
-});
-let codexProcessError = null;
-await new Promise((resolve, reject) => {
-  execProc.on("error", reject);
-  execProc.on("close", (code) => {
-    const trailingSessionId = extractSessionIdFromOutputLine(stdoutBuffer);
-    if (trailingSessionId) {
-      resolvedSessionId = trailingSessionId;
-    }
-
-    if (code === 0) {
-      resolve();
-      return;
-    }
-
-    const stderrTail = stderrBuffer.trim();
-    reject(new Error(`codex exited with code ${code ?? "unknown"}${stderrTail ? `: ${stderrTail}` : ""}`));
-  });
-}).catch((error) => {
-  codexProcessError = error;
-});
-await new Promise((resolve, reject) => {
-  rawEventsStream.end(() => resolve());
-  rawEventsStream.on("error", reject);
-});
-if (codexProcessError) {
-  throw codexProcessError;
-}
-
-if (!resolvedSessionId) {
-  resolvedSessionId = await inferSessionIdFromRolloutFiles();
-}
-if (resolvedSessionId) {
-  await writePersistedSessionId(resolvedSessionId);
-  console.log(`[runtime] codex session_id=${resolvedSessionId}`);
-}
-
-const summaryMarkdown = (await readFile(lastMessageFile, "utf8").catch(() => "")).trim();
-if (!summaryMarkdown) {
-  throw new Error("codex returned empty summary markdown");
-}
-
-await writeFile(manifest.resultMarkdownPath, `${summaryMarkdown}\n`, "utf8");
-await writeFile(
-  manifest.resultJsonPath,
-  JSON.stringify(
-    {
-      taskType: manifest.taskType,
-      status: "success",
-      summaryMarkdown,
-      changedFiles: [],
-      metadata: {
-        provider: manifest.provider,
-        action: manifest.action,
-        ...(resolvedSessionId ? { sessionId: resolvedSessionId } : {})
-      }
-    },
-    null,
-    2
-  ),
-  "utf8"
-);
-
-console.log("[runtime] completed");
 ````
 
 ## File: apps/server/src/services/repository-store.ts
@@ -34329,465 +29832,2722 @@ export class PostgresRepositoryStore implements RepositoryStore {
 }
 ````
 
-## File: apps/server/src/services/sequence-execution-service.test.ts
+## File: apps/server/src/services/webhook-delivery-service.test.ts
+````typescript
+import assert from "node:assert/strict";
+import { afterEach, describe, it } from "node:test";
+import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
+import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
+import { WebhookDeliveryService } from "./webhook-delivery-service.js";
+
+class FakeRedis {
+  private readonly kv = new Map<string, string>();
+  private readonly zsets = new Map<string, Map<string, number>>();
+
+  private getZset(key: string): Map<string, number> {
+    let current = this.zsets.get(key);
+    if (!current) {
+      current = new Map<string, number>();
+      this.zsets.set(key, current);
+    }
+    return current;
+  }
+
+  async set(key: string, value: string): Promise<"OK"> {
+    this.kv.set(key, value);
+    return "OK";
+  }
+
+  async get(key: string): Promise<string | null> {
+    return this.kv.get(key) ?? null;
+  }
+
+  async del(...keys: string[]): Promise<number> {
+    let deleted = 0;
+    for (const key of keys) {
+      if (this.kv.delete(key)) {
+        deleted += 1;
+      }
+    }
+    return deleted;
+  }
+
+  async zadd(key: string, score: number, member: string): Promise<number> {
+    this.getZset(key).set(member, score);
+    return 1;
+  }
+
+  async zrem(key: string, member: string): Promise<number> {
+    const zset = this.getZset(key);
+    const existed = zset.delete(member);
+    return existed ? 1 : 0;
+  }
+
+  async zrangebyscore(
+    key: string,
+    min: number,
+    max: number,
+    _limitKeyword?: string,
+    offset?: number,
+    count?: number
+  ): Promise<string[]> {
+    const parsedOffset = Number.isFinite(offset) ? Number(offset) : 0;
+    const parsedCount = Number.isFinite(count) ? Number(count) : Number.MAX_SAFE_INTEGER;
+    return [...this.getZset(key).entries()]
+      .filter(([, score]) => score >= min && score <= max)
+      .sort((a, b) => a[1] - b[1])
+      .slice(parsedOffset, parsedOffset + parsedCount)
+      .map(([member]) => member);
+  }
+
+  multi(): {
+    set: (key: string, value: string) => unknown;
+    zadd: (key: string, score: number, member: string) => unknown;
+    zrem: (key: string, member: string) => unknown;
+    del: (...keys: string[]) => unknown;
+    exec: () => Promise<unknown[]>;
+  } {
+    const operations: Array<() => void> = [];
+    const chain = {
+      set: (key: string, value: string) => {
+        operations.push(() => {
+          this.kv.set(key, value);
+        });
+        return chain;
+      },
+      zadd: (key: string, score: number, member: string) => {
+        operations.push(() => {
+          this.getZset(key).set(member, score);
+        });
+        return chain;
+      },
+      zrem: (key: string, member: string) => {
+        operations.push(() => {
+          this.getZset(key).delete(member);
+        });
+        return chain;
+      },
+      del: (...keys: string[]) => {
+        operations.push(() => {
+          for (const key of keys) {
+            this.kv.delete(key);
+          }
+        });
+        return chain;
+      },
+      exec: async () => {
+        for (const operation of operations) {
+          operation();
+        }
+        return [] as unknown[];
+      }
+    };
+    return chain;
+  }
+}
+
+const baseTask = (): Task => ({
+  id: "task-1",
+  title: "Example task",
+  deadline: null,
+  pinned: false,
+  hasPendingCheckpoint: false,
+  ownerUserId: "user-1",
+  repoId: "repo-1",
+  repoName: "Repo",
+  repoUrl: "https://github.com/example/repo.git",
+  repoDefaultBranch: "main",
+  taskType: "build",
+  provider: "codex",
+  providerProfile: "medium",
+  modelOverride: null,
+  baseBranch: "main",
+  branchStrategy: "feature_branch",
+  complexity: "normal",
+  branchName: "agentswarm/task-1",
+  workspaceBaseRef: null,
+  prompt: "Do it",
+  resultMarkdown: null,
+  executionSummary: "Do it",
+  branchDiff: null,
+  lastAction: "build",
+  status: "build_queued",
+  workflowStatus: "ready",
+  executionStatus: "queued",
+  executionAction: "build",
+  reviewReason: null,
+  logs: [],
+  enqueued: false,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+  startedAt: null,
+  finishedAt: null,
+  errorMessage: null
+});
+
+const baseRepository = (): Repository => ({
+  id: "repo-1",
+  name: "Repo",
+  url: "https://github.com/example/repo.git",
+  defaultBranch: "main",
+  envVars: [],
+  webhookUrl: "https://example.com/webhook",
+  webhookEnabled: true,
+  webhookSecretConfigured: true,
+  webhookLastAttemptAt: null,
+  webhookLastStatus: null,
+  webhookLastError: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z"
+});
+
+describe("WebhookDeliveryService", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("delivers created events and records successful delivery", async () => {
+    const redis = new FakeRedis();
+    const deliveryResults: Array<{ status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }> = [];
+    const repositoryStore = {
+      getRepositoryWebhookTarget: async () => ({
+        repository: baseRepository(),
+        webhookUrl: "https://example.com/webhook",
+        webhookSecret: "super-secret"
+      }),
+      recordWebhookDeliveryResult: async (
+        _repoId: string,
+        input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
+      ) => {
+        deliveryResults.push(input);
+        return baseRepository();
+      }
+    };
+    const fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    const store = new RedisWebhookDeliveryStore(redis as never);
+    const event: RealtimeEvent = { type: "task:created", payload: baseTask() };
+    const service = new WebhookDeliveryService(store, repositoryStore as never);
+    await service.handleRealtimeEvent(event);
+    await (service as unknown as { processDueJobs: () => Promise<void> }).processDueJobs();
+
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fetchCalls[0]?.url, "https://example.com/webhook");
+    const headers = fetchCalls[0]?.init?.headers as Record<string, string>;
+    assert.equal(headers["x-agentswarm-event"], "created");
+    assert.equal(typeof headers["x-agentswarm-signature"], "string");
+    assert.equal(deliveryResults.length, 1);
+    assert.equal(deliveryResults[0]?.status, "success");
+  });
+
+  it("queues updated events only when status changes", async () => {
+    const redis = new FakeRedis();
+    const repositoryStore = {
+      getRepositoryWebhookTarget: async () => null,
+      recordWebhookDeliveryResult: async () => null
+    };
+    const store = new RedisWebhookDeliveryStore(redis as never);
+    const service = new WebhookDeliveryService(store, repositoryStore as never);
+    const task = baseTask();
+
+    await service.handleRealtimeEvent({ type: "task:created", payload: task });
+    await service.handleRealtimeEvent({ type: "task:updated", payload: { ...task, updatedAt: "2026-01-01T00:01:00.000Z" } });
+    await service.handleRealtimeEvent({
+      type: "task:updated",
+      payload: {
+        ...task,
+        status: "building",
+        updatedAt: "2026-01-01T00:02:00.000Z"
+      }
+    });
+
+    const queued = await redis.zrangebyscore("agentswarm:webhook_delivery_queue", 0, Number.MAX_SAFE_INTEGER);
+    assert.equal(queued.length, 2);
+  });
+});
+````
+
+## File: apps/web/components/settings-page.tsx
+````typescript
+"use client";
+
+import { useEffect, useState } from "react";
+import type {
+  AgentProvider,
+  AgentClarifyBehavior,
+  AgentCodePreference,
+  AgentExplanationDepth,
+  AgentFormattingStyle,
+  AgentJargonLevel,
+  AudienceType,
+  McpServerTransport,
+  PermissionScope,
+  ProviderProfile,
+  ResponsePreferencePreset,
+  Role,
+  SystemSettings
+} from "@agentswarm/shared-types";
+import {
+  PERMISSION_SCOPE_GROUPS,
+  getAgentProviderLabel,
+  getEffortOptionsForProvider,
+  getModelsForProvider
+} from "@agentswarm/shared-types";
+import { DeleteOutlined, LockOutlined, PlusOutlined } from "@ant-design/icons";
+import {
+  Alert,
+  App,
+  Button,
+  Card,
+  Checkbox,
+  Divider,
+  Flex,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Popconfirm,
+  Select,
+  Space,
+  Switch,
+  Table,
+  Tag,
+  Tooltip,
+  Typography
+} from "antd";
+import { api } from "../src/api/client";
+import { useSettings } from "../src/hooks/useSettings";
+import { useProviderModels } from "../src/hooks/useProviderModels";
+import { useAuth } from "./auth-provider";
+
+interface McpServerFormItem {
+  name: string;
+  enabled: boolean;
+  transport: McpServerTransport;
+  command?: string;
+  argsText?: string;
+  url?: string;
+  bearerTokenEnvVar?: string;
+}
+
+interface GeneralSettingsForm {
+  defaultProvider: AgentProvider;
+  maxAgents: number;
+  branchPrefix: string;
+  gitUsername: string;
+  openaiBaseUrl: string;
+  taskPromptMagicModel: string;
+  taskPromptMagicTemplate: string;
+  mcpServers: McpServerFormItem[];
+  codexDefaultModel: string;
+  codexDefaultEffort: ProviderProfile;
+  claudeDefaultModel: string;
+  claudeDefaultEffort: ProviderProfile;
+}
+
+interface CredentialForm {
+  githubToken?: string;
+  openaiApiKey?: string;
+  anthropicApiKey?: string;
+}
+
+interface RoleFormValues {
+  name: string;
+  description: string;
+  scopes: PermissionScope[];
+  allowedProviders: AgentProvider[];
+  allowedModels: string[];
+  allowedEfforts: ProviderProfile[];
+}
+
+interface ResponsePreferencePresetFormValues {
+  name: string;
+  description: string;
+  audience?: AudienceType;
+  explanationDepth?: AgentExplanationDepth;
+  jargonLevel?: AgentJargonLevel;
+  codePreference?: AgentCodePreference;
+  clarifyBehavior?: AgentClarifyBehavior;
+  formattingStyle?: AgentFormattingStyle;
+  extraInstructions?: string;
+}
+
+type ClearCredentialTarget = "github" | "openai" | "anthropic";
+
+const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
+  { label: "stdio", value: "stdio" },
+  { label: "http", value: "http" }
+];
+
+const providerOptions: Array<{ label: string; value: AgentProvider }> = [
+  { label: getAgentProviderLabel("codex"), value: "codex" },
+  { label: getAgentProviderLabel("claude"), value: "claude" }
+];
+
+const summarizeAllowlist = (label: string, values: string[]): string => `${label}: ${values.length === 0 ? "All" : values.join(", ")}`;
+const toSentenceValue = (value: string): string => value.replace(/_/g, " ");
+const summarizeResponsePreference = (preset: ResponsePreferencePreset): string => {
+  const parts: string[] = [];
+  if (preset.preference.audience) {
+    parts.push(`Audience: ${toSentenceValue(preset.preference.audience)}`);
+  }
+  if (preset.preference.explanationDepth) {
+    parts.push(`Depth: ${toSentenceValue(preset.preference.explanationDepth)}`);
+  }
+  if (preset.preference.jargonLevel) {
+    parts.push(`Jargon: ${toSentenceValue(preset.preference.jargonLevel)}`);
+  }
+  return parts.length > 0 ? parts.join(" | ") : "Neutral";
+};
+
+const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
+  defaultProvider: settings.defaultProvider,
+  maxAgents: settings.maxAgents,
+  branchPrefix: settings.branchPrefix,
+  gitUsername: settings.gitUsername,
+  openaiBaseUrl: settings.openaiBaseUrl ?? "",
+  taskPromptMagicModel: settings.taskPromptMagicModel,
+  taskPromptMagicTemplate: settings.taskPromptMagicTemplate,
+  mcpServers: settings.mcpServers.map((server) => ({
+    name: server.name,
+    enabled: server.enabled,
+    transport: server.transport,
+    command: server.command ?? "",
+    argsText: (server.args ?? []).join("\n"),
+    url: server.url ?? "",
+    bearerTokenEnvVar: server.bearerTokenEnvVar ?? ""
+  })),
+  codexDefaultModel: settings.codexDefaultModel,
+  codexDefaultEffort: settings.codexDefaultEffort,
+  claudeDefaultModel: settings.claudeDefaultModel,
+  claudeDefaultEffort: settings.claudeDefaultEffort
+});
+
+export function SettingsPage() {
+  const { message } = App.useApp();
+  const { can } = useAuth();
+  const { loading, setSettings, settings } = useSettings();
+  const [generalForm] = Form.useForm<GeneralSettingsForm>();
+  const [credentialForm] = Form.useForm<CredentialForm>();
+  const [roleForm] = Form.useForm<RoleFormValues>();
+  const [responsePreferencePresetForm] = Form.useForm<ResponsePreferencePresetFormValues>();
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [rolesLoading, setRolesLoading] = useState(true);
+  const [savingGeneral, setSavingGeneral] = useState(false);
+  const [savingCredentials, setSavingCredentials] = useState(false);
+  const [savingRole, setSavingRole] = useState(false);
+  const [savingResponsePreferencePreset, setSavingResponsePreferencePreset] = useState(false);
+  const [roleModalOpen, setRoleModalOpen] = useState(false);
+  const [editingRole, setEditingRole] = useState<Role | null>(null);
+  const [responsePreferencePresetModalOpen, setResponsePreferencePresetModalOpen] = useState(false);
+  const [editingResponsePreferencePreset, setEditingResponsePreferencePreset] = useState<ResponsePreferencePreset | null>(null);
+  const canEditSettings = can("settings:edit");
+  const { models: codexModels, loading: codexModelsLoading } = useProviderModels("codex");
+  const { models: claudeModels, loading: claudeModelsLoading } = useProviderModels("claude");
+  const allModelOptions = Array.from(
+    new Map(
+      [...codexModels, ...claudeModels, ...getModelsForProvider("codex"), ...getModelsForProvider("claude")].map((option) => [option.value, option])
+    ).values()
+  ).sort((left, right) => left.label.localeCompare(right.label));
+  const allEffortOptions = Array.from(
+    new Map(
+      [...getEffortOptionsForProvider("codex"), ...getEffortOptionsForProvider("claude")].map((option) => [option.value, option])
+    ).values()
+  );
+  const responsePreferencePresets = settings?.responsePreferencePresets ?? [];
+
+  const loadRoles = async () => {
+    setRolesLoading(true);
+    try {
+      setRoles(await api.listRoles());
+    } finally {
+      setRolesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!settings) {
+      return;
+    }
+
+    generalForm.setFieldsValue(toFormValues(settings));
+  }, [generalForm, settings]);
+
+  useEffect(() => {
+    void loadRoles();
+  }, []);
+
+  const handleClearCredential = async (target: ClearCredentialTarget): Promise<void> => {
+    setSavingCredentials(true);
+    try {
+      if (target === "github") {
+        const nextSettings = await api.updateCredentials({ clearGithubToken: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["githubToken"]);
+        message.success("GitHub token cleared");
+        return;
+      }
+
+      if (target === "openai") {
+        const nextSettings = await api.updateCredentials({ clearOpenAiApiKey: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["openaiApiKey"]);
+        message.success("OpenAI API key cleared");
+        return;
+      }
+
+      const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
+      setSettings(nextSettings);
+      credentialForm.resetFields(["anthropicApiKey"]);
+      message.success("Anthropic API key cleared");
+    } catch (error) {
+      if (target === "github") {
+        message.error(error instanceof Error ? error.message : "Failed to clear GitHub token");
+        return;
+      }
+
+      if (target === "openai") {
+        message.error(error instanceof Error ? error.message : "Failed to clear OpenAI API key");
+        return;
+      }
+
+      message.error(error instanceof Error ? error.message : "Failed to clear Anthropic API key");
+    } finally {
+      setSavingCredentials(false);
+    }
+  };
+
+  return (
+    <>
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Flex vertical gap={0}>
+          <Typography.Title level={2} style={{ margin: 0 }}>
+            Settings
+          </Typography.Title>
+          <Typography.Text type="secondary">
+            Concurrency, runtime defaults, provider credentials, and role-based access control.
+          </Typography.Text>
+        </Flex>
+
+        {!canEditSettings ? (
+          <Alert
+            type="info"
+            showIcon
+            message="Read-only access"
+            description="This account can view system configuration and roles, but it cannot change them."
+          />
+        ) : null}
+
+        <Form
+          form={generalForm}
+          layout="vertical"
+          disabled={!canEditSettings}
+          onFinish={async (values) => {
+            setSavingGeneral(true);
+            try {
+              const nextSettings = await api.updateSettings({
+                defaultProvider: values.defaultProvider,
+                maxAgents: values.maxAgents,
+                branchPrefix: values.branchPrefix,
+                gitUsername: values.gitUsername,
+                openaiBaseUrl: values.openaiBaseUrl?.trim() ? values.openaiBaseUrl.trim() : null,
+                taskPromptMagicModel: values.taskPromptMagicModel,
+                taskPromptMagicTemplate: values.taskPromptMagicTemplate,
+                codexDefaultModel: values.codexDefaultModel,
+                codexDefaultEffort: values.codexDefaultEffort,
+                claudeDefaultModel: values.claudeDefaultModel,
+                claudeDefaultEffort: values.claudeDefaultEffort,
+                mcpServers: (values.mcpServers ?? []).map((server) =>
+                  server.transport === "http"
+                    ? {
+                        name: server.name,
+                        enabled: server.enabled,
+                        transport: "http" as const,
+                        url: server.url?.trim() || "",
+                        bearerTokenEnvVar: server.bearerTokenEnvVar?.trim() || null
+                      }
+                    : {
+                        name: server.name,
+                        enabled: server.enabled,
+                        transport: "stdio" as const,
+                        command: server.command?.trim() || "",
+                        args:
+                          server.argsText
+                            ?.split("\n")
+                            .map((item) => item.trim())
+                            .filter(Boolean) ?? []
+                      }
+                )
+              });
+              setSettings(nextSettings);
+              message.success("Settings saved");
+            } catch (error) {
+              message.error(error instanceof Error ? error.message : "Failed to save settings");
+            } finally {
+              setSavingGeneral(false);
+            }
+          }}
+        >
+          <Space direction="vertical" size={16} style={{ width: "100%" }}>
+            <Card bordered={false} loading={loading} title="Runtime Controls">
+              <Flex vertical gap={16} style={{ width: "100%" }}>
+                <Form.Item name="defaultProvider" label="Default Provider" rules={[{ required: true }]}>
+                  <Select options={providerOptions} />
+                </Form.Item>
+                <Form.Item
+                  name="maxAgents"
+                  label="Concurrent Agents"
+                  extra="Hard limit on how many agents can run in parallel."
+                  rules={[{ required: true }]}
+                >
+                  <InputNumber min={1} max={20} style={{ width: "100%" }} />
+                </Form.Item>
+              </Flex>
+            </Card>
+
+            <Card bordered={false} loading={loading} title="Provider Defaults">
+              <Flex vertical gap={24} style={{ width: "100%" }}>
+                <div>
+                  <Typography.Text strong>OpenAI Gateway</Typography.Text>
+                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
+                    <Form.Item
+                      name="openaiBaseUrl"
+                      label="Base URL Override"
+                      extra="Set when pointing to a proxy or self-hosted gateway."
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input placeholder="https://api.openai.com/v1" />
+                    </Form.Item>
+                    <Form.Item
+                      name="taskPromptMagicModel"
+                      label="Task Prompt Magic Model"
+                      extra="Model used by the Magic Prompt helper in task creation."
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input placeholder="gpt-5.4-mini" />
+                    </Form.Item>
+                    <Form.Item
+                      name="taskPromptMagicTemplate"
+                      label="Task Prompt Magic Template"
+                      extra="Use {{user_request}} as placeholder for the user's current text."
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input.TextArea autoSize={{ minRows: 6, maxRows: 16 }} placeholder="Template with {{user_request}} placeholder" />
+                    </Form.Item>
+                  </Flex>
+                </div>
+
+                <div>
+                  <Typography.Text strong>Codex (OpenAI)</Typography.Text>
+                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
+                    <Form.Item name="codexDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
+                      <Select options={codexModels} loading={codexModelsLoading} showSearch optionFilterProp="label" />
+                    </Form.Item>
+                    <Form.Item name="codexDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
+                      <Select options={getEffortOptionsForProvider("codex")} />
+                    </Form.Item>
+                  </Flex>
+                </div>
+
+                <div>
+                  <Typography.Text strong>Claude Code (Anthropic)</Typography.Text>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    style={{ marginTop: 8 }}
+                    message="Experimental"
+                    description="Claude Code in AgentSwarm is experimental; behavior and defaults may change."
+                  />
+                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
+                    <Form.Item name="claudeDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
+                      <Select options={claudeModels} loading={claudeModelsLoading} showSearch optionFilterProp="label" />
+                    </Form.Item>
+                    <Form.Item name="claudeDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
+                      <Select options={getEffortOptionsForProvider("claude")} />
+                    </Form.Item>
+                  </Flex>
+                </div>
+              </Flex>
+            </Card>
+
+            <Card bordered={false} loading={loading} title="Git & Branching">
+              <Flex vertical gap={16} style={{ width: "100%" }}>
+                <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
+                  <Input placeholder="agentswarm" />
+                </Form.Item>
+                <Form.Item
+                  name="gitUsername"
+                  label="Git Username"
+                  extra="Used for authenticated pushes from the runtime."
+                  rules={[{ required: true, whitespace: true }]}
+                >
+                  <Input placeholder="x-access-token" />
+                </Form.Item>
+              </Flex>
+            </Card>
+
+            <Card bordered={false} loading={loading} title="MCP Servers">
+              <Form.List name="mcpServers">
+                {(fields, { add, remove }) => (
+                  <Space direction="vertical" size={16} style={{ width: "100%" }}>
+                    {fields.map((field) => (
+                      <Card
+                        key={field.key}
+                        size="small"
+                        title={`Server ${field.name + 1}`}
+                        extra={
+                          <Button
+                            danger
+                            type="text"
+                            icon={<DeleteOutlined />}
+                            disabled={!canEditSettings}
+                            onClick={() => remove(field.name)}
+                          >
+                            Remove
+                          </Button>
+                        }
+                      >
+                        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                          <Form.Item name={[field.name, "name"]} label="Name" rules={[{ required: true, whitespace: true }]}>
+                            <Input placeholder="memory" />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "enabled"]} label="Enabled" valuePropName="checked">
+                            <Switch />
+                          </Form.Item>
+                          <Form.Item name={[field.name, "transport"]} label="Transport" rules={[{ required: true }]}>
+                            <Select options={transportOptions} />
+                          </Form.Item>
+                          <Form.Item noStyle shouldUpdate>
+                            {() => {
+                              const transport = generalForm.getFieldValue(["mcpServers", field.name, "transport"]) ?? "stdio";
+                              return transport === "http" ? (
+                                <>
+                                  <Form.Item name={[field.name, "url"]} label="URL" rules={[{ required: true, whitespace: true }]}>
+                                    <Input placeholder="https://example.com/mcp" />
+                                  </Form.Item>
+                                  <Form.Item
+                                    name={[field.name, "bearerTokenEnvVar"]}
+                                    label="Bearer Token Env Var"
+                                    extra="Environment variable name available to the server process (for example MCP_TOKEN)."
+                                    rules={[
+                                      {
+                                        validator: (_rule, value?: string) => {
+                                          if (!value || value.trim().length === 0) {
+                                            return Promise.resolve();
+                                          }
+
+                                          return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.trim())
+                                            ? Promise.resolve()
+                                            : Promise.reject(
+                                                new Error("Use a valid environment variable name (letters, numbers, underscore).")
+                                              );
+                                        }
+                                      }
+                                    ]}
+                                  >
+                                    <Input placeholder="MY_MCP_TOKEN" />
+                                  </Form.Item>
+                                </>
+                              ) : (
+                                <>
+                                  <Form.Item name={[field.name, "command"]} label="Command" rules={[{ required: true, whitespace: true }]}>
+                                    <Input placeholder="docker" />
+                                  </Form.Item>
+                                  <Form.Item name={[field.name, "argsText"]} label="Arguments">
+                                    <Input.TextArea rows={6} placeholder={"run\n-i\n--rm\nmcp/memory"} />
+                                  </Form.Item>
+                                </>
+                              );
+                            }}
+                          </Form.Item>
+                        </Space>
+                      </Card>
+                    ))}
+
+                    <Button
+                      type="dashed"
+                      icon={<PlusOutlined />}
+                      disabled={!canEditSettings}
+                      onClick={() =>
+                        add({
+                          name: "",
+                          enabled: true,
+                          transport: "stdio",
+                          command: "",
+                          argsText: ""
+                        })
+                      }
+                    >
+                      Add MCP Server
+                    </Button>
+                  </Space>
+                )}
+              </Form.List>
+            </Card>
+          </Space>
+
+          <Flex justify="flex-start" style={{ marginTop: 16 }}>
+            <Button type="primary" htmlType="submit" loading={savingGeneral} disabled={!canEditSettings}>
+              Save Settings
+            </Button>
+          </Flex>
+        </Form>
+
+        <Divider />
+
+        <Card
+          bordered={false}
+          loading={loading}
+          title="Credentials"
+          extra={
+            settings ? (
+              <Space>
+                <Tag color={settings.githubTokenConfigured ? "green" : "default"}>
+                  GitHub Token {settings.githubTokenConfigured ? "Configured" : "Missing"}
+                </Tag>
+                <Tag color={settings.openaiApiKeyConfigured ? "green" : "default"}>
+                  OpenAI API Key {settings.openaiApiKeyConfigured ? "Configured" : "Missing"}
+                </Tag>
+                <Tag color={settings.anthropicApiKeyConfigured ? "green" : "default"}>
+                  Anthropic API Key (Claude, experimental) {settings.anthropicApiKeyConfigured ? "Configured" : "Missing"}
+                </Tag>
+              </Space>
+            ) : null
+          }
+        >
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Credentials are write-only"
+            description="Tokens are encrypted on the server and never returned by the API."
+          />
+          <Form
+            form={credentialForm}
+            layout="vertical"
+            disabled={!canEditSettings}
+            onFinish={async (values) => {
+              setSavingCredentials(true);
+              try {
+                const nextSettings = await api.updateCredentials({
+                  githubToken: values.githubToken?.trim() || undefined,
+                  openaiApiKey: values.openaiApiKey?.trim() || undefined,
+                  anthropicApiKey: values.anthropicApiKey?.trim() || undefined
+                });
+                credentialForm.resetFields();
+                setSettings(nextSettings);
+                message.success("Credentials updated");
+              } catch (error) {
+                message.error(error instanceof Error ? error.message : "Failed to update credentials");
+              } finally {
+                setSavingCredentials(false);
+              }
+            }}
+          >
+            <Form.Item name="githubToken" label="GitHub Token">
+              <Input.Password placeholder={settings?.githubTokenConfigured ? "Configured. Enter a new token to replace it." : "github_pat_..."} />
+            </Form.Item>
+            <Form.Item name="openaiApiKey" label="OpenAI API Key">
+              <Input.Password placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."} />
+            </Form.Item>
+            <Form.Item
+              name="anthropicApiKey"
+              label="Anthropic API Key"
+              extra="Used for Claude Code (experimental) runs only."
+            >
+              <Input.Password placeholder={settings?.anthropicApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-ant-..."} />
+            </Form.Item>
+            <Space wrap>
+              <Button type="primary" htmlType="submit" loading={savingCredentials} disabled={!canEditSettings}>
+                Save Credentials
+              </Button>
+              <Popconfirm
+                title="Clear GitHub token?"
+                description="This removes the stored GitHub token from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
+                disabled={!canEditSettings}
+                onConfirm={() => handleClearCredential("github")}
+              >
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear GitHub Token
+                </Button>
+              </Popconfirm>
+              <Popconfirm
+                title="Clear OpenAI API key?"
+                description="This removes the stored OpenAI API key from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
+                disabled={!canEditSettings}
+                onConfirm={() => handleClearCredential("openai")}
+              >
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear OpenAI API Key
+                </Button>
+              </Popconfirm>
+              <Popconfirm
+                title="Clear Anthropic API key?"
+                description="This removes the stored Anthropic API key from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
+                disabled={!canEditSettings}
+                onConfirm={() => handleClearCredential("anthropic")}
+              >
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear Anthropic API Key
+                </Button>
+              </Popconfirm>
+            </Space>
+          </Form>
+        </Card>
+
+        <Card
+          bordered={false}
+          loading={rolesLoading}
+          title="Roles"
+          extra={
+            <Button
+              type="primary"
+              disabled={!canEditSettings}
+              onClick={() => {
+                setEditingRole(null);
+                roleForm.setFieldsValue({
+                  name: "",
+                  description: "",
+                  scopes: [],
+                  allowedProviders: [],
+                  allowedModels: [],
+                  allowedEfforts: []
+                });
+                setRoleModalOpen(true);
+              }}
+            >
+              Add Role
+            </Button>
+          }
+        >
+          <Table<Role>
+            rowKey="id"
+            pagination={false}
+            dataSource={roles}
+            columns={[
+              {
+                title: "Name",
+                dataIndex: "name",
+                render: (value: string, role) => (
+                  <Space>
+                    <Typography.Text strong>{value}</Typography.Text>
+                    {role.isSystem ? <Tag icon={<LockOutlined />}>System</Tag> : null}
+                  </Space>
+                )
+              },
+              {
+                title: "Description",
+                dataIndex: "description",
+                render: (value: string) => value || <Typography.Text type="secondary">None</Typography.Text>
+              },
+              {
+                title: "Scopes",
+                render: (_, role) => (
+                  <Space size={[4, 4]} wrap>
+                    {role.scopes.map((scope) => (
+                      <Tag key={scope}>{scope}</Tag>
+                    ))}
+                  </Space>
+                )
+              },
+              {
+                title: "Allowlists",
+                render: (_, role) => (
+                  <Space direction="vertical" size={4}>
+                    <Typography.Text type="secondary">{summarizeAllowlist("Providers", role.allowedProviders)}</Typography.Text>
+                    <Typography.Text type="secondary">{summarizeAllowlist("Models", role.allowedModels)}</Typography.Text>
+                    <Typography.Text type="secondary">{summarizeAllowlist("Efforts", role.allowedEfforts)}</Typography.Text>
+                  </Space>
+                )
+              },
+              {
+                title: "Actions",
+                render: (_, role) => (
+                  <Space>
+                    <Button
+                      disabled={!canEditSettings || role.isSystem}
+                      onClick={() => {
+                        setEditingRole(role);
+                        roleForm.setFieldsValue({
+                          name: role.name,
+                          description: role.description,
+                          scopes: role.scopes,
+                          allowedProviders: role.allowedProviders,
+                          allowedModels: role.allowedModels,
+                          allowedEfforts: role.allowedEfforts
+                        });
+                        setRoleModalOpen(true);
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      danger
+                      disabled={!canEditSettings || role.isSystem}
+                      onClick={async () => {
+                        try {
+                          await api.deleteRole(role.id);
+                          message.success("Role deleted");
+                          await loadRoles();
+                        } catch (error) {
+                          message.error(error instanceof Error ? error.message : "Failed to delete role");
+                        }
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  </Space>
+                )
+              }
+            ]}
+          />
+        </Card>
+
+        <Card
+          bordered={false}
+          loading={loading}
+          title="Response Preferences"
+          extra={
+            <Button
+              type="primary"
+              disabled={!canEditSettings}
+              onClick={() => {
+                setEditingResponsePreferencePreset(null);
+                responsePreferencePresetForm.setFieldsValue({
+                  name: "",
+                  description: "",
+                  audience: undefined,
+                  explanationDepth: undefined,
+                  jargonLevel: undefined,
+                  codePreference: undefined,
+                  clarifyBehavior: undefined,
+                  formattingStyle: undefined,
+                  extraInstructions: ""
+                });
+                setResponsePreferencePresetModalOpen(true);
+              }}
+            >
+              Add Response Preference
+            </Button>
+          }
+        >
+          <Table<ResponsePreferencePreset>
+            rowKey="id"
+            pagination={false}
+            dataSource={responsePreferencePresets}
+            columns={[
+              {
+                title: "Name",
+                dataIndex: "name",
+                render: (value: string, preset) => (
+                  <Space>
+                    <Typography.Text strong>{value}</Typography.Text>
+                    {preset.isSystem ? <Tag icon={<LockOutlined />}>System</Tag> : null}
+                  </Space>
+                )
+              },
+              {
+                title: "Description",
+                dataIndex: "description",
+                render: (value: string) => value || <Typography.Text type="secondary">None</Typography.Text>
+              },
+              {
+                title: "Policy",
+                render: (_, preset) => summarizeResponsePreference(preset)
+              },
+              {
+                title: "Actions",
+                render: (_, preset) => (
+                  <Space>
+                    <Button
+                      disabled={!canEditSettings || preset.isSystem}
+                      onClick={() => {
+                        setEditingResponsePreferencePreset(preset);
+                        responsePreferencePresetForm.setFieldsValue({
+                          name: preset.name,
+                          description: preset.description,
+                          audience: preset.preference.audience,
+                          explanationDepth: preset.preference.explanationDepth,
+                          jargonLevel: preset.preference.jargonLevel,
+                          codePreference: preset.preference.codePreference,
+                          clarifyBehavior: preset.preference.clarifyBehavior,
+                          formattingStyle: preset.preference.formattingStyle,
+                          extraInstructions: preset.preference.extraInstructions ?? ""
+                        });
+                        setResponsePreferencePresetModalOpen(true);
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Popconfirm
+                      title="Delete response preference?"
+                      description={`Delete ${preset.name}?`}
+                      disabled={!canEditSettings || preset.isSystem}
+                      onConfirm={async () => {
+                        if (!settings) {
+                          return;
+                        }
+                        try {
+                          const nextSettings = await api.updateSettings({
+                            responsePreferencePresets: responsePreferencePresets.filter((entry) => entry.id !== preset.id)
+                          });
+                          setSettings(nextSettings);
+                          message.success("Response preference deleted");
+                        } catch (error) {
+                          message.error(error instanceof Error ? error.message : "Failed to delete response preference");
+                        }
+                      }}
+                    >
+                      <Button
+                        danger
+                        disabled={!canEditSettings || preset.isSystem}
+                      >
+                        Delete
+                      </Button>
+                    </Popconfirm>
+                  </Space>
+                )
+              }
+            ]}
+          />
+        </Card>
+      </Space>
+
+      <Modal
+        open={roleModalOpen}
+        title={editingRole ? `Edit Role: ${editingRole.name}` : "Add Role"}
+        footer={null}
+        onCancel={() => setRoleModalOpen(false)}
+        destroyOnHidden
+      >
+        <Form
+          form={roleForm}
+          layout="vertical"
+          onFinish={async (values) => {
+            setSavingRole(true);
+            try {
+              if (editingRole) {
+                await api.updateRole(editingRole.id, values);
+                message.success("Role updated");
+              } else {
+                await api.createRole(values);
+                message.success("Role created");
+              }
+
+              setRoleModalOpen(false);
+              await loadRoles();
+            } catch (error) {
+              message.error(error instanceof Error ? error.message : "Failed to save role");
+            } finally {
+              setSavingRole(false);
+            }
+          }}
+        >
+          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a role name" }]}>
+            <Input disabled={!canEditSettings || editingRole?.isSystem} />
+          </Form.Item>
+          <Form.Item name="description" label="Description">
+            <Input.TextArea rows={3} disabled={!canEditSettings || editingRole?.isSystem} />
+          </Form.Item>
+          <Form.Item name="scopes" hidden rules={[{ required: true, message: "Select at least one scope" }]}>
+            <Select mode="multiple" options={[]} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate>
+            {() => {
+              const selectedScopes = (roleForm.getFieldValue("scopes") ?? []) as PermissionScope[];
+              return (
+                <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                  {PERMISSION_SCOPE_GROUPS.map((group) => (
+                    <Card key={group.label} size="small" title={group.label}>
+                      <Checkbox.Group
+                        style={{ width: "100%" }}
+                        disabled={!canEditSettings || editingRole?.isSystem}
+                        value={group.scopes.filter((scope) => selectedScopes.includes(scope))}
+                        options={group.scopes.map((scope) => ({
+                          label: scope,
+                          value: scope
+                        }))}
+                        onChange={(checkedValues) => {
+                          const currentScopes = (roleForm.getFieldValue("scopes") ?? []) as PermissionScope[];
+                          const groupScopeSet = new Set(group.scopes);
+                          const otherScopes = currentScopes.filter((scope) => !groupScopeSet.has(scope));
+                          roleForm.setFieldValue("scopes", [...otherScopes, ...(checkedValues as PermissionScope[])]);
+                        }}
+                      />
+                    </Card>
+                  ))}
+                </Space>
+              );
+            }}
+          </Form.Item>
+          <Form.Item
+            name="allowedProviders"
+            label="Allowed Providers"
+            extra="Leave empty to allow all providers."
+          >
+            <Select
+              mode="multiple"
+              options={providerOptions}
+              disabled={!canEditSettings || editingRole?.isSystem}
+            />
+          </Form.Item>
+          <Form.Item
+            name="allowedModels"
+            label="Allowed Models"
+            extra="Leave empty to allow all models."
+          >
+            <Select
+              mode="multiple"
+              options={allModelOptions}
+              loading={codexModelsLoading || claudeModelsLoading}
+              optionFilterProp="label"
+              showSearch
+              disabled={!canEditSettings || editingRole?.isSystem}
+            />
+          </Form.Item>
+          <Form.Item
+            name="allowedEfforts"
+            label="Allowed Efforts"
+            extra="Leave empty to allow all efforts."
+          >
+            <Select
+              mode="multiple"
+              options={allEffortOptions}
+              disabled={!canEditSettings || editingRole?.isSystem}
+            />
+          </Form.Item>
+          <Button
+            type="primary"
+            htmlType="submit"
+            loading={savingRole}
+            disabled={!canEditSettings || editingRole?.isSystem}
+            block
+            style={{ marginTop: 16 }}
+          >
+            {editingRole ? "Save Role" : "Create Role"}
+          </Button>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={responsePreferencePresetModalOpen}
+        title={editingResponsePreferencePreset ? `Edit Response Preference: ${editingResponsePreferencePreset.name}` : "Add Response Preference"}
+        footer={null}
+        onCancel={() => setResponsePreferencePresetModalOpen(false)}
+        destroyOnHidden
+      >
+        <Form
+          form={responsePreferencePresetForm}
+          layout="vertical"
+          onFinish={async (values) => {
+            if (!settings) {
+              return;
+            }
+
+            setSavingResponsePreferencePreset(true);
+            try {
+              const nextPresets = editingResponsePreferencePreset
+                ? responsePreferencePresets.map((preset) =>
+                    preset.id === editingResponsePreferencePreset.id
+                      ? {
+                          ...preset,
+                          name: values.name,
+                          description: values.description,
+                          preference: {
+                            audience: values.audience,
+                            explanationDepth: values.explanationDepth,
+                            jargonLevel: values.jargonLevel,
+                            codePreference: values.codePreference,
+                            clarifyBehavior: values.clarifyBehavior,
+                            formattingStyle: values.formattingStyle,
+                            extraInstructions: values.extraInstructions?.trim() || undefined
+                          }
+                        }
+                      : preset
+                  )
+                : [
+                    ...responsePreferencePresets,
+                    {
+                      name: values.name,
+                      description: values.description,
+                      preference: {
+                        audience: values.audience,
+                        explanationDepth: values.explanationDepth,
+                        jargonLevel: values.jargonLevel,
+                        codePreference: values.codePreference,
+                        clarifyBehavior: values.clarifyBehavior,
+                        formattingStyle: values.formattingStyle,
+                        extraInstructions: values.extraInstructions?.trim() || undefined
+                      }
+                    }
+                  ];
+
+              const nextSettings = await api.updateSettings({
+                responsePreferencePresets: nextPresets
+              });
+              setSettings(nextSettings);
+              setResponsePreferencePresetModalOpen(false);
+              message.success(editingResponsePreferencePreset ? "Response preference updated" : "Response preference created");
+            } catch (error) {
+              message.error(error instanceof Error ? error.message : "Failed to save response preference");
+            } finally {
+              setSavingResponsePreferencePreset(false);
+            }
+          }}
+        >
+          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a name" }]}>
+            <Input disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
+          </Form.Item>
+          <Form.Item name="description" label="Description">
+            <Input.TextArea rows={3} disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
+          </Form.Item>
+          <Form.Item name="audience" label="Audience">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use neutral"
+              options={[
+                { label: "Technical", value: "technical" },
+                { label: "Non-technical", value: "non_technical" },
+                { label: "Mixed", value: "mixed" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="explanationDepth" label="Explanation Depth">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default depth"
+              options={[
+                { label: "Brief", value: "brief" },
+                { label: "Standard", value: "standard" },
+                { label: "Detailed", value: "detailed" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="jargonLevel" label="Jargon Level">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default jargon level"
+              options={[
+                { label: "Avoid", value: "avoid" },
+                { label: "Balanced", value: "balanced" },
+                { label: "Expert", value: "expert" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="codePreference" label="Code Preference">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default code preference"
+              options={[
+                { label: "Only When Needed", value: "only_when_needed" },
+                { label: "Prefer Examples", value: "prefer_examples" },
+                { label: "Avoid Code", value: "avoid_code" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="clarifyBehavior" label="Clarify Behavior">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default clarify behavior"
+              options={[
+                { label: "Ask When Ambiguous", value: "ask_when_ambiguous" },
+                { label: "Make Reasonable Assumptions", value: "make_reasonable_assumptions" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="formattingStyle" label="Formatting Style">
+            <Select
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              allowClear
+              placeholder="Use default formatting style"
+              options={[
+                { label: "Direct", value: "direct" },
+                { label: "Teaching", value: "teaching" },
+                { label: "Executive", value: "executive" }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item name="extraInstructions" label="Extra Instructions">
+            <Input.TextArea
+              rows={4}
+              maxLength={2000}
+              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+              placeholder="Optional additional response instructions."
+            />
+          </Form.Item>
+          <Button
+            type="primary"
+            htmlType="submit"
+            loading={savingResponsePreferencePreset}
+            disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
+            block
+            style={{ marginTop: 16 }}
+          >
+            {editingResponsePreferencePreset ? "Save Response Preference" : "Create Response Preference"}
+          </Button>
+        </Form>
+      </Modal>
+    </>
+  );
+}
+````
+
+## File: apps/web/components/snippets-page.tsx
+````typescript
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import dayjs from "dayjs";
+import type { Snippet } from "@agentswarm/shared-types";
+import { CopyOutlined } from "@ant-design/icons";
+import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
+import { api } from "../src/api/client";
+import { useSnippets } from "../src/hooks/useSnippets";
+import { useAuth } from "./auth-provider";
+import { trackEvent } from "../src/utils/analytics";
+
+const summarizeSnippet = (value: string): string => {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "Empty";
+  }
+  return normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized;
+};
+
+export function SnippetsPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { snippets, loading } = useSnippets();
+  const { can } = useAuth();
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [messageApi, contextHolder] = message.useMessage();
+  const canCreateSnippet = can("snippet:create");
+  const canEditSnippet = can("snippet:edit");
+  const canDeleteSnippet = can("snippet:delete");
+  const canDuplicateSnippet = can("snippet:create");
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const savedState = searchParams.get("saved");
+    if (!savedState) {
+      return;
+    }
+    if (savedState === "created") {
+      messageApi.success("Snippet created");
+    } else if (savedState === "updated") {
+      messageApi.success("Snippet updated");
+    }
+    router.replace("/snippets");
+  }, [messageApi, router, searchParams]);
+
+  const copySnippetToClipboard = async (content: string, label: string) => {
+    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      messageApi.error("Clipboard access is unavailable in this browser.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(content);
+      messageApi.success(`${label} copied`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to copy snippet");
+    }
+  };
+
+  return (
+    <>
+      {contextHolder}
+      <Space direction="vertical" size={16} style={{ width: "100%" }}>
+        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
+          <Flex vertical gap={0}>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              Snippets
+            </Typography.Title>
+            <Typography.Text type="secondary">
+              Store reusable text blocks and insert them into task prompts and follow-up messages.
+            </Typography.Text>
+          </Flex>
+          {canCreateSnippet ? (
+            <Button type="primary" onClick={() => router.push("/snippets/new?from=list")}>
+              Add Snippet
+            </Button>
+          ) : null}
+        </Flex>
+
+        <Card bordered={false}>
+          <Table<Snippet>
+            rowKey="id"
+            loading={loading}
+            dataSource={snippets}
+            pagination={{ pageSize: 10 }}
+            columns={[
+              {
+                title: "Name",
+                dataIndex: "name"
+              },
+              {
+                title: "Preview",
+                dataIndex: "content",
+                render: (value: string) => summarizeSnippet(value)
+              },
+              {
+                title: "Updated At",
+                dataIndex: "updatedAt",
+                sorter: (left, right) => left.updatedAt.localeCompare(right.updatedAt),
+                defaultSortOrder: "descend",
+                render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
+              },
+              {
+                title: "Actions",
+                key: "actions",
+                width: 280,
+                render: (_value, snippet) => (
+                  <Space size={8} wrap={false} style={{ whiteSpace: "nowrap" }}>
+                    <Button size="small" icon={<CopyOutlined />} onClick={() => void copySnippetToClipboard(snippet.content, snippet.name)}>
+                      Copy
+                    </Button>
+                    {canEditSnippet ? (
+                      <Button size="small" onClick={() => router.push(`/snippets/${snippet.id}/edit?from=list`)}>
+                        Edit
+                      </Button>
+                    ) : null}
+                    {canDuplicateSnippet ? (
+                      <Button
+                        size="small"
+                        loading={duplicatingId === snippet.id}
+                        onClick={async () => {
+                          setDuplicatingId(snippet.id);
+                          try {
+                            const duplicated = await api.duplicateSnippet(snippet.id);
+                            trackEvent("snippet_duplicated", { source: "list", snippet_id: snippet.id, duplicated_snippet_id: duplicated.id });
+                            messageApi.success("Snippet duplicated");
+                            router.push(`/snippets/${duplicated.id}/edit?from=duplicate`);
+                          } catch (error) {
+                            messageApi.error(error instanceof Error ? error.message : "Failed to duplicate snippet");
+                          } finally {
+                            setDuplicatingId(null);
+                          }
+                        }}
+                      >
+                        Duplicate
+                      </Button>
+                    ) : null}
+                    {canDeleteSnippet ? (
+                      <Popconfirm
+                        title="Delete snippet?"
+                        description={`Delete "${snippet.name}"?`}
+                        okText="Delete"
+                        okButtonProps={{ danger: true, loading: deletingId === snippet.id }}
+                        onConfirm={async () => {
+                          setDeletingId(snippet.id);
+                          try {
+                            await api.deleteSnippet(snippet.id);
+                            messageApi.success("Snippet deleted");
+                          } catch (error) {
+                            messageApi.error(error instanceof Error ? error.message : "Failed to delete snippet");
+                          } finally {
+                            setDeletingId(null);
+                          }
+                        }}
+                      >
+                        <Button danger size="small">
+                          Delete
+                        </Button>
+                      </Popconfirm>
+                    ) : null}
+                  </Space>
+                )
+              }
+            ]}
+          />
+        </Card>
+      </Space>
+    </>
+  );
+}
+````
+
+## File: apps/web/components/task-create-page.tsx
+````typescript
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import type { TaskSourceType, TaskType } from "@agentswarm/shared-types";
+import { Button, Flex, Form, Space, Typography, message } from "antd";
+import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
+import { trackEvent } from "../src/utils/analytics";
+import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
+import { useAuth } from "./auth-provider";
+import {
+  TaskDefinitionFields,
+  type TaskDefinitionFormValues,
+  buildTaskDefinitionInput,
+  getTaskDefinitionInitialValues
+} from "./task-definition-fields";
+
+export function TaskCreatePage() {
+  const router = useRouter();
+  const { can } = useAuth();
+  const [form] = Form.useForm<TaskDefinitionFormValues>();
+  const [submitting, setSubmitting] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [messageApi, contextHolder] = message.useMessage();
+  const selectedSourceType = (Form.useWatch("sourceType", form) as TaskSourceType | undefined) ?? "blank";
+  const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
+  const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
+  const isIssueSource = selectedSourceType === "issue";
+  const isPullRequestSource = selectedSourceType === "pull_request";
+  const canCreateAnyTaskMode = can("task:build") || can("task:ask");
+
+  const pageTitle =
+    selectedSourceType === "issue"
+      ? "New Task From Issue"
+      : selectedSourceType === "pull_request"
+        ? "New Task From Pull Request"
+        : selectedTaskType === "ask"
+            ? "New Ask Task"
+            : "New Build Task";
+
+  const handleSubmit = async (values: TaskDefinitionFormValues) => {
+    setSubmitting(true);
+    try {
+      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
+      const definition = buildTaskDefinitionInput(values, encodedAttachments);
+      trackEvent("task_create_submitted", { source: definition.sourceType });
+      const task = await createTaskFromDefinition(definition);
+
+      messageApi.success(startMessageForDefinition(definition));
+      setPromptImageFiles([]);
+      router.push(`/tasks/${task.id}`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to create task");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSaveDraft = async () => {
+    const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
+    setSavingDraft(true);
+    try {
+      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
+      const definition = buildTaskDefinitionInput(values, encodedAttachments);
+      const draft = await createTaskFromDefinition(definition, { draft: true });
+      messageApi.success("Draft saved");
+      router.push(`/tasks/${draft.id}`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to save draft");
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
+  return (
+    <>
+      {contextHolder}
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={getTaskDefinitionInitialValues()}
+        onFinish={handleSubmit}
+      >
+        <Flex vertical gap={16}>
+          <Flex align="center" justify="space-between" gap={16} wrap="wrap">
+            <Flex vertical gap={0}>
+              <Typography.Title level={2} style={{ margin: 0 }}>
+                {pageTitle}
+              </Typography.Title>
+              <Typography.Text type="secondary">
+                Configure the task on the left and write the prompt on the right.
+              </Typography.Text>
+            </Flex>
+            <Space>
+              <Button onClick={() => router.push("/tasks")}>Cancel</Button>
+              <Button loading={savingDraft} onClick={() => void handleSaveDraft()}>
+                Save Draft
+              </Button>
+              <Button type="primary" htmlType="submit" loading={submitting} disabled={!canCreateAnyTaskMode}>
+                {isIssueSource ? "Create Task From Issue" : isPullRequestSource ? "Create Task From Pull Request" : "Create Task"}
+              </Button>
+            </Space>
+          </Flex>
+
+          <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
+        </Flex>
+      </Form>
+    </>
+  );
+}
+````
+
+## File: apps/web/src/utils/task-history.ts
+````typescript
+import {
+  getTaskTerminalSessionEndMessage,
+  getTaskTerminalSessionReviewMessage,
+  getTaskTerminalSessionStartMessage,
+  type TaskAction,
+  type TaskChangeProposal,
+  type TaskMessage,
+  type TaskRun
+} from "@agentswarm/shared-types";
+
+type RawMessageHistoryEntry = {
+  key: string;
+  kind: "message";
+  timestamp: string;
+  message: TaskMessage;
+};
+
+type RawRunHistoryEntry = {
+  key: string;
+  kind: "run";
+  timestamp: string;
+  run: TaskRun;
+};
+
+type RawProposalHistoryEntry = {
+  key: string;
+  kind: "proposal";
+  timestamp: string;
+  proposal: TaskChangeProposal;
+};
+
+export type GroupedAutoRunHistoryEntry = {
+  key: string;
+  kind: "grouped_auto_run";
+  timestamp: string;
+  run: TaskRun;
+  promptText: string;
+  promptMessage: TaskMessage | null;
+  summaryMessage: TaskMessage | null;
+  proposal: TaskChangeProposal | null;
+};
+
+export type GroupedTerminalHistoryEntry = {
+  key: string;
+  kind: "grouped_terminal_session";
+  timestamp: string;
+  sessionId: string | null;
+  startMessage: TaskMessage;
+  endMessage: TaskMessage | null;
+  proposal: TaskChangeProposal | null;
+  active: boolean;
+};
+
+export type TaskHistoryEntry =
+  | RawMessageHistoryEntry
+  | RawRunHistoryEntry
+  | RawProposalHistoryEntry
+  | GroupedAutoRunHistoryEntry
+  | GroupedTerminalHistoryEntry;
+
+export const INTERACTIVE_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("interactive");
+export const INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("interactive");
+export const INTERACTIVE_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("interactive").replace(/\.$/, "");
+export const GIT_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("git");
+export const LEGACY_GIT_TERMINAL_START_MESSAGE = "Git terminal session started.";
+export const GIT_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("git");
+export const GIT_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("git").replace(/\.$/, "");
+
+type AutoRunAction = Extract<TaskAction, "ask" | "build">;
+
+function compareIso(leftTimestamp: string, rightTimestamp: string, leftKey: string, rightKey: string): number {
+  if (leftTimestamp === rightTimestamp) {
+    return leftKey.localeCompare(rightKey);
+  }
+
+  return leftTimestamp.localeCompare(rightTimestamp);
+}
+
+function isAutoRunAction(action: TaskRun["action"]): action is AutoRunAction {
+  return action === "ask" || action === "build";
+}
+
+function isAutoPromptMessage(message: TaskMessage): message is TaskMessage & { role: "user"; action: AutoRunAction } {
+  return message.role === "user" && (message.action === "ask" || message.action === "build");
+}
+
+function isAssistantSummaryMessage(message: TaskMessage): message is TaskMessage & { role: "assistant"; action: AutoRunAction } {
+  return message.role === "assistant" && (message.action === "ask" || message.action === "build");
+}
+
+function isInteractiveTerminalStartMessage(message: TaskMessage): boolean {
+  return (
+    message.role === "system" &&
+    (
+      message.content === INTERACTIVE_TERMINAL_START_MESSAGE ||
+      message.content === GIT_TERMINAL_START_MESSAGE ||
+      message.content === LEGACY_GIT_TERMINAL_START_MESSAGE
+    )
+  );
+}
+
+function isInteractiveTerminalEndMessage(message: TaskMessage): boolean {
+  return (
+    message.role === "system" &&
+    (message.content.startsWith(INTERACTIVE_TERMINAL_END_PREFIX) || message.content.startsWith(GIT_TERMINAL_END_PREFIX))
+  );
+}
+
+export function buildTaskHistoryEntries(input: {
+  messages: TaskMessage[];
+  runs: TaskRun[];
+  proposals: TaskChangeProposal[];
+  interactiveTerminalRunning?: boolean;
+}): TaskHistoryEntry[] {
+  const sortedMessages = [...input.messages].sort((left, right) =>
+    compareIso(left.createdAt, right.createdAt, left.id, right.id)
+  );
+  const sortedRuns = [...input.runs].sort((left, right) => compareIso(left.startedAt, right.startedAt, left.id, right.id));
+  const sortedProposals = [...input.proposals].sort((left, right) =>
+    compareIso(left.createdAt, right.createdAt, left.id, right.id)
+  );
+
+  const consumedMessageIds = new Set<string>();
+  const consumedRunIds = new Set<string>();
+  const consumedProposalIds = new Set<string>();
+  const groupedAutoEntries: GroupedAutoRunHistoryEntry[] = [];
+  const groupedTerminalEntries: GroupedTerminalHistoryEntry[] = [];
+
+  const autoPromptCandidates = sortedMessages.filter(isAutoPromptMessage);
+  const autoAssistantCandidates = sortedMessages.filter(isAssistantSummaryMessage);
+  const promptQueues: Record<AutoRunAction, TaskMessage[]> = { ask: [], build: [] };
+  let promptCursor = 0;
+
+  const buildProposalByRunId = new Map<string, TaskChangeProposal>();
+  for (const proposal of sortedProposals) {
+    if (proposal.sourceType !== "build_run") {
+      continue;
+    }
+    if (!buildProposalByRunId.has(proposal.sourceId)) {
+      buildProposalByRunId.set(proposal.sourceId, proposal);
+    }
+  }
+  for (const run of sortedRuns) {
+    if (!isAutoRunAction(run.action)) {
+      continue;
+    }
+
+    while (promptCursor < autoPromptCandidates.length && autoPromptCandidates[promptCursor]!.createdAt <= run.startedAt) {
+      const candidate = autoPromptCandidates[promptCursor]!;
+      if (!consumedMessageIds.has(candidate.id)) {
+        promptQueues[candidate.action].push(candidate);
+      }
+      promptCursor += 1;
+    }
+
+    const promptMessage = promptQueues[run.action].shift() ?? null;
+    if (promptMessage) {
+      consumedMessageIds.add(promptMessage.id);
+    }
+    const promptText = promptMessage?.content ?? "No matched user prompt was found for this run.";
+
+    let summaryMessage: TaskMessage | null = null;
+    const normalizedRunSummary = run.summary?.trim() ?? "";
+    if (normalizedRunSummary) {
+      const summaryThreshold = run.finishedAt ?? run.startedAt;
+      summaryMessage =
+        autoAssistantCandidates.find(
+          (message) =>
+            !consumedMessageIds.has(message.id) &&
+            message.action === run.action &&
+            message.createdAt >= summaryThreshold &&
+            message.content.trim() === normalizedRunSummary
+        ) ?? null;
+
+      if (summaryMessage) {
+        consumedMessageIds.add(summaryMessage.id);
+      }
+    }
+
+    const proposal = buildProposalByRunId.get(run.id) ?? null;
+    if (proposal) {
+      consumedProposalIds.add(proposal.id);
+    }
+
+    consumedRunIds.add(run.id);
+    groupedAutoEntries.push({
+      key: `grouped-auto-${run.id}`,
+      kind: "grouped_auto_run",
+      timestamp: run.startedAt,
+      run,
+      promptText,
+      promptMessage,
+      summaryMessage,
+      proposal
+    });
+  }
+
+  const terminalStartMessages = sortedMessages.filter(isInteractiveTerminalStartMessage);
+  const terminalEndMessages = sortedMessages.filter(isInteractiveTerminalEndMessage);
+  const interactiveProposals = sortedProposals.filter((proposal) => proposal.sourceType === "interactive_session");
+  const lastTerminalStartMessageId = terminalStartMessages.at(-1)?.id ?? null;
+  const interactiveProposalsBySessionId = new Map<string, TaskChangeProposal>();
+  for (const proposal of interactiveProposals) {
+    if (!interactiveProposalsBySessionId.has(proposal.sourceId)) {
+      interactiveProposalsBySessionId.set(proposal.sourceId, proposal);
+    }
+  }
+  let terminalEndCursor = 0;
+  let interactiveProposalCursor = 0;
+
+  for (const startMessage of terminalStartMessages) {
+    if (consumedMessageIds.has(startMessage.id)) {
+      continue;
+    }
+
+    while (
+      terminalEndCursor < terminalEndMessages.length &&
+      (consumedMessageIds.has(terminalEndMessages[terminalEndCursor]!.id) ||
+        terminalEndMessages[terminalEndCursor]!.createdAt < startMessage.createdAt)
+    ) {
+      terminalEndCursor += 1;
+    }
+
+    const startSessionId = typeof startMessage.sessionId === "string" && startMessage.sessionId.trim().length > 0 ? startMessage.sessionId : null;
+    let endMessage: TaskMessage | null = null;
+
+    if (startSessionId) {
+      endMessage =
+        terminalEndMessages.find(
+          (message) =>
+            !consumedMessageIds.has(message.id) &&
+            message.createdAt >= startMessage.createdAt &&
+            message.sessionId === startSessionId
+        ) ?? null;
+    } else {
+      endMessage = terminalEndCursor < terminalEndMessages.length ? terminalEndMessages[terminalEndCursor]! : null;
+    }
+
+    if (!endMessage) {
+      if (input.interactiveTerminalRunning && startMessage.id === lastTerminalStartMessageId) {
+        consumedMessageIds.add(startMessage.id);
+        groupedTerminalEntries.push({
+          key: `grouped-terminal-${startMessage.id}`,
+          kind: "grouped_terminal_session",
+          timestamp: startMessage.createdAt,
+          sessionId: startSessionId,
+          startMessage,
+          endMessage: null,
+          proposal: null,
+          active: true
+        });
+      }
+      continue;
+    }
+
+    terminalEndCursor += 1;
+    consumedMessageIds.add(startMessage.id);
+    consumedMessageIds.add(endMessage.id);
+
+    const endSessionId = typeof endMessage.sessionId === "string" && endMessage.sessionId.trim().length > 0 ? endMessage.sessionId : null;
+    let sessionId = startSessionId ?? endSessionId;
+    let proposal: TaskChangeProposal | null = null;
+    if (endMessage.content === INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE || endMessage.content === GIT_TERMINAL_END_REVIEW_MESSAGE) {
+      if (sessionId) {
+        const matchedProposal = interactiveProposalsBySessionId.get(sessionId) ?? null;
+        if (matchedProposal && !consumedProposalIds.has(matchedProposal.id)) {
+          proposal = matchedProposal;
+          consumedProposalIds.add(matchedProposal.id);
+        }
+      }
+
+      if (!proposal) {
+        while (
+          interactiveProposalCursor < interactiveProposals.length &&
+          (consumedProposalIds.has(interactiveProposals[interactiveProposalCursor]!.id) ||
+            interactiveProposals[interactiveProposalCursor]!.createdAt < endMessage.createdAt)
+        ) {
+          interactiveProposalCursor += 1;
+        }
+
+        proposal = interactiveProposalCursor < interactiveProposals.length ? interactiveProposals[interactiveProposalCursor]! : null;
+        if (proposal) {
+          consumedProposalIds.add(proposal.id);
+          interactiveProposalCursor += 1;
+        }
+      }
+    }
+
+    sessionId = sessionId ?? proposal?.sourceId ?? null;
+
+    groupedTerminalEntries.push({
+      key: `grouped-terminal-${startMessage.id}`,
+      kind: "grouped_terminal_session",
+      timestamp: startMessage.createdAt,
+      sessionId,
+      startMessage,
+      endMessage,
+      proposal,
+      active: false
+    });
+  }
+
+  const rawRuns = sortedRuns.filter((run) => !consumedRunIds.has(run.id));
+  const rawRunSummaryKeys = new Set(
+    rawRuns.filter((run) => run.summary?.trim()).map((run) => `${run.action}:${run.summary?.trim()}`)
+  );
+
+  const rawMessages = sortedMessages.filter((message) => {
+    if (consumedMessageIds.has(message.id)) {
+      return false;
+    }
+
+    if (message.role === "assistant" && message.action) {
+      const trimmedContent = message.content.trim();
+      if (trimmedContent && rawRunSummaryKeys.has(`${message.action}:${trimmedContent}`)) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+  const rawProposals = sortedProposals.filter((proposal) => !consumedProposalIds.has(proposal.id));
+
+  const entries = [
+    ...groupedAutoEntries,
+    ...groupedTerminalEntries,
+    ...rawMessages.map(
+      (message): RawMessageHistoryEntry => ({
+        key: `message-${message.id}`,
+        kind: "message",
+        timestamp: message.createdAt,
+        message
+      })
+    ),
+    ...rawRuns.map(
+      (run): RawRunHistoryEntry => ({
+        key: `run-${run.id}`,
+        kind: "run",
+        timestamp: run.startedAt,
+        run
+      })
+    ),
+    ...rawProposals.map(
+      (proposal): RawProposalHistoryEntry => ({
+        key: `proposal-${proposal.id}`,
+        kind: "proposal",
+        timestamp: proposal.createdAt,
+        proposal
+      })
+    )
+  ];
+
+  return entries.sort((left, right) => compareIso(left.timestamp, right.timestamp, left.key, right.key));
+}
+````
+
+## File: AGENTS.md
+````markdown
+# Agent Harness Guide
+
+This file is a short operating guide for coding agents in this repository.
+
+## Start Here
+- If `REMOTE_BUILD=1`, export `REMOTE_BUILD_IMAGE` first.
+- Run `./scripts/harness/doctor.sh`
+- Run `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh` on clean checkout
+- Run `./scripts/harness/check-human-gated-flow.sh`
+- Run `./scripts/harness/check.sh`
+- Run `./scripts/harness/test.sh` (canonical test command)
+- Run `./scripts/harness/start.sh` (foreground dev mode)
+
+## Expected PR Workflow
+1. Run `./scripts/harness/pr-ready.sh`.
+2. Fix any failing checks.
+3. Complete the agent self-review checklist: `docs/development/agent-review.md`.
+4. Open a PR using `.github/pull_request_template.md`.
+5. Confirm docs are updated when behavior changes.
+
+Note:
+- `pr-ready.sh` includes architecture boundary checks.
+- `test.sh` supports `TEST_SCOPE=unit|integration|e2e|all`.
+
+## Documentation Table of Contents
+- [Architecture Summary](ARCHITECTURE.md)
+- [Docs Home](docs/index.md)
+- [Development Setup](docs/development/setup.md)
+- [Development Commands](docs/development/commands.md)
+- [Human-Gated Flow](docs/development/human-gated-taskwise-delivery-flow.md)
+- [Testing](docs/development/testing.md)
+- [Debugging](docs/development/debugging.md)
+- [Agent Self-Review](docs/development/agent-review.md)
+- [PR Workflow](docs/development/pr-workflow.md)
+- [Architecture Docs](docs/architecture/index.md)
+- [Product Docs](docs/product/index.md)
+- [Quality Docs](docs/quality/scorecard.md)
+- [Golden Principles](docs/quality/golden-principles.md)
+
+## Execution Plans
+- Small tasks can use inline plans in the task conversation.
+- Non-trivial tasks must use the Non-Trivial Task Flow below.
+- Complex tasks must create an execution plan using `docs/exec-plans/template.md`.
+- Plans must be updated during work as steps complete or scope changes.
+- Completed plans move from `docs/exec-plans/active/` to `docs/exec-plans/completed/`.
+- Complex task plans must include the required `Human-Gated Flow Evidence` checklist from the template.
+- Flow reference: `docs/development/human-gated-taskwise-delivery-flow.md`.
+
+## Non-Trivial Task Flow
+Use this flow for any task that requires repository changes beyond a tiny, obvious edit, touches multiple files, changes behavior, affects tests or build output, or has ambiguous requirements.
+
+```mermaid
+flowchart TB
+    A["Read Requirements"] --> B["Quick Repo Research"]
+    B --> C{"Clear Enough?"}
+    C -- No --> D["Ask Clarifying Questions"]
+    D --> A
+    C -- Yes --> E["Create Short Plan + Task List"]
+    E --> F["Human Review / Approval"]
+    F --> G{"Approved?"}
+    G -- No --> A
+    G -- Yes --> H["Run Baseline Checks"]
+    H --> I["Implement Next Task"]
+    I --> J["Run Tests / Build"]
+    J --> K{"Passed?"}
+    K -- No --> I
+    K -- Yes --> L["Self Review"]
+    L --> M{"More Tasks?"}
+    M -- Yes --> I
+    M -- No --> N["Final Verification"]
+    N --> R["Complete"]
+```
+
+## Operating Rules
+- Prefer harness scripts in `scripts/harness/`.
+- Treat non-zero exit codes as failures.
+- Do not assume behavior that is not documented in this repository.
+- Mark missing evidence as `TODO` instead of guessing.
+- Before starting work, inspect `docs/repomix.md` for the current repository context bundle.
+- After any agent run that changes code or repository files, execute `npx repomix --style markdown --output docs/repomix.md` to refresh the repository context bundle.
+- Keep `docs/repomix.md` as the canonical Repomix output referenced by agents.
+
+## Remote Build Runner
+Use `http://host.docker.internal:38127` and call `POST /run` with:
+- `image`
+- `workdir`
+- `cmd` (non-empty string array, for example `["sh","-lc","echo ok"]`)
+
+For `workdir`, prefer `TASK_WORKSPACE_PATH`.
+
+Runner mount support:
+- `dockerSocketContainerPath`: `/var/run/docker.sock` (available for mounting Docker into the runner container)
+
+Harness remote mode:
+- Set `REMOTE_BUILD=1` to force harness scripts to run in Remote Build Runner.
+- Set `REMOTE_BUILD_IMAGE` to the container image used by the runner request.
+- Optional: set `REMOTE_BUILD_RUNNER_URL` (defaults to `http://host.docker.internal:38127`).
+- Harness scripts auto-route to `POST /run` before local execution when remote mode is enabled.
+- Set `REMOTE_BUILD=0` (or unset it) to run harness scripts locally.
+- Use a remote image that has: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
+- `test.sh` auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`) for browser E2E when the remote runner cannot launch Playwright locally.
+
+## Sync Policy Reference
+- GitHub sync ownership and conflict policy: [docs/github-sync-ownership-model.md](docs/github-sync-ownership-model.md)
+````
+
+## File: agent-runtime-codex/run-task.mjs
+````javascript
+import { createWriteStream } from "node:fs";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import path from "node:path";
+
+const manifestPath = process.env.TASK_MANIFEST_FILE;
+const providerConfigPath = process.env.PROVIDER_CONFIG_FILE;
+const openAiApiKey = process.env.OPENAI_API_KEY ?? "";
+const openAiBaseUrl = process.env.OPENAI_BASE_URL ?? "";
+const codexAuthJsonB64 = process.env.CODEX_AUTH_JSON_B64 ?? "";
+const codexAuthJson = codexAuthJsonB64.trim()
+  ? Buffer.from(codexAuthJsonB64, "base64").toString("utf8").trim()
+  : "";
+
+if (!manifestPath) {
+  console.error("TASK_MANIFEST_FILE is required");
+  process.exit(1);
+}
+if (!providerConfigPath) {
+  console.error("PROVIDER_CONFIG_FILE is required");
+  process.exit(1);
+}
+if (!openAiApiKey && !codexAuthJson) {
+  console.error("OPENAI_API_KEY or CODEX_AUTH_JSON_B64 is required");
+  process.exit(1);
+}
+
+const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+const providerConfig = await readFile(providerConfigPath, "utf8").catch(() => "");
+const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
+const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
+const codexDir = configuredStatePath && configuredStatePath.length > 0 ? configuredStatePath : path.join("/root", ".codex");
+const homeDir = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : path.dirname(codexDir);
+const lastMessageFile = path.join(path.dirname(manifest.resultJsonPath), "codex-last-message.txt");
+const sessionIdFile = path.join(codexDir, "agentswarm-session-id.txt");
+const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
+  ? manifest.rawEventsJsonlPath.trim()
+  : path.join(path.dirname(manifest.resultJsonPath), "raw-events.jsonl");
+
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const isSessionId = (value) => typeof value === "string" && SESSION_ID_PATTERN.test(value.trim());
+
+const readPersistedSessionId = async () => {
+  const raw = await readFile(sessionIdFile, "utf8").catch(() => "");
+  const candidate = raw.trim();
+  return isSessionId(candidate) ? candidate : null;
+};
+
+const writePersistedSessionId = async (sessionId) => {
+  if (!isSessionId(sessionId)) {
+    return;
+  }
+
+  await writeFile(sessionIdFile, `${sessionId.trim()}\n`, "utf8");
+};
+
+const listRolloutFiles = async (sessionsRoot) => {
+  const pending = [sessionsRoot];
+  const files = [];
+
+  while (pending.length > 0) {
+    const currentDir = pending.pop();
+    if (!currentDir) {
+      continue;
+    }
+
+    const entries = await readdir(currentDir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(fullPath);
+        continue;
+      }
+
+      if (entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl")) {
+        files.push(fullPath);
+      }
+    }
+  }
+
+  return files;
+};
+
+const sessionIdFromRolloutFileName = (rolloutPath) => {
+  const match = path.basename(rolloutPath).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
+  return match?.[1] ?? null;
+};
+
+const inferSessionIdFromRolloutFiles = async () => {
+  const sessionsRoot = path.join(codexDir, "sessions");
+  const rolloutFiles = await listRolloutFiles(sessionsRoot);
+  if (rolloutFiles.length === 0) {
+    return null;
+  }
+
+  const withMtime = await Promise.all(
+    rolloutFiles.map(async (rolloutPath) => ({
+      rolloutPath,
+      mtimeMs: (await stat(rolloutPath).catch(() => null))?.mtimeMs ?? 0
+    }))
+  );
+  withMtime.sort((left, right) => right.mtimeMs - left.mtimeMs);
+
+  for (const { rolloutPath } of withMtime) {
+    const candidate = sessionIdFromRolloutFileName(rolloutPath);
+    if (isSessionId(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+};
+
+const extractSessionIdFromJsonEvent = (event) => {
+  if (!event || typeof event !== "object") {
+    return null;
+  }
+
+  const directFields = [event.session_id, event.sessionId, event.thread_id, event.threadId];
+  for (const value of directFields) {
+    if (isSessionId(value)) {
+      return value.trim();
+    }
+  }
+
+  if (event.type === "session_meta" && event.payload && typeof event.payload === "object" && isSessionId(event.payload.id)) {
+    return event.payload.id.trim();
+  }
+
+  return null;
+};
+
+const extractSessionIdFromOutputLine = (line) => {
+  if (!line || !line.trim().startsWith("{")) {
+    return null;
+  }
+
+  try {
+    return extractSessionIdFromJsonEvent(JSON.parse(line));
+  } catch {
+    return null;
+  }
+};
+
+await mkdir(homeDir, { recursive: true });
+await mkdir(codexDir, { recursive: true });
+await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
+await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
+await writeFile(path.join(codexDir, "config.toml"), providerConfig, "utf8");
+if (codexAuthJson) {
+  await writeFile(path.join(codexDir, "auth.json"), codexAuthJson, "utf8");
+}
+console.log("[runtime] wrote Codex config");
+
+if (openAiBaseUrl) {
+  process.env.OPENAI_BASE_URL = openAiBaseUrl;
+}
+if (openAiApiKey) {
+  process.env.OPENAI_API_KEY = openAiApiKey;
+}
+process.env.GIT_OPTIONAL_LOCKS = "0";
+process.env.HOME = homeDir;
+
+const buildResponsePreferencePreamble = () => {
+  const preference = manifest.agentResponsePreference;
+  if (!preference || typeof preference !== "object") {
+    return "";
+  }
+
+  const lines = ["Response style:"];
+  if (preference.audience === "technical") {
+    lines.push("- Audience: technical.");
+  } else if (preference.audience === "non_technical") {
+    lines.push("- Audience: non-technical.");
+  } else if (preference.audience === "mixed") {
+    lines.push("- Audience: mixed.");
+  }
+
+  if (preference.explanationDepth) {
+    lines.push(`- Explanation depth: ${preference.explanationDepth}.`);
+  }
+  if (preference.jargonLevel) {
+    lines.push(`- Jargon level: ${preference.jargonLevel}.`);
+  }
+  if (preference.codePreference) {
+    lines.push(`- Code preference: ${preference.codePreference}.`);
+  }
+  if (preference.clarifyBehavior) {
+    lines.push(`- Clarification behavior: ${preference.clarifyBehavior}.`);
+  }
+  if (preference.formattingStyle) {
+    lines.push(`- Formatting style: ${preference.formattingStyle}.`);
+  }
+  if (typeof preference.extraInstructions === "string" && preference.extraInstructions.trim()) {
+    lines.push(`- Extra instructions: ${preference.extraInstructions.trim()}`);
+  }
+
+  if (lines.length === 1) {
+    return "";
+  }
+
+  return lines.join("\n");
+};
+
+const buildPrompt = () => {
+  const rawContent = typeof manifest.content === "string" && manifest.content.trim().length > 0
+    ? manifest.content.trim()
+    : (typeof manifest.prompt === "string" ? manifest.prompt.trim() : "");
+  const attachments = Array.isArray(manifest.attachments)
+    ? manifest.attachments.filter(
+        (attachment) =>
+          attachment &&
+          typeof attachment === "object" &&
+          typeof attachment.name === "string" &&
+          typeof attachment.absolutePath === "string" &&
+          attachment.name.trim().length > 0 &&
+          attachment.absolutePath.trim().length > 0
+      )
+    : [];
+
+  if (rawContent.length === 0) {
+    throw new Error("Task prompt is empty");
+  }
+
+  const promptSections = [];
+  if (attachments.length > 0) {
+    promptSections.push(
+      "Reference Images:",
+      ...attachments.map((attachment) => `- ${attachment.absolutePath.trim()} (${attachment.name.trim()})`),
+      ""
+    );
+  }
+  const responsePreferencePreamble = buildResponsePreferencePreamble();
+  if (responsePreferencePreamble) {
+    promptSections.push(responsePreferencePreamble, "");
+  }
+  promptSections.push("Current user request:", "", rawContent);
+  return promptSections.join("\n");
+};
+
+if (!codexAuthJson) {
+  await new Promise((resolve, reject) => {
+    const proc = spawn("codex", ["login", "--with-api-key"], {
+      env: process.env,
+      cwd: manifest.workspacePath,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    proc.stdin.write(openAiApiKey);
+    proc.stdin.end();
+    proc.stdout.on("data", (chunk) => process.stdout.write(chunk));
+    proc.stderr.on("data", (chunk) => process.stderr.write(chunk));
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(`codex login exited with ${code ?? "unknown"}`));
+    });
+  });
+}
+
+const prompt = buildPrompt();
+const isAsk = manifest.action === "ask";
+const persistedSessionId = await readPersistedSessionId();
+let resolvedSessionId = persistedSessionId;
+
+console.log(
+  `[runtime] running codex action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only instruction)" : ""} session=${persistedSessionId ?? "new"}`
+);
+const args = [
+  "exec",
+  "-C",
+  manifest.workspacePath,
+  "-c",
+  "cli_auth_credentials_store=file",
+  "--color",
+  "never",
+  "--json",
+  "--output-last-message",
+  lastMessageFile
+];
+// Ask-mode immutability is enforced by mounting the workspace as read-only in the spawner.
+// Avoid Codex sandbox flags here because nested bubblewrap can fail on hosts without user namespaces.
+args.push("--dangerously-bypass-approvals-and-sandbox");
+if (manifest.resolvedModel) {
+  args.push("-m", manifest.resolvedModel);
+}
+if (manifest.resolvedReasoningEffort) {
+  args.push("-c", `model_reasoning_effort=\"${manifest.resolvedReasoningEffort}\"`);
+}
+if (persistedSessionId) {
+  args.push("resume", persistedSessionId);
+}
+for (const attachment of Array.isArray(manifest.attachments) ? manifest.attachments : []) {
+  if (typeof attachment?.absolutePath === "string" && attachment.absolutePath.trim().length > 0) {
+    args.push("--image", attachment.absolutePath.trim());
+  }
+}
+if (persistedSessionId) {
+  args.push(prompt);
+} else {
+  args.push("--", prompt);
+}
+
+const execProc = spawn("codex", args, { env: process.env, cwd: manifest.workspacePath, stdio: ["ignore", "pipe", "pipe"] });
+let stdoutBuffer = "";
+let stderrBuffer = "";
+const rawEventsStream = createWriteStream(rawEventsJsonlPath, { flags: "a" });
+
+execProc.stdout.on("data", (chunk) => {
+  rawEventsStream.write(chunk);
+  const text = chunk.toString();
+  stdoutBuffer += text;
+  const lines = stdoutBuffer.split("\n");
+  stdoutBuffer = lines.pop() ?? "";
+  for (const line of lines) {
+    const candidate = extractSessionIdFromOutputLine(line);
+    if (candidate) {
+      resolvedSessionId = candidate;
+    }
+  }
+  process.stdout.write(chunk);
+});
+execProc.stderr.on("data", (chunk) => {
+  stderrBuffer += chunk.toString();
+  process.stderr.write(chunk);
+});
+let codexProcessError = null;
+await new Promise((resolve, reject) => {
+  execProc.on("error", reject);
+  execProc.on("close", (code) => {
+    const trailingSessionId = extractSessionIdFromOutputLine(stdoutBuffer);
+    if (trailingSessionId) {
+      resolvedSessionId = trailingSessionId;
+    }
+
+    if (code === 0) {
+      resolve();
+      return;
+    }
+
+    const stderrTail = stderrBuffer.trim();
+    reject(new Error(`codex exited with code ${code ?? "unknown"}${stderrTail ? `: ${stderrTail}` : ""}`));
+  });
+}).catch((error) => {
+  codexProcessError = error;
+});
+await new Promise((resolve, reject) => {
+  rawEventsStream.end(() => resolve());
+  rawEventsStream.on("error", reject);
+});
+if (codexProcessError) {
+  throw codexProcessError;
+}
+
+if (!resolvedSessionId) {
+  resolvedSessionId = await inferSessionIdFromRolloutFiles();
+}
+if (resolvedSessionId) {
+  await writePersistedSessionId(resolvedSessionId);
+  console.log(`[runtime] codex session_id=${resolvedSessionId}`);
+}
+
+const summaryMarkdown = (await readFile(lastMessageFile, "utf8").catch(() => "")).trim();
+if (!summaryMarkdown) {
+  throw new Error("codex returned empty summary markdown");
+}
+
+await writeFile(manifest.resultMarkdownPath, `${summaryMarkdown}\n`, "utf8");
+await writeFile(
+  manifest.resultJsonPath,
+  JSON.stringify(
+    {
+      taskType: manifest.taskType,
+      status: "success",
+      summaryMarkdown,
+      changedFiles: [],
+      metadata: {
+        provider: manifest.provider,
+        action: manifest.action,
+        ...(resolvedSessionId ? { sessionId: resolvedSessionId } : {})
+      }
+    },
+    null,
+    2
+  ),
+  "utf8"
+);
+
+console.log("[runtime] completed");
+````
+
+## File: apps/server/src/services/github-status-sync-service.test.ts
 ````typescript
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { SequenceRun, TaskRun } from "@agentswarm/shared-types";
-import { SequenceExecutionService } from "./sequence-execution-service.js";
+import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
+import type { RepositoryStore } from "./repository-store.js";
+import { GitHubStatusSyncService } from "./github-status-sync-service.js";
 
-const createTaskRun = (input: { id: string; taskId: string; changeOutcome: "changed" | "no_change" }): TaskRun => ({
-  id: input.id,
-  taskId: input.taskId,
-  action: "build",
+class MockRepositoryStore implements Pick<RepositoryStore, "getRepository"> {
+  constructor(private readonly repository: Repository | null) {}
+  async getRepository(): Promise<Repository | null> {
+    return this.repository;
+  }
+}
+
+class MockGitHubOutboundService {
+  comments: Array<{ repositoryId: string; issueNumber: number; body: string; idempotencyKey: string }> = [];
+  labels: Array<{ repositoryId: string; issueNumber: number; add?: string[]; remove?: string[]; idempotencyKey: string }> = [];
+
+  async enqueueSummaryComment(input: { repositoryId: string; issueNumber: number; body: string; idempotencyKey: string }): Promise<boolean> {
+    this.comments.push(input);
+    return true;
+  }
+
+  async enqueueLabelUpdate(input: {
+    repositoryId: string;
+    issueNumber: number;
+    add?: string[];
+    remove?: string[];
+    idempotencyKey: string;
+  }): Promise<boolean> {
+    this.labels.push(input);
+    return true;
+  }
+}
+
+const buildTask = (status: Task["status"], overrides: Partial<Task> = {}): Task => ({
+  id: "task-1",
+  title: "Issue #22",
+  deadline: null,
+  pinned: false,
+  hasPendingCheckpoint: false,
+  activeInteractiveSession: false,
+  activeTerminalSessionMode: null,
+  ownerUserId: "user-1",
+  creatorName: "Dev",
+  repoId: "repo-1",
+  repoName: "Repo",
+  repoUrl: "https://github.com/acme/repo",
+  repoDefaultBranch: "main",
+  taskType: "build",
   provider: "codex",
-  providerProfile: "high",
+  providerProfile: "medium",
   modelOverride: null,
-  branchName: "feature/test",
-  status: "succeeded",
-  startedAt: "2026-05-26T00:00:00.000Z",
-  finishedAt: "2026-05-26T00:00:01.000Z",
-  summary: "done",
-  changeOutcome: input.changeOutcome,
-  errorMessage: null,
-  changeProposalCheckpointRef: null,
-  changeProposalUntrackedPaths: null,
-  logs: []
-});
-
-const createSequenceRun = (stepCount: number, executionMode: SequenceRun["executionMode"] = "auto_apply_changes"): SequenceRun => ({
-  id: "sequence-run-1",
-  sequenceId: "sequence-1",
-  taskId: "task-1",
-  status: "running",
-  executionMode,
-  failPolicy: "fail_fast",
-  stepCount,
-  waitingForApprovalAfterStepIndex: null,
-  failedStepIndex: null,
-  startedAt: "2026-05-26T00:00:00.000Z",
+  codexCredentialSource: "auto",
+  baseBranch: "main",
+  branchStrategy: "feature_branch",
+  complexity: "normal",
+  branchName: null,
+  workspaceBaseRef: null,
+  prompt: "Imported from GitHub issue #22: Test issue\n\nIssue URL: https://github.com/acme/repo/issues/22",
+  notes: "",
+  resultMarkdown: null,
+  executionSummary: "",
+  branchDiff: null,
+  pullCount: 0,
+  pushCount: 0,
+  lastAction: "build",
+  status,
+  workflowStatus: "ready",
+  executionStatus: "idle",
+  executionAction: "build",
+  reviewReason: null,
+  logs: [],
+  enqueued: false,
+  createdAt: "2026-05-22T00:00:00.000Z",
+  updatedAt: "2026-05-22T00:00:00.000Z",
+  startedAt: null,
   finishedAt: null,
-  steps: Array.from({ length: stepCount }, (_entry, index) => ({
-    index,
-    prompt: `step-${index + 1}`,
-    state: "pending",
-    taskRunId: null,
-    errorMessage: null,
-    startedAt: null,
-    finishedAt: null
-  }))
+  errorMessage: null,
+  ...overrides
 });
 
-describe("SequenceExecutionService", () => {
-  it("continues to the next step after a build step with no code changes", async () => {
-    let run = createSequenceRun(2);
-    const taskRuns = [createTaskRun({ id: "run-1", taskId: "task-1", changeOutcome: "no_change" }), createTaskRun({
-      id: "run-2",
-      taskId: "task-1",
-      changeOutcome: "changed"
-    })];
-    const logs: string[] = [];
-    let listRunsCallCount = 0;
-    let getTaskCallCount = 0;
-    let triggerActionCount = 0;
+describe("GitHubStatusSyncService", () => {
+  it("posts milestone updates when sync_status_enabled is true", async () => {
+    const repository: Repository = {
+      id: "repo-1",
+      name: "Repo",
+      url: "https://github.com/acme/repo",
+      defaultBranch: "main",
+      syncStatusEnabled: true,
+      envVars: [],
+      webhookUrl: null,
+      webhookEnabled: false,
+      webhookSecretConfigured: false,
+      webhookLastAttemptAt: null,
+      webhookLastStatus: null,
+      webhookLastError: null,
+      createdAt: "2026-05-22T00:00:00.000Z",
+      updatedAt: "2026-05-22T00:00:00.000Z"
+    };
+    const outbound = new MockGitHubOutboundService();
+    const service = new GitHubStatusSyncService(new MockRepositoryStore(repository) as unknown as RepositoryStore, outbound as never, () =>
+      "2026-05-22T12:00:00.000Z"
+    );
 
-    const sequenceStore = {
-      getRun: async () => run,
-      updateRun: async (
-        _runId: string,
-        patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps" | "waitingForApprovalAfterStepIndex">>
-      ) => {
-        run = {
-          ...run,
-          ...patch,
-          steps: patch.steps ?? run.steps
-        };
-        return run;
-      }
-    };
-    const taskStore = {
-      appendLog: async (_taskId: string, line: string) => {
-        logs.push(line);
-      },
-      listChangeProposals: async () => [],
-      listRuns: async () => {
-        listRunsCallCount += 1;
-        return listRunsCallCount === 1 ? [taskRuns[0]!] : [taskRuns[0]!, taskRuns[1]!];
-      },
-      getRun: async (runId: string) => taskRuns.find((runItem) => runItem.id === runId) ?? null,
-      getTask: async () => {
-        getTaskCallCount += 1;
-        return {
-          id: "task-1",
-          status: "open",
-          executionStatus: getTaskCallCount === 1 ? "running" : "idle",
-          hasPendingCheckpoint: false,
-          activeInteractiveSession: false
-        };
-      }
-    };
-    const scheduler = {
-      triggerAction: async () => {
-        triggerActionCount += 1;
-        return true;
-      }
-    };
-    const spawner = {
-      applyChangeProposal: async () => ({ ok: true as const })
-    };
+    const createdEvent: RealtimeEvent = { type: "task:created", payload: buildTask("build_queued") };
+    const startedEvent: RealtimeEvent = { type: "task:updated", payload: buildTask("building") };
+    const doneEvent: RealtimeEvent = { type: "task:updated", payload: buildTask("done", { resultMarkdown: "## Final summary\nShipped." }) };
 
-    const service = new SequenceExecutionService(sequenceStore as never, taskStore as never, scheduler as never, spawner as never);
-    await service.runSteps({
-      runId: run.id,
-      taskId: "task-1",
-      action: "build",
-      stepPrompts: ["step-1", "step-2"],
-      initialKnownRunIds: new Set<string>()
-    });
+    await service.handleRealtimeEvent(createdEvent);
+    await service.handleRealtimeEvent(startedEvent);
+    await service.handleRealtimeEvent(doneEvent);
 
-    assert.equal(run.status, "succeeded");
-    assert.equal(run.waitingForApprovalAfterStepIndex, null);
-    assert.equal(run.steps[0]?.state, "succeeded");
-    assert.equal(run.steps[1]?.state, "succeeded");
-    assert.equal(triggerActionCount, 1);
-    assert.ok(getTaskCallCount >= 2);
-    assert.ok(logs.includes("No changes needed for this step. Continuing."));
+    assert.equal(outbound.labels.length, 2);
+    assert.equal(outbound.comments.length, 2);
+    assert.deepEqual(outbound.labels[0]?.add, ["as:in-progress"]);
+    assert.deepEqual(outbound.labels[1]?.add, ["as:done"]);
+    assert.equal(outbound.comments[0]?.body, "Work started.");
+    assert.equal(outbound.comments[1]?.body, "## Final summary\nShipped.");
   });
 
-  it("pauses after each succeeded step when approval mode is enabled", async () => {
-    let run = createSequenceRun(2, "approve_before_continuing");
-    const taskRuns = [createTaskRun({ id: "run-1", taskId: "task-1", changeOutcome: "no_change" })];
-    const logs: string[] = [];
-    let listRunsCallCount = 0;
-    let triggerActionCount = 0;
+  it("does not post when sync_status_enabled is false", async () => {
+    const repository: Repository = {
+      id: "repo-1",
+      name: "Repo",
+      url: "https://github.com/acme/repo",
+      defaultBranch: "main",
+      syncStatusEnabled: false,
+      envVars: [],
+      webhookUrl: null,
+      webhookEnabled: false,
+      webhookSecretConfigured: false,
+      webhookLastAttemptAt: null,
+      webhookLastStatus: null,
+      webhookLastError: null,
+      createdAt: "2026-05-22T00:00:00.000Z",
+      updatedAt: "2026-05-22T00:00:00.000Z"
+    };
+    const outbound = new MockGitHubOutboundService();
+    const service = new GitHubStatusSyncService(new MockRepositoryStore(repository) as unknown as RepositoryStore, outbound as never);
 
-    const sequenceStore = {
-      getRun: async () => run,
-      updateRun: async (
-        _runId: string,
-        patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps" | "waitingForApprovalAfterStepIndex">>
-      ) => {
-        run = {
-          ...run,
-          ...patch,
-          steps: patch.steps ?? run.steps
-        };
-        return run;
-      }
-    };
-    const taskStore = {
-      appendLog: async (_taskId: string, line: string) => {
-        logs.push(line);
-      },
-      listChangeProposals: async () => [],
-      listRuns: async () => {
-        listRunsCallCount += 1;
-        return listRunsCallCount === 1 ? [taskRuns[0]!] : taskRuns;
-      },
-      getRun: async (runId: string) => taskRuns.find((runItem) => runItem.id === runId) ?? null
-    };
-    const scheduler = {
-      triggerAction: async () => {
-        triggerActionCount += 1;
-        return true;
-      }
-    };
-    const spawner = {
-      applyChangeProposal: async () => ({ ok: true as const })
-    };
+    await service.handleRealtimeEvent({ type: "task:created", payload: buildTask("build_queued") });
+    await service.handleRealtimeEvent({ type: "task:updated", payload: buildTask("building") });
 
-    const service = new SequenceExecutionService(sequenceStore as never, taskStore as never, scheduler as never, spawner as never);
-    await service.runSteps({
-      runId: run.id,
-      taskId: "task-1",
-      action: "build",
-      stepPrompts: ["step-1", "step-2"],
-      initialKnownRunIds: new Set<string>()
-    });
-
-    assert.equal(run.status, "waiting_for_approval");
-    assert.equal(run.waitingForApprovalAfterStepIndex, 0);
-    assert.equal(run.steps[0]?.state, "succeeded");
-    assert.equal(run.steps[1]?.state, "pending");
-    assert.equal(triggerActionCount, 0);
-    assert.ok(logs.includes("No changes needed for this step. Waiting for approval to continue."));
-    assert.ok(logs.some((line) => line.includes("Awaiting approval to continue")));
+    assert.equal(outbound.labels.length, 0);
+    assert.equal(outbound.comments.length, 0);
   });
 
-  it("resumes from the next pending step after approval", async () => {
-    let run = createSequenceRun(2, "approve_before_continuing");
-    run.status = "waiting_for_approval";
-    run.waitingForApprovalAfterStepIndex = 0;
-    run.steps[0] = {
-      ...run.steps[0]!,
-      state: "succeeded",
-      taskRunId: "run-1",
-      startedAt: "2026-05-26T00:00:00.000Z",
-      finishedAt: "2026-05-26T00:00:01.000Z"
+  it("does not post when task notes explicitly disable sync", async () => {
+    const repository: Repository = {
+      id: "repo-1",
+      name: "Repo",
+      url: "https://github.com/acme/repo",
+      defaultBranch: "main",
+      syncStatusEnabled: true,
+      envVars: [],
+      webhookUrl: null,
+      webhookEnabled: false,
+      webhookSecretConfigured: false,
+      webhookLastAttemptAt: null,
+      webhookLastStatus: null,
+      webhookLastError: null,
+      createdAt: "2026-05-22T00:00:00.000Z",
+      updatedAt: "2026-05-22T00:00:00.000Z"
     };
-    const taskRuns = [
-      createTaskRun({ id: "run-1", taskId: "task-1", changeOutcome: "changed" }),
-      createTaskRun({ id: "run-2", taskId: "task-1", changeOutcome: "changed" })
-    ];
-    let triggerActionCount = 0;
+    const outbound = new MockGitHubOutboundService();
+    const service = new GitHubStatusSyncService(new MockRepositoryStore(repository) as unknown as RepositoryStore, outbound as never);
 
-    const sequenceStore = {
-      getRun: async () => run,
-      updateRun: async (
-        _runId: string,
-        patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps" | "waitingForApprovalAfterStepIndex">>
-      ) => {
-        run = {
-          ...run,
-          ...patch,
-          steps: patch.steps ?? run.steps
-        };
-        return run;
-      }
-    };
-    const taskStore = {
-      appendLog: async () => undefined,
-      listChangeProposals: async () => [],
-      listRuns: async () => taskRuns,
-      getRun: async (runId: string) => taskRuns.find((runItem) => runItem.id === runId) ?? null,
-      getTask: async () => ({
-        id: "task-1",
-        status: "open",
-        hasPendingCheckpoint: false,
-        activeInteractiveSession: false
-      })
-    };
-    const scheduler = {
-      triggerAction: async () => {
-        triggerActionCount += 1;
-        return true;
-      }
-    };
-    const spawner = {
-      applyChangeProposal: async () => ({ ok: true as const })
-    };
-
-    const service = new SequenceExecutionService(sequenceStore as never, taskStore as never, scheduler as never, spawner as never);
-    await service.runSteps({
-      runId: run.id,
-      taskId: "task-1",
-      action: "build",
-      stepPrompts: ["step-1", "step-2"],
-      initialKnownRunIds: new Set<string>(["run-1"]),
-      startStepIndex: 1
+    await service.handleRealtimeEvent({
+      type: "task:created",
+      payload: buildTask("build_queued", { notes: "<!-- agentswarm:github_sync_status_enabled=false -->" })
+    });
+    await service.handleRealtimeEvent({
+      type: "task:updated",
+      payload: buildTask("building", { notes: "<!-- agentswarm:github_sync_status_enabled=false -->" })
     });
 
-    assert.equal(run.status, "succeeded");
-    assert.equal(run.waitingForApprovalAfterStepIndex, null);
-    assert.equal(run.steps[1]?.state, "succeeded");
-    assert.equal(run.steps[1]?.taskRunId, "run-2");
-    assert.equal(triggerActionCount, 1);
-  });
-
-  it("auto-applies pending checkpoints in auto mode before continuing", async () => {
-    let run = createSequenceRun(2, "auto_apply_changes");
-    const taskRuns = [
-      createTaskRun({ id: "run-1", taskId: "task-1", changeOutcome: "changed" }),
-      createTaskRun({ id: "run-2", taskId: "task-1", changeOutcome: "changed" })
-    ];
-    let triggerActionCount = 0;
-    let applyCount = 0;
-    const logs: string[] = [];
-    let listRunsCallCount = 0;
-    let pendingCheckpoint = true;
-
-    const sequenceStore = {
-      getRun: async () => run,
-      updateRun: async (
-        _runId: string,
-        patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps" | "waitingForApprovalAfterStepIndex">>
-      ) => {
-        run = {
-          ...run,
-          ...patch,
-          steps: patch.steps ?? run.steps
-        };
-        return run;
-      }
-    };
-    const taskStore = {
-      appendLog: async (_taskId: string, line: string) => {
-        logs.push(line);
-      },
-      listChangeProposals: async () => (pendingCheckpoint ? [{ id: "cp-1", taskId: "task-1", status: "pending" }] : []),
-      listRuns: async () => {
-        listRunsCallCount += 1;
-        return listRunsCallCount === 1 ? [taskRuns[0]!] : [taskRuns[0]!, taskRuns[1]!];
-      },
-      getRun: async (runId: string) => taskRuns.find((runItem) => runItem.id === runId) ?? null,
-      getTask: async () => ({
-        id: "task-1",
-        status: "open",
-        hasPendingCheckpoint: false,
-        activeInteractiveSession: false
-      })
-    };
-    const scheduler = {
-      triggerAction: async () => {
-        triggerActionCount += 1;
-        return true;
-      }
-    };
-    const spawner = {
-      applyChangeProposal: async () => {
-        applyCount += 1;
-        pendingCheckpoint = false;
-        return { ok: true as const };
-      }
-    };
-
-    const service = new SequenceExecutionService(sequenceStore as never, taskStore as never, scheduler as never, spawner as never);
-    await service.runSteps({
-      runId: run.id,
-      taskId: "task-1",
-      action: "build",
-      stepPrompts: ["step-1", "step-2"],
-      initialKnownRunIds: new Set<string>()
-    });
-
-    assert.equal(run.status, "succeeded");
-    assert.equal(applyCount, 1);
-    assert.equal(triggerActionCount, 1);
-    assert.ok(logs.some((line) => line.includes("auto-applied checkpoint")));
-  });
-
-  it("waits for checkpoint resolution when auto-apply fails", async () => {
-    let run = createSequenceRun(2, "auto_apply_changes");
-    const taskRuns = [createTaskRun({ id: "run-1", taskId: "task-1", changeOutcome: "changed" })];
-    let triggerActionCount = 0;
-    const logs: string[] = [];
-
-    const sequenceStore = {
-      getRun: async () => run,
-      updateRun: async (
-        _runId: string,
-        patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps" | "waitingForApprovalAfterStepIndex">>
-      ) => {
-        run = {
-          ...run,
-          ...patch,
-          steps: patch.steps ?? run.steps
-        };
-        return run;
-      }
-    };
-    const taskStore = {
-      appendLog: async (_taskId: string, line: string) => {
-        logs.push(line);
-      },
-      listChangeProposals: async () => [{ id: "cp-1", taskId: "task-1", status: "pending" }],
-      listRuns: async () => taskRuns,
-      getRun: async (runId: string) => taskRuns.find((runItem) => runItem.id === runId) ?? null,
-      getTask: async () => ({
-        id: "task-1",
-        status: "open",
-        hasPendingCheckpoint: true,
-        activeInteractiveSession: false
-      })
-    };
-    const scheduler = {
-      triggerAction: async () => {
-        triggerActionCount += 1;
-        return true;
-      }
-    };
-    const spawner = {
-      applyChangeProposal: async () => ({ ok: false as const, message: "conflict" })
-    };
-
-    const service = new SequenceExecutionService(sequenceStore as never, taskStore as never, scheduler as never, spawner as never);
-    await service.runSteps({
-      runId: run.id,
-      taskId: "task-1",
-      action: "build",
-      stepPrompts: ["step-1", "step-2"],
-      initialKnownRunIds: new Set<string>()
-    });
-
-    assert.equal(run.status, "waiting_for_checkpoint_resolution");
-    assert.equal(run.steps[0]?.state, "succeeded");
-    assert.equal(run.steps[1]?.state, "pending");
-    assert.equal(triggerActionCount, 0);
-    assert.ok(logs.some((line) => line.includes("could not auto-apply checkpoint")));
-  });
-
-  it("auto-applies checkpoint that appears after step success but before next step starts", async () => {
-    let run = createSequenceRun(2, "auto_apply_changes");
-    const taskRuns = [
-      createTaskRun({ id: "run-1", taskId: "task-1", changeOutcome: "changed" }),
-      createTaskRun({ id: "run-2", taskId: "task-1", changeOutcome: "changed" })
-    ];
-    let listRunsCallCount = 0;
-    let listChangeProposalsCallCount = 0;
-    let triggerActionCount = 0;
-    let applyCount = 0;
-    const logs: string[] = [];
-
-    const sequenceStore = {
-      getRun: async () => run,
-      updateRun: async (
-        _runId: string,
-        patch: Partial<Pick<SequenceRun, "status" | "failedStepIndex" | "finishedAt" | "steps" | "waitingForApprovalAfterStepIndex">>
-      ) => {
-        run = {
-          ...run,
-          ...patch,
-          steps: patch.steps ?? run.steps
-        };
-        return run;
-      }
-    };
-    const taskStore = {
-      appendLog: async (_taskId: string, line: string) => {
-        logs.push(line);
-      },
-      listChangeProposals: async () => {
-        listChangeProposalsCallCount += 1;
-        return listChangeProposalsCallCount === 1 ? [] : [{ id: "cp-late", taskId: "task-1", status: "pending" }];
-      },
-      listRuns: async () => {
-        listRunsCallCount += 1;
-        return listRunsCallCount === 1 ? [taskRuns[0]!] : [taskRuns[0]!, taskRuns[1]!];
-      },
-      getRun: async (runId: string) => taskRuns.find((runItem) => runItem.id === runId) ?? null,
-      getTask: async () => ({
-        id: "task-1",
-        status: "open",
-        hasPendingCheckpoint: false,
-        activeInteractiveSession: false
-      })
-    };
-    const scheduler = {
-      triggerAction: async () => {
-        triggerActionCount += 1;
-        return true;
-      }
-    };
-    const spawner = {
-      applyChangeProposal: async () => {
-        applyCount += 1;
-        return { ok: true as const };
-      }
-    };
-
-    const service = new SequenceExecutionService(sequenceStore as never, taskStore as never, scheduler as never, spawner as never);
-    await service.runSteps({
-      runId: run.id,
-      taskId: "task-1",
-      action: "build",
-      stepPrompts: ["step-1", "step-2"],
-      initialKnownRunIds: new Set<string>()
-    });
-
-    assert.equal(run.status, "succeeded");
-    assert.equal(applyCount, 1);
-    assert.equal(triggerActionCount, 1);
-    assert.ok(logs.some((line) => line.includes("auto-applied checkpoint before step 2/2")));
+    assert.equal(outbound.labels.length, 0);
+    assert.equal(outbound.comments.length, 0);
   });
 });
 ````
@@ -35870,163 +33630,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
 }
 ````
 
-## File: apps/web/components/sequences-page.tsx
-````typescript
-"use client";
-
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import dayjs from "dayjs";
-import type { Sequence, SequenceExecutionMode, SequenceStep } from "@agentswarm/shared-types";
-import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
-import { api } from "../src/api/client";
-import { useSequences } from "../src/hooks/useSequences";
-import { useAuth } from "./auth-provider";
-import { trackEvent } from "../src/utils/analytics";
-
-const summarizeStep = (step: SequenceStep): string => {
-  if (step.type === "snippet") {
-    return `Snippet: ${step.snippetId ?? "unknown"}`;
-  }
-  const normalized = step.prompt.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return "Inline prompt";
-  }
-  return normalized.length > 90 ? `${normalized.slice(0, 90)}...` : normalized;
-};
-
-const getExecutionModeLabel = (mode: SequenceExecutionMode): string =>
-  mode === "approve_before_continuing" ? "Approve Before Continuing" : "Auto Apply Changes";
-
-export function SequencesPage() {
-  const router = useRouter();
-  const { can } = useAuth();
-  const { sequences, loading } = useSequences(can("sequence:list"));
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [messageApi, contextHolder] = message.useMessage();
-  const canCreate = can("sequence:create");
-  const canEdit = can("sequence:edit");
-  const canDelete = can("sequence:delete");
-  const canDuplicate = can("sequence:create");
-  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
-
-  return (
-    <>
-      {contextHolder}
-      <Space direction="vertical" size={16} style={{ width: "100%" }}>
-        <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-          <Flex vertical gap={0}>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              Sequences
-            </Typography.Title>
-            <Typography.Text type="secondary">
-              Build reusable multi-step prompt flows with clear step order.
-            </Typography.Text>
-          </Flex>
-          {canCreate ? (
-            <Button type="primary" onClick={() => router.push("/sequences/new")}>
-              Add Sequence
-            </Button>
-          ) : null}
-        </Flex>
-
-        <Card bordered={false}>
-          <Table<Sequence>
-            rowKey="id"
-            loading={loading}
-            dataSource={sequences}
-            pagination={{ pageSize: 10 }}
-            columns={[
-              { title: "Name", dataIndex: "name" },
-              {
-                title: "Steps",
-                render: (_value, sequence) => sequence.steps.length
-              },
-              {
-                title: "Run Mode",
-                render: (_value, sequence) => getExecutionModeLabel(sequence.executionMode)
-              },
-              {
-                title: "Preview",
-                render: (_value, sequence) => summarizeStep(sequence.steps[0] ?? { id: "", type: "inline", prompt: "" })
-              },
-              {
-                title: "Updated At",
-                dataIndex: "updatedAt",
-                sorter: (left, right) => left.updatedAt.localeCompare(right.updatedAt),
-                defaultSortOrder: "descend",
-                render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
-              },
-              {
-                title: "Actions",
-                width: 220,
-                render: (_value, sequence) => (
-                  <Space size={8} wrap={false} style={{ whiteSpace: "nowrap" }}>
-                    {canEdit ? (
-                      <Button size="small" onClick={() => router.push(`/sequences/${sequence.id}/edit`)}>
-                        Edit
-                      </Button>
-                    ) : null}
-                    {canDuplicate ? (
-                      <Button
-                        size="small"
-                        loading={duplicatingId === sequence.id}
-                        onClick={async () => {
-                          setDuplicatingId(sequence.id);
-                          try {
-                            const duplicated = await api.duplicateSequence(sequence.id);
-                            trackEvent("sequence_duplicated", {
-                              source: "list",
-                              sequence_id: sequence.id,
-                              duplicated_sequence_id: duplicated.id
-                            });
-                            messageApi.success("Sequence duplicated");
-                            router.push(`/sequences/${duplicated.id}/edit`);
-                          } catch (error) {
-                            messageApi.error(error instanceof Error ? error.message : "Failed to duplicate sequence");
-                          } finally {
-                            setDuplicatingId(null);
-                          }
-                        }}
-                      >
-                        Duplicate
-                      </Button>
-                    ) : null}
-                    {canDelete ? (
-                      <Popconfirm
-                        title="Delete sequence?"
-                        description={`Delete "${sequence.name}"?`}
-                        okText="Delete"
-                        okButtonProps={{ danger: true, loading: deletingId === sequence.id }}
-                        onConfirm={async () => {
-                          setDeletingId(sequence.id);
-                          try {
-                            await api.deleteSequence(sequence.id);
-                            messageApi.success("Sequence deleted");
-                          } catch (error) {
-                            messageApi.error(error instanceof Error ? error.message : "Failed to delete sequence");
-                          } finally {
-                            setDeletingId(null);
-                          }
-                        }}
-                      >
-                        <Button danger size="small">
-                          Delete
-                        </Button>
-                      </Popconfirm>
-                    ) : null}
-                  </Space>
-                )
-              }
-            ]}
-          />
-        </Card>
-      </Space>
-    </>
-  );
-}
-````
-
 ## File: apps/web/components/tasks-page.tsx
 ````typescript
 "use client";
@@ -36367,7 +33970,7 @@ export function TasksPage() {
 ````typescript
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { SequenceRun, TaskChangeProposal, TaskMessage, TaskRun } from "@agentswarm/shared-types";
+import type { TaskChangeProposal, TaskMessage, TaskRun } from "@agentswarm/shared-types";
 import {
   buildTaskHistoryEntries,
   GIT_TERMINAL_END_REVIEW_MESSAGE,
@@ -36413,18 +34016,6 @@ function createProposal(
     untrackedPathsAtCheckpoint: [],
     resolvedAt: null,
     revertedAt: null,
-    ...input
-  };
-}
-
-function createSequenceRun(input: Partial<SequenceRun> & Pick<SequenceRun, "id" | "taskId" | "sequenceId" | "status" | "stepCount" | "steps">): SequenceRun {
-  return {
-    executionMode: "auto_apply_changes",
-    failPolicy: "fail_fast",
-    waitingForApprovalAfterStepIndex: null,
-    failedStepIndex: null,
-    startedAt: "2026-03-24T00:00:00.000Z",
-    finishedAt: null,
     ...input
   };
 }
@@ -36556,256 +34147,6 @@ test("keeps unmatched messages and proposals as raw entries when a run has no ma
   }
   assert.equal(grouped.promptMessage, null);
   assert.equal(grouped.promptText, "No matched user prompt was found for this run.");
-});
-
-test("uses sequence step prompt text when a run has no matched user prompt message", () => {
-  const run = createRun({
-    id: "r-seq-2",
-    action: "build",
-    startedAt: "2026-03-24T12:05:00.000Z",
-    status: "running"
-  });
-  const sequenceRun = createSequenceRun({
-    id: "seq-run-1",
-    taskId: "task-1",
-    sequenceId: "seq-1",
-    status: "running",
-    stepCount: 2,
-    steps: [
-      {
-        index: 0,
-        prompt: "First step prompt",
-        state: "succeeded",
-        taskRunId: "r-seq-1",
-        errorMessage: null,
-        startedAt: "2026-03-24T12:00:00.000Z",
-        finishedAt: "2026-03-24T12:01:00.000Z"
-      },
-      {
-        index: 1,
-        prompt: "Second step prompt from sequence",
-        state: "running",
-        taskRunId: "r-seq-2",
-        errorMessage: null,
-        startedAt: "2026-03-24T12:05:00.000Z",
-        finishedAt: null
-      }
-    ]
-  });
-
-  const entries = buildTaskHistoryEntries({
-    messages: [],
-    runs: [run],
-    proposals: [],
-    sequenceRun
-  });
-
-  assert.equal(entries[0]?.kind, "grouped_auto_run");
-  if (entries[0]?.kind !== "grouped_auto_run") {
-    throw new Error("Expected grouped_auto_run");
-  }
-  assert.equal(entries[0].promptMessage, null);
-  assert.equal(entries[0].promptText, "Second step prompt from sequence");
-});
-
-test("adds queued sequence steps as grouped auto run entries", () => {
-  const runningRun = createRun({
-    id: "r-seq-1",
-    action: "build",
-    startedAt: "2026-03-24T12:00:00.000Z",
-    status: "running"
-  });
-  const sequenceRun = createSequenceRun({
-    id: "seq-run-queued",
-    taskId: "task-1",
-    sequenceId: "seq-1",
-    status: "running",
-    stepCount: 3,
-    steps: [
-      {
-        index: 0,
-        prompt: "Step one",
-        state: "running",
-        taskRunId: "r-seq-1",
-        errorMessage: null,
-        startedAt: "2026-03-24T12:00:00.000Z",
-        finishedAt: null
-      },
-      {
-        index: 1,
-        prompt: "Step two queued",
-        state: "pending",
-        taskRunId: null,
-        errorMessage: null,
-        startedAt: null,
-        finishedAt: null
-      },
-      {
-        index: 2,
-        prompt: "Step three queued",
-        state: "pending",
-        taskRunId: null,
-        errorMessage: null,
-        startedAt: null,
-        finishedAt: null
-      }
-    ]
-  });
-
-  const entries = buildTaskHistoryEntries({
-    messages: [],
-    runs: [runningRun],
-    proposals: [],
-    sequenceRun
-  });
-
-  const grouped = entries.filter((entry) => entry.kind === "grouped_auto_run");
-  assert.equal(grouped.length, 3);
-  const queued = grouped.filter((entry) => entry.isQueued);
-  assert.equal(queued.length, 2);
-  assert.equal(queued[0]?.promptText, "Step two queued");
-  assert.equal(queued[1]?.promptText, "Step three queued");
-});
-
-test("keeps sequence step order stable across done, running, and queued states", () => {
-  const doneRun = createRun({
-    id: "r-step-1",
-    action: "build",
-    startedAt: "2026-03-24T12:01:00.000Z",
-    finishedAt: "2026-03-24T12:02:00.000Z",
-    status: "succeeded",
-    summary: "done"
-  });
-  const activeRun = createRun({
-    id: "r-step-2",
-    action: "build",
-    startedAt: "2026-03-24T12:10:00.000Z",
-    status: "running"
-  });
-  const sequenceRun = createSequenceRun({
-    id: "seq-run-order",
-    taskId: "task-1",
-    sequenceId: "seq-1",
-    status: "running",
-    stepCount: 3,
-    steps: [
-      {
-        index: 0,
-        prompt: "Step 1",
-        state: "succeeded",
-        taskRunId: "r-step-1",
-        errorMessage: null,
-        startedAt: "2026-03-24T12:01:00.000Z",
-        finishedAt: "2026-03-24T12:02:00.000Z"
-      },
-      {
-        index: 1,
-        prompt: "Step 2",
-        state: "running",
-        taskRunId: "r-step-2",
-        errorMessage: null,
-        startedAt: "2026-03-24T12:10:00.000Z",
-        finishedAt: null
-      },
-      {
-        index: 2,
-        prompt: "Step 3",
-        state: "pending",
-        taskRunId: null,
-        errorMessage: null,
-        startedAt: null,
-        finishedAt: null
-      }
-    ]
-  });
-
-  const entries = buildTaskHistoryEntries({
-    messages: [],
-    runs: [activeRun, doneRun],
-    proposals: [],
-    sequenceRun
-  });
-
-  const grouped = entries.filter((entry) => entry.kind === "grouped_auto_run");
-  assert.equal(grouped.length, 3);
-  assert.deepEqual(
-    grouped.map((entry) => entry.promptText),
-    ["Step 1", "Step 2", "Step 3"]
-  );
-});
-
-test("keeps order stable when the running step has no taskRunId yet", () => {
-  const doneRun = createRun({
-    id: "r-step-1",
-    action: "build",
-    startedAt: "2026-03-24T12:01:00.000Z",
-    finishedAt: "2026-03-24T12:02:00.000Z",
-    status: "succeeded",
-    summary: "done"
-  });
-  const activeRun = createRun({
-    id: "r-step-2",
-    action: "build",
-    startedAt: "2026-03-24T12:10:00.000Z",
-    status: "running"
-  });
-  const step2PromptMessage = createMessage({
-    id: "m-step-2",
-    createdAt: "2026-03-24T12:09:59.000Z",
-    role: "user",
-    action: "build",
-    content: "Step 2 unique prompt"
-  });
-  const sequenceRun = createSequenceRun({
-    id: "seq-run-no-runid",
-    taskId: "task-1",
-    sequenceId: "seq-1",
-    status: "running",
-    stepCount: 3,
-    steps: [
-      {
-        index: 0,
-        prompt: "Step 1 unique prompt",
-        state: "succeeded",
-        taskRunId: "r-step-1",
-        errorMessage: null,
-        startedAt: "2026-03-24T12:01:00.000Z",
-        finishedAt: "2026-03-24T12:02:00.000Z"
-      },
-      {
-        index: 1,
-        prompt: "Step 2 unique prompt",
-        state: "running",
-        taskRunId: null,
-        errorMessage: null,
-        startedAt: "2026-03-24T12:10:00.000Z",
-        finishedAt: null
-      },
-      {
-        index: 2,
-        prompt: "Step 3 unique prompt",
-        state: "pending",
-        taskRunId: null,
-        errorMessage: null,
-        startedAt: null,
-        finishedAt: null
-      }
-    ]
-  });
-
-  const entries = buildTaskHistoryEntries({
-    messages: [step2PromptMessage],
-    runs: [activeRun, doneRun],
-    proposals: [],
-    sequenceRun
-  });
-
-  const grouped = entries.filter((entry) => entry.kind === "grouped_auto_run");
-  assert.equal(grouped.length, 3);
-  assert.deepEqual(
-    grouped.map((entry) => entry.promptText),
-    ["Step 1 unique prompt", "Step 2 unique prompt", "Step 3 unique prompt"]
-  );
 });
 
 test("groups completed terminal sessions with a diff proposal", () => {
@@ -37274,188 +34615,312 @@ describe("orchestrateTaskActionStart", () => {
 });
 ````
 
-## File: apps/server/src/services/github-status-sync-service.test.ts
+## File: apps/server/src/routes/repositories.ts
 ````typescript
-import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
-import type { RepositoryStore } from "./repository-store.js";
-import { GitHubStatusSyncService } from "./github-status-sync-service.js";
+import { z } from "zod";
+import type { FastifyInstance } from "fastify";
+import type { CreateRepositoryInput, GitHubAutomationRule, UpdateRepositoryInput } from "@agentswarm/shared-types";
+import type { AuthService } from "../lib/auth.js";
+import { sendHttpError } from "../lib/http-error.js";
+import { canUserAccessRepository } from "../lib/task-ownership.js";
+import type { RepositoryStore } from "../services/repository-store.js";
+import type { UserStore } from "../services/user-store.js";
 
-class MockRepositoryStore implements Pick<RepositoryStore, "getRepository"> {
-  constructor(private readonly repository: Repository | null) {}
-  async getRepository(): Promise<Repository | null> {
-    return this.repository;
-  }
-}
+const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
+const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
+const REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH = 8192;
+const REPOSITORY_ENV_FILE_NAME_MAX_LENGTH = 255;
+const REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH = 350_000;
+const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
+const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
+const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
+const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
 
-class MockGitHubOutboundService {
-  comments: Array<{ repositoryId: string; issueNumber: number; body: string; idempotencyKey: string }> = [];
-  labels: Array<{ repositoryId: string; issueNumber: number; add?: string[]; remove?: string[]; idempotencyKey: string }> = [];
+const repositoryEnvKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(REPOSITORY_ENV_VAR_KEY_MAX_LENGTH)
+  .regex(REPOSITORY_ENV_VAR_KEY_PATTERN, "Names must match /^[A-Za-z_][A-Za-z0-9_]*$/.");
 
-  async enqueueSummaryComment(input: { repositoryId: string; issueNumber: number; body: string; idempotencyKey: string }): Promise<boolean> {
-    this.comments.push(input);
-    return true;
-  }
+const repositoryEnvVarsSchema = z
+  .array(
+    z.union([
+      z.object({
+        key: repositoryEnvKeySchema,
+        type: z.literal("text").optional(),
+        value: z.string().max(REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH)
+      }),
+      z.object({
+        key: repositoryEnvKeySchema,
+        type: z.literal("file"),
+        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
+        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
+      })
+    ])
+  )
+  .max(REPOSITORY_ENV_VAR_MAX_COUNT)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const key = entries[index]?.key;
+      if (!key) {
+        continue;
+      }
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "key"],
+          message: `Duplicate variable name: ${key}`
+        });
+      } else {
+        seen.add(key);
+      }
+    }
+  });
 
-  async enqueueLabelUpdate(input: {
-    repositoryId: string;
-    issueNumber: number;
-    add?: string[];
-    remove?: string[];
-    idempotencyKey: string;
-  }): Promise<boolean> {
-    this.labels.push(input);
-    return true;
-  }
-}
+const repositoryEnvSecretsSchema = z
+  .array(
+    z.union([
+      z.object({
+        key: repositoryEnvKeySchema
+          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
+          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
+        type: z.literal("text").optional(),
+        value: z.string().max(REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH).optional()
+      }),
+      z.object({
+        key: repositoryEnvKeySchema
+          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
+          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
+        type: z.literal("file"),
+        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
+        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
+      })
+    ])
+  )
+  .max(REPOSITORY_ENV_SECRET_MAX_COUNT)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const key = entries[index]?.key;
+      if (!key) {
+        continue;
+      }
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "key"],
+          message: `Duplicate secret name: ${key}`
+        });
+      } else {
+        seen.add(key);
+      }
+    }
+  });
 
-const buildTask = (status: Task["status"], overrides: Partial<Task> = {}): Task => ({
-  id: "task-1",
-  title: "Issue #22",
-  deadline: null,
-  pinned: false,
-  hasPendingCheckpoint: false,
-  activeInteractiveSession: false,
-  activeTerminalSessionMode: null,
-  ownerUserId: "user-1",
-  creatorName: "Dev",
-  repoId: "repo-1",
-  repoName: "Repo",
-  repoUrl: "https://github.com/acme/repo",
-  repoDefaultBranch: "main",
-  taskType: "build",
-  provider: "codex",
-  providerProfile: "medium",
-  modelOverride: null,
-  codexCredentialSource: "auto",
-  baseBranch: "main",
-  branchStrategy: "feature_branch",
-  complexity: "normal",
-  branchName: null,
-  workspaceBaseRef: null,
-  prompt: "Imported from GitHub issue #22: Test issue\n\nIssue URL: https://github.com/acme/repo/issues/22",
-  notes: "",
-  resultMarkdown: null,
-  executionSummary: "",
-  branchDiff: null,
-  pullCount: 0,
-  pushCount: 0,
-  lastAction: "build",
-  status,
-  workflowStatus: "ready",
-  executionStatus: "idle",
-  executionAction: "build",
-  reviewReason: null,
-  logs: [],
-  enqueued: false,
-  createdAt: "2026-05-22T00:00:00.000Z",
-  updatedAt: "2026-05-22T00:00:00.000Z",
-  startedAt: null,
-  finishedAt: null,
-  errorMessage: null,
-  ...overrides
+const createRepositorySchema = z.object({
+  name: z.string().min(1),
+  url: z.string().min(1),
+  defaultBranch: z.string().min(1).optional(),
+  syncStatusEnabled: z.boolean().optional(),
+  envVars: repositoryEnvVarsSchema.optional(),
+  envSecrets: repositoryEnvSecretsSchema.optional(),
+  webhookUrl: z.string().trim().url().nullable().optional(),
+  webhookEnabled: z.boolean().optional(),
+  webhookSecret: z.string().trim().min(1).optional(),
+  githubWebhookSecret: z.string().trim().min(1).optional(),
+  githubAutomations: z
+    .array(
+      z.object({
+        id: z.string().trim().min(1),
+        name: z.string().trim().min(1).max(160),
+        enabled: z.boolean().optional(),
+        trigger: z.enum(["issue_opened", "pull_request_opened"]),
+        syncStatusEnabled: z.boolean().optional(),
+        automationEnabled: z.boolean().optional(),
+        allowedTriggers: z.array(z.enum(["emoji_reaction", "slash_command", "bot_mention"])).optional(),
+        allowedReactions: z.array(z.string().trim().min(1)).optional(),
+        allowedCommands: z.array(z.string().trim().min(1)).optional(),
+        allowedActorLogins: z.array(z.string().trim().min(1)).optional(),
+        labelFilter: z
+          .object({
+            labelsAny: z.array(z.string().trim().min(1)).optional(),
+            labelsAll: z.array(z.string().trim().min(1)).optional(),
+            labelsNone: z.array(z.string().trim().min(1)).optional()
+          })
+          .optional(),
+        task: z
+          .object({
+            assigneeEmail: z.string().trim().email().optional(),
+            codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+            taskType: z.enum(["build", "ask"]).optional(),
+            includeComments: z.boolean().optional(),
+            titleTemplate: z.string().optional(),
+            notes: z.string().optional(),
+            provider: z.enum(["codex", "claude"]).optional(),
+            providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+            modelOverride: z.string().nullable().optional(),
+            baseBranch: z.string().optional(),
+            branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+            snippetId: z.string().optional()
+          })
+          .strict()
+      })
+    )
+    .optional()
 });
 
-describe("GitHubStatusSyncService", () => {
-  it("posts milestone updates when sync_status_enabled is true", async () => {
-    const repository: Repository = {
-      id: "repo-1",
-      name: "Repo",
-      url: "https://github.com/acme/repo",
-      defaultBranch: "main",
-      syncStatusEnabled: true,
-      envVars: [],
-      webhookUrl: null,
-      webhookEnabled: false,
-      webhookSecretConfigured: false,
-      webhookLastAttemptAt: null,
-      webhookLastStatus: null,
-      webhookLastError: null,
-      createdAt: "2026-05-22T00:00:00.000Z",
-      updatedAt: "2026-05-22T00:00:00.000Z"
-    };
-    const outbound = new MockGitHubOutboundService();
-    const service = new GitHubStatusSyncService(new MockRepositoryStore(repository) as unknown as RepositoryStore, outbound as never, () =>
-      "2026-05-22T12:00:00.000Z"
-    );
-
-    const createdEvent: RealtimeEvent = { type: "task:created", payload: buildTask("build_queued") };
-    const startedEvent: RealtimeEvent = { type: "task:updated", payload: buildTask("building") };
-    const doneEvent: RealtimeEvent = { type: "task:updated", payload: buildTask("done", { resultMarkdown: "## Final summary\nShipped." }) };
-
-    await service.handleRealtimeEvent(createdEvent);
-    await service.handleRealtimeEvent(startedEvent);
-    await service.handleRealtimeEvent(doneEvent);
-
-    assert.equal(outbound.labels.length, 2);
-    assert.equal(outbound.comments.length, 2);
-    assert.deepEqual(outbound.labels[0]?.add, ["as:in-progress"]);
-    assert.deepEqual(outbound.labels[1]?.add, ["as:done"]);
-    assert.equal(outbound.comments[0]?.body, "Work started.");
-    assert.equal(outbound.comments[1]?.body, "## Final summary\nShipped.");
-  });
-
-  it("does not post when sync_status_enabled is false", async () => {
-    const repository: Repository = {
-      id: "repo-1",
-      name: "Repo",
-      url: "https://github.com/acme/repo",
-      defaultBranch: "main",
-      syncStatusEnabled: false,
-      envVars: [],
-      webhookUrl: null,
-      webhookEnabled: false,
-      webhookSecretConfigured: false,
-      webhookLastAttemptAt: null,
-      webhookLastStatus: null,
-      webhookLastError: null,
-      createdAt: "2026-05-22T00:00:00.000Z",
-      updatedAt: "2026-05-22T00:00:00.000Z"
-    };
-    const outbound = new MockGitHubOutboundService();
-    const service = new GitHubStatusSyncService(new MockRepositoryStore(repository) as unknown as RepositoryStore, outbound as never);
-
-    await service.handleRealtimeEvent({ type: "task:created", payload: buildTask("build_queued") });
-    await service.handleRealtimeEvent({ type: "task:updated", payload: buildTask("building") });
-
-    assert.equal(outbound.labels.length, 0);
-    assert.equal(outbound.comments.length, 0);
-  });
-
-  it("does not post when task notes explicitly disable sync", async () => {
-    const repository: Repository = {
-      id: "repo-1",
-      name: "Repo",
-      url: "https://github.com/acme/repo",
-      defaultBranch: "main",
-      syncStatusEnabled: true,
-      envVars: [],
-      webhookUrl: null,
-      webhookEnabled: false,
-      webhookSecretConfigured: false,
-      webhookLastAttemptAt: null,
-      webhookLastStatus: null,
-      webhookLastError: null,
-      createdAt: "2026-05-22T00:00:00.000Z",
-      updatedAt: "2026-05-22T00:00:00.000Z"
-    };
-    const outbound = new MockGitHubOutboundService();
-    const service = new GitHubStatusSyncService(new MockRepositoryStore(repository) as unknown as RepositoryStore, outbound as never);
-
-    await service.handleRealtimeEvent({
-      type: "task:created",
-      payload: buildTask("build_queued", { notes: "<!-- agentswarm:github_sync_status_enabled=false -->" })
-    });
-    await service.handleRealtimeEvent({
-      type: "task:updated",
-      payload: buildTask("building", { notes: "<!-- agentswarm:github_sync_status_enabled=false -->" })
-    });
-
-    assert.equal(outbound.labels.length, 0);
-    assert.equal(outbound.comments.length, 0);
-  });
+const updateRepositorySchema = createRepositorySchema.partial().extend({
+  clearWebhookSecret: z.boolean().optional(),
+  clearGithubWebhookSecret: z.boolean().optional()
 });
+
+type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;
+type ParsedRepositoryUpdateInput = z.infer<typeof updateRepositorySchema>;
+type ParsedGitHubAutomationRule = NonNullable<ParsedRepositoryInput["githubAutomations"]>[number];
+
+const nowIso = (): string => new Date().toISOString();
+
+const toGitHubAutomationRule = (rule: ParsedGitHubAutomationRule, now: string): GitHubAutomationRule => ({
+  id: rule.id,
+  name: rule.name,
+  enabled: rule.enabled ?? true,
+  trigger: rule.trigger,
+  syncStatusEnabled: rule.syncStatusEnabled,
+  automationEnabled: rule.automationEnabled,
+  allowedTriggers: rule.allowedTriggers,
+  allowedReactions: rule.allowedReactions,
+  allowedCommands: rule.allowedCommands,
+  allowedActorLogins: rule.allowedActorLogins,
+  labelFilter: rule.labelFilter,
+  task: rule.task,
+  createdAt: now,
+  updatedAt: now
+});
+
+const normalizeGitHubAutomations = (
+  rules: ParsedRepositoryInput["githubAutomations"] | ParsedRepositoryUpdateInput["githubAutomations"]
+): GitHubAutomationRule[] | undefined => {
+  if (!rules) {
+    return undefined;
+  }
+  const now = nowIso();
+  return rules.map((rule) => toGitHubAutomationRule(rule, now));
+};
+
+const toCreateRepositoryInput = (input: ParsedRepositoryInput): CreateRepositoryInput => ({
+  ...input,
+  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
+});
+
+const toUpdateRepositoryInput = (input: ParsedRepositoryUpdateInput): UpdateRepositoryInput => ({
+  ...input,
+  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
+});
+
+export const registerRepositoryRoutes = (
+  app: FastifyInstance,
+  deps: {
+    repositoryStore: RepositoryStore;
+    auth: AuthService;
+    userStore: UserStore;
+  }
+): void => {
+  app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async (request) => {
+    const repositories = await deps.repositoryStore.listRepositories();
+    return repositories.filter((repository) => canUserAccessRepository(request.auth?.user, repository.id));
+  });
+
+  app.get<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repository = await deps.repositoryStore.getRepository(request.params.id);
+    if (!repository || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    return reply.send(repository);
+  });
+
+  app.post("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:create"]) }, async (request, reply) => {
+    const parsed = createRepositorySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    try {
+      const createInput: CreateRepositoryInput = toCreateRepositoryInput(parsed.data);
+      const repository = await deps.repositoryStore.createRepository(createInput);
+      const authUser = request.auth?.user;
+      if (authUser) {
+        const creator = await deps.userStore.getUser(authUser.id);
+        if (creator) {
+          const resolvedRepositoryIds = await Promise.all(
+            creator.repositoryIds.map(async (repositoryId) =>
+              (await deps.repositoryStore.getRepository(repositoryId)) ? repositoryId : null
+            )
+          );
+          const nextRepositoryIds = resolvedRepositoryIds.filter((repositoryId): repositoryId is string => Boolean(repositoryId));
+          if (!nextRepositoryIds.includes(repository.id)) {
+            nextRepositoryIds.push(repository.id);
+          }
+          await deps.userStore.updateUser(creator.id, {
+            repositoryIds: nextRepositoryIds
+          });
+        }
+      }
+      return reply.status(201).send(repository);
+    } catch (error) {
+      const sent = sendHttpError(reply, error);
+      if (sent) {
+        return sent;
+      }
+      throw error;
+    }
+  });
+
+  app.patch<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:edit"]) }, async (request, reply) => {
+    const parsed = updateRepositorySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    try {
+      const current = await deps.repositoryStore.getRepository(request.params.id);
+      if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+        return reply.status(404).send({ message: "Repository not found" });
+      }
+
+      const updateInput: UpdateRepositoryInput = toUpdateRepositoryInput(parsed.data);
+      const updated = await deps.repositoryStore.updateRepository(request.params.id, updateInput);
+      if (!updated) {
+        return reply.status(404).send({ message: "Repository not found" });
+      }
+
+      return reply.send(updated);
+    } catch (error) {
+      const sent = sendHttpError(reply, error);
+      if (sent) {
+        return sent;
+      }
+      throw error;
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:delete"]) }, async (request, reply) => {
+    const current = await deps.repositoryStore.getRepository(request.params.id);
+    if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    const deleted = await deps.repositoryStore.deleteRepository(request.params.id);
+    if (!deleted) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    return reply.status(204).send();
+  });
+};
 ````
 
 ## File: apps/server/src/services/settings-store.ts
@@ -37506,7 +34971,6 @@ const buildSystemResponsePreferencePreset = (): ResponsePreferencePreset => ({
 const buildSystemDataStores = (): SystemDataStores => ({
   taskStore: "postgres",
   snippetStore: "postgres",
-  sequenceStore: "postgres",
   repositoryStore: "postgres",
   credentialStore: "postgres",
   roleStore: "postgres",
@@ -38162,6 +35626,345 @@ export class PostgresSettingsStore implements SettingsStore {
     return next;
   }
 }
+````
+
+## File: apps/server/src/index.ts
+````typescript
+import Fastify from "fastify";
+import { randomUUID } from "node:crypto";
+import cookie from "@fastify/cookie";
+import cors from "@fastify/cors";
+import * as Sentry from "@sentry/node";
+import { Server as SocketIOServer } from "socket.io";
+import type { RealtimeEvent } from "@agentswarm/shared-types";
+import { env } from "./config/env.js";
+import { createAuthService } from "./lib/auth.js";
+import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
+import { createRedisClients } from "./lib/redis.js";
+import { EventBus } from "./lib/events.js";
+import { createPostgresStores } from "./services/create-postgres-stores.js";
+import { registerAuthRoutes } from "./routes/auth.js";
+import { SpawnerService } from "./services/spawner.js";
+import { SchedulerService } from "./services/scheduler.js";
+import { GitHubImportService } from "./services/github-import-service.js";
+import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
+import { GitHubOutboundService } from "./services/github-outbound-service.js";
+import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
+import { registerRoleRoutes } from "./routes/roles.js";
+import { registerTaskRoutes } from "./routes/tasks.js";
+import { registerUserRoutes } from "./routes/users.js";
+import { registerSettingsRoutes } from "./routes/settings.js";
+import { registerRepositoryRoutes } from "./routes/repositories.js";
+import { registerImportRoutes } from "./routes/imports.js";
+import { registerSnippetRoutes } from "./routes/snippets.js";
+import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
+import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
+
+const readHeaderValue = (value: string | string[] | undefined): string | null => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (Array.isArray(value) && value.length > 0) {
+    const first = value[0]?.trim();
+    return first && first.length > 0 ? first : null;
+  }
+  return null;
+};
+
+const getOperationIdFromHeaders = (headers: Record<string, string | string[] | undefined>): string | null =>
+  readHeaderValue(headers["x-operation-id"]) ?? readHeaderValue(headers["x-agent-operation-id"]);
+
+const bootstrap = async (): Promise<void> => {
+  const sentryEnabled = env.SENTRY_ENABLED && env.SENTRY_DSN.trim().length > 0;
+  if (sentryEnabled) {
+    Sentry.init({
+      dsn: env.SENTRY_DSN,
+      tracesSampleRate: 1
+    });
+  }
+
+  const app = Fastify({
+    logger: {
+      level: process.env.LOG_LEVEL ?? "info",
+      base: { service: "agentswarm-server" }
+    },
+    disableRequestLogging: true,
+    requestIdHeader: "x-request-id",
+    genReqId: (rawRequest) => readHeaderValue(rawRequest.headers["x-request-id"]) ?? randomUUID(),
+    bodyLimit: 35 * 1024 * 1024
+  });
+  await app.register(cookie);
+  app.decorateRequest("auth", null);
+  await app.register(cors, {
+    origin: env.CORS_ORIGIN,
+    credentials: true
+  });
+  app.addHook("onRequest", async (request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    reply.header("x-request-id", request.id);
+    if (operationId) {
+      reply.header("x-operation-id", operationId);
+    }
+    request.log.info(
+      {
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url
+      },
+      "request.started"
+    );
+  });
+  app.addHook("onResponse", async (request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    request.log.info(
+      {
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url,
+        statusCode: reply.statusCode,
+        durationMs: reply.elapsedTime
+      },
+      "request.completed"
+    );
+  });
+  app.log.info(
+    {
+      event: "startup.config",
+      port: env.PORT,
+      corsOrigin: env.CORS_ORIGIN,
+      durableStores: "postgres",
+      runtimeServices: "redis",
+      postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
+      sentryEnabled,
+      taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
+      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
+    },
+    "Server configuration loaded"
+  );
+
+  const redisClients = createRedisClients(env.REDIS_URL);
+  const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
+  const postgresPool = createPostgresPool(env.DATABASE_URL);
+  if (env.POSTGRES_AUTO_MIGRATE) {
+    app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
+    await runPostgresMigrations(postgresPool);
+    app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
+  } else {
+    app.log.info({ event: "startup.migrations", mode: "manual" }, "Skipping auto-migrations");
+  }
+
+  const {
+    taskStore,
+    taskQueueStore,
+    githubOutboundQueueStore,
+    webhookDeliveryStore,
+    snippetStore,
+    repositoryStore,
+    credentialStore,
+    roleStore,
+    userStore,
+    sessionStore,
+    settingsStore
+  } = createPostgresStores(
+    postgresPool,
+    redisClients,
+    eventBus,
+    env.AUTH_SESSION_TTL_DAYS
+  );
+  const auth = createAuthService({
+    userStore,
+    sessionStore,
+    cookieName: env.AUTH_COOKIE_NAME,
+    taskStore,
+    credentialStore
+  });
+  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
+  const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
+  const githubImportService = new GitHubImportService(settingsStore);
+  const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
+  const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
+  const githubStatusSyncService = new GitHubStatusSyncService(repositoryStore, githubOutboundService);
+
+  await roleStore.ensureDefaultAdminRole();
+  await userStore.ensureDefaultAdminUser({
+    name: env.DEFAULT_ADMIN_NAME,
+    email: env.DEFAULT_ADMIN_EMAIL,
+    password: env.DEFAULT_ADMIN_PASSWORD
+  });
+
+  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore });
+  registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
+  registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
+  registerTaskRoutes(app, {
+    taskStore,
+    taskQueueStore,
+    repositoryStore,
+    userStore,
+    scheduler,
+    spawner,
+    settingsStore,
+    snippetStore,
+    auth
+  });
+  registerSnippetRoutes(app, { snippetStore, auth });
+  registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
+  registerSettingsRoutes(app, { settingsStore, scheduler, auth });
+  registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, userStore, scheduler, spawner, auth });
+  registerGitHubWebhookRoutes(app, {
+    repositoryStore,
+    githubImportService,
+    taskStore,
+    userStore,
+    scheduler,
+    spawner,
+    snippetStore
+  });
+
+  app.get("/health", async () => ({ ok: true }));
+
+  app.setErrorHandler((error, request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    request.log.error(
+      {
+        err: error,
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url
+      },
+      "request.failed"
+    );
+    if (sentryEnabled) {
+      Sentry.captureException(error, {
+        tags: {
+          route: request.routeOptions.url
+        },
+        extra: {
+          requestId: request.id,
+          operationId,
+          method: request.method,
+          url: request.url
+        }
+      });
+    }
+    void reply.send(error);
+  });
+
+  await app.ready();
+  attachTaskInteractiveTerminalUpgrade(app.server, {
+    auth,
+    taskStore,
+    settingsStore,
+    spawner,
+    userStore,
+    repositoryStore
+  });
+
+  const io = new SocketIOServer(app.server, {
+    cors: {
+      origin: env.CORS_ORIGIN,
+      credentials: true
+    }
+  });
+  io.use(auth.authorizeSocket());
+
+  io.on("connection", (socket) => {
+    auth.onSocketConnection(socket);
+    app.log.info({ socketId: socket.id }, "Socket client connected");
+  });
+
+  await redisClients.sub.subscribe(env.EVENT_CHANNEL);
+  redisClients.sub.on("message", (_channel, message) => {
+    try {
+      const event = JSON.parse(message) as RealtimeEvent;
+      void webhookDeliveryService.handleRealtimeEvent(event);
+      void githubStatusSyncService.handleRealtimeEvent(event);
+      void auth.emitScopedRealtimeEvent(io, event);
+    } catch (error) {
+      app.log.error({ error }, "Failed to parse event message");
+    }
+  });
+
+  webhookDeliveryService.start();
+  githubOutboundService.start();
+  await scheduler.bootstrap();
+
+  let closeStarted = false;
+  const close = async (): Promise<void> => {
+    if (closeStarted) {
+      return;
+    }
+    closeStarted = true;
+    scheduler.stop();
+    webhookDeliveryService.stop();
+    githubOutboundService.stop();
+    io.close();
+    await Promise.all([
+      ...(postgresPool ? [postgresPool.end()] : []),
+      redisClients.command.quit(),
+      redisClients.pub.quit(),
+      redisClients.sub.quit()
+    ]);
+    await app.close();
+    if (sentryEnabled) {
+      await Sentry.close(2_000);
+    }
+  };
+
+  process.on("SIGINT", () => {
+    app.log.warn({ signal: "SIGINT" }, "Shutdown signal received");
+    void close();
+  });
+  process.on("SIGTERM", () => {
+    app.log.warn({ signal: "SIGTERM" }, "Shutdown signal received");
+    void close();
+  });
+
+  process.on("uncaughtException", (error) => {
+    app.log.fatal({ err: error }, "Unhandled exception");
+    if (sentryEnabled) {
+      Sentry.captureException(error);
+    }
+    void close().finally(() => process.exit(1));
+  });
+  process.on("unhandledRejection", (reason) => {
+    app.log.fatal({ reason }, "Unhandled promise rejection");
+    if (sentryEnabled) {
+      Sentry.captureException(reason);
+    }
+    void close().finally(() => process.exit(1));
+  });
+
+  const listenAddress = await app.listen({ port: env.PORT, host: "0.0.0.0" });
+  app.log.info(
+    {
+      event: "startup.ready",
+      listenAddress,
+      healthPath: "/health",
+      proxyHealthPath: "/api/health"
+    },
+    "Server started"
+  );
+};
+
+void bootstrap().catch((error) => {
+  // Startup errors should stop the process so Docker restart policies can react.
+  const errorForLog =
+    error instanceof Error
+      ? { name: error.name, message: error.message, stack: error.stack }
+      : { message: String(error) };
+  console.error(
+    JSON.stringify({
+      level: "fatal",
+      event: "startup.bootstrap_failed",
+      error: errorForLog
+    })
+  );
+  process.exit(1);
+});
 ````
 
 ## File: apps/web/app/globals.css
@@ -38932,7 +36735,6 @@ export const navigationRoutes: NavigationRoute[] = [
   { key: "/tasks", label: "Tasks", requiredScopes: ["task:list"] },
   { key: "/tasks/board", label: "Board", requiredScopes: ["task:list"] },
   { key: "/snippets", label: "Snippets", requiredScopes: ["snippet:list"] },
-  { key: "/sequences", label: "Sequences", requiredScopes: ["sequence:list"] },
   { key: "/repositories", label: "Repositories", requiredScopes: ["repo:list"] },
   { key: "/settings", label: "Settings", requiredScopes: ["settings:read"] },
   { key: "/users", label: "Users", requiredScopes: ["user:list"] }
@@ -38962,18 +36764,6 @@ export const getRequiredScopesForPathname = (pathname: string): PermissionScope[
 
   if (pathname === "/snippets" || pathname === "/presets") {
     return ["snippet:list"];
-  }
-
-  if (pathname === "/sequences") {
-    return ["sequence:list"];
-  }
-
-  if (pathname === "/sequences/new") {
-    return ["sequence:create"];
-  }
-
-  if (/^\/sequences\/[^/]+\/edit$/.test(pathname)) {
-    return ["sequence:list", "sequence:edit"];
   }
 
   if (pathname === "/repositories") {
@@ -39022,10 +36812,6 @@ export const getSelectedNavigationKey = (pathname: string): string => {
     return "/snippets";
   }
 
-  if (pathname.startsWith("/sequences")) {
-    return "/sequences";
-  }
-
   if (pathname.startsWith("/repositories")) {
     return "/repositories";
   }
@@ -39056,10 +36842,6 @@ export const startMessageForDefinition = (definition: TaskDefinitionInput): stri
 
   if (definition.sourceType === "issue") {
     return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
-  }
-
-  if (definition.sourceType === "sequence") {
-    return "Sequence task created and started";
   }
 
   return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
@@ -39097,28 +36879,6 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput, option
       providerProfile: definition.providerProfile,
       modelOverride: definition.model || undefined,
       codexCredentialSource: definition.codexCredentialSource
-    });
-  }
-
-  if (definition.sourceType === "sequence") {
-    return api.createTask({
-      title: definition.title,
-      draft: options.draft,
-      repoId: definition.repoId,
-      prompt: "",
-      notes: definition.notes,
-      deadline: definition.deadline,
-      attachments: definition.attachments,
-      taskType: definition.taskType,
-      provider: definition.provider,
-      providerProfile: definition.providerProfile,
-      modelOverride: definition.model || undefined,
-      codexCredentialSource: definition.codexCredentialSource,
-      baseBranch: definition.baseBranch,
-      branchStrategy: definition.branchStrategy,
-      task_source: "sequence",
-      sequence_id: definition.sequenceId,
-      sequence_variables: definition.sequenceVariables
     });
   }
 
@@ -39166,7 +36926,7 @@ The project is built for developers and teams who want agent-assisted coding wor
 - Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
 - Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
 - Open task workspaces in an interactive browser terminal.
-- Configure repositories, credentials, roles, users, provider defaults, snippets, and prompt sequences.
+- Configure repositories, credentials, roles, users, provider defaults, and snippets.
 - Automate task creation from GitHub webhooks and repository automation rules.
 - Add repository-local postflight checks with `.agentswarm/postflight.yml`.
 
@@ -39822,1040 +37582,6 @@ export const registerImportRoutes = (
 };
 ````
 
-## File: apps/server/src/routes/repositories.ts
-````typescript
-import { z } from "zod";
-import type { FastifyInstance } from "fastify";
-import type { CreateRepositoryInput, GitHubAutomationRule, UpdateRepositoryInput } from "@agentswarm/shared-types";
-import type { AuthService } from "../lib/auth.js";
-import { sendHttpError } from "../lib/http-error.js";
-import { canUserAccessRepository } from "../lib/task-ownership.js";
-import type { RepositoryStore } from "../services/repository-store.js";
-import type { UserStore } from "../services/user-store.js";
-
-const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
-const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
-const REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH = 8192;
-const REPOSITORY_ENV_FILE_NAME_MAX_LENGTH = 255;
-const REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH = 350_000;
-const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
-const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
-const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
-const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
-
-const repositoryEnvKeySchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(REPOSITORY_ENV_VAR_KEY_MAX_LENGTH)
-  .regex(REPOSITORY_ENV_VAR_KEY_PATTERN, "Names must match /^[A-Za-z_][A-Za-z0-9_]*$/.");
-
-const repositoryEnvVarsSchema = z
-  .array(
-    z.union([
-      z.object({
-        key: repositoryEnvKeySchema,
-        type: z.literal("text").optional(),
-        value: z.string().max(REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH)
-      }),
-      z.object({
-        key: repositoryEnvKeySchema,
-        type: z.literal("file"),
-        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
-        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
-      })
-    ])
-  )
-  .max(REPOSITORY_ENV_VAR_MAX_COUNT)
-  .superRefine((entries, ctx) => {
-    const seen = new Set<string>();
-    for (let index = 0; index < entries.length; index += 1) {
-      const key = entries[index]?.key;
-      if (!key) {
-        continue;
-      }
-      if (seen.has(key)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: [index, "key"],
-          message: `Duplicate variable name: ${key}`
-        });
-      } else {
-        seen.add(key);
-      }
-    }
-  });
-
-const repositoryEnvSecretsSchema = z
-  .array(
-    z.union([
-      z.object({
-        key: repositoryEnvKeySchema
-          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
-          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
-        type: z.literal("text").optional(),
-        value: z.string().max(REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH).optional()
-      }),
-      z.object({
-        key: repositoryEnvKeySchema
-          .max(REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH)
-          .regex(REPOSITORY_ENV_SECRET_KEY_PATTERN, "Secret names must match /^[A-Za-z_][A-Za-z0-9_]*$/."),
-        type: z.literal("file"),
-        fileName: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_NAME_MAX_LENGTH).optional(),
-        fileContentBase64: z.string().trim().min(1).max(REPOSITORY_ENV_FILE_CONTENT_MAX_LENGTH).optional()
-      })
-    ])
-  )
-  .max(REPOSITORY_ENV_SECRET_MAX_COUNT)
-  .superRefine((entries, ctx) => {
-    const seen = new Set<string>();
-    for (let index = 0; index < entries.length; index += 1) {
-      const key = entries[index]?.key;
-      if (!key) {
-        continue;
-      }
-      if (seen.has(key)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: [index, "key"],
-          message: `Duplicate secret name: ${key}`
-        });
-      } else {
-        seen.add(key);
-      }
-    }
-  });
-
-const createRepositorySchema = z.object({
-  name: z.string().min(1),
-  url: z.string().min(1),
-  defaultBranch: z.string().min(1).optional(),
-  syncStatusEnabled: z.boolean().optional(),
-  envVars: repositoryEnvVarsSchema.optional(),
-  envSecrets: repositoryEnvSecretsSchema.optional(),
-  webhookUrl: z.string().trim().url().nullable().optional(),
-  webhookEnabled: z.boolean().optional(),
-  webhookSecret: z.string().trim().min(1).optional(),
-  githubWebhookSecret: z.string().trim().min(1).optional(),
-  githubAutomations: z
-    .array(
-      z.object({
-        id: z.string().trim().min(1),
-        name: z.string().trim().min(1).max(160),
-        enabled: z.boolean().optional(),
-        trigger: z.enum(["issue_opened", "pull_request_opened"]),
-        syncStatusEnabled: z.boolean().optional(),
-        automationEnabled: z.boolean().optional(),
-        allowedTriggers: z.array(z.enum(["emoji_reaction", "slash_command", "bot_mention"])).optional(),
-        allowedReactions: z.array(z.string().trim().min(1)).optional(),
-        allowedCommands: z.array(z.string().trim().min(1)).optional(),
-        allowedActorLogins: z.array(z.string().trim().min(1)).optional(),
-        labelFilter: z
-          .object({
-            labelsAny: z.array(z.string().trim().min(1)).optional(),
-            labelsAll: z.array(z.string().trim().min(1)).optional(),
-            labelsNone: z.array(z.string().trim().min(1)).optional()
-          })
-          .optional(),
-        task: z
-          .object({
-            assigneeEmail: z.string().trim().email().optional(),
-            codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-            taskType: z.enum(["build", "ask"]).optional(),
-            includeComments: z.boolean().optional(),
-            titleTemplate: z.string().optional(),
-            notes: z.string().optional(),
-            provider: z.enum(["codex", "claude"]).optional(),
-            providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-            modelOverride: z.string().nullable().optional(),
-            baseBranch: z.string().optional(),
-            branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-            snippetId: z.string().optional()
-          })
-          .strict()
-      })
-    )
-    .optional()
-});
-
-const updateRepositorySchema = createRepositorySchema.partial().extend({
-  clearWebhookSecret: z.boolean().optional(),
-  clearGithubWebhookSecret: z.boolean().optional()
-});
-
-type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;
-type ParsedRepositoryUpdateInput = z.infer<typeof updateRepositorySchema>;
-type ParsedGitHubAutomationRule = NonNullable<ParsedRepositoryInput["githubAutomations"]>[number];
-
-const nowIso = (): string => new Date().toISOString();
-
-const toGitHubAutomationRule = (rule: ParsedGitHubAutomationRule, now: string): GitHubAutomationRule => ({
-  id: rule.id,
-  name: rule.name,
-  enabled: rule.enabled ?? true,
-  trigger: rule.trigger,
-  syncStatusEnabled: rule.syncStatusEnabled,
-  automationEnabled: rule.automationEnabled,
-  allowedTriggers: rule.allowedTriggers,
-  allowedReactions: rule.allowedReactions,
-  allowedCommands: rule.allowedCommands,
-  allowedActorLogins: rule.allowedActorLogins,
-  labelFilter: rule.labelFilter,
-  task: rule.task,
-  createdAt: now,
-  updatedAt: now
-});
-
-const normalizeGitHubAutomations = (
-  rules: ParsedRepositoryInput["githubAutomations"] | ParsedRepositoryUpdateInput["githubAutomations"]
-): GitHubAutomationRule[] | undefined => {
-  if (!rules) {
-    return undefined;
-  }
-  const now = nowIso();
-  return rules.map((rule) => toGitHubAutomationRule(rule, now));
-};
-
-const toCreateRepositoryInput = (input: ParsedRepositoryInput): CreateRepositoryInput => ({
-  ...input,
-  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
-});
-
-const toUpdateRepositoryInput = (input: ParsedRepositoryUpdateInput): UpdateRepositoryInput => ({
-  ...input,
-  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
-});
-
-export const registerRepositoryRoutes = (
-  app: FastifyInstance,
-  deps: {
-    repositoryStore: RepositoryStore;
-    auth: AuthService;
-    userStore: UserStore;
-  }
-): void => {
-  app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async (request) => {
-    const repositories = await deps.repositoryStore.listRepositories();
-    return repositories.filter((repository) => canUserAccessRepository(request.auth?.user, repository.id));
-  });
-
-  app.get<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repository = await deps.repositoryStore.getRepository(request.params.id);
-    if (!repository || !canUserAccessRepository(request.auth?.user, request.params.id)) {
-      return reply.status(404).send({ message: "Repository not found" });
-    }
-
-    return reply.send(repository);
-  });
-
-  app.post("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:create"]) }, async (request, reply) => {
-    const parsed = createRepositorySchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    try {
-      const createInput: CreateRepositoryInput = toCreateRepositoryInput(parsed.data);
-      const repository = await deps.repositoryStore.createRepository(createInput);
-      const authUser = request.auth?.user;
-      if (authUser) {
-        const creator = await deps.userStore.getUser(authUser.id);
-        if (creator) {
-          const resolvedRepositoryIds = await Promise.all(
-            creator.repositoryIds.map(async (repositoryId) =>
-              (await deps.repositoryStore.getRepository(repositoryId)) ? repositoryId : null
-            )
-          );
-          const nextRepositoryIds = resolvedRepositoryIds.filter((repositoryId): repositoryId is string => Boolean(repositoryId));
-          if (!nextRepositoryIds.includes(repository.id)) {
-            nextRepositoryIds.push(repository.id);
-          }
-          await deps.userStore.updateUser(creator.id, {
-            repositoryIds: nextRepositoryIds
-          });
-        }
-      }
-      return reply.status(201).send(repository);
-    } catch (error) {
-      const sent = sendHttpError(reply, error);
-      if (sent) {
-        return sent;
-      }
-      throw error;
-    }
-  });
-
-  app.patch<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:edit"]) }, async (request, reply) => {
-    const parsed = updateRepositorySchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    try {
-      const current = await deps.repositoryStore.getRepository(request.params.id);
-      if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
-        return reply.status(404).send({ message: "Repository not found" });
-      }
-
-      const updateInput: UpdateRepositoryInput = toUpdateRepositoryInput(parsed.data);
-      const updated = await deps.repositoryStore.updateRepository(request.params.id, updateInput);
-      if (!updated) {
-        return reply.status(404).send({ message: "Repository not found" });
-      }
-
-      return reply.send(updated);
-    } catch (error) {
-      const sent = sendHttpError(reply, error);
-      if (sent) {
-        return sent;
-      }
-      throw error;
-    }
-  });
-
-  app.delete<{ Params: { id: string } }>("/repositories/:id", { preHandler: deps.auth.requireAllScopes(["repo:delete"]) }, async (request, reply) => {
-    const current = await deps.repositoryStore.getRepository(request.params.id);
-    if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
-      return reply.status(404).send({ message: "Repository not found" });
-    }
-
-    const deleted = await deps.repositoryStore.deleteRepository(request.params.id);
-    if (!deleted) {
-      return reply.status(404).send({ message: "Repository not found" });
-    }
-
-    return reply.status(204).send();
-  });
-};
-````
-
-## File: apps/server/src/services/sequence-execution-service.ts
-````typescript
-import { type SequenceExecutionMode, type SequenceRunStep, type TaskAction } from "@agentswarm/shared-types";
-import type { SchedulerService } from "./scheduler.js";
-import type { SequenceStore } from "./sequence-store.js";
-import type { SpawnerService } from "./spawner.js";
-import type { TaskStore } from "./task-store.js";
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-const RUN_POLL_INTERVAL_MS = 1000;
-const MAX_WAIT_MS = 8 * 60 * 60 * 1000;
-const TASK_READY_WAIT_MS = 5 * 60 * 1000;
-
-export class SequenceExecutionService {
-  constructor(
-    private readonly sequenceStore: SequenceStore,
-    private readonly taskStore: TaskStore,
-    private readonly scheduler: SchedulerService,
-    private readonly spawner: SpawnerService
-  ) {}
-
-  async initializeRun(
-    sequenceId: string,
-    taskId: string,
-    stepPrompts: string[],
-    executionMode: SequenceExecutionMode = "auto_apply_changes"
-  ): Promise<{ runId: string; steps: SequenceRunStep[] }> {
-    const run = await this.sequenceStore.createRun({ sequenceId, taskId, stepCount: stepPrompts.length, stepPrompts, executionMode });
-    await this.taskStore.patchTask(taskId, { sequenceRunId: run.id });
-    return { runId: run.id, steps: run.steps };
-  }
-
-  async failRunImmediately(input: { runId: string; failedStepIndex: number; errorMessage: string }): Promise<void> {
-    const run = await this.sequenceStore.getRun(input.runId);
-    if (!run) {
-      return;
-    }
-    const now = new Date().toISOString();
-    const steps = run.steps.map((step, index) => {
-      if (index < input.failedStepIndex) {
-        return step;
-      }
-      if (index === input.failedStepIndex) {
-        return {
-          ...step,
-          state: "failed" as const,
-          errorMessage: input.errorMessage,
-          finishedAt: now
-        };
-      }
-      return {
-        ...step,
-        state: "skipped" as const,
-        finishedAt: now
-      };
-    });
-    await this.sequenceStore.updateRun(input.runId, {
-      status: "failed",
-      failedStepIndex: input.failedStepIndex,
-      waitingForApprovalAfterStepIndex: null,
-      finishedAt: now,
-      steps
-    });
-  }
-
-  async runSteps(input: {
-    runId: string;
-    taskId: string;
-    action: TaskAction;
-    stepPrompts: string[];
-    initialKnownRunIds: Set<string>;
-    startStepIndex?: number;
-  }): Promise<void> {
-    let run = await this.sequenceStore.getRun(input.runId);
-    if (!run) {
-      return;
-    }
-    let knownRunIds = new Set(input.initialKnownRunIds);
-    const startStepIndex =
-      typeof input.startStepIndex === "number" && Number.isFinite(input.startStepIndex)
-        ? Math.max(0, Math.min(Math.floor(input.startStepIndex), input.stepPrompts.length))
-        : 0;
-
-    for (let stepIndex = startStepIndex; stepIndex < input.stepPrompts.length; stepIndex += 1) {
-      const startedAt = new Date().toISOString();
-      const runningSteps = run.steps.map((step, index) =>
-        index === stepIndex
-          ? {
-              ...step,
-              state: "running" as const,
-              startedAt
-            }
-          : step
-      );
-      run = (await this.sequenceStore.updateRun(run.id, {
-        status: "running",
-        waitingForApprovalAfterStepIndex: null,
-        steps: runningSteps
-      })) ?? run;
-      await this.taskStore.appendLog(input.taskId, `Sequence step ${stepIndex + 1}/${input.stepPrompts.length} started.`);
-
-      let taskRunId: string | null = null;
-      if (stepIndex > 0) {
-        const taskReadyResult = await this.waitForTaskReady(input.taskId);
-        if (!taskReadyResult.ready) {
-          await this.failAtStep(run, input.taskId, stepIndex, taskReadyResult.reason);
-          return;
-        }
-
-        if (run.executionMode === "auto_apply_changes" && input.action === "build") {
-          const pendingProposal = (await this.taskStore.listChangeProposals(input.taskId)).find((proposal) => proposal.status === "pending");
-          if (pendingProposal) {
-            const task = await this.taskStore.getTask(input.taskId);
-            if (!task) {
-              await this.failAtStep(run, input.taskId, stepIndex, "Step could not be started because the task could not be loaded.");
-              return;
-            }
-            const autoApplyResult = await this.spawner.applyChangeProposal(task, pendingProposal.id);
-            if (!autoApplyResult.ok) {
-              run = (await this.sequenceStore.updateRun(run.id, {
-                status: "waiting_for_checkpoint_resolution",
-                failedStepIndex: null,
-                waitingForApprovalAfterStepIndex: null,
-                finishedAt: null
-              })) ?? run;
-              await this.taskStore.appendLog(
-                input.taskId,
-                `Sequence paused before step ${stepIndex + 1}/${input.stepPrompts.length}: could not auto-apply checkpoint (${autoApplyResult.message}). Resolve checkpoint and sequence will continue.`
-              );
-              return;
-            }
-            await this.taskStore.appendLog(
-              input.taskId,
-              `Sequence auto-applied checkpoint before step ${stepIndex + 1}/${input.stepPrompts.length}. Continuing.`
-            );
-          }
-        }
-
-        const accepted = await this.scheduler.triggerAction(input.taskId, input.action, {
-          content: input.stepPrompts[stepIndex]!
-        });
-        if (!accepted) {
-          await this.failAtStep(run, input.taskId, stepIndex, await this.buildStepStartBlockedMessage(input.taskId));
-          return;
-        }
-      }
-
-      try {
-        const taskRun = await this.waitForNewTaskRun(input.taskId, knownRunIds);
-        taskRunId = taskRun.id;
-        knownRunIds.add(taskRun.id);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not detect the step run.";
-        await this.failAtStep(run, input.taskId, stepIndex, message);
-        return;
-      }
-
-      run = await this.updateStepTaskRunId(run.id, stepIndex, taskRunId, startedAt);
-      let completedRun: Awaited<ReturnType<SequenceExecutionService["waitForTaskRunCompletion"]>>;
-      try {
-        completedRun = await this.waitForTaskRunCompletion(taskRunId);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Step run did not finish.";
-        await this.failAtStep(run, input.taskId, stepIndex, message);
-        return;
-      }
-      if (!completedRun) {
-        await this.failAtStep(run, input.taskId, stepIndex, "Step run could not be loaded.");
-        return;
-      }
-
-      if (completedRun.status !== "succeeded") {
-        const errorMessage = completedRun.errorMessage?.trim() || `Step run ended with status: ${completedRun.status}.`;
-        await this.failAtStep(run, input.taskId, stepIndex, errorMessage);
-        return;
-      }
-
-      const finishedAt = new Date().toISOString();
-      const succeededSteps = run.steps.map((step, index) =>
-        index === stepIndex
-          ? {
-              ...step,
-              state: "succeeded" as const,
-              taskRunId,
-              errorMessage: null,
-              startedAt: step.startedAt ?? startedAt,
-              finishedAt
-            }
-          : step
-      );
-      run = (await this.sequenceStore.updateRun(run.id, { steps: succeededSteps })) ?? run;
-      await this.taskStore.appendLog(input.taskId, `Sequence step ${stepIndex + 1}/${input.stepPrompts.length} succeeded.`);
-
-      if (run.executionMode === "auto_apply_changes" && completedRun.action === "build" && stepIndex + 1 < input.stepPrompts.length) {
-        const pendingProposal = (await this.taskStore.listChangeProposals(input.taskId)).find((proposal) => proposal.status === "pending");
-        if (pendingProposal) {
-          const task = await this.taskStore.getTask(input.taskId);
-          if (!task) {
-            await this.failAtStep(run, input.taskId, stepIndex + 1, "Step could not be started because the task could not be loaded.");
-            return;
-          }
-
-          const autoApplyResult = await this.spawner.applyChangeProposal(task, pendingProposal.id);
-          if (!autoApplyResult.ok) {
-            run = (await this.sequenceStore.updateRun(run.id, {
-              status: "waiting_for_checkpoint_resolution",
-              failedStepIndex: null,
-              waitingForApprovalAfterStepIndex: null,
-              finishedAt: null
-            })) ?? run;
-            await this.taskStore.appendLog(
-              input.taskId,
-              `Sequence paused after step ${stepIndex + 1}/${input.stepPrompts.length}: could not auto-apply checkpoint (${autoApplyResult.message}). Resolve checkpoint and sequence will continue.`
-            );
-            return;
-          }
-
-          await this.taskStore.appendLog(
-            input.taskId,
-            `Sequence auto-applied checkpoint after step ${stepIndex + 1}/${input.stepPrompts.length}. Continuing.`
-          );
-        }
-      }
-
-      if (completedRun.action === "build" && completedRun.changeOutcome === "no_change" && stepIndex + 1 < input.stepPrompts.length) {
-        if (run.executionMode === "approve_before_continuing") {
-          await this.taskStore.appendLog(input.taskId, "No changes needed for this step. Waiting for approval to continue.");
-        } else {
-          await this.taskStore.appendLog(input.taskId, "No changes needed for this step. Continuing.");
-        }
-      }
-
-      if (run.executionMode === "approve_before_continuing" && stepIndex + 1 < input.stepPrompts.length) {
-        run = (await this.sequenceStore.updateRun(run.id, {
-          status: "waiting_for_approval",
-          waitingForApprovalAfterStepIndex: stepIndex
-        })) ?? run;
-        await this.taskStore.appendLog(
-          input.taskId,
-          `Sequence paused after step ${stepIndex + 1}/${input.stepPrompts.length}. Awaiting approval to continue.`
-        );
-        return;
-      }
-    }
-
-    await this.sequenceStore.updateRun(run.id, {
-      status: "succeeded",
-      waitingForApprovalAfterStepIndex: null,
-      failedStepIndex: null,
-      finishedAt: new Date().toISOString()
-    });
-  }
-
-  private async updateStepTaskRunId(runId: string, stepIndex: number, taskRunId: string, startedAt: string) {
-    const current = await this.sequenceStore.getRun(runId);
-    if (!current) {
-      throw new Error("Sequence run no longer exists.");
-    }
-    const steps = current.steps.map((step, index) =>
-      index === stepIndex
-        ? {
-            ...step,
-            state: "running" as const,
-            taskRunId,
-            startedAt: step.startedAt ?? startedAt
-          }
-        : step
-    );
-    return (await this.sequenceStore.updateRun(runId, { steps })) ?? current;
-  }
-
-  private async failAtStep(run: { id: string; steps: SequenceRunStep[] }, taskId: string, stepIndex: number, errorMessage: string): Promise<void> {
-    const finishedAt = new Date().toISOString();
-    const nextSteps = run.steps.map((step, index) => {
-      if (index < stepIndex) {
-        return step;
-      }
-      if (index === stepIndex) {
-        return {
-          ...step,
-          state: "failed" as const,
-          errorMessage,
-          finishedAt
-        };
-      }
-      return {
-        ...step,
-        state: "skipped" as const,
-        finishedAt
-      };
-    });
-    await this.sequenceStore.updateRun(run.id, {
-      status: "failed",
-      failedStepIndex: stepIndex,
-      waitingForApprovalAfterStepIndex: null,
-      finishedAt,
-      steps: nextSteps
-    });
-    await this.taskStore.appendLog(taskId, `Sequence step ${stepIndex + 1} failed: ${errorMessage}`);
-  }
-
-  private async waitForNewTaskRun(taskId: string, knownRunIds: Set<string>) {
-    const deadline = Date.now() + MAX_WAIT_MS;
-    while (Date.now() < deadline) {
-      const runs = await this.taskStore.listRuns(taskId);
-      const next = runs.find((run) => !knownRunIds.has(run.id));
-      if (next) {
-        return next;
-      }
-      await sleep(RUN_POLL_INTERVAL_MS);
-    }
-    throw new Error("Timed out waiting for the step run to start.");
-  }
-
-  private async waitForTaskRunCompletion(runId: string) {
-    const deadline = Date.now() + MAX_WAIT_MS;
-    while (Date.now() < deadline) {
-      const run = await this.taskStore.getRun(runId);
-      if (!run) {
-        return null;
-      }
-      if (run.status !== "running") {
-        return run;
-      }
-      await sleep(RUN_POLL_INTERVAL_MS);
-    }
-    throw new Error("Timed out waiting for the step run to finish.");
-  }
-
-  private async waitForTaskReady(taskId: string): Promise<{ ready: true } | { ready: false; reason: string }> {
-    const deadline = Date.now() + TASK_READY_WAIT_MS;
-    while (Date.now() < deadline) {
-      const task = await this.taskStore.getTask(taskId);
-      if (!task) {
-        return {
-          ready: false,
-          reason: "Step could not be started because the task could not be loaded."
-        };
-      }
-
-      if (task.status === "archived") {
-        return {
-          ready: false,
-          reason: "Step could not be started because the task is archived."
-        };
-      }
-
-      if (task.executionStatus !== "queued" && task.executionStatus !== "preparing" && task.executionStatus !== "running") {
-        return { ready: true };
-      }
-
-      await sleep(RUN_POLL_INTERVAL_MS);
-    }
-
-    return {
-      ready: false,
-      reason: "Timed out waiting for the previous step to become ready for the next run."
-    };
-  }
-
-  private async buildStepStartBlockedMessage(taskId: string): Promise<string> {
-    const task = await this.taskStore.getTask(taskId);
-    if (!task) {
-      return "Step could not be started because the task could not be loaded.";
-    }
-
-    if (task.status === "archived") {
-      return "Step could not be started because the task is archived.";
-    }
-
-    if (task.hasPendingCheckpoint) {
-      return "Step could not be started because a pending checkpoint must be reviewed first.";
-    }
-
-    if (task.activeInteractiveSession) {
-      return "Step could not be started because an interactive terminal session is active.";
-    }
-
-    return "Step could not be started. The task is currently unavailable for execution.";
-  }
-}
-````
-
-## File: apps/server/src/index.ts
-````typescript
-import Fastify from "fastify";
-import { randomUUID } from "node:crypto";
-import cookie from "@fastify/cookie";
-import cors from "@fastify/cors";
-import * as Sentry from "@sentry/node";
-import { Server as SocketIOServer } from "socket.io";
-import type { RealtimeEvent } from "@agentswarm/shared-types";
-import { env } from "./config/env.js";
-import { createAuthService } from "./lib/auth.js";
-import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
-import { createRedisClients } from "./lib/redis.js";
-import { EventBus } from "./lib/events.js";
-import { createPostgresStores } from "./services/create-postgres-stores.js";
-import { registerAuthRoutes } from "./routes/auth.js";
-import { SpawnerService } from "./services/spawner.js";
-import { SchedulerService } from "./services/scheduler.js";
-import { GitHubImportService } from "./services/github-import-service.js";
-import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
-import { GitHubOutboundService } from "./services/github-outbound-service.js";
-import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
-import { registerRoleRoutes } from "./routes/roles.js";
-import { registerTaskRoutes } from "./routes/tasks.js";
-import { registerUserRoutes } from "./routes/users.js";
-import { registerSettingsRoutes } from "./routes/settings.js";
-import { registerRepositoryRoutes } from "./routes/repositories.js";
-import { registerImportRoutes } from "./routes/imports.js";
-import { registerSnippetRoutes } from "./routes/snippets.js";
-import { registerSequenceRoutes } from "./routes/sequences.js";
-import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
-import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
-
-const readHeaderValue = (value: string | string[] | undefined): string | null => {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  if (Array.isArray(value) && value.length > 0) {
-    const first = value[0]?.trim();
-    return first && first.length > 0 ? first : null;
-  }
-  return null;
-};
-
-const getOperationIdFromHeaders = (headers: Record<string, string | string[] | undefined>): string | null =>
-  readHeaderValue(headers["x-operation-id"]) ?? readHeaderValue(headers["x-agent-operation-id"]);
-
-const bootstrap = async (): Promise<void> => {
-  const sentryEnabled = env.SENTRY_ENABLED && env.SENTRY_DSN.trim().length > 0;
-  if (sentryEnabled) {
-    Sentry.init({
-      dsn: env.SENTRY_DSN,
-      tracesSampleRate: 1
-    });
-  }
-
-  const app = Fastify({
-    logger: {
-      level: process.env.LOG_LEVEL ?? "info",
-      base: { service: "agentswarm-server" }
-    },
-    disableRequestLogging: true,
-    requestIdHeader: "x-request-id",
-    genReqId: (rawRequest) => readHeaderValue(rawRequest.headers["x-request-id"]) ?? randomUUID(),
-    bodyLimit: 35 * 1024 * 1024
-  });
-  await app.register(cookie);
-  app.decorateRequest("auth", null);
-  await app.register(cors, {
-    origin: env.CORS_ORIGIN,
-    credentials: true
-  });
-  app.addHook("onRequest", async (request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    reply.header("x-request-id", request.id);
-    if (operationId) {
-      reply.header("x-operation-id", operationId);
-    }
-    request.log.info(
-      {
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url
-      },
-      "request.started"
-    );
-  });
-  app.addHook("onResponse", async (request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    request.log.info(
-      {
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url,
-        statusCode: reply.statusCode,
-        durationMs: reply.elapsedTime
-      },
-      "request.completed"
-    );
-  });
-  app.log.info(
-    {
-      event: "startup.config",
-      port: env.PORT,
-      corsOrigin: env.CORS_ORIGIN,
-      durableStores: "postgres",
-      runtimeServices: "redis",
-      postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
-      sentryEnabled,
-      taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
-      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
-    },
-    "Server configuration loaded"
-  );
-
-  const redisClients = createRedisClients(env.REDIS_URL);
-  const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
-  const postgresPool = createPostgresPool(env.DATABASE_URL);
-  if (env.POSTGRES_AUTO_MIGRATE) {
-    app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
-    await runPostgresMigrations(postgresPool);
-    app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
-  } else {
-    app.log.info({ event: "startup.migrations", mode: "manual" }, "Skipping auto-migrations");
-  }
-
-  const {
-    taskStore,
-    taskQueueStore,
-    githubOutboundQueueStore,
-    webhookDeliveryStore,
-    snippetStore,
-    sequenceStore,
-    repositoryStore,
-    credentialStore,
-    roleStore,
-    userStore,
-    sessionStore,
-    settingsStore
-  } = createPostgresStores(
-    postgresPool,
-    redisClients,
-    eventBus,
-    env.AUTH_SESSION_TTL_DAYS
-  );
-  const auth = createAuthService({
-    userStore,
-    sessionStore,
-    cookieName: env.AUTH_COOKIE_NAME,
-    taskStore,
-    credentialStore
-  });
-  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
-  const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
-  const githubImportService = new GitHubImportService(settingsStore);
-  const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
-  const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
-  const githubStatusSyncService = new GitHubStatusSyncService(repositoryStore, githubOutboundService);
-
-  await roleStore.ensureDefaultAdminRole();
-  await userStore.ensureDefaultAdminUser({
-    name: env.DEFAULT_ADMIN_NAME,
-    email: env.DEFAULT_ADMIN_EMAIL,
-    password: env.DEFAULT_ADMIN_PASSWORD
-  });
-
-  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore });
-  registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
-  registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
-  registerTaskRoutes(app, {
-    taskStore,
-    taskQueueStore,
-    repositoryStore,
-    userStore,
-    scheduler,
-    spawner,
-    settingsStore,
-    sequenceStore,
-    snippetStore,
-    auth
-  });
-  registerSnippetRoutes(app, { snippetStore, auth });
-  registerSequenceRoutes(app, { sequenceStore, auth });
-  registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
-  registerSettingsRoutes(app, { settingsStore, scheduler, auth });
-  registerImportRoutes(app, { githubImportService, repositoryStore, settingsStore, taskStore, userStore, scheduler, spawner, auth });
-  registerGitHubWebhookRoutes(app, {
-    repositoryStore,
-    githubImportService,
-    taskStore,
-    userStore,
-    scheduler,
-    spawner,
-    snippetStore
-  });
-
-  app.get("/health", async () => ({ ok: true }));
-
-  app.setErrorHandler((error, request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    request.log.error(
-      {
-        err: error,
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url
-      },
-      "request.failed"
-    );
-    if (sentryEnabled) {
-      Sentry.captureException(error, {
-        tags: {
-          route: request.routeOptions.url
-        },
-        extra: {
-          requestId: request.id,
-          operationId,
-          method: request.method,
-          url: request.url
-        }
-      });
-    }
-    void reply.send(error);
-  });
-
-  await app.ready();
-  attachTaskInteractiveTerminalUpgrade(app.server, {
-    auth,
-    taskStore,
-    settingsStore,
-    spawner,
-    userStore,
-    repositoryStore
-  });
-
-  const io = new SocketIOServer(app.server, {
-    cors: {
-      origin: env.CORS_ORIGIN,
-      credentials: true
-    }
-  });
-  io.use(auth.authorizeSocket());
-
-  io.on("connection", (socket) => {
-    auth.onSocketConnection(socket);
-    app.log.info({ socketId: socket.id }, "Socket client connected");
-  });
-
-  await redisClients.sub.subscribe(env.EVENT_CHANNEL);
-  redisClients.sub.on("message", (_channel, message) => {
-    try {
-      const event = JSON.parse(message) as RealtimeEvent;
-      void webhookDeliveryService.handleRealtimeEvent(event);
-      void githubStatusSyncService.handleRealtimeEvent(event);
-      void auth.emitScopedRealtimeEvent(io, event);
-    } catch (error) {
-      app.log.error({ error }, "Failed to parse event message");
-    }
-  });
-
-  webhookDeliveryService.start();
-  githubOutboundService.start();
-  await scheduler.bootstrap();
-
-  let closeStarted = false;
-  const close = async (): Promise<void> => {
-    if (closeStarted) {
-      return;
-    }
-    closeStarted = true;
-    scheduler.stop();
-    webhookDeliveryService.stop();
-    githubOutboundService.stop();
-    io.close();
-    await Promise.all([
-      ...(postgresPool ? [postgresPool.end()] : []),
-      redisClients.command.quit(),
-      redisClients.pub.quit(),
-      redisClients.sub.quit()
-    ]);
-    await app.close();
-    if (sentryEnabled) {
-      await Sentry.close(2_000);
-    }
-  };
-
-  process.on("SIGINT", () => {
-    app.log.warn({ signal: "SIGINT" }, "Shutdown signal received");
-    void close();
-  });
-  process.on("SIGTERM", () => {
-    app.log.warn({ signal: "SIGTERM" }, "Shutdown signal received");
-    void close();
-  });
-
-  process.on("uncaughtException", (error) => {
-    app.log.fatal({ err: error }, "Unhandled exception");
-    if (sentryEnabled) {
-      Sentry.captureException(error);
-    }
-    void close().finally(() => process.exit(1));
-  });
-  process.on("unhandledRejection", (reason) => {
-    app.log.fatal({ reason }, "Unhandled promise rejection");
-    if (sentryEnabled) {
-      Sentry.captureException(reason);
-    }
-    void close().finally(() => process.exit(1));
-  });
-
-  const listenAddress = await app.listen({ port: env.PORT, host: "0.0.0.0" });
-  app.log.info(
-    {
-      event: "startup.ready",
-      listenAddress,
-      healthPath: "/health",
-      proxyHealthPath: "/api/health"
-    },
-    "Server started"
-  );
-};
-
-void bootstrap().catch((error) => {
-  // Startup errors should stop the process so Docker restart policies can react.
-  const errorForLog =
-    error instanceof Error
-      ? { name: error.name, message: error.message, stack: error.stack }
-      : { message: String(error) };
-  console.error(
-    JSON.stringify({
-      level: "fatal",
-      event: "startup.bootstrap_failed",
-      error: errorForLog
-    })
-  );
-  process.exit(1);
-});
-````
-
 ## File: apps/web/components/app-shell.tsx
 ````typescript
 "use client";
@@ -40881,7 +37607,6 @@ import { AppFooterNote } from "./app-footer-note";
 import { ResponsePolicyFields } from "./response-policy-fields";
 import { useAuth } from "./auth-provider";
 import { TaskBrowserNotifications } from "./task-browser-notifications";
-import { SequenceAnalyticsTracker } from "./sequence-analytics-tracker";
 import { useThemeMode } from "./theme-provider";
 import { appThemeOptions, type AppThemeMode } from "../src/theme/antd-theme";
 import { api } from "../src/api/client";
@@ -40910,7 +37635,6 @@ const menuIconByPath: Record<string, ReactNode> = {
   "/tasks": <UnorderedListOutlined />,
   "/tasks/board": <AppstoreOutlined />,
   "/snippets": <CopyOutlined />,
-  "/sequences": <UnorderedListOutlined />,
   "/repositories": <DatabaseOutlined />,
   "/settings": <SettingOutlined />,
   "/users": <TeamOutlined />
@@ -41295,7 +38019,6 @@ export function AppShell({ children }: { children: ReactNode }) {
             />
             <Flex align="center" gap={12}>
               <TaskBrowserNotifications />
-              <SequenceAnalyticsTracker />
               <Flex vertical gap={0} style={{ minWidth: 0 }}>
                 <Button type="text" style={{ paddingInline: 6 }} onClick={() => { void openProfile(); }}>
                   <Typography.Text strong>{`Hi, ${session.user.name || "Administrator"}`}</Typography.Text>
@@ -41652,520 +38375,6 @@ describe("buildTaskLifecycleViewModel", () => {
 });
 ````
 
-## File: apps/web/components/tasks-kanban-board-page.tsx
-````typescript
-"use client";
-
-import { useMemo, useState, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
-import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
-import { CSS } from "@dnd-kit/utilities";
-import { PlusOutlined } from "@ant-design/icons";
-import {
-  getTaskExecutionStatusLabel,
-  getTaskTypeLabel,
-  getTaskWorkflowStatusLabel,
-  type Task,
-  type UpdateTaskStateInput
-} from "@agentswarm/shared-types";
-import { Button, Card, Empty, Flex, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
-import dayjs from "dayjs";
-import { api } from "../src/api/client";
-import { useTasks } from "../src/hooks/useTasks";
-import { useAuth } from "./auth-provider";
-import { TaskCreateModal } from "./task-create-modal";
-
-type BoardColumnId = "backlog" | "ready" | "in_progress" | "review" | "done";
-type BoardTaskStatus = UpdateTaskStateInput["status"];
-type BoardItem = { id: string; task: Task; column: BoardColumnId };
-
-const columns: Array<{ id: BoardColumnId; title: string; taskStatus: BoardTaskStatus; acceptsTasks: boolean }> = [
-  { id: "backlog", title: "Backlog", taskStatus: "backlog", acceptsTasks: true },
-  { id: "ready", title: getTaskWorkflowStatusLabel("ready"), taskStatus: "ready", acceptsTasks: true },
-  { id: "in_progress", title: getTaskWorkflowStatusLabel("in_progress"), taskStatus: "in_progress", acceptsTasks: true },
-  { id: "review", title: getTaskWorkflowStatusLabel("review"), taskStatus: "review", acceptsTasks: true },
-  { id: "done", title: getTaskWorkflowStatusLabel("done"), taskStatus: "done", acceptsTasks: true }
-];
-
-const taskColumn = (task: Task): BoardColumnId => {
-  if (task.workflowStatus === "backlog") {
-    return "backlog";
-  }
-  if (task.workflowStatus === "done") {
-    return "done";
-  }
-  if (task.workflowStatus === "review") {
-    return "review";
-  }
-  if (task.workflowStatus === "in_progress") {
-    return "in_progress";
-  }
-  return "ready";
-};
-
-const getItemDeadline = (item: BoardItem): string | null => item.task.deadline;
-
-const getItemTitle = (item: BoardItem): string => item.task.title;
-
-const compareItemsByDeadline = (left: BoardItem, right: BoardItem): number => {
-  const leftDeadline = getItemDeadline(left);
-  const rightDeadline = getItemDeadline(right);
-  if (leftDeadline && rightDeadline) {
-    const deadlineComparison = leftDeadline.localeCompare(rightDeadline);
-    if (deadlineComparison !== 0) {
-      return deadlineComparison;
-    }
-  } else if (leftDeadline) {
-    return -1;
-  } else if (rightDeadline) {
-    return 1;
-  }
-
-  return getItemTitle(left).localeCompare(getItemTitle(right));
-};
-
-function KanbanColumn({
-  column,
-  canCreate,
-  onAdd,
-  children
-}: {
-  column: (typeof columns)[number];
-  canCreate: boolean;
-  onAdd: (column: (typeof columns)[number]) => void;
-  children: ReactNode;
-}) {
-  const { token } = antTheme.useToken();
-  const { setNodeRef, isOver } = useDroppable({
-    id: column.id,
-    disabled: !column.acceptsTasks
-  });
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={{
-        minWidth: 290,
-        width: 320,
-        flex: "0 0 320px",
-        background: isOver ? token.colorPrimaryBg : token.colorFillQuaternary,
-        border: `1px solid ${isOver ? token.colorPrimaryBorder : token.colorBorderSecondary}`,
-        borderRadius: 8,
-        padding: 12,
-        minHeight: "calc(100vh - 220px)"
-      }}
-    >
-      <Flex vertical gap={12}>
-        <Flex justify="space-between" align="center">
-          <Typography.Text strong>{column.title}</Typography.Text>
-          {canCreate ? (
-            <Button
-              type="text"
-              size="small"
-              icon={<PlusOutlined />}
-              aria-label={`Create in ${column.title}`}
-              title={`Create in ${column.title}`}
-              onClick={() => onAdd(column)}
-            />
-          ) : null}
-        </Flex>
-        {children}
-      </Flex>
-    </div>
-  );
-}
-
-function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardItem) => void }) {
-  const draggable = useDraggable({
-    id: item.id,
-    data: item
-  });
-  const style = {
-    transform: CSS.Translate.toString(draggable.transform),
-    opacity: draggable.isDragging ? 0.65 : 1,
-    cursor: "grab"
-  };
-  const task = item.task;
-  const isDraft = task.status === "draft";
-  const deadline = getItemDeadline(item);
-
-  return (
-    <Card
-      ref={draggable.setNodeRef}
-      {...draggable.listeners}
-      {...draggable.attributes}
-      size="small"
-      hoverable
-      onClick={() => onOpen(item)}
-      style={{ ...style, borderRadius: 8 }}
-      bodyStyle={{ padding: 12 }}
-    >
-      <Flex vertical gap={8}>
-        <Typography.Text strong ellipsis={{ tooltip: task.title }}>
-          {task.title}
-        </Typography.Text>
-        <Space size={[6, 6]} wrap>
-          {isDraft ? <Tag color="default">Draft</Tag> : null}
-          <Tag>{getTaskTypeLabel(task.taskType)}</Tag>
-          {task.executionStatus !== "idle" ? <Tag color={task.executionStatus === "failed" ? "red" : "blue"}>{getTaskExecutionStatusLabel(task.executionStatus)}</Tag> : null}
-          {task.reviewReason ? <Tag color="gold">{task.reviewReason}</Tag> : null}
-        </Space>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {task.repoName}
-        </Typography.Text>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
-        </Typography.Text>
-      </Flex>
-    </Card>
-  );
-}
-
-export function TasksKanbanBoardPage() {
-  const router = useRouter();
-  const { can } = useAuth();
-  const [messageApi, contextHolder] = message.useMessage();
-  const { tasks, setTasks, loading: tasksLoading } = useTasks({ view: "active" });
-  const [movingTaskId, setMovingTaskId] = useState<string | null>(null);
-  const [taskCreateModalOpen, setTaskCreateModalOpen] = useState(false);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
-  const loading = tasksLoading;
-  const canCreateTask = can("task:create");
-
-  const items = useMemo<BoardItem[]>(() => {
-    return tasks
-      .filter((task) => task.status !== "archived")
-      .map((task) => ({ id: `task:${task.id}`, task, column: taskColumn(task) }));
-  }, [tasks]);
-
-  const itemsByColumn = useMemo(
-    () =>
-      Object.fromEntries(
-        columns.map((column) => [
-          column.id,
-          items.filter((item) => item.column === column.id).sort(compareItemsByDeadline)
-        ])
-      ) as Record<BoardColumnId, BoardItem[]>,
-    [items]
-  );
-
-  const openItem = (item: BoardItem) => {
-    router.push(`/tasks/${item.task.id}`);
-  };
-
-  const openCreateModal = () => {
-    setTaskCreateModalOpen(true);
-  };
-
-  const closeCreateModal = () => {
-    setTaskCreateModalOpen(false);
-  };
-
-  const handleDragEnd = async (event: DragEndEvent) => {
-    const item = event.active.data.current as BoardItem | undefined;
-    const column = columns.find((entry) => entry.id === event.over?.id);
-    if (!item || !column?.taskStatus || item.column === column.id) {
-      return;
-    }
-
-    setMovingTaskId(item.task.id);
-    try {
-      const updated = await api.updateTaskState(item.task.id, { status: column.taskStatus });
-      setTasks((current) => current.map((task) => (task.id === updated.id ? { ...task, ...updated, logs: task.logs } : task)));
-      messageApi.success(`Moved to ${column.title}`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Could not move task");
-    } finally {
-      setMovingTaskId(null);
-    }
-  };
-
-  return (
-    <>
-      {contextHolder}
-      <Flex vertical gap={16}>
-        <Flex justify="space-between" align="center" gap={16} wrap="wrap">
-          <Flex vertical gap={0}>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              Task Board
-            </Typography.Title>
-            <Typography.Text type="secondary">Plan drafts and move active tasks through the workflow.</Typography.Text>
-          </Flex>
-          <Space>
-            <Button onClick={() => router.push("/tasks")}>Table</Button>
-            {canCreateTask ? <Button type="primary" onClick={openCreateModal}>New Task</Button> : null}
-          </Space>
-        </Flex>
-        {loading ? (
-          <Flex justify="center" style={{ padding: 80 }}>
-            <Spin />
-          </Flex>
-        ) : (
-          <DndContext sensors={sensors} onDragEnd={(event) => void handleDragEnd(event)}>
-            <Flex gap={16} align="stretch" style={{ overflowX: "auto", paddingBottom: 12 }}>
-              {columns.map((column) => (
-                <KanbanColumn key={column.id} column={column} canCreate={canCreateTask} onAdd={openCreateModal}>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {itemsByColumn[column.id].length} item{itemsByColumn[column.id].length === 1 ? "" : "s"}
-                  </Typography.Text>
-                  {itemsByColumn[column.id].length === 0 ? (
-                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No cards" />
-                  ) : (
-                    <Flex vertical gap={10}>
-                      {itemsByColumn[column.id].map((item) => (
-                        <KanbanCard key={item.id} item={item} onOpen={openItem} />
-                      ))}
-                    </Flex>
-                  )}
-                </KanbanColumn>
-              ))}
-            </Flex>
-          </DndContext>
-        )}
-        {movingTaskId ? <Typography.Text type="secondary">Moving task...</Typography.Text> : null}
-      </Flex>
-      <TaskCreateModal
-        open={taskCreateModalOpen}
-        onClose={closeCreateModal}
-        onCreated={(task) => {
-          setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
-        }}
-      />
-    </>
-  );
-}
-````
-
-## File: docs/product/user-flows.md
-````markdown
-# User Flows
-
-## Login (Current Harness Coverage)
-1. Open `/login`.
-2. Enter admin email and password.
-3. Click **Sign in**.
-4. User is redirected to their first allowed page.
-
-Notes:
-- Default first-boot admin values come from `.env` / `.env.example`.
-- This flow is validated by Playwright in `apps/web/e2e/auth.smoke.spec.ts`.
-
-## TODO
-- Task flows are documented below.
-- TODO: Document repository connect/sync flow.
-- TODO: Document settings and credentials flow.
-
-## Repository Configuration Flow (Current)
-1. Open `/repositories`.
-2. Create or edit a repository.
-3. Add environment variables (plaintext key/value).
-4. Add environment secrets (write-only values).
-5. Save.
-
-Notes:
-- Existing secrets are shown as configured placeholders only; values are never shown again after save.
-- Editing can keep an existing secret by leaving its value blank, replace it by entering a new value, or delete it by removing the row.
-
-## Task Flows (New + Existing)
-
-Notes:
-- `/tasks/board` shows saved task drafts in Backlog and active tasks in Ready, In Progress, Review, and Done columns.
-- Saving a draft stores the same task definition fields used by the new task form; opening a draft reuses the same form and can create the runnable task.
-
-```mermaid
-flowchart TD
-  subgraph A[New Task Flow]
-    A1[User opens Create Task]
-    A2[Fill config: source, repo, title, prompt, provider]
-    A3{Optional: Magic Prompt?}
-    A4[POST /tasks/prompt-magic]
-    A5[Prompt returned + textarea/title updated]
-    A6[Submit create form]
-    A7{Source type}
-    A8[Blank/Snippet/Sequence -> POST /tasks]
-    A9[Issue -> POST /imports/issue]
-    A10[PR -> POST /imports/pull-request]
-    A11[Task row created in store]
-    A12[Workspace prepared]
-    A13[Action enqueued via Scheduler]
-    A14[Task Detail opens]
-  end
-
-  A1 --> A2 --> A3
-  A3 -- Yes --> A4 --> A5 --> A6
-  A3 -- No --> A6
-  A6 --> A7
-  A7 --> A8 --> A11
-  A7 --> A9 --> A11
-  A7 --> A10 --> A11
-  A11 --> A12 --> A13 --> A14
-
-  subgraph B[Existing Build Flow]
-    B1[Open existing task]
-    B2[Click Build or send Build message]
-    B3[Scheduler triggerAction build]
-    B4{Can run now? active/queued/archived/pending checkpoint/terminal active}
-    B5[Set queued status + enqueue]
-    B6[Worker dequeues]
-    B7[Status -> building]
-    B8[Spawner ensures workspace clone/checkout]
-    B9[Run provider build execution]
-    B10[Stream logs + runs/messages]
-    B11{Changes produced?}
-    B12[Create pending checkpoint/change proposal]
-    B13[Wait for Apply/Reject/Revert]
-    B14[Continue or stop depending on sequence mode]
-    B15[Status -> done/failed/cancelled]
-  end
-
-  B1 --> B2 --> B3 --> B4
-  B4 -- No --> B15
-  B4 -- Yes --> B5 --> B6 --> B7 --> B8 --> B9 --> B10 --> B11
-  B11 -- Yes --> B12 --> B13 --> B14 --> B15
-  B11 -- No --> B15
-
-  subgraph C[Existing Ask Flow]
-    C1[Open existing task]
-    C2[Click Ask or send Ask message]
-    C3[Scheduler triggerAction ask]
-    C4{Parallel ask allowed while already building or asking}
-    C5[Run ask immediately if capacity]
-    C6[Else queue ask]
-    C7[Status -> asking]
-    C8[Spawner ensures workspace/context]
-    C9[Run provider ask execution]
-    C10[Stream logs + assistant response]
-    C11[Status -> answered/failed/cancelled]
-  end
-
-  C1 --> C2 --> C3 --> C4
-  C4 -- Yes --> C5 --> C7
-  C4 -- No --> C6 --> C7
-  C7 --> C8 --> C9 --> C10 --> C11
-```
-
-## Code Flow (Implementation Path)
-
-```mermaid
-flowchart TD
-  subgraph N[New Task - Code Path]
-    N1[web: task-create-page.tsx submit]
-    N2[web: buildTaskDefinitionInput]
-    N3[web: createTaskFromDefinition]
-    N4{sourceType}
-    N5[web api: POST /tasks]
-    N6[web api: POST /imports/issue]
-    N7[web api: POST /imports/pull-request]
-    N8[server route: routes/tasks.ts or routes/imports.ts]
-    N9[server: taskStore.createTask]
-    N10[server: orchestrateTaskStart]
-    N11[spawner.prepareWorkspace]
-    N12[scheduler.triggerAction]
-    N14[task persisted + events published]
-  end
-
-  N1 --> N2 --> N3 --> N4
-  N4 -- blank/snippet/sequence --> N5 --> N8
-  N4 -- issue --> N6 --> N8
-  N4 -- pull_request --> N7 --> N8
-  N8 --> N9 --> N10 --> N11 --> N12 --> N14
-
-  subgraph B[Existing Build - Code Path]
-    B1[web: task-detail build action]
-    B2[web api: POST /tasks/:id/actions action=build]
-    B3[server route: routes/tasks.ts]
-    B4[server: orchestrateTaskActionStart]
-    B5[taskStore.markQueuedForAction]
-    B6[taskQueueStore.replaceTask]
-    B7[scheduler.drainQueue dequeue]
-    B8[scheduler.executeTask]
-    B9[spawner.run build provider]
-    B10[taskStore.createRun/updateRun/appendLog]
-    B11{pending checkpoint?}
-    B12[taskStore upsert pending change proposal]
-    B13[route handlers apply/reject/revert checkpoint]
-    B14[task terminal status update + event publish]
-  end
-
-  B1 --> B2 --> B3 --> B4 --> B5 --> B6 --> B7 --> B8 --> B9 --> B10 --> B11
-  B11 -- Yes --> B12 --> B13 --> B14
-  B11 -- No --> B14
-
-  subgraph A[Existing Ask - Code Path]
-    A1[web: task-detail ask action]
-    A2[web api: POST /tasks/:id/actions action=ask]
-    A3[server route: routes/tasks.ts]
-    A4[server: orchestrateTaskActionStart]
-    A5{parallel ask allowed}
-    A6[scheduler.executeTask direct]
-    A7[queue via taskQueueStore]
-    A8[scheduler.executeTask from queue]
-    A9[spawner.run ask provider]
-    A10[taskStore.createRun/updateRun/appendLog]
-    A11[task status answered/failed/cancelled + events]
-  end
-
-  A1 --> A2 --> A3 --> A4 --> A5
-  A5 -- Yes --> A6 --> A9
-  A5 -- No --> A7 --> A8 --> A9
-  A9 --> A10 --> A11
-```
-
-## Git Flow (Task Detail)
-
-```mermaid
-flowchart TD
-  G1[User opens task detail Git actions]
-  G2{Action chosen}
-
-  G3[Pull selected]
-  G4[POST tasks id pull]
-  G5{Mutation blocked? active run pending checkpoint terminal active archived}
-  G6[shared git command handler then spawner pullTaskBranch]
-  G7[task refreshed and sync counts updated]
-
-  G8[Push selected]
-  G9[POST tasks id push]
-  G10{Mutation blocked? active run pending checkpoint terminal active archived}
-  G11[shared git command handler then spawner pushTaskBranch]
-  G12[publish task pushed event]
-  G13[task refreshed and sync counts updated]
-
-  G14[Merge selected]
-  G15[GET merge preview target branch]
-  G16{Merge allowed? feature branch target not same blocked checks pass}
-  G17[POST tasks id merge]
-  G18[shared git command handler then spawner mergeTaskBranch]
-  G19[publish task merged event]
-  G20[remove queued entry archive task append archived log]
-  G21[return merged archived task]
-
-  G22[Checkpoint action apply reject revert]
-  G23[POST change proposals action endpoint]
-  G24[checkpoint mutation transition helper executes action and refresh]
-  G25{sequence auto apply recovery needed}
-  G26[resume waiting sequence step]
-
-  G1 --> G2
-
-  G2 -- Pull --> G3 --> G4 --> G5
-  G5 -- No --> G6 --> G7
-  G5 -- Yes --> G7
-
-  G2 -- Push --> G8 --> G9 --> G10
-  G10 -- No --> G11 --> G12 --> G13
-  G10 -- Yes --> G13
-
-  G2 -- Merge --> G14 --> G15 --> G16
-  G16 -- Yes --> G17 --> G18 --> G19 --> G20 --> G21
-  G16 -- No --> G21
-
-  G2 -- Checkpoint --> G22 --> G23 --> G24 --> G25
-  G25 -- Yes --> G26
-  G25 -- No --> G24
-```
-````
-
 ## File: apps/server/src/db/migrations.ts
 ````typescript
 export interface PostgresMigration {
@@ -42516,32 +38725,6 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
     `
   },
   {
-    id: "20260526_01_sequences_mvp",
-    sql: `
-      CREATE TABLE IF NOT EXISTS sequences (
-        id text PRIMARY KEY,
-        name text NOT NULL,
-        steps jsonb NOT NULL DEFAULT '[]'::jsonb,
-        variables jsonb NOT NULL DEFAULT '[]'::jsonb,
-        created_at text NOT NULL,
-        updated_at text NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS sequences_updated_at_idx ON sequences(updated_at DESC);
-
-      CREATE TABLE IF NOT EXISTS sequence_runs (
-        id text PRIMARY KEY,
-        sequence_id text NOT NULL REFERENCES sequences(id) ON DELETE CASCADE,
-        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-        started_at text NOT NULL,
-        run_data jsonb NOT NULL
-      );
-
-      CREATE UNIQUE INDEX IF NOT EXISTS sequence_runs_task_id_idx ON sequence_runs(task_id);
-      CREATE INDEX IF NOT EXISTS sequence_runs_sequence_id_started_at_idx ON sequence_runs(sequence_id, started_at DESC, id);
-    `
-  },
-  {
     id: "20260526_02_task_git_operations",
     sql: `
       CREATE TABLE IF NOT EXISTS task_git_operations (
@@ -42553,13 +38736,6 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
 
       CREATE INDEX IF NOT EXISTS task_git_operations_task_id_started_at_idx
         ON task_git_operations(task_id, started_at DESC, id DESC);
-    `
-  },
-  {
-    id: "20260526_03_sequence_execution_mode",
-    sql: `
-      ALTER TABLE sequences
-      ADD COLUMN IF NOT EXISTS execution_mode text NOT NULL DEFAULT 'auto_apply_changes';
     `
   },
   {
@@ -42586,8 +38762,524 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
 
       CREATE INDEX IF NOT EXISTS task_drafts_owner_updated_at_idx ON task_drafts(owner_user_id, updated_at DESC);
     `
+  },
+  {
+    id: "20260609_01_remove_sequences",
+    sql: `
+      DROP TABLE IF EXISTS sequence_runs;
+      DROP TABLE IF EXISTS sequences;
+    `
   }
 ];
+````
+
+## File: docs/product/user-flows.md
+````markdown
+# User Flows
+
+## Login (Current Harness Coverage)
+1. Open `/login`.
+2. Enter admin email and password.
+3. Click **Sign in**.
+4. User is redirected to their first allowed page.
+
+Notes:
+- Default first-boot admin values come from `.env` / `.env.example`.
+- This flow is validated by Playwright in `apps/web/e2e/auth.smoke.spec.ts`.
+
+## TODO
+- Task flows are documented below.
+- TODO: Document repository connect/sync flow.
+- TODO: Document settings and credentials flow.
+
+## Repository Configuration Flow (Current)
+1. Open `/repositories`.
+2. Create or edit a repository.
+3. Add environment variables (plaintext key/value).
+4. Add environment secrets (write-only values).
+5. Save.
+
+Notes:
+- Existing secrets are shown as configured placeholders only; values are never shown again after save.
+- Editing can keep an existing secret by leaving its value blank, replace it by entering a new value, or delete it by removing the row.
+
+## Task Flows (New + Existing)
+
+Notes:
+- `/tasks/board` shows saved task drafts in Backlog and active tasks in Ready, In Progress, Review, and Done columns.
+- Saving a draft stores the same task definition fields used by the new task form; opening a draft reuses the same form and can create the runnable task.
+
+```mermaid
+flowchart TD
+  subgraph A[New Task Flow]
+    A1[User opens Create Task]
+    A2[Fill config: source, repo, title, prompt, provider]
+    A3{Optional: Magic Prompt?}
+    A4[POST /tasks/prompt-magic]
+    A5[Prompt returned + textarea/title updated]
+    A6[Submit create form]
+    A7{Source type}
+    A8[Blank/Snippet -> POST /tasks]
+    A9[Issue -> POST /imports/issue]
+    A10[PR -> POST /imports/pull-request]
+    A11[Task row created in store]
+    A12[Workspace prepared]
+    A13[Action enqueued via Scheduler]
+    A14[Task Detail opens]
+  end
+
+  A1 --> A2 --> A3
+  A3 -- Yes --> A4 --> A5 --> A6
+  A3 -- No --> A6
+  A6 --> A7
+  A7 --> A8 --> A11
+  A7 --> A9 --> A11
+  A7 --> A10 --> A11
+  A11 --> A12 --> A13 --> A14
+
+  subgraph B[Existing Build Flow]
+    B1[Open existing task]
+    B2[Click Build or send Build message]
+    B3[Scheduler triggerAction build]
+    B4{Can run now? active/queued/archived/pending checkpoint/terminal active}
+    B5[Set queued status + enqueue]
+    B6[Worker dequeues]
+    B7[Status -> building]
+    B8[Spawner ensures workspace clone/checkout]
+    B9[Run provider build execution]
+    B10[Stream logs + runs/messages]
+    B11{Changes produced?}
+    B12[Create pending checkpoint/change proposal]
+    B13[Wait for Apply/Reject/Revert]
+    B14[Apply selected checkpoint action]
+    B15[Status -> done/failed/cancelled]
+  end
+
+  B1 --> B2 --> B3 --> B4
+  B4 -- No --> B15
+  B4 -- Yes --> B5 --> B6 --> B7 --> B8 --> B9 --> B10 --> B11
+  B11 -- Yes --> B12 --> B13 --> B14 --> B15
+  B11 -- No --> B15
+
+  subgraph C[Existing Ask Flow]
+    C1[Open existing task]
+    C2[Click Ask or send Ask message]
+    C3[Scheduler triggerAction ask]
+    C4{Parallel ask allowed while already building or asking}
+    C5[Run ask immediately if capacity]
+    C6[Else queue ask]
+    C7[Status -> asking]
+    C8[Spawner ensures workspace/context]
+    C9[Run provider ask execution]
+    C10[Stream logs + assistant response]
+    C11[Status -> answered/failed/cancelled]
+  end
+
+  C1 --> C2 --> C3 --> C4
+  C4 -- Yes --> C5 --> C7
+  C4 -- No --> C6 --> C7
+  C7 --> C8 --> C9 --> C10 --> C11
+```
+
+## Code Flow (Implementation Path)
+
+```mermaid
+flowchart TD
+  subgraph N[New Task - Code Path]
+    N1[web: task-create-page.tsx submit]
+    N2[web: buildTaskDefinitionInput]
+    N3[web: createTaskFromDefinition]
+    N4{sourceType}
+    N5[web api: POST /tasks]
+    N6[web api: POST /imports/issue]
+    N7[web api: POST /imports/pull-request]
+    N8[server route: routes/tasks.ts or routes/imports.ts]
+    N9[server: taskStore.createTask]
+    N10[server: orchestrateTaskStart]
+    N11[spawner.prepareWorkspace]
+    N12[scheduler.triggerAction]
+    N14[task persisted + events published]
+  end
+
+  N1 --> N2 --> N3 --> N4
+  N4 -- blank/snippet --> N5 --> N8
+  N4 -- issue --> N6 --> N8
+  N4 -- pull_request --> N7 --> N8
+  N8 --> N9 --> N10 --> N11 --> N12 --> N14
+
+  subgraph B[Existing Build - Code Path]
+    B1[web: task-detail build action]
+    B2[web api: POST /tasks/:id/actions action=build]
+    B3[server route: routes/tasks.ts]
+    B4[server: orchestrateTaskActionStart]
+    B5[taskStore.markQueuedForAction]
+    B6[taskQueueStore.replaceTask]
+    B7[scheduler.drainQueue dequeue]
+    B8[scheduler.executeTask]
+    B9[spawner.run build provider]
+    B10[taskStore.createRun/updateRun/appendLog]
+    B11{pending checkpoint?}
+    B12[taskStore upsert pending change proposal]
+    B13[route handlers apply/reject/revert checkpoint]
+    B14[task terminal status update + event publish]
+  end
+
+  B1 --> B2 --> B3 --> B4 --> B5 --> B6 --> B7 --> B8 --> B9 --> B10 --> B11
+  B11 -- Yes --> B12 --> B13 --> B14
+  B11 -- No --> B14
+
+  subgraph A[Existing Ask - Code Path]
+    A1[web: task-detail ask action]
+    A2[web api: POST /tasks/:id/actions action=ask]
+    A3[server route: routes/tasks.ts]
+    A4[server: orchestrateTaskActionStart]
+    A5{parallel ask allowed}
+    A6[scheduler.executeTask direct]
+    A7[queue via taskQueueStore]
+    A8[scheduler.executeTask from queue]
+    A9[spawner.run ask provider]
+    A10[taskStore.createRun/updateRun/appendLog]
+    A11[task status answered/failed/cancelled + events]
+  end
+
+  A1 --> A2 --> A3 --> A4 --> A5
+  A5 -- Yes --> A6 --> A9
+  A5 -- No --> A7 --> A8 --> A9
+  A9 --> A10 --> A11
+```
+
+## Git Flow (Task Detail)
+
+```mermaid
+flowchart TD
+  G1[User opens task detail Git actions]
+  G2{Action chosen}
+
+  G3[Pull selected]
+  G4[POST tasks id pull]
+  G5{Mutation blocked? active run pending checkpoint terminal active archived}
+  G6[shared git command handler then spawner pullTaskBranch]
+  G7[task refreshed and sync counts updated]
+
+  G8[Push selected]
+  G9[POST tasks id push]
+  G10{Mutation blocked? active run pending checkpoint terminal active archived}
+  G11[shared git command handler then spawner pushTaskBranch]
+  G12[publish task pushed event]
+  G13[task refreshed and sync counts updated]
+
+  G14[Merge selected]
+  G15[GET merge preview target branch]
+  G16{Merge allowed? feature branch target not same blocked checks pass}
+  G17[POST tasks id merge]
+  G18[shared git command handler then spawner mergeTaskBranch]
+  G19[publish task merged event]
+  G20[remove queued entry archive task append archived log]
+  G21[return merged archived task]
+
+  G22[Checkpoint action apply reject revert]
+  G23[POST change proposals action endpoint]
+  G24[checkpoint mutation transition helper executes action and refresh]
+  G1 --> G2
+
+  G2 -- Pull --> G3 --> G4 --> G5
+  G5 -- No --> G6 --> G7
+  G5 -- Yes --> G7
+
+  G2 -- Push --> G8 --> G9 --> G10
+  G10 -- No --> G11 --> G12 --> G13
+  G10 -- Yes --> G13
+
+  G2 -- Merge --> G14 --> G15 --> G16
+  G16 -- Yes --> G17 --> G18 --> G19 --> G20 --> G21
+  G16 -- No --> G21
+
+  G2 -- Checkpoint --> G22 --> G23 --> G24
+```
+````
+
+## File: apps/web/components/tasks-kanban-board-page.tsx
+````typescript
+"use client";
+
+import { useMemo, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
+import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
+import { PlusOutlined } from "@ant-design/icons";
+import {
+  getTaskExecutionStatusLabel,
+  getTaskTypeLabel,
+  getTaskWorkflowStatusLabel,
+  type Task,
+  type UpdateTaskStateInput
+} from "@agentswarm/shared-types";
+import { Button, Card, Empty, Flex, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
+import dayjs from "dayjs";
+import { api } from "../src/api/client";
+import { useTasks } from "../src/hooks/useTasks";
+import { useAuth } from "./auth-provider";
+import { TaskCreateModal } from "./task-create-modal";
+
+type BoardColumnId = "backlog" | "ready" | "in_progress" | "review" | "done";
+type BoardTaskStatus = UpdateTaskStateInput["status"];
+type BoardItem = { id: string; task: Task; column: BoardColumnId };
+
+const columns: Array<{ id: BoardColumnId; title: string; taskStatus: BoardTaskStatus; acceptsTasks: boolean }> = [
+  { id: "backlog", title: "Backlog", taskStatus: "backlog", acceptsTasks: true },
+  { id: "ready", title: getTaskWorkflowStatusLabel("ready"), taskStatus: "ready", acceptsTasks: true },
+  { id: "in_progress", title: getTaskWorkflowStatusLabel("in_progress"), taskStatus: "in_progress", acceptsTasks: true },
+  { id: "review", title: getTaskWorkflowStatusLabel("review"), taskStatus: "review", acceptsTasks: true },
+  { id: "done", title: getTaskWorkflowStatusLabel("done"), taskStatus: "done", acceptsTasks: true }
+];
+
+const taskColumn = (task: Task): BoardColumnId => {
+  if (task.workflowStatus === "backlog") {
+    return "backlog";
+  }
+  if (task.workflowStatus === "done") {
+    return "done";
+  }
+  if (task.workflowStatus === "review") {
+    return "review";
+  }
+  if (task.workflowStatus === "in_progress") {
+    return "in_progress";
+  }
+  return "ready";
+};
+
+const getItemDeadline = (item: BoardItem): string | null => item.task.deadline;
+
+const getItemTitle = (item: BoardItem): string => item.task.title;
+
+const compareItemsByDeadline = (left: BoardItem, right: BoardItem): number => {
+  const leftDeadline = getItemDeadline(left);
+  const rightDeadline = getItemDeadline(right);
+  if (leftDeadline && rightDeadline) {
+    const deadlineComparison = leftDeadline.localeCompare(rightDeadline);
+    if (deadlineComparison !== 0) {
+      return deadlineComparison;
+    }
+  } else if (leftDeadline) {
+    return -1;
+  } else if (rightDeadline) {
+    return 1;
+  }
+
+  return getItemTitle(left).localeCompare(getItemTitle(right));
+};
+
+function KanbanColumn({
+  column,
+  canCreate,
+  onAdd,
+  children
+}: {
+  column: (typeof columns)[number];
+  canCreate: boolean;
+  onAdd: (column: (typeof columns)[number]) => void;
+  children: ReactNode;
+}) {
+  const { token } = antTheme.useToken();
+  const { setNodeRef, isOver } = useDroppable({
+    id: column.id,
+    disabled: !column.acceptsTasks
+  });
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        minWidth: 290,
+        width: 320,
+        flex: "0 0 320px",
+        background: isOver ? token.colorPrimaryBg : token.colorFillQuaternary,
+        border: `1px solid ${isOver ? token.colorPrimaryBorder : token.colorBorderSecondary}`,
+        borderRadius: 8,
+        padding: 12,
+        minHeight: "calc(100vh - 220px)"
+      }}
+    >
+      <Flex vertical gap={12}>
+        <Flex justify="space-between" align="center">
+          <Typography.Text strong>{column.title}</Typography.Text>
+          {canCreate ? (
+            <Button
+              type="text"
+              size="small"
+              icon={<PlusOutlined />}
+              aria-label={`Create in ${column.title}`}
+              title={`Create in ${column.title}`}
+              onClick={() => onAdd(column)}
+            />
+          ) : null}
+        </Flex>
+        {children}
+      </Flex>
+    </div>
+  );
+}
+
+function KanbanCard({ item, onOpen }: { item: BoardItem; onOpen: (item: BoardItem) => void }) {
+  const draggable = useDraggable({
+    id: item.id,
+    data: item
+  });
+  const style = {
+    transform: CSS.Translate.toString(draggable.transform),
+    opacity: draggable.isDragging ? 0.65 : 1,
+    cursor: "grab"
+  };
+  const task = item.task;
+  const isDraft = task.status === "draft";
+  const deadline = getItemDeadline(item);
+
+  return (
+    <Card
+      ref={draggable.setNodeRef}
+      {...draggable.listeners}
+      {...draggable.attributes}
+      size="small"
+      hoverable
+      onClick={() => onOpen(item)}
+      style={{ ...style, borderRadius: 8 }}
+      bodyStyle={{ padding: 12 }}
+    >
+      <Flex vertical gap={8}>
+        <Typography.Text strong ellipsis={{ tooltip: task.title }}>
+          {task.title}
+        </Typography.Text>
+        <Space size={[6, 6]} wrap>
+          {isDraft ? <Tag color="default">Draft</Tag> : null}
+          <Tag>{getTaskTypeLabel(task.taskType)}</Tag>
+          {task.executionStatus !== "idle" ? <Tag color={task.executionStatus === "failed" ? "red" : "blue"}>{getTaskExecutionStatusLabel(task.executionStatus)}</Tag> : null}
+          {task.reviewReason ? <Tag color="gold">{task.reviewReason}</Tag> : null}
+        </Space>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {task.repoName}
+        </Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          Deadline {deadline ? dayjs(deadline).format("YYYY-MM-DD HH:mm") : "None"}
+        </Typography.Text>
+      </Flex>
+    </Card>
+  );
+}
+
+export function TasksKanbanBoardPage() {
+  const router = useRouter();
+  const { can } = useAuth();
+  const [messageApi, contextHolder] = message.useMessage();
+  const { tasks, setTasks, loading: tasksLoading } = useTasks({ view: "active" });
+  const [movingTaskId, setMovingTaskId] = useState<string | null>(null);
+  const [taskCreateModalOpen, setTaskCreateModalOpen] = useState(false);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const loading = tasksLoading;
+  const canCreateTask = can("task:create");
+
+  const items = useMemo<BoardItem[]>(() => {
+    return tasks
+      .filter((task) => task.status !== "archived")
+      .map((task) => ({ id: `task:${task.id}`, task, column: taskColumn(task) }));
+  }, [tasks]);
+
+  const itemsByColumn = useMemo(
+    () =>
+      Object.fromEntries(
+        columns.map((column) => [
+          column.id,
+          items.filter((item) => item.column === column.id).sort(compareItemsByDeadline)
+        ])
+      ) as Record<BoardColumnId, BoardItem[]>,
+    [items]
+  );
+
+  const openItem = (item: BoardItem) => {
+    router.push(`/tasks/${item.task.id}`);
+  };
+
+  const openCreateModal = () => {
+    setTaskCreateModalOpen(true);
+  };
+
+  const closeCreateModal = () => {
+    setTaskCreateModalOpen(false);
+  };
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const item = event.active.data.current as BoardItem | undefined;
+    const column = columns.find((entry) => entry.id === event.over?.id);
+    if (!item || !column?.taskStatus || item.column === column.id) {
+      return;
+    }
+
+    setMovingTaskId(item.task.id);
+    try {
+      const updated = await api.updateTaskState(item.task.id, { status: column.taskStatus });
+      setTasks((current) => current.map((task) => (task.id === updated.id ? { ...task, ...updated, logs: task.logs } : task)));
+      messageApi.success(`Moved to ${column.title}`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Could not move task");
+    } finally {
+      setMovingTaskId(null);
+    }
+  };
+
+  return (
+    <>
+      {contextHolder}
+      <Flex vertical gap={16}>
+        <Flex justify="space-between" align="center" gap={16} wrap="wrap">
+          <Flex vertical gap={0}>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              Task Board
+            </Typography.Title>
+            <Typography.Text type="secondary">Plan drafts and move active tasks through the workflow.</Typography.Text>
+          </Flex>
+          <Space>
+            <Button onClick={() => router.push("/tasks")}>Table</Button>
+            {canCreateTask ? <Button type="primary" onClick={openCreateModal}>New Task</Button> : null}
+          </Space>
+        </Flex>
+        {loading ? (
+          <Flex justify="center" style={{ padding: 80 }}>
+            <Spin />
+          </Flex>
+        ) : (
+          <DndContext sensors={sensors} onDragEnd={(event) => void handleDragEnd(event)}>
+            <Flex gap={16} align="stretch" style={{ overflowX: "auto", paddingBottom: 12 }}>
+              {columns.map((column) => (
+                <KanbanColumn key={column.id} column={column} canCreate={canCreateTask} onAdd={openCreateModal}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {itemsByColumn[column.id].length} item{itemsByColumn[column.id].length === 1 ? "" : "s"}
+                  </Typography.Text>
+                  {itemsByColumn[column.id].length === 0 ? (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No cards" />
+                  ) : (
+                    <Flex vertical gap={10}>
+                      {itemsByColumn[column.id].map((item) => (
+                        <KanbanCard key={item.id} item={item} onOpen={openItem} />
+                      ))}
+                    </Flex>
+                  )}
+                </KanbanColumn>
+              ))}
+            </Flex>
+          </DndContext>
+        )}
+        {movingTaskId ? <Typography.Text type="secondary">Moving task...</Typography.Text> : null}
+      </Flex>
+      <TaskCreateModal
+        open={taskCreateModalOpen}
+        onClose={closeCreateModal}
+        onCreated={(task) => {
+          setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+        }}
+      />
+    </>
+  );
+}
 ````
 
 ## File: apps/server/src/services/spawner.workspace-provisioning.test.ts
@@ -42895,7 +39587,7 @@ describe("SpawnerService workspace provisioning", () => {
     "db:backfill:redis-to-postgres": "tsx src/db/backfill-redis-to-postgres.ts",
     "build": "tsc -p tsconfig.json",
     "lint": "tsc --noEmit -p tsconfig.json",
-    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/lib/agent-event-parser.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/sequence-resolution.test.ts src/services/sequence-execution-service.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
+    "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/lib/agent-event-parser.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
   },
   "dependencies": {
     "@agentswarm/shared-types": "*",
@@ -43073,6 +39765,556 @@ export function TaskCreateModal({ open, onClose, onCreated }: TaskCreateModalPro
     </Modal>
   );
 }
+````
+
+## File: apps/web/src/api/client.ts
+````typescript
+"use client";
+
+import type {
+  AgentProvider,
+  AuthProfile,
+  AuthSession,
+  CreateRoleInput,
+  CreateSnippetInput,
+  CreateTaskFromIssueInput,
+  CreateTaskFromPullRequestInput,
+  CreateTaskMessageInput,
+  CreateRepositoryInput,
+  CreateTaskInput,
+  CreateUserInput,
+  GitHubBranchReference,
+  GitHubIssueReference,
+  GitHubPullRequestReference,
+  LoginInput,
+  ProviderModelOption,
+  Repository,
+  Role,
+  Snippet,
+  SystemSettings,
+  Task,
+  OpenAiDiffAssistInput,
+  OpenAiDiffAssistResult,
+  TaskPromptMagicInput,
+  TaskPromptMagicResult,
+  TaskLiveDiff,
+  TaskWorkspaceFileSearchResult,
+  TaskWorkspaceFileTree,
+  TaskWorkspaceFilePreview,
+  TaskWorkspaceCommitLog,
+  TaskPushPreview,
+  TaskMergePreview,
+  TaskMessage,
+  MergeTaskInput,
+  ApplyTaskChangeProposalInput,
+  RevertTaskChangeProposalFileInput,
+  UpdateTaskMessageInput,
+  UpdateTaskWorkspaceFileInput,
+  TaskRun,
+  TaskGitOperation,
+  TaskChangeProposal,
+  TaskInteractiveTerminalTranscript,
+  TaskAction,
+  TaskTerminalSessionMode,
+  UpdateRoleInput,
+  UpdateSnippetInput,
+  UpdateTaskPinInput,
+  UpdateTaskNotesInput,
+  UpdateTaskDeadlineInput,
+  UpdateTaskDraftInput,
+  UpdateTaskAssigneeInput,
+  UpdateTaskStateInput,
+  UpdateUserNotesInput,
+  UpdateTaskTitleInput,
+  UpdateAuthProfileInput,
+  UpdateCredentialSettingsInput,
+  UpdateTaskConfigInput,
+  UpdateRepositoryInput,
+  UpdateSettingsInput,
+  UpdateUserInput,
+  User,
+  UserNotes
+} from "@agentswarm/shared-types";
+export type { TaskWorkspaceFilePreview } from "@agentswarm/shared-types";
+import { buildApiUrl } from "../lib/public-url";
+
+export interface ProviderModelsResponse {
+  models: ProviderModelOption[];
+  source: "api" | "static";
+}
+
+export interface TaskInteractiveTerminalStatus {
+  available: boolean;
+  reason?: string;
+  /** Server sets this when a terminal WebSocket session is active for the task. */
+  activeInteractiveSession?: boolean;
+  /** Present when an active session exists for this task. */
+  terminalMode?: TaskTerminalSessionMode;
+}
+
+export interface TaskBranchSyncCounts {
+  pullCount: number;
+  pushCount: number;
+}
+
+export interface ListTasksOptions {
+  view?: "all" | "active" | "archived";
+  limit?: number;
+}
+
+export interface HistoryPageOptions {
+  before?: string | null;
+  beforeId?: string | null;
+  limit?: number;
+}
+
+export interface HistoryPageResult<T> {
+  items: T[];
+  hasMore: boolean;
+}
+
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (init?.body !== undefined && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const response = await fetch(buildApiUrl(path), {
+    ...init,
+    headers,
+    cache: "no-store",
+    credentials: "include"
+  });
+
+  if (!response.ok) {
+    const raw = await response.text();
+    let message = raw || response.statusText;
+    try {
+      const parsed = JSON.parse(raw) as { message?: string };
+      message = parsed.message ?? message;
+    } catch {
+      // Keep the raw response body when the server does not return JSON.
+    }
+
+    throw new ApiError(response.status, message);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return response.json() as Promise<T>;
+}
+
+export const api = {
+  login: (input: LoginInput) =>
+    request<AuthSession>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  getProfile: () => request<AuthProfile>("/auth/profile"),
+  updateProfile: (input: UpdateAuthProfileInput) =>
+    request<AuthProfile>("/auth/profile", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  logout: () =>
+    request<void>("/auth/logout", {
+      method: "POST"
+    }),
+  getSession: () => request<AuthSession>("/auth/session"),
+  listUsers: () => request<User[]>("/users"),
+  getUser: (id: string) => request<User>(`/users/${id}`),
+  createUser: (input: CreateUserInput) =>
+    request<User>("/users", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateUser: (id: string, input: UpdateUserInput) =>
+    request<User>(`/users/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteUser: (id: string) =>
+    request<void>(`/users/${id}`, {
+      method: "DELETE"
+    }),
+  listRoles: () => request<Role[]>("/roles"),
+  getRole: (id: string) => request<Role>(`/roles/${id}`),
+  createRole: (input: CreateRoleInput) =>
+    request<Role>("/roles", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateRole: (id: string, input: UpdateRoleInput) =>
+    request<Role>(`/roles/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteRole: (id: string) =>
+    request<void>(`/roles/${id}`, {
+      method: "DELETE"
+    }),
+  listSnippets: () => request<Snippet[]>("/snippets"),
+  getSnippet: (id: string) => request<Snippet>(`/snippets/${id}`),
+  createSnippet: (input: CreateSnippetInput) =>
+    request<Snippet>("/snippets", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateSnippet: (id: string, input: UpdateSnippetInput) =>
+    request<Snippet>(`/snippets/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteSnippet: (id: string) =>
+    request<void>(`/snippets/${id}`, {
+      method: "DELETE"
+    }),
+  duplicateSnippet: (id: string) =>
+    request<Snippet>(`/snippets/${id}/duplicate`, {
+      method: "POST"
+    }),
+  listTasks: (options?: ListTasksOptions) => {
+    const params = new URLSearchParams();
+    if (options?.view) {
+      params.set("view", options.view);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<Task[]>(`/tasks${query ? `?${query}` : ""}`);
+  },
+  getTask: (id: string) => request<Task>(`/tasks/${id}`),
+  startTask: (id: string) =>
+    request<Task>(`/tasks/${id}/start`, {
+      method: "POST"
+    }),
+  getTaskBranchSyncCounts: (id: string) => request<TaskBranchSyncCounts>(`/tasks/${id}/branch-sync-counts`),
+  getTaskGitOperation: (id: string) => request<TaskGitOperation | null>(`/tasks/${id}/git-operation`),
+  getTaskInteractiveTerminalStatus: (id: string, options?: { mode?: TaskTerminalSessionMode }) => {
+    const params = new URLSearchParams();
+    if (options?.mode) {
+      params.set("mode", options.mode);
+    }
+    const query = params.toString();
+    return request<TaskInteractiveTerminalStatus>(`/tasks/${id}/interactive-terminal/status${query ? `?${query}` : ""}`);
+  },
+  getTaskInteractiveTerminalTranscript: (taskId: string, sessionId: string) =>
+    request<TaskInteractiveTerminalTranscript>(`/tasks/${taskId}/interactive-terminal/sessions/${encodeURIComponent(sessionId)}/transcript`),
+  killTaskInteractiveTerminal: (id: string) =>
+    request<Task>(`/tasks/${id}/interactive-terminal/kill`, {
+      method: "POST"
+    }),
+  resetTaskSession: (id: string) =>
+    request<Task>(`/tasks/${id}/new-session`, {
+      method: "POST"
+    }),
+  getTaskLiveDiff: (
+    id: string,
+    options?: { baseRef?: string | null; diffKind?: "compare" | "working" | "commits"; commitSha?: string | null }
+  ) => {
+    const params = new URLSearchParams();
+    const base = options?.baseRef?.trim();
+    if (base) {
+      params.set("base", base);
+    }
+    if (options?.diffKind === "working") {
+      params.set("kind", "working");
+    } else if (options?.diffKind === "commits") {
+      params.set("kind", "commits");
+    }
+    const commit = options?.commitSha?.trim();
+    if (commit) {
+      params.set("commit", commit);
+    }
+    const query = params.toString();
+    return request<TaskLiveDiff>(`/tasks/${id}/live-diff${query ? `?${query}` : ""}`);
+  },
+  getTaskWorkspaceCommitLog: (id: string, options?: { limit?: number }) => {
+    const params = new URLSearchParams();
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<TaskWorkspaceCommitLog>(`/tasks/${id}/workspace-commit-log${query ? `?${query}` : ""}`);
+  },
+  getTaskWorkspaceFiles: (id: string, options?: { prefix?: string | null; limit?: number }) => {
+    const params = new URLSearchParams();
+    const prefix = options?.prefix?.trim();
+    if (prefix) {
+      params.set("prefix", prefix);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<TaskWorkspaceFileTree>(`/tasks/${id}/workspace-files${query ? `?${query}` : ""}`);
+  },
+  searchTaskWorkspaceFiles: (id: string, options: { query: string; limit?: number }) => {
+    const params = new URLSearchParams({ q: options.query });
+    if (options.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    return request<TaskWorkspaceFileSearchResult>(`/tasks/${id}/workspace-files/search?${params.toString()}`);
+  },
+  getTaskWorkspaceFile: (id: string, filePath: string, options?: { ref?: string | null }) => {
+    const params = new URLSearchParams({ path: filePath });
+    const ref = options?.ref?.trim();
+    if (ref) {
+      params.set("ref", ref);
+    }
+    return request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file?${params.toString()}`);
+  },
+  updateTaskWorkspaceFile: (id: string, input: UpdateTaskWorkspaceFileInput) =>
+    request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file`, {
+      method: "PUT",
+      body: JSON.stringify(input)
+    }),
+  openAiDiffAssist: (taskId: string, input: OpenAiDiffAssistInput) =>
+    request<OpenAiDiffAssistResult>(`/tasks/${taskId}/openai/diff-assist`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  generateTaskPromptMagic: (input: TaskPromptMagicInput) =>
+    request<TaskPromptMagicResult>("/tasks/prompt-magic", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  getTaskMessageAttachmentUrl: (taskId: string, messageId: string, attachmentId: string) =>
+    buildApiUrl(`/tasks/${taskId}/messages/${messageId}/attachments/${attachmentId}`),
+  listTaskMessages: (id: string, options?: HistoryPageOptions) => {
+    const params = new URLSearchParams();
+    const before = options?.before?.trim();
+    if (before) {
+      params.set("before", before);
+    }
+    const beforeId = options?.beforeId?.trim();
+    if (beforeId) {
+      params.set("beforeId", beforeId);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<HistoryPageResult<TaskMessage>>(`/tasks/${id}/messages${query ? `?${query}` : ""}`);
+  },
+  updateTaskMessage: (taskId: string, messageId: string, input: UpdateTaskMessageInput) =>
+    request<TaskMessage>(`/tasks/${taskId}/messages/${messageId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  listTaskRuns: (id: string, options?: HistoryPageOptions) => {
+    const params = new URLSearchParams();
+    const before = options?.before?.trim();
+    if (before) {
+      params.set("before", before);
+    }
+    const beforeId = options?.beforeId?.trim();
+    if (beforeId) {
+      params.set("beforeId", beforeId);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<HistoryPageResult<TaskRun>>(`/tasks/${id}/runs${query ? `?${query}` : ""}`);
+  },
+  getTaskRunRawJsonUrl: (taskId: string, runId: string) =>
+    buildApiUrl(`/tasks/${taskId}/runs/${encodeURIComponent(runId)}/raw-json`),
+  listTaskChangeProposals: (id: string, options?: HistoryPageOptions) => {
+    const params = new URLSearchParams();
+    const before = options?.before?.trim();
+    if (before) {
+      params.set("before", before);
+    }
+    const beforeId = options?.beforeId?.trim();
+    if (beforeId) {
+      params.set("beforeId", beforeId);
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<HistoryPageResult<TaskChangeProposal>>(`/tasks/${id}/change-proposals${query ? `?${query}` : ""}`);
+  },
+  applyTaskChangeProposal: (taskId: string, proposalId: string, input?: ApplyTaskChangeProposalInput) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/apply`, {
+      method: "POST",
+      ...(input ? { body: JSON.stringify(input) } : {})
+    }),
+  /** @deprecated Prefer applyTaskChangeProposal */
+  acceptTaskChangeProposal: (taskId: string, proposalId: string, input?: ApplyTaskChangeProposalInput) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/accept`, {
+      method: "POST",
+      ...(input ? { body: JSON.stringify(input) } : {})
+    }),
+  revertTaskChangeProposal: (taskId: string, proposalId: string) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/revert`, { method: "POST" }),
+  revertTaskChangeProposalFile: (
+    taskId: string,
+    proposalId: string,
+    input: RevertTaskChangeProposalFileInput
+  ) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/revert-file`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  rejectTaskChangeProposal: (taskId: string, proposalId: string) =>
+    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/reject`, { method: "POST" }),
+  createTask: (input: CreateTaskInput) =>
+    request<Task>("/tasks", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  createTaskFromIssue: (input: CreateTaskFromIssueInput) =>
+    request<Task>("/imports/issue", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  createTaskFromPullRequest: (input: CreateTaskFromPullRequestInput) =>
+    request<Task>("/imports/pull-request", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  listGitHubIssues: (repoId: string) =>
+    request<GitHubIssueReference[]>(`/imports/github/issues?repoId=${encodeURIComponent(repoId)}`),
+  listGitHubPullRequests: (repoId: string) =>
+    request<GitHubPullRequestReference[]>(`/imports/github/pull-requests?repoId=${encodeURIComponent(repoId)}`),
+  listGitHubBranches: (repoId: string) =>
+    request<GitHubBranchReference[]>(`/imports/github/branches?repoId=${encodeURIComponent(repoId)}`),
+  triggerTaskAction: (id: string, action: TaskAction) =>
+    request<Task>(`/tasks/${id}/actions`, {
+      method: "POST",
+      body: JSON.stringify({ action })
+    }),
+  runTaskPostflight: (id: string) =>
+    request<Task>(`/tasks/${id}/postflight`, {
+      method: "POST"
+    }),
+  createTaskMessage: (id: string, input: CreateTaskMessageInput) =>
+    request<Task>(`/tasks/${id}/messages`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  cancelTask: (id: string) =>
+    request<Task>(`/tasks/${id}/cancel`, {
+      method: "POST"
+    }),
+  pullTask: (id: string) =>
+    request<Task>(`/tasks/${id}/pull`, {
+      method: "POST"
+    }),
+  getTaskMergePreview: (id: string, targetBranch: string) =>
+    request<TaskMergePreview>(`/tasks/${id}/merge-preview?targetBranch=${encodeURIComponent(targetBranch)}`),
+  getTaskPushPreview: (id: string) => request<TaskPushPreview>(`/tasks/${id}/push-preview`),
+  pushTask: (id: string, input?: { commitMessage?: string }) =>
+    request<Task>(`/tasks/${id}/push`, {
+      method: "POST",
+      body: JSON.stringify(input ?? {})
+    }),
+  mergeTask: (id: string, input: MergeTaskInput) =>
+    request<Task>(`/tasks/${id}/merge`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  archiveTask: (id: string, input?: { deleteRemoteBranch?: boolean }) =>
+    request<Task>(`/tasks/${id}/archive`, {
+      method: "POST",
+      body: JSON.stringify(input ?? {})
+    }),
+  deleteTask: (id: string, input?: { deleteRemoteBranch?: boolean }) =>
+    request<void>(`/tasks/${id}`, {
+      method: "DELETE",
+      body: JSON.stringify(input ?? {})
+    }),
+  updateTaskConfig: (id: string, input: UpdateTaskConfigInput) =>
+    request<Task>(`/tasks/${id}/config`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskPin: (id: string, input: UpdateTaskPinInput) =>
+    request<Task>(`/tasks/${id}/pin`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskTitle: (id: string, input: UpdateTaskTitleInput) =>
+    request<Task>(`/tasks/${id}/title`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskNotes: (id: string, input: UpdateTaskNotesInput) =>
+    request<Task>(`/tasks/${id}/notes`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskDeadline: (id: string, input: UpdateTaskDeadlineInput) =>
+    request<Task>(`/tasks/${id}/deadline`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskDraft: (id: string, input: UpdateTaskDraftInput) =>
+    request<Task>(`/tasks/${id}/draft`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskState: (id: string, input: UpdateTaskStateInput) =>
+    request<Task>(`/tasks/${id}/state`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskAssignee: (id: string, input: UpdateTaskAssigneeInput) =>
+    request<Task>(`/tasks/${id}/assignee`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  listRepositories: () => request<Repository[]>("/repositories"),
+  getRepository: (id: string) => request<Repository>(`/repositories/${id}`),
+  createRepository: (input: CreateRepositoryInput) =>
+    request<Repository>("/repositories", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateRepository: (id: string, input: UpdateRepositoryInput) =>
+    request<Repository>(`/repositories/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteRepository: (id: string) =>
+    request<void>(`/repositories/${id}`, {
+      method: "DELETE"
+    }),
+  getSettings: () => request<SystemSettings>("/settings"),
+  listModels: (provider: AgentProvider) =>
+    request<ProviderModelsResponse>(`/settings/models?provider=${encodeURIComponent(provider)}`),
+  updateSettings: (input: UpdateSettingsInput) =>
+    request<SystemSettings>("/settings", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateCredentials: (input: UpdateCredentialSettingsInput) =>
+    request<SystemSettings>("/settings/credentials", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  getUserNotes: () => request<UserNotes>("/settings/notes"),
+  updateUserNotes: (input: UpdateUserNotesInput) =>
+    request<UserNotes>("/settings/notes", {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    })
+};
 ````
 
 ## File: apps/server/src/services/task-store.ts
@@ -43510,17 +40752,12 @@ export class RedisTaskStore implements TaskStore {
       notes?: string;
       taskSource?: Task["taskSource"];
       snippetId?: string;
-      sequenceId?: string;
-      sequenceRunId?: string | null;
       scheduledStartAt?: string | null;
       scheduledEndAt?: string | null;
     };
     const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
     delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
-    const taskSource =
-      legacyTask.taskSource === "snippet" || legacyTask.taskSource === "sequence" || legacyTask.taskSource === "blank"
-        ? legacyTask.taskSource
-        : "blank";
+    const taskSource = legacyTask.taskSource === "snippet" || legacyTask.taskSource === "blank" ? legacyTask.taskSource : "blank";
     const normalizedTask: Task = {
       ...taskWithoutStartMode,
       deadline: normalizeDeadline(legacyTask.deadline),
@@ -43544,14 +40781,6 @@ export class RedisTaskStore implements TaskStore {
         taskSource === "snippet" && typeof legacyTask.snippetId === "string" && legacyTask.snippetId.trim().length > 0
           ? legacyTask.snippetId.trim()
           : undefined,
-      sequenceId:
-        taskSource === "sequence" && typeof legacyTask.sequenceId === "string" && legacyTask.sequenceId.trim().length > 0
-          ? legacyTask.sequenceId.trim()
-          : undefined,
-      sequenceRunId:
-        taskSource === "sequence" && typeof legacyTask.sequenceRunId === "string" && legacyTask.sequenceRunId.trim().length > 0
-          ? legacyTask.sequenceRunId.trim()
-          : null,
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
@@ -43748,14 +40977,10 @@ export class RedisTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
-    const taskSource = input.task_source === "snippet" || input.task_source === "sequence" ? input.task_source : "blank";
+    const taskSource = input.task_source === "snippet" ? input.task_source : "blank";
     const snippetId =
       taskSource === "snippet" && typeof input.snippet_id === "string" && input.snippet_id.trim().length > 0
         ? input.snippet_id.trim()
-        : undefined;
-    const sequenceId =
-      taskSource === "sequence" && typeof input.sequence_id === "string" && input.sequence_id.trim().length > 0
-        ? input.sequence_id.trim()
         : undefined;
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
@@ -43780,8 +41005,6 @@ export class RedisTaskStore implements TaskStore {
       codexCredentialSource,
       taskSource,
       ...(snippetId ? { snippetId } : {}),
-      ...(sequenceId ? { sequenceId } : {}),
-      sequenceRunId: taskSource === "sequence" ? null : undefined,
       baseBranch,
       branchStrategy,
       complexity,
@@ -44765,17 +41988,12 @@ export class PostgresTaskStore implements TaskStore {
       notes?: string;
       taskSource?: Task["taskSource"];
       snippetId?: string;
-      sequenceId?: string;
-      sequenceRunId?: string | null;
       scheduledStartAt?: string | null;
       scheduledEndAt?: string | null;
     };
     const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
     delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
-    const taskSource =
-      legacyTask.taskSource === "snippet" || legacyTask.taskSource === "sequence" || legacyTask.taskSource === "blank"
-        ? legacyTask.taskSource
-        : "blank";
+    const taskSource = legacyTask.taskSource === "snippet" || legacyTask.taskSource === "blank" ? legacyTask.taskSource : "blank";
     const normalizedTask: Task = {
       ...taskWithoutStartMode,
       deadline: normalizeDeadline(legacyTask.deadline),
@@ -44799,14 +42017,6 @@ export class PostgresTaskStore implements TaskStore {
         taskSource === "snippet" && typeof legacyTask.snippetId === "string" && legacyTask.snippetId.trim().length > 0
           ? legacyTask.snippetId.trim()
           : undefined,
-      sequenceId:
-        taskSource === "sequence" && typeof legacyTask.sequenceId === "string" && legacyTask.sequenceId.trim().length > 0
-          ? legacyTask.sequenceId.trim()
-          : undefined,
-      sequenceRunId:
-        taskSource === "sequence" && typeof legacyTask.sequenceRunId === "string" && legacyTask.sequenceRunId.trim().length > 0
-          ? legacyTask.sequenceRunId.trim()
-          : null,
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
@@ -45089,14 +42299,10 @@ export class PostgresTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
-    const taskSource = input.task_source === "snippet" || input.task_source === "sequence" ? input.task_source : "blank";
+    const taskSource = input.task_source === "snippet" ? input.task_source : "blank";
     const snippetId =
       taskSource === "snippet" && typeof input.snippet_id === "string" && input.snippet_id.trim().length > 0
         ? input.snippet_id.trim()
-        : undefined;
-    const sequenceId =
-      taskSource === "sequence" && typeof input.sequence_id === "string" && input.sequence_id.trim().length > 0
-        ? input.sequence_id.trim()
         : undefined;
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
@@ -45121,8 +42327,6 @@ export class PostgresTaskStore implements TaskStore {
       codexCredentialSource,
       taskSource,
       ...(snippetId ? { snippetId } : {}),
-      ...(sequenceId ? { sequenceId } : {}),
-      sequenceRunId: taskSource === "sequence" ? null : undefined,
       baseBranch,
       branchStrategy,
       complexity,
@@ -46048,585 +43252,6 @@ export class PostgresTaskStore implements TaskStore {
 }
 ````
 
-## File: apps/web/src/api/client.ts
-````typescript
-"use client";
-
-import type {
-  AgentProvider,
-  AuthProfile,
-  AuthSession,
-  CreateRoleInput,
-  CreateSequenceInput,
-  CreateSnippetInput,
-  CreateTaskFromIssueInput,
-  CreateTaskFromPullRequestInput,
-  CreateTaskMessageInput,
-  CreateRepositoryInput,
-  CreateTaskInput,
-  CreateUserInput,
-  GitHubBranchReference,
-  GitHubIssueReference,
-  GitHubPullRequestReference,
-  LoginInput,
-  ProviderModelOption,
-  Repository,
-  Role,
-  Sequence,
-  SequenceRun,
-  Snippet,
-  SystemSettings,
-  Task,
-  OpenAiDiffAssistInput,
-  OpenAiDiffAssistResult,
-  TaskPromptMagicInput,
-  TaskPromptMagicResult,
-  TaskLiveDiff,
-  TaskWorkspaceFileSearchResult,
-  TaskWorkspaceFileTree,
-  TaskWorkspaceFilePreview,
-  TaskWorkspaceCommitLog,
-  TaskPushPreview,
-  TaskMergePreview,
-  TaskMessage,
-  MergeTaskInput,
-  ApplyTaskChangeProposalInput,
-  RevertTaskChangeProposalFileInput,
-  UpdateTaskMessageInput,
-  UpdateTaskWorkspaceFileInput,
-  TaskRun,
-  TaskGitOperation,
-  TaskChangeProposal,
-  TaskInteractiveTerminalTranscript,
-  TaskAction,
-  TaskTerminalSessionMode,
-  UpdateRoleInput,
-  UpdateSequenceInput,
-  UpdateSnippetInput,
-  UpdateTaskPinInput,
-  UpdateTaskNotesInput,
-  UpdateTaskDeadlineInput,
-  UpdateTaskDraftInput,
-  UpdateTaskAssigneeInput,
-  UpdateTaskStateInput,
-  UpdateUserNotesInput,
-  UpdateTaskTitleInput,
-  UpdateAuthProfileInput,
-  UpdateCredentialSettingsInput,
-  UpdateTaskConfigInput,
-  UpdateRepositoryInput,
-  UpdateSettingsInput,
-  UpdateUserInput,
-  User,
-  UserNotes
-} from "@agentswarm/shared-types";
-export type { TaskWorkspaceFilePreview } from "@agentswarm/shared-types";
-import { buildApiUrl } from "../lib/public-url";
-
-export interface ProviderModelsResponse {
-  models: ProviderModelOption[];
-  source: "api" | "static";
-}
-
-export interface TaskInteractiveTerminalStatus {
-  available: boolean;
-  reason?: string;
-  /** Server sets this when a terminal WebSocket session is active for the task. */
-  activeInteractiveSession?: boolean;
-  /** Present when an active session exists for this task. */
-  terminalMode?: TaskTerminalSessionMode;
-}
-
-export interface TaskBranchSyncCounts {
-  pullCount: number;
-  pushCount: number;
-}
-
-export interface ListTasksOptions {
-  view?: "all" | "active" | "archived";
-  limit?: number;
-}
-
-export interface HistoryPageOptions {
-  before?: string | null;
-  beforeId?: string | null;
-  limit?: number;
-}
-
-export interface HistoryPageResult<T> {
-  items: T[];
-  hasMore: boolean;
-}
-
-export class ApiError extends Error {
-  constructor(
-    public readonly status: number,
-    message: string
-  ) {
-    super(message);
-    this.name = "ApiError";
-  }
-}
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (init?.body !== undefined && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const response = await fetch(buildApiUrl(path), {
-    ...init,
-    headers,
-    cache: "no-store",
-    credentials: "include"
-  });
-
-  if (!response.ok) {
-    const raw = await response.text();
-    let message = raw || response.statusText;
-    try {
-      const parsed = JSON.parse(raw) as { message?: string };
-      message = parsed.message ?? message;
-    } catch {
-      // Keep the raw response body when the server does not return JSON.
-    }
-
-    throw new ApiError(response.status, message);
-  }
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  return response.json() as Promise<T>;
-}
-
-export const api = {
-  login: (input: LoginInput) =>
-    request<AuthSession>("/auth/login", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  getProfile: () => request<AuthProfile>("/auth/profile"),
-  updateProfile: (input: UpdateAuthProfileInput) =>
-    request<AuthProfile>("/auth/profile", {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  logout: () =>
-    request<void>("/auth/logout", {
-      method: "POST"
-    }),
-  getSession: () => request<AuthSession>("/auth/session"),
-  listUsers: () => request<User[]>("/users"),
-  getUser: (id: string) => request<User>(`/users/${id}`),
-  createUser: (input: CreateUserInput) =>
-    request<User>("/users", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateUser: (id: string, input: UpdateUserInput) =>
-    request<User>(`/users/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteUser: (id: string) =>
-    request<void>(`/users/${id}`, {
-      method: "DELETE"
-    }),
-  listRoles: () => request<Role[]>("/roles"),
-  getRole: (id: string) => request<Role>(`/roles/${id}`),
-  createRole: (input: CreateRoleInput) =>
-    request<Role>("/roles", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateRole: (id: string, input: UpdateRoleInput) =>
-    request<Role>(`/roles/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteRole: (id: string) =>
-    request<void>(`/roles/${id}`, {
-      method: "DELETE"
-    }),
-  listSnippets: () => request<Snippet[]>("/snippets"),
-  getSnippet: (id: string) => request<Snippet>(`/snippets/${id}`),
-  createSnippet: (input: CreateSnippetInput) =>
-    request<Snippet>("/snippets", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateSnippet: (id: string, input: UpdateSnippetInput) =>
-    request<Snippet>(`/snippets/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteSnippet: (id: string) =>
-    request<void>(`/snippets/${id}`, {
-      method: "DELETE"
-    }),
-  duplicateSnippet: (id: string) =>
-    request<Snippet>(`/snippets/${id}/duplicate`, {
-      method: "POST"
-    }),
-  listSequences: () => request<Sequence[]>("/sequences"),
-  getSequence: (id: string) => request<Sequence>(`/sequences/${id}`),
-  createSequence: (input: CreateSequenceInput) =>
-    request<Sequence>("/sequences", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateSequence: (id: string, input: UpdateSequenceInput) =>
-    request<Sequence>(`/sequences/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteSequence: (id: string) =>
-    request<void>(`/sequences/${id}`, {
-      method: "DELETE"
-    }),
-  duplicateSequence: (id: string) =>
-    request<Sequence>(`/sequences/${id}/duplicate`, {
-      method: "POST"
-    }),
-  listTasks: (options?: ListTasksOptions) => {
-    const params = new URLSearchParams();
-    if (options?.view) {
-      params.set("view", options.view);
-    }
-    if (options?.limit != null && Number.isFinite(options.limit)) {
-      params.set("limit", String(options.limit));
-    }
-    const query = params.toString();
-    return request<Task[]>(`/tasks${query ? `?${query}` : ""}`);
-  },
-  getTask: (id: string) => request<Task>(`/tasks/${id}`),
-  startTask: (id: string) =>
-    request<Task>(`/tasks/${id}/start`, {
-      method: "POST"
-    }),
-  getTaskSequenceRun: (id: string) => request<SequenceRun>(`/tasks/${id}/sequence-run`),
-  approveTaskSequenceRun: (id: string) =>
-    request<SequenceRun>(`/tasks/${id}/sequence-run/approve`, {
-      method: "POST"
-    }),
-  getTaskBranchSyncCounts: (id: string) => request<TaskBranchSyncCounts>(`/tasks/${id}/branch-sync-counts`),
-  getTaskGitOperation: (id: string) => request<TaskGitOperation | null>(`/tasks/${id}/git-operation`),
-  getTaskInteractiveTerminalStatus: (id: string, options?: { mode?: TaskTerminalSessionMode }) => {
-    const params = new URLSearchParams();
-    if (options?.mode) {
-      params.set("mode", options.mode);
-    }
-    const query = params.toString();
-    return request<TaskInteractiveTerminalStatus>(`/tasks/${id}/interactive-terminal/status${query ? `?${query}` : ""}`);
-  },
-  getTaskInteractiveTerminalTranscript: (taskId: string, sessionId: string) =>
-    request<TaskInteractiveTerminalTranscript>(`/tasks/${taskId}/interactive-terminal/sessions/${encodeURIComponent(sessionId)}/transcript`),
-  killTaskInteractiveTerminal: (id: string) =>
-    request<Task>(`/tasks/${id}/interactive-terminal/kill`, {
-      method: "POST"
-    }),
-  resetTaskSession: (id: string) =>
-    request<Task>(`/tasks/${id}/new-session`, {
-      method: "POST"
-    }),
-  getTaskLiveDiff: (
-    id: string,
-    options?: { baseRef?: string | null; diffKind?: "compare" | "working" | "commits"; commitSha?: string | null }
-  ) => {
-    const params = new URLSearchParams();
-    const base = options?.baseRef?.trim();
-    if (base) {
-      params.set("base", base);
-    }
-    if (options?.diffKind === "working") {
-      params.set("kind", "working");
-    } else if (options?.diffKind === "commits") {
-      params.set("kind", "commits");
-    }
-    const commit = options?.commitSha?.trim();
-    if (commit) {
-      params.set("commit", commit);
-    }
-    const query = params.toString();
-    return request<TaskLiveDiff>(`/tasks/${id}/live-diff${query ? `?${query}` : ""}`);
-  },
-  getTaskWorkspaceCommitLog: (id: string, options?: { limit?: number }) => {
-    const params = new URLSearchParams();
-    if (options?.limit != null && Number.isFinite(options.limit)) {
-      params.set("limit", String(options.limit));
-    }
-    const query = params.toString();
-    return request<TaskWorkspaceCommitLog>(`/tasks/${id}/workspace-commit-log${query ? `?${query}` : ""}`);
-  },
-  getTaskWorkspaceFiles: (id: string, options?: { prefix?: string | null; limit?: number }) => {
-    const params = new URLSearchParams();
-    const prefix = options?.prefix?.trim();
-    if (prefix) {
-      params.set("prefix", prefix);
-    }
-    if (options?.limit != null && Number.isFinite(options.limit)) {
-      params.set("limit", String(options.limit));
-    }
-    const query = params.toString();
-    return request<TaskWorkspaceFileTree>(`/tasks/${id}/workspace-files${query ? `?${query}` : ""}`);
-  },
-  searchTaskWorkspaceFiles: (id: string, options: { query: string; limit?: number }) => {
-    const params = new URLSearchParams({ q: options.query });
-    if (options.limit != null && Number.isFinite(options.limit)) {
-      params.set("limit", String(options.limit));
-    }
-    return request<TaskWorkspaceFileSearchResult>(`/tasks/${id}/workspace-files/search?${params.toString()}`);
-  },
-  getTaskWorkspaceFile: (id: string, filePath: string, options?: { ref?: string | null }) => {
-    const params = new URLSearchParams({ path: filePath });
-    const ref = options?.ref?.trim();
-    if (ref) {
-      params.set("ref", ref);
-    }
-    return request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file?${params.toString()}`);
-  },
-  updateTaskWorkspaceFile: (id: string, input: UpdateTaskWorkspaceFileInput) =>
-    request<TaskWorkspaceFilePreview>(`/tasks/${id}/workspace-file`, {
-      method: "PUT",
-      body: JSON.stringify(input)
-    }),
-  openAiDiffAssist: (taskId: string, input: OpenAiDiffAssistInput) =>
-    request<OpenAiDiffAssistResult>(`/tasks/${taskId}/openai/diff-assist`, {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  generateTaskPromptMagic: (input: TaskPromptMagicInput) =>
-    request<TaskPromptMagicResult>("/tasks/prompt-magic", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  getTaskMessageAttachmentUrl: (taskId: string, messageId: string, attachmentId: string) =>
-    buildApiUrl(`/tasks/${taskId}/messages/${messageId}/attachments/${attachmentId}`),
-  listTaskMessages: (id: string, options?: HistoryPageOptions) => {
-    const params = new URLSearchParams();
-    const before = options?.before?.trim();
-    if (before) {
-      params.set("before", before);
-    }
-    const beforeId = options?.beforeId?.trim();
-    if (beforeId) {
-      params.set("beforeId", beforeId);
-    }
-    if (options?.limit != null && Number.isFinite(options.limit)) {
-      params.set("limit", String(options.limit));
-    }
-    const query = params.toString();
-    return request<HistoryPageResult<TaskMessage>>(`/tasks/${id}/messages${query ? `?${query}` : ""}`);
-  },
-  updateTaskMessage: (taskId: string, messageId: string, input: UpdateTaskMessageInput) =>
-    request<TaskMessage>(`/tasks/${taskId}/messages/${messageId}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  listTaskRuns: (id: string, options?: HistoryPageOptions) => {
-    const params = new URLSearchParams();
-    const before = options?.before?.trim();
-    if (before) {
-      params.set("before", before);
-    }
-    const beforeId = options?.beforeId?.trim();
-    if (beforeId) {
-      params.set("beforeId", beforeId);
-    }
-    if (options?.limit != null && Number.isFinite(options.limit)) {
-      params.set("limit", String(options.limit));
-    }
-    const query = params.toString();
-    return request<HistoryPageResult<TaskRun>>(`/tasks/${id}/runs${query ? `?${query}` : ""}`);
-  },
-  getTaskRunRawJsonUrl: (taskId: string, runId: string) =>
-    buildApiUrl(`/tasks/${taskId}/runs/${encodeURIComponent(runId)}/raw-json`),
-  listTaskChangeProposals: (id: string, options?: HistoryPageOptions) => {
-    const params = new URLSearchParams();
-    const before = options?.before?.trim();
-    if (before) {
-      params.set("before", before);
-    }
-    const beforeId = options?.beforeId?.trim();
-    if (beforeId) {
-      params.set("beforeId", beforeId);
-    }
-    if (options?.limit != null && Number.isFinite(options.limit)) {
-      params.set("limit", String(options.limit));
-    }
-    const query = params.toString();
-    return request<HistoryPageResult<TaskChangeProposal>>(`/tasks/${id}/change-proposals${query ? `?${query}` : ""}`);
-  },
-  applyTaskChangeProposal: (taskId: string, proposalId: string, input?: ApplyTaskChangeProposalInput) =>
-    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/apply`, {
-      method: "POST",
-      ...(input ? { body: JSON.stringify(input) } : {})
-    }),
-  /** @deprecated Prefer applyTaskChangeProposal */
-  acceptTaskChangeProposal: (taskId: string, proposalId: string, input?: ApplyTaskChangeProposalInput) =>
-    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/accept`, {
-      method: "POST",
-      ...(input ? { body: JSON.stringify(input) } : {})
-    }),
-  revertTaskChangeProposal: (taskId: string, proposalId: string) =>
-    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/revert`, { method: "POST" }),
-  revertTaskChangeProposalFile: (
-    taskId: string,
-    proposalId: string,
-    input: RevertTaskChangeProposalFileInput
-  ) =>
-    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/revert-file`, {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  rejectTaskChangeProposal: (taskId: string, proposalId: string) =>
-    request<Task>(`/tasks/${taskId}/change-proposals/${proposalId}/reject`, { method: "POST" }),
-  createTask: (input: CreateTaskInput) =>
-    request<Task>("/tasks", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  createTaskFromIssue: (input: CreateTaskFromIssueInput) =>
-    request<Task>("/imports/issue", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  createTaskFromPullRequest: (input: CreateTaskFromPullRequestInput) =>
-    request<Task>("/imports/pull-request", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  listGitHubIssues: (repoId: string) =>
-    request<GitHubIssueReference[]>(`/imports/github/issues?repoId=${encodeURIComponent(repoId)}`),
-  listGitHubPullRequests: (repoId: string) =>
-    request<GitHubPullRequestReference[]>(`/imports/github/pull-requests?repoId=${encodeURIComponent(repoId)}`),
-  listGitHubBranches: (repoId: string) =>
-    request<GitHubBranchReference[]>(`/imports/github/branches?repoId=${encodeURIComponent(repoId)}`),
-  triggerTaskAction: (id: string, action: TaskAction) =>
-    request<Task>(`/tasks/${id}/actions`, {
-      method: "POST",
-      body: JSON.stringify({ action })
-    }),
-  runTaskPostflight: (id: string) =>
-    request<Task>(`/tasks/${id}/postflight`, {
-      method: "POST"
-    }),
-  createTaskMessage: (id: string, input: CreateTaskMessageInput) =>
-    request<Task>(`/tasks/${id}/messages`, {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  cancelTask: (id: string) =>
-    request<Task>(`/tasks/${id}/cancel`, {
-      method: "POST"
-    }),
-  pullTask: (id: string) =>
-    request<Task>(`/tasks/${id}/pull`, {
-      method: "POST"
-    }),
-  getTaskMergePreview: (id: string, targetBranch: string) =>
-    request<TaskMergePreview>(`/tasks/${id}/merge-preview?targetBranch=${encodeURIComponent(targetBranch)}`),
-  getTaskPushPreview: (id: string) => request<TaskPushPreview>(`/tasks/${id}/push-preview`),
-  pushTask: (id: string, input?: { commitMessage?: string }) =>
-    request<Task>(`/tasks/${id}/push`, {
-      method: "POST",
-      body: JSON.stringify(input ?? {})
-    }),
-  mergeTask: (id: string, input: MergeTaskInput) =>
-    request<Task>(`/tasks/${id}/merge`, {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  archiveTask: (id: string, input?: { deleteRemoteBranch?: boolean }) =>
-    request<Task>(`/tasks/${id}/archive`, {
-      method: "POST",
-      body: JSON.stringify(input ?? {})
-    }),
-  deleteTask: (id: string, input?: { deleteRemoteBranch?: boolean }) =>
-    request<void>(`/tasks/${id}`, {
-      method: "DELETE",
-      body: JSON.stringify(input ?? {})
-    }),
-  updateTaskConfig: (id: string, input: UpdateTaskConfigInput) =>
-    request<Task>(`/tasks/${id}/config`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskPin: (id: string, input: UpdateTaskPinInput) =>
-    request<Task>(`/tasks/${id}/pin`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskTitle: (id: string, input: UpdateTaskTitleInput) =>
-    request<Task>(`/tasks/${id}/title`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskNotes: (id: string, input: UpdateTaskNotesInput) =>
-    request<Task>(`/tasks/${id}/notes`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskDeadline: (id: string, input: UpdateTaskDeadlineInput) =>
-    request<Task>(`/tasks/${id}/deadline`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskDraft: (id: string, input: UpdateTaskDraftInput) =>
-    request<Task>(`/tasks/${id}/draft`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskState: (id: string, input: UpdateTaskStateInput) =>
-    request<Task>(`/tasks/${id}/state`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskAssignee: (id: string, input: UpdateTaskAssigneeInput) =>
-    request<Task>(`/tasks/${id}/assignee`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  listRepositories: () => request<Repository[]>("/repositories"),
-  getRepository: (id: string) => request<Repository>(`/repositories/${id}`),
-  createRepository: (input: CreateRepositoryInput) =>
-    request<Repository>("/repositories", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateRepository: (id: string, input: UpdateRepositoryInput) =>
-    request<Repository>(`/repositories/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteRepository: (id: string) =>
-    request<void>(`/repositories/${id}`, {
-      method: "DELETE"
-    }),
-  getSettings: () => request<SystemSettings>("/settings"),
-  listModels: (provider: AgentProvider) =>
-    request<ProviderModelsResponse>(`/settings/models?provider=${encodeURIComponent(provider)}`),
-  updateSettings: (input: UpdateSettingsInput) =>
-    request<SystemSettings>("/settings", {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateCredentials: (input: UpdateCredentialSettingsInput) =>
-    request<SystemSettings>("/settings/credentials", {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  getUserNotes: () => request<UserNotes>("/settings/notes"),
-  updateUserNotes: (input: UpdateUserNotesInput) =>
-    request<UserNotes>("/settings/notes", {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    })
-};
-````
-
 ## File: apps/web/components/task-definition-fields.tsx
 ````typescript
 "use client";
@@ -46662,7 +43287,6 @@ import { RobotOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
-import { useSequences } from "../src/hooks/useSequences";
 import { useSettings } from "../src/hooks/useSettings";
 import { useSnippets } from "../src/hooks/useSnippets";
 import { trackEvent } from "../src/utils/analytics";
@@ -46690,8 +43314,6 @@ export type TaskDefinitionFormValues = {
   pullRequestNumber?: number;
   snippetId?: string;
   snippetVariables?: Record<string, string>;
-  sequenceId?: string;
-  sequenceVariables?: Record<string, string>;
 };
 
 export interface TaskDefinitionFieldsProps {
@@ -46835,26 +43457,6 @@ export const buildTaskDefinitionInput = (
     };
   }
 
-  if (values.sourceType === "sequence") {
-    return {
-      sourceType: "sequence",
-      title: values.title?.trim() ?? "",
-      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
-      repoId: values.repoId ?? "",
-      sequenceId: values.sequenceId ?? "",
-      sequenceVariables: values.sequenceVariables ?? {},
-      notes: values.notes?.trim() ?? "",
-      ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
-      taskType: values.taskType ?? "build",
-      provider,
-      model: values.model?.trim() ?? "",
-      providerProfile: values.providerProfile ?? "high",
-      ...(codexCredentialSource ? { codexCredentialSource } : {}),
-      baseBranch: values.baseBranch?.trim() ?? "",
-      branchStrategy: values.branchStrategy ?? "feature_branch"
-    };
-  }
-
   return {
     sourceType: "pull_request",
     title: values.title?.trim() || undefined,
@@ -46892,7 +43494,6 @@ export function TaskDefinitionFields({
   const canAskTasks = can("task:ask");
   const canRunAutomatedTask = canBuildTasks || canAskTasks;
   const canUseSnippets = can("snippet:list");
-  const canUseSequences = can("sequence:list");
 
   const selectedRepoId = Form.useWatch("repoId", form);
   const selectedModel = Form.useWatch("model", form);
@@ -46903,24 +43504,20 @@ export function TaskDefinitionFields({
   const selectedIssueNumber = Form.useWatch("issueNumber", form);
   const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
   const selectedSnippetId = Form.useWatch("snippetId", form);
-  const selectedSequenceId = Form.useWatch("sequenceId", form);
   const selectedPrompt = Form.useWatch("prompt", form);
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(selectedProvider);
   const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
-  const { sequences, loading: sequencesLoading } = useSequences(canUseSequences);
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
   const selectedIssue = githubIssues.find((issue) => issue.number === selectedIssueNumber) ?? null;
   const selectedPullRequest = githubPullRequests.find((pullRequest) => pullRequest.number === selectedPullRequestNumber) ?? null;
   const isBlankSource = selectedSourceType === "blank";
   const isSnippetSource = selectedSourceType === "snippet";
-  const isSequenceSource = selectedSourceType === "sequence";
   const isIssueSource = selectedSourceType === "issue";
   const isPullRequestSource = selectedSourceType === "pull_request";
   const effectiveTaskType = isPullRequestSource ? "build" : selectedTaskType;
   const isImplementationTask = effectiveTaskType === "build";
-  const baseBranchLabel = isBlankSource || isSnippetSource || isSequenceSource || isIssueSource ? "Base Branch" : undefined;
+  const baseBranchLabel = isBlankSource || isSnippetSource || isIssueSource ? "Base Branch" : undefined;
   const selectedSnippet = snippets.find((snippet) => snippet.id === selectedSnippetId) ?? null;
-  const selectedSequence = sequences.find((sequence) => sequence.id === selectedSequenceId) ?? null;
   const providerMissingCredentials =
     selectedProvider === "codex"
       ? !(settings?.openaiApiKeyConfigured || session?.user.codexAuthJsonConfigured)
@@ -46945,7 +43542,7 @@ export function TaskDefinitionFields({
   );
   const sourceOptions: Array<{ label: string; value: TaskSourceType }> = [
     { label: "Blank", value: "blank" },
-    ...(canUseSequences ? [{ label: "Sequence", value: "sequence" as const }] : []),
+    ...(canUseSnippets ? [{ label: "Snippet", value: "snippet" as const }] : []),
     ...(canReadRepositoryMetadata
       ? [
           { label: "From Issue", value: "issue" as const },
@@ -46959,7 +43556,7 @@ export function TaskDefinitionFields({
   ];
 
   useEffect(() => {
-    if (canReadRepositoryMetadata || selectedSourceType === "blank" || selectedSourceType === "snippet" || selectedSourceType === "sequence") {
+    if (canReadRepositoryMetadata || selectedSourceType === "blank" || selectedSourceType === "snippet") {
       return;
     }
 
@@ -46971,12 +43568,6 @@ export function TaskDefinitionFields({
       form.setFieldValue("sourceType", canReadRepositoryMetadata ? "issue" : "blank");
     }
   }, [canBuildTasks, canReadRepositoryMetadata, form, selectedSourceType]);
-
-  useEffect(() => {
-    if (selectedSourceType === "sequence" && !canUseSequences) {
-      form.setFieldValue("sourceType", "blank");
-    }
-  }, [canUseSequences, form, selectedSourceType]);
 
   useEffect(() => {
     if (!settings || !syncSettingsDefaults) {
@@ -47074,14 +43665,6 @@ export function TaskDefinitionFields({
   }, [form, isSnippetSource, selectedSnippet]);
 
   useEffect(() => {
-    if (!isSequenceSource || !selectedSequence) {
-      return;
-    }
-    const defaults = Object.fromEntries((selectedSequence.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""]));
-    form.setFieldValue("sequenceVariables", defaults);
-  }, [form, isSequenceSource, selectedSequence]);
-
-  useEffect(() => {
     if (!selectedRepoId || !canReadRepositoryMetadata) {
       setGitHubIssues([]);
       setGitHubPullRequests([]);
@@ -47116,9 +43699,7 @@ export function TaskDefinitionFields({
     ? (effectiveTaskType === "ask" ? "Question" : "Prompt")
     : isSnippetSource
       ? "Snippet Variables"
-      : isSequenceSource
-        ? "Sequence Variables"
-        : "Imported Context";
+      : "Imported Context";
   const canAttachPromptImages = isBlankSource;
   const canUsePromptMagic = isBlankSource;
   const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
@@ -47391,64 +43972,6 @@ export function TaskDefinitionFields({
       );
     }
 
-    if (isSequenceSource) {
-      return (
-        <Flex vertical gap={16}>
-          <Form.Item name="title" label="Title" rules={[{ required: true, message: "Enter a task title" }]} style={{ marginBottom: 0 }}>
-            <Input placeholder="Your Task Title" size="large" />
-          </Form.Item>
-          <Alert
-            type="info"
-            showIcon
-            message="Sequence steps run in order with fail-fast behavior"
-            description="Pick a sequence and fill variables below. The backend executes each step and stops at the first failure."
-          />
-          <Form.Item name="sequenceId" label="Sequence" rules={[{ required: true, message: "Select a sequence" }]} style={{ marginBottom: 0 }}>
-            <Select
-              showSearch
-              loading={sequencesLoading}
-              placeholder={sequencesLoading ? "Loading sequences..." : "Select sequence"}
-              optionFilterProp="label"
-              options={sequences.map((sequence) => ({ label: `${sequence.name} (${sequence.steps.length} steps)`, value: sequence.id }))}
-              onChange={() => trackEvent("sequence_selected")}
-            />
-          </Form.Item>
-          {(selectedSequence?.variables ?? []).map((variable) => (
-            <Form.Item
-              key={variable.name}
-              name={["sequenceVariables", variable.name]}
-              label={variable.title || variable.name}
-              rules={[{ required: true, message: `Enter ${variable.title || variable.name}` }]}
-              extra={variable.description || undefined}
-              style={{ marginBottom: 0 }}
-            >
-              {variable.type === "multiline" ? (
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 12 }} placeholder={variable.defaultValue || ""} />
-              ) : (
-                <Input placeholder={variable.defaultValue || ""} />
-              )}
-            </Form.Item>
-          ))}
-          <Form.Item
-            name="notes"
-            label="Notes (Markdown)"
-            extra={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Optional. These notes are shown in the task Info tab below current configuration.
-              </Typography.Text>
-            }
-            style={{ marginBottom: 0 }}
-          >
-            <Input.TextArea
-              autoSize={{ minRows: 6, maxRows: 16 }}
-              style={{ resize: "none" }}
-              placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
-            />
-          </Form.Item>
-        </Flex>
-      );
-    }
-
     if (isIssueSource) {
       return (
         <Flex vertical gap={16}>
@@ -47564,10 +44087,6 @@ export function TaskDefinitionFields({
                 if (value === "snippet") {
                   form.setFieldValue("taskType", "build");
                 }
-                if (value === "sequence") {
-                  form.setFieldValue("taskType", "build");
-                }
-
                 if (value !== "blank") {
                   form.setFieldValue("prompt", undefined);
                 }
@@ -47579,10 +44098,6 @@ export function TaskDefinitionFields({
                 if (value !== "snippet") {
                   form.setFieldValue("snippetId", undefined);
                   form.setFieldValue("snippetVariables", undefined);
-                }
-                if (value !== "sequence") {
-                  form.setFieldValue("sequenceId", undefined);
-                  form.setFieldValue("sequenceVariables", undefined);
                 }
               }}
             />
@@ -47648,7 +44163,7 @@ export function TaskDefinitionFields({
             </>
           ) : null}
 
-          {isBlankSource || isSnippetSource || isSequenceSource ? (
+          {isBlankSource || isSnippetSource ? (
             <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
               <Select options={taskTypeOptions} />
             </Form.Item>
@@ -47714,7 +44229,7 @@ export function TaskDefinitionFields({
             </Form.Item>
           ) : null}
 
-          {(isBlankSource || isSnippetSource || isSequenceSource || isIssueSource) && baseBranchLabel ? (
+          {(isBlankSource || isSnippetSource || isIssueSource) && baseBranchLabel ? (
             <Form.Item name="baseBranch" label={baseBranchLabel} rules={[{ required: true }]}>
               <Select
                 showSearch
@@ -52846,14 +49361,12 @@ import {
   TASK_PROMPT_ATTACHMENT_MAX_COUNT,
   type Task,
   type TaskAction,
-  type SequenceExecutionMode,
   type TaskPromptAttachment,
   type TaskTerminalSessionMode
 } from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
-import type { SequenceStore } from "../services/sequence-store.js";
 import type { SnippetStore } from "../services/snippet-store.js";
 import type { UserStore } from "../services/user-store.js";
 import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
@@ -52864,8 +49377,6 @@ import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
-import { SequenceExecutionService } from "../services/sequence-execution-service.js";
-import { resolveSequenceStepPrompts, SequenceValidationError } from "../services/sequence-resolution.js";
 import { buildExecutionSummaryFromPrompt, classifyTaskComplexity } from "../lib/task-intelligence.js";
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
 import { persistTaskPromptAttachments, readTaskPromptAttachmentBuffer } from "../lib/task-prompt-attachments.js";
@@ -52912,10 +49423,8 @@ const createTaskSchema = z
     branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
     model: z.string().min(1).optional(),
     reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional(),
-    task_source: z.enum(["blank", "snippet", "sequence"]).optional(),
-    snippet_id: z.string().trim().min(1).optional(),
-    sequence_id: z.string().trim().min(1).optional(),
-    sequence_variables: z.record(z.string().max(2000)).optional()
+    task_source: z.enum(["blank", "snippet"]).optional(),
+    snippet_id: z.string().trim().min(1).optional()
   })
   .strict()
   .superRefine((data, ctx) => {
@@ -52928,16 +49437,7 @@ const createTaskSchema = z
         });
       }
     }
-    if (data.task_source === "sequence") {
-      if (!data.sequence_id) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "sequence_id is required when task_source is sequence",
-          path: ["sequence_id"]
-        });
-      }
-    }
-    if (data.task_source !== "sequence" && data.prompt.trim().length === 0) {
+    if (data.prompt.trim().length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Prompt is required",
@@ -53195,96 +49695,10 @@ export const registerTaskRoutes = (
     scheduler: SchedulerService;
     spawner: SpawnerService;
     settingsStore: SettingsStore;
-    sequenceStore: SequenceStore;
     snippetStore: SnippetStore;
     auth: AuthService;
   }
 ): void => {
-  const sequenceExecutionService = new SequenceExecutionService(deps.sequenceStore, deps.taskStore, deps.scheduler, deps.spawner);
-  const maybeResumeAutoApplySequence = async (taskId: string): Promise<void> => {
-    const task = await deps.taskStore.getTask(taskId);
-    if (!task || task.status === "archived") {
-      return;
-    }
-    if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
-      return;
-    }
-    if (await deps.taskStore.hasPendingChangeProposal(task.id)) {
-      return;
-    }
-    if (await deps.taskStore.getActiveInteractiveSession(task.id)) {
-      return;
-    }
-
-    const run = await deps.sequenceStore.getRunForTask(task.id);
-    if (!run || run.executionMode !== "auto_apply_changes" || (run.status !== "failed" && run.status !== "waiting_for_checkpoint_resolution")) {
-      return;
-    }
-
-    const blockedByCheckpoint =
-      run.status === "waiting_for_checkpoint_resolution" ||
-      (run.failedStepIndex !== null && (run.steps[run.failedStepIndex]?.errorMessage ?? "").toLowerCase().includes("pending checkpoint"));
-    if (!blockedByCheckpoint) {
-      return;
-    }
-
-    const firstPendingStepIndex = run.steps.findIndex((step) => step.state === "pending");
-    const failedStepIndex = run.failedStepIndex ?? (firstPendingStepIndex >= 0 ? firstPendingStepIndex : null);
-    if (failedStepIndex === null) {
-      return;
-    }
-
-    const stepPrompts = run.steps.map((step) => step.prompt);
-    if (failedStepIndex >= stepPrompts.length) {
-      return;
-    }
-    const initialRuns = await deps.taskStore.listRuns(task.id);
-    const resumed = await deps.sequenceStore.updateRun(run.id, {
-      status: "running",
-      failedStepIndex: null,
-      waitingForApprovalAfterStepIndex: null,
-      finishedAt: null
-    });
-    const runId = resumed?.id ?? run.id;
-    await deps.taskStore.appendLog(
-      task.id,
-      `Sequence auto-apply recovery: resuming step ${failedStepIndex + 1}/${stepPrompts.length} after checkpoint decision.`
-    );
-
-    void sequenceExecutionService
-      .runSteps({
-        runId,
-        taskId: task.id,
-        action: getChatActionForTask(task),
-        stepPrompts,
-        initialKnownRunIds: new Set(initialRuns.map((runItem) => runItem.id)),
-        startStepIndex: failedStepIndex
-      })
-      .catch(async (error) => {
-        try {
-          const message = error instanceof Error ? error.message : "Sequence execution failed.";
-          await deps.taskStore.appendLog(task.id, `Sequence execution failed: ${message}`);
-          const currentRun = await deps.sequenceStore.getRun(runId);
-          if (currentRun?.status === "running") {
-            await sequenceExecutionService.failRunImmediately({
-              runId,
-              failedStepIndex: currentRun.failedStepIndex ?? failedStepIndex,
-              errorMessage: message
-            });
-          }
-        } catch (innerError) {
-          app.log.warn(
-            {
-              taskId: task.id,
-              runId,
-              error: innerError instanceof Error ? innerError.message : String(innerError)
-            },
-            "Sequence recovery handler failed while processing runSteps rejection."
-          );
-        }
-      });
-  };
-
   const resolveCheckpointMutationTransition = async (
     task: Task,
     mutationResult: { ok: true } | { ok: false; message: string }
@@ -53292,7 +49706,6 @@ export const registerTaskRoutes = (
     if (!mutationResult.ok) {
       return { ok: false, message: mutationResult.message };
     }
-    await maybeResumeAutoApplySequence(task.id);
     const refreshedTask = (await deps.taskStore.getTask(task.id)) ?? task;
     return {
       ok: true,
@@ -53556,110 +49969,6 @@ export const registerTaskRoutes = (
       reply.header("Content-Length", String(fileStats.size));
       reply.header("Content-Disposition", `attachment; filename="agentswarm-${task.id}-${run.id}-${provider}-raw.jsonl"`);
       return reply.send(createReadStream(rawEventsJsonlPath));
-    }
-  );
-
-  app.get<{ Params: { id: string } }>(
-    "/tasks/:id/sequence-run",
-    { preHandler: deps.auth.requireAllScopes(["task:read"]) },
-    async (request, reply) => {
-      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
-      if (!task) {
-        return;
-      }
-      const run = await deps.sequenceStore.getRunForTask(task.id);
-      if (!run) {
-        return reply.status(404).send({ message: "Sequence run not found for this task." });
-      }
-      return reply.send(run);
-    }
-  );
-
-  app.post<{ Params: { id: string } }>(
-    "/tasks/:id/sequence-run/approve",
-    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
-    async (request, reply) => {
-      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
-      if (!task) {
-        return;
-      }
-
-      if (task.status === "archived") {
-        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
-      }
-
-      const run = await deps.sequenceStore.getRunForTask(task.id);
-      if (!run) {
-        return reply.status(404).send({ message: "Sequence run not found for this task." });
-      }
-      if (run.status !== "waiting_for_approval" || run.waitingForApprovalAfterStepIndex === null) {
-        return reply.status(409).send({ message: "Sequence is not waiting for approval." });
-      }
-
-      if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
-        return reply.status(409).send({ message: "Task is still finishing the previous step. Try again shortly." });
-      }
-      if (await deps.taskStore.hasPendingChangeProposal(task.id)) {
-        return reply.status(409).send({ message: "Apply or reject the pending checkpoint before continuing." });
-      }
-      if (await deps.taskStore.getActiveInteractiveSession(task.id)) {
-        return reply.status(409).send({ message: "Close the terminal session before continuing." });
-      }
-
-      const claimed = await deps.sequenceStore.claimRunWaitingForApproval(run.id);
-      if (!claimed) {
-        return reply.status(409).send({ message: "Sequence is no longer waiting for approval." });
-      }
-
-      const stepPrompts = claimed.run.steps.map((step) => step.prompt);
-      const nextStepIndex = claimed.approvedStepIndex + 1;
-      if (nextStepIndex >= stepPrompts.length) {
-        const completed = await deps.sequenceStore.updateRun(claimed.run.id, {
-          status: "succeeded",
-          waitingForApprovalAfterStepIndex: null,
-          failedStepIndex: null,
-          finishedAt: new Date().toISOString()
-        });
-        return reply.send(completed ?? claimed.run);
-      }
-
-      const initialRuns = await deps.taskStore.listRuns(task.id);
-      await deps.taskStore.appendLog(task.id, `Sequence approval received. Resuming step ${nextStepIndex + 1}/${stepPrompts.length}.`);
-
-      void sequenceExecutionService
-        .runSteps({
-          runId: claimed.run.id,
-          taskId: task.id,
-          action: getChatActionForTask(task),
-          stepPrompts,
-          initialKnownRunIds: new Set(initialRuns.map((runItem) => runItem.id)),
-          startStepIndex: nextStepIndex
-        })
-        .catch(async (error) => {
-          try {
-            const message = error instanceof Error ? error.message : "Sequence execution failed.";
-            await deps.taskStore.appendLog(task.id, `Sequence execution failed: ${message}`);
-            const currentRun = await deps.sequenceStore.getRun(claimed.run.id);
-            if (currentRun?.status === "running") {
-              await sequenceExecutionService.failRunImmediately({
-                runId: claimed.run.id,
-                failedStepIndex: nextStepIndex,
-                errorMessage: message
-              });
-            }
-          } catch (innerError) {
-            app.log.warn(
-              {
-                taskId: task.id,
-                runId: claimed.run.id,
-                error: innerError instanceof Error ? innerError.message : String(innerError)
-              },
-              "Sequence approval resume handler failed while processing runSteps rejection."
-            );
-          }
-        });
-
-      return reply.send(claimed.run);
     }
   );
 
@@ -54099,32 +50408,6 @@ export const registerTaskRoutes = (
     } = parsed.data;
     const settings = await deps.settingsStore.getSettings();
     const createPayload = applyCreateDefaultsFromSettings(rawCreatePayload, settings);
-    let sequenceStepPrompts: string[] = [];
-    let sequenceId: string | null = null;
-    let sequenceExecutionMode: SequenceExecutionMode = "auto_apply_changes";
-    if (createPayload.task_source === "sequence") {
-      const selectedSequenceId = createPayload.sequence_id?.trim() ?? "";
-      const sequence = selectedSequenceId ? await deps.sequenceStore.getSequence(selectedSequenceId) : null;
-      if (!sequence) {
-        return reply.status(400).send({ message: "Sequence not found." });
-      }
-      try {
-        sequenceStepPrompts = await resolveSequenceStepPrompts({
-          sequence,
-          snippetStore: deps.snippetStore,
-          variables: createPayload.sequence_variables
-        });
-      } catch (error) {
-        const message = error instanceof SequenceValidationError ? error.message : "Sequence validation failed.";
-        return reply.status(400).send({ message });
-      }
-      if (sequenceStepPrompts.length === 0) {
-        return reply.status(400).send({ message: "Sequence must contain at least one executable step." });
-      }
-      sequenceId = sequence.id;
-      sequenceExecutionMode = sequence.executionMode;
-      createPayload.prompt = sequenceStepPrompts[0] ?? "";
-    }
     if (
       !requireTaskCapabilityAccess(request, reply, {
         taskType: createPayload.taskType ?? "build"
@@ -54152,20 +50435,6 @@ export const registerTaskRoutes = (
       ...task,
       creatorName: request.auth!.user.name
     };
-    let sequenceRunContext:
-      | { runId: string; action: TaskAction; stepPrompts: string[]; initialKnownRunIds: Set<string> }
-      | null = null;
-    if (createPayload.draft !== true && createPayload.task_source === "sequence" && sequenceId && sequenceStepPrompts.length > 0) {
-      const { runId } = await sequenceExecutionService.initializeRun(sequenceId, createdTask.id, sequenceStepPrompts, sequenceExecutionMode);
-      const initialRuns = await deps.taskStore.listRuns(createdTask.id);
-      await deps.taskStore.appendLog(createdTask.id, `Sequence run started with ${sequenceStepPrompts.length} step(s).`);
-      sequenceRunContext = {
-        runId,
-        action: getTriggerActionForNewTask(createdTask),
-        stepPrompts: sequenceStepPrompts,
-        initialKnownRunIds: new Set(initialRuns.map((run) => run.id))
-      };
-    }
 
     let persistedAttachments: TaskPromptAttachment[] = [];
     if (attachmentUploads.length > 0) {
@@ -54206,48 +50475,7 @@ export const registerTaskRoutes = (
       }
     );
     if (!startResult.ok) {
-      if (sequenceRunContext) {
-        await sequenceExecutionService.failRunImmediately({
-          runId: sequenceRunContext.runId,
-          failedStepIndex: 0,
-          errorMessage: startResult.message
-        });
-      }
       return reply.status(startResult.statusCode).send({ message: startResult.message });
-    }
-
-    if (sequenceRunContext) {
-      void sequenceExecutionService
-        .runSteps({
-          runId: sequenceRunContext.runId,
-          taskId: createdTask.id,
-          action: sequenceRunContext.action,
-          stepPrompts: sequenceRunContext.stepPrompts,
-          initialKnownRunIds: sequenceRunContext.initialKnownRunIds
-        })
-        .catch(async (error) => {
-          try {
-            const message = error instanceof Error ? error.message : "Sequence execution failed.";
-            await deps.taskStore.appendLog(createdTask.id, `Sequence execution failed: ${message}`);
-            const currentRun = await deps.sequenceStore.getRun(sequenceRunContext.runId);
-            if (currentRun?.status === "running") {
-              await sequenceExecutionService.failRunImmediately({
-                runId: sequenceRunContext.runId,
-                failedStepIndex: currentRun.failedStepIndex ?? 0,
-                errorMessage: message
-              });
-            }
-          } catch (innerError) {
-            app.log.warn(
-              {
-                taskId: createdTask.id,
-                runId: sequenceRunContext.runId,
-                error: innerError instanceof Error ? innerError.message : String(innerError)
-              },
-              "Sequence start handler failed while processing runSteps rejection."
-            );
-          }
-        });
     }
 
     return reply.status(201).send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, startResult.task)));
@@ -55274,11 +51502,6 @@ export type PermissionScope =
   | "snippet:read"
   | "snippet:edit"
   | "snippet:delete"
-  | "sequence:list"
-  | "sequence:create"
-  | "sequence:read"
-  | "sequence:edit"
-  | "sequence:delete"
   | "repo:list"
   | "repo:read"
   | "repo:create"
@@ -55306,11 +51529,6 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "snippet:read",
   "snippet:edit",
   "snippet:delete",
-  "sequence:list",
-  "sequence:create",
-  "sequence:read",
-  "sequence:edit",
-  "sequence:delete",
   "repo:list",
   "repo:read",
   "repo:create",
@@ -55333,7 +51551,6 @@ export interface PermissionScopeGroup {
 export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
   { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:interactive", "task:delete"] },
   { label: "Snippets", scopes: ["snippet:list", "snippet:create", "snippet:read", "snippet:edit", "snippet:delete"] },
-  { label: "Sequences", scopes: ["sequence:list", "sequence:create", "sequence:read", "sequence:edit", "sequence:delete"] },
   { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
   { label: "Settings", scopes: ["settings:read", "settings:edit"] },
   { label: "Users", scopes: ["user:list", "user:create", "user:read", "user:edit", "user:delete"] }
@@ -55605,10 +51822,8 @@ export interface Task {
   providerProfile: ProviderProfile;
   modelOverride: string | null;
   codexCredentialSource?: CodexCredentialSource;
-  taskSource?: Extract<TaskSourceType, "blank" | "snippet" | "sequence">;
+  taskSource?: Extract<TaskSourceType, "blank" | "snippet">;
   snippetId?: string;
-  sequenceId?: string;
-  sequenceRunId?: string | null;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
   complexity: TaskComplexity;
@@ -55948,7 +52163,6 @@ export type WorkspaceProvisioningMode = "clone_only" | "hybrid";
 export interface SystemDataStores {
   taskStore: "postgres";
   snippetStore: "postgres";
-  sequenceStore: "postgres";
   repositoryStore: "postgres";
   credentialStore: "postgres";
   roleStore: "postgres";
@@ -56033,13 +52247,11 @@ export interface CreateTaskInput {
   branchStrategy?: TaskBranchStrategy;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
-  task_source?: "blank" | "snippet" | "sequence";
+  task_source?: "blank" | "snippet";
   snippet_id?: string;
-  sequence_id?: string;
-  sequence_variables?: Record<string, string>;
 }
 
-export type TaskSourceType = "blank" | "snippet" | "sequence" | "issue" | "pull_request";
+export type TaskSourceType = "blank" | "snippet" | "issue" | "pull_request";
 
 export interface BlankTaskDefinitionInput {
   sourceType: "blank";
@@ -56106,28 +52318,9 @@ export interface SnippetTaskDefinitionInput {
   branchStrategy: TaskBranchStrategy;
 }
 
-export interface SequenceTaskDefinitionInput {
-  sourceType: "sequence";
-  title: string;
-  deadline?: string | null;
-  repoId: string;
-  sequenceId: string;
-  sequenceVariables?: Record<string, string>;
-  notes?: string;
-  attachments?: CreateTaskPromptAttachmentInput[];
-  taskType: TaskType;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
 export type TaskDefinitionInput =
   | BlankTaskDefinitionInput
   | SnippetTaskDefinitionInput
-  | SequenceTaskDefinitionInput
   | IssueTaskDefinitionInput
   | PullRequestTaskDefinitionInput;
 
@@ -56160,67 +52353,6 @@ export interface UpdateSnippetInput {
   name: string;
   content: string;
   variables?: SnippetVariable[];
-}
-
-export type SequenceStepType = "inline" | "snippet";
-export type SequenceStepState = "pending" | "running" | "succeeded" | "failed" | "skipped";
-export type SequenceExecutionMode = "auto_apply_changes" | "approve_before_continuing";
-export type SequenceRunStatus = "running" | "waiting_for_approval" | "waiting_for_checkpoint_resolution" | "succeeded" | "failed";
-
-export interface SequenceStep {
-  id: string;
-  type: SequenceStepType;
-  prompt: string;
-  snippetId?: string;
-}
-
-export interface Sequence {
-  id: string;
-  name: string;
-  executionMode: SequenceExecutionMode;
-  steps: SequenceStep[];
-  variables: SnippetVariable[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface CreateSequenceInput {
-  name: string;
-  executionMode?: SequenceExecutionMode;
-  steps: SequenceStep[];
-  variables?: SnippetVariable[];
-}
-
-export interface UpdateSequenceInput {
-  name: string;
-  executionMode?: SequenceExecutionMode;
-  steps: SequenceStep[];
-  variables?: SnippetVariable[];
-}
-
-export interface SequenceRunStep {
-  index: number;
-  prompt: string;
-  state: SequenceStepState;
-  taskRunId: string | null;
-  errorMessage: string | null;
-  startedAt: string | null;
-  finishedAt: string | null;
-}
-
-export interface SequenceRun {
-  id: string;
-  sequenceId: string;
-  taskId: string;
-  status: SequenceRunStatus;
-  executionMode: SequenceExecutionMode;
-  failPolicy: "fail_fast";
-  stepCount: number;
-  waitingForApprovalAfterStepIndex: number | null;
-  failedStepIndex: number | null;
-  startedAt: string;
-  finishedAt: string | null;
-  steps: SequenceRunStep[];
 }
 
 export interface CreateTaskFromIssueInput {
@@ -56693,16 +52825,6 @@ export interface SnippetEvent {
   payload: Snippet | { id: string };
 }
 
-export interface SequenceEvent {
-  type: "sequence:created" | "sequence:updated" | "sequence:deleted";
-  payload: Sequence | { id: string };
-}
-
-export interface SequenceRunEvent {
-  type: "sequence:run_updated";
-  payload: SequenceRun;
-}
-
 export type RealtimeEvent =
   | TaskEvent
   | TaskDeletedEvent
@@ -56716,9 +52838,7 @@ export type RealtimeEvent =
   | TaskMergedEvent
   | SettingsEvent
   | RepositoryEvent
-  | SnippetEvent
-  | SequenceEvent
-  | SequenceRunEvent;
+  | SnippetEvent;
 ````
 
 ## File: apps/web/components/task-detail-page.tsx
@@ -56828,7 +52948,6 @@ import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useTaskMessages } from "../src/hooks/useTaskMessages";
 import { useTaskRuns } from "../src/hooks/useTaskRuns";
 import { useTaskChangeProposals } from "../src/hooks/useTaskChangeProposals";
-import { useTaskSequenceRun } from "../src/hooks/useTaskSequenceRun";
 import { useSettings } from "../src/hooks/useSettings";
 import { useSocket } from "../src/hooks/useSocket";
 import { isImageDiffPath, normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
@@ -57483,7 +53602,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     refetch: refetchChangeProposals,
     loadMore: loadMoreProposals
   } = useTaskChangeProposals(taskId);
-  const { sequenceRun: taskSequenceRun } = useTaskSequenceRun(taskId, task?.taskSource === "sequence");
   const canUseSnippets = can("snippet:list");
   const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
   const [liveDiff, setLiveDiff] = useState<TaskLiveDiff | null>(null);
@@ -57543,7 +53661,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "state"
     | "renameTitle"
     | "editComment"
-    | "sequenceApprove"
   >(null);
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
@@ -58982,30 +55099,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         messages: taskMessages,
         runs: taskRuns,
         proposals: changeProposals,
-        sequenceRun: taskSequenceRun,
         interactiveTerminalRunning: interactiveTerminalRunning || interactiveTerminalLaunchPending
       }),
-    [changeProposals, interactiveTerminalLaunchPending, interactiveTerminalRunning, taskMessages, taskRuns, taskSequenceRun]
+    [changeProposals, interactiveTerminalLaunchPending, interactiveTerminalRunning, taskMessages, taskRuns]
   );
-  const sequenceQueuedSteps = useMemo(() => {
-    if (
-      !taskSequenceRun ||
-      (taskSequenceRun.status !== "running" &&
-        taskSequenceRun.status !== "waiting_for_approval" &&
-        taskSequenceRun.status !== "waiting_for_checkpoint_resolution")
-    ) {
-      return [];
-    }
-
-    return taskSequenceRun.steps.filter((step) => step.state === "pending" && step.prompt.trim().length > 0);
-  }, [taskSequenceRun]);
-  const runningSequenceStep = useMemo(() => {
-    if (!taskSequenceRun || taskSequenceRun.status !== "running") {
-      return null;
-    }
-
-    return taskSequenceRun.steps.find((step) => step.state === "running") ?? null;
-  }, [taskSequenceRun]);
   const activeTerminalHistoryEntry = useMemo(
     () =>
       [...chatTimeline]
@@ -59318,25 +55415,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       void messageApi.error(errorMessage);
     } finally {
       setTaskPromptMagicLoading(false);
-    }
-  };
-  const handleApproveSequenceRun = async () => {
-    if (!task || !taskSequenceRun || taskSequenceRun.status !== "waiting_for_approval") {
-      return;
-    }
-
-    setSubmitting("sequenceApprove");
-    trackEvent("sequence_approved_continue", {
-      task_id: task.id,
-      sequence_run_id: taskSequenceRun.id
-    });
-    try {
-      await api.approveTaskSequenceRun(task.id);
-      messageApi.success("Sequence approved. Continuing.");
-    } catch (error) {
-      showTaskActionError(error, "Could not continue sequence");
-    } finally {
-      setSubmitting((current) => (current === "sequenceApprove" ? null : current));
     }
   };
   const handleDeleteTask = async () => {
@@ -60553,59 +56631,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   ]
     .filter((part): part is string => Boolean(part))
     .join(" · ");
-  const sequenceQueueNotice =
-    taskSequenceRun?.status === "waiting_for_approval" ||
-    taskSequenceRun?.status === "waiting_for_checkpoint_resolution" ? (
-      <Alert
-        type={taskSequenceRun?.status === "waiting_for_approval" || taskSequenceRun?.status === "waiting_for_checkpoint_resolution" ? "warning" : "info"}
-        showIcon
-        message={
-          taskSequenceRun?.status === "waiting_for_approval"
-            ? `Sequence paused for approval. ${sequenceQueuedSteps.length} step(s) waiting next.`
-            : taskSequenceRun?.status === "waiting_for_checkpoint_resolution"
-              ? `Sequence paused for checkpoint resolution. ${sequenceQueuedSteps.length} step(s) waiting next.`
-              : `${sequenceQueuedSteps.length} sequence step(s) waiting next.`
-        }
-        description={
-          <Flex vertical gap={6}>
-            {taskSequenceRun?.status === "waiting_for_approval" ? (
-              <Typography.Text>
-                {taskSequenceRun.waitingForApprovalAfterStepIndex !== null
-                  ? `Review completed step ${taskSequenceRun.waitingForApprovalAfterStepIndex + 1} and approve to continue.`
-                  : "Review progress and approve to continue."}
-              </Typography.Text>
-            ) : null}
-            {taskSequenceRun?.status === "waiting_for_checkpoint_resolution" ? (
-              <Typography.Text>Resolve the pending checkpoint (apply or reject) to continue the sequence automatically.</Typography.Text>
-            ) : null}
-            {sequenceQueuedSteps.map((step) => (
-              <Typography.Text key={`sequence-queued-${step.index}`} type="secondary">
-                {`Step ${step.index + 1}: ${step.prompt}`}
-              </Typography.Text>
-            ))}
-            {taskSequenceRun?.status === "waiting_for_approval" ? (
-              <Button
-                type="primary"
-                onClick={() => void handleApproveSequenceRun()}
-                loading={submitting === "sequenceApprove"}
-                disabled={!canEditTask || isArchived || !!pendingChangeProposal}
-              >
-                Approve and Continue
-              </Button>
-            ) : null}
-            {taskSequenceRun?.status === "waiting_for_approval" && pendingChangeProposal ? (
-              <Typography.Text type="secondary">
-                Apply or reject the pending checkpoint before continuing.
-              </Typography.Text>
-            ) : null}
-          </Flex>
-        }
-      />
-    ) : null;
-
   const chatComposer = (
     <Flex vertical gap={12}>
-      {sequenceQueueNotice}
       <div style={{ position: "relative" }}>
         {promptMagicVisible ? (
           <Button
@@ -61772,17 +57799,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     const normalizedRunSummary = getNormalizedRunSummary(entry.run);
     const summaryTitle = entry.run.action === "build" ? "Implementation Summary" : "Summary";
     const promptText = entry.promptText;
-    const runStatusLabel = entry.isQueued ? "queued" : entry.run.status;
-    const runStatusTagColor = entry.isQueued ? "processing" : runStatusColor[entry.run.status];
+    const runStatusLabel = entry.run.status;
+    const runStatusTagColor = runStatusColor[entry.run.status];
 
     return (
       <Card
         key={entryKey}
         size="small"
-        style={{
-          ...getHistoryContextCardStyle(entryKey),
-          ...(entry.isQueued ? { opacity: 0.72 } : {})
-        }}
+        style={getHistoryContextCardStyle(entryKey)}
         headStyle={historyCardHeadStyle}
         title={
           <Space wrap>
@@ -61823,9 +57847,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   </ReactMarkdown>
                 ) : (
                   <Typography.Text type="secondary">
-                    {entry.isQueued
-                      ? "Run is queued and will start automatically when prior sequence work is complete."
-                      : entry.run.status === "running"
+                    {entry.run.status === "running"
                       ? "Summary will appear when the run finishes."
                       : entry.run.action === "build" && entry.run.changeOutcome === "no_change"
                         ? "No code changes were needed for this run."

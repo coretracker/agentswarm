@@ -4,7 +4,6 @@ import type { RoleStore } from "./role-store.js";
 import type { SessionStore } from "./session-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { SnippetStore } from "./snippet-store.js";
-import type { SequenceStore } from "./sequence-store.js";
 import type { TaskQueueStore } from "./task-queue-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { UserStore } from "./user-store.js";
@@ -17,7 +16,6 @@ export interface AppStores {
   githubOutboundQueueStore: GitHubOutboundQueueStore;
   webhookDeliveryStore: WebhookDeliveryStore;
   snippetStore: SnippetStore;
-  sequenceStore: SequenceStore;
   repositoryStore: RepositoryStore;
   credentialStore: CredentialStore;
   roleStore: RoleStore;

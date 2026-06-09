@@ -31,7 +31,6 @@ import { RobotOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
-import { useSequences } from "../src/hooks/useSequences";
 import { useSettings } from "../src/hooks/useSettings";
 import { useSnippets } from "../src/hooks/useSnippets";
 import { trackEvent } from "../src/utils/analytics";
@@ -59,8 +58,6 @@ export type TaskDefinitionFormValues = {
   pullRequestNumber?: number;
   snippetId?: string;
   snippetVariables?: Record<string, string>;
-  sequenceId?: string;
-  sequenceVariables?: Record<string, string>;
 };
 
 export interface TaskDefinitionFieldsProps {
@@ -204,26 +201,6 @@ export const buildTaskDefinitionInput = (
     };
   }
 
-  if (values.sourceType === "sequence") {
-    return {
-      sourceType: "sequence",
-      title: values.title?.trim() ?? "",
-      deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
-      repoId: values.repoId ?? "",
-      sequenceId: values.sequenceId ?? "",
-      sequenceVariables: values.sequenceVariables ?? {},
-      notes: values.notes?.trim() ?? "",
-      ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
-      taskType: values.taskType ?? "build",
-      provider,
-      model: values.model?.trim() ?? "",
-      providerProfile: values.providerProfile ?? "high",
-      ...(codexCredentialSource ? { codexCredentialSource } : {}),
-      baseBranch: values.baseBranch?.trim() ?? "",
-      branchStrategy: values.branchStrategy ?? "feature_branch"
-    };
-  }
-
   return {
     sourceType: "pull_request",
     title: values.title?.trim() || undefined,
@@ -261,7 +238,6 @@ export function TaskDefinitionFields({
   const canAskTasks = can("task:ask");
   const canRunAutomatedTask = canBuildTasks || canAskTasks;
   const canUseSnippets = can("snippet:list");
-  const canUseSequences = can("sequence:list");
 
   const selectedRepoId = Form.useWatch("repoId", form);
   const selectedModel = Form.useWatch("model", form);
@@ -272,24 +248,20 @@ export function TaskDefinitionFields({
   const selectedIssueNumber = Form.useWatch("issueNumber", form);
   const selectedPullRequestNumber = Form.useWatch("pullRequestNumber", form);
   const selectedSnippetId = Form.useWatch("snippetId", form);
-  const selectedSequenceId = Form.useWatch("sequenceId", form);
   const selectedPrompt = Form.useWatch("prompt", form);
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(selectedProvider);
   const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
-  const { sequences, loading: sequencesLoading } = useSequences(canUseSequences);
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
   const selectedIssue = githubIssues.find((issue) => issue.number === selectedIssueNumber) ?? null;
   const selectedPullRequest = githubPullRequests.find((pullRequest) => pullRequest.number === selectedPullRequestNumber) ?? null;
   const isBlankSource = selectedSourceType === "blank";
   const isSnippetSource = selectedSourceType === "snippet";
-  const isSequenceSource = selectedSourceType === "sequence";
   const isIssueSource = selectedSourceType === "issue";
   const isPullRequestSource = selectedSourceType === "pull_request";
   const effectiveTaskType = isPullRequestSource ? "build" : selectedTaskType;
   const isImplementationTask = effectiveTaskType === "build";
-  const baseBranchLabel = isBlankSource || isSnippetSource || isSequenceSource || isIssueSource ? "Base Branch" : undefined;
+  const baseBranchLabel = isBlankSource || isSnippetSource || isIssueSource ? "Base Branch" : undefined;
   const selectedSnippet = snippets.find((snippet) => snippet.id === selectedSnippetId) ?? null;
-  const selectedSequence = sequences.find((sequence) => sequence.id === selectedSequenceId) ?? null;
   const providerMissingCredentials =
     selectedProvider === "codex"
       ? !(settings?.openaiApiKeyConfigured || session?.user.codexAuthJsonConfigured)
@@ -314,7 +286,7 @@ export function TaskDefinitionFields({
   );
   const sourceOptions: Array<{ label: string; value: TaskSourceType }> = [
     { label: "Blank", value: "blank" },
-    ...(canUseSequences ? [{ label: "Sequence", value: "sequence" as const }] : []),
+    ...(canUseSnippets ? [{ label: "Snippet", value: "snippet" as const }] : []),
     ...(canReadRepositoryMetadata
       ? [
           { label: "From Issue", value: "issue" as const },
@@ -328,7 +300,7 @@ export function TaskDefinitionFields({
   ];
 
   useEffect(() => {
-    if (canReadRepositoryMetadata || selectedSourceType === "blank" || selectedSourceType === "snippet" || selectedSourceType === "sequence") {
+    if (canReadRepositoryMetadata || selectedSourceType === "blank" || selectedSourceType === "snippet") {
       return;
     }
 
@@ -340,12 +312,6 @@ export function TaskDefinitionFields({
       form.setFieldValue("sourceType", canReadRepositoryMetadata ? "issue" : "blank");
     }
   }, [canBuildTasks, canReadRepositoryMetadata, form, selectedSourceType]);
-
-  useEffect(() => {
-    if (selectedSourceType === "sequence" && !canUseSequences) {
-      form.setFieldValue("sourceType", "blank");
-    }
-  }, [canUseSequences, form, selectedSourceType]);
 
   useEffect(() => {
     if (!settings || !syncSettingsDefaults) {
@@ -443,14 +409,6 @@ export function TaskDefinitionFields({
   }, [form, isSnippetSource, selectedSnippet]);
 
   useEffect(() => {
-    if (!isSequenceSource || !selectedSequence) {
-      return;
-    }
-    const defaults = Object.fromEntries((selectedSequence.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""]));
-    form.setFieldValue("sequenceVariables", defaults);
-  }, [form, isSequenceSource, selectedSequence]);
-
-  useEffect(() => {
     if (!selectedRepoId || !canReadRepositoryMetadata) {
       setGitHubIssues([]);
       setGitHubPullRequests([]);
@@ -485,9 +443,7 @@ export function TaskDefinitionFields({
     ? (effectiveTaskType === "ask" ? "Question" : "Prompt")
     : isSnippetSource
       ? "Snippet Variables"
-      : isSequenceSource
-        ? "Sequence Variables"
-        : "Imported Context";
+      : "Imported Context";
   const canAttachPromptImages = isBlankSource;
   const canUsePromptMagic = isBlankSource;
   const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
@@ -760,64 +716,6 @@ export function TaskDefinitionFields({
       );
     }
 
-    if (isSequenceSource) {
-      return (
-        <Flex vertical gap={16}>
-          <Form.Item name="title" label="Title" rules={[{ required: true, message: "Enter a task title" }]} style={{ marginBottom: 0 }}>
-            <Input placeholder="Your Task Title" size="large" />
-          </Form.Item>
-          <Alert
-            type="info"
-            showIcon
-            message="Sequence steps run in order with fail-fast behavior"
-            description="Pick a sequence and fill variables below. The backend executes each step and stops at the first failure."
-          />
-          <Form.Item name="sequenceId" label="Sequence" rules={[{ required: true, message: "Select a sequence" }]} style={{ marginBottom: 0 }}>
-            <Select
-              showSearch
-              loading={sequencesLoading}
-              placeholder={sequencesLoading ? "Loading sequences..." : "Select sequence"}
-              optionFilterProp="label"
-              options={sequences.map((sequence) => ({ label: `${sequence.name} (${sequence.steps.length} steps)`, value: sequence.id }))}
-              onChange={() => trackEvent("sequence_selected")}
-            />
-          </Form.Item>
-          {(selectedSequence?.variables ?? []).map((variable) => (
-            <Form.Item
-              key={variable.name}
-              name={["sequenceVariables", variable.name]}
-              label={variable.title || variable.name}
-              rules={[{ required: true, message: `Enter ${variable.title || variable.name}` }]}
-              extra={variable.description || undefined}
-              style={{ marginBottom: 0 }}
-            >
-              {variable.type === "multiline" ? (
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 12 }} placeholder={variable.defaultValue || ""} />
-              ) : (
-                <Input placeholder={variable.defaultValue || ""} />
-              )}
-            </Form.Item>
-          ))}
-          <Form.Item
-            name="notes"
-            label="Notes (Markdown)"
-            extra={
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                Optional. These notes are shown in the task Info tab below current configuration.
-              </Typography.Text>
-            }
-            style={{ marginBottom: 0 }}
-          >
-            <Input.TextArea
-              autoSize={{ minRows: 6, maxRows: 16 }}
-              style={{ resize: "none" }}
-              placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
-            />
-          </Form.Item>
-        </Flex>
-      );
-    }
-
     if (isIssueSource) {
       return (
         <Flex vertical gap={16}>
@@ -933,10 +831,6 @@ export function TaskDefinitionFields({
                 if (value === "snippet") {
                   form.setFieldValue("taskType", "build");
                 }
-                if (value === "sequence") {
-                  form.setFieldValue("taskType", "build");
-                }
-
                 if (value !== "blank") {
                   form.setFieldValue("prompt", undefined);
                 }
@@ -948,10 +842,6 @@ export function TaskDefinitionFields({
                 if (value !== "snippet") {
                   form.setFieldValue("snippetId", undefined);
                   form.setFieldValue("snippetVariables", undefined);
-                }
-                if (value !== "sequence") {
-                  form.setFieldValue("sequenceId", undefined);
-                  form.setFieldValue("sequenceVariables", undefined);
                 }
               }}
             />
@@ -1017,7 +907,7 @@ export function TaskDefinitionFields({
             </>
           ) : null}
 
-          {isBlankSource || isSnippetSource || isSequenceSource ? (
+          {isBlankSource || isSnippetSource ? (
             <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
               <Select options={taskTypeOptions} />
             </Form.Item>
@@ -1083,7 +973,7 @@ export function TaskDefinitionFields({
             </Form.Item>
           ) : null}
 
-          {(isBlankSource || isSnippetSource || isSequenceSource || isIssueSource) && baseBranchLabel ? (
+          {(isBlankSource || isSnippetSource || isIssueSource) && baseBranchLabel ? (
             <Form.Item name="baseBranch" label={baseBranchLabel} rules={[{ required: true }]}>
               <Select
                 showSearch

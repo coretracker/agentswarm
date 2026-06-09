@@ -10,7 +10,6 @@ export const navigationRoutes: NavigationRoute[] = [
   { key: "/tasks", label: "Tasks", requiredScopes: ["task:list"] },
   { key: "/tasks/board", label: "Board", requiredScopes: ["task:list"] },
   { key: "/snippets", label: "Snippets", requiredScopes: ["snippet:list"] },
-  { key: "/sequences", label: "Sequences", requiredScopes: ["sequence:list"] },
   { key: "/repositories", label: "Repositories", requiredScopes: ["repo:list"] },
   { key: "/settings", label: "Settings", requiredScopes: ["settings:read"] },
   { key: "/users", label: "Users", requiredScopes: ["user:list"] }
@@ -40,18 +39,6 @@ export const getRequiredScopesForPathname = (pathname: string): PermissionScope[
 
   if (pathname === "/snippets" || pathname === "/presets") {
     return ["snippet:list"];
-  }
-
-  if (pathname === "/sequences") {
-    return ["sequence:list"];
-  }
-
-  if (pathname === "/sequences/new") {
-    return ["sequence:create"];
-  }
-
-  if (/^\/sequences\/[^/]+\/edit$/.test(pathname)) {
-    return ["sequence:list", "sequence:edit"];
   }
 
   if (pathname === "/repositories") {
@@ -98,10 +85,6 @@ export const getSelectedNavigationKey = (pathname: string): string => {
 
   if (pathname.startsWith("/snippets") || pathname.startsWith("/presets")) {
     return "/snippets";
-  }
-
-  if (pathname.startsWith("/sequences")) {
-    return "/sequences";
   }
 
   if (pathname.startsWith("/repositories")) {

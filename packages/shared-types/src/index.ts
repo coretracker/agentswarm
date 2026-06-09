@@ -141,11 +141,6 @@ export type PermissionScope =
   | "snippet:read"
   | "snippet:edit"
   | "snippet:delete"
-  | "sequence:list"
-  | "sequence:create"
-  | "sequence:read"
-  | "sequence:edit"
-  | "sequence:delete"
   | "repo:list"
   | "repo:read"
   | "repo:create"
@@ -173,11 +168,6 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "snippet:read",
   "snippet:edit",
   "snippet:delete",
-  "sequence:list",
-  "sequence:create",
-  "sequence:read",
-  "sequence:edit",
-  "sequence:delete",
   "repo:list",
   "repo:read",
   "repo:create",
@@ -200,7 +190,6 @@ export interface PermissionScopeGroup {
 export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
   { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:interactive", "task:delete"] },
   { label: "Snippets", scopes: ["snippet:list", "snippet:create", "snippet:read", "snippet:edit", "snippet:delete"] },
-  { label: "Sequences", scopes: ["sequence:list", "sequence:create", "sequence:read", "sequence:edit", "sequence:delete"] },
   { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
   { label: "Settings", scopes: ["settings:read", "settings:edit"] },
   { label: "Users", scopes: ["user:list", "user:create", "user:read", "user:edit", "user:delete"] }
@@ -472,10 +461,8 @@ export interface Task {
   providerProfile: ProviderProfile;
   modelOverride: string | null;
   codexCredentialSource?: CodexCredentialSource;
-  taskSource?: Extract<TaskSourceType, "blank" | "snippet" | "sequence">;
+  taskSource?: Extract<TaskSourceType, "blank" | "snippet">;
   snippetId?: string;
-  sequenceId?: string;
-  sequenceRunId?: string | null;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
   complexity: TaskComplexity;
@@ -815,7 +802,6 @@ export type WorkspaceProvisioningMode = "clone_only" | "hybrid";
 export interface SystemDataStores {
   taskStore: "postgres";
   snippetStore: "postgres";
-  sequenceStore: "postgres";
   repositoryStore: "postgres";
   credentialStore: "postgres";
   roleStore: "postgres";
@@ -900,13 +886,11 @@ export interface CreateTaskInput {
   branchStrategy?: TaskBranchStrategy;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
-  task_source?: "blank" | "snippet" | "sequence";
+  task_source?: "blank" | "snippet";
   snippet_id?: string;
-  sequence_id?: string;
-  sequence_variables?: Record<string, string>;
 }
 
-export type TaskSourceType = "blank" | "snippet" | "sequence" | "issue" | "pull_request";
+export type TaskSourceType = "blank" | "snippet" | "issue" | "pull_request";
 
 export interface BlankTaskDefinitionInput {
   sourceType: "blank";
@@ -973,28 +957,9 @@ export interface SnippetTaskDefinitionInput {
   branchStrategy: TaskBranchStrategy;
 }
 
-export interface SequenceTaskDefinitionInput {
-  sourceType: "sequence";
-  title: string;
-  deadline?: string | null;
-  repoId: string;
-  sequenceId: string;
-  sequenceVariables?: Record<string, string>;
-  notes?: string;
-  attachments?: CreateTaskPromptAttachmentInput[];
-  taskType: TaskType;
-  provider: AgentProvider;
-  model: string;
-  providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch: string;
-  branchStrategy: TaskBranchStrategy;
-}
-
 export type TaskDefinitionInput =
   | BlankTaskDefinitionInput
   | SnippetTaskDefinitionInput
-  | SequenceTaskDefinitionInput
   | IssueTaskDefinitionInput
   | PullRequestTaskDefinitionInput;
 
@@ -1027,67 +992,6 @@ export interface UpdateSnippetInput {
   name: string;
   content: string;
   variables?: SnippetVariable[];
-}
-
-export type SequenceStepType = "inline" | "snippet";
-export type SequenceStepState = "pending" | "running" | "succeeded" | "failed" | "skipped";
-export type SequenceExecutionMode = "auto_apply_changes" | "approve_before_continuing";
-export type SequenceRunStatus = "running" | "waiting_for_approval" | "waiting_for_checkpoint_resolution" | "succeeded" | "failed";
-
-export interface SequenceStep {
-  id: string;
-  type: SequenceStepType;
-  prompt: string;
-  snippetId?: string;
-}
-
-export interface Sequence {
-  id: string;
-  name: string;
-  executionMode: SequenceExecutionMode;
-  steps: SequenceStep[];
-  variables: SnippetVariable[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface CreateSequenceInput {
-  name: string;
-  executionMode?: SequenceExecutionMode;
-  steps: SequenceStep[];
-  variables?: SnippetVariable[];
-}
-
-export interface UpdateSequenceInput {
-  name: string;
-  executionMode?: SequenceExecutionMode;
-  steps: SequenceStep[];
-  variables?: SnippetVariable[];
-}
-
-export interface SequenceRunStep {
-  index: number;
-  prompt: string;
-  state: SequenceStepState;
-  taskRunId: string | null;
-  errorMessage: string | null;
-  startedAt: string | null;
-  finishedAt: string | null;
-}
-
-export interface SequenceRun {
-  id: string;
-  sequenceId: string;
-  taskId: string;
-  status: SequenceRunStatus;
-  executionMode: SequenceExecutionMode;
-  failPolicy: "fail_fast";
-  stepCount: number;
-  waitingForApprovalAfterStepIndex: number | null;
-  failedStepIndex: number | null;
-  startedAt: string;
-  finishedAt: string | null;
-  steps: SequenceRunStep[];
 }
 
 export interface CreateTaskFromIssueInput {
@@ -1560,16 +1464,6 @@ export interface SnippetEvent {
   payload: Snippet | { id: string };
 }
 
-export interface SequenceEvent {
-  type: "sequence:created" | "sequence:updated" | "sequence:deleted";
-  payload: Sequence | { id: string };
-}
-
-export interface SequenceRunEvent {
-  type: "sequence:run_updated";
-  payload: SequenceRun;
-}
-
 export type RealtimeEvent =
   | TaskEvent
   | TaskDeletedEvent
@@ -1583,6 +1477,4 @@ export type RealtimeEvent =
   | TaskMergedEvent
   | SettingsEvent
   | RepositoryEvent
-  | SnippetEvent
-  | SequenceEvent
-  | SequenceRunEvent;
+  | SnippetEvent;

@@ -103,7 +103,6 @@ import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useTaskMessages } from "../src/hooks/useTaskMessages";
 import { useTaskRuns } from "../src/hooks/useTaskRuns";
 import { useTaskChangeProposals } from "../src/hooks/useTaskChangeProposals";
-import { useTaskSequenceRun } from "../src/hooks/useTaskSequenceRun";
 import { useSettings } from "../src/hooks/useSettings";
 import { useSocket } from "../src/hooks/useSocket";
 import { isImageDiffPath, normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
@@ -758,7 +757,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     refetch: refetchChangeProposals,
     loadMore: loadMoreProposals
   } = useTaskChangeProposals(taskId);
-  const { sequenceRun: taskSequenceRun } = useTaskSequenceRun(taskId, task?.taskSource === "sequence");
   const canUseSnippets = can("snippet:list");
   const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
   const [liveDiff, setLiveDiff] = useState<TaskLiveDiff | null>(null);
@@ -818,7 +816,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "state"
     | "renameTitle"
     | "editComment"
-    | "sequenceApprove"
   >(null);
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
@@ -2257,30 +2254,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         messages: taskMessages,
         runs: taskRuns,
         proposals: changeProposals,
-        sequenceRun: taskSequenceRun,
         interactiveTerminalRunning: interactiveTerminalRunning || interactiveTerminalLaunchPending
       }),
-    [changeProposals, interactiveTerminalLaunchPending, interactiveTerminalRunning, taskMessages, taskRuns, taskSequenceRun]
+    [changeProposals, interactiveTerminalLaunchPending, interactiveTerminalRunning, taskMessages, taskRuns]
   );
-  const sequenceQueuedSteps = useMemo(() => {
-    if (
-      !taskSequenceRun ||
-      (taskSequenceRun.status !== "running" &&
-        taskSequenceRun.status !== "waiting_for_approval" &&
-        taskSequenceRun.status !== "waiting_for_checkpoint_resolution")
-    ) {
-      return [];
-    }
-
-    return taskSequenceRun.steps.filter((step) => step.state === "pending" && step.prompt.trim().length > 0);
-  }, [taskSequenceRun]);
-  const runningSequenceStep = useMemo(() => {
-    if (!taskSequenceRun || taskSequenceRun.status !== "running") {
-      return null;
-    }
-
-    return taskSequenceRun.steps.find((step) => step.state === "running") ?? null;
-  }, [taskSequenceRun]);
   const activeTerminalHistoryEntry = useMemo(
     () =>
       [...chatTimeline]
@@ -2593,25 +2570,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       void messageApi.error(errorMessage);
     } finally {
       setTaskPromptMagicLoading(false);
-    }
-  };
-  const handleApproveSequenceRun = async () => {
-    if (!task || !taskSequenceRun || taskSequenceRun.status !== "waiting_for_approval") {
-      return;
-    }
-
-    setSubmitting("sequenceApprove");
-    trackEvent("sequence_approved_continue", {
-      task_id: task.id,
-      sequence_run_id: taskSequenceRun.id
-    });
-    try {
-      await api.approveTaskSequenceRun(task.id);
-      messageApi.success("Sequence approved. Continuing.");
-    } catch (error) {
-      showTaskActionError(error, "Could not continue sequence");
-    } finally {
-      setSubmitting((current) => (current === "sequenceApprove" ? null : current));
     }
   };
   const handleDeleteTask = async () => {
@@ -3828,59 +3786,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   ]
     .filter((part): part is string => Boolean(part))
     .join(" · ");
-  const sequenceQueueNotice =
-    taskSequenceRun?.status === "waiting_for_approval" ||
-    taskSequenceRun?.status === "waiting_for_checkpoint_resolution" ? (
-      <Alert
-        type={taskSequenceRun?.status === "waiting_for_approval" || taskSequenceRun?.status === "waiting_for_checkpoint_resolution" ? "warning" : "info"}
-        showIcon
-        message={
-          taskSequenceRun?.status === "waiting_for_approval"
-            ? `Sequence paused for approval. ${sequenceQueuedSteps.length} step(s) waiting next.`
-            : taskSequenceRun?.status === "waiting_for_checkpoint_resolution"
-              ? `Sequence paused for checkpoint resolution. ${sequenceQueuedSteps.length} step(s) waiting next.`
-              : `${sequenceQueuedSteps.length} sequence step(s) waiting next.`
-        }
-        description={
-          <Flex vertical gap={6}>
-            {taskSequenceRun?.status === "waiting_for_approval" ? (
-              <Typography.Text>
-                {taskSequenceRun.waitingForApprovalAfterStepIndex !== null
-                  ? `Review completed step ${taskSequenceRun.waitingForApprovalAfterStepIndex + 1} and approve to continue.`
-                  : "Review progress and approve to continue."}
-              </Typography.Text>
-            ) : null}
-            {taskSequenceRun?.status === "waiting_for_checkpoint_resolution" ? (
-              <Typography.Text>Resolve the pending checkpoint (apply or reject) to continue the sequence automatically.</Typography.Text>
-            ) : null}
-            {sequenceQueuedSteps.map((step) => (
-              <Typography.Text key={`sequence-queued-${step.index}`} type="secondary">
-                {`Step ${step.index + 1}: ${step.prompt}`}
-              </Typography.Text>
-            ))}
-            {taskSequenceRun?.status === "waiting_for_approval" ? (
-              <Button
-                type="primary"
-                onClick={() => void handleApproveSequenceRun()}
-                loading={submitting === "sequenceApprove"}
-                disabled={!canEditTask || isArchived || !!pendingChangeProposal}
-              >
-                Approve and Continue
-              </Button>
-            ) : null}
-            {taskSequenceRun?.status === "waiting_for_approval" && pendingChangeProposal ? (
-              <Typography.Text type="secondary">
-                Apply or reject the pending checkpoint before continuing.
-              </Typography.Text>
-            ) : null}
-          </Flex>
-        }
-      />
-    ) : null;
-
   const chatComposer = (
     <Flex vertical gap={12}>
-      {sequenceQueueNotice}
       <div style={{ position: "relative" }}>
         {promptMagicVisible ? (
           <Button
@@ -5047,17 +4954,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     const normalizedRunSummary = getNormalizedRunSummary(entry.run);
     const summaryTitle = entry.run.action === "build" ? "Implementation Summary" : "Summary";
     const promptText = entry.promptText;
-    const runStatusLabel = entry.isQueued ? "queued" : entry.run.status;
-    const runStatusTagColor = entry.isQueued ? "processing" : runStatusColor[entry.run.status];
+    const runStatusLabel = entry.run.status;
+    const runStatusTagColor = runStatusColor[entry.run.status];
 
     return (
       <Card
         key={entryKey}
         size="small"
-        style={{
-          ...getHistoryContextCardStyle(entryKey),
-          ...(entry.isQueued ? { opacity: 0.72 } : {})
-        }}
+        style={getHistoryContextCardStyle(entryKey)}
         headStyle={historyCardHeadStyle}
         title={
           <Space wrap>
@@ -5098,9 +5002,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   </ReactMarkdown>
                 ) : (
                   <Typography.Text type="secondary">
-                    {entry.isQueued
-                      ? "Run is queued and will start automatically when prior sequence work is complete."
-                      : entry.run.status === "running"
+                    {entry.run.status === "running"
                       ? "Summary will appear when the run finishes."
                       : entry.run.action === "build" && entry.run.changeOutcome === "no_change"
                         ? "No code changes were needed for this run."
