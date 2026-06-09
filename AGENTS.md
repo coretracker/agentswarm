@@ -76,9 +76,6 @@ flowchart TB
 - Treat non-zero exit codes as failures.
 - Do not assume behavior that is not documented in this repository.
 - Mark missing evidence as `TODO` instead of guessing.
-- Before starting work, inspect `docs/repomix.md` for the current repository context bundle.
-- After any agent run that changes code or repository files, execute `npx repomix --style markdown --output docs/repomix.md` to refresh the repository context bundle.
-- Keep `docs/repomix.md` as the canonical Repomix output referenced by agents.
 
 ## Remote Build Runner
 Use `http://host.docker.internal:38127` and call `POST /run` with:

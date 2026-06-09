@@ -317,12 +317,6 @@ The repository uses execution-plan and human-gated-flow checks for non-trivial c
 - `docs/development/pr-workflow.md`
 - `docs/development/agent-review.md`
 
-After any agent-generated repository edit, refresh the Repomix context bundle:
-
-```bash
-npx repomix --style markdown --output docs/repomix.md
-```
-
 ## FAQ
 
 ### Where do I configure API keys?
