@@ -75,16 +75,10 @@ import {
 } from "antd";
 import {
   ArrowRightOutlined,
-  CheckCircleOutlined,
-  CloseCircleOutlined,
-  CodeOutlined,
   CopyOutlined,
   DownloadOutlined,
   EditOutlined,
-  FileTextOutlined,
-  InfoCircleOutlined,
   LoadingOutlined,
-  MessageOutlined,
   MoreOutlined,
   RobotOutlined,
   RollbackOutlined
@@ -4244,31 +4238,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     return "gray";
   };
 
-  const getTimelineEventIcon = (event: TimelineEvent): ReactNode => {
-    if (event.kind.includes("failed") || (event.exitCode != null && event.exitCode !== 0)) {
-      return <CloseCircleOutlined />;
-    }
-    if (event.status === "in_progress" || event.kind.endsWith(".started")) {
-      return <LoadingOutlined spin />;
-    }
-    if (event.kind.startsWith("assistant")) {
-      return <MessageOutlined />;
-    }
-    if (event.kind.startsWith("tool")) {
-      return <CodeOutlined />;
-    }
-    if (event.kind === "file.changed") {
-      return <FileTextOutlined />;
-    }
-    if (event.kind.includes("completed")) {
-      return <CheckCircleOutlined />;
-    }
-    if (event.kind.startsWith("run")) {
-      return <RobotOutlined />;
-    }
-    return <InfoCircleOutlined />;
-  };
-
   const renderTimelineEventContent = (event: TimelineEvent): ReactNode => {
     const showDetail = event.detail && event.detail !== event.filePath;
     return (
@@ -4336,7 +4305,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         items={events.map((event) => ({
           key: event.id,
           color: getTimelineEventColor(event),
-          dot: getTimelineEventIcon(event),
           children: renderTimelineEventContent(event)
         }))}
       />
@@ -5598,16 +5566,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                                         }
                                       : updatedTask
                                   );
-                                  messageApi.success("Draft started");
+                                  messageApi.success("Task started");
                                 } catch (error) {
-                                  showTaskActionError(error, "Draft task could not be started");
+                                  showTaskActionError(error, "Task could not be started");
                                 } finally {
                                   setSubmitting(null);
                                 }
                               }}
                               loading={submitting === "startDraft"}
                             >
-                              Start Draft
+                              Start Task
                             </Button>
                           ) : null}
                           {canCancel ? (
@@ -5645,7 +5613,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                       type="info"
                       showIcon
                       message="Draft task"
-                      description="This task is saved but has not started. Start the draft when it is ready for agent work."
+                      description="This task is saved but has not started. Start the task when it is ready for agent work."
                     />
                   ) : !canEditTask ? (
                     <Alert
