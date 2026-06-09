@@ -307,7 +307,7 @@ function resolveInteractiveTerminalRuntimeConfig(
     return { ok: false, reason: "Interactive Codex is not configured (set CODEX_INTERACTIVE_IMAGE on the server)." };
   }
   if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
-    return { ok: false, reason: "OpenAI API key or profile Codex auth.json is not configured." };
+    return { ok: false, reason: "OpenAI API key or Codex auth.json is not configured." };
   }
   const useCodexAuthJson = Boolean(credentials.codexAuthJson);
 

@@ -301,7 +301,7 @@ export function TaskDiffOpenAiPanel({
           type="info"
           showIcon
           style={{ marginBottom: 12 }}
-          message="OpenAI on diff needs a live workspace"
+          message="AI diff assist needs a live workspace"
           description="Wait until the task workspace is available, then ask about selected lines or the whole file."
         />
       ) : null}
@@ -331,7 +331,7 @@ export function TaskDiffOpenAiPanel({
       </Space>
 
       <Modal
-        title="OpenAI (diff selection)"
+        title="AI diff assist"
         open={configOpen}
         onCancel={() => setConfigOpen(false)}
         onOk={() => void runAssist()}
@@ -390,7 +390,7 @@ export function TaskDiffOpenAiPanel({
       </Modal>
 
       <Modal
-        title="OpenAI result"
+        title="AI result"
         open={resultOpen}
         onCancel={() => setResultOpen(false)}
         footer={[

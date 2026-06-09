@@ -107,9 +107,11 @@ const updateSettingsSchema = z.object({
 const updateCredentialsSchema = z.object({
   githubToken: z.string().trim().min(1).optional(),
   openaiApiKey: z.string().trim().min(1).optional(),
+  codexAuthJson: z.string().trim().min(1).optional(),
   anthropicApiKey: z.string().trim().min(1).optional(),
   clearGithubToken: z.boolean().optional(),
   clearOpenAiApiKey: z.boolean().optional(),
+  clearCodexAuthJson: z.boolean().optional(),
   clearAnthropicApiKey: z.boolean().optional()
 });
 
@@ -169,6 +171,17 @@ export const registerSettingsRoutes = (
     const parsed = updateCredentialsSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    if (parsed.data.codexAuthJson !== undefined && !parsed.data.clearCodexAuthJson) {
+      try {
+        const parsedJson = JSON.parse(parsed.data.codexAuthJson) as unknown;
+        if (!parsedJson || typeof parsedJson !== "object" || Array.isArray(parsedJson)) {
+          return reply.status(400).send({ message: "Codex auth.json must be a JSON object" });
+        }
+      } catch {
+        return reply.status(400).send({ message: "Codex auth.json must be valid JSON" });
+      }
     }
 
     const settings = await deps.settingsStore.updateCredentials(parsed.data);

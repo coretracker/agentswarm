@@ -72,7 +72,7 @@ const providerOptions = (
 const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
   { label: "Auto (Profile then Global)", value: "auto" },
   { label: "Profile auth.json only", value: "profile" },
-  { label: "Global OpenAI key only", value: "global" }
+  { label: "Global OpenAI key or auth.json", value: "global" }
 ];
 
 const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSettings | null): string =>
@@ -181,15 +181,17 @@ export function TaskDefinitionFields({
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
   const effectiveTaskType = selectedTaskType;
   const isImplementationTask = effectiveTaskType === "build";
+  const hasGlobalCodexCredentials = Boolean(settings?.openaiApiKeyConfigured || settings?.codexAuthJsonConfigured);
+  const hasAnyCodexCredentials = Boolean(hasGlobalCodexCredentials || session?.user.codexAuthJsonConfigured);
   const providerMissingCredentials =
     selectedProvider === "codex"
-      ? !(settings?.openaiApiKeyConfigured || session?.user.codexAuthJsonConfigured)
+      ? !hasAnyCodexCredentials
       : !settings?.anthropicApiKeyConfigured;
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
   const roleAllowedModels = session?.user.allowedModels ?? [];
   const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
   const providerSelectOptions = providerOptions(
-    Boolean(settings?.openaiApiKeyConfigured || session?.user.codexAuthJsonConfigured),
+    hasAnyCodexCredentials,
     Boolean(settings?.anthropicApiKeyConfigured)
   ).map(
     (option) => ({
@@ -600,9 +602,9 @@ export function TaskDefinitionFields({
                 style={{ marginBottom: 16 }}
                 message={`${selectedProvider === "codex" ? "Codex" : "Anthropic"} credentials are missing`}
                 description={
-                  selectedProvider === "codex"
-                    ? "Configure Codex auth.json in your Profile or set an OpenAI API key in Settings before running this task."
-                    : "Configure the provider credential in Settings before running this task."
+                selectedProvider === "codex"
+                  ? "Configure Codex auth.json in your Profile or Settings, or set an OpenAI API key in Settings before running this task."
+                  : "Configure the provider credential in Settings before running this task."
                 }
               />
             ) : null}

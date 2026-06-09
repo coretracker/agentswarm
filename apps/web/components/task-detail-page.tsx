@@ -227,7 +227,7 @@ const providerOptions: Array<{ label: string; value: AgentProvider }> = [
 const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
   { label: "Auto (Profile then Global)", value: "auto" },
   { label: "Profile auth.json only", value: "profile" },
-  { label: "Global OpenAI key only", value: "global" }
+  { label: "Global OpenAI key or auth.json", value: "global" }
 ];
 
 const branchStrategyOptions: Array<{ label: string; value: TaskBranchStrategy }> = [

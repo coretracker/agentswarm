@@ -122,6 +122,7 @@ apps/
         users.ts
       services/
         app-stores.ts
+        codex-utility-service.ts
         create-postgres-stores.ts
         credential-store.ts
         github-import-service.ts
@@ -3113,6 +3114,175 @@ export const registerRoleRoutes = (
 };
 ````
 
+## File: apps/server/src/services/codex-utility-service.ts
+````typescript
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import type { ProviderProfile } from "@agentswarm/shared-types";
+import { env } from "../config/env.js";
+import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
+import type { SettingsRuntimeCredentials } from "./settings-store.js";
+
+const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_OUTPUT_MAX_CHARS = 12_000;
+const CODEX_UTILITY_WORKDIR = "/utility";
+
+export class CodexUtilityUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CodexUtilityUnavailableError";
+  }
+}
+
+export class CodexUtilityError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode = 502
+  ) {
+    super(message);
+    this.name = "CodexUtilityError";
+  }
+}
+
+const codexUtilityScript = `
+set -eu
+mkdir -p "$HOME/.codex"
+cat > "$HOME/.codex/config.toml" <<'EOF'
+sandbox_mode = "read-only"
+approval_policy = "never"
+
+[notice]
+hide_rate_limit_model_nudge = true
+hide_gpt5_1_migration_prompt = true
+"hide_gpt-5.1-codex-max_migration_prompt" = true
+EOF
+if [ -n "\${CODEX_AUTH_JSON_B64:-}" ]; then
+  printf %s "$CODEX_AUTH_JSON_B64" | base64 -d > "$HOME/.codex/auth.json"
+elif [ -n "\${OPENAI_API_KEY:-}" ]; then
+  printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file
+else
+  echo "Codex credentials are not configured." >&2
+  exit 64
+fi
+codex exec \\
+  --ephemeral \\
+  --skip-git-repo-check \\
+  --ignore-rules \\
+  --sandbox read-only \\
+  -C "${CODEX_UTILITY_WORKDIR}" \\
+  -m "$CODEX_MODEL" \\
+  -c cli_auth_credentials_store=file \\
+  -c "model_reasoning_effort=\\"$CODEX_REASONING_EFFORT\\"" \\
+  -o "${CODEX_UTILITY_WORKDIR}/output.txt" \\
+  - < "${CODEX_UTILITY_WORKDIR}/prompt.txt"
+`;
+
+const trimProcessOutput = (value: string, maxChars = 4000): string => {
+  const trimmed = value.trim();
+  return trimmed.length > maxChars ? `${trimmed.slice(0, maxChars)}...` : trimmed;
+};
+
+export async function executeCodexUtility(input: {
+  prompt: string;
+  model: string;
+  providerProfile: ProviderProfile;
+  credentials: SettingsRuntimeCredentials;
+  timeoutMs?: number;
+  outputMaxChars?: number;
+}): Promise<string> {
+  const image = env.CODEX_INTERACTIVE_IMAGE?.trim();
+  if (!image) {
+    throw new CodexUtilityUnavailableError("Codex utility runner is not configured (set CODEX_INTERACTIVE_IMAGE).");
+  }
+  if (!input.credentials.openaiApiKey && !input.credentials.codexAuthJson) {
+    throw new CodexUtilityUnavailableError("Codex credentials are not configured.");
+  }
+
+  const tempDir = path.join(os.tmpdir(), `agentswarm-codex-utility-${randomUUID()}`);
+  await mkdir(tempDir, { recursive: true });
+  await writeFile(path.join(tempDir, "prompt.txt"), input.prompt, "utf8");
+
+  const args = [
+    "run",
+    "--rm",
+    "-e",
+    "HOME=/root",
+    "-e",
+    `CODEX_MODEL=${input.model}`,
+    "-e",
+    `CODEX_REASONING_EFFORT=${codexReasoningEffortForProfile(input.providerProfile)}`,
+    ...(input.credentials.openaiApiKey ? ["-e", `OPENAI_API_KEY=${input.credentials.openaiApiKey}`] : []),
+    ...(input.credentials.codexAuthJson
+      ? ["-e", `CODEX_AUTH_JSON_B64=${Buffer.from(input.credentials.codexAuthJson, "utf8").toString("base64")}`]
+      : []),
+    ...(input.credentials.openaiBaseUrl ? ["-e", `OPENAI_BASE_URL=${input.credentials.openaiBaseUrl}`] : []),
+    "-v",
+    `${tempDir}:${CODEX_UTILITY_WORKDIR}`,
+    "-w",
+    CODEX_UTILITY_WORKDIR,
+    image,
+    "sh",
+    "-lc",
+    codexUtilityScript
+  ];
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const timeout = setTimeout(() => {
+        settled = true;
+        child.kill("SIGKILL");
+        reject(new CodexUtilityError("Codex utility run timed out.", 504));
+      }, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        stdout += String(chunk);
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += String(chunk);
+      });
+      child.on("error", (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        reject(new CodexUtilityUnavailableError(`Failed to start Codex utility runner: ${error.message}`));
+      });
+      child.on("close", (code) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        const details = trimProcessOutput(stderr || stdout);
+        reject(new CodexUtilityError(details || `Codex utility run failed with exit code ${code ?? "unknown"}.`));
+      });
+    });
+
+    const output = (await readFile(path.join(tempDir, "output.txt"), "utf8")).trim();
+    if (!output) {
+      throw new CodexUtilityError("Codex utility run returned empty output.");
+    }
+    return output.slice(0, input.outputMaxChars ?? DEFAULT_OUTPUT_MAX_CHARS);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+````
+
 ## File: apps/server/src/services/credential-store.ts
 ````typescript
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
@@ -3129,6 +3299,7 @@ const nowIso = (): string => new Date().toISOString();
 interface StoredCredentials {
   githubToken: string | null;
   openaiApiKey: string | null;
+  codexAuthJson: string | null;
   anthropicApiKey: string | null;
   codexAuthJsonByUserId: Record<string, string>;
 }
@@ -3150,6 +3321,7 @@ export interface RuntimeCredentials {
 export interface CredentialStatus {
   githubTokenConfigured: boolean;
   openaiApiKeyConfigured: boolean;
+  codexAuthJsonConfigured: boolean;
   anthropicApiKeyConfigured: boolean;
 }
 
@@ -3239,6 +3411,7 @@ export class RedisCredentialStore implements CredentialStore {
       return {
         githubToken: null,
         openaiApiKey: null,
+        codexAuthJson: null,
         anthropicApiKey: null,
         codexAuthJsonByUserId: {}
       };
@@ -3252,6 +3425,7 @@ export class RedisCredentialStore implements CredentialStore {
       return {
         githubToken: parsed.githubToken?.trim() || null,
         openaiApiKey: parsed.openaiApiKey?.trim() || null,
+        codexAuthJson: parsed.codexAuthJson?.trim() || null,
         anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
         codexAuthJsonByUserId: this.normalizeCodexAuthJsonByUserId(parsed.codexAuthJsonByUserId)
       };
@@ -3259,6 +3433,7 @@ export class RedisCredentialStore implements CredentialStore {
       return {
         githubToken: null,
         openaiApiKey: null,
+        codexAuthJson: null,
         anthropicApiKey: null,
         codexAuthJsonByUserId: {}
       };
@@ -3266,7 +3441,7 @@ export class RedisCredentialStore implements CredentialStore {
   }
 
   private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
-    if (!next.githubToken && !next.openaiApiKey && !next.anthropicApiKey && Object.keys(next.codexAuthJsonByUserId).length === 0) {
+    if (!next.githubToken && !next.openaiApiKey && !next.codexAuthJson && !next.anthropicApiKey && Object.keys(next.codexAuthJsonByUserId).length === 0) {
       await this.redis.del(CREDENTIALS_KEY);
       return;
     }
@@ -3281,7 +3456,7 @@ export class RedisCredentialStore implements CredentialStore {
       githubToken: current.githubToken,
       openaiApiKey: current.openaiApiKey,
       anthropicApiKey: current.anthropicApiKey,
-      codexAuthJson: null
+      codexAuthJson: current.codexAuthJson
     };
   }
 
@@ -3290,6 +3465,7 @@ export class RedisCredentialStore implements CredentialStore {
     return {
       githubTokenConfigured: Boolean(credentials.githubToken),
       openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
+      codexAuthJsonConfigured: Boolean(credentials.codexAuthJson),
       anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
     };
   }
@@ -3307,6 +3483,11 @@ export class RedisCredentialStore implements CredentialStore {
         : input.openaiApiKey?.trim()
           ? input.openaiApiKey.trim()
           : current.openaiApiKey,
+      codexAuthJson: input.clearCodexAuthJson
+        ? null
+        : input.codexAuthJson?.trim()
+          ? input.codexAuthJson.trim()
+          : current.codexAuthJson,
       anthropicApiKey: input.clearAnthropicApiKey
         ? null
         : input.anthropicApiKey?.trim()
@@ -3433,6 +3614,7 @@ export class PostgresCredentialStore implements CredentialStore {
       return {
         githubToken: null,
         openaiApiKey: null,
+        codexAuthJson: null,
         anthropicApiKey: null,
         codexAuthJsonByUserId: {}
       };
@@ -3446,6 +3628,7 @@ export class PostgresCredentialStore implements CredentialStore {
       return {
         githubToken: parsed.githubToken?.trim() || null,
         openaiApiKey: parsed.openaiApiKey?.trim() || null,
+        codexAuthJson: parsed.codexAuthJson?.trim() || null,
         anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
         codexAuthJsonByUserId: this.normalizeCodexAuthJsonByUserId(parsed.codexAuthJsonByUserId)
       };
@@ -3453,6 +3636,7 @@ export class PostgresCredentialStore implements CredentialStore {
       return {
         githubToken: null,
         openaiApiKey: null,
+        codexAuthJson: null,
         anthropicApiKey: null,
         codexAuthJsonByUserId: {}
       };
@@ -3460,7 +3644,7 @@ export class PostgresCredentialStore implements CredentialStore {
   }
 
   private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
-    if (!next.githubToken && !next.openaiApiKey && !next.anthropicApiKey && Object.keys(next.codexAuthJsonByUserId).length === 0) {
+    if (!next.githubToken && !next.openaiApiKey && !next.codexAuthJson && !next.anthropicApiKey && Object.keys(next.codexAuthJsonByUserId).length === 0) {
       await this.pool.query("DELETE FROM credentials WHERE singleton_id = 1");
       return;
     }
@@ -3489,7 +3673,7 @@ export class PostgresCredentialStore implements CredentialStore {
       githubToken: current.githubToken,
       openaiApiKey: current.openaiApiKey,
       anthropicApiKey: current.anthropicApiKey,
-      codexAuthJson: null
+      codexAuthJson: current.codexAuthJson
     };
   }
 
@@ -3498,6 +3682,7 @@ export class PostgresCredentialStore implements CredentialStore {
     return {
       githubTokenConfigured: Boolean(credentials.githubToken),
       openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
+      codexAuthJsonConfigured: Boolean(credentials.codexAuthJson),
       anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
     };
   }
@@ -3515,6 +3700,11 @@ export class PostgresCredentialStore implements CredentialStore {
         : input.openaiApiKey?.trim()
           ? input.openaiApiKey.trim()
           : current.openaiApiKey,
+      codexAuthJson: input.clearCodexAuthJson
+        ? null
+        : input.codexAuthJson?.trim()
+          ? input.codexAuthJson.trim()
+          : current.codexAuthJson,
       anthropicApiKey: input.clearAnthropicApiKey
         ? null
         : input.anthropicApiKey?.trim()
@@ -4276,6 +4466,29 @@ export async function executeOpenAiDiffAssist(input: {
   openaiApiKey: string;
   openaiBaseUrl: string | null;
 }): Promise<OpenAiDiffAssistResult> {
+  const userContent = await buildDiffAssistPromptContext(input);
+  const reasoningEffort = codexReasoningEffortForProfile(input.providerProfile);
+  const base = openAiChatBase(input.openaiBaseUrl);
+  const messages: Array<{ role: string; content: string }> = [
+    {
+      role: "system",
+      content:
+        "You are a careful code assistant. Answer using the provided context. Be concise and accurate."
+    },
+    { role: "user", content: userContent }
+  ];
+
+  const data = await chatReadWithRetries(base, input.openaiApiKey, input.model, messages, reasoningEffort);
+
+  return { text: extractCompletionText(data) };
+}
+
+export async function buildDiffAssistPromptContext(input: {
+  taskId: string;
+  filePath: string;
+  selectedSnippet: string;
+  userPrompt: string;
+}): Promise<string> {
   const relativePath = normalizeDiffFilePath(input.filePath);
   if (!relativePath) {
     throw Object.assign(new Error("Invalid file path."), { status: 400 });
@@ -4288,8 +4501,6 @@ export async function executeOpenAiDiffAssist(input: {
     throw Object.assign(new Error("No local workspace for this task."), { status: 409 });
   }
 
-  const reasoningEffort = codexReasoningEffortForProfile(input.providerProfile);
-  const base = openAiChatBase(input.openaiBaseUrl);
   const currentFile = await readSafeWorkspaceFile(workspaceRoot, relativePath);
   const snippet = input.selectedSnippet.slice(0, MAX_SNIPPET);
   const userPrompt = input.userPrompt.trim().slice(0, MAX_USER_PROMPT);
@@ -4310,19 +4521,7 @@ export async function executeOpenAiDiffAssist(input: {
     userPrompt
   ];
 
-  const userContent = contextParts.join("\n");
-  const messages: Array<{ role: string; content: string }> = [
-    {
-      role: "system",
-      content:
-        "You are a careful code assistant. Answer using the provided context. Be concise and accurate."
-    },
-    { role: "user", content: userContent }
-  ];
-
-  const data = await chatReadWithRetries(base, input.openaiApiKey, input.model, messages, reasoningEffort);
-
-  return { text: extractCompletionText(data) };
+  return contextParts.join("\n");
 }
 ````
 
@@ -6968,7 +7167,7 @@ export function TaskDiffOpenAiPanel({
           type="info"
           showIcon
           style={{ marginBottom: 12 }}
-          message="OpenAI on diff needs a live workspace"
+          message="AI diff assist needs a live workspace"
           description="Wait until the task workspace is available, then ask about selected lines or the whole file."
         />
       ) : null}
@@ -6998,7 +7197,7 @@ export function TaskDiffOpenAiPanel({
       </Space>
 
       <Modal
-        title="OpenAI (diff selection)"
+        title="AI diff assist"
         open={configOpen}
         onCancel={() => setConfigOpen(false)}
         onOk={() => void runAssist()}
@@ -7057,7 +7256,7 @@ export function TaskDiffOpenAiPanel({
       </Modal>
 
       <Modal
-        title="OpenAI result"
+        title="AI result"
         open={resultOpen}
         onCancel={() => setResultOpen(false)}
         footer={[
@@ -22511,9 +22710,11 @@ const updateSettingsSchema = z.object({
 const updateCredentialsSchema = z.object({
   githubToken: z.string().trim().min(1).optional(),
   openaiApiKey: z.string().trim().min(1).optional(),
+  codexAuthJson: z.string().trim().min(1).optional(),
   anthropicApiKey: z.string().trim().min(1).optional(),
   clearGithubToken: z.boolean().optional(),
   clearOpenAiApiKey: z.boolean().optional(),
+  clearCodexAuthJson: z.boolean().optional(),
   clearAnthropicApiKey: z.boolean().optional()
 });
 
@@ -22575,6 +22776,17 @@ export const registerSettingsRoutes = (
       return reply.status(400).send({ message: parsed.error.message });
     }
 
+    if (parsed.data.codexAuthJson !== undefined && !parsed.data.clearCodexAuthJson) {
+      try {
+        const parsedJson = JSON.parse(parsed.data.codexAuthJson) as unknown;
+        if (!parsedJson || typeof parsedJson !== "object" || Array.isArray(parsedJson)) {
+          return reply.status(400).send({ message: "Codex auth.json must be a JSON object" });
+        }
+      } catch {
+        return reply.status(400).send({ message: "Codex auth.json must be valid JSON" });
+      }
+    }
+
     const settings = await deps.settingsStore.updateCredentials(parsed.data);
     return reply.send(settings);
   });
@@ -22593,370 +22805,6 @@ export const registerSettingsRoutes = (
     return reply.send(next);
   });
 };
-````
-
-## File: apps/server/src/services/github-import-service.ts
-````typescript
-import type {
-  CreateTaskFromIssueInput,
-  CreateTaskFromPullRequestInput,
-  CreateTaskInput,
-  GitHubBranchReference,
-  GitHubIssueReference,
-  GitHubPullRequestReference,
-  Repository
-} from "@agentswarm/shared-types";
-import type { SettingsStore } from "./settings-store.js";
-
-const GITHUB_API_URL = "https://api.github.com";
-const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
-
-interface GitHubUser {
-  login: string;
-}
-
-interface GitHubIssue {
-  number: number;
-  title: string;
-  body: string | null;
-  html_url: string;
-  labels?: Array<{ name: string }>;
-  pull_request?: Record<string, unknown>;
-}
-
-interface GitHubIssueComment {
-  body: string;
-  html_url: string;
-  user: GitHubUser | null;
-  created_at: string;
-}
-
-interface GitHubPullRequest {
-  number: number;
-  title: string;
-  body: string | null;
-  html_url: string;
-  head: { ref: string };
-  base: { ref: string };
-}
-
-interface GitHubBranch {
-  name: string;
-}
-
-interface ReviewThreadCommentNode {
-  body: string;
-  url: string;
-  createdAt: string;
-  diffHunk: string | null;
-  author: GitHubUser | null;
-}
-
-interface ReviewThreadNode {
-  isResolved: boolean;
-  isOutdated: boolean;
-  path: string | null;
-  line: number | null;
-  originalLine: number | null;
-  comments: {
-    nodes: ReviewThreadCommentNode[];
-  };
-}
-
-interface PullRequestReviewThreadsResponse {
-  data?: {
-    repository?: {
-      pullRequest?: {
-        reviewThreads?: {
-          nodes: ReviewThreadNode[];
-        };
-      };
-    };
-  };
-  errors?: Array<{ message: string }>;
-}
-
-export class GitHubImportError extends Error {
-  constructor(
-    message: string,
-    readonly statusCode = 400
-  ) {
-    super(message);
-    this.name = "GitHubImportError";
-  }
-}
-
-const truncate = (value: string, maxLength: number): string =>
-  value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 3))}...` : value;
-
-const cleanMarkdownBlock = (value: string | null | undefined, maxLength = 3000): string | null => {
-  const normalized = (value ?? "").trim();
-  if (!normalized) {
-    return null;
-  }
-
-  return truncate(normalized, maxLength);
-};
-
-const parseGitHubRepository = (repoUrl: string): { owner: string; repo: string } => {
-  const httpsMatch = repoUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
-  if (httpsMatch) {
-    return { owner: httpsMatch[1], repo: httpsMatch[2] };
-  }
-
-  const sshMatch = repoUrl.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (sshMatch) {
-    return { owner: sshMatch[1], repo: sshMatch[2] };
-  }
-
-  throw new GitHubImportError("Repository import currently supports github.com repositories only.");
-};
-
-export class GitHubImportService {
-  constructor(private readonly settingsStore: SettingsStore) {}
-
-  private async getGitHubToken(): Promise<string> {
-    const credentials = await this.settingsStore.getRuntimeCredentials();
-    if (!credentials.githubToken) {
-      throw new GitHubImportError("GitHub token is not configured in Settings.", 409);
-    }
-
-    return credentials.githubToken;
-  }
-
-  private async fetchGitHubJson<T>(path: string): Promise<T> {
-    const token = await this.getGitHubToken();
-    const response = await fetch(`${GITHUB_API_URL}${path}`, {
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${token}`,
-        "User-Agent": "AgentSwarm",
-        "X-GitHub-Api-Version": "2022-11-28"
-      }
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new GitHubImportError(`GitHub API request failed (${response.status}): ${text || response.statusText}`, response.status);
-    }
-
-    return response.json() as Promise<T>;
-  }
-
-  private async fetchGitHubGraphQL<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-    const token = await this.getGitHubToken();
-    const response = await fetch(GITHUB_GRAPHQL_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-        "User-Agent": "AgentSwarm"
-      },
-      body: JSON.stringify({ query, variables })
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new GitHubImportError(`GitHub GraphQL request failed (${response.status}): ${text || response.statusText}`, response.status);
-    }
-
-    return response.json() as Promise<T>;
-  }
-
-  async listOpenIssues(repository: Repository): Promise<GitHubIssueReference[]> {
-    const { owner, repo } = parseGitHubRepository(repository.url);
-    const issues = await this.fetchGitHubJson<GitHubIssue[]>(`/repos/${owner}/${repo}/issues?state=open&sort=updated&direction=desc&per_page=50`);
-
-    return issues
-      .filter((issue) => !issue.pull_request)
-      .map((issue) => ({
-        number: issue.number,
-        title: issue.title,
-        url: issue.html_url
-      }));
-  }
-
-  async listOpenPullRequests(repository: Repository): Promise<GitHubPullRequestReference[]> {
-    const { owner, repo } = parseGitHubRepository(repository.url);
-    const pullRequests = await this.fetchGitHubJson<GitHubPullRequest[]>(`/repos/${owner}/${repo}/pulls?state=open&sort=updated&direction=desc&per_page=50`);
-
-    return pullRequests.map((pullRequest) => ({
-      number: pullRequest.number,
-      title: pullRequest.title,
-      url: pullRequest.html_url,
-      headBranch: pullRequest.head.ref,
-      baseBranch: pullRequest.base.ref
-    }));
-  }
-
-  async listBranches(repository: Repository): Promise<GitHubBranchReference[]> {
-    const { owner, repo } = parseGitHubRepository(repository.url);
-    const branches = await this.fetchGitHubJson<GitHubBranch[]>(`/repos/${owner}/${repo}/branches?per_page=100`);
-
-    return branches.map((branch) => ({
-      name: branch.name,
-      isDefault: branch.name === repository.defaultBranch
-    }));
-  }
-
-  async buildTaskInputFromIssue(repository: Repository, input: CreateTaskFromIssueInput): Promise<CreateTaskInput> {
-    const { owner, repo } = parseGitHubRepository(repository.url);
-    const issue = await this.fetchGitHubJson<GitHubIssue>(`/repos/${owner}/${repo}/issues/${input.issueNumber}`);
-
-    if (issue.pull_request) {
-      throw new GitHubImportError("That number belongs to a pull request. Use the PR import path instead.");
-    }
-
-    const comments = input.includeComments
-      ? await this.fetchGitHubJson<GitHubIssueComment[]>(`/repos/${owner}/${repo}/issues/${input.issueNumber}/comments?per_page=50`)
-      : [];
-
-    const commentBlocks = comments
-      .map((comment) => {
-        const body = cleanMarkdownBlock(comment.body, 1800);
-        if (!body) {
-          return null;
-        }
-
-        return [`### @${comment.user?.login ?? "unknown"} (${comment.created_at})`, body, `Source: ${comment.html_url}`].join("\n");
-      })
-      .filter((value): value is string => Boolean(value));
-
-    const issueBody = cleanMarkdownBlock(issue.body, 6000);
-    const labels = (issue.labels ?? []).map((label) => label.name).filter(Boolean);
-    const taskType = input.taskType ?? "build";
-    const title = input.title?.trim() || `Issue #${issue.number}: ${issue.title}`;
-    const prompt = [
-      `Imported from GitHub issue #${issue.number}: ${issue.title}`,
-      `Issue URL: ${issue.html_url}`,
-      labels.length > 0 ? `Labels: ${labels.join(", ")}` : null,
-      issueBody ? `## Issue Body\n${issueBody}` : null,
-      commentBlocks.length > 0 ? `## Issue Comments\n\n${commentBlocks.join("\n\n")}` : null
-    ]
-      .filter((value): value is string => Boolean(value))
-      .join("\n\n");
-
-    return {
-      title,
-      repoId: repository.id,
-      prompt,
-      notes: input.notes?.trim() ?? "",
-      deadline: input.deadline ?? null,
-      taskType,
-      provider: input.provider,
-      providerProfile: input.providerProfile,
-      modelOverride: input.modelOverride,
-      codexCredentialSource: input.codexCredentialSource,
-      baseBranch: input.baseBranch?.trim() || repository.defaultBranch,
-      branchStrategy: taskType === "build" ? input.branchStrategy ?? "feature_branch" : "feature_branch",
-      model: input.model,
-      reasoningEffort: input.reasoningEffort
-    };
-  }
-
-  async buildTaskInputFromPullRequest(repository: Repository, input: CreateTaskFromPullRequestInput): Promise<CreateTaskInput> {
-    const { owner, repo } = parseGitHubRepository(repository.url);
-    const pullRequest = await this.fetchGitHubJson<GitHubPullRequest>(`/repos/${owner}/${repo}/pulls/${input.pullRequestNumber}`);
-
-    const response = await this.fetchGitHubGraphQL<PullRequestReviewThreadsResponse>(
-      `
-        query PullRequestReviewThreads($owner: String!, $repo: String!, $number: Int!) {
-          repository(owner: $owner, name: $repo) {
-            pullRequest(number: $number) {
-              reviewThreads(first: 100) {
-                nodes {
-                  isResolved
-                  isOutdated
-                  path
-                  line
-                  originalLine
-                  comments(first: 20) {
-                    nodes {
-                      body
-                      url
-                      createdAt
-                      diffHunk
-                      author {
-                        login
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      `,
-      { owner, repo, number: input.pullRequestNumber }
-    );
-
-    if (response.errors?.length) {
-      throw new GitHubImportError(response.errors.map((error) => error.message).join("; "));
-    }
-
-    const threads = response.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
-    const unresolvedThreads = threads.filter((thread) => !thread.isResolved && !thread.isOutdated);
-
-    if (unresolvedThreads.length === 0) {
-      throw new GitHubImportError("No unresolved pull request review threads found.", 409);
-    }
-
-    const threadBlocks = unresolvedThreads
-      .map((thread, index) => {
-        const location = [thread.path ?? "(unknown path)", thread.line ?? thread.originalLine ?? "unknown line"].join(":");
-        const commentBlocks = thread.comments.nodes
-          .map((comment) => {
-            const body = cleanMarkdownBlock(comment.body, 1800);
-            if (!body) {
-              return null;
-            }
-
-            const parts = [`- @${comment.author?.login ?? "unknown"} (${comment.createdAt})`, `  ${body.replace(/\n/g, "\n  ")}`, `  Source: ${comment.url}`];
-
-            const diffHunk = cleanMarkdownBlock(comment.diffHunk, 1200);
-            if (diffHunk) {
-              parts.push("", "  ```diff", `  ${diffHunk.replace(/\n/g, "\n  ")}`, "  ```");
-            }
-
-            return parts.join("\n");
-          })
-          .filter((value): value is string => Boolean(value));
-
-        return [`### Thread ${index + 1} (${location})`, ...commentBlocks].join("\n");
-      })
-      .join("\n\n");
-
-    const pullRequestBody = cleanMarkdownBlock(pullRequest.body, 4000);
-    const title = input.title?.trim() || `PR #${pullRequest.number}: ${pullRequest.title}`;
-    const prompt = [
-      `Implement the unresolved review feedback from GitHub pull request #${pullRequest.number}: ${pullRequest.title}.`,
-      `PR URL: ${pullRequest.html_url}`,
-      `Default branch: ${pullRequest.base.ref}`,
-      `PR branch: ${pullRequest.head.ref}`,
-      pullRequestBody ? `## Pull Request Description\n${pullRequestBody}` : null,
-      `## Unresolved Review Threads\n\n${threadBlocks}`
-    ]
-      .filter((value): value is string => Boolean(value))
-      .join("\n\n");
-
-    return {
-      title,
-      repoId: repository.id,
-      prompt,
-      notes: input.notes?.trim() ?? "",
-      deadline: input.deadline ?? null,
-      taskType: "build",
-      provider: input.provider,
-      providerProfile: input.providerProfile,
-      modelOverride: input.modelOverride,
-      codexCredentialSource: input.codexCredentialSource,
-      baseBranch: pullRequest.head.ref,
-      branchStrategy: "work_on_branch",
-      model: input.model,
-      reasoningEffort: input.reasoningEffort
-    };
-  }
-}
 ````
 
 ## File: apps/server/src/services/openai-task-prompt-magic-service.ts
@@ -25730,6 +25578,370 @@ export const normalizeTaskLifecycleStatus = (
 };
 ````
 
+## File: apps/server/src/services/github-import-service.ts
+````typescript
+import type {
+  CreateTaskFromIssueInput,
+  CreateTaskFromPullRequestInput,
+  CreateTaskInput,
+  GitHubBranchReference,
+  GitHubIssueReference,
+  GitHubPullRequestReference,
+  Repository
+} from "@agentswarm/shared-types";
+import type { SettingsStore } from "./settings-store.js";
+
+const GITHUB_API_URL = "https://api.github.com";
+const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
+
+interface GitHubUser {
+  login: string;
+}
+
+interface GitHubIssue {
+  number: number;
+  title: string;
+  body: string | null;
+  html_url: string;
+  labels?: Array<{ name: string }>;
+  pull_request?: Record<string, unknown>;
+}
+
+interface GitHubIssueComment {
+  body: string;
+  html_url: string;
+  user: GitHubUser | null;
+  created_at: string;
+}
+
+interface GitHubPullRequest {
+  number: number;
+  title: string;
+  body: string | null;
+  html_url: string;
+  head: { ref: string };
+  base: { ref: string };
+}
+
+interface GitHubBranch {
+  name: string;
+}
+
+interface ReviewThreadCommentNode {
+  body: string;
+  url: string;
+  createdAt: string;
+  diffHunk: string | null;
+  author: GitHubUser | null;
+}
+
+interface ReviewThreadNode {
+  isResolved: boolean;
+  isOutdated: boolean;
+  path: string | null;
+  line: number | null;
+  originalLine: number | null;
+  comments: {
+    nodes: ReviewThreadCommentNode[];
+  };
+}
+
+interface PullRequestReviewThreadsResponse {
+  data?: {
+    repository?: {
+      pullRequest?: {
+        reviewThreads?: {
+          nodes: ReviewThreadNode[];
+        };
+      };
+    };
+  };
+  errors?: Array<{ message: string }>;
+}
+
+export class GitHubImportError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode = 400
+  ) {
+    super(message);
+    this.name = "GitHubImportError";
+  }
+}
+
+const truncate = (value: string, maxLength: number): string =>
+  value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 3))}...` : value;
+
+const cleanMarkdownBlock = (value: string | null | undefined, maxLength = 3000): string | null => {
+  const normalized = (value ?? "").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  return truncate(normalized, maxLength);
+};
+
+const parseGitHubRepository = (repoUrl: string): { owner: string; repo: string } => {
+  const httpsMatch = repoUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  if (httpsMatch) {
+    return { owner: httpsMatch[1], repo: httpsMatch[2] };
+  }
+
+  const sshMatch = repoUrl.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
+  if (sshMatch) {
+    return { owner: sshMatch[1], repo: sshMatch[2] };
+  }
+
+  throw new GitHubImportError("Repository import currently supports github.com repositories only.");
+};
+
+export class GitHubImportService {
+  constructor(private readonly settingsStore: SettingsStore) {}
+
+  private async getGitHubToken(): Promise<string> {
+    const credentials = await this.settingsStore.getRuntimeCredentials();
+    if (!credentials.githubToken) {
+      throw new GitHubImportError("GitHub token is not configured in Settings.", 409);
+    }
+
+    return credentials.githubToken;
+  }
+
+  private async fetchGitHubJson<T>(path: string): Promise<T> {
+    const token = await this.getGitHubToken();
+    const response = await fetch(`${GITHUB_API_URL}${path}`, {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": "AgentSwarm",
+        "X-GitHub-Api-Version": "2022-11-28"
+      }
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new GitHubImportError(`GitHub API request failed (${response.status}): ${text || response.statusText}`, response.status);
+    }
+
+    return response.json() as Promise<T>;
+  }
+
+  private async fetchGitHubGraphQL<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    const token = await this.getGitHubToken();
+    const response = await fetch(GITHUB_GRAPHQL_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        "User-Agent": "AgentSwarm"
+      },
+      body: JSON.stringify({ query, variables })
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new GitHubImportError(`GitHub GraphQL request failed (${response.status}): ${text || response.statusText}`, response.status);
+    }
+
+    return response.json() as Promise<T>;
+  }
+
+  async listOpenIssues(repository: Repository): Promise<GitHubIssueReference[]> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const issues = await this.fetchGitHubJson<GitHubIssue[]>(`/repos/${owner}/${repo}/issues?state=open&sort=updated&direction=desc&per_page=50`);
+
+    return issues
+      .filter((issue) => !issue.pull_request)
+      .map((issue) => ({
+        number: issue.number,
+        title: issue.title,
+        url: issue.html_url
+      }));
+  }
+
+  async listOpenPullRequests(repository: Repository): Promise<GitHubPullRequestReference[]> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const pullRequests = await this.fetchGitHubJson<GitHubPullRequest[]>(`/repos/${owner}/${repo}/pulls?state=open&sort=updated&direction=desc&per_page=50`);
+
+    return pullRequests.map((pullRequest) => ({
+      number: pullRequest.number,
+      title: pullRequest.title,
+      url: pullRequest.html_url,
+      headBranch: pullRequest.head.ref,
+      baseBranch: pullRequest.base.ref
+    }));
+  }
+
+  async listBranches(repository: Repository): Promise<GitHubBranchReference[]> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const branches = await this.fetchGitHubJson<GitHubBranch[]>(`/repos/${owner}/${repo}/branches?per_page=100`);
+
+    return branches.map((branch) => ({
+      name: branch.name,
+      isDefault: branch.name === repository.defaultBranch
+    }));
+  }
+
+  async buildTaskInputFromIssue(repository: Repository, input: CreateTaskFromIssueInput): Promise<CreateTaskInput> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const issue = await this.fetchGitHubJson<GitHubIssue>(`/repos/${owner}/${repo}/issues/${input.issueNumber}`);
+
+    if (issue.pull_request) {
+      throw new GitHubImportError("That number belongs to a pull request. Use the PR import path instead.");
+    }
+
+    const comments = input.includeComments
+      ? await this.fetchGitHubJson<GitHubIssueComment[]>(`/repos/${owner}/${repo}/issues/${input.issueNumber}/comments?per_page=50`)
+      : [];
+
+    const commentBlocks = comments
+      .map((comment) => {
+        const body = cleanMarkdownBlock(comment.body, 1800);
+        if (!body) {
+          return null;
+        }
+
+        return [`### @${comment.user?.login ?? "unknown"} (${comment.created_at})`, body, `Source: ${comment.html_url}`].join("\n");
+      })
+      .filter((value): value is string => Boolean(value));
+
+    const issueBody = cleanMarkdownBlock(issue.body, 6000);
+    const labels = (issue.labels ?? []).map((label) => label.name).filter(Boolean);
+    const taskType = input.taskType ?? "build";
+    const title = input.title?.trim() || `Issue #${issue.number}: ${issue.title}`;
+    const prompt = [
+      `Imported from GitHub issue #${issue.number}: ${issue.title}`,
+      `Issue URL: ${issue.html_url}`,
+      labels.length > 0 ? `Labels: ${labels.join(", ")}` : null,
+      issueBody ? `## Issue Body\n${issueBody}` : null,
+      commentBlocks.length > 0 ? `## Issue Comments\n\n${commentBlocks.join("\n\n")}` : null
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join("\n\n");
+
+    return {
+      title,
+      repoId: repository.id,
+      prompt,
+      notes: input.notes?.trim() ?? "",
+      deadline: input.deadline ?? null,
+      taskType,
+      provider: input.provider,
+      providerProfile: input.providerProfile,
+      modelOverride: input.modelOverride,
+      codexCredentialSource: input.codexCredentialSource,
+      baseBranch: input.baseBranch?.trim() || repository.defaultBranch,
+      branchStrategy: taskType === "build" ? input.branchStrategy ?? "feature_branch" : "feature_branch",
+      model: input.model,
+      reasoningEffort: input.reasoningEffort
+    };
+  }
+
+  async buildTaskInputFromPullRequest(repository: Repository, input: CreateTaskFromPullRequestInput): Promise<CreateTaskInput> {
+    const { owner, repo } = parseGitHubRepository(repository.url);
+    const pullRequest = await this.fetchGitHubJson<GitHubPullRequest>(`/repos/${owner}/${repo}/pulls/${input.pullRequestNumber}`);
+
+    const response = await this.fetchGitHubGraphQL<PullRequestReviewThreadsResponse>(
+      `
+        query PullRequestReviewThreads($owner: String!, $repo: String!, $number: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $number) {
+              reviewThreads(first: 100) {
+                nodes {
+                  isResolved
+                  isOutdated
+                  path
+                  line
+                  originalLine
+                  comments(first: 20) {
+                    nodes {
+                      body
+                      url
+                      createdAt
+                      diffHunk
+                      author {
+                        login
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `,
+      { owner, repo, number: input.pullRequestNumber }
+    );
+
+    if (response.errors?.length) {
+      throw new GitHubImportError(response.errors.map((error) => error.message).join("; "));
+    }
+
+    const threads = response.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+    const unresolvedThreads = threads.filter((thread) => !thread.isResolved && !thread.isOutdated);
+
+    if (unresolvedThreads.length === 0) {
+      throw new GitHubImportError("No unresolved pull request review threads found.", 409);
+    }
+
+    const threadBlocks = unresolvedThreads
+      .map((thread, index) => {
+        const location = [thread.path ?? "(unknown path)", thread.line ?? thread.originalLine ?? "unknown line"].join(":");
+        const commentBlocks = thread.comments.nodes
+          .map((comment) => {
+            const body = cleanMarkdownBlock(comment.body, 1800);
+            if (!body) {
+              return null;
+            }
+
+            const parts = [`- @${comment.author?.login ?? "unknown"} (${comment.createdAt})`, `  ${body.replace(/\n/g, "\n  ")}`, `  Source: ${comment.url}`];
+
+            const diffHunk = cleanMarkdownBlock(comment.diffHunk, 1200);
+            if (diffHunk) {
+              parts.push("", "  ```diff", `  ${diffHunk.replace(/\n/g, "\n  ")}`, "  ```");
+            }
+
+            return parts.join("\n");
+          })
+          .filter((value): value is string => Boolean(value));
+
+        return [`### Thread ${index + 1} (${location})`, ...commentBlocks].join("\n");
+      })
+      .join("\n\n");
+
+    const pullRequestBody = cleanMarkdownBlock(pullRequest.body, 4000);
+    const title = input.title?.trim() || `PR #${pullRequest.number}: ${pullRequest.title}`;
+    const prompt = [
+      `Implement the unresolved review feedback from GitHub pull request #${pullRequest.number}: ${pullRequest.title}.`,
+      `PR URL: ${pullRequest.html_url}`,
+      `Default branch: ${pullRequest.base.ref}`,
+      `PR branch: ${pullRequest.head.ref}`,
+      pullRequestBody ? `## Pull Request Description\n${pullRequestBody}` : null,
+      `## Unresolved Review Threads\n\n${threadBlocks}`
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join("\n\n");
+
+    return {
+      title,
+      repoId: repository.id,
+      prompt,
+      notes: input.notes?.trim() ?? "",
+      deadline: input.deadline ?? null,
+      taskType: "build",
+      provider: input.provider,
+      providerProfile: input.providerProfile,
+      modelOverride: input.modelOverride,
+      codexCredentialSource: input.codexCredentialSource,
+      baseBranch: pullRequest.head.ref,
+      branchStrategy: "work_on_branch",
+      model: input.model,
+      reasoningEffort: input.reasoningEffort
+    };
+  }
+}
+````
+
 ## File: apps/web/e2e/auth.smoke.spec.ts
 ````typescript
 import { expect, test } from "@playwright/test";
@@ -28421,6 +28633,7 @@ interface GeneralSettingsForm {
 interface CredentialForm {
   githubToken?: string;
   openaiApiKey?: string;
+  codexAuthJson?: string;
   anthropicApiKey?: string;
 }
 
@@ -28445,7 +28658,7 @@ interface ResponsePreferencePresetFormValues {
   extraInstructions?: string;
 }
 
-type ClearCredentialTarget = "github" | "openai" | "anthropic";
+type ClearCredentialTarget = "github" | "openai" | "codexAuthJson" | "anthropic";
 
 const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
   { label: "stdio", value: "stdio" },
@@ -28569,6 +28782,14 @@ export function SettingsPage() {
         return;
       }
 
+      if (target === "codexAuthJson") {
+        const nextSettings = await api.updateCredentials({ clearCodexAuthJson: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["codexAuthJson"]);
+        message.success("Codex auth.json cleared");
+        return;
+      }
+
       const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
       setSettings(nextSettings);
       credentialForm.resetFields(["anthropicApiKey"]);
@@ -28581,6 +28802,11 @@ export function SettingsPage() {
 
       if (target === "openai") {
         message.error(error instanceof Error ? error.message : "Failed to clear OpenAI API key");
+        return;
+      }
+
+      if (target === "codexAuthJson") {
+        message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");
         return;
       }
 
@@ -28881,6 +29107,9 @@ export function SettingsPage() {
                 <Tag color={settings.openaiApiKeyConfigured ? "green" : "default"}>
                   OpenAI API Key {settings.openaiApiKeyConfigured ? "Configured" : "Missing"}
                 </Tag>
+                <Tag color={settings.codexAuthJsonConfigured ? "green" : "default"}>
+                  Codex auth.json {settings.codexAuthJsonConfigured ? "Configured" : "Missing"}
+                </Tag>
                 <Tag color={settings.anthropicApiKeyConfigured ? "green" : "default"}>
                   Anthropic API Key (Claude, experimental) {settings.anthropicApiKeyConfigured ? "Configured" : "Missing"}
                 </Tag>
@@ -28905,6 +29134,7 @@ export function SettingsPage() {
                 const nextSettings = await api.updateCredentials({
                   githubToken: values.githubToken?.trim() || undefined,
                   openaiApiKey: values.openaiApiKey?.trim() || undefined,
+                  codexAuthJson: values.codexAuthJson?.trim() || undefined,
                   anthropicApiKey: values.anthropicApiKey?.trim() || undefined
                 });
                 credentialForm.resetFields();
@@ -28922,6 +29152,12 @@ export function SettingsPage() {
             </Form.Item>
             <Form.Item name="openaiApiKey" label="OpenAI API Key">
               <Input.Password placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."} />
+            </Form.Item>
+            <Form.Item name="codexAuthJson" label="Global Codex auth.json" extra="Used as the Global Codex credential source and as the Auto fallback after profile auth.json.">
+              <Input.TextArea
+                autoSize={{ minRows: 4, maxRows: 10 }}
+                placeholder={settings?.codexAuthJsonConfigured ? "Configured. Paste a new auth.json to replace it." : "{ ... }"}
+              />
             </Form.Item>
             <Form.Item
               name="anthropicApiKey"
@@ -28960,6 +29196,20 @@ export function SettingsPage() {
               >
                 <Button danger loading={savingCredentials} disabled={!canEditSettings}>
                   Clear OpenAI API Key
+                </Button>
+              </Popconfirm>
+              <Popconfirm
+                title="Clear Codex auth.json?"
+                description="This removes the stored global Codex auth.json from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
+                disabled={!canEditSettings}
+                onConfirm={() => handleClearCredential("codexAuthJson")}
+              >
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear Codex auth.json
                 </Button>
               </Popconfirm>
               <Popconfirm
@@ -29653,110 +29903,6 @@ export function SnippetsPage() {
           />
         </Card>
       </Space>
-    </>
-  );
-}
-````
-
-## File: apps/web/components/task-create-page.tsx
-````typescript
-"use client";
-
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import type { TaskType } from "@agentswarm/shared-types";
-import { Button, Flex, Form, Space, Typography, message } from "antd";
-import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
-import { trackEvent } from "../src/utils/analytics";
-import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
-import { useAuth } from "./auth-provider";
-import {
-  TaskDefinitionFields,
-  type TaskDefinitionFormValues,
-  buildTaskDefinitionInput,
-  getTaskDefinitionInitialValues
-} from "./task-definition-fields";
-
-export function TaskCreatePage() {
-  const router = useRouter();
-  const { can } = useAuth();
-  const [form] = Form.useForm<TaskDefinitionFormValues>();
-  const [submitting, setSubmitting] = useState(false);
-  const [savingDraft, setSavingDraft] = useState(false);
-  const [messageApi, contextHolder] = message.useMessage();
-  const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
-  const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
-  const canCreateAnyTaskMode = can("task:build") || can("task:ask");
-
-  const pageTitle = selectedTaskType === "ask" ? "New Ask Task" : "New Build Task";
-
-  const handleSubmit = async (values: TaskDefinitionFormValues) => {
-    setSubmitting(true);
-    try {
-      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
-      const definition = buildTaskDefinitionInput(values, encodedAttachments);
-      trackEvent("task_create_submitted", { task_type: definition.taskType });
-      const task = await createTaskFromDefinition(definition);
-
-      messageApi.success(startMessageForDefinition(definition));
-      setPromptImageFiles([]);
-      router.push(`/tasks/${task.id}`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to create task");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleSaveDraft = async () => {
-    const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
-    setSavingDraft(true);
-    try {
-      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
-      const definition = buildTaskDefinitionInput(values, encodedAttachments);
-      const draft = await createTaskFromDefinition(definition, { draft: true });
-      messageApi.success("Draft saved");
-      router.push(`/tasks/${draft.id}`);
-    } catch (error) {
-      messageApi.error(error instanceof Error ? error.message : "Failed to save draft");
-    } finally {
-      setSavingDraft(false);
-    }
-  };
-
-  return (
-    <>
-      {contextHolder}
-      <Form
-        form={form}
-        layout="vertical"
-        initialValues={getTaskDefinitionInitialValues()}
-        onFinish={handleSubmit}
-      >
-        <Flex vertical gap={16}>
-          <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-            <Flex vertical gap={0}>
-              <Typography.Title level={2} style={{ margin: 0 }}>
-                {pageTitle}
-              </Typography.Title>
-              <Typography.Text type="secondary">
-                Configure the task on the left and write the prompt on the right.
-              </Typography.Text>
-            </Flex>
-            <Space>
-              <Button onClick={() => router.push("/tasks")}>Cancel</Button>
-              <Button loading={savingDraft} onClick={() => void handleSaveDraft()}>
-                Save Draft
-              </Button>
-              <Button type="primary" htmlType="submit" loading={submitting} disabled={!canCreateAnyTaskMode}>
-                Create Task
-              </Button>
-            </Space>
-          </Flex>
-
-          <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
-        </Flex>
-      </Form>
     </>
   );
 }
@@ -31253,7 +31399,7 @@ function resolveInteractiveTerminalRuntimeConfig(
     return { ok: false, reason: "Interactive Codex is not configured (set CODEX_INTERACTIVE_IMAGE on the server)." };
   }
   if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
-    return { ok: false, reason: "OpenAI API key or profile Codex auth.json is not configured." };
+    return { ok: false, reason: "OpenAI API key or Codex auth.json is not configured." };
   }
   const useCodexAuthJson = Boolean(credentials.codexAuthJson);
 
@@ -33371,6 +33517,110 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
 }
 ````
 
+## File: apps/web/components/task-create-page.tsx
+````typescript
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import type { TaskType } from "@agentswarm/shared-types";
+import { Button, Flex, Form, Space, Typography, message } from "antd";
+import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
+import { trackEvent } from "../src/utils/analytics";
+import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
+import { useAuth } from "./auth-provider";
+import {
+  TaskDefinitionFields,
+  type TaskDefinitionFormValues,
+  buildTaskDefinitionInput,
+  getTaskDefinitionInitialValues
+} from "./task-definition-fields";
+
+export function TaskCreatePage() {
+  const router = useRouter();
+  const { can } = useAuth();
+  const [form] = Form.useForm<TaskDefinitionFormValues>();
+  const [submitting, setSubmitting] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [messageApi, contextHolder] = message.useMessage();
+  const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
+  const [promptImageFiles, setPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
+  const canCreateAnyTaskMode = can("task:build") || can("task:ask");
+
+  const pageTitle = selectedTaskType === "ask" ? "New Ask Task" : "New Build Task";
+
+  const handleSubmit = async (values: TaskDefinitionFormValues) => {
+    setSubmitting(true);
+    try {
+      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
+      const definition = buildTaskDefinitionInput(values, encodedAttachments);
+      trackEvent("task_create_submitted", { task_type: definition.taskType });
+      const task = await createTaskFromDefinition(definition);
+
+      messageApi.success(startMessageForDefinition(definition));
+      setPromptImageFiles([]);
+      router.push(`/tasks/${task.id}`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to create task");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSaveDraft = async () => {
+    const values = form.getFieldsValue(true) as TaskDefinitionFormValues;
+    setSavingDraft(true);
+    try {
+      const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
+      const definition = buildTaskDefinitionInput(values, encodedAttachments);
+      const draft = await createTaskFromDefinition(definition, { draft: true });
+      messageApi.success("Draft saved");
+      router.push(`/tasks/${draft.id}`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to save draft");
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
+  return (
+    <>
+      {contextHolder}
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={getTaskDefinitionInitialValues()}
+        onFinish={handleSubmit}
+      >
+        <Flex vertical gap={16}>
+          <Flex align="center" justify="space-between" gap={16} wrap="wrap">
+            <Flex vertical gap={0}>
+              <Typography.Title level={2} style={{ margin: 0 }}>
+                {pageTitle}
+              </Typography.Title>
+              <Typography.Text type="secondary">
+                Configure the task on the left and write the prompt on the right.
+              </Typography.Text>
+            </Flex>
+            <Space>
+              <Button onClick={() => router.push("/tasks")}>Cancel</Button>
+              <Button loading={savingDraft} onClick={() => void handleSaveDraft()}>
+                Save Draft
+              </Button>
+              <Button type="primary" htmlType="submit" loading={submitting} disabled={!canCreateAnyTaskMode}>
+                Create Task
+              </Button>
+            </Space>
+          </Flex>
+
+          <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
+        </Flex>
+      </Form>
+    </>
+  );
+}
+````
+
 ## File: apps/web/components/tasks-page.tsx
 ````typescript
 "use client";
@@ -34731,6 +34981,7 @@ const defaultSettings: SystemSettings = {
     "You are an expert prompt editor for software engineering tasks.\nRewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.\n\nRequirements:\n- Preserve intent and constraints.\n- Make it specific and actionable.\n- Include acceptance criteria when implied.\n- Avoid changing requested scope.\n- Return plain text only, no markdown fences.\n\nUser request:\n{{user_request}}\n",
   githubTokenConfigured: false,
   openaiApiKeyConfigured: false,
+  codexAuthJsonConfigured: false,
   anthropicApiKeyConfigured: false,
   codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.4",
   codexDefaultEffort: DEFAULT_CODEX_EFFORT,
@@ -34928,7 +35179,7 @@ export interface SettingsStore {
   getSettings(): Promise<SystemSettings>;
   updateSettings(input: UpdateSettingsInput): Promise<SystemSettings>;
   updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings>;
-  getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials>;
+  getRuntimeCredentials(userId?: string | null, codexCredentialSource?: "auto" | "profile" | "global"): Promise<SettingsRuntimeCredentials>;
   getUserNotes(userId: string): Promise<UserNotes>;
   updateUserNotes(userId: string, notes: string): Promise<UserNotes>;
 }
@@ -35052,14 +35303,21 @@ export class RedisSettingsStore implements SettingsStore {
     return settings;
   }
 
-  async getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials> {
+  async getRuntimeCredentials(userId?: string | null, codexCredentialSource: "auto" | "profile" | "global" = "auto"): Promise<SettingsRuntimeCredentials> {
     const [credentials, settings] = await Promise.all([
       this.credentialStore.getCredentials(),
       this.getSettings()
     ]);
-    const codexAuthJson = userId?.trim()
+    const profileCodexAuthJson = userId?.trim()
       ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
       : null;
+    const globalCodexAuthJson = credentials.codexAuthJson ?? null;
+    const codexAuthJson =
+      codexCredentialSource === "profile"
+        ? profileCodexAuthJson
+        : codexCredentialSource === "global"
+          ? globalCodexAuthJson
+          : profileCodexAuthJson || globalCodexAuthJson;
 
     return {
       ...credentials,
@@ -35308,14 +35566,21 @@ export class PostgresSettingsStore implements SettingsStore {
     return settings;
   }
 
-  async getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials> {
+  async getRuntimeCredentials(userId?: string | null, codexCredentialSource: "auto" | "profile" | "global" = "auto"): Promise<SettingsRuntimeCredentials> {
     const [credentials, settings] = await Promise.all([
       this.credentialStore.getCredentials(),
       this.getSettings()
     ]);
-    const codexAuthJson = userId?.trim()
+    const profileCodexAuthJson = userId?.trim()
       ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
       : null;
+    const globalCodexAuthJson = credentials.codexAuthJson ?? null;
+    const codexAuthJson =
+      codexCredentialSource === "profile"
+        ? profileCodexAuthJson
+        : codexCredentialSource === "global"
+          ? globalCodexAuthJson
+          : profileCodexAuthJson || globalCodexAuthJson;
 
     return {
       ...credentials,
@@ -36481,424 +36746,6 @@ test("shows active auto runs as grouped cards before summary or diff exist", () 
 });
 ````
 
-## File: apps/server/src/routes/imports.ts
-````typescript
-import { z } from "zod";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { AuthService } from "../lib/auth.js";
-import type { RepositoryStore } from "../services/repository-store.js";
-import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
-import { canUserAccessRepository } from "../lib/task-ownership.js";
-
-export const registerImportRoutes = (
-  app: FastifyInstance,
-  deps: {
-    githubImportService: GitHubImportService;
-    repositoryStore: RepositoryStore;
-    auth: AuthService;
-  }
-): void => {
-  const getAccessibleRepository = async (
-    repoId: string,
-    request: FastifyRequest,
-    reply: FastifyReply
-  ) => {
-    const repository = await deps.repositoryStore.getRepository(repoId);
-    if (!repository || !canUserAccessRepository(request.auth?.user, repoId)) {
-      await reply.status(404).send({ message: "Repository not found" });
-      return null;
-    }
-
-    return repository;
-  };
-
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/pull-requests", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repoId = String(request.query.repoId ?? "").trim();
-    if (!repoId) {
-      return reply.status(400).send({ message: "repoId is required" });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const pullRequests = await deps.githubImportService.listOpenPullRequests(repository);
-      return reply.send(pullRequests);
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-
-  app.get<{ Querystring: { repoId: string } }>("/imports/github/branches", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
-    const repoId = String(request.query.repoId ?? "").trim();
-    if (!repoId) {
-      return reply.status(400).send({ message: "repoId is required" });
-    }
-
-    try {
-      const repository = await getAccessibleRepository(repoId, request, reply);
-      if (!repository) {
-        return;
-      }
-
-      const branches = await deps.githubImportService.listBranches(repository);
-      return reply.send(branches);
-    } catch (error) {
-      if (error instanceof GitHubImportError) {
-        return reply.status(error.statusCode).send({ message: error.message });
-      }
-
-      throw error;
-    }
-  });
-};
-````
-
-## File: apps/server/src/index.ts
-````typescript
-import Fastify from "fastify";
-import { randomUUID } from "node:crypto";
-import cookie from "@fastify/cookie";
-import cors from "@fastify/cors";
-import * as Sentry from "@sentry/node";
-import { Server as SocketIOServer } from "socket.io";
-import type { RealtimeEvent } from "@agentswarm/shared-types";
-import { env } from "./config/env.js";
-import { createAuthService } from "./lib/auth.js";
-import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
-import { createRedisClients } from "./lib/redis.js";
-import { EventBus } from "./lib/events.js";
-import { createPostgresStores } from "./services/create-postgres-stores.js";
-import { registerAuthRoutes } from "./routes/auth.js";
-import { SpawnerService } from "./services/spawner.js";
-import { SchedulerService } from "./services/scheduler.js";
-import { GitHubImportService } from "./services/github-import-service.js";
-import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
-import { GitHubOutboundService } from "./services/github-outbound-service.js";
-import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
-import { registerRoleRoutes } from "./routes/roles.js";
-import { registerTaskRoutes } from "./routes/tasks.js";
-import { registerUserRoutes } from "./routes/users.js";
-import { registerSettingsRoutes } from "./routes/settings.js";
-import { registerRepositoryRoutes } from "./routes/repositories.js";
-import { registerImportRoutes } from "./routes/imports.js";
-import { registerSnippetRoutes } from "./routes/snippets.js";
-import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
-import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
-
-const readHeaderValue = (value: string | string[] | undefined): string | null => {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  if (Array.isArray(value) && value.length > 0) {
-    const first = value[0]?.trim();
-    return first && first.length > 0 ? first : null;
-  }
-  return null;
-};
-
-const getOperationIdFromHeaders = (headers: Record<string, string | string[] | undefined>): string | null =>
-  readHeaderValue(headers["x-operation-id"]) ?? readHeaderValue(headers["x-agent-operation-id"]);
-
-const bootstrap = async (): Promise<void> => {
-  const sentryEnabled = env.SENTRY_ENABLED && env.SENTRY_DSN.trim().length > 0;
-  if (sentryEnabled) {
-    Sentry.init({
-      dsn: env.SENTRY_DSN,
-      tracesSampleRate: 1
-    });
-  }
-
-  const app = Fastify({
-    logger: {
-      level: process.env.LOG_LEVEL ?? "info",
-      base: { service: "agentswarm-server" }
-    },
-    disableRequestLogging: true,
-    requestIdHeader: "x-request-id",
-    genReqId: (rawRequest) => readHeaderValue(rawRequest.headers["x-request-id"]) ?? randomUUID(),
-    bodyLimit: 35 * 1024 * 1024
-  });
-  await app.register(cookie);
-  app.decorateRequest("auth", null);
-  await app.register(cors, {
-    origin: env.CORS_ORIGIN,
-    credentials: true
-  });
-  app.addHook("onRequest", async (request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    reply.header("x-request-id", request.id);
-    if (operationId) {
-      reply.header("x-operation-id", operationId);
-    }
-    request.log.info(
-      {
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url
-      },
-      "request.started"
-    );
-  });
-  app.addHook("onResponse", async (request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    request.log.info(
-      {
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url,
-        statusCode: reply.statusCode,
-        durationMs: reply.elapsedTime
-      },
-      "request.completed"
-    );
-  });
-  app.log.info(
-    {
-      event: "startup.config",
-      port: env.PORT,
-      corsOrigin: env.CORS_ORIGIN,
-      durableStores: "postgres",
-      runtimeServices: "redis",
-      postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
-      sentryEnabled,
-      taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
-      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
-    },
-    "Server configuration loaded"
-  );
-
-  const redisClients = createRedisClients(env.REDIS_URL);
-  const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
-  const postgresPool = createPostgresPool(env.DATABASE_URL);
-  if (env.POSTGRES_AUTO_MIGRATE) {
-    app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
-    await runPostgresMigrations(postgresPool);
-    app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
-  } else {
-    app.log.info({ event: "startup.migrations", mode: "manual" }, "Skipping auto-migrations");
-  }
-
-  const {
-    taskStore,
-    taskQueueStore,
-    githubOutboundQueueStore,
-    webhookDeliveryStore,
-    snippetStore,
-    repositoryStore,
-    credentialStore,
-    roleStore,
-    userStore,
-    sessionStore,
-    settingsStore
-  } = createPostgresStores(
-    postgresPool,
-    redisClients,
-    eventBus,
-    env.AUTH_SESSION_TTL_DAYS
-  );
-  const auth = createAuthService({
-    userStore,
-    sessionStore,
-    cookieName: env.AUTH_COOKIE_NAME,
-    taskStore,
-    credentialStore
-  });
-  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
-  const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
-  const githubImportService = new GitHubImportService(settingsStore);
-  const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
-  const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
-  const githubStatusSyncService = new GitHubStatusSyncService(repositoryStore, githubOutboundService);
-
-  await roleStore.ensureDefaultAdminRole();
-  await userStore.ensureDefaultAdminUser({
-    name: env.DEFAULT_ADMIN_NAME,
-    email: env.DEFAULT_ADMIN_EMAIL,
-    password: env.DEFAULT_ADMIN_PASSWORD
-  });
-
-  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore });
-  registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
-  registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
-  registerTaskRoutes(app, {
-    taskStore,
-    taskQueueStore,
-    repositoryStore,
-    userStore,
-    scheduler,
-    spawner,
-    settingsStore,
-    snippetStore,
-    auth
-  });
-  registerSnippetRoutes(app, { snippetStore, auth });
-  registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
-  registerSettingsRoutes(app, { settingsStore, scheduler, auth });
-  registerImportRoutes(app, { githubImportService, repositoryStore, auth });
-  registerGitHubWebhookRoutes(app, {
-    repositoryStore,
-    githubImportService,
-    taskStore,
-    userStore,
-    scheduler,
-    spawner,
-    snippetStore
-  });
-
-  app.get("/health", async () => ({ ok: true }));
-
-  app.setErrorHandler((error, request, reply) => {
-    const operationId = getOperationIdFromHeaders(request.headers);
-    request.log.error(
-      {
-        err: error,
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url
-      },
-      "request.failed"
-    );
-    if (sentryEnabled) {
-      Sentry.captureException(error, {
-        tags: {
-          route: request.routeOptions.url
-        },
-        extra: {
-          requestId: request.id,
-          operationId,
-          method: request.method,
-          url: request.url
-        }
-      });
-    }
-    void reply.send(error);
-  });
-
-  await app.ready();
-  attachTaskInteractiveTerminalUpgrade(app.server, {
-    auth,
-    taskStore,
-    settingsStore,
-    spawner,
-    userStore,
-    repositoryStore
-  });
-
-  const io = new SocketIOServer(app.server, {
-    cors: {
-      origin: env.CORS_ORIGIN,
-      credentials: true
-    }
-  });
-  io.use(auth.authorizeSocket());
-
-  io.on("connection", (socket) => {
-    auth.onSocketConnection(socket);
-    app.log.info({ socketId: socket.id }, "Socket client connected");
-  });
-
-  await redisClients.sub.subscribe(env.EVENT_CHANNEL);
-  redisClients.sub.on("message", (_channel, message) => {
-    try {
-      const event = JSON.parse(message) as RealtimeEvent;
-      void webhookDeliveryService.handleRealtimeEvent(event);
-      void githubStatusSyncService.handleRealtimeEvent(event);
-      void auth.emitScopedRealtimeEvent(io, event);
-    } catch (error) {
-      app.log.error({ error }, "Failed to parse event message");
-    }
-  });
-
-  webhookDeliveryService.start();
-  githubOutboundService.start();
-  await scheduler.bootstrap();
-
-  let closeStarted = false;
-  const close = async (): Promise<void> => {
-    if (closeStarted) {
-      return;
-    }
-    closeStarted = true;
-    scheduler.stop();
-    webhookDeliveryService.stop();
-    githubOutboundService.stop();
-    io.close();
-    await Promise.all([
-      ...(postgresPool ? [postgresPool.end()] : []),
-      redisClients.command.quit(),
-      redisClients.pub.quit(),
-      redisClients.sub.quit()
-    ]);
-    await app.close();
-    if (sentryEnabled) {
-      await Sentry.close(2_000);
-    }
-  };
-
-  process.on("SIGINT", () => {
-    app.log.warn({ signal: "SIGINT" }, "Shutdown signal received");
-    void close();
-  });
-  process.on("SIGTERM", () => {
-    app.log.warn({ signal: "SIGTERM" }, "Shutdown signal received");
-    void close();
-  });
-
-  process.on("uncaughtException", (error) => {
-    app.log.fatal({ err: error }, "Unhandled exception");
-    if (sentryEnabled) {
-      Sentry.captureException(error);
-    }
-    void close().finally(() => process.exit(1));
-  });
-  process.on("unhandledRejection", (reason) => {
-    app.log.fatal({ reason }, "Unhandled promise rejection");
-    if (sentryEnabled) {
-      Sentry.captureException(reason);
-    }
-    void close().finally(() => process.exit(1));
-  });
-
-  const listenAddress = await app.listen({ port: env.PORT, host: "0.0.0.0" });
-  app.log.info(
-    {
-      event: "startup.ready",
-      listenAddress,
-      healthPath: "/health",
-      proxyHealthPath: "/api/health"
-    },
-    "Server started"
-  );
-};
-
-void bootstrap().catch((error) => {
-  // Startup errors should stop the process so Docker restart policies can react.
-  const errorForLog =
-    error instanceof Error
-      ? { name: error.name, message: error.message, stack: error.stack }
-      : { message: String(error) };
-  console.error(
-    JSON.stringify({
-      level: "fatal",
-      event: "startup.bootstrap_failed",
-      error: errorForLog
-    })
-  );
-  process.exit(1);
-});
-````
-
 ## File: apps/web/src/auth/access.ts
 ````typescript
 import type { PermissionScope } from "@agentswarm/shared-types";
@@ -37003,37 +36850,6 @@ export const getSelectedNavigationKey = (pathname: string): string => {
   }
 
   return pathname;
-};
-````
-
-## File: apps/web/src/utils/task-definition-submit.ts
-````typescript
-"use client";
-
-import type { Task, TaskDefinitionInput } from "@agentswarm/shared-types";
-import { api } from "../api/client";
-
-export const startMessageForDefinition = (definition: TaskDefinitionInput): string => {
-  return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
-};
-
-export const createTaskFromDefinition = (definition: TaskDefinitionInput, options: { draft?: boolean } = {}): Promise<Task> => {
-  return api.createTask({
-    title: definition.title,
-    draft: options.draft,
-    repoId: definition.repoId,
-    prompt: definition.prompt,
-    notes: definition.notes,
-    deadline: definition.deadline,
-    attachments: definition.attachments,
-    taskType: definition.taskType,
-    provider: definition.provider,
-    providerProfile: definition.providerProfile,
-    modelOverride: definition.model || undefined,
-    codexCredentialSource: definition.codexCredentialSource,
-    baseBranch: definition.baseBranch,
-    branchStrategy: definition.branchStrategy
-  });
 };
 ````
 
@@ -37486,6 +37302,424 @@ HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
 ## License
 
 No license file is currently present in this repository. Treat the code as private/proprietary unless a license is added by the project owner.
+````
+
+## File: apps/server/src/routes/imports.ts
+````typescript
+import { z } from "zod";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { AuthService } from "../lib/auth.js";
+import type { RepositoryStore } from "../services/repository-store.js";
+import { GitHubImportError, type GitHubImportService } from "../services/github-import-service.js";
+import { canUserAccessRepository } from "../lib/task-ownership.js";
+
+export const registerImportRoutes = (
+  app: FastifyInstance,
+  deps: {
+    githubImportService: GitHubImportService;
+    repositoryStore: RepositoryStore;
+    auth: AuthService;
+  }
+): void => {
+  const getAccessibleRepository = async (
+    repoId: string,
+    request: FastifyRequest,
+    reply: FastifyReply
+  ) => {
+    const repository = await deps.repositoryStore.getRepository(repoId);
+    if (!repository || !canUserAccessRepository(request.auth?.user, repoId)) {
+      await reply.status(404).send({ message: "Repository not found" });
+      return null;
+    }
+
+    return repository;
+  };
+
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/pull-requests", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repoId = String(request.query.repoId ?? "").trim();
+    if (!repoId) {
+      return reply.status(400).send({ message: "repoId is required" });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      const pullRequests = await deps.githubImportService.listOpenPullRequests(repository);
+      return reply.send(pullRequests);
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+
+  app.get<{ Querystring: { repoId: string } }>("/imports/github/branches", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repoId = String(request.query.repoId ?? "").trim();
+    if (!repoId) {
+      return reply.status(400).send({ message: "repoId is required" });
+    }
+
+    try {
+      const repository = await getAccessibleRepository(repoId, request, reply);
+      if (!repository) {
+        return;
+      }
+
+      const branches = await deps.githubImportService.listBranches(repository);
+      return reply.send(branches);
+    } catch (error) {
+      if (error instanceof GitHubImportError) {
+        return reply.status(error.statusCode).send({ message: error.message });
+      }
+
+      throw error;
+    }
+  });
+};
+````
+
+## File: apps/server/src/index.ts
+````typescript
+import Fastify from "fastify";
+import { randomUUID } from "node:crypto";
+import cookie from "@fastify/cookie";
+import cors from "@fastify/cors";
+import * as Sentry from "@sentry/node";
+import { Server as SocketIOServer } from "socket.io";
+import type { RealtimeEvent } from "@agentswarm/shared-types";
+import { env } from "./config/env.js";
+import { createAuthService } from "./lib/auth.js";
+import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
+import { createRedisClients } from "./lib/redis.js";
+import { EventBus } from "./lib/events.js";
+import { createPostgresStores } from "./services/create-postgres-stores.js";
+import { registerAuthRoutes } from "./routes/auth.js";
+import { SpawnerService } from "./services/spawner.js";
+import { SchedulerService } from "./services/scheduler.js";
+import { GitHubImportService } from "./services/github-import-service.js";
+import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
+import { GitHubOutboundService } from "./services/github-outbound-service.js";
+import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
+import { registerRoleRoutes } from "./routes/roles.js";
+import { registerTaskRoutes } from "./routes/tasks.js";
+import { registerUserRoutes } from "./routes/users.js";
+import { registerSettingsRoutes } from "./routes/settings.js";
+import { registerRepositoryRoutes } from "./routes/repositories.js";
+import { registerImportRoutes } from "./routes/imports.js";
+import { registerSnippetRoutes } from "./routes/snippets.js";
+import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
+import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
+
+const readHeaderValue = (value: string | string[] | undefined): string | null => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (Array.isArray(value) && value.length > 0) {
+    const first = value[0]?.trim();
+    return first && first.length > 0 ? first : null;
+  }
+  return null;
+};
+
+const getOperationIdFromHeaders = (headers: Record<string, string | string[] | undefined>): string | null =>
+  readHeaderValue(headers["x-operation-id"]) ?? readHeaderValue(headers["x-agent-operation-id"]);
+
+const bootstrap = async (): Promise<void> => {
+  const sentryEnabled = env.SENTRY_ENABLED && env.SENTRY_DSN.trim().length > 0;
+  if (sentryEnabled) {
+    Sentry.init({
+      dsn: env.SENTRY_DSN,
+      tracesSampleRate: 1
+    });
+  }
+
+  const app = Fastify({
+    logger: {
+      level: process.env.LOG_LEVEL ?? "info",
+      base: { service: "agentswarm-server" }
+    },
+    disableRequestLogging: true,
+    requestIdHeader: "x-request-id",
+    genReqId: (rawRequest) => readHeaderValue(rawRequest.headers["x-request-id"]) ?? randomUUID(),
+    bodyLimit: 35 * 1024 * 1024
+  });
+  await app.register(cookie);
+  app.decorateRequest("auth", null);
+  await app.register(cors, {
+    origin: env.CORS_ORIGIN,
+    credentials: true
+  });
+  app.addHook("onRequest", async (request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    reply.header("x-request-id", request.id);
+    if (operationId) {
+      reply.header("x-operation-id", operationId);
+    }
+    request.log.info(
+      {
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url
+      },
+      "request.started"
+    );
+  });
+  app.addHook("onResponse", async (request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    request.log.info(
+      {
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url,
+        statusCode: reply.statusCode,
+        durationMs: reply.elapsedTime
+      },
+      "request.completed"
+    );
+  });
+  app.log.info(
+    {
+      event: "startup.config",
+      port: env.PORT,
+      corsOrigin: env.CORS_ORIGIN,
+      durableStores: "postgres",
+      runtimeServices: "redis",
+      postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
+      sentryEnabled,
+      taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
+      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
+    },
+    "Server configuration loaded"
+  );
+
+  const redisClients = createRedisClients(env.REDIS_URL);
+  const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
+  const postgresPool = createPostgresPool(env.DATABASE_URL);
+  if (env.POSTGRES_AUTO_MIGRATE) {
+    app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
+    await runPostgresMigrations(postgresPool);
+    app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
+  } else {
+    app.log.info({ event: "startup.migrations", mode: "manual" }, "Skipping auto-migrations");
+  }
+
+  const {
+    taskStore,
+    taskQueueStore,
+    githubOutboundQueueStore,
+    webhookDeliveryStore,
+    snippetStore,
+    repositoryStore,
+    credentialStore,
+    roleStore,
+    userStore,
+    sessionStore,
+    settingsStore
+  } = createPostgresStores(
+    postgresPool,
+    redisClients,
+    eventBus,
+    env.AUTH_SESSION_TTL_DAYS
+  );
+  const auth = createAuthService({
+    userStore,
+    sessionStore,
+    cookieName: env.AUTH_COOKIE_NAME,
+    taskStore,
+    credentialStore
+  });
+  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
+  const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
+  const githubImportService = new GitHubImportService(settingsStore);
+  const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
+  const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
+  const githubStatusSyncService = new GitHubStatusSyncService(repositoryStore, githubOutboundService);
+
+  await roleStore.ensureDefaultAdminRole();
+  await userStore.ensureDefaultAdminUser({
+    name: env.DEFAULT_ADMIN_NAME,
+    email: env.DEFAULT_ADMIN_EMAIL,
+    password: env.DEFAULT_ADMIN_PASSWORD
+  });
+
+  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore });
+  registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
+  registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
+  registerTaskRoutes(app, {
+    taskStore,
+    taskQueueStore,
+    repositoryStore,
+    userStore,
+    scheduler,
+    spawner,
+    settingsStore,
+    snippetStore,
+    auth
+  });
+  registerSnippetRoutes(app, { snippetStore, auth });
+  registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
+  registerSettingsRoutes(app, { settingsStore, scheduler, auth });
+  registerImportRoutes(app, { githubImportService, repositoryStore, auth });
+  registerGitHubWebhookRoutes(app, {
+    repositoryStore,
+    githubImportService,
+    taskStore,
+    userStore,
+    scheduler,
+    spawner,
+    snippetStore
+  });
+
+  app.get("/health", async () => ({ ok: true }));
+
+  app.setErrorHandler((error, request, reply) => {
+    const operationId = getOperationIdFromHeaders(request.headers);
+    request.log.error(
+      {
+        err: error,
+        requestId: request.id,
+        operationId,
+        method: request.method,
+        url: request.url
+      },
+      "request.failed"
+    );
+    if (sentryEnabled) {
+      Sentry.captureException(error, {
+        tags: {
+          route: request.routeOptions.url
+        },
+        extra: {
+          requestId: request.id,
+          operationId,
+          method: request.method,
+          url: request.url
+        }
+      });
+    }
+    void reply.send(error);
+  });
+
+  await app.ready();
+  attachTaskInteractiveTerminalUpgrade(app.server, {
+    auth,
+    taskStore,
+    settingsStore,
+    spawner,
+    userStore,
+    repositoryStore
+  });
+
+  const io = new SocketIOServer(app.server, {
+    cors: {
+      origin: env.CORS_ORIGIN,
+      credentials: true
+    }
+  });
+  io.use(auth.authorizeSocket());
+
+  io.on("connection", (socket) => {
+    auth.onSocketConnection(socket);
+    app.log.info({ socketId: socket.id }, "Socket client connected");
+  });
+
+  await redisClients.sub.subscribe(env.EVENT_CHANNEL);
+  redisClients.sub.on("message", (_channel, message) => {
+    try {
+      const event = JSON.parse(message) as RealtimeEvent;
+      void webhookDeliveryService.handleRealtimeEvent(event);
+      void githubStatusSyncService.handleRealtimeEvent(event);
+      void auth.emitScopedRealtimeEvent(io, event);
+    } catch (error) {
+      app.log.error({ error }, "Failed to parse event message");
+    }
+  });
+
+  webhookDeliveryService.start();
+  githubOutboundService.start();
+  await scheduler.bootstrap();
+
+  let closeStarted = false;
+  const close = async (): Promise<void> => {
+    if (closeStarted) {
+      return;
+    }
+    closeStarted = true;
+    scheduler.stop();
+    webhookDeliveryService.stop();
+    githubOutboundService.stop();
+    io.close();
+    await Promise.all([
+      ...(postgresPool ? [postgresPool.end()] : []),
+      redisClients.command.quit(),
+      redisClients.pub.quit(),
+      redisClients.sub.quit()
+    ]);
+    await app.close();
+    if (sentryEnabled) {
+      await Sentry.close(2_000);
+    }
+  };
+
+  process.on("SIGINT", () => {
+    app.log.warn({ signal: "SIGINT" }, "Shutdown signal received");
+    void close();
+  });
+  process.on("SIGTERM", () => {
+    app.log.warn({ signal: "SIGTERM" }, "Shutdown signal received");
+    void close();
+  });
+
+  process.on("uncaughtException", (error) => {
+    app.log.fatal({ err: error }, "Unhandled exception");
+    if (sentryEnabled) {
+      Sentry.captureException(error);
+    }
+    void close().finally(() => process.exit(1));
+  });
+  process.on("unhandledRejection", (reason) => {
+    app.log.fatal({ reason }, "Unhandled promise rejection");
+    if (sentryEnabled) {
+      Sentry.captureException(reason);
+    }
+    void close().finally(() => process.exit(1));
+  });
+
+  const listenAddress = await app.listen({ port: env.PORT, host: "0.0.0.0" });
+  app.log.info(
+    {
+      event: "startup.ready",
+      listenAddress,
+      healthPath: "/health",
+      proxyHealthPath: "/api/health"
+    },
+    "Server started"
+  );
+};
+
+void bootstrap().catch((error) => {
+  // Startup errors should stop the process so Docker restart policies can react.
+  const errorForLog =
+    error instanceof Error
+      ? { name: error.name, message: error.message, stack: error.stack }
+      : { message: String(error) };
+  console.error(
+    JSON.stringify({
+      level: "fatal",
+      event: "startup.bootstrap_failed",
+      error: errorForLog
+    })
+  );
+  process.exit(1);
+});
 ````
 
 ## File: apps/web/components/app-shell.tsx
@@ -38222,6 +38456,37 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return <App>{shellContent}</App>;
 }
+````
+
+## File: apps/web/src/utils/task-definition-submit.ts
+````typescript
+"use client";
+
+import type { Task, TaskDefinitionInput } from "@agentswarm/shared-types";
+import { api } from "../api/client";
+
+export const startMessageForDefinition = (definition: TaskDefinitionInput): string => {
+  return definition.taskType === "ask" ? "Ask task created and started" : "Build task created and started";
+};
+
+export const createTaskFromDefinition = (definition: TaskDefinitionInput, options: { draft?: boolean } = {}): Promise<Task> => {
+  return api.createTask({
+    title: definition.title,
+    draft: options.draft,
+    repoId: definition.repoId,
+    prompt: definition.prompt,
+    notes: definition.notes,
+    deadline: definition.deadline,
+    attachments: definition.attachments,
+    taskType: definition.taskType,
+    provider: definition.provider,
+    providerProfile: definition.providerProfile,
+    modelOverride: definition.model || undefined,
+    codexCredentialSource: definition.codexCredentialSource,
+    baseBranch: definition.baseBranch,
+    branchStrategy: definition.branchStrategy
+  });
+};
 ````
 
 ## File: apps/server/src/db/migrations.ts
@@ -43172,696 +43437,6 @@ export class PostgresTaskStore implements TaskStore {
 }
 ````
 
-## File: apps/web/components/task-definition-fields.tsx
-````typescript
-"use client";
-
-import { useEffect, useState } from "react";
-import type { FormInstance } from "antd";
-import dayjs, { type Dayjs } from "dayjs";
-import type {
-  AgentProvider,
-  CodexCredentialSource,
-  CreateTaskPromptAttachmentInput,
-  GitHubBranchReference,
-  ProviderProfile,
-  Repository,
-  Snippet,
-  SystemSettings,
-  TaskBranchStrategy,
-  TaskDefinitionInput,
-  TaskType
-} from "@agentswarm/shared-types";
-import {
-  getAgentProviderLabel,
-  getDefaultModelForProvider,
-  getEffortOptionsForProvider,
-  getModelsForProvider
-} from "@agentswarm/shared-types";
-import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Typography, message } from "antd";
-import { RobotOutlined } from "@ant-design/icons";
-import { api } from "../src/api/client";
-import { useProviderModels } from "../src/hooks/useProviderModels";
-import { useRepositories } from "../src/hooks/useRepositories";
-import { useSettings } from "../src/hooks/useSettings";
-import { useSnippets } from "../src/hooks/useSnippets";
-import { trackEvent } from "../src/utils/analytics";
-import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
-import { type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
-import { useAuth } from "./auth-provider";
-import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
-
-export type TaskDefinitionFormValues = {
-  title?: string;
-  deadline?: string | null | Dayjs;
-  repoId?: string;
-  prompt?: string;
-  notes?: string;
-  taskType?: TaskType;
-  provider?: AgentProvider;
-  model?: string;
-  providerProfile?: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-};
-
-export interface TaskDefinitionFieldsProps {
-  form: FormInstance<TaskDefinitionFormValues>;
-  syncSettingsDefaults?: boolean;
-  lockRepository?: boolean;
-  allowPromptAttachments?: boolean;
-  promptImageFiles?: SelectedTaskPromptImageFile[];
-  onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
-}
-
-type SnippetVariableFormValues = Record<string, string>;
-
-const providerOptions = (
-  hasOpenAi: boolean,
-  hasAnthropic: boolean
-): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
-  { label: "Codex (OpenAI)", value: "codex", disabled: !hasOpenAi },
-  { label: getAgentProviderLabel("claude"), value: "claude", disabled: !hasAnthropic }
-];
-
-const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
-  { label: "Auto (Profile then Global)", value: "auto" },
-  { label: "Profile auth.json only", value: "profile" },
-  { label: "Global OpenAI key only", value: "global" }
-];
-
-const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSettings | null): string =>
-  provider === "claude"
-    ? settings?.claudeDefaultModel ?? getDefaultModelForProvider(provider)
-    : settings?.codexDefaultModel ?? getDefaultModelForProvider(provider);
-
-const getProviderDefaultProfile = (provider: AgentProvider, settings?: SystemSettings | null): ProviderProfile =>
-  provider === "claude" ? settings?.claudeDefaultEffort ?? "high" : settings?.codexDefaultEffort ?? "high";
-
-const deriveTitleFromPrompt = (prompt: string): string => {
-  const lines = prompt
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  if (lines.length === 0) {
-    return "";
-  }
-
-  const heading = lines.find((line) => /^#{1,6}\s+/.test(line));
-  if (heading) {
-    return heading.replace(/^#{1,6}\s+/, "").trim();
-  }
-
-  return lines[0];
-};
-
-export const getTaskDefinitionDeadlineIso = (value: TaskDefinitionFormValues["deadline"]): string | undefined => {
-  if (!value) {
-    return undefined;
-  }
-
-  const parsed = dayjs.isDayjs(value) ? value : dayjs(value);
-  return parsed.isValid() ? parsed.toISOString() : undefined;
-};
-
-export const getTaskDefinitionInitialValues = (
-  settings?: SystemSettings | null
-): Partial<TaskDefinitionFormValues> => {
-  const provider = settings?.defaultProvider ?? "codex";
-  return {
-    taskType: "build",
-    provider,
-    model: getProviderDefaultModel(provider, settings),
-    providerProfile: getProviderDefaultProfile(provider, settings),
-    codexCredentialSource: "auto",
-    branchStrategy: "feature_branch"
-  };
-};
-
-export const buildTaskDefinitionInput = (
-  values: TaskDefinitionFormValues,
-  promptAttachments: CreateTaskPromptAttachmentInput[] = []
-): TaskDefinitionInput => {
-  const provider = values.provider ?? "codex";
-  const codexCredentialSource = provider === "codex" ? (values.codexCredentialSource ?? "auto") : undefined;
-
-  return {
-    title: values.title?.trim() ?? "",
-    deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
-    repoId: values.repoId ?? "",
-    prompt: values.prompt?.trim() ?? "",
-    notes: values.notes?.trim() || undefined,
-    ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
-    taskType: values.taskType ?? "build",
-    provider,
-    model: values.model?.trim() ?? "",
-    providerProfile: values.providerProfile ?? "high",
-    ...(codexCredentialSource ? { codexCredentialSource } : {}),
-    baseBranch: values.baseBranch?.trim() ?? "",
-    branchStrategy: values.branchStrategy ?? "feature_branch"
-  };
-};
-
-export function TaskDefinitionFields({
-  form,
-  syncSettingsDefaults = true,
-  lockRepository = false,
-  allowPromptAttachments = true,
-  promptImageFiles = [],
-  onPromptImageFilesChange
-}: TaskDefinitionFieldsProps) {
-  const { can, session } = useAuth();
-  const { repositories } = useRepositories();
-  const { settings } = useSettings();
-  const [githubBranches, setGitHubBranches] = useState<GitHubBranchReference[]>([]);
-  const [githubOptionsLoading, setGitHubOptionsLoading] = useState(false);
-  const [magicPromptLoading, setMagicPromptLoading] = useState(false);
-  const [selectedSnippetToInsertId, setSelectedSnippetToInsertId] = useState<string | null>(null);
-  const [pendingSnippetForInsert, setPendingSnippetForInsert] = useState<Snippet | null>(null);
-  const [snippetVariableModalOpen, setSnippetVariableModalOpen] = useState(false);
-  const [snippetVariableForm] = Form.useForm<SnippetVariableFormValues>();
-  const canReadRepositoryMetadata = can("repo:read");
-  const canBuildTasks = can("task:build");
-  const canAskTasks = can("task:ask");
-  const canRunAutomatedTask = canBuildTasks || canAskTasks;
-  const canUseSnippets = can("snippet:list");
-
-  const selectedRepoId = Form.useWatch("repoId", form);
-  const selectedModel = Form.useWatch("model", form);
-  const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
-  const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
-  const selectedPrompt = Form.useWatch("prompt", form);
-  const { models: providerModels, loading: providerModelsLoading } = useProviderModels(selectedProvider);
-  const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
-  const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
-  const effectiveTaskType = selectedTaskType;
-  const isImplementationTask = effectiveTaskType === "build";
-  const providerMissingCredentials =
-    selectedProvider === "codex"
-      ? !(settings?.openaiApiKeyConfigured || session?.user.codexAuthJsonConfigured)
-      : !settings?.anthropicApiKeyConfigured;
-  const roleAllowedProviders = session?.user.allowedProviders ?? [];
-  const roleAllowedModels = session?.user.allowedModels ?? [];
-  const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
-  const providerSelectOptions = providerOptions(
-    Boolean(settings?.openaiApiKeyConfigured || session?.user.codexAuthJsonConfigured),
-    Boolean(settings?.anthropicApiKeyConfigured)
-  ).map(
-    (option) => ({
-      ...option,
-      disabled: Boolean(option.disabled || (roleAllowedProviders.length > 0 && !roleAllowedProviders.includes(option.value)))
-    })
-  );
-  const allowedModelOptions = providerModels.filter(
-    (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
-  );
-  const allowedEffortOptions = getEffortOptionsForProvider(selectedProvider).filter(
-    (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
-  );
-  const taskTypeOptions: Array<{ label: string; value: TaskType }> = [
-    ...(canBuildTasks ? [{ label: "Build", value: "build" as const }] : []),
-    ...(canAskTasks ? [{ label: "Ask", value: "ask" as const }] : [])
-  ];
-
-  useEffect(() => {
-    if (!settings || !syncSettingsDefaults) {
-      return;
-    }
-
-    const currentProvider = form.getFieldValue("provider") as AgentProvider | undefined;
-    const shouldReplaceProvider = !form.isFieldTouched("provider") && (!currentProvider || currentProvider === "codex");
-    const nextProvider = shouldReplaceProvider ? settings.defaultProvider : currentProvider ?? settings.defaultProvider;
-    const providerChanged = nextProvider !== currentProvider;
-
-    if (shouldReplaceProvider) {
-      form.setFieldValue("provider", nextProvider);
-    }
-
-    const currentModel = form.getFieldValue("model") as string | undefined;
-    const currentProfile = form.getFieldValue("providerProfile") as ProviderProfile | undefined;
-    const genericModel = getDefaultModelForProvider(currentProvider ?? nextProvider);
-
-    if (!form.isFieldTouched("model") && (providerChanged || !currentModel || currentModel === genericModel)) {
-      form.setFieldValue("model", getProviderDefaultModel(nextProvider, settings));
-    }
-
-    if (!form.isFieldTouched("providerProfile") && (providerChanged || !currentProfile || currentProfile === "high")) {
-      form.setFieldValue("providerProfile", getProviderDefaultProfile(nextProvider, settings));
-    }
-  }, [form, settings, syncSettingsDefaults]);
-
-  useEffect(() => {
-    const selected = providerSelectOptions.find((option) => option.value === selectedProvider && !option.disabled);
-    if (selected) {
-      return;
-    }
-
-    const fallback = providerSelectOptions.find((option) => !option.disabled);
-    if (!fallback) {
-      return;
-    }
-
-    form.setFieldValue("provider", fallback.value);
-  }, [form, providerSelectOptions, selectedProvider]);
-
-  useEffect(() => {
-    if (providerModelsLoading) {
-      return;
-    }
-    if (allowedModelOptions.length === 0) {
-      return;
-    }
-    if (allowedModelOptions.some((option) => option.value === selectedModel)) {
-      return;
-    }
-    form.setFieldValue("model", allowedModelOptions[0]?.value);
-  }, [allowedModelOptions, form, providerModelsLoading, selectedModel]);
-
-  useEffect(() => {
-    if (allowedEffortOptions.length === 0) {
-      return;
-    }
-    const currentProfile = form.getFieldValue("providerProfile") as ProviderProfile | undefined;
-    if (currentProfile && allowedEffortOptions.some((option) => option.value === currentProfile)) {
-      return;
-    }
-    form.setFieldValue("providerProfile", allowedEffortOptions[0]?.value);
-  }, [allowedEffortOptions, form]);
-
-  useEffect(() => {
-    if (selectedProvider !== "codex") {
-      return;
-    }
-    const current = form.getFieldValue("codexCredentialSource") as CodexCredentialSource | undefined;
-    if (current === "auto" || current === "profile" || current === "global") {
-      return;
-    }
-    form.setFieldValue("codexCredentialSource", "auto");
-  }, [form, selectedProvider]);
-
-  useEffect(() => {
-    if (selectedTaskType === "build" && !canBuildTasks && canAskTasks) {
-      form.setFieldValue("taskType", "ask");
-      return;
-    }
-
-    if (selectedTaskType === "ask" && !canAskTasks && canBuildTasks) {
-      form.setFieldValue("taskType", "build");
-    }
-  }, [canAskTasks, canBuildTasks, form, selectedTaskType]);
-
-  useEffect(() => {
-    if (!selectedRepoId || !canReadRepositoryMetadata) {
-      setGitHubBranches([]);
-      return;
-    }
-
-    let active = true;
-    setGitHubOptionsLoading(true);
-
-    void api.listGitHubBranches(selectedRepoId).catch(() => []).then((branches) => {
-      if (!active) {
-        return;
-      }
-
-      setGitHubBranches(branches);
-      setGitHubOptionsLoading(false);
-    });
-
-    return () => {
-      active = false;
-    };
-  }, [canReadRepositoryMetadata, selectedRepoId]);
-
-  const promptPanelTitle = effectiveTaskType === "ask" ? "Question" : "Prompt";
-  const canAttachPromptImages = allowPromptAttachments;
-  const canUsePromptMagic = true;
-  const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
-
-  const handleGeneratePromptMagic = async (): Promise<void> => {
-    const prompt = (form.getFieldValue("prompt") as string | undefined)?.trim() ?? "";
-    if (!prompt || magicPromptLoading) {
-      return;
-    }
-
-    setMagicPromptLoading(true);
-    try {
-      const response = await api.generateTaskPromptMagic({ prompt });
-      const nextPrompt = response.prompt ?? "";
-      const currentTitle = (form.getFieldValue("title") as string | undefined)?.trim() ?? "";
-      const derivedTitle = deriveTitleFromPrompt(nextPrompt);
-      const nextValues: Partial<TaskDefinitionFormValues> = { prompt: nextPrompt };
-      if (!currentTitle && derivedTitle) {
-        nextValues.title = derivedTitle.slice(0, 500);
-      }
-      form.setFieldsValue(nextValues);
-      form.setFields([{ name: "prompt", value: nextPrompt }]);
-      trackEvent("task_prompt_magic_used", {
-        source: "task_create",
-        input_length: prompt.length,
-        output_length: nextPrompt.length
-      });
-      if (nextPrompt.trim() === prompt) {
-        void message.info("Magic prompt returned a similar result.");
-      } else {
-        void message.success("Prompt improved.");
-      }
-    } catch (error) {
-      const fallback = "Failed to generate prompt.";
-      const errorMessage = error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
-      void message.error(errorMessage);
-    } finally {
-      setMagicPromptLoading(false);
-    }
-  };
-
-  const insertIntoPrompt = (snippetContent: string | null | undefined): void => {
-    const currentPrompt = form.getFieldValue("prompt") as string | undefined;
-    const nextPrompt = insertSnippetContent(currentPrompt, snippetContent);
-    form.setFieldValue("prompt", nextPrompt);
-    form.setFields([{ name: "prompt", value: nextPrompt }]);
-  };
-
-  const handleInsertSelectedSnippet = (): void => {
-    if (!selectedSnippetToInsertId) {
-      return;
-    }
-
-    const snippet = snippets.find((item) => item.id === selectedSnippetToInsertId);
-    if (!snippet) {
-      void message.error("Selected snippet is no longer available.");
-      return;
-    }
-
-    if ((snippet.variables ?? []).length > 0) {
-      setPendingSnippetForInsert(snippet);
-      snippetVariableForm.resetFields();
-      const defaultValues = Object.fromEntries(
-        (snippet.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""])
-      );
-      snippetVariableForm.setFieldsValue(defaultValues);
-      setSnippetVariableModalOpen(true);
-      return;
-    }
-
-    insertIntoPrompt(snippet.content);
-    setSelectedSnippetToInsertId(null);
-  };
-
-  const handleConfirmSnippetVariableInsert = async (): Promise<void> => {
-    if (!pendingSnippetForInsert) {
-      return;
-    }
-
-    try {
-      const values = await snippetVariableForm.validateFields();
-      const rendered = applySnippetVariables(pendingSnippetForInsert.content, pendingSnippetForInsert.variables, values);
-      insertIntoPrompt(rendered);
-      setSnippetVariableModalOpen(false);
-      setPendingSnippetForInsert(null);
-      snippetVariableForm.resetFields();
-      setSelectedSnippetToInsertId(null);
-    } catch {
-      // Form-level validation messages are shown inline.
-    }
-  };
-
-  const handleCloseSnippetVariableModal = (): void => {
-    setSnippetVariableModalOpen(false);
-    setPendingSnippetForInsert(null);
-    snippetVariableForm.resetFields();
-    setSelectedSnippetToInsertId(null);
-  };
-
-  const renderPromptPanel = () => (
-    <>
-      <Form.Item
-        name="title"
-        label="Title"
-        rules={[{ required: true, message: "Enter a task title" }]}
-        style={{ marginBottom: 16 }}
-        extra={
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Choose a short, descriptive task title.
-          </Typography.Text>
-        }
-      >
-        <Input placeholder="Your Task Title" size="large" />
-      </Form.Item>
-      <Form.Item
-        label={promptPanelTitle}
-        style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
-      >
-        <Flex vertical gap={12} style={{ flex: 1 }}>
-          <div style={{ position: "relative" }}>
-            <Button
-              size="small"
-              type="default"
-              icon={<RobotOutlined />}
-              title="Magic Wand"
-              aria-label="Magic Wand"
-              loading={magicPromptLoading}
-              disabled={!canUsePromptMagic || promptIsEmpty || magicPromptLoading}
-              onClick={() => void handleGeneratePromptMagic()}
-              style={{
-                position: "absolute",
-                right: 10,
-                bottom: 10,
-                zIndex: 1
-              }}
-            />
-            <Form.Item
-              name="prompt"
-              style={{ marginBottom: 0 }}
-              rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]}
-            >
-              <Input.TextArea
-                autoSize={{ minRows: 12, maxRows: 28 }}
-                style={{ resize: "none", paddingRight: 44, paddingBottom: 38 }}
-                placeholder={
-                  effectiveTaskType === "ask"
-                    ? "Ask a repository question."
-                    : "Describe the goal, constraints, and expected outcome in your prompt."
-                }
-              />
-            </Form.Item>
-          </div>
-          {canUseSnippets ? (
-            <Flex gap={8} wrap="wrap">
-              <Select
-                showSearch
-                style={{ minWidth: 220, flex: 1 }}
-                placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
-                value={selectedSnippetToInsertId}
-                onChange={(value) => setSelectedSnippetToInsertId(value)}
-                optionFilterProp="label"
-                allowClear
-                loading={snippetsLoading}
-                disabled={snippetsLoading || snippets.length === 0}
-                options={snippets.map((snippet) => ({
-                  label: snippet.name,
-                  value: snippet.id
-                }))}
-              />
-              <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetToInsertId}>
-                Insert
-              </Button>
-            </Flex>
-          ) : null}
-          {allowPromptAttachments ? (
-            <TaskPromptAttachmentsInput
-              files={promptImageFiles}
-              onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
-              onError={(errorMessage) => void message.error(errorMessage)}
-              disabled={!canAttachPromptImages || !onPromptImageFilesChange}
-            />
-          ) : null}
-        </Flex>
-      </Form.Item>
-      <Form.Item
-        name="notes"
-        label="Notes (Markdown)"
-        extra={
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Optional. These notes are shown in the task Info tab below current configuration.
-          </Typography.Text>
-        }
-        style={{ marginTop: 16, marginBottom: 0 }}
-      >
-        <Input.TextArea
-          autoSize={{ minRows: 6, maxRows: 16 }}
-          style={{ resize: "none" }}
-          placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
-        />
-      </Form.Item>
-    </>
-  );
-
-  return (
-    <>
-      <Row gutter={[24, 24]} align="stretch">
-        <Col xs={24} xl={8}>
-          <Card bordered={false} title="Configuration" styles={{ body: { display: "flex", flexDirection: "column", gap: 0 } }}>
-            <Form.Item name="repoId" label="Repository" rules={[{ required: true }]}>
-              <Select
-                options={repositories.map((repository) => ({ label: repository.name, value: repository.id }))}
-                placeholder="Select repository"
-                disabled={lockRepository}
-                onChange={(repoId) => {
-                  const repository = repositories.find((item) => item.id === repoId);
-                  form.setFieldValue("baseBranch", repository?.defaultBranch ?? "");
-                }}
-              />
-            </Form.Item>
-
-            <Form.Item name="deadline" label="Deadline">
-              <DatePicker
-                showTime={{ format: "HH:mm" }}
-                format="YYYY-MM-DD HH:mm"
-                placeholder="No deadline"
-                style={{ width: "100%" }}
-                allowClear
-              />
-            </Form.Item>
-
-            <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
-              <Select options={taskTypeOptions} />
-            </Form.Item>
-
-            {!canRunAutomatedTask ? (
-              <Alert
-                type="warning"
-                showIcon
-                style={{ marginBottom: 16 }}
-                message="This role cannot create build or ask tasks."
-                description="Ask an administrator to grant task mode permissions in Settings."
-              />
-            ) : null}
-
-            <Form.Item name="provider" label="Provider" rules={[{ required: true }]}>
-              <Select
-                options={providerSelectOptions}
-                onChange={(value: AgentProvider) => {
-                  const nextModels = getModelsForProvider(value).filter(
-                    (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
-                  );
-                  const nextEfforts = getEffortOptionsForProvider(value).filter(
-                    (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
-                  );
-                  form.setFieldValue("model", nextModels[0]?.value ?? getProviderDefaultModel(value, settings));
-                  form.setFieldValue("providerProfile", nextEfforts[0]?.value ?? getProviderDefaultProfile(value, settings));
-                }}
-              />
-            </Form.Item>
-
-            <Form.Item name="model" label="Model" rules={[{ required: true }]}>
-              <Select options={allowedModelOptions} loading={providerModelsLoading} showSearch optionFilterProp="label" />
-            </Form.Item>
-
-            <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
-              <Select options={allowedEffortOptions} />
-            </Form.Item>
-
-            {selectedProvider === "codex" ? (
-              <Form.Item name="codexCredentialSource" label="Codex Credential Source" rules={[{ required: true }]}>
-                <Select options={codexCredentialSourceOptions} />
-              </Form.Item>
-            ) : null}
-
-            {providerMissingCredentials ? (
-              <Alert
-                type="warning"
-                showIcon
-                style={{ marginBottom: 16 }}
-                message={`${selectedProvider === "codex" ? "Codex" : "Anthropic"} credentials are missing`}
-                description={
-                  selectedProvider === "codex"
-                    ? "Configure Codex auth.json in your Profile or set an OpenAI API key in Settings before running this task."
-                    : "Configure the provider credential in Settings before running this task."
-                }
-              />
-            ) : null}
-
-            <Form.Item name="baseBranch" label="Base Branch" rules={[{ required: true }]}>
-              <Select
-                showSearch
-                loading={githubOptionsLoading}
-                placeholder={selectedRepository?.defaultBranch ?? "develop"}
-                optionFilterProp="label"
-                options={
-                  canReadRepositoryMetadata
-                    ? githubBranches.map((branch) => ({
-                        label: branch.isDefault ? `${branch.name} (default)` : branch.name,
-                        value: branch.name
-                      }))
-                    : selectedRepository
-                      ? [{ label: selectedRepository.defaultBranch, value: selectedRepository.defaultBranch }]
-                      : []
-                }
-              />
-            </Form.Item>
-
-            {isImplementationTask ? (
-              <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]}>
-                <Select
-                  options={[
-                    { label: "Create feature branch", value: "feature_branch" },
-                    { label: "Work on existing branch", value: "work_on_branch" }
-                  ]}
-                />
-              </Form.Item>
-            ) : null}
-          </Card>
-        </Col>
-
-        <Col xs={24} xl={16}>
-          <Card
-            bordered={false}
-            title={promptPanelTitle}
-            styles={{
-              body: {
-                display: "flex",
-                flexDirection: "column",
-                minHeight: 640
-              }
-            }}
-          >
-            {renderPromptPanel()}
-          </Card>
-        </Col>
-      </Row>
-      <Modal
-        title={pendingSnippetForInsert ? `Insert Snippet: ${pendingSnippetForInsert.name}` : "Insert Snippet"}
-        open={snippetVariableModalOpen}
-        onCancel={handleCloseSnippetVariableModal}
-        destroyOnClose
-        onOk={() => void handleConfirmSnippetVariableInsert()}
-        okText="Insert"
-      >
-        <Form form={snippetVariableForm} layout="vertical">
-          {(pendingSnippetForInsert?.variables ?? []).map((variable) => (
-            <Form.Item
-              key={variable.name}
-              name={variable.name}
-              label={variable.title.trim() || variable.name}
-              tooltip={variable.description.trim() || undefined}
-              rules={[{ required: true, message: `Enter ${variable.title.trim() || variable.name}` }]}
-            >
-              {variable.type === "multiline" ? (
-                <Input.TextArea rows={4} placeholder={variable.description.trim() || variable.name} />
-              ) : (
-                <Input placeholder={variable.description.trim() || variable.name} />
-              )}
-            </Form.Item>
-          ))}
-        </Form>
-      </Modal>
-    </>
-  );
-}
-````
-
 ## File: apps/server/src/services/spawner.ts
 ````typescript
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -48247,12 +47822,9 @@ export class SpawnerService {
   async prepareTaskWorkspaceOnly(task: Task): Promise<Task> {
     const [settings, runtimeCredentialsRaw] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials(task.ownerUserId)
+      this.settingsStore.getRuntimeCredentials(task.ownerUserId, task.codexCredentialSource ?? "auto")
     ]);
-    const runtimeCredentials =
-      task.provider === "codex" && task.codexCredentialSource === "global"
-        ? { ...runtimeCredentialsRaw, codexAuthJson: null }
-        : runtimeCredentialsRaw;
+    const runtimeCredentials = runtimeCredentialsRaw;
     if (task.provider === "codex" && task.codexCredentialSource === "profile" && !runtimeCredentials.codexAuthJson) {
       throw new Error("Codex credential source is set to Profile, but your profile Codex auth.json is not configured.");
     }
@@ -48356,12 +47928,9 @@ export class SpawnerService {
 
     const [settings, runtimeCredentialsRaw] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials(task.ownerUserId)
+      this.settingsStore.getRuntimeCredentials(task.ownerUserId, task.codexCredentialSource ?? "auto")
     ]);
-    const runtimeCredentials =
-      task.provider === "codex" && task.codexCredentialSource === "global"
-        ? { ...runtimeCredentialsRaw, codexAuthJson: null }
-        : runtimeCredentialsRaw;
+    const runtimeCredentials = runtimeCredentialsRaw;
     if (task.provider === "codex" && task.codexCredentialSource === "profile" && !runtimeCredentials.codexAuthJson) {
       throw new Error("Codex credential source is set to Profile, but your profile Codex auth.json is not configured.");
     }
@@ -48531,14 +48100,11 @@ export class SpawnerService {
     this.cancelRequestedTaskIds.delete(task.id);
     const [settings, runtimeCredentialsRaw, repositoryRuntimeEnvEntries, responsePreferenceUser] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials(task.ownerUserId),
+      this.settingsStore.getRuntimeCredentials(task.ownerUserId, task.codexCredentialSource ?? "auto"),
       this.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId),
       task.ownerUserId ? this.userStore.getAuthSessionUser(task.ownerUserId) : Promise.resolve(null)
     ]);
-    const runtimeCredentials =
-      task.provider === "codex" && task.codexCredentialSource === "global"
-        ? { ...runtimeCredentialsRaw, codexAuthJson: null }
-        : runtimeCredentialsRaw;
+    const runtimeCredentials = runtimeCredentialsRaw;
     if (task.provider === "codex" && task.codexCredentialSource === "profile" && !runtimeCredentials.codexAuthJson) {
       throw new Error("Codex credential source is set to Profile, but your profile Codex auth.json is not configured.");
     }
@@ -49005,6 +48571,698 @@ export class CancelledTaskError extends Error {
 }
 ````
 
+## File: apps/web/components/task-definition-fields.tsx
+````typescript
+"use client";
+
+import { useEffect, useState } from "react";
+import type { FormInstance } from "antd";
+import dayjs, { type Dayjs } from "dayjs";
+import type {
+  AgentProvider,
+  CodexCredentialSource,
+  CreateTaskPromptAttachmentInput,
+  GitHubBranchReference,
+  ProviderProfile,
+  Repository,
+  Snippet,
+  SystemSettings,
+  TaskBranchStrategy,
+  TaskDefinitionInput,
+  TaskType
+} from "@agentswarm/shared-types";
+import {
+  getAgentProviderLabel,
+  getDefaultModelForProvider,
+  getEffortOptionsForProvider,
+  getModelsForProvider
+} from "@agentswarm/shared-types";
+import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Typography, message } from "antd";
+import { RobotOutlined } from "@ant-design/icons";
+import { api } from "../src/api/client";
+import { useProviderModels } from "../src/hooks/useProviderModels";
+import { useRepositories } from "../src/hooks/useRepositories";
+import { useSettings } from "../src/hooks/useSettings";
+import { useSnippets } from "../src/hooks/useSnippets";
+import { trackEvent } from "../src/utils/analytics";
+import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
+import { type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
+import { useAuth } from "./auth-provider";
+import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
+
+export type TaskDefinitionFormValues = {
+  title?: string;
+  deadline?: string | null | Dayjs;
+  repoId?: string;
+  prompt?: string;
+  notes?: string;
+  taskType?: TaskType;
+  provider?: AgentProvider;
+  model?: string;
+  providerProfile?: ProviderProfile;
+  codexCredentialSource?: CodexCredentialSource;
+  baseBranch?: string;
+  branchStrategy?: TaskBranchStrategy;
+};
+
+export interface TaskDefinitionFieldsProps {
+  form: FormInstance<TaskDefinitionFormValues>;
+  syncSettingsDefaults?: boolean;
+  lockRepository?: boolean;
+  allowPromptAttachments?: boolean;
+  promptImageFiles?: SelectedTaskPromptImageFile[];
+  onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
+}
+
+type SnippetVariableFormValues = Record<string, string>;
+
+const providerOptions = (
+  hasOpenAi: boolean,
+  hasAnthropic: boolean
+): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
+  { label: "Codex (OpenAI)", value: "codex", disabled: !hasOpenAi },
+  { label: getAgentProviderLabel("claude"), value: "claude", disabled: !hasAnthropic }
+];
+
+const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
+  { label: "Auto (Profile then Global)", value: "auto" },
+  { label: "Profile auth.json only", value: "profile" },
+  { label: "Global OpenAI key or auth.json", value: "global" }
+];
+
+const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSettings | null): string =>
+  provider === "claude"
+    ? settings?.claudeDefaultModel ?? getDefaultModelForProvider(provider)
+    : settings?.codexDefaultModel ?? getDefaultModelForProvider(provider);
+
+const getProviderDefaultProfile = (provider: AgentProvider, settings?: SystemSettings | null): ProviderProfile =>
+  provider === "claude" ? settings?.claudeDefaultEffort ?? "high" : settings?.codexDefaultEffort ?? "high";
+
+const deriveTitleFromPrompt = (prompt: string): string => {
+  const lines = prompt
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) {
+    return "";
+  }
+
+  const heading = lines.find((line) => /^#{1,6}\s+/.test(line));
+  if (heading) {
+    return heading.replace(/^#{1,6}\s+/, "").trim();
+  }
+
+  return lines[0];
+};
+
+export const getTaskDefinitionDeadlineIso = (value: TaskDefinitionFormValues["deadline"]): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = dayjs.isDayjs(value) ? value : dayjs(value);
+  return parsed.isValid() ? parsed.toISOString() : undefined;
+};
+
+export const getTaskDefinitionInitialValues = (
+  settings?: SystemSettings | null
+): Partial<TaskDefinitionFormValues> => {
+  const provider = settings?.defaultProvider ?? "codex";
+  return {
+    taskType: "build",
+    provider,
+    model: getProviderDefaultModel(provider, settings),
+    providerProfile: getProviderDefaultProfile(provider, settings),
+    codexCredentialSource: "auto",
+    branchStrategy: "feature_branch"
+  };
+};
+
+export const buildTaskDefinitionInput = (
+  values: TaskDefinitionFormValues,
+  promptAttachments: CreateTaskPromptAttachmentInput[] = []
+): TaskDefinitionInput => {
+  const provider = values.provider ?? "codex";
+  const codexCredentialSource = provider === "codex" ? (values.codexCredentialSource ?? "auto") : undefined;
+
+  return {
+    title: values.title?.trim() ?? "",
+    deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
+    repoId: values.repoId ?? "",
+    prompt: values.prompt?.trim() ?? "",
+    notes: values.notes?.trim() || undefined,
+    ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
+    taskType: values.taskType ?? "build",
+    provider,
+    model: values.model?.trim() ?? "",
+    providerProfile: values.providerProfile ?? "high",
+    ...(codexCredentialSource ? { codexCredentialSource } : {}),
+    baseBranch: values.baseBranch?.trim() ?? "",
+    branchStrategy: values.branchStrategy ?? "feature_branch"
+  };
+};
+
+export function TaskDefinitionFields({
+  form,
+  syncSettingsDefaults = true,
+  lockRepository = false,
+  allowPromptAttachments = true,
+  promptImageFiles = [],
+  onPromptImageFilesChange
+}: TaskDefinitionFieldsProps) {
+  const { can, session } = useAuth();
+  const { repositories } = useRepositories();
+  const { settings } = useSettings();
+  const [githubBranches, setGitHubBranches] = useState<GitHubBranchReference[]>([]);
+  const [githubOptionsLoading, setGitHubOptionsLoading] = useState(false);
+  const [magicPromptLoading, setMagicPromptLoading] = useState(false);
+  const [selectedSnippetToInsertId, setSelectedSnippetToInsertId] = useState<string | null>(null);
+  const [pendingSnippetForInsert, setPendingSnippetForInsert] = useState<Snippet | null>(null);
+  const [snippetVariableModalOpen, setSnippetVariableModalOpen] = useState(false);
+  const [snippetVariableForm] = Form.useForm<SnippetVariableFormValues>();
+  const canReadRepositoryMetadata = can("repo:read");
+  const canBuildTasks = can("task:build");
+  const canAskTasks = can("task:ask");
+  const canRunAutomatedTask = canBuildTasks || canAskTasks;
+  const canUseSnippets = can("snippet:list");
+
+  const selectedRepoId = Form.useWatch("repoId", form);
+  const selectedModel = Form.useWatch("model", form);
+  const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
+  const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
+  const selectedPrompt = Form.useWatch("prompt", form);
+  const { models: providerModels, loading: providerModelsLoading } = useProviderModels(selectedProvider);
+  const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
+  const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
+  const effectiveTaskType = selectedTaskType;
+  const isImplementationTask = effectiveTaskType === "build";
+  const hasGlobalCodexCredentials = Boolean(settings?.openaiApiKeyConfigured || settings?.codexAuthJsonConfigured);
+  const hasAnyCodexCredentials = Boolean(hasGlobalCodexCredentials || session?.user.codexAuthJsonConfigured);
+  const providerMissingCredentials =
+    selectedProvider === "codex"
+      ? !hasAnyCodexCredentials
+      : !settings?.anthropicApiKeyConfigured;
+  const roleAllowedProviders = session?.user.allowedProviders ?? [];
+  const roleAllowedModels = session?.user.allowedModels ?? [];
+  const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
+  const providerSelectOptions = providerOptions(
+    hasAnyCodexCredentials,
+    Boolean(settings?.anthropicApiKeyConfigured)
+  ).map(
+    (option) => ({
+      ...option,
+      disabled: Boolean(option.disabled || (roleAllowedProviders.length > 0 && !roleAllowedProviders.includes(option.value)))
+    })
+  );
+  const allowedModelOptions = providerModels.filter(
+    (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
+  );
+  const allowedEffortOptions = getEffortOptionsForProvider(selectedProvider).filter(
+    (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
+  );
+  const taskTypeOptions: Array<{ label: string; value: TaskType }> = [
+    ...(canBuildTasks ? [{ label: "Build", value: "build" as const }] : []),
+    ...(canAskTasks ? [{ label: "Ask", value: "ask" as const }] : [])
+  ];
+
+  useEffect(() => {
+    if (!settings || !syncSettingsDefaults) {
+      return;
+    }
+
+    const currentProvider = form.getFieldValue("provider") as AgentProvider | undefined;
+    const shouldReplaceProvider = !form.isFieldTouched("provider") && (!currentProvider || currentProvider === "codex");
+    const nextProvider = shouldReplaceProvider ? settings.defaultProvider : currentProvider ?? settings.defaultProvider;
+    const providerChanged = nextProvider !== currentProvider;
+
+    if (shouldReplaceProvider) {
+      form.setFieldValue("provider", nextProvider);
+    }
+
+    const currentModel = form.getFieldValue("model") as string | undefined;
+    const currentProfile = form.getFieldValue("providerProfile") as ProviderProfile | undefined;
+    const genericModel = getDefaultModelForProvider(currentProvider ?? nextProvider);
+
+    if (!form.isFieldTouched("model") && (providerChanged || !currentModel || currentModel === genericModel)) {
+      form.setFieldValue("model", getProviderDefaultModel(nextProvider, settings));
+    }
+
+    if (!form.isFieldTouched("providerProfile") && (providerChanged || !currentProfile || currentProfile === "high")) {
+      form.setFieldValue("providerProfile", getProviderDefaultProfile(nextProvider, settings));
+    }
+  }, [form, settings, syncSettingsDefaults]);
+
+  useEffect(() => {
+    const selected = providerSelectOptions.find((option) => option.value === selectedProvider && !option.disabled);
+    if (selected) {
+      return;
+    }
+
+    const fallback = providerSelectOptions.find((option) => !option.disabled);
+    if (!fallback) {
+      return;
+    }
+
+    form.setFieldValue("provider", fallback.value);
+  }, [form, providerSelectOptions, selectedProvider]);
+
+  useEffect(() => {
+    if (providerModelsLoading) {
+      return;
+    }
+    if (allowedModelOptions.length === 0) {
+      return;
+    }
+    if (allowedModelOptions.some((option) => option.value === selectedModel)) {
+      return;
+    }
+    form.setFieldValue("model", allowedModelOptions[0]?.value);
+  }, [allowedModelOptions, form, providerModelsLoading, selectedModel]);
+
+  useEffect(() => {
+    if (allowedEffortOptions.length === 0) {
+      return;
+    }
+    const currentProfile = form.getFieldValue("providerProfile") as ProviderProfile | undefined;
+    if (currentProfile && allowedEffortOptions.some((option) => option.value === currentProfile)) {
+      return;
+    }
+    form.setFieldValue("providerProfile", allowedEffortOptions[0]?.value);
+  }, [allowedEffortOptions, form]);
+
+  useEffect(() => {
+    if (selectedProvider !== "codex") {
+      return;
+    }
+    const current = form.getFieldValue("codexCredentialSource") as CodexCredentialSource | undefined;
+    if (current === "auto" || current === "profile" || current === "global") {
+      return;
+    }
+    form.setFieldValue("codexCredentialSource", "auto");
+  }, [form, selectedProvider]);
+
+  useEffect(() => {
+    if (selectedTaskType === "build" && !canBuildTasks && canAskTasks) {
+      form.setFieldValue("taskType", "ask");
+      return;
+    }
+
+    if (selectedTaskType === "ask" && !canAskTasks && canBuildTasks) {
+      form.setFieldValue("taskType", "build");
+    }
+  }, [canAskTasks, canBuildTasks, form, selectedTaskType]);
+
+  useEffect(() => {
+    if (!selectedRepoId || !canReadRepositoryMetadata) {
+      setGitHubBranches([]);
+      return;
+    }
+
+    let active = true;
+    setGitHubOptionsLoading(true);
+
+    void api.listGitHubBranches(selectedRepoId).catch(() => []).then((branches) => {
+      if (!active) {
+        return;
+      }
+
+      setGitHubBranches(branches);
+      setGitHubOptionsLoading(false);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [canReadRepositoryMetadata, selectedRepoId]);
+
+  const promptPanelTitle = effectiveTaskType === "ask" ? "Question" : "Prompt";
+  const canAttachPromptImages = allowPromptAttachments;
+  const canUsePromptMagic = true;
+  const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
+
+  const handleGeneratePromptMagic = async (): Promise<void> => {
+    const prompt = (form.getFieldValue("prompt") as string | undefined)?.trim() ?? "";
+    if (!prompt || magicPromptLoading) {
+      return;
+    }
+
+    setMagicPromptLoading(true);
+    try {
+      const response = await api.generateTaskPromptMagic({ prompt });
+      const nextPrompt = response.prompt ?? "";
+      const currentTitle = (form.getFieldValue("title") as string | undefined)?.trim() ?? "";
+      const derivedTitle = deriveTitleFromPrompt(nextPrompt);
+      const nextValues: Partial<TaskDefinitionFormValues> = { prompt: nextPrompt };
+      if (!currentTitle && derivedTitle) {
+        nextValues.title = derivedTitle.slice(0, 500);
+      }
+      form.setFieldsValue(nextValues);
+      form.setFields([{ name: "prompt", value: nextPrompt }]);
+      trackEvent("task_prompt_magic_used", {
+        source: "task_create",
+        input_length: prompt.length,
+        output_length: nextPrompt.length
+      });
+      if (nextPrompt.trim() === prompt) {
+        void message.info("Magic prompt returned a similar result.");
+      } else {
+        void message.success("Prompt improved.");
+      }
+    } catch (error) {
+      const fallback = "Failed to generate prompt.";
+      const errorMessage = error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
+      void message.error(errorMessage);
+    } finally {
+      setMagicPromptLoading(false);
+    }
+  };
+
+  const insertIntoPrompt = (snippetContent: string | null | undefined): void => {
+    const currentPrompt = form.getFieldValue("prompt") as string | undefined;
+    const nextPrompt = insertSnippetContent(currentPrompt, snippetContent);
+    form.setFieldValue("prompt", nextPrompt);
+    form.setFields([{ name: "prompt", value: nextPrompt }]);
+  };
+
+  const handleInsertSelectedSnippet = (): void => {
+    if (!selectedSnippetToInsertId) {
+      return;
+    }
+
+    const snippet = snippets.find((item) => item.id === selectedSnippetToInsertId);
+    if (!snippet) {
+      void message.error("Selected snippet is no longer available.");
+      return;
+    }
+
+    if ((snippet.variables ?? []).length > 0) {
+      setPendingSnippetForInsert(snippet);
+      snippetVariableForm.resetFields();
+      const defaultValues = Object.fromEntries(
+        (snippet.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""])
+      );
+      snippetVariableForm.setFieldsValue(defaultValues);
+      setSnippetVariableModalOpen(true);
+      return;
+    }
+
+    insertIntoPrompt(snippet.content);
+    setSelectedSnippetToInsertId(null);
+  };
+
+  const handleConfirmSnippetVariableInsert = async (): Promise<void> => {
+    if (!pendingSnippetForInsert) {
+      return;
+    }
+
+    try {
+      const values = await snippetVariableForm.validateFields();
+      const rendered = applySnippetVariables(pendingSnippetForInsert.content, pendingSnippetForInsert.variables, values);
+      insertIntoPrompt(rendered);
+      setSnippetVariableModalOpen(false);
+      setPendingSnippetForInsert(null);
+      snippetVariableForm.resetFields();
+      setSelectedSnippetToInsertId(null);
+    } catch {
+      // Form-level validation messages are shown inline.
+    }
+  };
+
+  const handleCloseSnippetVariableModal = (): void => {
+    setSnippetVariableModalOpen(false);
+    setPendingSnippetForInsert(null);
+    snippetVariableForm.resetFields();
+    setSelectedSnippetToInsertId(null);
+  };
+
+  const renderPromptPanel = () => (
+    <>
+      <Form.Item
+        name="title"
+        label="Title"
+        rules={[{ required: true, message: "Enter a task title" }]}
+        style={{ marginBottom: 16 }}
+        extra={
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Choose a short, descriptive task title.
+          </Typography.Text>
+        }
+      >
+        <Input placeholder="Your Task Title" size="large" />
+      </Form.Item>
+      <Form.Item
+        label={promptPanelTitle}
+        style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
+      >
+        <Flex vertical gap={12} style={{ flex: 1 }}>
+          <div style={{ position: "relative" }}>
+            <Button
+              size="small"
+              type="default"
+              icon={<RobotOutlined />}
+              title="Magic Wand"
+              aria-label="Magic Wand"
+              loading={magicPromptLoading}
+              disabled={!canUsePromptMagic || promptIsEmpty || magicPromptLoading}
+              onClick={() => void handleGeneratePromptMagic()}
+              style={{
+                position: "absolute",
+                right: 10,
+                bottom: 10,
+                zIndex: 1
+              }}
+            />
+            <Form.Item
+              name="prompt"
+              style={{ marginBottom: 0 }}
+              rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]}
+            >
+              <Input.TextArea
+                autoSize={{ minRows: 12, maxRows: 28 }}
+                style={{ resize: "none", paddingRight: 44, paddingBottom: 38 }}
+                placeholder={
+                  effectiveTaskType === "ask"
+                    ? "Ask a repository question."
+                    : "Describe the goal, constraints, and expected outcome in your prompt."
+                }
+              />
+            </Form.Item>
+          </div>
+          {canUseSnippets ? (
+            <Flex gap={8} wrap="wrap">
+              <Select
+                showSearch
+                style={{ minWidth: 220, flex: 1 }}
+                placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
+                value={selectedSnippetToInsertId}
+                onChange={(value) => setSelectedSnippetToInsertId(value)}
+                optionFilterProp="label"
+                allowClear
+                loading={snippetsLoading}
+                disabled={snippetsLoading || snippets.length === 0}
+                options={snippets.map((snippet) => ({
+                  label: snippet.name,
+                  value: snippet.id
+                }))}
+              />
+              <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetToInsertId}>
+                Insert
+              </Button>
+            </Flex>
+          ) : null}
+          {allowPromptAttachments ? (
+            <TaskPromptAttachmentsInput
+              files={promptImageFiles}
+              onChange={(nextFiles) => onPromptImageFilesChange?.(nextFiles)}
+              onError={(errorMessage) => void message.error(errorMessage)}
+              disabled={!canAttachPromptImages || !onPromptImageFilesChange}
+            />
+          ) : null}
+        </Flex>
+      </Form.Item>
+      <Form.Item
+        name="notes"
+        label="Notes (Markdown)"
+        extra={
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Optional. These notes are shown in the task Info tab below current configuration.
+          </Typography.Text>
+        }
+        style={{ marginTop: 16, marginBottom: 0 }}
+      >
+        <Input.TextArea
+          autoSize={{ minRows: 6, maxRows: 16 }}
+          style={{ resize: "none" }}
+          placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
+        />
+      </Form.Item>
+    </>
+  );
+
+  return (
+    <>
+      <Row gutter={[24, 24]} align="stretch">
+        <Col xs={24} xl={8}>
+          <Card bordered={false} title="Configuration" styles={{ body: { display: "flex", flexDirection: "column", gap: 0 } }}>
+            <Form.Item name="repoId" label="Repository" rules={[{ required: true }]}>
+              <Select
+                options={repositories.map((repository) => ({ label: repository.name, value: repository.id }))}
+                placeholder="Select repository"
+                disabled={lockRepository}
+                onChange={(repoId) => {
+                  const repository = repositories.find((item) => item.id === repoId);
+                  form.setFieldValue("baseBranch", repository?.defaultBranch ?? "");
+                }}
+              />
+            </Form.Item>
+
+            <Form.Item name="deadline" label="Deadline">
+              <DatePicker
+                showTime={{ format: "HH:mm" }}
+                format="YYYY-MM-DD HH:mm"
+                placeholder="No deadline"
+                style={{ width: "100%" }}
+                allowClear
+              />
+            </Form.Item>
+
+            <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
+              <Select options={taskTypeOptions} />
+            </Form.Item>
+
+            {!canRunAutomatedTask ? (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message="This role cannot create build or ask tasks."
+                description="Ask an administrator to grant task mode permissions in Settings."
+              />
+            ) : null}
+
+            <Form.Item name="provider" label="Provider" rules={[{ required: true }]}>
+              <Select
+                options={providerSelectOptions}
+                onChange={(value: AgentProvider) => {
+                  const nextModels = getModelsForProvider(value).filter(
+                    (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
+                  );
+                  const nextEfforts = getEffortOptionsForProvider(value).filter(
+                    (option) => roleAllowedEfforts.length === 0 || roleAllowedEfforts.includes(option.value)
+                  );
+                  form.setFieldValue("model", nextModels[0]?.value ?? getProviderDefaultModel(value, settings));
+                  form.setFieldValue("providerProfile", nextEfforts[0]?.value ?? getProviderDefaultProfile(value, settings));
+                }}
+              />
+            </Form.Item>
+
+            <Form.Item name="model" label="Model" rules={[{ required: true }]}>
+              <Select options={allowedModelOptions} loading={providerModelsLoading} showSearch optionFilterProp="label" />
+            </Form.Item>
+
+            <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
+              <Select options={allowedEffortOptions} />
+            </Form.Item>
+
+            {selectedProvider === "codex" ? (
+              <Form.Item name="codexCredentialSource" label="Codex Credential Source" rules={[{ required: true }]}>
+                <Select options={codexCredentialSourceOptions} />
+              </Form.Item>
+            ) : null}
+
+            {providerMissingCredentials ? (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message={`${selectedProvider === "codex" ? "Codex" : "Anthropic"} credentials are missing`}
+                description={
+                selectedProvider === "codex"
+                  ? "Configure Codex auth.json in your Profile or Settings, or set an OpenAI API key in Settings before running this task."
+                  : "Configure the provider credential in Settings before running this task."
+                }
+              />
+            ) : null}
+
+            <Form.Item name="baseBranch" label="Base Branch" rules={[{ required: true }]}>
+              <Select
+                showSearch
+                loading={githubOptionsLoading}
+                placeholder={selectedRepository?.defaultBranch ?? "develop"}
+                optionFilterProp="label"
+                options={
+                  canReadRepositoryMetadata
+                    ? githubBranches.map((branch) => ({
+                        label: branch.isDefault ? `${branch.name} (default)` : branch.name,
+                        value: branch.name
+                      }))
+                    : selectedRepository
+                      ? [{ label: selectedRepository.defaultBranch, value: selectedRepository.defaultBranch }]
+                      : []
+                }
+              />
+            </Form.Item>
+
+            {isImplementationTask ? (
+              <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]}>
+                <Select
+                  options={[
+                    { label: "Create feature branch", value: "feature_branch" },
+                    { label: "Work on existing branch", value: "work_on_branch" }
+                  ]}
+                />
+              </Form.Item>
+            ) : null}
+          </Card>
+        </Col>
+
+        <Col xs={24} xl={16}>
+          <Card
+            bordered={false}
+            title={promptPanelTitle}
+            styles={{
+              body: {
+                display: "flex",
+                flexDirection: "column",
+                minHeight: 640
+              }
+            }}
+          >
+            {renderPromptPanel()}
+          </Card>
+        </Col>
+      </Row>
+      <Modal
+        title={pendingSnippetForInsert ? `Insert Snippet: ${pendingSnippetForInsert.name}` : "Insert Snippet"}
+        open={snippetVariableModalOpen}
+        onCancel={handleCloseSnippetVariableModal}
+        destroyOnClose
+        onOk={() => void handleConfirmSnippetVariableInsert()}
+        okText="Insert"
+      >
+        <Form form={snippetVariableForm} layout="vertical">
+          {(pendingSnippetForInsert?.variables ?? []).map((variable) => (
+            <Form.Item
+              key={variable.name}
+              name={variable.name}
+              label={variable.title.trim() || variable.name}
+              tooltip={variable.description.trim() || undefined}
+              rules={[{ required: true, message: `Enter ${variable.title.trim() || variable.name}` }]}
+            >
+              {variable.type === "multiline" ? (
+                <Input.TextArea rows={4} placeholder={variable.description.trim() || variable.name} />
+              ) : (
+                <Input placeholder={variable.description.trim() || variable.name} />
+              )}
+            </Form.Item>
+          ))}
+        </Form>
+      </Modal>
+    </>
+  );
+}
+````
+
 ## File: apps/server/src/routes/tasks.ts
 ````typescript
 import path from "node:path";
@@ -49029,8 +49287,9 @@ import type { SnippetStore } from "../services/snippet-store.js";
 import type { UserStore } from "../services/user-store.js";
 import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
 import { getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
-import { executeOpenAiDiffAssist } from "../services/openai-diff-assist-service.js";
+import { buildDiffAssistPromptContext, executeOpenAiDiffAssist } from "../services/openai-diff-assist-service.js";
 import { executeTaskPromptMagic } from "../services/openai-task-prompt-magic-service.js";
+import { CodexUtilityError, CodexUtilityUnavailableError, executeCodexUtility } from "../services/codex-utility-service.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
@@ -49963,13 +50222,47 @@ export const registerTaskRoutes = (
         return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
       }
 
-      const credentials = await deps.settingsStore.getRuntimeCredentials();
-      const settings = await deps.settingsStore.getSettings();
-      if (!credentials.openaiApiKey) {
-        return reply.status(400).send({ message: "OpenAI API key is not configured in Settings." });
+      const [settings, credentials] = await Promise.all([
+        deps.settingsStore.getSettings(),
+        deps.settingsStore.getRuntimeCredentials(auth.user.id, "auto")
+      ]);
+      if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
+        return reply.status(400).send({ message: "Codex auth.json or OpenAI API key is not configured." });
       }
 
       try {
+        if (credentials.codexAuthJson) {
+          try {
+            const context = await buildDiffAssistPromptContext({
+              taskId: task.id,
+              userPrompt: parsed.data.userPrompt,
+              filePath: parsed.data.filePath,
+              selectedSnippet: parsed.data.selectedSnippet
+            });
+            const text = await executeCodexUtility({
+              prompt: [
+                "You are a careful code assistant. Answer using the provided context. Be concise and accurate.",
+                "",
+                context,
+                "",
+                "Return only the requested answer. Do not include unrelated commentary."
+              ].join("\n"),
+              model: parsed.data.model,
+              providerProfile: parsed.data.providerProfile,
+              credentials
+            });
+            return reply.send({ text });
+          } catch (error) {
+            if (!credentials.openaiApiKey || !(error instanceof CodexUtilityUnavailableError)) {
+              throw error;
+            }
+          }
+        }
+
+        if (!credentials.openaiApiKey) {
+          return reply.status(400).send({ message: "OpenAI API key is not configured and Codex utility runner is unavailable." });
+        }
+
         const result = await executeOpenAiDiffAssist({
           taskId: task.id,
           model: parsed.data.model,
@@ -49983,6 +50276,12 @@ export const registerTaskRoutes = (
 
         return reply.send(result);
       } catch (error: unknown) {
+        if (error instanceof CodexUtilityUnavailableError) {
+          return reply.status(400).send({ message: error.message });
+        }
+        if (error instanceof CodexUtilityError) {
+          return reply.status(error.statusCode).send({ message: error.message });
+        }
         if (
           error &&
           typeof error === "object" &&
@@ -50007,13 +50306,39 @@ export const registerTaskRoutes = (
         return reply.status(400).send({ message: parsed.error.message });
       }
 
-      const credentials = await deps.settingsStore.getRuntimeCredentials();
-      const settings = await deps.settingsStore.getSettings();
-      if (!credentials.openaiApiKey) {
-        return reply.status(400).send({ message: "OpenAI API key is not configured in Settings." });
+      const [settings, credentials] = await Promise.all([
+        deps.settingsStore.getSettings(),
+        deps.settingsStore.getRuntimeCredentials(request.auth!.user.id, "auto")
+      ]);
+      if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
+        return reply.status(400).send({ message: "Codex auth.json or OpenAI API key is not configured." });
       }
 
       try {
+        if (credentials.codexAuthJson) {
+          try {
+            const prompt = await executeCodexUtility({
+              prompt: [
+                settings.taskPromptMagicTemplate.replaceAll("{{user_request}}", parsed.data.prompt.trim()),
+                "",
+                "Return only the rewritten prompt text. Do not include markdown fences, commentary, labels, or explanation."
+              ].join("\n"),
+              model: settings.taskPromptMagicModel,
+              providerProfile: settings.codexDefaultEffort,
+              credentials
+            });
+            return reply.send({ prompt });
+          } catch (error) {
+            if (!credentials.openaiApiKey || !(error instanceof CodexUtilityUnavailableError)) {
+              throw error;
+            }
+          }
+        }
+
+        if (!credentials.openaiApiKey) {
+          return reply.status(400).send({ message: "OpenAI API key is not configured and Codex utility runner is unavailable." });
+        }
+
         const result = await executeTaskPromptMagic({
           prompt: parsed.data.prompt,
           model: settings.taskPromptMagicModel,
@@ -50023,6 +50348,12 @@ export const registerTaskRoutes = (
         });
         return reply.send(result);
       } catch (error: unknown) {
+        if (error instanceof CodexUtilityUnavailableError) {
+          return reply.status(400).send({ message: error.message });
+        }
+        if (error instanceof CodexUtilityError) {
+          return reply.status(error.statusCode).send({ message: error.message });
+        }
         if (
           error &&
           typeof error === "object" &&
@@ -51839,6 +52170,7 @@ export interface SystemSettings {
   taskPromptMagicTemplate: string;
   githubTokenConfigured: boolean;
   openaiApiKeyConfigured: boolean;
+  codexAuthJsonConfigured: boolean;
   anthropicApiKeyConfigured: boolean;
   codexDefaultModel: string;
   codexDefaultEffort: ProviderProfile;
@@ -52319,9 +52651,11 @@ export interface UpdateSettingsInput {
 export interface UpdateCredentialSettingsInput {
   githubToken?: string;
   openaiApiKey?: string;
+  codexAuthJson?: string;
   anthropicApiKey?: string;
   clearGithubToken?: boolean;
   clearOpenAiApiKey?: boolean;
+  clearCodexAuthJson?: boolean;
   clearAnthropicApiKey?: boolean;
 }
 
@@ -52668,7 +53002,7 @@ const providerOptions: Array<{ label: string; value: AgentProvider }> = [
 const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
   { label: "Auto (Profile then Global)", value: "auto" },
   { label: "Profile auth.json only", value: "profile" },
-  { label: "Global OpenAI key only", value: "global" }
+  { label: "Global OpenAI key or auth.json", value: "global" }
 ];
 
 const branchStrategyOptions: Array<{ label: string; value: TaskBranchStrategy }> = [

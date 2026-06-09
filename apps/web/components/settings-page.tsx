@@ -77,6 +77,7 @@ interface GeneralSettingsForm {
 interface CredentialForm {
   githubToken?: string;
   openaiApiKey?: string;
+  codexAuthJson?: string;
   anthropicApiKey?: string;
 }
 
@@ -101,7 +102,7 @@ interface ResponsePreferencePresetFormValues {
   extraInstructions?: string;
 }
 
-type ClearCredentialTarget = "github" | "openai" | "anthropic";
+type ClearCredentialTarget = "github" | "openai" | "codexAuthJson" | "anthropic";
 
 const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
   { label: "stdio", value: "stdio" },
@@ -225,6 +226,14 @@ export function SettingsPage() {
         return;
       }
 
+      if (target === "codexAuthJson") {
+        const nextSettings = await api.updateCredentials({ clearCodexAuthJson: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["codexAuthJson"]);
+        message.success("Codex auth.json cleared");
+        return;
+      }
+
       const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
       setSettings(nextSettings);
       credentialForm.resetFields(["anthropicApiKey"]);
@@ -237,6 +246,11 @@ export function SettingsPage() {
 
       if (target === "openai") {
         message.error(error instanceof Error ? error.message : "Failed to clear OpenAI API key");
+        return;
+      }
+
+      if (target === "codexAuthJson") {
+        message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");
         return;
       }
 
@@ -537,6 +551,9 @@ export function SettingsPage() {
                 <Tag color={settings.openaiApiKeyConfigured ? "green" : "default"}>
                   OpenAI API Key {settings.openaiApiKeyConfigured ? "Configured" : "Missing"}
                 </Tag>
+                <Tag color={settings.codexAuthJsonConfigured ? "green" : "default"}>
+                  Codex auth.json {settings.codexAuthJsonConfigured ? "Configured" : "Missing"}
+                </Tag>
                 <Tag color={settings.anthropicApiKeyConfigured ? "green" : "default"}>
                   Anthropic API Key (Claude, experimental) {settings.anthropicApiKeyConfigured ? "Configured" : "Missing"}
                 </Tag>
@@ -561,6 +578,7 @@ export function SettingsPage() {
                 const nextSettings = await api.updateCredentials({
                   githubToken: values.githubToken?.trim() || undefined,
                   openaiApiKey: values.openaiApiKey?.trim() || undefined,
+                  codexAuthJson: values.codexAuthJson?.trim() || undefined,
                   anthropicApiKey: values.anthropicApiKey?.trim() || undefined
                 });
                 credentialForm.resetFields();
@@ -578,6 +596,12 @@ export function SettingsPage() {
             </Form.Item>
             <Form.Item name="openaiApiKey" label="OpenAI API Key">
               <Input.Password placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."} />
+            </Form.Item>
+            <Form.Item name="codexAuthJson" label="Global Codex auth.json" extra="Used as the Global Codex credential source and as the Auto fallback after profile auth.json.">
+              <Input.TextArea
+                autoSize={{ minRows: 4, maxRows: 10 }}
+                placeholder={settings?.codexAuthJsonConfigured ? "Configured. Paste a new auth.json to replace it." : "{ ... }"}
+              />
             </Form.Item>
             <Form.Item
               name="anthropicApiKey"
@@ -616,6 +640,20 @@ export function SettingsPage() {
               >
                 <Button danger loading={savingCredentials} disabled={!canEditSettings}>
                   Clear OpenAI API Key
+                </Button>
+              </Popconfirm>
+              <Popconfirm
+                title="Clear Codex auth.json?"
+                description="This removes the stored global Codex auth.json from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
+                disabled={!canEditSettings}
+                onConfirm={() => handleClearCredential("codexAuthJson")}
+              >
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear Codex auth.json
                 </Button>
               </Popconfirm>
               <Popconfirm

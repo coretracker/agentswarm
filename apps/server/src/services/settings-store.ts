@@ -68,6 +68,7 @@ const defaultSettings: SystemSettings = {
     "You are an expert prompt editor for software engineering tasks.\nRewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.\n\nRequirements:\n- Preserve intent and constraints.\n- Make it specific and actionable.\n- Include acceptance criteria when implied.\n- Avoid changing requested scope.\n- Return plain text only, no markdown fences.\n\nUser request:\n{{user_request}}\n",
   githubTokenConfigured: false,
   openaiApiKeyConfigured: false,
+  codexAuthJsonConfigured: false,
   anthropicApiKeyConfigured: false,
   codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.4",
   codexDefaultEffort: DEFAULT_CODEX_EFFORT,
@@ -265,7 +266,7 @@ export interface SettingsStore {
   getSettings(): Promise<SystemSettings>;
   updateSettings(input: UpdateSettingsInput): Promise<SystemSettings>;
   updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings>;
-  getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials>;
+  getRuntimeCredentials(userId?: string | null, codexCredentialSource?: "auto" | "profile" | "global"): Promise<SettingsRuntimeCredentials>;
   getUserNotes(userId: string): Promise<UserNotes>;
   updateUserNotes(userId: string, notes: string): Promise<UserNotes>;
 }
@@ -389,14 +390,21 @@ export class RedisSettingsStore implements SettingsStore {
     return settings;
   }
 
-  async getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials> {
+  async getRuntimeCredentials(userId?: string | null, codexCredentialSource: "auto" | "profile" | "global" = "auto"): Promise<SettingsRuntimeCredentials> {
     const [credentials, settings] = await Promise.all([
       this.credentialStore.getCredentials(),
       this.getSettings()
     ]);
-    const codexAuthJson = userId?.trim()
+    const profileCodexAuthJson = userId?.trim()
       ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
       : null;
+    const globalCodexAuthJson = credentials.codexAuthJson ?? null;
+    const codexAuthJson =
+      codexCredentialSource === "profile"
+        ? profileCodexAuthJson
+        : codexCredentialSource === "global"
+          ? globalCodexAuthJson
+          : profileCodexAuthJson || globalCodexAuthJson;
 
     return {
       ...credentials,
@@ -645,14 +653,21 @@ export class PostgresSettingsStore implements SettingsStore {
     return settings;
   }
 
-  async getRuntimeCredentials(userId?: string | null): Promise<SettingsRuntimeCredentials> {
+  async getRuntimeCredentials(userId?: string | null, codexCredentialSource: "auto" | "profile" | "global" = "auto"): Promise<SettingsRuntimeCredentials> {
     const [credentials, settings] = await Promise.all([
       this.credentialStore.getCredentials(),
       this.getSettings()
     ]);
-    const codexAuthJson = userId?.trim()
+    const profileCodexAuthJson = userId?.trim()
       ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
       : null;
+    const globalCodexAuthJson = credentials.codexAuthJson ?? null;
+    const codexAuthJson =
+      codexCredentialSource === "profile"
+        ? profileCodexAuthJson
+        : codexCredentialSource === "global"
+          ? globalCodexAuthJson
+          : profileCodexAuthJson || globalCodexAuthJson;
 
     return {
       ...credentials,
