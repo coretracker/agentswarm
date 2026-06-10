@@ -23,6 +23,83 @@ describe("parseAgentJsonlEvents", () => {
     assert.equal(events.some((event) => event.kind === "usage.reported"), true);
   });
 
+  it("normalizes Codex MCP tool call events", () => {
+    const raw = [
+      {
+        type: "item.started",
+        item: {
+          id: "item_1",
+          type: "mcp_tool_call",
+          server: "github-mcp",
+          tool: "list_pull_requests",
+          arguments: { owner: "org", repo: "repo", state: "all" },
+          result: null,
+          error: null,
+          status: "in_progress"
+        }
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "item_1",
+          type: "mcp_tool_call",
+          server: "github-mcp",
+          tool: "list_pull_requests",
+          arguments: { owner: "org", repo: "repo", state: "all" },
+          result: { content: [{ type: "text", text: "[]" }], structured_content: null },
+          error: null,
+          status: "completed"
+        }
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "item_2",
+          type: "mcp_tool_call",
+          server: "github-mcp",
+          tool: "create_pull_request",
+          arguments: { owner: "org", repo: "repo" },
+          result: null,
+          error: { message: "Forbidden" },
+          status: "completed"
+        }
+      }
+    ].map((event) => JSON.stringify(event)).join("\n");
+
+    const events = parseAgentJsonlEvents("codex", raw);
+
+    assert.equal(
+      events.some(
+        (event) =>
+          event.kind === "tool.started" &&
+          event.title === "MCP github-mcp:list_pull_requests started" &&
+          event.toolName === "list_pull_requests" &&
+          event.detail === "{\"owner\":\"org\",\"repo\":\"repo\",\"state\":\"all\"}"
+      ),
+      true
+    );
+    assert.equal(
+      events.some(
+        (event) =>
+          event.kind === "tool.completed" &&
+          event.title === "MCP github-mcp:list_pull_requests completed" &&
+          event.message === "[]" &&
+          event.status === "completed"
+      ),
+      true
+    );
+    assert.equal(
+      events.some(
+        (event) =>
+          event.kind === "tool.failed" &&
+          event.title === "MCP github-mcp:create_pull_request failed" &&
+          event.message === "{\"message\":\"Forbidden\"}" &&
+          event.status === "completed"
+      ),
+      true
+    );
+  });
+
   it("normalizes Claude tool results and final result events", () => {
     const raw = [
       { type: "system", subtype: "init", session_id: "session-1", model: "claude-sonnet" },

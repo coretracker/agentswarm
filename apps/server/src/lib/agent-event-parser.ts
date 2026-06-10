@@ -8,6 +8,20 @@ const asString = (value: unknown): string | undefined => (typeof value === "stri
 const asNumber = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
 const asRecord = (value: unknown): JsonObject | undefined => (isRecord(value) ? value : undefined);
 
+const stringify = (value: unknown): string | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+};
+
 const truncate = (value: string | undefined, maxLength = 800): string | undefined => {
   if (!value) {
     return undefined;
@@ -145,6 +159,36 @@ function parseCodexItem(raw: JsonObject, index: number, events: NormalizedAgentE
       toolCallId: itemId,
       toolName: "command_execution",
       exitCode: exitCode ?? null
+    });
+    return;
+  }
+
+  if (itemType === "mcp_tool_call") {
+    const server = asString(item?.server);
+    const toolName = asString(item?.tool);
+    const error = item?.error;
+    const isFailed = isCompleted && error !== undefined && error !== null;
+    const kind = !isCompleted ? "tool.started" : isFailed ? "tool.failed" : "tool.completed";
+    const titleToolName = [server, toolName].filter(Boolean).join(":");
+    const result = asRecord(item?.result);
+    const content = Array.isArray(result?.content) ? result.content : [];
+    const textContent = content
+      .map((block) => asString(asRecord(block)?.text))
+      .filter((text): text is string => Boolean(text))
+      .join("\n");
+    const message = isFailed ? truncate(stringify(error)) : truncate(textContent || stringify(item?.result));
+    push(events, "codex", index, itemId ?? "mcp-tool-call", {
+      kind,
+      title: !isCompleted
+        ? titleToolName ? `MCP ${titleToolName} started` : "MCP tool started"
+        : isFailed
+          ? titleToolName ? `MCP ${titleToolName} failed` : "MCP tool failed"
+          : titleToolName ? `MCP ${titleToolName} completed` : "MCP tool completed",
+      detail: truncate(stringify(item?.arguments)),
+      message: isCompleted ? message : undefined,
+      status: status ?? (!isCompleted ? "in_progress" : isFailed ? "failed" : "completed"),
+      toolCallId: itemId,
+      toolName: toolName ?? "mcp_tool_call"
     });
     return;
   }

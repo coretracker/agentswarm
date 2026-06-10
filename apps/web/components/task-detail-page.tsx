@@ -107,6 +107,7 @@ import {
 import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
 import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { buildTaskLifecycleViewModel } from "../src/utils/task-lifecycle-view-model";
+import { buildTimelineDisplayItems, type TimelineDisplayItem } from "../src/utils/task-run-timeline";
 import { trackEvent } from "../src/utils/analytics";
 import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
@@ -4263,6 +4264,21 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     return "gray";
   };
 
+  const getTimelineDisplayItemColor = (item: TimelineDisplayItem): string => {
+    if (item.type === "event") {
+      return getTimelineEventColor(item.event);
+    }
+    if (item.status === "failed") {
+      return "red";
+    }
+    if (item.status === "in_progress") {
+      return "blue";
+    }
+    return "green";
+  };
+
+  const formatTimelineIndexRange = (start: number, end: number): string => (start === end ? `#${start + 1}` : `#${start + 1}-${end + 1}`);
+
   const renderTimelineEventContent = (event: TimelineEvent): ReactNode => {
     const showDetail = event.detail && event.detail !== event.filePath;
     return (
@@ -4318,8 +4334,126 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   };
 
+  const renderToolGroupContent = (item: Extract<TimelineDisplayItem, { type: "tool_group" }>): ReactNode => (
+    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+      <Flex align="flex-start" justify="space-between" gap={8} wrap="wrap">
+        <Space size={6} wrap>
+          <Typography.Text strong>{item.title}</Typography.Text>
+          <Tag>{item.calls.length}</Tag>
+          <Tag color={item.status === "failed" ? "red" : item.status === "in_progress" ? "blue" : "green"}>{item.status}</Tag>
+          {item.rawEventCount > item.calls.length ? <Tag>{item.rawEventCount} events</Tag> : null}
+        </Space>
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {formatTimelineIndexRange(item.rawEventIndexStart, item.rawEventIndexEnd)}
+        </Typography.Text>
+      </Flex>
+      <Collapse
+        ghost
+        size="small"
+        items={[
+          {
+            key: "tools",
+            label: "Details",
+            children: (
+              <List
+                size="small"
+                dataSource={item.calls}
+                renderItem={(call) => (
+                  <List.Item style={{ paddingLeft: 0, paddingRight: 0 }}>
+                    <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                      <Flex align="flex-start" justify="space-between" gap={8} wrap="wrap">
+                        <Space size={6} wrap>
+                          <Typography.Text>{call.title}</Typography.Text>
+                          {call.toolName ? <Tag color="blue">{call.toolName}</Tag> : null}
+                          {call.status ? <Tag>{call.status}</Tag> : null}
+                          {call.exitCode != null ? <Tag color={call.exitCode === 0 ? "green" : "red"}>exit {call.exitCode}</Tag> : null}
+                        </Space>
+                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                          {formatTimelineIndexRange(call.rawEventIndexStart, call.rawEventIndexEnd)}
+                        </Typography.Text>
+                      </Flex>
+                      {call.detail ? (
+                        <Typography.Text
+                          code
+                          style={{
+                            display: "block",
+                            padding: "6px 8px",
+                            background: token.colorFillAlter,
+                            borderRadius: 6,
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word"
+                          }}
+                        >
+                          {call.detail}
+                        </Typography.Text>
+                      ) : null}
+                      {call.message ? (
+                        <Typography.Paragraph
+                          style={{
+                            margin: 0,
+                            maxHeight: 140,
+                            overflow: "auto",
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word"
+                          }}
+                        >
+                          {call.message}
+                        </Typography.Paragraph>
+                      ) : null}
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            )
+          }
+        ]}
+      />
+    </Space>
+  );
+
+  const renderFileGroupContent = (item: Extract<TimelineDisplayItem, { type: "file_group" }>): ReactNode => (
+    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+      <Flex align="flex-start" justify="space-between" gap={8} wrap="wrap">
+        <Space size={6} wrap>
+          <Typography.Text strong>{item.title}</Typography.Text>
+          <Tag>{item.files.length}</Tag>
+          {item.status ? <Tag>{item.status}</Tag> : null}
+          {item.rawEventCount > item.files.length ? <Tag>{item.rawEventCount} events</Tag> : null}
+        </Space>
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {formatTimelineIndexRange(item.rawEventIndexStart, item.rawEventIndexEnd)}
+        </Typography.Text>
+      </Flex>
+      <List
+        size="small"
+        dataSource={item.files}
+        renderItem={(file) => (
+          <List.Item style={{ paddingLeft: 0, paddingRight: 0 }}>
+            <Space size={6} wrap>
+              {file.fileChangeKind ? <Tag>{file.fileChangeKind}</Tag> : null}
+              <Typography.Text code style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                {file.filePath ?? file.title}
+              </Typography.Text>
+            </Space>
+          </List.Item>
+        )}
+      />
+    </Space>
+  );
+
+  const renderTimelineDisplayItemContent = (item: TimelineDisplayItem): ReactNode => {
+    if (item.type === "tool_group") {
+      return renderToolGroupContent(item);
+    }
+    if (item.type === "file_group") {
+      return renderFileGroupContent(item);
+    }
+    return renderTimelineEventContent(item.event);
+  };
+
   const renderRunTimelinePanel = (run: TaskRun) => {
     const events = run.timelineEvents ?? [];
+    const items = buildTimelineDisplayItems(events);
     if (events.length === 0) {
       return <Typography.Text type="secondary">No parsed timeline events captured for this run.</Typography.Text>;
     }
@@ -4337,10 +4471,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       >
         <Timeline
           mode="left"
-          items={events.map((event) => ({
-            key: event.id,
-            color: getTimelineEventColor(event),
-            children: renderTimelineEventContent(event)
+          items={items.map((item) => ({
+            key: item.id,
+            color: getTimelineDisplayItemColor(item),
+            children: renderTimelineDisplayItemContent(item)
           }))}
         />
       </div>
@@ -4349,6 +4483,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const renderRunTimelineCollapse = (run: TaskRun) => {
     const count = run.timelineEvents?.length ?? 0;
+    const displayCount = buildTimelineDisplayItems(run.timelineEvents ?? []).length;
     return (
       <Collapse
         size="small"
@@ -4365,7 +4500,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         items={[
           {
             key: run.id,
-            label: `Timeline${count > 0 ? ` (${count})` : ""}`,
+            label: `Timeline${count > 0 ? ` (${displayCount}/${count})` : ""}`,
             children: renderRunTimelinePanel(run)
           }
         ]}
