@@ -865,6 +865,43 @@ export class SpawnerService {
     console.info(JSON.stringify(base));
   }
 
+  private async measureTaskGitRead<T>(
+    events: {
+      success: "git_state_snapshot_loaded" | "live_diff_loaded" | "build_finalize_diff_collected";
+      failure: "git_state_snapshot_failed" | "live_diff_failed" | "build_finalize_diff_failed";
+    },
+    taskId: string,
+    fn: () => Promise<T>,
+    buildMeta?: (result: T) => Record<string, unknown>
+  ): Promise<T> {
+    const startedAtMs = Date.now();
+    try {
+      const result = await fn();
+      const base: Record<string, unknown> = {
+        level: "info",
+        event: events.success,
+        task_id: taskId,
+        duration_ms: Math.max(0, Date.now() - startedAtMs)
+      };
+      if (buildMeta) {
+        Object.assign(base, buildMeta(result));
+      }
+      console.info(JSON.stringify(base));
+      return result;
+    } catch (error) {
+      console.info(
+        JSON.stringify({
+          level: "info",
+          event: events.failure,
+          task_id: taskId,
+          duration_ms: Math.max(0, Date.now() - startedAtMs),
+          failure_reason: error instanceof Error ? error.message : String(error)
+        })
+      );
+      throw error;
+    }
+  }
+
   private async withGitWorkerContainer<T>(fn: () => Promise<T>): Promise<T> {
     return this.gitWorkerContextStorage.run({ enabled: true }, fn);
   }
@@ -2508,146 +2545,159 @@ export class SpawnerService {
     task: Task,
     options?: { compareBaseRef?: string; diffKind?: "compare" | "working" | "commits"; commitSha?: string | null }
   ): Promise<TaskLiveDiff> {
-    const fetchedAt = new Date().toISOString();
-    const emptyHead = (): TaskLiveDiff => ({
-      diff: null,
-      live: false,
-      fetchedAt,
-      message: null,
-      headBranch: null,
-      headShaShort: null,
-      baseRef: null,
-      defaultBaseRef: null
-    });
-
-    const workspacePath = this.resolveWorkspacePath(task.id);
-    const workspaceExists = await access(workspacePath)
-      .then(() => true)
-      .catch(() => false);
-
-    if (!workspaceExists) {
-      return {
-        ...emptyHead(),
-        message: "Local workspace is unavailable for this task."
-      };
-    }
-
-    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
-    const token = runtimeCredentials.githubToken;
-    const gitUsername = runtimeCredentials.gitUsername;
-
-    const headInfo = await this.getWorkspaceHeadInfo(workspacePath, token, gitUsername);
     const diffKind: "compare" | "working" | "commits" =
       options?.diffKind === "working" ? "working" : options?.diffKind === "commits" ? "commits" : "compare";
-
-    if (diffKind === "commits") {
-      const defaultBaseRef = await this.resolveLiveDiffBaseRef(task, workspacePath, token, gitUsername);
-      const shaRaw = options?.commitSha?.trim() ?? "";
-      if (!shaRaw) {
-        return {
+    return this.measureTaskGitRead(
+      { success: "live_diff_loaded", failure: "live_diff_failed" },
+      task.id,
+      async () => {
+        const fetchedAt = new Date().toISOString();
+        const emptyHead = (): TaskLiveDiff => ({
           diff: null,
+          live: false,
+          fetchedAt,
+          message: null,
+          headBranch: null,
+          headShaShort: null,
+          baseRef: null,
+          defaultBaseRef: null
+        });
+
+        const workspacePath = this.resolveWorkspacePath(task.id);
+        const workspaceExists = await access(workspacePath)
+          .then(() => true)
+          .catch(() => false);
+
+        if (!workspaceExists) {
+          return {
+            ...emptyHead(),
+            message: "Local workspace is unavailable for this task."
+          };
+        }
+
+        const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+        const token = runtimeCredentials.githubToken;
+        const gitUsername = runtimeCredentials.gitUsername;
+
+        const headInfo = await this.getWorkspaceHeadInfo(workspacePath, token, gitUsername);
+
+        if (diffKind === "commits") {
+          const defaultBaseRef = await this.resolveLiveDiffBaseRef(task, workspacePath, token, gitUsername);
+          const shaRaw = options?.commitSha?.trim() ?? "";
+          if (!shaRaw) {
+            return {
+              diff: null,
+              live: true,
+              fetchedAt,
+              message: null,
+              headBranch: headInfo?.branch ?? null,
+              headShaShort: headInfo?.shaShort ?? null,
+              baseRef: null,
+              defaultBaseRef
+            };
+          }
+          if (!/^[0-9a-f]{7,40}$/i.test(shaRaw)) {
+            return {
+              diff: null,
+              live: false,
+              fetchedAt,
+              message: "Invalid commit id.",
+              headBranch: headInfo?.branch ?? null,
+              headShaShort: headInfo?.shaShort ?? null,
+              baseRef: null,
+              defaultBaseRef
+            };
+          }
+          try {
+            await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "--verify", `${shaRaw}^{commit}`], token, gitUsername);
+          } catch {
+            return {
+              diff: null,
+              live: false,
+              fetchedAt,
+              message: "Commit not found in this workspace.",
+              headBranch: headInfo?.branch ?? null,
+              headShaShort: headInfo?.shaShort ?? null,
+              baseRef: null,
+              defaultBaseRef
+            };
+          }
+          const diff = await this.collectCommitPatch(workspacePath, shaRaw, token, gitUsername);
+          return {
+            diff: diff || null,
+            live: true,
+            fetchedAt,
+            message: null,
+            headBranch: headInfo?.branch ?? null,
+            headShaShort: headInfo?.shaShort ?? null,
+            baseRef: null,
+            defaultBaseRef
+          };
+        }
+
+        if (diffKind === "working") {
+          const defaultBaseRef = await this.resolveLiveDiffBaseRef(task, workspacePath, token, gitUsername);
+          const diff = await this.collectWorkingTreeDiff(workspacePath, token, gitUsername);
+          return {
+            diff: diff || null,
+            live: true,
+            fetchedAt,
+            message: null,
+            headBranch: headInfo?.branch ?? null,
+            headShaShort: headInfo?.shaShort ?? null,
+            baseRef: null,
+            defaultBaseRef
+          };
+        }
+
+        await this.syncWorkspaceRemoteRefsIfNeeded(task, workspacePath, token, gitUsername).catch(() => undefined);
+
+        const defaultBaseRef = await this.resolveLiveDiffBaseRef(task, workspacePath, token, gitUsername);
+        if (!defaultBaseRef) {
+          return {
+            ...emptyHead(),
+            message: "No compare base is available yet."
+          };
+        }
+
+        let baseRef = defaultBaseRef;
+
+        if (options?.compareBaseRef?.trim()) {
+          const resolved = await this.normalizeUserCompareBaseRef(workspacePath, options.compareBaseRef, token, gitUsername);
+          if (!resolved) {
+            return {
+              diff: null,
+              live: false,
+              fetchedAt,
+              message: `Compare ref not found in workspace: ${options.compareBaseRef.trim()}`,
+              headBranch: headInfo?.branch ?? null,
+              headShaShort: headInfo?.shaShort ?? null,
+              baseRef: null,
+              defaultBaseRef
+            };
+          }
+          baseRef = resolved;
+        }
+        const diff = await this.collectCompareDiff(workspacePath, baseRef, token, gitUsername);
+        return {
+          diff: diff || null,
           live: true,
           fetchedAt,
           message: null,
           headBranch: headInfo?.branch ?? null,
           headShaShort: headInfo?.shaShort ?? null,
-          baseRef: null,
+          baseRef,
           defaultBaseRef
         };
-      }
-      if (!/^[0-9a-f]{7,40}$/i.test(shaRaw)) {
-        return {
-          diff: null,
-          live: false,
-          fetchedAt,
-          message: "Invalid commit id.",
-          headBranch: headInfo?.branch ?? null,
-          headShaShort: headInfo?.shaShort ?? null,
-          baseRef: null,
-          defaultBaseRef
-        };
-      }
-      try {
-        await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "--verify", `${shaRaw}^{commit}`], token, gitUsername);
-      } catch {
-        return {
-          diff: null,
-          live: false,
-          fetchedAt,
-          message: "Commit not found in this workspace.",
-          headBranch: headInfo?.branch ?? null,
-          headShaShort: headInfo?.shaShort ?? null,
-          baseRef: null,
-          defaultBaseRef
-        };
-      }
-      const diff = await this.collectCommitPatch(workspacePath, shaRaw, token, gitUsername);
-      return {
-        diff: diff || null,
-        live: true,
-        fetchedAt,
-        message: null,
-        headBranch: headInfo?.branch ?? null,
-        headShaShort: headInfo?.shaShort ?? null,
-        baseRef: null,
-        defaultBaseRef
-      };
-    }
-
-    if (diffKind === "working") {
-      const defaultBaseRef = await this.resolveLiveDiffBaseRef(task, workspacePath, token, gitUsername);
-      const diff = await this.collectWorkingTreeDiff(workspacePath, token, gitUsername);
-      return {
-        diff: diff || null,
-        live: true,
-        fetchedAt,
-        message: null,
-        headBranch: headInfo?.branch ?? null,
-        headShaShort: headInfo?.shaShort ?? null,
-        baseRef: null,
-        defaultBaseRef
-      };
-    }
-
-    await this.syncWorkspaceRemoteRefsIfNeeded(task, workspacePath, token, gitUsername).catch(() => undefined);
-
-    const defaultBaseRef = await this.resolveLiveDiffBaseRef(task, workspacePath, token, gitUsername);
-    if (!defaultBaseRef) {
-      return {
-        ...emptyHead(),
-        message: "No compare base is available yet."
-      };
-    }
-
-    let baseRef = defaultBaseRef;
-
-    if (options?.compareBaseRef?.trim()) {
-      const resolved = await this.normalizeUserCompareBaseRef(workspacePath, options.compareBaseRef, token, gitUsername);
-      if (!resolved) {
-        return {
-          diff: null,
-          live: false,
-          fetchedAt,
-          message: `Compare ref not found in workspace: ${options.compareBaseRef.trim()}`,
-          headBranch: headInfo?.branch ?? null,
-          headShaShort: headInfo?.shaShort ?? null,
-          baseRef: null,
-          defaultBaseRef
-        };
-      }
-      baseRef = resolved;
-    }
-    const diff = await this.collectCompareDiff(workspacePath, baseRef, token, gitUsername);
-    return {
-      diff: diff || null,
-      live: true,
-      fetchedAt,
-      message: null,
-      headBranch: headInfo?.branch ?? null,
-      headShaShort: headInfo?.shaShort ?? null,
-      baseRef,
-      defaultBaseRef
-    };
+      },
+      (result) => ({
+        diff_kind: diffKind,
+        live: result.live,
+        diff_chars: result.diff?.length ?? 0,
+        base_ref: result.baseRef,
+        default_base_ref: result.defaultBaseRef
+      })
+    );
   }
 
   private async prepareWorkspaceLegacyWorktree(
@@ -3088,38 +3138,50 @@ export class SpawnerService {
   }
 
   async getTaskGitStateSnapshot(task: Task): Promise<TaskGitStateSnapshot> {
-    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
-    const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
-    if (!branchName) {
-      throw new Error("No target branch available for publishing");
-    }
+    return this.measureTaskGitRead(
+      { success: "git_state_snapshot_loaded", failure: "git_state_snapshot_failed" },
+      task.id,
+      async () => {
+        const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+        const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
+        if (!branchName) {
+          throw new Error("No target branch available for publishing");
+        }
 
-    const workspacePath = this.resolveWorkspacePath(task.id);
-    const exists = await access(workspacePath)
-      .then(() => true)
-      .catch(() => false);
-    if (!exists) {
-      throw new Error("No local workspace exists for this task. Build it again before pushing.");
-    }
+        const workspacePath = this.resolveWorkspacePath(task.id);
+        const exists = await access(workspacePath)
+          .then(() => true)
+          .catch(() => false);
+        if (!exists) {
+          throw new Error("No local workspace exists for this task. Build it again before pushing.");
+        }
 
-    const { githubToken, gitUsername } = runtimeCredentials;
-    await this.refreshWorkspaceRemoteState(task, workspacePath, githubToken, gitUsername, "status");
-    const pushPreview = await this.collectTaskPushPreview(task, workspacePath, branchName, githubToken, gitUsername);
-    const { pullCount, pushCount } = await this.computeTaskBranchSyncCounts(
-      task,
-      workspacePath,
-      branchName,
-      pushPreview.hasUncommittedChanges,
-      githubToken,
-      gitUsername
+        const { githubToken, gitUsername } = runtimeCredentials;
+        await this.refreshWorkspaceRemoteState(task, workspacePath, githubToken, gitUsername, "status");
+        const pushPreview = await this.collectTaskPushPreview(task, workspacePath, branchName, githubToken, gitUsername);
+        const { pullCount, pushCount } = await this.computeTaskBranchSyncCounts(
+          task,
+          workspacePath,
+          branchName,
+          pushPreview.hasUncommittedChanges,
+          githubToken,
+          gitUsername
+        );
+
+        return {
+          fetchedAt: new Date().toISOString(),
+          pullCount,
+          pushCount,
+          pushPreview
+        };
+      },
+      (snapshot) => ({
+        pull_count: snapshot.pullCount,
+        push_count: snapshot.pushCount,
+        changed_file_count: snapshot.pushPreview.changedFiles.length,
+        unpushed_commit_count: snapshot.pushPreview.unpushedCommitSubjects.length
+      })
     );
-
-    return {
-      fetchedAt: new Date().toISOString(),
-      pullCount,
-      pushCount,
-      pushPreview
-    };
   }
 
   private async getCommitSubject(
@@ -3158,21 +3220,35 @@ export class SpawnerService {
     diffTruncated: boolean;
     toRef: string;
     commitSha: string;
-    providerCommitted: boolean;
-    changeOutcome: "changed" | "no_change";
-  }> {
-    // Keep repo-owned .agentswarm files. Only strip workspace scratch paths from diffs/commits.
-    await this.stripEphemeralWorkspaceFiles(workspacePath);
-    const commitSha = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
-    const providerCommitted = commitSha !== runStartRef;
-    const { diff: branchDiff, diffStat, changedFiles, diffTruncated, toRef } = await this.collectWorkingTreeDiffSinceRef(
-      workspacePath,
-      diffBaseRef,
-      githubToken,
-      gitUsername
+      providerCommitted: boolean;
+      changeOutcome: "changed" | "no_change";
+    }> {
+    return this.measureTaskGitRead(
+      { success: "build_finalize_diff_collected", failure: "build_finalize_diff_failed" },
+      task.id,
+      async () => {
+        // Keep repo-owned .agentswarm files. Only strip workspace scratch paths from diffs/commits.
+        await this.stripEphemeralWorkspaceFiles(workspacePath);
+        const commitSha = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
+        const providerCommitted = commitSha !== runStartRef;
+        const { diff: branchDiff, diffStat, changedFiles, diffTruncated, toRef } = await this.collectWorkingTreeDiffSinceRef(
+          workspacePath,
+          diffBaseRef,
+          githubToken,
+          gitUsername
+        );
+        const changeOutcome = changedFiles.length > 0 ? "changed" : "no_change";
+        return { branchDiff, diffStat, changedFiles, diffTruncated, toRef, commitSha, providerCommitted, changeOutcome };
+      },
+      (result) => ({
+        diff_base_ref: diffBaseRef,
+        changed_file_count: result.changedFiles.length,
+        diff_chars: result.branchDiff.length,
+        diff_truncated: result.diffTruncated,
+        provider_committed: result.providerCommitted,
+        change_outcome: result.changeOutcome
+      })
     );
-    const changeOutcome = changedFiles.length > 0 ? "changed" : "no_change";
-    return { branchDiff, diffStat, changedFiles, diffTruncated, toRef, commitSha, providerCommitted, changeOutcome };
   }
 
   private async collectReviewDiff(task: Task, workspacePath: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string | null> {
