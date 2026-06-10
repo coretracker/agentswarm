@@ -430,6 +430,18 @@ export const api = {
     request<Task>(`/tasks/${id}/pull`, {
       method: "POST"
     }),
+  resetTaskGit: (id: string) =>
+    request<Task>(`/tasks/${id}/reset-git`, {
+      method: "POST"
+    }),
+  revertTaskCommit: (id: string, commitSha: string) =>
+    request<Task>(`/tasks/${id}/commits/${encodeURIComponent(commitSha)}/revert`, {
+      method: "POST"
+    }),
+  resetTaskCommit: (id: string, commitSha: string) =>
+    request<Task>(`/tasks/${id}/commits/${encodeURIComponent(commitSha)}/reset`, {
+      method: "POST"
+    }),
   getTaskMergePreview: (id: string, targetBranch: string) =>
     request<TaskMergePreview>(`/tasks/${id}/merge-preview?targetBranch=${encodeURIComponent(targetBranch)}`),
   getTaskPushPreview: (id: string) => request<TaskPushPreview>(`/tasks/${id}/push-preview`),
@@ -510,8 +522,8 @@ export const api = {
       method: "DELETE"
     }),
   getSettings: () => request<SystemSettings>("/settings"),
-  listModels: (provider: AgentProvider) =>
-    request<ProviderModelsResponse>(`/settings/models?provider=${encodeURIComponent(provider)}`),
+  listModels: (provider: AgentProvider, options?: { refresh?: boolean }) =>
+    request<ProviderModelsResponse>(`/settings/models?provider=${encodeURIComponent(provider)}${options?.refresh ? "&refresh=1" : ""}`),
   updateSettings: (input: UpdateSettingsInput) =>
     request<SystemSettings>("/settings", {
       method: "PATCH",

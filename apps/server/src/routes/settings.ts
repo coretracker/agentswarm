@@ -70,6 +70,10 @@ const mcpServerSchema = z.discriminatedUnion("transport", [
 ]);
 
 const providerProfileEnum = z.enum(["low", "medium", "high", "max"]);
+const providerModelSchema = z.object({
+  label: z.string().trim().min(1).max(160),
+  value: z.string().trim().min(1).max(160)
+});
 const responsePreferenceSchema = z
   .object({
     audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
@@ -98,8 +102,10 @@ const updateSettingsSchema = z.object({
   taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
   taskPromptMagicTemplate: z.string().trim().min(1).max(12_000).optional(),
   codexDefaultModel: z.string().trim().min(1).max(120).optional(),
+  codexModels: z.array(providerModelSchema).max(100).optional(),
   codexDefaultEffort: providerProfileEnum.optional(),
   claudeDefaultModel: z.string().trim().min(1).max(120).optional(),
+  claudeModels: z.array(providerModelSchema).max(100).optional(),
   claudeDefaultEffort: providerProfileEnum.optional(),
   responsePreferencePresets: z.array(responsePreferencePresetSchema).max(50).optional()
 });
@@ -132,27 +138,34 @@ export const registerSettingsRoutes = (
   app.get("/settings/models", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async (request, reply) => {
     const providerParam = (request.query as Record<string, string>).provider as AgentProvider | undefined;
     const provider = providerParam === "claude" ? "claude" : "codex";
+    const refresh = (request.query as Record<string, string | undefined>).refresh === "1";
+
+    const settings = await deps.settingsStore.getSettings();
+    const configured = provider === "claude" ? settings.claudeModels : settings.codexModels;
+    const fallback = provider === "claude" ? [...CLAUDE_MODELS] : [...CODEX_MODELS];
+
+    if (!refresh) {
+      return reply.send({ models: configured.length > 0 ? configured : fallback, source: configured.length > 0 ? "cache" : "fallback" });
+    }
 
     const credentials = await deps.settingsStore.getRuntimeCredentials();
-    const settings = await deps.settingsStore.getSettings();
-    const fallback = provider === "claude" ? [...CLAUDE_MODELS] : [...CODEX_MODELS];
 
     try {
       if (provider === "claude") {
         if (!credentials.anthropicApiKey) {
-          return reply.send({ models: fallback, source: "fallback" });
+          return reply.send({ models: configured.length > 0 ? configured : fallback, source: configured.length > 0 ? "cache" : "fallback" });
         }
         const models = await fetchAnthropicModels(credentials.anthropicApiKey);
         return reply.send({ models, source: "api" });
       }
 
       if (!credentials.openaiApiKey) {
-        return reply.send({ models: fallback, source: "fallback" });
+        return reply.send({ models: configured.length > 0 ? configured : fallback, source: configured.length > 0 ? "cache" : "fallback" });
       }
       const models = await fetchOpenAiModels(credentials.openaiApiKey, settings.openaiBaseUrl);
       return reply.send({ models, source: "api" });
     } catch {
-      return reply.send({ models: fallback, source: "fallback" });
+      return reply.send({ models: configured.length > 0 ? configured : fallback, source: configured.length > 0 ? "cache" : "fallback" });
     }
   });
 

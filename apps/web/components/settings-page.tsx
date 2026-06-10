@@ -11,6 +11,7 @@ import type {
   AudienceType,
   McpServerTransport,
   PermissionScope,
+  ProviderModelOption,
   ProviderProfile,
   ResponsePreferencePreset,
   Role,
@@ -22,7 +23,7 @@ import {
   getEffortOptionsForProvider,
   getModelsForProvider
 } from "@agentswarm/shared-types";
-import { DeleteOutlined, LockOutlined, PlusOutlined } from "@ant-design/icons";
+import { DeleteOutlined, LockOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   Alert,
   App,
@@ -70,8 +71,10 @@ interface GeneralSettingsForm {
   taskPromptMagicTemplate: string;
   mcpServers: McpServerFormItem[];
   codexDefaultModel: string;
+  codexModels: ProviderModelOption[];
   codexDefaultEffort: ProviderProfile;
   claudeDefaultModel: string;
+  claudeModels: ProviderModelOption[];
   claudeDefaultEffort: ProviderProfile;
 }
 
@@ -117,6 +120,19 @@ const providerOptions: Array<{ label: string; value: AgentProvider }> = [
 
 const summarizeAllowlist = (label: string, values: string[]): string => `${label}: ${values.length === 0 ? "All" : values.join(", ")}`;
 const toSentenceValue = (value: string): string => value.replace(/_/g, " ");
+const normalizeProviderModelOptions = (models: ProviderModelOption[] | undefined, fallback: ProviderModelOption[]): ProviderModelOption[] => {
+  const normalized: ProviderModelOption[] = [];
+  const seen = new Set<string>();
+  for (const model of models ?? []) {
+    const value = model.value?.trim();
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    normalized.push({ label: model.label?.trim() || value, value });
+    seen.add(value);
+  }
+  return normalized.length > 0 ? normalized : fallback;
+};
 const summarizeResponsePreference = (preset: ResponsePreferencePreset): string => {
   const parts: string[] = [];
   if (preset.preference.audience) {
@@ -149,8 +165,10 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
     bearerTokenEnvVar: server.bearerTokenEnvVar ?? ""
   })),
   codexDefaultModel: settings.codexDefaultModel,
+  codexModels: settings.codexModels,
   codexDefaultEffort: settings.codexDefaultEffort,
   claudeDefaultModel: settings.claudeDefaultModel,
+  claudeModels: settings.claudeModels,
   claudeDefaultEffort: settings.claudeDefaultEffort
 });
 
@@ -166,6 +184,7 @@ export function SettingsPage() {
   const [rolesLoading, setRolesLoading] = useState(true);
   const [savingGeneral, setSavingGeneral] = useState(false);
   const [savingCredentials, setSavingCredentials] = useState(false);
+  const [autoFillingProvider, setAutoFillingProvider] = useState<AgentProvider | null>(null);
   const [savingRole, setSavingRole] = useState(false);
   const [savingResponsePreferencePreset, setSavingResponsePreferencePreset] = useState(false);
   const [roleModalOpen, setRoleModalOpen] = useState(false);
@@ -175,6 +194,10 @@ export function SettingsPage() {
   const canEditSettings = can("settings:edit");
   const { models: codexModels, loading: codexModelsLoading, source: codexModelsSource } = useProviderModels("codex");
   const { models: claudeModels, loading: claudeModelsLoading, source: claudeModelsSource } = useProviderModels("claude");
+  const codexModelFormValues = Form.useWatch("codexModels", generalForm);
+  const claudeModelFormValues = Form.useWatch("claudeModels", generalForm);
+  const codexDefaultModelOptions = normalizeProviderModelOptions(codexModelFormValues, codexModels);
+  const claudeDefaultModelOptions = normalizeProviderModelOptions(claudeModelFormValues, claudeModels);
   const allModelOptions = Array.from(
     new Map(
       [...codexModels, ...claudeModels, ...getModelsForProvider("codex"), ...getModelsForProvider("claude")].map((option) => [option.value, option])
@@ -207,6 +230,31 @@ export function SettingsPage() {
   useEffect(() => {
     void loadRoles();
   }, []);
+
+  const handleAutoFillModels = async (provider: AgentProvider): Promise<void> => {
+    setAutoFillingProvider(provider);
+    try {
+      const response = await api.listModels(provider, { refresh: true });
+      const fallback = getModelsForProvider(provider);
+      const models = normalizeProviderModelOptions(response.models, fallback);
+      if (provider === "codex") {
+        generalForm.setFieldValue("codexModels", models);
+        if (!models.some((model) => model.value === generalForm.getFieldValue("codexDefaultModel"))) {
+          generalForm.setFieldValue("codexDefaultModel", models[0]?.value ?? fallback[0]?.value);
+        }
+      } else {
+        generalForm.setFieldValue("claudeModels", models);
+        if (!models.some((model) => model.value === generalForm.getFieldValue("claudeDefaultModel"))) {
+          generalForm.setFieldValue("claudeDefaultModel", models[0]?.value ?? fallback[0]?.value);
+        }
+      }
+      message.success(response.source === "api" ? "Models fetched from provider" : "Using saved or built-in model list");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to fetch provider models");
+    } finally {
+      setAutoFillingProvider(null);
+    }
+  };
 
   const handleClearCredential = async (target: ClearCredentialTarget): Promise<void> => {
     setSavingCredentials(true);
@@ -261,6 +309,76 @@ export function SettingsPage() {
     }
   };
 
+  const renderProviderModelsEditor = (
+    provider: AgentProvider,
+    fieldName: "codexModels" | "claudeModels",
+    canAutoFill: boolean
+  ) => (
+    <Form.List name={fieldName}>
+      {(fields, { add, remove }) => (
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <Alert
+            type="info"
+            showIcon
+            message="Model list"
+            description={
+              canAutoFill
+                ? "Use Auto-fill to fetch every model available to the configured API key, or edit this list by hand."
+                : "Add models by hand, or configure the provider API key to auto-fill all available models."
+            }
+          />
+          <Flex justify="space-between" align="center" gap={8} wrap="wrap">
+            <Typography.Text type="secondary">These models are used in task create and edit model selectors.</Typography.Text>
+            <Tooltip title={canAutoFill ? "Fetch available models from the provider" : "Configure the provider API key to enable auto-fill"}>
+              <Button
+                icon={<ReloadOutlined />}
+                loading={autoFillingProvider === provider}
+                disabled={!canAutoFill}
+                onClick={() => void handleAutoFillModels(provider)}
+              >
+                Auto-fill
+              </Button>
+            </Tooltip>
+          </Flex>
+          {fields.map((field) => (
+            <Flex key={field.key} gap={8} align="flex-start" wrap="wrap">
+              <Form.Item
+                name={[field.name, "label"]}
+                label={field.name === 0 ? "Title" : undefined}
+                rules={[{ required: true, whitespace: true, message: "Enter a title" }]}
+                style={{ flex: "1 1 220px", marginBottom: 0 }}
+              >
+                <Input placeholder="GPT-5.5" />
+              </Form.Item>
+              <Form.Item
+                name={[field.name, "value"]}
+                label={field.name === 0 ? "Value" : undefined}
+                rules={[{ required: true, whitespace: true, message: "Enter a model value" }]}
+                style={{ flex: "1 1 260px", marginBottom: 0 }}
+              >
+                <Input placeholder="gpt-5.5" />
+              </Form.Item>
+              <Button
+                aria-label="Remove model"
+                icon={<DeleteOutlined />}
+                style={{ marginTop: field.name === 0 ? 30 : 0 }}
+                onClick={() => remove(field.name)}
+              />
+            </Flex>
+          ))}
+          <Button
+            type="dashed"
+            icon={<PlusOutlined />}
+            onClick={() => add({ label: "", value: "" })}
+            style={{ width: "100%" }}
+          >
+            Add model
+          </Button>
+        </Space>
+      )}
+    </Form.List>
+  );
+
   return (
     <>
       <Space direction="vertical" size={16} style={{ width: "100%" }}>
@@ -298,8 +416,10 @@ export function SettingsPage() {
                 taskPromptMagicModel: values.taskPromptMagicModel,
                 taskPromptMagicTemplate: values.taskPromptMagicTemplate,
                 codexDefaultModel: values.codexDefaultModel,
+                codexModels: values.codexModels,
                 codexDefaultEffort: values.codexDefaultEffort,
                 claudeDefaultModel: values.claudeDefaultModel,
+                claudeModels: values.claudeModels,
                 claudeDefaultEffort: values.claudeDefaultEffort,
                 mcpServers: (values.mcpServers ?? []).map((server) =>
                   server.transport === "http"
@@ -387,14 +507,15 @@ export function SettingsPage() {
                     <Form.Item
                       name="codexDefaultModel"
                       label="Default Model"
-                      extra={codexModelsSource === "api" ? "Model suggestions were refreshed from the provider." : "Model suggestions may be stale. You can type a model name manually."}
+                      extra={codexModelsSource === "cache" ? "Model suggestions come from the saved Codex model list below." : "Model suggestions use built-in defaults until you save a custom list."}
                       style={{ marginBottom: 0 }}
                     >
-                      <ModelSelect options={codexModels} loading={codexModelsLoading} />
+                      <ModelSelect options={codexDefaultModelOptions} loading={codexModelsLoading} />
                     </Form.Item>
                     <Form.Item name="codexDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
                       <Select options={getEffortOptionsForProvider("codex")} />
                     </Form.Item>
+                    {renderProviderModelsEditor("codex", "codexModels", Boolean(settings?.openaiApiKeyConfigured))}
                   </Flex>
                 </div>
 
@@ -411,14 +532,15 @@ export function SettingsPage() {
                     <Form.Item
                       name="claudeDefaultModel"
                       label="Default Model"
-                      extra={claudeModelsSource === "api" ? "Model suggestions were refreshed from the provider." : "Model suggestions may be stale. You can type a model name manually."}
+                      extra={claudeModelsSource === "cache" ? "Model suggestions come from the saved Claude model list below." : "Model suggestions use built-in defaults until you save a custom list."}
                       style={{ marginBottom: 0 }}
                     >
-                      <ModelSelect options={claudeModels} loading={claudeModelsLoading} />
+                      <ModelSelect options={claudeDefaultModelOptions} loading={claudeModelsLoading} />
                     </Form.Item>
                     <Form.Item name="claudeDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
                       <Select options={getEffortOptionsForProvider("claude")} />
                     </Form.Item>
+                    {renderProviderModelsEditor("claude", "claudeModels", Boolean(settings?.anthropicApiKeyConfigured))}
                   </Flex>
                 </div>
               </Flex>

@@ -171,6 +171,11 @@ const mergePreviewQuerySchema = z.object({
   targetBranch: z.string().trim().min(1).max(255)
 });
 
+const commitShaSchema = z
+  .string()
+  .trim()
+  .regex(/^[0-9a-f]{7,40}$/i, "Invalid commit SHA.");
+
 const openAiDiffAssistSchema = z.object({
   model: z.string().trim().min(1).max(256),
   providerProfile: z.enum(["low", "medium", "high", "max"]),
@@ -357,9 +362,8 @@ export const registerTaskRoutes = (
       await reply.status(409).send({ message: archivedTaskReadOnlyMessage });
       return false;
     }
-    const blocked = await getMutationBlocked(deps.taskStore, task.id);
-    if (blocked) {
-      await replyWithMutationBlocked(reply, blocked);
+    if (await deps.taskStore.getActiveInteractiveSession(task.id)) {
+      await reply.status(409).send({ message: "Close the terminal session before continuing." });
       return false;
     }
     return true;
@@ -1853,6 +1857,84 @@ export const registerTaskRoutes = (
     const pulledRefreshed = await deps.taskStore.patchTask(pulled.id, {});
     return reply.send(await withBranchSyncCounts(deps.spawner, pulledRefreshed ?? pulled));
   });
+
+  app.post<{ Params: { id: string } }>("/tasks/:id/reset-git", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (!(await ensureGitMutationAllowed(reply, task))) {
+      return;
+    }
+
+    const resetResult = await runGitCommand(() => deps.spawner.resetTaskBranchLocalState(task), "Reset failed");
+    if (!resetResult.ok) {
+      return reply.status(400).send({ message: resetResult.message });
+    }
+
+    const resetTask = resetResult.value;
+    const resetRefreshed = await deps.taskStore.patchTask(resetTask.id, {});
+    return reply.send(await withBranchSyncCounts(deps.spawner, resetRefreshed ?? resetTask));
+  });
+
+  app.post<{ Params: { id: string; commitSha: string } }>(
+    "/tasks/:id/commits/:commitSha/revert",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const parsedSha = commitShaSchema.safeParse(request.params.commitSha);
+      if (!parsedSha.success) {
+        return reply.status(400).send({ message: parsedSha.error.message });
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (!(await ensureGitMutationAllowed(reply, task))) {
+        return;
+      }
+
+      const revertResult = await runGitCommand(() => deps.spawner.revertTaskCommit(task, parsedSha.data), "Revert failed");
+      if (!revertResult.ok) {
+        return reply.status(400).send({ message: revertResult.message });
+      }
+
+      const revertedTask = revertResult.value;
+      const revertedRefreshed = await deps.taskStore.patchTask(revertedTask.id, {});
+      return reply.send(await withBranchSyncCounts(deps.spawner, revertedRefreshed ?? revertedTask));
+    }
+  );
+
+  app.post<{ Params: { id: string; commitSha: string } }>(
+    "/tasks/:id/commits/:commitSha/reset",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const parsedSha = commitShaSchema.safeParse(request.params.commitSha);
+      if (!parsedSha.success) {
+        return reply.status(400).send({ message: parsedSha.error.message });
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (!(await ensureGitMutationAllowed(reply, task))) {
+        return;
+      }
+
+      const resetResult = await runGitCommand(() => deps.spawner.resetTaskBranchToCommit(task, parsedSha.data), "Reset failed");
+      if (!resetResult.ok) {
+        return reply.status(400).send({ message: resetResult.message });
+      }
+
+      const resetTask = resetResult.value;
+      const resetRefreshed = await deps.taskStore.patchTask(resetTask.id, {});
+      return reply.send(await withBranchSyncCounts(deps.spawner, resetRefreshed ?? resetTask));
+    }
+  );
 
   app.get<{ Params: { id: string }; Querystring: { targetBranch: string } }>(
     "/tasks/:id/merge-preview",

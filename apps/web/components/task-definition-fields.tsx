@@ -84,6 +84,11 @@ const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSetti
 const getProviderDefaultProfile = (provider: AgentProvider, settings?: SystemSettings | null): ProviderProfile =>
   provider === "claude" ? settings?.claudeDefaultEffort ?? "high" : settings?.codexDefaultEffort ?? "high";
 
+const getProviderConfiguredModels = (provider: AgentProvider, settings?: SystemSettings | null) => {
+  const models = provider === "claude" ? settings?.claudeModels : settings?.codexModels;
+  return models && models.length > 0 ? models : getModelsForProvider(provider);
+};
+
 const deriveTitleFromPrompt = (prompt: string): string => {
   const lines = prompt
     .split(/\r?\n/)
@@ -573,7 +578,7 @@ export function TaskDefinitionFields({
               <Select
                 options={providerSelectOptions}
                 onChange={(value: AgentProvider) => {
-                  const nextModels = getModelsForProvider(value).filter(
+                  const nextModels = getProviderConfiguredModels(value, settings).filter(
                     (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
                   );
                   const nextEfforts = getEffortOptionsForProvider(value).filter(

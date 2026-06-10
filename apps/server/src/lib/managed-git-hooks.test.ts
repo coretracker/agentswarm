@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 import { installManagedGitHooks, MANAGED_GIT_HOOKS } from "./managed-git-hooks.js";
 
 describe("installManagedGitHooks", () => {
-  it("writes blocking git hooks with execute permissions", async () => {
+  it("writes managed git hooks with execute permissions", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "agentswarm-managed-hooks-"));
     const gitDir = path.join(root, ".git");
 

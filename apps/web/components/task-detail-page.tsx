@@ -207,6 +207,11 @@ function getProviderDefaultModel(provider: AgentProvider, settings?: SystemSetti
     : settings?.codexDefaultModel ?? getDefaultModelForProvider(provider);
 }
 
+function getProviderConfiguredModels(provider: AgentProvider, settings?: SystemSettings | null) {
+  const models = provider === "claude" ? settings?.claudeModels : settings?.codexModels;
+  return models && models.length > 0 ? models : getModelsForProvider(provider);
+}
+
 function formatRunDuration(startedAt: string, finishedAt: string | null): string {
   const start = dayjs(startedAt);
   const end = finishedAt ? dayjs(finishedAt) : dayjs();
@@ -746,7 +751,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [liveDiffLoading, setLiveDiffLoading] = useState(false);
   const [liveDiffError, setLiveDiffError] = useState<string | null>(null);
   const [liveDiffRefreshKey, setLiveDiffRefreshKey] = useState(0);
-  const [diffLiveKind, setDiffLiveKind] = useState<"compare" | "commits">("commits");
+  const [diffLiveKind, setDiffLiveKind] = useState<"compare" | "commits" | "working">("working");
   const [diffCompareBaseRef, setDiffCompareBaseRef] = useState<string | null>(null);
   const [existingGitHubPullRequest, setExistingGitHubPullRequest] = useState<GitHubPullRequestReference | null>(null);
   const [existingGitHubPullRequestChecked, setExistingGitHubPullRequestChecked] = useState(false);
@@ -782,6 +787,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "config"
     | "pull"
     | "push"
+    | "resetGit"
+    | "revertCommit"
+    | "resetCommit"
     | "merge"
     | "archive"
     | "newSession"
@@ -1379,7 +1387,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             before: liveDiff?.baseRef ?? liveDiff?.defaultBaseRef ?? null,
             after: "HEAD"
           }
-        : selectedCommitSha
+        : diffLiveKind === "commits" && selectedCommitSha
           ? {
               before: `${selectedCommitSha}^`,
               after: selectedCommitSha
@@ -1831,7 +1839,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   }, [diffLiveKind]);
 
   useEffect(() => {
-    if (activeMainTab !== "diff" || !task || !canRequestLiveDiff || diffLiveKind !== "commits") {
+    if (activeMainTab !== "diff" || !task || !canRequestLiveDiff) {
+      return;
+    }
+
+    if (diffLiveKind !== "commits") {
+      setCommitLog([]);
+      setCommitLogError(null);
+      setCommitLogLoading(false);
       return;
     }
 
@@ -1925,8 +1940,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setLiveDiffLoading(true);
       try {
         const snapshot = await api.getTaskLiveDiff(task.id, {
-          baseRef: diffCompareBaseRef ?? task.repoDefaultBranch ?? undefined,
-          diffKind: "compare"
+          ...(diffLiveKind === "compare"
+            ? {
+                baseRef: diffCompareBaseRef ?? task.repoDefaultBranch ?? undefined,
+                diffKind: "compare" as const
+              }
+            : { diffKind: "working" as const })
         });
         if (!cancelled) {
           setLiveDiff(snapshot);
@@ -2384,7 +2403,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   };
   const handleProviderInputChange = (value: AgentProvider) => {
     setProviderInput(value);
-    const nextModels = getModelsForProvider(value).filter(
+    const nextModels = getProviderConfiguredModels(value, settings).filter(
       (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
     );
     const nextEfforts = getEffortOptionsForProvider(value).filter(
@@ -2896,6 +2915,109 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
+  const handleResetGit = async () => {
+    if (!task) {
+      return;
+    }
+
+    Modal.confirm({
+      title: "Reset local Git state?",
+      content:
+        "This discards uncommitted changes and local-only commits by resetting the task branch to its remote branch, or to the task base if nothing has been pushed yet.",
+      okText: "Reset",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setSubmitting("resetGit");
+        try {
+          const updatedTask = await api.resetTaskGit(task.id);
+          setTask((current) =>
+            current
+              ? {
+                  ...current,
+                  ...updatedTask,
+                  logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+                }
+              : updatedTask
+          );
+          messageApi.success("Local Git state reset");
+          void loadPushPreview();
+          setLiveDiffRefreshKey((k) => k + 1);
+        } catch (error) {
+          showTaskActionError(error, "Failed to reset local Git state");
+        } finally {
+          setSubmitting(null);
+        }
+      }
+    });
+  };
+  const handleRevertCommit = async (commit: TaskWorkspaceCommit) => {
+    if (!task) {
+      return;
+    }
+
+    Modal.confirm({
+      title: `Revert ${commit.shortSha}?`,
+      content: "This creates a new commit that reverts the selected commit.",
+      okText: "Revert commit",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setSubmitting("revertCommit");
+        try {
+          const updatedTask = await api.revertTaskCommit(task.id, commit.sha);
+          setTask((current) =>
+            current
+              ? {
+                  ...current,
+                  ...updatedTask,
+                  logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+                }
+              : updatedTask
+          );
+          messageApi.success(`Reverted ${commit.shortSha}`);
+          void loadPushPreview();
+          setLiveDiffRefreshKey((k) => k + 1);
+        } catch (error) {
+          showTaskActionError(error, "Failed to revert commit");
+        } finally {
+          setSubmitting(null);
+        }
+      }
+    });
+  };
+  const handleResetToCommit = async (commit: TaskWorkspaceCommit) => {
+    if (!task) {
+      return;
+    }
+
+    Modal.confirm({
+      title: `Reset to ${commit.shortSha}?`,
+      content: "This removes newer local-only commits and discards uncommitted changes.",
+      okText: "Reset to commit",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setSubmitting("resetCommit");
+        try {
+          const updatedTask = await api.resetTaskCommit(task.id, commit.sha);
+          setTask((current) =>
+            current
+              ? {
+                  ...current,
+                  ...updatedTask,
+                  logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+                }
+              : updatedTask
+          );
+          messageApi.success(`Reset to ${commit.shortSha}`);
+          void loadPushPreview();
+          setLiveDiffRefreshKey((k) => k + 1);
+        } catch (error) {
+          showTaskActionError(error, "Failed to reset to commit");
+        } finally {
+          setSubmitting(null);
+        }
+      }
+    });
+  };
   const handleMergeTask = async () => {
     if (!task || !mergeTargetBranch || !mergePreview?.mergeable) {
       return;
@@ -3341,6 +3463,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     pushPreview &&
       (pushPreview.hasUncommittedChanges || pushPreview.unpushedCommitSubjects.length > 0)
   );
+  const uncommittedChangeCount = pushPreview?.changedFiles.length ?? 0;
+  const unpushedCommitCount = pushPreview?.unpushedCommitSubjects.length ?? 0;
+  const gitStateSummary = [
+    pushPreviewLoading
+      ? { label: "Working tree", value: "Loading…" }
+      : {
+          label: "Working tree",
+          value: pushPreview?.hasUncommittedChanges ? `${uncommittedChangeCount} changed ${uncommittedChangeCount === 1 ? "file" : "files"}` : "Clean"
+        },
+    pushPreviewLoading
+      ? { label: "Local commits", value: "Loading…" }
+      : {
+          label: "Local commits",
+          value: unpushedCommitCount > 0 ? `${unpushedCommitCount} unpushed` : "All pushed"
+        },
+    pushPreviewLoading
+      ? { label: "Branch status", value: "Loading…" }
+      : {
+          label: "Branch status",
+          value: pushPreviewHasPushableChanges || pushCount > 0 ? "Local-only changes present" : "In sync with remote"
+        }
+  ];
   const gitOperationBusy = gitOperation?.status === "queued" || gitOperation?.status === "running";
   const gitOperationStatusLabel =
     gitOperation?.status === "queued"
@@ -3379,6 +3523,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const applyCheckpointFooterBusy = applyCheckpointApplyingOrPushing || applyCheckpointCommitMessageGenerating;
   const mergeFooterBusy = submitting === "merge" || mergeCommitMessageGenerating;
   const pushNothingToPush = Boolean(pushPreview) && pushCount === 0 && !pushPreviewHasPushableChanges;
+  const resetGitDisabled = submitting === "resetGit" || pushPreviewLoading || gitOperationBusy || !pushPreviewHasPushableChanges;
   const pushPrimaryDisabled = submitting === "push" || pushPreviewLoading || pushNothingToPush || gitOperationBusy;
   const mergeBlockedReason =
     pendingChangeProposal
@@ -3390,15 +3535,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     canPull ? (
       <Tooltip
         title={
-          pendingChangeProposal
-            ? "Apply or reject the pending checkpoint before pulling."
-            : gitOperationBusy
-              ? "Another Git operation is already running."
+          gitOperationBusy
+            ? "Another Git operation is already running."
             : undefined
         }
       >
         <span style={{ display: "inline-block" }}>
-          <Button onClick={handlePullTask} loading={submitting === "pull"} disabled={!!pendingChangeProposal || submitting === "push" || gitOperationBusy}>
+          <Button onClick={handlePullTask} loading={submitting === "pull"} disabled={submitting === "push" || gitOperationBusy}>
             {`Pull (${pullCount})`}
           </Button>
         </span>
@@ -3408,18 +3551,39 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     canPush ? (
       <Tooltip
         title={
-          pendingChangeProposal
-            ? "Apply or reject the pending checkpoint before pushing."
-            : gitOperationBusy
-              ? "Another Git operation is already running."
+          gitOperationBusy
+            ? "Another Git operation is already running."
             : pushNothingToPush
               ? "Nothing to push — commit local changes or refresh Git status."
               : undefined
         }
       >
         <span style={{ display: "inline-block" }}>
-          <Button type="primary" onClick={() => void confirmPushTask()} loading={submitting === "push"} disabled={!!pendingChangeProposal || pushPrimaryDisabled}>
+          <Button type="primary" onClick={() => void confirmPushTask()} loading={submitting === "push"} disabled={pushPrimaryDisabled}>
             {`Push (${pushCount})`}
+          </Button>
+        </span>
+      </Tooltip>
+    ) : null;
+  const renderResetGitButton = () =>
+    canPush ? (
+      <Tooltip
+        title={
+          gitOperationBusy
+            ? "Another Git operation is already running."
+              : !pushPreviewHasPushableChanges
+                ? "No local-only changes or commits to reset."
+                : undefined
+        }
+      >
+        <span style={{ display: "inline-block" }}>
+          <Button
+            danger
+            onClick={() => void handleResetGit()}
+            loading={submitting === "resetGit"}
+            disabled={resetGitDisabled}
+          >
+            Reset Git
           </Button>
         </span>
       </Tooltip>
@@ -3526,13 +3690,33 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         <Card size="small" style={{ flexShrink: 0 }} styles={{ body: { paddingBottom: 12 } }}>
           <Segmented
             value={diffLiveKind}
-            onChange={(value) => setDiffLiveKind(value as "compare" | "commits")}
+            onChange={(value) => setDiffLiveKind(value as "compare" | "commits" | "working")}
             options={[
+              { label: "Working tree", value: "working" },
               { label: "Branch commits", value: "commits" },
               { label: "Compare to branch", value: "compare" }
             ]}
             style={{ marginBottom: 14 }}
           />
+          <Flex gap={8} wrap style={{ width: "100%", marginBottom: 14 }}>
+            {gitStateSummary.map((item) => (
+              <div
+                key={item.label}
+                style={{
+                  minWidth: 150,
+                  flex: "1 1 170px",
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  background: token.colorFillAlter
+                }}
+              >
+                <Typography.Text type="secondary" style={{ display: "block", fontSize: 12 }}>
+                  {item.label}
+                </Typography.Text>
+                <Typography.Text strong>{item.value}</Typography.Text>
+              </div>
+            ))}
+          </Flex>
           <Flex align="flex-start" wrap="wrap" gap={16}>
             <div style={{ minWidth: 200, flex: "1 1 220px" }}>
               <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
@@ -3543,7 +3727,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 value={diffCompareBaseRef ?? task.repoDefaultBranch}
                 options={diffBaseBranchOptions}
                 loading={diffBranchesLoading}
-                disabled={!canRequestLiveDiff || diffLiveKind === "commits"}
+                disabled={!canRequestLiveDiff || diffLiveKind !== "compare"}
                 style={{ width: "100%" }}
                 onChange={(value) => {
                   setDiffCompareBaseRef(typeof value === "string" && value.length > 0 ? value : task.repoDefaultBranch ?? null);
@@ -3554,12 +3738,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   Recent commits on the current workspace branch. Choose one to view its patch. The base branch is only used in
                   Compare to branch mode.
                 </Typography.Paragraph>
+              ) : diffLiveKind === "working" ? (
+                <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
+                  Live workspace changes against HEAD, including uncommitted edits.
+                </Typography.Paragraph>
               ) : null}
             </div>
             <ArrowRightOutlined style={{ color: "rgba(0,0,0,0.45)", marginTop: 34 }} />
             <div style={{ minWidth: 200, flex: "1 1 220px" }}>
               <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
-                {diffLiveKind === "commits" ? "Workspace (HEAD)" : "Compare (HEAD)"}
+                {diffLiveKind === "commits" ? "Workspace (HEAD)" : diffLiveKind === "working" ? "Working tree" : "Compare (HEAD)"}
               </Typography.Text>
               <Typography.Text code style={{ fontSize: 14 }}>
                 {diffHeadLabel}
@@ -3582,6 +3770,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 ) : (
                   liveDiff?.message ?? "Select a commit to view its changes."
                 )
+              ) : diffLiveKind === "working" ? (
+                hasLiveDiff ? `Working tree · updated ${dayjs(liveDiff?.fetchedAt).format("HH:mm:ss")}` : liveDiff?.message ?? "Live working tree diff will appear once the task workspace exists."
               ) : hasLiveDiff ? (
                 `Compare · updated ${dayjs(liveDiff?.fetchedAt).format("HH:mm:ss")}`
               ) : hasStoredDiff ? (
@@ -3613,9 +3803,46 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               size="small"
               title="Commits"
               extra={
-                <Button type="link" size="small" onClick={triggerGitRefresh} style={{ padding: 0 }}>
-                  Refresh
-                </Button>
+                <Space size={8}>
+                  {selectedCommitSha ? (
+                    <>
+                      <Button
+                        type="link"
+                        size="small"
+                        onClick={() => {
+                          const selected = commitLog.find((commit) => commit.sha === selectedCommitSha);
+                          if (selected) {
+                            void handleRevertCommit(selected);
+                          }
+                        }}
+                        loading={submitting === "revertCommit"}
+                        style={{ padding: 0 }}
+                      >
+                        Revert commit
+                      </Button>
+                      {commitLog.find((commit) => commit.sha === selectedCommitSha)?.isPushed === false ? (
+                        <Button
+                          type="link"
+                          size="small"
+                          danger
+                          onClick={() => {
+                            const selected = commitLog.find((commit) => commit.sha === selectedCommitSha);
+                            if (selected) {
+                              void handleResetToCommit(selected);
+                            }
+                          }}
+                          loading={submitting === "resetCommit"}
+                          style={{ padding: 0 }}
+                        >
+                          Reset to here
+                        </Button>
+                      ) : null}
+                    </>
+                  ) : null}
+                  <Button type="link" size="small" onClick={triggerGitRefresh} style={{ padding: 0 }}>
+                    Refresh
+                  </Button>
+                </Space>
               }
               style={{ width: "100%", maxWidth: 360, flex: "0 0 320px", height: "100%", minHeight: 0, display: "flex", flexDirection: "column" }}
               styles={{ body: { padding: 0, flex: 1, minHeight: 0, overflow: "auto" } }}
@@ -3640,9 +3867,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                     >
                       <List.Item.Meta
                         title={
-                          <Typography.Text code style={{ fontSize: 12 }}>
-                            {c.shortSha}
-                          </Typography.Text>
+                          <Space size={8} wrap>
+                            <Typography.Text code style={{ fontSize: 12 }}>
+                              {c.shortSha}
+                            </Typography.Text>
+                            <Tag color={c.isPushed ? "default" : "blue"} style={{ marginInlineEnd: 0 }}>
+                              {c.isPushed ? "Pushed" : "Local"}
+                            </Tag>
+                          </Space>
                         }
                         description={
                           <div>
@@ -3677,6 +3909,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                             : hasLiveDiff
                               ? "This commit has no file changes in its patch."
                               : liveDiff?.message ?? "Could not load this commit’s diff."
+                    : diffLiveKind === "working"
+                      ? hasLiveDiff
+                        ? "No uncommitted changes in the working tree."
+                        : liveDiff?.message ?? "Could not load the working tree diff."
                     : hasLiveDiff
                         ? "No diff between the selected base and HEAD."
                         : "No diff captured yet. Run Build to generate one."
@@ -3906,6 +4142,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               >
                 {renderPullTaskButton()}
                 {renderPushTaskButton()}
+                {renderResetGitButton()}
                 {renderGitHubDiffTargetButton()}
                 {renderMoreActionsButton()}
               </Space>

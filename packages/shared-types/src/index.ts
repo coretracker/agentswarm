@@ -15,7 +15,10 @@ export interface ProviderEffortOption {
 }
 
 export const CODEX_MODELS: ProviderModelOption[] = [
+  { label: "GPT-5.5", value: "gpt-5.5" },
   { label: "GPT-5.4", value: "gpt-5.4" },
+  { label: "GPT-5.4 mini", value: "gpt-5.4-mini" },
+  { label: "GPT-5.4 nano", value: "gpt-5.4-nano" },
   { label: "o3", value: "o3" },
   { label: "o4-mini", value: "o4-mini" },
   { label: "o3-mini", value: "o3-mini" },
@@ -24,7 +27,10 @@ export const CODEX_MODELS: ProviderModelOption[] = [
 ];
 
 export const CLAUDE_MODELS: ProviderModelOption[] = [
-  { label: "Claude Opus 4", value: "claude-opus-4-5" },
+  { label: "Claude Opus 4.8", value: "claude-opus-4-8" },
+  { label: "Claude Sonnet 4.6", value: "claude-sonnet-4-6" },
+  { label: "Claude Haiku 4.5", value: "claude-haiku-4-5-20251001" },
+  { label: "Claude Opus 4.5", value: "claude-opus-4-5" },
   { label: "Claude Sonnet 4.5", value: "claude-sonnet-4-5" },
   { label: "Claude Sonnet 4", value: "claude-sonnet-4" },
   { label: "Claude Haiku 3.5", value: "claude-haiku-3-5" }
@@ -52,7 +58,7 @@ export const getEffortOptionsForProvider = (provider: AgentProvider): ProviderEf
   provider === "claude" ? CLAUDE_EFFORT_OPTIONS : CODEX_EFFORT_OPTIONS;
 
 export const getDefaultModelForProvider = (provider: AgentProvider): string =>
-  provider === "claude" ? "claude-sonnet-4-5" : "gpt-5.4";
+  provider === "claude" ? "claude-opus-4-8" : "gpt-5.5";
 export type TaskMessageRole = "user" | "assistant" | "system";
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 
@@ -542,6 +548,8 @@ export interface TaskWorkspaceCommit {
   /** ISO 8601 timestamp from `git log` (%cI). */
   committedAt: string;
   authorName: string;
+  /** True when this commit is already reachable from the task branch on origin. */
+  isPushed: boolean;
 }
 
 export interface TaskWorkspaceCommitLog {
@@ -834,8 +842,10 @@ export interface SystemSettings {
   codexAuthJsonConfigured: boolean;
   anthropicApiKeyConfigured: boolean;
   codexDefaultModel: string;
+  codexModels: ProviderModelOption[];
   codexDefaultEffort: ProviderProfile;
   claudeDefaultModel: string;
+  claudeModels: ProviderModelOption[];
   claudeDefaultEffort: ProviderProfile;
   responsePreferencePresets: ResponsePreferencePreset[];
   dataStores?: SystemDataStores;
@@ -1303,8 +1313,10 @@ export interface UpdateSettingsInput {
   taskPromptMagicModel?: string;
   taskPromptMagicTemplate?: string;
   codexDefaultModel?: string;
+  codexModels?: ProviderModelOption[];
   codexDefaultEffort?: ProviderProfile;
   claudeDefaultModel?: string;
+  claudeModels?: ProviderModelOption[];
   claudeDefaultEffort?: ProviderProfile;
   responsePreferencePresets?: ResponsePreferencePresetInput[];
 }

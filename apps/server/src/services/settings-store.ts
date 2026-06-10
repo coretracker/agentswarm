@@ -7,6 +7,7 @@ import type {
   AudienceType,
   SystemDataStores,
   McpServerConfig,
+  ProviderModelOption,
   ProviderProfile,
   WorkspaceProvisioningMode,
   ResponsePreferencePreset,
@@ -16,6 +17,7 @@ import type {
   UpdateCredentialSettingsInput,
   UpdateSettingsInput
 } from "@agentswarm/shared-types";
+import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
 import { normalizeProvider, DEFAULT_PROVIDER, normalizeProviderProfile } from "../lib/provider-config.js";
 import { defaultModelForProvider } from "../lib/provider-config.js";
@@ -70,9 +72,11 @@ const defaultSettings: SystemSettings = {
   openaiApiKeyConfigured: false,
   codexAuthJsonConfigured: false,
   anthropicApiKeyConfigured: false,
-  codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.4",
+  codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.5",
+  codexModels: CODEX_MODELS,
   codexDefaultEffort: DEFAULT_CODEX_EFFORT,
-  claudeDefaultModel: defaultModelForProvider("claude", DEFAULT_CLAUDE_EFFORT) ?? "claude-sonnet-4-5",
+  claudeDefaultModel: defaultModelForProvider("claude", DEFAULT_CLAUDE_EFFORT) ?? "claude-opus-4-8",
+  claudeModels: CLAUDE_MODELS,
   claudeDefaultEffort: DEFAULT_CLAUDE_EFFORT,
   responsePreferencePresets: [buildSystemResponsePreferencePreset()],
   dataStores: buildSystemDataStores()
@@ -166,6 +170,23 @@ const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerCon
   }
 
   return normalized;
+};
+
+const normalizeProviderModels = (value: ProviderModelOption[] | undefined, fallback: ProviderModelOption[]): ProviderModelOption[] => {
+  const normalized: ProviderModelOption[] = [];
+  const seenValues = new Set<string>();
+
+  for (const model of value ?? []) {
+    const modelValue = model.value?.trim();
+    if (!modelValue || seenValues.has(modelValue)) {
+      continue;
+    }
+    const label = model.label?.trim() || modelValue;
+    normalized.push({ label, value: modelValue });
+    seenValues.add(modelValue);
+  }
+
+  return normalized.length > 0 ? normalized : fallback;
 };
 
 const normalizeResponsePreferencePresetName = (value: string | undefined): string =>
@@ -296,8 +317,10 @@ export class RedisSettingsStore implements SettingsStore {
         taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
         taskPromptMagicTemplate: defaultSettings.taskPromptMagicTemplate,
         codexDefaultModel: defaultSettings.codexDefaultModel,
+        codexModels: defaultSettings.codexModels,
         codexDefaultEffort: defaultSettings.codexDefaultEffort,
         claudeDefaultModel: defaultSettings.claudeDefaultModel,
+        claudeModels: defaultSettings.claudeModels,
         claudeDefaultEffort: defaultSettings.claudeDefaultEffort,
         responsePreferencePresets: defaultSettings.responsePreferencePresets
       };
@@ -316,8 +339,10 @@ export class RedisSettingsStore implements SettingsStore {
       taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
       taskPromptMagicTemplate: parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate,
       codexDefaultModel: parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel,
+      codexModels: normalizeProviderModels(parsed.codexModels, defaultSettings.codexModels),
       codexDefaultEffort: normalizeProviderProfile(parsed.codexDefaultEffort) ?? defaultSettings.codexDefaultEffort,
       claudeDefaultModel: parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel,
+      claudeModels: normalizeProviderModels(parsed.claudeModels, defaultSettings.claudeModels),
       claudeDefaultEffort: normalizeProviderProfile(parsed.claudeDefaultEffort) ?? defaultSettings.claudeDefaultEffort,
       responsePreferencePresets: normalizeResponsePreferencePresets(parsed.responsePreferencePresets)
     };
@@ -334,6 +359,8 @@ export class RedisSettingsStore implements SettingsStore {
       (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl ||
       (parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel) !== normalizedBase.taskPromptMagicModel ||
       (parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate) !== normalizedBase.taskPromptMagicTemplate ||
+      JSON.stringify(parsed.codexModels ?? []) !== JSON.stringify(normalizedBase.codexModels) ||
+      JSON.stringify(parsed.claudeModels ?? []) !== JSON.stringify(normalizedBase.claudeModels) ||
       JSON.stringify(parsed.responsePreferencePresets ?? []) !== JSON.stringify(normalizedBase.responsePreferencePresets)
     ) {
       await this.redis.set(SETTINGS_KEY, JSON.stringify(normalizedBase));
@@ -368,8 +395,10 @@ export class RedisSettingsStore implements SettingsStore {
       taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
       taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
       codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
+      codexModels: input.codexModels === undefined ? current.codexModels : normalizeProviderModels(input.codexModels, defaultSettings.codexModels),
       codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
       claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
+      claudeModels: input.claudeModels === undefined ? current.claudeModels : normalizeProviderModels(input.claudeModels, defaultSettings.claudeModels),
       claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
       responsePreferencePresets:
         input.responsePreferencePresets === undefined
@@ -468,12 +497,14 @@ export class PostgresSettingsStore implements SettingsStore {
           task_prompt_magic_model,
           task_prompt_magic_template,
           codex_default_model,
+          codex_models,
           codex_default_effort,
           claude_default_model,
+          claude_models,
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11::jsonb, $12, $13, $14::jsonb, $15, $16::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
@@ -487,8 +518,10 @@ export class PostgresSettingsStore implements SettingsStore {
         defaultSettings.taskPromptMagicModel,
         defaultSettings.taskPromptMagicTemplate,
         defaultSettings.codexDefaultModel,
+        JSON.stringify(defaultSettings.codexModels),
         defaultSettings.codexDefaultEffort,
         defaultSettings.claudeDefaultModel,
+        JSON.stringify(defaultSettings.claudeModels),
         defaultSettings.claudeDefaultEffort,
         JSON.stringify(defaultSettings.responsePreferencePresets)
       ]
@@ -510,8 +543,10 @@ export class PostgresSettingsStore implements SettingsStore {
           task_prompt_magic_model,
           task_prompt_magic_template,
           codex_default_model,
+          codex_models,
           codex_default_effort,
           claude_default_model,
+          claude_models,
           claude_default_effort,
           response_preference_presets
         FROM system_settings
@@ -539,11 +574,19 @@ export class PostgresSettingsStore implements SettingsStore {
         typeof row?.codex_default_model === "string" && row.codex_default_model.trim().length > 0
           ? row.codex_default_model.trim()
           : defaultSettings.codexDefaultModel,
+      codexModels: normalizeProviderModels(
+        Array.isArray(row?.codex_models) ? (row.codex_models as ProviderModelOption[]) : undefined,
+        defaultSettings.codexModels
+      ),
       codexDefaultEffort: normalizeProviderProfile(row?.codex_default_effort) ?? defaultSettings.codexDefaultEffort,
       claudeDefaultModel:
         typeof row?.claude_default_model === "string" && row.claude_default_model.trim().length > 0
           ? row.claude_default_model.trim()
           : defaultSettings.claudeDefaultModel,
+      claudeModels: normalizeProviderModels(
+        Array.isArray(row?.claude_models) ? (row.claude_models as ProviderModelOption[]) : undefined,
+        defaultSettings.claudeModels
+      ),
       claudeDefaultEffort: normalizeProviderProfile(row?.claude_default_effort) ?? defaultSettings.claudeDefaultEffort,
       responsePreferencePresets: normalizeResponsePreferencePresets(
         Array.isArray(row?.response_preference_presets) ? (row.response_preference_presets as ResponsePreferencePreset[]) : undefined
@@ -578,8 +621,10 @@ export class PostgresSettingsStore implements SettingsStore {
       taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
       taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
       codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
+      codexModels: input.codexModels === undefined ? current.codexModels : normalizeProviderModels(input.codexModels, defaultSettings.codexModels),
       codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
       claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
+      claudeModels: input.claudeModels === undefined ? current.claudeModels : normalizeProviderModels(input.claudeModels, defaultSettings.claudeModels),
       claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
       responsePreferencePresets:
         input.responsePreferencePresets === undefined
@@ -601,12 +646,14 @@ export class PostgresSettingsStore implements SettingsStore {
           task_prompt_magic_model,
           task_prompt_magic_template,
           codex_default_model,
+          codex_models,
           codex_default_effort,
           claude_default_model,
+          claude_models,
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11::jsonb, $12, $13, $14::jsonb, $15, $16::jsonb)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
@@ -619,8 +666,10 @@ export class PostgresSettingsStore implements SettingsStore {
           task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
           task_prompt_magic_template = EXCLUDED.task_prompt_magic_template,
           codex_default_model = EXCLUDED.codex_default_model,
+          codex_models = EXCLUDED.codex_models,
           codex_default_effort = EXCLUDED.codex_default_effort,
           claude_default_model = EXCLUDED.claude_default_model,
+          claude_models = EXCLUDED.claude_models,
           claude_default_effort = EXCLUDED.claude_default_effort,
           response_preference_presets = EXCLUDED.response_preference_presets
       `,
@@ -635,8 +684,10 @@ export class PostgresSettingsStore implements SettingsStore {
         nextBase.taskPromptMagicModel,
         nextBase.taskPromptMagicTemplate,
         nextBase.codexDefaultModel,
+        JSON.stringify(nextBase.codexModels),
         nextBase.codexDefaultEffort,
         nextBase.claudeDefaultModel,
+        JSON.stringify(nextBase.claudeModels),
         nextBase.claudeDefaultEffort,
         JSON.stringify(nextBase.responsePreferencePresets)
       ]

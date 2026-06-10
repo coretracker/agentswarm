@@ -97,8 +97,10 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         task_prompt_magic_model text NOT NULL DEFAULT 'gpt-5.4-mini',
         task_prompt_magic_template text NOT NULL DEFAULT '',
         codex_default_model text NOT NULL,
+        codex_models jsonb NOT NULL DEFAULT '[]'::jsonb,
         codex_default_effort text NOT NULL,
         claude_default_model text NOT NULL,
+        claude_models jsonb NOT NULL DEFAULT '[]'::jsonb,
         claude_default_effort text NOT NULL,
         response_preference_presets jsonb NOT NULL DEFAULT '[]'::jsonb
       );
@@ -401,6 +403,16 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
     sql: `
       DROP TABLE IF EXISTS sequence_runs;
       DROP TABLE IF EXISTS sequences;
+    `
+  },
+  {
+    id: "20260610_01_provider_model_settings",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS codex_models jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS claude_models jsonb NOT NULL DEFAULT '[]'::jsonb;
     `
   }
 ];

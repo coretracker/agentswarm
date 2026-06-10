@@ -42,7 +42,6 @@ import { buildGitProcessEnv } from "../lib/git-env.js";
 import { extractGitLockPathFromErrorMessage, isPathInside, resolveGitTargetLockKey } from "../lib/git-locks.js";
 import { resolveGitPaths } from "../lib/git-paths.js";
 import { resolveWorkspaceGitRuntimeMounts } from "../lib/git-runtime-mounts.js";
-import { installManagedGitHooks } from "../lib/managed-git-hooks.js";
 import { reconcileTaskStatusWithPendingCheckpoint, resolveTaskReadyStatus } from "../lib/task-status.js";
 import { buildTaskCommitSubject, formatCommitSubject } from "../lib/task-commit-subject.js";
 import { parsePostflightConfig, postflightAppliesToTask, type PostflightConfig } from "../lib/postflight-config.js";
@@ -1064,9 +1063,9 @@ export class SpawnerService {
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<void> {
-    const gitPaths = await this.getWorkspaceGitPaths(workspacePath);
-    const hooksPath = gitPaths.usesLinkedWorktree ? gitPaths.commonDir : gitPaths.gitDir;
-    await installManagedGitHooks(hooksPath);
+    void workspacePath;
+    void githubToken;
+    void gitUsername;
   }
 
   private async findBranchWorktreePath(
@@ -2395,6 +2394,12 @@ export class SpawnerService {
       return empty("Could not read commit history in this workspace.");
     }
 
+    const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
+    const unpushedShas =
+      branchName
+        ? await this.getUnpushedCommitShas(workspacePath, branchName, task.baseBranch, token, gitUsername).catch(() => new Set<string>())
+        : new Set<string>();
+
     const commits: TaskWorkspaceCommit[] = [];
     for (const line of raw.trim().split("\n")) {
       if (!line) {
@@ -2410,7 +2415,8 @@ export class SpawnerService {
         shortSha: sha.slice(0, 7),
         subject,
         committedAt,
-        authorName
+        authorName,
+        isPushed: !unpushedShas.has(sha)
       });
     }
 
@@ -2989,6 +2995,66 @@ export class SpawnerService {
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean);
+  }
+
+  private async getUnpushedCommitShas(
+    workspacePath: string,
+    branchName: string,
+    fallbackBaseBranch?: string | null,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<Set<string>> {
+    const remoteRef = `origin/${branchName}`;
+    let logRange: string | null = null;
+
+    if (await this.refExists(workspacePath, remoteRef, githubToken, gitUsername)) {
+      logRange = `${remoteRef}..HEAD`;
+    } else if (fallbackBaseBranch && fallbackBaseBranch !== branchName) {
+      const fallbackRemoteRef = `origin/${fallbackBaseBranch}`;
+      if (await this.refExists(workspacePath, fallbackRemoteRef, githubToken, gitUsername)) {
+        logRange = `${fallbackRemoteRef}..${branchName}`;
+      }
+    }
+
+    if (!logRange) {
+      return new Set<string>();
+    }
+
+    const raw = await this.gitCommandCaptureAllowExitCodes(
+      ["-C", workspacePath, "rev-list", logRange],
+      [0],
+      githubToken,
+      gitUsername
+    );
+
+    return new Set(
+      raw
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+    );
+  }
+
+  private async getCommitSubject(
+    workspacePath: string,
+    commitSha: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string> {
+    return (
+      await this.gitCommandCapture(
+        ["-C", workspacePath, "show", "-s", "--format=%s", commitSha],
+        githubToken,
+        gitUsername
+      )
+    ).trim();
+  }
+
+  private async appendGitActivityMessage(taskId: string, content: string): Promise<void> {
+    await this.taskStore.appendMessage(taskId, {
+      role: "system",
+      content
+    });
   }
 
   private async finalizeBuild(
@@ -4064,6 +4130,121 @@ export class SpawnerService {
     return this.withTrackedTaskGitOperation(task, "push_task_branch", async () => this.pushTaskBranchCore(task, options));
   }
 
+  async resetTaskBranchLocalState(task: Task): Promise<Task> {
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
+    if (!branchName) {
+      throw new Error("No target branch available for reset");
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const exists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      throw new Error("No local workspace exists for this task. Build it again before resetting.");
+    }
+
+    const { githubToken, gitUsername } = runtimeCredentials;
+    await this.taskStore.appendLog(task.id, `Spawner: resetting local Git state for ${branchName}.`);
+    await this.refreshWorkspaceRemoteState(task, workspacePath, githubToken, gitUsername, "pull").catch(() => undefined);
+
+    const remoteRef = `origin/${branchName}`;
+    const remoteExists = await this.refExists(workspacePath, remoteRef, githubToken, gitUsername);
+    const fallbackBaseRef = task.workspaceBaseRef?.trim() || null;
+    const fallbackRemoteBaseRef =
+      !remoteExists && task.baseBranch && task.baseBranch !== branchName && (await this.refExists(workspacePath, `origin/${task.baseBranch}`, githubToken, gitUsername))
+        ? `origin/${task.baseBranch}`
+        : null;
+    const resetTarget = remoteExists ? remoteRef : fallbackBaseRef ?? fallbackRemoteBaseRef;
+
+    if (!resetTarget) {
+      throw new Error("No remote branch or saved base ref is available for reset.");
+    }
+
+    if (await this.localBranchExists(workspacePath, branchName, githubToken, gitUsername)) {
+      await this.gitCommand(["-C", workspacePath, "checkout", branchName], githubToken, gitUsername);
+    }
+
+    await this.gitCommand(["-C", workspacePath, "reset", "--hard", resetTarget], githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "clean", "-fd"], githubToken, gitUsername);
+
+    await this.appendGitActivityMessage(
+      task.id,
+      remoteExists
+        ? `Local Git state reset to ${remoteRef}.`
+        : `Local Git state reset to ${resetTarget}.`
+    );
+    await this.taskStore.appendLog(
+      task.id,
+      remoteExists
+        ? `Spawner: reset local branch ${branchName} to ${remoteRef}.`
+        : `Spawner: reset local branch ${branchName} to ${resetTarget}.`
+    );
+
+    return (await this.taskStore.getTask(task.id)) ?? task;
+  }
+
+  async revertTaskCommit(task: Task, commitSha: string): Promise<Task> {
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
+    if (!branchName) {
+      throw new Error("No target branch available for revert");
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const exists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      throw new Error("No local workspace exists for this task. Build it again before reverting.");
+    }
+
+    const { githubToken, gitUsername } = runtimeCredentials;
+    const subject = await this.getCommitSubject(workspacePath, commitSha, githubToken, gitUsername).catch(() => "");
+    await this.gitCommand(["-C", workspacePath, "revert", "--no-edit", commitSha], githubToken, gitUsername);
+    const revertSha = (await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername)).trim();
+    const revertSubject = await this.getCommitSubject(workspacePath, revertSha, githubToken, gitUsername).catch(() => "");
+    await this.appendGitActivityMessage(
+      task.id,
+      `Reverted commit ${commitSha.slice(0, 7)}${subject ? `: ${subject}` : ""}${revertSubject ? ` with ${revertSha.slice(0, 7)}: ${revertSubject}` : "."}`
+    );
+    await this.taskStore.appendLog(task.id, `Spawner: reverted commit ${commitSha.slice(0, 7)} on ${branchName}.`);
+    return (await this.taskStore.getTask(task.id)) ?? task;
+  }
+
+  async resetTaskBranchToCommit(task: Task, commitSha: string): Promise<Task> {
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
+    if (!branchName) {
+      throw new Error("No target branch available for reset");
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const exists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      throw new Error("No local workspace exists for this task. Build it again before resetting.");
+    }
+
+    const { githubToken, gitUsername } = runtimeCredentials;
+    const unpushedShas = await this.getUnpushedCommitShas(workspacePath, branchName, task.baseBranch, githubToken, gitUsername);
+    if (!unpushedShas.has(commitSha)) {
+      throw new Error("Only local-only commits can be used as a reset target.");
+    }
+
+    const subject = await this.getCommitSubject(workspacePath, commitSha, githubToken, gitUsername).catch(() => "");
+    await this.gitCommand(["-C", workspacePath, "reset", "--hard", commitSha], githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "clean", "-fd"], githubToken, gitUsername);
+    await this.appendGitActivityMessage(
+      task.id,
+      `Reset local branch ${branchName} to commit ${commitSha.slice(0, 7)}${subject ? `: ${subject}` : ""}`
+    );
+    await this.taskStore.appendLog(task.id, `Spawner: reset local branch ${branchName} to commit ${commitSha.slice(0, 7)}.`);
+    return (await this.taskStore.getTask(task.id)) ?? task;
+  }
+
   private async pushTaskBranchCore(task: Task, options?: { commitMessage?: string | null }): Promise<Task> {
     const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
     const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
@@ -4101,6 +4282,9 @@ export class SpawnerService {
     }
 
     if (createdLocalCommit) {
+      const commitSha = (await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername)).trim();
+      const commitSubject = await this.getCommitSubject(workspacePath, commitSha, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      await this.appendGitActivityMessage(task.id, `Local commit created ${commitSha.slice(0, 7)}: ${commitSubject}`);
       await this.taskStore.appendLog(task.id, "Spawner: created a local commit from workspace changes before pushing.");
     } else {
       const unpushedSubjects = await this.getUnpushedCommitSubjects(
@@ -4147,6 +4331,7 @@ export class SpawnerService {
     }
 
     await this.taskStore.appendLog(task.id, `Spawner: pushed local branch ${branchName} to origin.`);
+    await this.appendGitActivityMessage(task.id, `Pushed branch ${branchName} to origin.`);
     return (await this.taskStore.getTask(task.id)) ?? task;
   }
 
@@ -4793,7 +4978,7 @@ export class SpawnerService {
 
       if (action === "build") {
         await this.ensureWorkspaceGitHooks(workspace.workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-        await appendRunLog("Spawner: installed git hooks to block direct commit/push from the runtime.");
+        await appendRunLog("Spawner: workspace Git integration is ready.");
       }
 
       await appendRunLog(
@@ -5012,7 +5197,7 @@ export class SpawnerService {
         }
       } else {
         const diffBaseRef = task.workspaceBaseRef ?? workspace.workspaceBaseRef;
-        const { branchDiff, providerCommitted, changeOutcome } = await this.finalizeBuild(
+        const { branchDiff, providerCommitted, changeOutcome, commitSha } = await this.finalizeBuild(
           task,
           workspace.workspacePath,
           diffBaseRef,
@@ -5022,6 +5207,16 @@ export class SpawnerService {
         );
         if (providerCommitted) {
           await appendRunLog("Spawner: detected provider-created local commit; reusing it instead of creating a new commit.");
+          const commitSubject = await this.getCommitSubject(
+            workspace.workspacePath,
+            commitSha,
+            runtimeCredentials.githubToken,
+            runtimeCredentials.gitUsername
+          ).catch(() => "");
+          await this.appendGitActivityMessage(
+            task.id,
+            `Agent created local commit ${commitSha.slice(0, 7)}${commitSubject ? `: ${commitSubject}` : "."}`
+          );
         }
         const finalSummary =
           runtimeResult.summaryMarkdown.trim() ||
