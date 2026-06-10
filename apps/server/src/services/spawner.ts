@@ -33,6 +33,7 @@ import {
   type TaskWorkspaceFileTreeEntry,
   type TaskWorkspaceCommit,
   type TaskWorkspaceCommitLog,
+  type TaskGitStateSnapshot,
   type TaskGitOperation,
   type TaskGitOperationFailureCode,
   type TaskGitOperationType
@@ -2249,6 +2250,47 @@ export class SpawnerService {
     }
   }
 
+  private async computeTaskBranchSyncCounts(
+    task: Task,
+    workspacePath: string,
+    branchName: string,
+    hasUncommittedChanges: boolean,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<{ pullCount: number; pushCount: number }> {
+    let pullCount = 0;
+    let pushCount = 0;
+    const remoteRef = `origin/${branchName}`;
+    const remoteExists = await this.refExists(workspacePath, remoteRef, githubToken, gitUsername);
+
+    if (remoteExists) {
+      const divergence = await this.gitCommandCapture(
+        ["-C", workspacePath, "rev-list", "--left-right", "--count", `${branchName}...${remoteRef}`],
+        githubToken,
+        gitUsername
+      );
+      const [aheadRaw, behindRaw] = divergence.trim().split(/\s+/);
+      pushCount = Number.parseInt(aheadRaw ?? "0", 10) || 0;
+      pullCount = Number.parseInt(behindRaw ?? "0", 10) || 0;
+    } else if (branchName !== task.baseBranch) {
+      const baseRef = `origin/${task.baseBranch}`;
+      if (await this.refExists(workspacePath, baseRef, githubToken, gitUsername)) {
+        const localOnly = await this.gitCommandCapture(
+          ["-C", workspacePath, "rev-list", "--count", `${baseRef}..${branchName}`],
+          githubToken,
+          gitUsername
+        );
+        pushCount = Number.parseInt(localOnly.trim(), 10) || 0;
+      }
+    }
+
+    if (hasUncommittedChanges) {
+      pushCount += 1;
+    }
+
+    return { pullCount, pushCount };
+  }
+
   private async resolveLiveDiffBaseRef(
     task: Task,
     workspacePath: string,
@@ -2911,22 +2953,13 @@ export class SpawnerService {
   private static readonly CHANGE_PROPOSAL_DIFF_MAX_CHARS = 120_000;
   private static readonly CHANGE_PROPOSAL_STAT_MAX_CHARS = 24_000;
 
-  async getTaskPushPreview(task: Task): Promise<TaskPushPreview> {
-    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
-    const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
-    if (!branchName) {
-      throw new Error("No target branch available for publishing");
-    }
-
-    const workspacePath = this.resolveWorkspacePath(task.id);
-    const exists = await access(workspacePath)
-      .then(() => true)
-      .catch(() => false);
-    if (!exists) {
-      throw new Error("No local workspace exists for this task. Build it again before pushing.");
-    }
-
-    const { githubToken, gitUsername } = runtimeCredentials;
+  private async collectTaskPushPreview(
+    task: Task,
+    workspacePath: string,
+    branchName: string,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<TaskPushPreview> {
     const changedFiles = await this.getWorkingTreePathsVersusHead(workspacePath, githubToken, gitUsername);
     const suggestedCommitMessage = this.buildGeneratedCommitSubjectFromFiles(task, changedFiles);
 
@@ -2960,6 +2993,25 @@ export class SpawnerService {
       unpushedCommitSubjects,
       suggestedCommitMessage
     };
+  }
+
+  async getTaskPushPreview(task: Task): Promise<TaskPushPreview> {
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
+    if (!branchName) {
+      throw new Error("No target branch available for publishing");
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const exists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      throw new Error("No local workspace exists for this task. Build it again before pushing.");
+    }
+
+    const { githubToken, gitUsername } = runtimeCredentials;
+    return this.collectTaskPushPreview(task, workspacePath, branchName, githubToken, gitUsername);
   }
 
   private async getUnpushedCommitSubjects(
@@ -3035,6 +3087,41 @@ export class SpawnerService {
     );
   }
 
+  async getTaskGitStateSnapshot(task: Task): Promise<TaskGitStateSnapshot> {
+    const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
+    const branchName = task.branchStrategy === "work_on_branch" ? task.baseBranch : task.branchName;
+    if (!branchName) {
+      throw new Error("No target branch available for publishing");
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const exists = await access(workspacePath)
+      .then(() => true)
+      .catch(() => false);
+    if (!exists) {
+      throw new Error("No local workspace exists for this task. Build it again before pushing.");
+    }
+
+    const { githubToken, gitUsername } = runtimeCredentials;
+    await this.refreshWorkspaceRemoteState(task, workspacePath, githubToken, gitUsername, "status");
+    const pushPreview = await this.collectTaskPushPreview(task, workspacePath, branchName, githubToken, gitUsername);
+    const { pullCount, pushCount } = await this.computeTaskBranchSyncCounts(
+      task,
+      workspacePath,
+      branchName,
+      pushPreview.hasUncommittedChanges,
+      githubToken,
+      gitUsername
+    );
+
+    return {
+      fetchedAt: new Date().toISOString(),
+      pullCount,
+      pushCount,
+      pushPreview
+    };
+  }
+
   private async getCommitSubject(
     workspacePath: string,
     commitSha: string,
@@ -3064,19 +3151,28 @@ export class SpawnerService {
     runStartRef: string,
     githubToken?: string | null,
     gitUsername = "x-access-token"
-  ): Promise<{ branchDiff: string; changedFiles: string[]; commitSha: string; providerCommitted: boolean; changeOutcome: "changed" | "no_change" }> {
+  ): Promise<{
+    branchDiff: string;
+    diffStat: string;
+    changedFiles: string[];
+    diffTruncated: boolean;
+    toRef: string;
+    commitSha: string;
+    providerCommitted: boolean;
+    changeOutcome: "changed" | "no_change";
+  }> {
     // Keep repo-owned .agentswarm files. Only strip workspace scratch paths from diffs/commits.
     await this.stripEphemeralWorkspaceFiles(workspacePath);
     const commitSha = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
     const providerCommitted = commitSha !== runStartRef;
-    const { diff: branchDiff, changedFiles } = await this.collectWorkingTreeDiffSinceRef(
+    const { diff: branchDiff, diffStat, changedFiles, diffTruncated, toRef } = await this.collectWorkingTreeDiffSinceRef(
       workspacePath,
       diffBaseRef,
       githubToken,
       gitUsername
     );
     const changeOutcome = changedFiles.length > 0 ? "changed" : "no_change";
-    return { branchDiff, changedFiles, commitSha, providerCommitted, changeOutcome };
+    return { branchDiff, diffStat, changedFiles, diffTruncated, toRef, commitSha, providerCommitted, changeOutcome };
   }
 
   private async collectReviewDiff(task: Task, workspacePath: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string | null> {
@@ -3196,7 +3292,21 @@ export class SpawnerService {
     });
   }
 
-  async createBuildRunChangeProposal(task: Task, runId: string, workspacePath: string): Promise<void> {
+  async createBuildRunChangeProposal(
+    task: Task,
+    runId: string,
+    workspacePath: string,
+    precomputed?:
+      | {
+          fromRef: string;
+          diff: string;
+          diffStat: string;
+          changedFiles: string[];
+          diffTruncated: boolean;
+          toRef: string;
+        }
+      | undefined
+  ): Promise<void> {
     const run = await this.taskStore.getRun(runId);
     if (!run || run.taskId !== task.id) {
       return;
@@ -3215,12 +3325,10 @@ export class SpawnerService {
       return;
     }
 
-    const { diff, diffStat, changedFiles, diffTruncated, toRef } = await this.collectWorkingTreeDiffSinceRef(
-      workspacePath,
-      fromRef,
-      githubToken,
-      gitUsername
-    );
+    const { diff, diffStat, changedFiles, diffTruncated, toRef } =
+      precomputed && precomputed.fromRef === fromRef
+        ? precomputed
+        : await this.collectWorkingTreeDiffSinceRef(workspacePath, fromRef, githubToken, gitUsername);
 
     if (changedFiles.length === 0) {
       await this.taskStore.appendLog(task.id, `Build run ${runId}: no changes since checkpoint; checkpoint not created.`);
@@ -4747,7 +4855,7 @@ export class SpawnerService {
 
       await this.stripEphemeralWorkspaceFiles(workspacePath);
       const diffBaseRef = task.workspaceBaseRef ?? checkpointRef;
-      const { diff: branchDiff, changedFiles } = await this.collectWorkingTreeDiffSinceRef(
+      const { diff: branchDiff, diffStat, changedFiles, diffTruncated, toRef } = await this.collectWorkingTreeDiffSinceRef(
         workspacePath,
         diffBaseRef,
         runtimeCredentials.githubToken,
@@ -4768,7 +4876,14 @@ export class SpawnerService {
       }
 
       if (runId && changedFiles.length > 0) {
-        await this.createBuildRunChangeProposal(task, runId, workspacePath);
+        await this.createBuildRunChangeProposal(task, runId, workspacePath, {
+          fromRef: diffBaseRef,
+          diff: branchDiff,
+          diffStat,
+          changedFiles,
+          diffTruncated,
+          toRef
+        });
       }
 
       const hasPendingCheckpoint = await this.taskStore.hasPendingChangeProposal(task.id);
@@ -5197,7 +5312,7 @@ export class SpawnerService {
         }
       } else {
         const diffBaseRef = task.workspaceBaseRef ?? workspace.workspaceBaseRef;
-        const { branchDiff, providerCommitted, changeOutcome, commitSha } = await this.finalizeBuild(
+        const { branchDiff, diffStat, changedFiles, diffTruncated, toRef, providerCommitted, changeOutcome, commitSha } = await this.finalizeBuild(
           task,
           workspace.workspacePath,
           diffBaseRef,
@@ -5240,7 +5355,14 @@ export class SpawnerService {
           });
         }
         if (runId && action === "build") {
-          await this.createBuildRunChangeProposal(task, runId, workspace.workspacePath);
+          await this.createBuildRunChangeProposal(task, runId, workspace.workspacePath, {
+            fromRef: diffBaseRef,
+            diff: branchDiff,
+            diffStat,
+            changedFiles,
+            diffTruncated,
+            toRef
+          });
         }
         const nextBranchDiff = branchDiff.length > 0 ? branchDiff : task.branchDiff;
         const hasPendingCheckpoint = await this.taskStore.hasPendingChangeProposal(task.id);

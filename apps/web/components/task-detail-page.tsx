@@ -1204,10 +1204,41 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       // Ignore refresh failures; user actions can still proceed with explicit pull/push operations.
     }
   }, [setTask, task?.id]);
+  const loadTaskGitState = useCallback(async (taskIdOverride?: string): Promise<void> => {
+    const targetTaskId = taskIdOverride ?? task?.id;
+    if (!targetTaskId) {
+      return;
+    }
+
+    setPushPreviewLoading(true);
+    try {
+      const snapshot = await api.getTaskGitState(targetTaskId);
+      setTask((current) =>
+        current && current.id === targetTaskId
+          ? {
+              ...current,
+              pullCount: snapshot.pullCount,
+              pushCount: snapshot.pushCount
+            }
+          : current
+      );
+      setPushPreview(snapshot.pushPreview);
+      setPushCommitMessage((current) => (current.trim().length > 0 ? current : snapshot.pushPreview.suggestedCommitMessage));
+    } catch (error) {
+      setPushPreview(null);
+      showTaskActionError(error, "Could not load Git state");
+    } finally {
+      setPushPreviewLoading(false);
+    }
+  }, [setTask, showTaskActionError, task?.id]);
   const triggerGitRefresh = useCallback((): void => {
     setLiveDiffRefreshKey((k) => k + 1);
+    if (canPush) {
+      void loadTaskGitState();
+      return;
+    }
     void refreshBranchSyncCounts();
-  }, [refreshBranchSyncCounts]);
+  }, [canPush, loadTaskGitState, refreshBranchSyncCounts]);
   useEffect(() => {
     if (!task?.id || !gitOperation) {
       return;
@@ -1218,8 +1249,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (gitOperation.status !== "succeeded" || (gitOperation.operationType !== "pull_task_branch" && gitOperation.operationType !== "push_task_branch")) {
       return;
     }
+    if (canPush) {
+      void loadTaskGitState(task.id);
+      return;
+    }
     void refreshBranchSyncCounts(task.id);
-  }, [gitOperation, refreshBranchSyncCounts, task?.id]);
+  }, [canPush, gitOperation, loadTaskGitState, refreshBranchSyncCounts, task?.id]);
   const assigneeNameById = useMemo(() => {
     return new Map(assignableUsers.map((user) => [user.id, user.name]));
   }, [assignableUsers]);
@@ -1447,8 +1482,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
+    if (canPush) {
+      return;
+    }
+
     void refreshBranchSyncCounts(task.id);
-  }, [hasBranchForSync, refreshBranchSyncCounts, task?.id, task?.updatedAt]);
+  }, [canPush, hasBranchForSync, refreshBranchSyncCounts, task?.id, task?.updatedAt]);
 
   useEffect(() => {
     if (providerInputOptions.some((option) => option.value === providerInput)) {
@@ -2771,23 +2810,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const closeDraftEditModal = () => {
     setDraftEditModalOpen(false);
   };
-  const loadPushPreview = async () => {
-    if (!task) {
-      return;
-    }
-    setPushPreviewLoading(true);
-    try {
-      const preview = await api.getTaskPushPreview(task.id);
-      setPushPreview(preview);
-      setPushCommitMessage((current) => (current.trim().length > 0 ? current : preview.suggestedCommitMessage));
-    } catch (error) {
-      setPushPreview(null);
-      showTaskActionError(error, "Could not load push preview");
-    } finally {
-      setPushPreviewLoading(false);
-    }
-  };
-
   const confirmRenameTask = async () => {
     if (!task) {
       return;
@@ -2901,7 +2923,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         operation_type: "push_task_branch",
         source_surface: "task_detail"
       });
-      void loadPushPreview();
+      void loadTaskGitState();
       setLiveDiffRefreshKey((k) => k + 1);
     } catch (error) {
       trackEvent("git_op_failed", {
@@ -2940,7 +2962,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               : updatedTask
           );
           messageApi.success("Local Git state reset");
-          void loadPushPreview();
+          void loadTaskGitState();
           setLiveDiffRefreshKey((k) => k + 1);
         } catch (error) {
           showTaskActionError(error, "Failed to reset local Git state");
@@ -2974,7 +2996,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               : updatedTask
           );
           messageApi.success(`Reverted ${commit.shortSha}`);
-          void loadPushPreview();
+          void loadTaskGitState();
           setLiveDiffRefreshKey((k) => k + 1);
         } catch (error) {
           showTaskActionError(error, "Failed to revert commit");
@@ -3008,7 +3030,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               : updatedTask
           );
           messageApi.success(`Reset to ${commit.shortSha}`);
-          void loadPushPreview();
+          void loadTaskGitState();
           setLiveDiffRefreshKey((k) => k + 1);
         } catch (error) {
           showTaskActionError(error, "Failed to reset to commit");
@@ -3150,7 +3172,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         source_surface: "task_detail"
       });
       setLiveDiffRefreshKey((k) => k + 1);
-      void loadPushPreview();
+      void loadTaskGitState();
     } catch (error) {
       trackEvent("git_op_failed", {
         task_id: task.id,
@@ -3363,8 +3385,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (!task || !canPush) {
       return;
     }
-    void loadPushPreview();
-  }, [canPush, task?.id, task?.updatedAt]);
+    void loadTaskGitState();
+  }, [canPush, loadTaskGitState, task?.id, task?.updatedAt]);
 
   const moreActionItems = task
     ? [
@@ -4272,7 +4294,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : updatedAfterPush
       );
       messageApi.success(canReapplyReverted ? "Checkpoint re-applied and pushed" : "Checkpoint applied and pushed");
-      void loadPushPreview();
+      void loadTaskGitState();
       setLiveDiffRefreshKey((k) => k + 1);
     } catch (error) {
       if (applied) {

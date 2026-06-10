@@ -24,6 +24,7 @@ import type {
   TaskPromptMagicInput,
   TaskPromptMagicResult,
   TaskLiveDiff,
+  TaskGitStateSnapshot,
   TaskWorkspaceFileSearchResult,
   TaskWorkspaceFileTree,
   TaskWorkspaceFilePreview,
@@ -78,10 +79,7 @@ export interface TaskInteractiveTerminalStatus {
   terminalMode?: TaskTerminalSessionMode;
 }
 
-export interface TaskBranchSyncCounts {
-  pullCount: number;
-  pushCount: number;
-}
+export type TaskBranchSyncCounts = Pick<TaskGitStateSnapshot, "pullCount" | "pushCount">;
 
 export interface ListTasksOptions {
   view?: "all" | "active" | "archived";
@@ -228,6 +226,7 @@ export const api = {
       method: "POST"
     }),
   getTaskBranchSyncCounts: (id: string) => request<TaskBranchSyncCounts>(`/tasks/${id}/branch-sync-counts`),
+  getTaskGitState: (id: string) => request<TaskGitStateSnapshot>(`/tasks/${id}/git-state`),
   getTaskGitOperation: (id: string) => request<TaskGitOperation | null>(`/tasks/${id}/git-operation`),
   getTaskInteractiveTerminalStatus: (id: string, options?: { mode?: TaskTerminalSessionMode }) => {
     const params = new URLSearchParams();

@@ -611,6 +611,13 @@ export interface TaskPushPreview {
   suggestedCommitMessage: string;
 }
 
+export interface TaskGitStateSnapshot {
+  fetchedAt: string;
+  pullCount: number;
+  pushCount: number;
+  pushPreview: TaskPushPreview;
+}
+
 export interface TaskMergePreview {
   sourceBranch: string;
   targetBranch: string;

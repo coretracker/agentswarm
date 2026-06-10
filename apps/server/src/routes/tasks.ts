@@ -424,6 +424,33 @@ export const registerTaskRoutes = (
   );
 
   app.get<{ Params: { id: string } }>(
+    "/tasks/:id/git-state",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const blocked = await getMutationBlocked(deps.taskStore, task.id);
+      if (blocked) {
+        return replyWithMutationBlocked(reply, blocked);
+      }
+
+      try {
+        return reply.send(await deps.spawner.getTaskGitStateSnapshot(task));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Git state could not be loaded";
+        return reply.status(400).send({ message });
+      }
+    }
+  );
+
+  app.get<{ Params: { id: string } }>(
     "/tasks/:id/git-operation",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
     async (request, reply) => {
