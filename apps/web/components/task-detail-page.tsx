@@ -117,6 +117,7 @@ import { CheckpointFileEditorModal } from "./checkpoint-file-editor-modal";
 import { TaskFilesTab } from "./task-files-tab";
 import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 import { TaskCreateModal } from "./task-create-modal";
+import { ModelSelect } from "./model-select";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 import { useThemeMode } from "./theme-provider";
 import { getPrismTheme } from "../src/theme/code-highlighting";
@@ -1458,11 +1459,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (allowedProviderModels.some((option) => option.value === modelInput)) {
       return;
     }
+    if (roleAllowedModels.length === 0 && modelInput.trim().length > 0) {
+      return;
+    }
     const fallback = allowedProviderModels[0]?.value;
     if (fallback) {
       setModelInput(fallback);
     }
-  }, [allowedProviderModels, modelInput, providerModelsLoading]);
+  }, [allowedProviderModels, modelInput, providerModelsLoading, roleAllowedModels.length]);
 
   useEffect(() => {
     if (allowedEffortOptions.some((option) => option.value === providerProfileInput)) {
@@ -5214,12 +5218,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </div>
           <div>
             <Typography.Text type="secondary">Model</Typography.Text>
-            <Select
+            <ModelSelect
               value={modelInput}
               options={allowedProviderModels}
               loading={providerModelsLoading}
-              showSearch
-              optionFilterProp="label"
+              allowCustom={roleAllowedModels.length === 0}
               onChange={(value) => setModelInput(value)}
               style={{ width: "100%", marginTop: 6 }}
               disabled={!canEditTask || isArchived || interactiveTerminalRunning}

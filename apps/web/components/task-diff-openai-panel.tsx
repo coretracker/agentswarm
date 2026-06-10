@@ -15,6 +15,7 @@ import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
+import { ModelSelect } from "./model-select";
 
 function buildSnippetFromSelection(file: FileData, selectedKeys: string[]): string {
   const selected = new Set(selectedKeys);
@@ -356,12 +357,10 @@ export function TaskDiffOpenAiPanel({
             <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
               Model
             </Typography.Text>
-            <Select
+            <ModelSelect
               value={openAiModel}
               options={codexModels}
               loading={codexModelsLoading}
-              showSearch
-              optionFilterProp="label"
               onChange={(v) => setOpenAiModel(v)}
               style={{ width: "100%" }}
             />

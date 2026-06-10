@@ -140,19 +140,19 @@ export const registerSettingsRoutes = (
     try {
       if (provider === "claude") {
         if (!credentials.anthropicApiKey) {
-          return reply.send({ models: fallback, source: "static" });
+          return reply.send({ models: fallback, source: "fallback" });
         }
         const models = await fetchAnthropicModels(credentials.anthropicApiKey);
         return reply.send({ models, source: "api" });
       }
 
       if (!credentials.openaiApiKey) {
-        return reply.send({ models: fallback, source: "static" });
+        return reply.send({ models: fallback, source: "fallback" });
       }
       const models = await fetchOpenAiModels(credentials.openaiApiKey, settings.openaiBaseUrl);
       return reply.send({ models, source: "api" });
     } catch {
-      return reply.send({ models: fallback, source: "static" });
+      return reply.send({ models: fallback, source: "fallback" });
     }
   });
 

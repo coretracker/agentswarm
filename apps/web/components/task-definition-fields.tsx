@@ -33,6 +33,7 @@ import { trackEvent } from "../src/utils/analytics";
 import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
 import { type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
+import { ModelSelect } from "./model-select";
 import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
 
 export type TaskDefinitionFormValues = {
@@ -176,7 +177,7 @@ export function TaskDefinitionFields({
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
   const selectedPrompt = Form.useWatch("prompt", form);
-  const { models: providerModels, loading: providerModelsLoading } = useProviderModels(selectedProvider);
+  const { models: providerModels, loading: providerModelsLoading, source: providerModelsSource } = useProviderModels(selectedProvider);
   const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
   const effectiveTaskType = selectedTaskType;
@@ -261,8 +262,11 @@ export function TaskDefinitionFields({
     if (allowedModelOptions.some((option) => option.value === selectedModel)) {
       return;
     }
+    if (roleAllowedModels.length === 0 && typeof selectedModel === "string" && selectedModel.trim().length > 0) {
+      return;
+    }
     form.setFieldValue("model", allowedModelOptions[0]?.value);
-  }, [allowedModelOptions, form, providerModelsLoading, selectedModel]);
+  }, [allowedModelOptions, form, providerModelsLoading, roleAllowedModels.length, selectedModel]);
 
   useEffect(() => {
     if (allowedEffortOptions.length === 0) {
@@ -581,8 +585,19 @@ export function TaskDefinitionFields({
               />
             </Form.Item>
 
-            <Form.Item name="model" label="Model" rules={[{ required: true }]}>
-              <Select options={allowedModelOptions} loading={providerModelsLoading} showSearch optionFilterProp="label" />
+            <Form.Item
+              name="model"
+              label="Model"
+              rules={[{ required: true }]}
+              extra={
+                providerModelsSource === "api"
+                  ? "Model suggestions were refreshed from the provider."
+                  : roleAllowedModels.length === 0
+                    ? "Model suggestions may be stale. You can type a model name manually."
+                    : "Model choices are restricted by your role."
+              }
+            >
+              <ModelSelect options={allowedModelOptions} loading={providerModelsLoading} allowCustom={roleAllowedModels.length === 0} />
             </Form.Item>
 
             <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>

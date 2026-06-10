@@ -66,7 +66,7 @@ import { buildApiUrl } from "../lib/public-url";
 
 export interface ProviderModelsResponse {
   models: ProviderModelOption[];
-  source: "api" | "static";
+  source: "api" | "cache" | "fallback";
 }
 
 export interface TaskInteractiveTerminalStatus {

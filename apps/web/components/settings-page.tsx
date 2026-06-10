@@ -48,6 +48,7 @@ import { api } from "../src/api/client";
 import { useSettings } from "../src/hooks/useSettings";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useAuth } from "./auth-provider";
+import { ModelSelect } from "./model-select";
 
 interface McpServerFormItem {
   name: string;
@@ -172,8 +173,8 @@ export function SettingsPage() {
   const [responsePreferencePresetModalOpen, setResponsePreferencePresetModalOpen] = useState(false);
   const [editingResponsePreferencePreset, setEditingResponsePreferencePreset] = useState<ResponsePreferencePreset | null>(null);
   const canEditSettings = can("settings:edit");
-  const { models: codexModels, loading: codexModelsLoading } = useProviderModels("codex");
-  const { models: claudeModels, loading: claudeModelsLoading } = useProviderModels("claude");
+  const { models: codexModels, loading: codexModelsLoading, source: codexModelsSource } = useProviderModels("codex");
+  const { models: claudeModels, loading: claudeModelsLoading, source: claudeModelsSource } = useProviderModels("claude");
   const allModelOptions = Array.from(
     new Map(
       [...codexModels, ...claudeModels, ...getModelsForProvider("codex"), ...getModelsForProvider("claude")].map((option) => [option.value, option])
@@ -383,8 +384,13 @@ export function SettingsPage() {
                 <div>
                   <Typography.Text strong>Codex (OpenAI)</Typography.Text>
                   <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
-                    <Form.Item name="codexDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
-                      <Select options={codexModels} loading={codexModelsLoading} showSearch optionFilterProp="label" />
+                    <Form.Item
+                      name="codexDefaultModel"
+                      label="Default Model"
+                      extra={codexModelsSource === "api" ? "Model suggestions were refreshed from the provider." : "Model suggestions may be stale. You can type a model name manually."}
+                      style={{ marginBottom: 0 }}
+                    >
+                      <ModelSelect options={codexModels} loading={codexModelsLoading} />
                     </Form.Item>
                     <Form.Item name="codexDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
                       <Select options={getEffortOptionsForProvider("codex")} />
@@ -402,8 +408,13 @@ export function SettingsPage() {
                     description="Claude Code in AgentSwarm is experimental; behavior and defaults may change."
                   />
                   <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
-                    <Form.Item name="claudeDefaultModel" label="Default Model" style={{ marginBottom: 0 }}>
-                      <Select options={claudeModels} loading={claudeModelsLoading} showSearch optionFilterProp="label" />
+                    <Form.Item
+                      name="claudeDefaultModel"
+                      label="Default Model"
+                      extra={claudeModelsSource === "api" ? "Model suggestions were refreshed from the provider." : "Model suggestions may be stale. You can type a model name manually."}
+                      style={{ marginBottom: 0 }}
+                    >
+                      <ModelSelect options={claudeModels} loading={claudeModelsLoading} />
                     </Form.Item>
                     <Form.Item name="claudeDefaultEffort" label="Default Effort" style={{ marginBottom: 0 }}>
                       <Select options={getEffortOptionsForProvider("claude")} />
