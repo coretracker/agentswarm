@@ -100,6 +100,104 @@ describe("parseAgentJsonlEvents", () => {
     );
   });
 
+  it("normalizes Codex web search events into tool lifecycle entries", () => {
+    const raw = [
+      {
+        type: "item.started",
+        item: {
+          id: "ws_123",
+          type: "web_search",
+          query: "",
+          action: { type: "other" },
+          status: "in_progress"
+        }
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "ws_123",
+          type: "web_search",
+          query: "site:docs.github.com GitHub Actions runs-on expressions",
+          action: {
+            type: "search",
+            query: "site:docs.github.com GitHub Actions runs-on expressions",
+            queries: ["site:docs.github.com GitHub Actions runs-on expressions"]
+          },
+          status: "completed"
+        }
+      }
+    ].map((event) => JSON.stringify(event)).join("\n");
+
+    const events = parseAgentJsonlEvents("codex", raw);
+
+    assert.equal(
+      events.some(
+        (event) =>
+          event.kind === "tool.started" &&
+          event.toolName === "web_search" &&
+          event.toolCallId === "ws_123" &&
+          event.status === "in_progress"
+      ),
+      true
+    );
+    assert.equal(
+      events.some(
+        (event) =>
+          event.kind === "tool.completed" &&
+          event.toolName === "web_search" &&
+          event.toolCallId === "ws_123" &&
+          event.detail === "site:docs.github.com GitHub Actions runs-on expressions"
+      ),
+      true
+    );
+  });
+
+  it("normalizes Codex file change events from started and completed wrappers", () => {
+    const raw = [
+      {
+        type: "item.started",
+        item: {
+          id: "file_1",
+          type: "file_change",
+          changes: [{ path: "docs/tasks/active/026-step-metrics-delay.md", kind: "add" }],
+          status: "in_progress"
+        }
+      },
+      {
+        type: "item.completed",
+        item: {
+          id: "file_1",
+          type: "file_change",
+          changes: [{ path: "docs/tasks/active/026-step-metrics-delay.md", kind: "add" }],
+          status: "completed"
+        }
+      }
+    ].map((event) => JSON.stringify(event)).join("\n");
+
+    const events = parseAgentJsonlEvents("codex", raw);
+
+    assert.equal(
+      events.some(
+        (event) =>
+          event.kind === "file.changed" &&
+          event.toolCallId === "file_1" &&
+          event.filePath === "docs/tasks/active/026-step-metrics-delay.md" &&
+          event.status === "in_progress"
+      ),
+      true
+    );
+    assert.equal(
+      events.some(
+        (event) =>
+          event.kind === "file.changed" &&
+          event.toolCallId === "file_1" &&
+          event.filePath === "docs/tasks/active/026-step-metrics-delay.md" &&
+          event.status === "completed"
+      ),
+      true
+    );
+  });
+
   it("normalizes Claude tool results and final result events", () => {
     const raw = [
       { type: "system", subtype: "init", session_id: "session-1", model: "claude-sonnet" },

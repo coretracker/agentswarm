@@ -4067,6 +4067,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           style={{ resize: "none", paddingRight: 44, paddingBottom: 38 }}
         />
       </div>
+      {!interactiveComposerSelected && !terminalComposerSelected && canUseSnippets ? (
+        <Flex gap={8} wrap="wrap">
+          <Select
+            showSearch
+            style={{ minWidth: 220, flex: 1 }}
+            placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
+            value={selectedSnippetId}
+            onChange={(value) => setSelectedSnippetId(value)}
+            optionFilterProp="label"
+            allowClear
+            loading={snippetsLoading}
+            disabled={snippetsLoading || snippets.length === 0 || !canEditTask || isArchived || interactiveTerminalRunning}
+            options={snippets.map((snippet) => ({
+              label: snippet.name,
+              value: snippet.id
+            }))}
+          />
+          <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning}>
+            Insert
+          </Button>
+        </Flex>
+      ) : null}
       {canAttachPromptImages || selectedPromptImageFiles.length > 0 ? (
         <>
           <Divider style={{ margin: 0 }} />
@@ -4085,53 +4107,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <div
             style={{
               display: "flex",
-              flexDirection: "column"
+              flexDirection: "column",
+              gap: 8,
+              minWidth: 320,
+              maxWidth: 480,
+              flex: "1 1 320px"
             }}
           >
             <Button style={{ alignSelf: "flex-start" }} onClick={() => setAiSettingsModalOpen(true)}>
               AI Settings
             </Button>
+            <Select
+              showSearch
+              value={modelInput}
+              options={allowedProviderModels}
+              loading={providerModelsLoading}
+              onChange={(value) => setModelInput(value)}
+              optionFilterProp="label"
+              placeholder="Select model"
+              style={{ width: "100%" }}
+              disabled={!canEditTask || isArchived || interactiveTerminalRunning}
+            />
           </div>
-          {!interactiveComposerSelected && !terminalComposerSelected ? (
-            <div
-              style={{
-                minWidth: 260,
-                maxWidth: 420,
-                display: "flex",
-                flexDirection: "column"
-              }}
-            >
-              <Flex gap={8}>
-                <Select
-                  showSearch
-                  style={{ minWidth: 180, flex: 1 }}
-                  placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
-                  value={selectedSnippetId}
-                  onChange={(value) => setSelectedSnippetId(value)}
-                  optionFilterProp="label"
-                  allowClear
-                  loading={snippetsLoading}
-                  disabled={
-                    snippetsLoading ||
-                    snippets.length === 0 ||
-                    !canEditTask ||
-                    isArchived ||
-                    interactiveTerminalRunning
-                  }
-                  options={snippets.map((snippet) => ({
-                    label: snippet.name,
-                    value: snippet.id
-                  }))}
-                />
-                <Button
-                  onClick={handleInsertSelectedSnippet}
-                  disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning}
-                >
-                  Insert
-                </Button>
-              </Flex>
-            </div>
-          ) : null}
         </Flex>
         <Flex align="center" gap={12} wrap="wrap" style={{ flexShrink: 0 }}>
           <Flex align="center" gap={12} wrap="wrap">

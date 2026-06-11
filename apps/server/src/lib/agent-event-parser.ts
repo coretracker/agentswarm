@@ -193,17 +193,46 @@ function parseCodexItem(raw: JsonObject, index: number, events: NormalizedAgentE
     return;
   }
 
-  if (itemType === "file_change" && isCompleted) {
+  if (itemType === "web_search") {
+    const action = asRecord(item?.action);
+    const actionType = asString(action?.type);
+    const query = asString(item?.query) ?? asString(action?.query);
+    const queries = Array.isArray(action?.queries) ? action.queries : [];
+    const queryList = queries
+      .map((entry) => asString(entry))
+      .filter((entry): entry is string => Boolean(entry));
+    const detail = truncate(query);
+    const message = truncate(queryList.length > 0 ? queryList.join("\n") : actionType ? JSON.stringify(action) : undefined);
+    push(events, "codex", index, itemId ?? "web-search", {
+      kind: !isCompleted ? "tool.started" : "tool.completed",
+      title: !isCompleted ? "Web search started" : "Web search completed",
+      detail,
+      message: isCompleted ? message : undefined,
+      status: status ?? (!isCompleted ? "in_progress" : "completed"),
+      toolCallId: itemId,
+      toolName: "web_search"
+    });
+    return;
+  }
+
+  if (itemType === "file_change") {
     const changes = Array.isArray(item?.changes) ? item.changes : [];
     changes.forEach((change, changeIndex) => {
       const record = asRecord(change);
       const filePath = asString(record?.path);
       const fileChangeKind = asString(record?.kind);
+      const isStarted = !isCompleted;
       push(events, "codex", index, `${itemId ?? "file-change"}-${changeIndex}`, {
         kind: "file.changed",
-        title: fileChangeKind ? `File ${fileChangeKind}` : "File changed",
+        title: isStarted
+          ? fileChangeKind
+            ? `File ${fileChangeKind} started`
+            : "File change started"
+          : fileChangeKind
+            ? `File ${fileChangeKind}`
+            : "File changed",
         detail: filePath,
-        status,
+        status: status ?? (isStarted ? "in_progress" : "completed"),
         toolCallId: itemId,
         filePath,
         fileChangeKind
