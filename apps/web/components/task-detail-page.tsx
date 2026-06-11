@@ -774,7 +774,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(providerInput);
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>(null);
   const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "diff" | "files">("chat");
-  const [expandedRunKeys, setExpandedRunKeys] = useState<string[]>([]);
   const [expandedRunTimelineKeys, setExpandedRunTimelineKeys] = useState<string[]>([]);
   const [selectedChatAction, setSelectedChatAction] = useState<ComposerAction>("build");
   const [submitting, setSubmitting] = useState<
@@ -4470,32 +4469,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </Typography.Paragraph>
     ) : null;
 
-  const renderRunLogsPanel = (run: TaskRun) => (
-    <div
-      style={{
-        padding: "14px 16px",
-        background: "#0b0f14",
-        borderRadius: 8,
-        maxHeight: 600,
-        overflow: "scroll"
-      }}
-    >
-      <pre
-        style={{
-          margin: 0,
-          color: "#d8e1ee",
-          fontFamily: "\"SFMono-Regular\", Consolas, monospace",
-          fontSize: 12,
-          lineHeight: 1.65,
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word"
-        }}
-      >
-        {run.logs.join("\n") || "No logs captured for this run."}
-      </pre>
-    </div>
-  );
-
   type TimelineEvent = NonNullable<TaskRun["timelineEvents"]>[number];
 
   const getTimelineEventColor = (event: TimelineEvent): string => {
@@ -4759,26 +4732,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       />
     );
   };
-
-  const renderRunLogsCollapse = (run: TaskRun) => (
-    <Collapse
-      size="small"
-      activeKey={expandedRunKeys.includes(run.id) ? [run.id] : []}
-      onChange={(keys) =>
-        setExpandedRunKeys((current) => {
-          const isOpen = Array.isArray(keys) ? keys.length > 0 : Boolean(keys);
-          return isOpen ? (current.includes(run.id) ? current : [...current, run.id]) : current.filter((key) => key !== run.id);
-        })
-      }
-      items={[
-        {
-          key: run.id,
-          label: `Logs${run.logs.length > 0 ? ` (${run.logs.length})` : ""}`,
-          children: renderRunLogsPanel(run)
-        }
-      ]}
-    />
-  );
 
   const renderRunErrorNotice = (run: TaskRun) =>
     run.errorMessage ? (
@@ -5204,7 +5157,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </Typography.Paragraph>
           {renderRunErrorNotice(run)}
           {renderRunTimelineCollapse(run)}
-          {renderRunLogsCollapse(run)}
           {renderRunNoChangeNotice(run)}
           {normalizedRunSummary ? (
             isCollapsibleSummaryRun ? (
@@ -5264,7 +5216,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </div>
           {renderRunErrorNotice(entry.run)}
           {renderRunTimelineCollapse(entry.run)}
-          {renderRunLogsCollapse(entry.run)}
           <Collapse
             size="small"
             defaultActiveKey={[`${entryKey}-summary`]}
