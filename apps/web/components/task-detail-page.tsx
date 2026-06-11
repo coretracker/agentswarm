@@ -1544,7 +1544,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     syncExecutionConfigInputs(task);
-  }, [task]);
+  }, [
+    task?.id,
+    task?.provider,
+    task?.providerProfile,
+    task?.modelOverride,
+    task?.codexCredentialSource,
+    task?.branchStrategy
+  ]);
 
   useEffect(() => {
     if (!isArchived) {
