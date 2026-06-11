@@ -3981,101 +3981,41 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     .join(" · ");
   const chatComposer = (
     <Flex vertical gap={12}>
-      <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
-        <Flex align="flex-end" gap={12} wrap="wrap" style={{ flex: "1 1 0", minWidth: 0 }}>
-          <Flex gap={8} align="center" wrap="wrap" style={{ minWidth: 320, flex: "1 1 320px" }}>
-            <Button onClick={() => setAiSettingsModalOpen(true)}>AI Settings</Button>
-            <Select
-              showSearch
-              value={modelInput}
-              options={allowedProviderModels}
-              loading={providerModelsLoading}
-              onChange={(value) => setModelInput(value)}
-              optionFilterProp="label"
-              placeholder="Select model"
-              style={{ minWidth: 220, flex: 1 }}
-              disabled={!canEditTask || isArchived || interactiveTerminalRunning}
-            />
-            {!interactiveComposerSelected && !terminalComposerSelected && canUseSnippets ? (
-              <Select
-                showSearch
-                style={{ minWidth: 220, flex: 1 }}
-                placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
-                value={selectedSnippetId}
-                onChange={(value) => setSelectedSnippetId(value)}
-                optionFilterProp="label"
-                allowClear
-                loading={snippetsLoading}
-                disabled={snippetsLoading || snippets.length === 0 || !canEditTask || isArchived || interactiveTerminalRunning}
-                options={snippets.map((snippet) => ({
-                  label: snippet.name,
-                  value: snippet.id
-                }))}
-              />
-            ) : null}
-            {!interactiveComposerSelected && !terminalComposerSelected && canUseSnippets ? (
-              <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning}>
-                Insert
-              </Button>
-            ) : null}
-          </Flex>
-        </Flex>
-        <Flex align="center" gap={12} wrap="wrap" style={{ flexShrink: 0 }}>
-          <Flex align="center" gap={12} wrap="wrap">
-            <Space.Compact size="middle">
-              <Select
-                value={selectedChatAction}
-                options={allowedChatActions.map((action) => ({
-                  label: taskActionLabel[action],
-                  value: action
-                }))}
-                disabled={chatClosed || interactiveTerminalRunning}
-                onChange={(value) => {
-                  selectedChatActionRef.current = true;
-                  setSelectedChatAction(value);
-                }}
-                style={{ minWidth: 140 }}
-              />
-              <Button
-                type="primary"
-                loading={submitting === "message"}
-                disabled={chatSubmitDisabled}
-                onClick={() => void handleSubmitComposer()}
-              >
-                {chatSubmitLabel}
-              </Button>
-              <Popconfirm
-                title="Clear composer?"
-                description="This will clear the message input, selected reference images, and reset the AI settings to this task's defaults."
-                okText="Clear"
-                cancelText="Cancel"
-                okButtonProps={{ danger: true }}
-                placement="top"
-                disabled={composerClearDisabled}
-                onConfirm={handleConfirmClearComposer}
-              >
-                <Button disabled={composerClearDisabled}>Clear</Button>
-              </Popconfirm>
-            </Space.Compact>
-            {canPull || canPush || hasGitHubDiffTargetAction || hasDropdownMoreActions ? (
-              <Space
-                size={8}
-                wrap
-                style={{
-                  paddingInlineStart: 12,
-                  marginInlineStart: 4,
-                  borderInlineStart: "1px solid var(--ant-colorSplit, rgba(5, 5, 5, 0.12))"
-                }}
-              >
-                {renderPullTaskButton()}
-                {renderPushTaskButton()}
-                {renderResetGitButton()}
-                {renderGitHubDiffTargetButton()}
-                {renderMoreActionsButton()}
-              </Space>
-            ) : null}
-          </Flex>
-        </Flex>
+      <Flex gap={8} align="center" wrap="wrap" style={{ minWidth: 320, flex: "1 1 320px" }}>
+        <Button onClick={() => setAiSettingsModalOpen(true)}>AI Settings</Button>
+        <Select
+          showSearch
+          value={modelInput}
+          options={allowedProviderModels}
+          loading={providerModelsLoading}
+          onChange={(value) => setModelInput(value)}
+          optionFilterProp="label"
+          placeholder="Select model"
+          style={{ minWidth: 220, flex: 1 }}
+          disabled={!canEditTask || isArchived || interactiveTerminalRunning}
+        />
+        {!interactiveComposerSelected && !terminalComposerSelected && canUseSnippets ? (
+          <Select
+            showSearch
+            style={{ minWidth: 220, flex: 1 }}
+            placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
+            value={selectedSnippetId}
+            onChange={(value) => setSelectedSnippetId(value)}
+            optionFilterProp="label"
+            allowClear
+            loading={snippetsLoading}
+            disabled={snippetsLoading || snippets.length === 0 || !canEditTask || isArchived || interactiveTerminalRunning}
+            options={snippets.map((snippet) => ({
+              label: snippet.name,
+              value: snippet.id
+            }))}
+          />
+        ) : null}
+        {!interactiveComposerSelected && !terminalComposerSelected && canUseSnippets ? (
+          <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning}>
+            Insert
+          </Button>
+        ) : null}
       </Flex>
       <div style={{ position: "relative" }}>
         {promptMagicVisible ? (
@@ -4176,6 +4116,62 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Divider style={{ margin: 0 }} />
         </>
       ) : null}
+      <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
+        <Flex align="center" gap={12} wrap="wrap">
+          <Space.Compact size="middle">
+            <Select
+              value={selectedChatAction}
+              options={allowedChatActions.map((action) => ({
+                label: taskActionLabel[action],
+                value: action
+              }))}
+              disabled={chatClosed || interactiveTerminalRunning}
+              onChange={(value) => {
+                selectedChatActionRef.current = true;
+                setSelectedChatAction(value);
+              }}
+              style={{ minWidth: 140 }}
+            />
+            <Button
+              type="primary"
+              loading={submitting === "message"}
+              disabled={chatSubmitDisabled}
+              onClick={() => void handleSubmitComposer()}
+            >
+              {chatSubmitLabel}
+            </Button>
+            <Popconfirm
+              title="Clear composer?"
+              description="This will clear the message input, selected reference images, and reset the AI settings to this task's defaults."
+              okText="Clear"
+              cancelText="Cancel"
+              okButtonProps={{ danger: true }}
+              placement="top"
+              disabled={composerClearDisabled}
+              onConfirm={handleConfirmClearComposer}
+            >
+              <Button disabled={composerClearDisabled}>Clear</Button>
+            </Popconfirm>
+          </Space.Compact>
+          {canPull || canPush || hasGitHubDiffTargetAction || hasDropdownMoreActions ? (
+            <Space
+              size={8}
+              wrap
+              style={{
+                paddingInlineStart: 12,
+                marginInlineStart: 4,
+                borderInlineStart: "1px solid var(--ant-colorSplit, rgba(5, 5, 5, 0.12))"
+              }}
+            >
+              {renderPullTaskButton()}
+              {renderPushTaskButton()}
+              {renderResetGitButton()}
+              {renderGitHubDiffTargetButton()}
+              {renderMoreActionsButton()}
+            </Space>
+          ) : null}
+        </Flex>
+      </Flex>
       <Divider style={{ margin: "8px 0 0" }} />
       <Typography.Text type="secondary" style={{ display: "block", textAlign: "left" }}>
         {`Current: ${aiSettingsSummary}`}
@@ -4572,15 +4568,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </Typography.Text>
         ) : null}
         {event.message ? (
-          <Typography.Paragraph
-            style={{
-              margin: 0,
-              maxHeight: 180,
-              overflow: "auto",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word"
-            }}
-          >
+          <Typography.Paragraph style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
             {event.message}
           </Typography.Paragraph>
         ) : null}
@@ -4588,13 +4576,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   };
 
-  const renderToolGroupContent = (item: Extract<TimelineDisplayItem, { type: "tool_group" }>): ReactNode => (
+  const renderToolGroupContent = (
+    item: Extract<TimelineDisplayItem, { type: "tool_group" }>,
+    provider: TaskRun["provider"]
+  ): ReactNode => (
     <Space direction="vertical" size={8} style={{ width: "100%" }}>
       <Flex align="flex-start" justify="space-between" gap={8} wrap="wrap">
         <Space size={6} wrap>
           <Typography.Text strong>{item.title}</Typography.Text>
           <Tag>{item.calls.length}</Tag>
-          <Tag color={item.status === "failed" ? "red" : item.status === "in_progress" ? "blue" : "green"}>{item.status}</Tag>
+          {provider !== "codex" ? (
+            <Tag color={item.status === "failed" ? "red" : item.status === "in_progress" ? "blue" : "green"}>{item.status}</Tag>
+          ) : null}
           {item.rawEventCount > item.calls.length ? <Tag>{item.rawEventCount} events</Tag> : null}
         </Space>
         <Typography.Text type="secondary" style={{ fontSize: 11 }}>
@@ -4642,15 +4635,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                         </Typography.Text>
                       ) : null}
                       {call.message ? (
-                        <Typography.Paragraph
-                          style={{
-                            margin: 0,
-                            maxHeight: 140,
-                            overflow: "auto",
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word"
-                          }}
-                        >
+                        <Typography.Paragraph style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                           {call.message}
                         </Typography.Paragraph>
                       ) : null}
@@ -4697,7 +4682,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const renderTimelineDisplayItemContent = (item: TimelineDisplayItem): ReactNode => {
     if (item.type === "tool_group") {
-      return renderToolGroupContent(item);
+      return renderToolGroupContent(item, currentTaskProvider);
     }
     if (item.type === "file_group") {
       return renderFileGroupContent(item);
