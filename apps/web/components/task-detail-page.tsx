@@ -3981,7 +3981,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     .join(" · ");
   const chatComposer = (
     <Flex vertical gap={12}>
-      <Flex gap={8} align="center" wrap="wrap" style={{ minWidth: 320, flex: "1 1 320px" }}>
+      <Flex gap={8} align="center" wrap="wrap">
         <Button onClick={() => setAiSettingsModalOpen(true)}>AI Settings</Button>
         <Select
           showSearch
@@ -4116,8 +4116,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Divider style={{ margin: 0 }} />
         </>
       ) : null}
-      <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
-        <Flex align="center" gap={12} wrap="wrap">
+      <Flex justify="flex-end" align="flex-end" gap={12} wrap="wrap">
+        <Flex align="center" justify="flex-end" gap={12} wrap="wrap">
           <Space.Compact size="middle">
             <Select
               value={selectedChatAction}
