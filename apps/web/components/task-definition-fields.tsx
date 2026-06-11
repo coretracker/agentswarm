@@ -267,7 +267,7 @@ export function TaskDefinitionFields({
     if (allowedModelOptions.some((option) => option.value === selectedModel)) {
       return;
     }
-    if (roleAllowedModels.length === 0 && typeof selectedModel === "string" && selectedModel.trim().length > 0) {
+    if (roleAllowedModels.length === 0) {
       return;
     }
     form.setFieldValue("model", allowedModelOptions[0]?.value);

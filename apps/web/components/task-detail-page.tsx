@@ -1151,19 +1151,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   );
   const currentTaskProvider = task?.provider ?? "codex";
   const currentTaskProviderProfile = task?.providerProfile ?? "high";
-  const currentTaskModelOverride = task?.modelOverride ?? "";
+  const currentTaskModelOverride = task?.modelOverride?.trim() ?? "";
+  const modelOverrideInput = modelInput.trim();
   const currentTaskCodexCredentialSource = task?.codexCredentialSource ?? "auto";
   const interactiveTerminalConfigDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)) ||
+    modelOverrideInput !== currentTaskModelOverride ||
     (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource);
   const currentTaskBranchStrategy = task?.branchStrategy ?? "feature_branch";
   const hasExecutionContext = Boolean(task?.executionSummary?.trim());
   const configDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)) ||
+    modelOverrideInput !== currentTaskModelOverride ||
     (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource) ||
     (isImplementationTask && branchStrategyInput !== currentTaskBranchStrategy);
 
@@ -1177,7 +1178,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const syncExecutionConfigInputs = (nextTask: Task): void => {
     setProviderInput(nextTask.provider ?? "codex");
     setProviderProfileInput(nextTask.providerProfile ?? "high");
-    setModelInput(nextTask.modelOverride ?? getDefaultModelForProvider(nextTask.provider ?? "codex"));
+    setModelInput(nextTask.modelOverride ?? "");
     setCodexCredentialSourceInput(nextTask.codexCredentialSource ?? "auto");
     setBranchStrategyInput(nextTask.branchStrategy ?? "feature_branch");
   };
@@ -1508,7 +1509,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (allowedProviderModels.some((option) => option.value === modelInput)) {
       return;
     }
-    if (roleAllowedModels.length === 0 && modelInput.trim().length > 0) {
+    if (roleAllowedModels.length === 0) {
       return;
     }
     const fallback = allowedProviderModels[0]?.value;
@@ -2481,7 +2482,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     !!chatInput.trim() ||
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)) ||
+    modelOverrideInput !== currentTaskModelOverride ||
     (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource);
   const composerClearDisabled = interactiveTerminalRunning || !composerHasChangesToClear;
   const terminalSubmitDisabled =
@@ -2506,7 +2507,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (task) {
       const nextProvider = currentTaskProvider;
       setProviderInput(nextProvider);
-      setModelInput(currentTaskModelOverride || getDefaultModelForProvider(nextProvider));
+      setModelInput(currentTaskModelOverride);
       setProviderProfileInput(currentTaskProviderProfile);
       setCodexCredentialSourceInput(currentTaskCodexCredentialSource);
     }
@@ -3973,7 +3974,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const aiSettingsSummary = [
     providerOptions.find((option) => option.value === providerInput)?.label ?? getAgentProviderLabel(providerInput),
-    allowedProviderModels.find((option) => option.value === modelInput)?.label ?? modelInput,
+    (allowedProviderModels.find((option) => option.value === modelInput)?.label ?? modelInput) ||
+      `${getProviderDefaultModel(providerInput, settings)} (default)`,
     getProviderProfileLabel(providerProfileInput),
     providerInput === "codex"
       ? `Credential: ${codexCredentialSourceOptions.find((option) => option.value === codexCredentialSourceInput)?.label ?? "Auto"}`
