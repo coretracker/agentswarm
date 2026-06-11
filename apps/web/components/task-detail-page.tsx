@@ -4104,19 +4104,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       ) : null}
       <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
         <Flex align="flex-end" gap={12} wrap="wrap" style={{ flex: "1 1 0", minWidth: 0 }}>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 8,
-              minWidth: 320,
-              maxWidth: 480,
-              flex: "1 1 320px"
-            }}
-          >
-            <Button style={{ alignSelf: "flex-start" }} onClick={() => setAiSettingsModalOpen(true)}>
-              AI Settings
-            </Button>
+          <Flex gap={8} align="center" wrap="wrap" style={{ minWidth: 320, maxWidth: 480, flex: "1 1 320px" }}>
+            <Button onClick={() => setAiSettingsModalOpen(true)}>AI Settings</Button>
             <Select
               showSearch
               value={modelInput}
@@ -4125,10 +4114,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               onChange={(value) => setModelInput(value)}
               optionFilterProp="label"
               placeholder="Select model"
-              style={{ width: "100%" }}
+              style={{ minWidth: 220, flex: 1 }}
               disabled={!canEditTask || isArchived || interactiveTerminalRunning}
             />
-          </div>
+          </Flex>
         </Flex>
         <Flex align="center" gap={12} wrap="wrap" style={{ flexShrink: 0 }}>
           <Flex align="center" gap={12} wrap="wrap">
