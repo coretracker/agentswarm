@@ -5071,7 +5071,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Card
             size="small"
             bodyStyle={{
-              background: "rgba(107,143,163,0.12)",
               padding: "10px 12px"
             }}
             style={getHistoryContextCardStyle(entryKey, { width: "100%" })}
