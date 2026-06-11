@@ -126,4 +126,10 @@ docker compose ps
 
 ## External Services and Secrets
 - Provider credentials (GitHub/OpenAI/Anthropic) are set in the app Settings UI.
+- GitHub token and Git username in Settings are used for authenticated GitHub HTTPS operations from both server-side Git actions and Codex/Claude task runtimes.
+- Git author identity comes from the task owner's `Git Author Name` / `Git Author Email`, falling back to the user's profile name/email.
+- If agents can edit locally but remote Git commands fail, verify the GitHub token first.
+- `could not read Username` usually means the GitHub token is missing, the runtime did not receive `GIT_TOKEN`, or the remote requires a different auth mode than HTTPS PAT.
+- `Authentication failed` usually means the token exists but lacks repository permissions or no longer grants access to that repository.
+- `Author identity unknown` means the runtime did not receive a usable Git author name/email; check the task owner's profile or user admin record.
 - TODO: Document any additional external dependencies required for production-like flows.

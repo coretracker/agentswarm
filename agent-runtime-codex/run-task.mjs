@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
@@ -143,6 +143,29 @@ const extractSessionIdFromOutputLine = (line) => {
   }
 };
 
+const ensureGitAskPass = async (runtimeHome) => {
+  const gitToken = process.env.GIT_TOKEN?.trim();
+  if (!gitToken) {
+    return;
+  }
+
+  const askPassPath = path.join(runtimeHome, "agentswarm-git-askpass.sh");
+  await writeFile(
+    askPassPath,
+    `#!/usr/bin/env sh
+case "$1" in
+  *sername*) echo "\${GIT_USERNAME:-x-access-token}" ;;
+  *assword*) echo "\${GIT_TOKEN:-}" ;;
+  *) echo "" ;;
+esac
+`,
+    "utf8"
+  );
+  await chmod(askPassPath, 0o700);
+  process.env.GIT_TERMINAL_PROMPT = "0";
+  process.env.GIT_ASKPASS = askPassPath;
+};
+
 await mkdir(homeDir, { recursive: true });
 await mkdir(codexDir, { recursive: true });
 await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
@@ -161,6 +184,7 @@ if (openAiApiKey) {
 }
 process.env.GIT_OPTIONAL_LOCKS = "0";
 process.env.HOME = homeDir;
+await ensureGitAskPass(homeDir);
 
 const buildResponsePreferencePreamble = () => {
   const preference = manifest.agentResponsePreference;

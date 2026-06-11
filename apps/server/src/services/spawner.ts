@@ -43,6 +43,7 @@ import { buildGitProcessEnv } from "../lib/git-env.js";
 import { extractGitLockPathFromErrorMessage, isPathInside, resolveGitTargetLockKey } from "../lib/git-locks.js";
 import { resolveGitPaths } from "../lib/git-paths.js";
 import { resolveWorkspaceGitRuntimeMounts } from "../lib/git-runtime-mounts.js";
+import { buildTaskRuntimeGitEnvEntries } from "../lib/task-interactive-terminal-git-env.js";
 import { reconcileTaskStatusWithPendingCheckpoint, resolveTaskReadyStatus } from "../lib/task-status.js";
 import { buildTaskCommitSubject, formatCommitSubject } from "../lib/task-commit-subject.js";
 import { parsePostflightConfig, postflightAppliesToTask, type PostflightConfig } from "../lib/postflight-config.js";
@@ -5033,11 +5034,15 @@ export class SpawnerService {
 
   async runTask(task: Task, action: TaskAction, input?: TaskExecutionInput | string): Promise<void> {
     this.cancelRequestedTaskIds.delete(task.id);
-    const [settings, runtimeCredentialsRaw, repositoryRuntimeEnvEntries, responsePreferenceUser] = await Promise.all([
+    const [settings, runtimeCredentialsRaw, repositoryRuntimeEnvEntries, responsePreferenceUser, gitIdentity] = await Promise.all([
       this.settingsStore.getSettings(),
       this.settingsStore.getRuntimeCredentials(task.ownerUserId, task.codexCredentialSource ?? "auto"),
       this.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId),
-      task.ownerUserId ? this.userStore.getAuthSessionUser(task.ownerUserId) : Promise.resolve(null)
+      task.ownerUserId ? this.userStore.getAuthSessionUser(task.ownerUserId) : Promise.resolve(null),
+      resolveTaskGitCommitIdentity(task, this.userStore, {
+        name: env.GIT_USER_NAME,
+        email: env.GIT_USER_EMAIL
+      })
     ]);
     const runtimeCredentials = runtimeCredentialsRaw;
     if (task.provider === "codex" && task.codexCredentialSource === "profile" && !runtimeCredentials.codexAuthJson) {
@@ -5171,6 +5176,9 @@ export class SpawnerService {
         await this.ensureWorkspaceGitHooks(workspace.workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
         await appendRunLog("Spawner: workspace Git integration is ready.");
       }
+      if (!runtimeCredentials.githubToken) {
+        await appendRunLog("Spawner: GitHub token is not configured; in-agent git pull/push against remote repositories may fail.");
+      }
 
       await appendRunLog(
         `Spawner: runtime config includes provider=${task.provider}, profile=${task.providerProfile}, and ${settings.mcpServers.length} MCP server${settings.mcpServers.length === 1 ? "" : "s"}.`
@@ -5212,6 +5220,12 @@ export class SpawnerService {
       const dockerSocketPolicy = resolveDockerSocketAccessPolicy(task.provider);
       const dockerSocketMountArgs = resolveDockerSocketMountArgs(dockerSocketPolicy);
       const dockerSocketEnvEntries = resolveDockerSocketEnvEntries(dockerSocketPolicy);
+      const taskRuntimeGitEnvEntries = buildTaskRuntimeGitEnvEntries({
+        workspacePath: workspace.workspacePath,
+        githubToken: runtimeCredentials.githubToken,
+        gitUsername: runtimeCredentials.gitUsername,
+        gitIdentity
+      });
       if (workspaceMountMode === "ro") {
         await appendRunLog("Spawner: mounting workspace read-only (ask mode).");
       }
@@ -5260,6 +5274,9 @@ export class SpawnerService {
         args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
       }
       for (const [name, value] of Object.entries(runtimeMcpEnv)) {
+        args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
+      }
+      for (const [name, value] of taskRuntimeGitEnvEntries) {
         args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
       }
       for (const [name, value] of repositoryRuntimeEnv) {

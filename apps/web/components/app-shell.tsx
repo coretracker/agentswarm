@@ -687,7 +687,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Form.Item
               name="gitAuthorName"
               label="Git Author Name"
-              extra="Leave blank to use your profile name."
+              extra="Used for agent-created Git commits. Leave blank to use your profile name."
             >
               <Input placeholder={session.user.name} />
             </Form.Item>
@@ -695,7 +695,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               name="gitAuthorEmail"
               label="Git Author Email"
               rules={[{ type: "email", message: "Enter a valid email address" }]}
-              extra="Leave blank to use your profile email."
+              extra="Used for agent-created Git commits. Leave blank to use your profile email."
             >
               <Input placeholder={session.user.email} />
             </Form.Item>

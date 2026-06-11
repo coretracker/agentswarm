@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { buildGitTerminalDockerEnvEntries, buildGitTerminalEnvEntries } from "./task-interactive-terminal-git-env.js";
+import { buildGitTerminalDockerEnvEntries, buildGitTerminalEnvEntries, buildTaskRuntimeGitEnvEntries } from "./task-interactive-terminal-git-env.js";
 import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
@@ -35,6 +35,35 @@ describe("buildGitTerminalStartScript", () => {
 });
 
 describe("buildGitTerminalEnvEntries", () => {
+  it("builds Git runtime env entries for automated task containers", () => {
+    const env = Object.fromEntries(
+      buildTaskRuntimeGitEnvEntries({
+        workspacePath: "/workspace",
+        githubToken: "secret-token",
+        gitUsername: "octocat",
+        gitIdentity: {
+          name: "Ada Lovelace",
+          email: "ada@example.com"
+        }
+      })
+    );
+
+    assert.equal(env.GIT_OPTIONAL_LOCKS, "0");
+    assert.equal(env.GIT_CONFIG_COUNT, "3");
+    assert.equal(env.GIT_CONFIG_KEY_0, "safe.directory");
+    assert.equal(env.GIT_CONFIG_VALUE_0, "/workspace");
+    assert.equal(env.GIT_CONFIG_KEY_1, "user.name");
+    assert.equal(env.GIT_CONFIG_VALUE_1, "Ada Lovelace");
+    assert.equal(env.GIT_CONFIG_KEY_2, "user.email");
+    assert.equal(env.GIT_CONFIG_VALUE_2, "ada@example.com");
+    assert.equal(env.GIT_TOKEN, "secret-token");
+    assert.equal(env.GIT_USERNAME, "octocat");
+    assert.equal(env.GIT_AUTHOR_NAME, "Ada Lovelace");
+    assert.equal(env.GIT_COMMITTER_EMAIL, "ada@example.com");
+    assert.equal(env.TERM, undefined);
+    assert.equal(env.HOME, undefined);
+  });
+
   it("injects git identity as transient config for interactive commits", () => {
     const env = Object.fromEntries(
       buildGitTerminalEnvEntries({

@@ -112,6 +112,16 @@ curl -fsS http://localhost:3217/api/health
 ## External Credentials
 GitHub/OpenAI/Anthropic credentials are configured in the app Settings UI, not in `.env`.
 
+For Git access from server-side actions and from Codex/Claude task runtimes:
+- Set a GitHub personal access token in `Settings -> Credentials -> GitHub Token`.
+- Keep `Settings -> Git & Branching -> Git Username` as `x-access-token` for standard GitHub PAT HTTPS auth unless your Git host requires another username.
+- Set `Git Author Name` and `Git Author Email` in your profile or in the Users admin page if you want agent-created commits to use something other than the account name/email.
+
+Recommended GitHub token permissions:
+- Repository contents read/write for clone, fetch, pull, commit push, and branch deletion on private repositories.
+- Pull request read/write if you also use PR-related automation and outbound updates.
+- Metadata read so repository access checks succeed consistently.
+
 ## TODO
 - TODO: Document a fully verified host-only (non-Docker) local startup path end-to-end.
 - TODO: Document any required external service accounts for production-like runs.

@@ -554,7 +554,7 @@ export function SettingsPage() {
                 <Form.Item
                   name="gitUsername"
                   label="Git Username"
-                  extra="Used for authenticated pushes from the runtime."
+                  extra="Used for authenticated GitHub HTTPS access from server Git actions and Codex/Claude runtimes. For personal access tokens, keep `x-access-token` unless your Git host requires a different username."
                   rules={[{ required: true, whitespace: true }]}
                 >
                   <Input placeholder="x-access-token" />
@@ -724,7 +724,11 @@ export function SettingsPage() {
               }
             }}
           >
-            <Form.Item name="githubToken" label="GitHub Token">
+            <Form.Item
+              name="githubToken"
+              label="GitHub Token"
+              extra="Used for server pull/push/merge operations and for in-agent `git pull` / `git push` inside Codex and Claude task runtimes."
+            >
               <Input.Password placeholder={settings?.githubTokenConfigured ? "Configured. Enter a new token to replace it." : "github_pat_..."} />
             </Form.Item>
             <Form.Item name="openaiApiKey" label="OpenAI API Key">

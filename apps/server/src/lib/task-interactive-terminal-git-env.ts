@@ -14,7 +14,7 @@ export function buildInteractiveWorkspaceGitEnvEntries(
   return envEntries;
 }
 
-export function buildGitTerminalEnvEntries(options: {
+export function buildTaskRuntimeGitEnvEntries(options: {
   workspacePath: string;
   githubToken?: string | null;
   gitUsername?: string | null;
@@ -23,9 +23,6 @@ export function buildGitTerminalEnvEntries(options: {
   const identityName = options.gitIdentity?.name.trim() ?? "";
   const identityEmail = options.gitIdentity?.email.trim() ?? "";
   const envEntries: Array<[string, string]> = [
-    ["TERM", "xterm-256color"],
-    ["HOME", "/root"],
-    ["TASK_INTERACTIVE_WORKSPACE", options.workspacePath],
     ["GIT_OPTIONAL_LOCKS", "0"],
     ...buildInteractiveWorkspaceGitEnvEntries(
       options.workspacePath,
@@ -53,6 +50,20 @@ export function buildGitTerminalEnvEntries(options: {
   }
 
   return envEntries;
+}
+
+export function buildGitTerminalEnvEntries(options: {
+  workspacePath: string;
+  githubToken?: string | null;
+  gitUsername?: string | null;
+  gitIdentity?: GitCommitIdentity | null;
+}): Array<[string, string]> {
+  return [
+    ["TERM", "xterm-256color"],
+    ["HOME", "/root"],
+    ["TASK_INTERACTIVE_WORKSPACE", options.workspacePath],
+    ...buildTaskRuntimeGitEnvEntries(options)
+  ];
 }
 
 export function buildGitTerminalDockerEnvEntries(options: {

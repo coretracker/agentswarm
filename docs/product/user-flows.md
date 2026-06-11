@@ -13,7 +13,6 @@ Notes:
 ## TODO
 - Task flows are documented below.
 - TODO: Document repository connect/sync flow.
-- TODO: Document settings and credentials flow.
 
 ## Repository Configuration Flow (Current)
 1. Open `/repositories`.
@@ -25,6 +24,19 @@ Notes:
 Notes:
 - Existing secrets are shown as configured placeholders only; values are never shown again after save.
 - Editing can keep an existing secret by leaving its value blank, replace it by entering a new value, or delete it by removing the row.
+
+## Settings And Credentials Flow (Current)
+1. Open `/settings`.
+2. Set `Git Username` in the `Git & Branching` section. Default GitHub PAT HTTPS auth uses `x-access-token`.
+3. Save the general settings form.
+4. In `Credentials`, add or replace the write-only `GitHub Token`.
+5. Add provider credentials for Codex and/or Claude as needed.
+6. Open your profile, or the Users admin page, and set `Git Author Name` / `Git Author Email` if agent-created commits should differ from the account name/email.
+
+Notes:
+- The GitHub token is used for both server-side Git actions and in-agent `git pull` / `git push` inside Codex and Claude runtimes.
+- Stored credential values are write-only and never returned in plaintext by the API/UI.
+- Agent-created commit identity resolves from the task owner's Git author fields first, then their profile name/email.
 
 ## Task Flows (New + Existing)
 

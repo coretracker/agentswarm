@@ -345,7 +345,7 @@ export function UsersPage() {
           <Form.Item
             name="gitAuthorName"
             label="Git Author Name"
-            extra="Leave blank to use the user's profile name."
+            extra="Used for agent-created Git commits. Leave blank to use the user's profile name."
           >
             <Input placeholder="Profile name" />
           </Form.Item>
@@ -353,7 +353,7 @@ export function UsersPage() {
             name="gitAuthorEmail"
             label="Git Author Email"
             rules={[{ type: "email", message: "Enter a valid email address" }]}
-            extra="Leave blank to use the user's profile email."
+            extra="Used for agent-created Git commits. Leave blank to use the user's profile email."
           >
             <Input placeholder="Profile email" />
           </Form.Item>

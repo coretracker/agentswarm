@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { access, constants, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, constants, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
@@ -95,6 +95,29 @@ const resolveClaudeBinary = async (runtimeHome) => {
   }
 
   return homeBinary;
+};
+
+const ensureGitAskPass = async (runtimeHome) => {
+  const gitToken = process.env.GIT_TOKEN?.trim();
+  if (!gitToken) {
+    return;
+  }
+
+  const askPassPath = path.join(runtimeHome, "agentswarm-git-askpass.sh");
+  await writeFile(
+    askPassPath,
+    `#!/usr/bin/env sh
+case "$1" in
+  *sername*) echo "\${GIT_USERNAME:-x-access-token}" ;;
+  *assword*) echo "\${GIT_TOKEN:-}" ;;
+  *) echo "" ;;
+esac
+`,
+    "utf8"
+  );
+  await chmod(askPassPath, 0o700);
+  process.env.GIT_TERMINAL_PROMPT = "0";
+  process.env.GIT_ASKPASS = askPassPath;
 };
 
 const buildResponsePreferencePreamble = () => {
@@ -214,6 +237,7 @@ const providerStatePath = configuredStatePath && configuredStatePath.length > 0
   : path.join(runtimeHome, ".claude");
 await mkdir(runtimeHome, { recursive: true });
 await mkdir(providerStatePath, { recursive: true });
+await ensureGitAskPass(runtimeHome);
 const sessionIdFilePath = path.join(providerStatePath, "agentswarm-session-id.txt");
 const persistedSessionId = await readPersistedSessionId(sessionIdFilePath);
 if (persistedSessionId) {
@@ -242,10 +266,7 @@ const proc = spawn("su-exec", [runtimeIdentity, claudeBinary, ...args], {
     ...(typeof manifest.resolvedThinkingBudgetTokens === "number"
       ? { MAX_THINKING_TOKENS: String(manifest.resolvedThinkingBudgetTokens) }
       : {}),
-    HOME: runtimeHome,
-    GIT_CONFIG_COUNT: "1",
-    GIT_CONFIG_KEY_0: "safe.directory",
-    GIT_CONFIG_VALUE_0: manifest.workspacePath
+    HOME: runtimeHome
   },
   cwd: manifest.workspacePath,
   stdio: ["ignore", "pipe", "pipe"]
