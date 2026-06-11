@@ -926,6 +926,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   );
   const selectedChatActionRef = useRef(false);
   const diffCompareBaseSyncedTaskIdRef = useRef<string | null>(null);
+  const executionConfigSyncedTaskIdRef = useRef<string | null>(null);
   const applyCheckpointAutoMagicProposalIdRef = useRef<string | null>(null);
   const mergeAutoMagicTargetRef = useRef<string | null>(null);
   const [selectedSnippetId, setSelectedSnippetId] = useState<string | null>(null);
@@ -1543,6 +1544,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
+    if (executionConfigSyncedTaskIdRef.current !== task.id) {
+      executionConfigSyncedTaskIdRef.current = task.id;
+      syncExecutionConfigInputs(task);
+      return;
+    }
+
+    if (configDirty || submitting === "config") {
+      return;
+    }
+
     syncExecutionConfigInputs(task);
   }, [
     task?.id,
@@ -1550,7 +1561,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     task?.providerProfile,
     task?.modelOverride,
     task?.codexCredentialSource,
-    task?.branchStrategy
+    task?.branchStrategy,
+    configDirty,
+    submitting
   ]);
 
   useEffect(() => {

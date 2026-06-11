@@ -102,10 +102,10 @@ const updateSettingsSchema = z.object({
   taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
   taskPromptMagicTemplate: z.string().trim().min(1).max(12_000).optional(),
   codexDefaultModel: z.string().trim().min(1).max(120).optional(),
-  codexModels: z.array(providerModelSchema).max(100).optional(),
+  codexModels: z.array(providerModelSchema).max(500).optional(),
   codexDefaultEffort: providerProfileEnum.optional(),
   claudeDefaultModel: z.string().trim().min(1).max(120).optional(),
-  claudeModels: z.array(providerModelSchema).max(100).optional(),
+  claudeModels: z.array(providerModelSchema).max(500).optional(),
   claudeDefaultEffort: providerProfileEnum.optional(),
   responsePreferencePresets: z.array(responsePreferencePresetSchema).max(50).optional()
 });
