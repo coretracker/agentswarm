@@ -118,7 +118,6 @@ import { CheckpointFileEditorModal } from "./checkpoint-file-editor-modal";
 import { TaskFilesTab } from "./task-files-tab";
 import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 import { TaskCreateModal } from "./task-create-modal";
-import { ModelSelect } from "./model-select";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 import { useThemeMode } from "./theme-provider";
 import { getPrismTheme } from "../src/theme/code-highlighting";
@@ -1152,19 +1151,19 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const currentTaskProvider = task?.provider ?? "codex";
   const currentTaskProviderProfile = task?.providerProfile ?? "high";
   const currentTaskModelOverride = task?.modelOverride?.trim() ?? "";
-  const modelOverrideInput = modelInput.trim();
+  const currentTaskModel = currentTaskModelOverride || getProviderDefaultModel(currentTaskProvider, settings);
   const currentTaskCodexCredentialSource = task?.codexCredentialSource ?? "auto";
   const interactiveTerminalConfigDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelOverrideInput !== currentTaskModelOverride ||
+    modelInput !== currentTaskModel ||
     (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource);
   const currentTaskBranchStrategy = task?.branchStrategy ?? "feature_branch";
   const hasExecutionContext = Boolean(task?.executionSummary?.trim());
   const configDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelOverrideInput !== currentTaskModelOverride ||
+    modelInput !== currentTaskModel ||
     (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource) ||
     (isImplementationTask && branchStrategyInput !== currentTaskBranchStrategy);
 
@@ -1178,7 +1177,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const syncExecutionConfigInputs = (nextTask: Task): void => {
     setProviderInput(nextTask.provider ?? "codex");
     setProviderProfileInput(nextTask.providerProfile ?? "high");
-    setModelInput(nextTask.modelOverride ?? "");
+    setModelInput(nextTask.modelOverride ?? getProviderDefaultModel(nextTask.provider ?? "codex", settings));
     setCodexCredentialSourceInput(nextTask.codexCredentialSource ?? "auto");
     setBranchStrategyInput(nextTask.branchStrategy ?? "feature_branch");
   };
@@ -1509,14 +1508,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (allowedProviderModels.some((option) => option.value === modelInput)) {
       return;
     }
-    if (roleAllowedModels.length === 0) {
-      return;
-    }
     const fallback = allowedProviderModels[0]?.value;
     if (fallback) {
       setModelInput(fallback);
     }
-  }, [allowedProviderModels, modelInput, providerModelsLoading, roleAllowedModels.length]);
+  }, [allowedProviderModels, modelInput, providerModelsLoading]);
 
   useEffect(() => {
     if (allowedEffortOptions.some((option) => option.value === providerProfileInput)) {
@@ -2482,7 +2478,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     !!chatInput.trim() ||
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelOverrideInput !== currentTaskModelOverride ||
+    modelInput !== currentTaskModel ||
     (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource);
   const composerClearDisabled = interactiveTerminalRunning || !composerHasChangesToClear;
   const terminalSubmitDisabled =
@@ -2507,7 +2503,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (task) {
       const nextProvider = currentTaskProvider;
       setProviderInput(nextProvider);
-      setModelInput(currentTaskModelOverride);
+      setModelInput(currentTaskModel);
       setProviderProfileInput(currentTaskProviderProfile);
       setCodexCredentialSourceInput(currentTaskCodexCredentialSource);
     }
@@ -3472,7 +3468,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Descriptions.Item label="Provider">{getAgentProviderLabel(currentTaskProvider)}</Descriptions.Item>
           <Descriptions.Item label="Effort">{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
           <Descriptions.Item label="Last Action">{task?.lastAction ?? "draft"}</Descriptions.Item>
-          <Descriptions.Item label="Model">{currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)}</Descriptions.Item>
+          <Descriptions.Item label="Model">{currentTaskModel}</Descriptions.Item>
           {currentTaskProvider === "codex" ? (
             <Descriptions.Item label="Codex Credential Source">
               {codexCredentialSourceOptions.find((option) => option.value === currentTaskCodexCredentialSource)?.label ?? "Auto"}
@@ -5634,12 +5630,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </div>
           <div>
             <Typography.Text type="secondary">Model</Typography.Text>
-            <ModelSelect
+            <Select
+              showSearch
               value={modelInput}
               options={allowedProviderModels}
               loading={providerModelsLoading}
-              allowCustom={roleAllowedModels.length === 0}
               onChange={(value) => setModelInput(value)}
+              optionFilterProp="label"
+              placeholder="Select model"
               style={{ width: "100%", marginTop: 6 }}
               disabled={!canEditTask || isArchived || interactiveTerminalRunning}
             />

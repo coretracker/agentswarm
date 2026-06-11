@@ -33,7 +33,6 @@ import { trackEvent } from "../src/utils/analytics";
 import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
 import { type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
-import { ModelSelect } from "./model-select";
 import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
 
 export type TaskDefinitionFormValues = {
@@ -267,11 +266,8 @@ export function TaskDefinitionFields({
     if (allowedModelOptions.some((option) => option.value === selectedModel)) {
       return;
     }
-    if (roleAllowedModels.length === 0) {
-      return;
-    }
     form.setFieldValue("model", allowedModelOptions[0]?.value);
-  }, [allowedModelOptions, form, providerModelsLoading, roleAllowedModels.length, selectedModel]);
+  }, [allowedModelOptions, form, providerModelsLoading, selectedModel]);
 
   useEffect(() => {
     if (allowedEffortOptions.length === 0) {
@@ -598,11 +594,17 @@ export function TaskDefinitionFields({
                 providerModelsSource === "api"
                   ? "Model suggestions were refreshed from the provider."
                   : roleAllowedModels.length === 0
-                    ? "Model suggestions may be stale. You can type a model name manually."
+                    ? "Model choices come from the model list in Settings."
                     : "Model choices are restricted by your role."
               }
             >
-              <ModelSelect options={allowedModelOptions} loading={providerModelsLoading} allowCustom={roleAllowedModels.length === 0} />
+              <Select
+                showSearch
+                options={allowedModelOptions}
+                loading={providerModelsLoading}
+                optionFilterProp="label"
+                placeholder="Select model"
+              />
             </Form.Item>
 
             <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
