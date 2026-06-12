@@ -421,6 +421,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
+  deletePendingTaskMessage: (taskId: string, messageId: string) =>
+    request<Task>(`/tasks/${taskId}/messages/${encodeURIComponent(messageId)}/queue`, {
+      method: "DELETE"
+    }),
+  runNextQueuedTaskMessage: (taskId: string) =>
+    request<Task>(`/tasks/${taskId}/queue/run-next`, {
+      method: "POST"
+    }),
   cancelTask: (id: string) =>
     request<Task>(`/tasks/${id}/cancel`, {
       method: "POST"

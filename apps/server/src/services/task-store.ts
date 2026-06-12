@@ -172,10 +172,14 @@ const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
     ? rawAttachments.map(normalizeTaskPromptAttachment).filter((attachment): attachment is TaskPromptAttachment => attachment !== null)
     : [];
   const sessionId = typeof message.sessionId === "string" && message.sessionId.trim().length > 0 ? message.sessionId : null;
+  const queueState = message.queueState === "pending" ? "pending" : null;
+  const queueSource = message.queueSource === "github" ? "github" : message.queueSource === "user" ? "user" : null;
 
   return {
     ...message,
     action: normalizeTaskMessageAction(message.action),
+    ...(queueState !== null || "queueState" in message ? { queueState } : {}),
+    ...(queueSource !== null || "queueSource" in message ? { queueSource } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
     ...(sessionId !== null || "sessionId" in message ? { sessionId } : {})
   };
@@ -245,6 +249,7 @@ export interface ListTasksOptions {
 
 export interface CreateTaskRunInput {
   action: TaskAction;
+  promptMessageId?: string | null;
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride: string | null;
@@ -277,6 +282,7 @@ export type UpdateTaskRunPatch = Partial<
     | "changeProposalUntrackedPaths"
     | "hasRawJson"
     | "timelineEvents"
+    | "promptMessageId"
   >
 >;
 
@@ -284,6 +290,8 @@ export interface AppendTaskMessageInput {
   role: TaskMessage["role"];
   content: string;
   action?: TaskMessage["action"];
+  queueState?: TaskMessage["queueState"];
+  queueSource?: TaskMessage["queueSource"];
   attachments?: TaskPromptAttachment[];
   sessionId?: string | null;
 }
@@ -367,6 +375,11 @@ export interface TaskStore {
   appendMessage(taskId: string, input: AppendTaskMessageInput): Promise<TaskMessage | null>;
   updateMessage(taskId: string, messageId: string, content: string): Promise<TaskMessage | null>;
   setMessageAttachments(taskId: string, messageId: string, attachments: TaskPromptAttachment[]): Promise<TaskMessage | null>;
+  listPendingActionMessages(taskId: string): Promise<TaskMessage[]>;
+  getNextPendingActionMessage(taskId: string): Promise<TaskMessage | null>;
+  hasPendingActionMessage(taskId: string): Promise<boolean>;
+  consumePendingActionMessage(taskId: string, messageId: string): Promise<TaskMessage | null>;
+  deletePendingActionMessage(taskId: string, messageId: string): Promise<boolean>;
   markQueuedForAction(taskId: string, action: TaskAction): Promise<Task | null>;
   setExecutionState(
     taskId: string,
@@ -489,6 +502,15 @@ export class RedisTaskStore implements TaskStore {
 
   private taskMessageKey(taskId: string): string {
     return `${TASK_MESSAGE_KEY_PREFIX}${taskId}`;
+  }
+
+  private async rewriteTaskMessages(taskId: string, messages: TaskMessage[]): Promise<void> {
+    const pipeline = this.redis.multi().del(this.taskMessageKey(taskId));
+    if (messages.length > 0) {
+      pipeline.rpush(this.taskMessageKey(taskId), ...messages.map((message) => JSON.stringify(message)));
+      pipeline.ltrim(this.taskMessageKey(taskId), -MAX_MESSAGES, -1);
+    }
+    await pipeline.exec();
   }
 
   private taskRunKey(runId: string): string {
@@ -911,6 +933,7 @@ export class RedisTaskStore implements TaskStore {
     taskId: string,
     input: {
       action: TaskAction;
+      promptMessageId?: string | null;
       provider: AgentProvider;
       providerProfile: ProviderProfile;
       modelOverride: string | null;
@@ -926,6 +949,7 @@ export class RedisTaskStore implements TaskStore {
       id: nanoid(),
       taskId,
       action: input.action,
+      promptMessageId: input.promptMessageId ?? null,
       provider: input.provider,
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,
@@ -1053,6 +1077,8 @@ export class RedisTaskStore implements TaskStore {
       role: input.role,
       content: input.content,
       action: input.action ?? null,
+      ...(input.queueState !== undefined ? { queueState: input.queueState ?? null } : {}),
+      ...(input.queueSource !== undefined ? { queueSource: input.queueSource ?? null } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(input.sessionId !== undefined ? { sessionId: input.sessionId ?? null } : {}),
       createdAt: nowIso()
@@ -1068,6 +1094,111 @@ export class RedisTaskStore implements TaskStore {
       payload: message
     });
     return message;
+  }
+
+  async listPendingActionMessages(taskId: string): Promise<TaskMessage[]> {
+    const rawMessages = await this.redis.lrange(this.taskMessageKey(taskId), 0, -1);
+    return rawMessages
+      .map((raw) => {
+        try {
+          return normalizeTaskMessage(JSON.parse(raw) as TaskMessage);
+        } catch {
+          return null;
+        }
+      })
+      .filter((message): message is TaskMessage => message !== null)
+      .filter((message) => message.role === "user" && (message.action === "ask" || message.action === "build") && message.queueState === "pending");
+  }
+
+  async getNextPendingActionMessage(taskId: string): Promise<TaskMessage | null> {
+    const messages = await this.listPendingActionMessages(taskId);
+    return messages[0] ?? null;
+  }
+
+  async hasPendingActionMessage(taskId: string): Promise<boolean> {
+    return (await this.getNextPendingActionMessage(taskId)) !== null;
+  }
+
+  async consumePendingActionMessage(taskId: string, messageId: string): Promise<TaskMessage | null> {
+    const rawMessages = await this.redis.lrange(this.taskMessageKey(taskId), 0, -1);
+    if (rawMessages.length === 0) {
+      return null;
+    }
+
+    let updatedMessage: TaskMessage | null = null;
+    const nextMessages = rawMessages.map((raw) => {
+      try {
+        const message = normalizeTaskMessage(JSON.parse(raw) as TaskMessage);
+        if (message.id !== messageId) {
+          return message;
+        }
+        if (message.queueState !== "pending" || message.role !== "user" || (message.action !== "ask" && message.action !== "build")) {
+          return message;
+        }
+        updatedMessage = {
+          ...message,
+          queueState: null
+        };
+        return updatedMessage;
+      } catch {
+        return null;
+      }
+    });
+
+    if (!updatedMessage) {
+      return null;
+    }
+
+    await this.rewriteTaskMessages(taskId, nextMessages.filter((message): message is TaskMessage => message !== null));
+    await this.eventBus.publish({
+      type: "task:message_updated",
+      payload: updatedMessage
+    });
+    return updatedMessage;
+  }
+
+  async deletePendingActionMessage(taskId: string, messageId: string): Promise<boolean> {
+    const rawMessages = await this.redis.lrange(this.taskMessageKey(taskId), 0, -1);
+    if (rawMessages.length === 0) {
+      return false;
+    }
+
+    let deleted = false;
+    const nextMessages = rawMessages
+      .map((raw) => {
+        try {
+          return normalizeTaskMessage(JSON.parse(raw) as TaskMessage);
+        } catch {
+          return null;
+        }
+      })
+      .filter((message): message is TaskMessage => {
+        if (message === null) {
+          return false;
+        }
+        if (message.id !== messageId) {
+          return true;
+        }
+        if (message.queueState !== "pending" || message.role !== "user" || (message.action !== "ask" && message.action !== "build")) {
+          return true;
+        }
+        deleted = true;
+        return false;
+      });
+
+    if (!deleted) {
+      return false;
+    }
+
+    await this.rewriteTaskMessages(taskId, nextMessages);
+    await this.eventBus.publish({
+      type: "task:message_deleted",
+      payload: {
+        taskId,
+        messageId
+      }
+    });
+    return true;
   }
 
   async updateMessage(taskId: string, messageId: string, content: string): Promise<TaskMessage | null> {
@@ -2250,6 +2381,7 @@ export class PostgresTaskStore implements TaskStore {
       id: nanoid(),
       taskId,
       action: input.action,
+      promptMessageId: input.promptMessageId ?? null,
       provider: input.provider,
       providerProfile: input.providerProfile,
       modelOverride: input.modelOverride,
@@ -2365,6 +2497,8 @@ export class PostgresTaskStore implements TaskStore {
       role: input.role,
       content: input.content,
       action: input.action ?? null,
+      ...(input.queueState !== undefined ? { queueState: input.queueState ?? null } : {}),
+      ...(input.queueSource !== undefined ? { queueSource: input.queueSource ?? null } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(input.sessionId !== undefined ? { sessionId: input.sessionId ?? null } : {}),
       createdAt: nowIso()
@@ -2385,6 +2519,90 @@ export class PostgresTaskStore implements TaskStore {
       payload: message
     });
     return message;
+  }
+
+  async listPendingActionMessages(taskId: string): Promise<TaskMessage[]> {
+    const result = await this.pool.query(
+      `
+        SELECT message_data
+        FROM task_messages
+        WHERE task_id = $1
+        ORDER BY created_at ASC, message_id ASC
+      `,
+      [taskId]
+    );
+    return result.rows
+      .map((row) => normalizeTaskMessage(parseJsonColumn<TaskMessage>(row.message_data)))
+      .filter((message) => message.role === "user" && (message.action === "ask" || message.action === "build") && message.queueState === "pending");
+  }
+
+  async getNextPendingActionMessage(taskId: string): Promise<TaskMessage | null> {
+    const messages = await this.listPendingActionMessages(taskId);
+    return messages[0] ?? null;
+  }
+
+  async hasPendingActionMessage(taskId: string): Promise<boolean> {
+    return (await this.getNextPendingActionMessage(taskId)) !== null;
+  }
+
+  async consumePendingActionMessage(taskId: string, messageId: string): Promise<TaskMessage | null> {
+    const result = await this.pool.query(
+      "SELECT message_data FROM task_messages WHERE task_id = $1 AND message_id = $2",
+      [taskId, messageId]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+
+    const message = normalizeTaskMessage(parseJsonColumn<TaskMessage>(row.message_data));
+    if (message.queueState !== "pending" || message.role !== "user" || (message.action !== "ask" && message.action !== "build")) {
+      return null;
+    }
+
+    const updatedMessage: TaskMessage = {
+      ...message,
+      queueState: null
+    };
+
+    await this.pool.query(
+      "UPDATE task_messages SET message_data = $3::jsonb WHERE task_id = $1 AND message_id = $2",
+      [taskId, messageId, JSON.stringify(updatedMessage)]
+    );
+    await this.eventBus.publish({
+      type: "task:message_updated",
+      payload: updatedMessage
+    });
+    return updatedMessage;
+  }
+
+  async deletePendingActionMessage(taskId: string, messageId: string): Promise<boolean> {
+    const result = await this.pool.query(
+      "SELECT message_data FROM task_messages WHERE task_id = $1 AND message_id = $2",
+      [taskId, messageId]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return false;
+    }
+
+    const message = normalizeTaskMessage(parseJsonColumn<TaskMessage>(row.message_data));
+    if (message.queueState !== "pending" || message.role !== "user" || (message.action !== "ask" && message.action !== "build")) {
+      return false;
+    }
+
+    await this.pool.query(
+      "DELETE FROM task_messages WHERE task_id = $1 AND message_id = $2",
+      [taskId, messageId]
+    );
+    await this.eventBus.publish({
+      type: "task:message_deleted",
+      payload: {
+        taskId,
+        messageId
+      }
+    });
+    return true;
   }
 
   async updateMessage(taskId: string, messageId: string, content: string): Promise<TaskMessage | null> {

@@ -351,9 +351,17 @@ export const registerTaskRoutes = (
       return { ok: false, message: mutationResult.message };
     }
     const refreshedTask = (await deps.taskStore.getTask(task.id)) ?? task;
+    if (
+      refreshedTask.executionStatus === "idle" &&
+      !(await deps.taskStore.hasPendingChangeProposal(task.id)) &&
+      !(await deps.taskStore.getActiveInteractiveSession(task.id))
+    ) {
+      await deps.scheduler.triggerNextPendingAction(task.id, "auto");
+    }
+    const finalTask = (await deps.taskStore.getTask(task.id)) ?? refreshedTask;
     return {
       ok: true,
-      task: await withBranchSyncCounts(deps.spawner, refreshedTask)
+      task: await withBranchSyncCounts(deps.spawner, finalTask)
     };
   };
 
@@ -1242,10 +1250,10 @@ export const registerTaskRoutes = (
       return;
     }
 
-    const allowParallelAsk =
-      parsed.data.action === "ask" &&
-      task.executionStatus === "running" &&
-      (task.executionAction === "build" || task.executionAction === "ask");
+    if (await deps.taskStore.hasPendingActionMessage(task.id)) {
+      return reply.status(409).send({ message: "Run or remove queued follow-ups before starting another direct action." });
+    }
+
     const actionStartResult = await orchestrateTaskActionStart(
       {
         taskStore: deps.taskStore,
@@ -1254,10 +1262,8 @@ export const registerTaskRoutes = (
       {
         task,
         action: parsed.data.action,
-        allowParallelAsk,
         busyMessage: "Task is already running",
-        triggerRejectedMessage: "Task is already running",
-        capacityMessage: "No agent capacity is available for a parallel ask right now."
+        triggerRejectedMessage: "Task is already running"
       }
     );
     if (!actionStartResult.ok) {
@@ -1707,27 +1713,15 @@ export const registerTaskRoutes = (
       return;
     }
 
-    const allowParallelAsk =
-      action === "ask" &&
-      task.executionStatus === "running" &&
-      (task.executionAction === "build" || task.executionAction === "ask");
-
-    // comments are treated as read-only messages; ask can also run in parallel with another ask/build.
-    if (
-      action !== "comment" &&
-      (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") &&
-      !allowParallelAsk
-    ) {
-      return reply.status(409).send({ message: "Task is already running" });
-    }
-
-    if (allowParallelAsk && !(await deps.scheduler.hasExecutionCapacity())) {
-      return reply.status(409).send({ message: "No agent capacity is available for a parallel ask right now." });
-    }
+    const isBusy =
+      task.executionStatus === "queued" ||
+      task.executionStatus === "preparing" ||
+      task.executionStatus === "running";
+    const hasOlderPendingActionMessages = action !== "comment" ? await deps.taskStore.hasPendingActionMessage(task.id) : false;
 
     if (action !== "comment") {
       const blocked = await getMutationBlocked(deps.taskStore, task.id);
-      if (blocked) {
+      if (blocked?.code === "active_terminal_session") {
         return replyWithMutationBlocked(reply, blocked);
       }
     }
@@ -1742,10 +1736,11 @@ export const registerTaskRoutes = (
       }
     }
 
-    await deps.taskStore.appendMessage(task.id, {
+    const createdMessage = await deps.taskStore.appendMessage(task.id, {
       role: "user",
       action,
       content: parsed.data.content,
+      ...(action !== "comment" ? { queueState: "pending" as const, queueSource: "user" as const } : {}),
       attachments: persistedAttachments
     });
 
@@ -1754,17 +1749,90 @@ export const registerTaskRoutes = (
       return reply.send(refreshed);
     }
 
-    const accepted = await deps.scheduler.triggerAction(task.id, action, {
-      content: parsed.data.content,
-      ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
-    });
-    if (!accepted) {
-      return reply.status(409).send({ message: "Task execution could not be started" });
+    const canStartImmediately =
+      task.executionStatus === "idle" &&
+      !isBusy &&
+      !hasOlderPendingActionMessages &&
+      !(await deps.taskStore.hasPendingChangeProposal(task.id));
+
+    if (canStartImmediately && createdMessage) {
+      await deps.scheduler.triggerAction(
+        task.id,
+        action,
+        {
+          content: parsed.data.content,
+          ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
+        },
+        {
+          promptMessageId: createdMessage.id
+        }
+      );
     }
 
     const refreshed = await deps.taskStore.getTask(task.id);
     return reply.send(refreshed);
   });
+
+  app.delete<{ Params: { id: string; messageId: string } }>(
+    "/tasks/:id/messages/:messageId/queue",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const nextPendingBeforeDelete = await deps.taskStore.getNextPendingActionMessage(task.id);
+      const deleted = await deps.taskStore.deletePendingActionMessage(task.id, request.params.messageId);
+      if (!deleted) {
+        return reply.status(409).send({ message: "Queued follow-up could not be removed." });
+      }
+
+      if (task.executionStatus === "queued" && nextPendingBeforeDelete?.id === request.params.messageId) {
+        await deps.taskQueueStore.removeTask(task.id);
+        await deps.taskStore.setExecutionState(task.id, "idle", {
+          enqueued: false,
+          executionAction: null,
+          errorMessage: null
+        });
+        await deps.scheduler.triggerNextPendingAction(task.id, "auto");
+      }
+
+      const refreshed = await deps.taskStore.getTask(task.id);
+      return reply.send(refreshed);
+    }
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/tasks/:id/queue/run-next",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      if (task.executionStatus !== "failed" && task.executionStatus !== "cancelled") {
+        return reply.status(409).send({ message: "The task queue is not paused after a failed or cancelled run." });
+      }
+
+      const accepted = await deps.scheduler.triggerNextPendingAction(task.id, "manual");
+      if (!accepted) {
+        return reply.status(409).send({ message: "No queued follow-up is ready to run." });
+      }
+
+      const refreshed = await deps.taskStore.getTask(task.id);
+      return reply.send(refreshed);
+    }
+  );
 
   app.patch<{ Params: { id: string; messageId: string } }>(
     "/tasks/:id/messages/:messageId",
@@ -2164,6 +2232,10 @@ export const registerTaskRoutes = (
     const action = getTriggerActionForNewTask(task);
     if (!requireTaskActionCapabilityAccess(request, reply, action)) {
       return;
+    }
+
+    if (await deps.taskStore.hasPendingActionMessage(task.id)) {
+      return reply.status(409).send({ message: "Run or remove queued follow-ups before starting another direct action." });
     }
 
     const accepted = await deps.scheduler.triggerAction(task.id, action);

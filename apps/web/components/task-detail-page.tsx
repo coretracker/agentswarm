@@ -2234,19 +2234,26 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive" && selectedChatAction !== "terminal";
   const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived" || task.status === "draft";
   const promptMagicVisible = (selectedChatAction === "build" || selectedChatAction === "ask") && canCreateTask;
-  const parallelAskAllowed =
-    selectedChatAction === "ask" &&
-    task?.executionStatus === "running" &&
-    (task.executionAction === "build" || task.executionAction === "ask");
-  const autoRunStartBlocked =
-    selectedChatAction !== "comment" && (!!pendingChangeProposal || ((isQueued || isActive) && !parallelAskAllowed));
+  const autoRunStartBlocked = false;
   const chatDisabled = chatClosed || interactiveTerminalRunning || autoRunStartBlocked;
   const chatInputDisabled = chatClosed || interactiveTerminalRunning || interactiveComposerSelected || terminalComposerSelected;
   const canUsePromptMagic = promptMagicVisible && !chatInputDisabled;
   const promptMagicDisabled = !canUsePromptMagic || chatInput.trim().length === 0 || taskPromptMagicLoading;
   const canAttachPromptImages = selectedChatAction === "build" || selectedChatAction === "ask";
   const promptImageAttachmentDisabled = chatClosed || interactiveTerminalRunning || !canAttachPromptImages;
+  const pendingQueuedMessages = useMemo(
+    () =>
+      taskMessages.filter(
+        (message) => message.role === "user" && (message.action === "ask" || message.action === "build") && message.queueState === "pending"
+      ),
+    [taskMessages]
+  );
   const draftActionLabel = taskActionLabel[selectedChatAction].toLowerCase();
+  const willQueueSubmittedMessage =
+    selectedChatAction !== "comment" &&
+    selectedChatAction !== "interactive" &&
+    selectedChatAction !== "terminal" &&
+    (pendingChangeProposal !== null || isQueued || isActive || pendingQueuedMessages.length > 0);
   const chatPlaceholder = (() => {
     if (interactiveTerminalRunning) {
       return `A ${activeTerminalSentenceLabel.toLowerCase()} session is already running for this task. Close or end it before sending from here.`;
@@ -2275,13 +2282,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return "Describe the next implementation change for this branch. Claude will receive the selected image file paths in the prompt.";
     }
     if (pendingChangeProposal) {
-      return `Draft the next ${draftActionLabel} while you review the pending checkpoint. Start is available again after you apply or reject it.`;
-    }
-    if (parallelAskAllowed) {
-      return "Ask a repository question while the current run keeps working. This ask will start immediately.";
+      return `Queue the next ${draftActionLabel} while you review the pending checkpoint. It will start automatically after you apply or reject it.`;
     }
     if (isQueued || isActive) {
-      return `Draft the next ${draftActionLabel} while the current run finishes. Start becomes available when the task is ready.`;
+      return `Queue the next ${draftActionLabel} while the current run finishes. It will start automatically when the task is ready.`;
     }
     if (selectedChatAction === "ask") {
       return "Ask a repository question or refine the last answer";
@@ -2315,6 +2319,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     () => chatTimeline,
     [chatTimeline]
   );
+  const queuePausedAfterFailure = Boolean(task && (task.executionStatus === "failed" || task.executionStatus === "cancelled") && pendingQueuedMessages.length > 0);
+  const canRunNextQueuedItem = canEditTask && !!task && !isArchived && queuePausedAfterFailure;
   const historyTotalCount = historicalChatTimeline.length;
   const loadedHistoryPageCount = Math.max(1, Math.ceil(Math.max(0, historyTotalCount) / HISTORY_PAGE_SIZE));
   const hasActiveTerminalHistoryEntry = activeTerminalHistoryEntry !== null;
@@ -2491,7 +2497,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       : chatDisabled ||
           (selectedChatActionRequiresPrompt && chatInput.trim().length === 0) ||
           (selectedPromptImageFiles.length > 0 && !canAttachPromptImages);
-  const chatSubmitLabel = selectedChatAction === "comment" ? "Add Comment" : "Start";
+  const chatSubmitLabel =
+    selectedChatAction === "comment" ? "Add Comment" : selectedChatActionRequiresPrompt && willQueueSubmittedMessage ? "Queue" : "Start";
   const handleConfirmClearComposer = () => {
     setSelectedSnippetId(null);
     setSnippetVariableModalOpen(false);
@@ -2574,9 +2581,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       messageApi.success(
         selectedChatAction === "comment"
           ? "Comment added to history"
-          : parallelAskAllowed && selectedChatAction === "ask"
-            ? "Ask started from history"
-            : `${taskActionLabel[selectedChatAction]} queued from history`
+          : willQueueSubmittedMessage
+            ? `${taskActionLabel[selectedChatAction]} follow-up queued`
+            : `${taskActionLabel[selectedChatAction]} started`
       );
     } catch (error) {
       showTaskActionError(error, "Task execution could not be started");
@@ -2634,6 +2641,54 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setIsDeletingTask(false);
       setRedirectingToTaskList(false);
       showTaskActionError(error, "Failed to delete task");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+  const handleRemoveQueuedMessage = async (messageId: string) => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("message");
+    try {
+      const updatedTask = await api.deletePendingTaskMessage(task.id, messageId);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success("Queued follow-up removed");
+    } catch (error) {
+      showTaskActionError(error, "Queued follow-up could not be removed");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+  const handleRunNextQueuedItem = async () => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("message");
+    try {
+      const updatedTask = await api.runNextQueuedTaskMessage(task.id);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success("Next queued follow-up started");
+    } catch (error) {
+      showTaskActionError(error, "Next queued follow-up could not be started");
     } finally {
       setSubmitting(null);
     }
@@ -5038,6 +5093,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : "rgba(107,143,163,0.08)";
     const isCompactMessage = entryMessage.role === "user";
     const canEditCommentMessage = canEditTask && !isArchived && entryMessage.role === "user" && entryMessage.action === "comment";
+    const isPendingQueuedFollowUp =
+      entryMessage.role === "user" &&
+      (entryMessage.action === "ask" || entryMessage.action === "build") &&
+      entryMessage.queueState === "pending";
 
     return (
       <Flex key={entryKey}>
@@ -5057,13 +5116,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                     {entryMessage.role}
                   </Tag>
                   {entryMessage.action ? <Tag style={{ marginInlineEnd: 0 }}>{taskActionLabel[entryMessage.action]}</Tag> : null}
+                  {isPendingQueuedFollowUp ? <Tag color="gold">Queued</Tag> : null}
                   <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
                 </Space>
-                {canEditCommentMessage ? (
-                  <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openCommentEditModal(entryMessage)}>
-                    Edit
-                  </Button>
-                ) : null}
+                <Space size={4}>
+                  {isPendingQueuedFollowUp ? (
+                    <Popconfirm
+                      title="Remove queued follow-up?"
+                      description="This pending follow-up has not started yet."
+                      onConfirm={() => void handleRemoveQueuedMessage(entryMessage.id)}
+                      okText="Remove"
+                    >
+                      <Button size="small" type="text" icon={<RollbackOutlined />} loading={submitting === "message"}>
+                        Remove
+                      </Button>
+                    </Popconfirm>
+                  ) : null}
+                  {canEditCommentMessage ? (
+                    <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openCommentEditModal(entryMessage)}>
+                      Edit
+                    </Button>
+                  ) : null}
+                </Space>
               </Flex>
               <div>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
@@ -5958,6 +6032,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                               loading={submitting === "cancel"}
                             >
                               Cancel
+                            </Button>
+                          ) : null}
+                          {canRunNextQueuedItem ? (
+                            <Button
+                              onClick={() => void handleRunNextQueuedItem()}
+                              icon={<ArrowRightOutlined />}
+                              loading={submitting === "message"}
+                            >
+                              Run Next Queued Item
                             </Button>
                           ) : null}
 

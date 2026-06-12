@@ -9,6 +9,11 @@ interface TaskDeletedPayload {
   id: string;
 }
 
+interface TaskMessageDeletedPayload {
+  taskId: string;
+  messageId: string;
+}
+
 const HISTORY_PAGE_SIZE = 25;
 
 const sortMessages = (items: TaskMessage[]): TaskMessage[] => [...items].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -109,6 +114,14 @@ export const useTaskMessages = (taskId: string) => {
       setMessages((current) => mergeMessages(current, [message]));
     };
 
+    const onTaskMessageDeleted = (payload: TaskMessageDeletedPayload) => {
+      if (payload.taskId !== taskId) {
+        return;
+      }
+
+      setMessages((current) => current.filter((message) => message.id !== payload.messageId));
+    };
+
     const onTaskDelete = (payload: TaskDeletedPayload) => {
       if (payload.id !== taskId) {
         return;
@@ -121,12 +134,14 @@ export const useTaskMessages = (taskId: string) => {
     socket.on("connect", onConnect);
     socket.on("task:message", onTaskMessage);
     socket.on("task:message_updated", onTaskMessageUpdated);
+    socket.on("task:message_deleted", onTaskMessageDeleted);
     socket.on("task:deleted", onTaskDelete);
 
     return () => {
       socket.off("connect", onConnect);
       socket.off("task:message", onTaskMessage);
       socket.off("task:message_updated", onTaskMessageUpdated);
+      socket.off("task:message_deleted", onTaskMessageDeleted);
       socket.off("task:deleted", onTaskDelete);
     };
   }, [refetch, socket, taskId]);

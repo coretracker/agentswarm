@@ -24,9 +24,7 @@ export interface OrchestrateTaskActionOptions {
   task: Task;
   action: TaskAction;
   input?: TaskExecutionInput;
-  allowParallelAsk?: boolean;
   busyMessage?: string;
-  capacityMessage?: string;
   triggerRejectedMessage?: string;
 }
 
@@ -90,21 +88,12 @@ export async function orchestrateTaskActionStart(
 
   if (
     ((options.task.executionStatus === "queued" || options.task.executionStatus === "preparing" || options.task.executionStatus === "running") ||
-      isActiveTaskStatus(options.task.status)) &&
-    options.allowParallelAsk !== true
+      isActiveTaskStatus(options.task.status))
   ) {
     return {
       ok: false,
       statusCode: 409,
       message: options.busyMessage ?? "Task is already running"
-    };
-  }
-
-  if (options.allowParallelAsk === true && !(await deps.scheduler.hasExecutionCapacity())) {
-    return {
-      ok: false,
-      statusCode: 409,
-      message: options.capacityMessage ?? "No agent capacity is available for a parallel ask right now."
     };
   }
 

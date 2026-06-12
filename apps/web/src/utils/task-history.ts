@@ -128,6 +128,7 @@ export function buildTaskHistoryEntries(input: {
 
   const autoPromptCandidates = sortedMessages.filter(isAutoPromptMessage);
   const autoAssistantCandidates = sortedMessages.filter(isAssistantSummaryMessage);
+  const autoPromptById = new Map(autoPromptCandidates.map((message) => [message.id, message]));
   const promptQueues: Record<AutoRunAction, TaskMessage[]> = { ask: [], build: [] };
   let promptCursor = 0;
 
@@ -153,7 +154,18 @@ export function buildTaskHistoryEntries(input: {
       promptCursor += 1;
     }
 
-    const promptMessage = promptQueues[run.action].shift() ?? null;
+    let promptMessage: TaskMessage | null = null;
+    if (run.promptMessageId && autoPromptById.has(run.promptMessageId) && !consumedMessageIds.has(run.promptMessageId)) {
+      const explicitPrompt = autoPromptById.get(run.promptMessageId) ?? null;
+      if (explicitPrompt?.action === run.action) {
+        promptMessage = explicitPrompt;
+        promptQueues[run.action] = promptQueues[run.action].filter((message) => message.id !== explicitPrompt.id);
+      }
+    }
+
+    if (!promptMessage) {
+      promptMessage = promptQueues[run.action].shift() ?? null;
+    }
     if (promptMessage) {
       consumedMessageIds.add(promptMessage.id);
     }

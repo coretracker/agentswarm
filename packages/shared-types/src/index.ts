@@ -643,6 +643,8 @@ export interface TaskMessage {
   role: TaskMessageRole;
   content: string;
   action: TaskMessageAction | null;
+  queueState?: "pending" | null;
+  queueSource?: "user" | "github" | null;
   /** Optional saved image attachments that were attached when the user submitted this message. */
   attachments?: TaskPromptAttachment[];
   /** Present for interactive terminal lifecycle messages so history can address the terminal session. */
@@ -699,6 +701,7 @@ export interface TaskRun {
   id: string;
   taskId: string;
   action: TaskAction;
+  promptMessageId?: string | null;
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride: string | null;
@@ -1372,6 +1375,14 @@ export interface TaskMessageUpdatedEvent {
   payload: TaskMessage;
 }
 
+export interface TaskMessageDeletedEvent {
+  type: "task:message_deleted";
+  payload: {
+    taskId: string;
+    messageId: string;
+  };
+}
+
 export interface TaskRunEvent {
   type: "task:run_updated";
   payload: TaskRun;
@@ -1431,6 +1442,7 @@ export type RealtimeEvent =
   | TaskLogEvent
   | TaskMessageEvent
   | TaskMessageUpdatedEvent
+  | TaskMessageDeletedEvent
   | TaskRunEvent
   | TaskGitOperationEvent
   | TaskChangeProposalEvent

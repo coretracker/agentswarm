@@ -5032,7 +5032,7 @@ export class SpawnerService {
     }
   }
 
-  async runTask(task: Task, action: TaskAction, input?: TaskExecutionInput | string): Promise<void> {
+  async runTask(task: Task, action: TaskAction, input?: TaskExecutionInput | string, promptMessageId: string | null = null): Promise<void> {
     this.cancelRequestedTaskIds.delete(task.id);
     const [settings, runtimeCredentialsRaw, repositoryRuntimeEnvEntries, responsePreferenceUser, gitIdentity] = await Promise.all([
       this.settingsStore.getSettings(),
@@ -5067,6 +5067,7 @@ export class SpawnerService {
     try {
       const run = await this.taskStore.createRun(task.id, {
         action,
+        promptMessageId,
         provider: task.provider,
         providerProfile: task.providerProfile,
         modelOverride: task.modelOverride,

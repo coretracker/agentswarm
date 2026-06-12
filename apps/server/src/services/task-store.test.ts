@@ -202,6 +202,44 @@ describe("TaskStore.appendMessage", () => {
   });
 });
 
+describe("TaskStore pending action messages", () => {
+  it("lists, consumes, and deletes pending follow-up messages", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
+
+    const queuedAsk = await taskStore.appendMessage(task.id, {
+      role: "user",
+      action: "ask",
+      content: "Explain the current diff",
+      queueState: "pending",
+      queueSource: "user"
+    });
+    await taskStore.appendMessage(task.id, {
+      role: "user",
+      action: "build",
+      content: "Apply the feedback",
+      queueState: "pending",
+      queueSource: "user"
+    });
+
+    const pendingBeforeConsume = await taskStore.listPendingActionMessages(task.id);
+    assert.equal(pendingBeforeConsume.length, 2);
+    assert.equal((await taskStore.getNextPendingActionMessage(task.id))?.id, queuedAsk?.id);
+
+    const consumed = await taskStore.consumePendingActionMessage(task.id, queuedAsk!.id);
+    assert.equal(consumed?.queueState, null);
+    assert.equal((await taskStore.listPendingActionMessages(task.id)).length, 1);
+
+    const remaining = await taskStore.getNextPendingActionMessage(task.id);
+    assert.ok(remaining);
+    assert.equal(await taskStore.deletePendingActionMessage(task.id, remaining!.id), true);
+    assert.equal(await taskStore.hasPendingActionMessage(task.id), false);
+  });
+});
+
 describe("TaskStore.createTask", () => {
   it("creates new build tasks in the build queue", async () => {
     const redis = new FakeRedis();

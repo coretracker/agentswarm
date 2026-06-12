@@ -34,6 +34,7 @@ const normalizeQueueEntryInput = (input: unknown): TaskExecutionInput | undefine
 
 export interface QueueEntry {
   taskId: string;
+  promptMessageId?: string | null;
   reason: QueueReason;
   action: TaskAction;
   input?: TaskExecutionInput;
@@ -105,6 +106,7 @@ export class RedisTaskQueueStore implements TaskQueueStore {
       ) {
         return {
           ...parsed,
+          promptMessageId: typeof parsed.promptMessageId === "string" && parsed.promptMessageId.trim().length > 0 ? parsed.promptMessageId : null,
           input: normalizeQueueEntryInput(parsed.input)
         };
       }

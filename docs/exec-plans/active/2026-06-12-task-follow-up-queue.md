@@ -94,15 +94,15 @@
 - Repository Research Complete: Yes
 - Uncertainties Logged: Yes
 - Human Review Completed: Yes
-- User Approval To Start: Pending implementation request
-- Baseline Checks Run: Not run in planning-only phase
+- User Approval To Start: Yes
+- Baseline Checks Run: Yes
 - Visible Task List Updated: Yes
-- Task-Level Tests/Lint/Build: Not run in planning-only phase
-- Self Review Complete: N/A in planning-only phase
-- Code Review Complete: N/A in planning-only phase
-- Final Verification Complete: N/A in planning-only phase
+- Task-Level Tests/Lint/Build: In progress
+- Self Review Complete: In progress
+- Code Review Complete: N/A
+- Final Verification Complete: In progress
 - Security/Privacy Review Complete: N/A in planning-only phase
-- Docs/Changelog Updated: Plan only
+- Docs/Changelog Updated: Plan updated during implementation
 
 ## Validation Commands
 - `node --import tsx --test apps/server/src/services/scheduler.test.ts`
@@ -128,6 +128,9 @@
 - 2026-06-12 00:00 UTC: Reviewed task message route, scheduler, task store, realtime hooks, and task history assembly to map the current execution path.
 - 2026-06-12 00:00 UTC: Confirmed product decisions for v1: always queue follow-ups on busy tasks, FIFO per task, auto-resume after checkpoint resolution, append/remove queue controls only, show pending items in history, pause after failure/cancel, and explicit resume via `Run next queued item`.
 - 2026-06-12 00:00 UTC: Produced decision-complete implementation plan.
+- 2026-06-12 09:45 UTC: Implemented message-backed queue metadata, prompt-to-run linkage, queue-aware scheduler entries, queue pause/resume routes, and task-detail queue controls.
+- 2026-06-12 10:05 UTC: Added targeted tests for task-store pending messages, task-history prompt linkage, and scheduler queued-prompt consumption/auto-advance.
+- 2026-06-12 10:15 UTC: Verified `@agentswarm/server` TypeScript build/lint, verified `@agentswarm/web` production build, and re-ran focused server/web tests. Known unrelated failures remain in docs checks and the sandboxed `spawner.workspace-provisioning` test.
 
 ## Decisions
 - 2026-06-12: Queue scope is per task, not global.
@@ -139,5 +142,6 @@
 - 2026-06-12: The current parallel-ask exception is removed so in-task queue order stays strict.
 
 ## Completion Notes
-- Planning complete.
-- Ready for implementation.
+- Implementation in progress.
+- Core queue behavior is wired through server, realtime, and task detail UI.
+- Final verification and self-review are still pending before merge.

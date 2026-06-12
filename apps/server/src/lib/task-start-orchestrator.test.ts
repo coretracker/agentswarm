@@ -157,31 +157,6 @@ describe("orchestrateTaskActionStart", () => {
     }
   });
 
-  it("returns capacity message for parallel ask when no capacity is available", async () => {
-    const task = createTask({ status: "building", taskType: "ask" });
-    const result = await orchestrateTaskActionStart(
-      {
-        taskStore: {
-          hasPendingChangeProposal: async () => false,
-          getActiveInteractiveSession: async () => null
-        } as never,
-        scheduler: {
-          hasExecutionCapacity: async () => false
-        } as never
-      },
-      {
-        task,
-        action: "ask",
-        allowParallelAsk: true
-      }
-    );
-
-    assert.equal(result.ok, false);
-    if (!result.ok) {
-      assert.match(result.message, /capacity/i);
-    }
-  });
-
   it("returns trigger-rejected message when scheduler refuses to start", async () => {
     const task = createTask({ status: "open" });
     const result = await orchestrateTaskActionStart(

@@ -137,6 +137,45 @@ test("groups ask runs without forcing a diff section", () => {
   assert.equal(entries[0].proposal, null);
 });
 
+test("prefers promptMessageId over timestamp matching when grouping queued follow-ups", () => {
+  const olderPrompt = createMessage({
+    id: "m1",
+    createdAt: "2026-03-24T11:59:00.000Z",
+    role: "user",
+    action: "build",
+    content: "Older follow-up"
+  });
+  const matchedPrompt = createMessage({
+    id: "m2",
+    createdAt: "2026-03-24T12:00:00.000Z",
+    role: "user",
+    action: "build",
+    content: "Run this exact follow-up"
+  });
+  const run = createRun({
+    id: "r1",
+    action: "build",
+    promptMessageId: "m2",
+    startedAt: "2026-03-24T12:01:00.000Z",
+    status: "running"
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [olderPrompt, matchedPrompt],
+    runs: [run],
+    proposals: []
+  });
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.kind, "message");
+  assert.equal(entries[1]?.kind, "grouped_auto_run");
+  if (entries[1]?.kind !== "grouped_auto_run") {
+    throw new Error("Expected grouped_auto_run");
+  }
+  assert.equal(entries[1].promptMessage?.id, "m2");
+  assert.equal(entries[1].promptText, "Run this exact follow-up");
+});
+
 test("keeps unmatched messages and proposals as raw entries when a run has no matched prompt", () => {
   const unrelatedMessage = createMessage({
     id: "m1",
