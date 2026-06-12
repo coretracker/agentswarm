@@ -132,7 +132,6 @@ const getInitialAction = (task: { taskType: Task["taskType"] }): TaskAction => (
 const normalizeLegacyTaskType = (taskType: string | null | undefined): Task["taskType"] => (taskType === "ask" ? "ask" : "build");
 const currentTaskStatuses = new Set<TaskStatus>([
   "draft",
-  "scheduled",
   "build_queued",
   "preparing_workspace",
   "building",
@@ -185,7 +184,6 @@ const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
 const normalizeTaskExecutionStatus = (value: unknown, fallbackTask: Pick<Task, "status" | "activeInteractiveSession">): TaskExecutionStatus => {
   if (
     value === "idle" ||
-    value === "scheduled" ||
     value === "queued" ||
     value === "preparing" ||
     value === "running" ||
@@ -431,8 +429,6 @@ export class RedisTaskStore implements TaskStore {
       notes?: string;
       taskSource?: Task["taskSource"];
       snippetId?: string;
-      scheduledStartAt?: string | null;
-      scheduledEndAt?: string | null;
     };
     const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
     delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
@@ -465,14 +461,6 @@ export class RedisTaskStore implements TaskStore {
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
       resultMarkdown: legacyTask.resultMarkdown ?? null,
       lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
-      scheduledStartAt:
-        typeof legacyTask.scheduledStartAt === "string" && legacyTask.scheduledStartAt.trim().length > 0
-          ? legacyTask.scheduledStartAt
-          : null,
-      scheduledEndAt:
-        typeof legacyTask.scheduledEndAt === "string" && legacyTask.scheduledEndAt.trim().length > 0
-          ? legacyTask.scheduledEndAt
-          : null,
       // Prefer the new prompt field; fall back to legacy requirements for older tasks.
       prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim(),
       notes: (legacyTask.notes ?? "").trim()
@@ -697,8 +685,6 @@ export class RedisTaskStore implements TaskStore {
       reviewReason: null,
       logs: [],
       enqueued: false,
-      scheduledStartAt: null,
-      scheduledEndAt: null,
       createdAt: timestamp,
       updatedAt: timestamp,
       startedAt: null,
@@ -1662,8 +1648,6 @@ export class PostgresTaskStore implements TaskStore {
       notes?: string;
       taskSource?: Task["taskSource"];
       snippetId?: string;
-      scheduledStartAt?: string | null;
-      scheduledEndAt?: string | null;
     };
     const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
     delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
@@ -1696,14 +1680,6 @@ export class PostgresTaskStore implements TaskStore {
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
       resultMarkdown: legacyTask.resultMarkdown ?? null,
       lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
-      scheduledStartAt:
-        typeof legacyTask.scheduledStartAt === "string" && legacyTask.scheduledStartAt.trim().length > 0
-          ? legacyTask.scheduledStartAt
-          : null,
-      scheduledEndAt:
-        typeof legacyTask.scheduledEndAt === "string" && legacyTask.scheduledEndAt.trim().length > 0
-          ? legacyTask.scheduledEndAt
-          : null,
       prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim(),
       notes: (legacyTask.notes ?? "").trim()
     };
@@ -2014,8 +1990,6 @@ export class PostgresTaskStore implements TaskStore {
       reviewReason: null,
       logs: [],
       enqueued: false,
-      scheduledStartAt: null,
-      scheduledEndAt: null,
       createdAt: timestamp,
       updatedAt: timestamp,
       startedAt: null,

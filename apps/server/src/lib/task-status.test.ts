@@ -32,7 +32,6 @@ describe("normalizeTaskLifecycleStatus", () => {
   });
 
   it("maps queued and active execution statuses back to open Kanban state", () => {
-    assert.equal(normalizeTaskLifecycleStatus("scheduled", "build", false), "scheduled");
     assert.equal(normalizeTaskLifecycleStatus("build_queued", "build", false), "open");
     assert.equal(normalizeTaskLifecycleStatus("asking", "ask", false), "open");
   });
@@ -64,10 +63,6 @@ describe("reconcileTaskStatusWithPendingCheckpoint", () => {
 
   it("keeps archived tasks unchanged", () => {
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("archived", true), "archived");
-  });
-
-  it("keeps scheduled tasks unchanged", () => {
-    assert.equal(reconcileTaskStatusWithPendingCheckpoint("scheduled", true), "scheduled");
   });
 
   it("keeps draft tasks unchanged", () => {

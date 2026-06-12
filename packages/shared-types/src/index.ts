@@ -64,7 +64,6 @@ export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 
 export type TaskStatus =
   | "draft"
-  | "scheduled"
   | "build_queued"
   | "preparing_workspace"
   | "building"
@@ -83,7 +82,7 @@ export type TaskStatus =
   | "failed";
 
 export type TaskWorkflowStatus = "backlog" | "ready" | "in_progress" | "review" | "done" | "archived";
-export type TaskExecutionStatus = "idle" | "scheduled" | "queued" | "preparing" | "running" | "failed" | "cancelled";
+export type TaskExecutionStatus = "idle" | "queued" | "preparing" | "running" | "failed" | "cancelled";
 export type TaskReviewReason = "checkpoint" | "answer" | "manual" | "merge" | null;
 export type TaskAction = "build" | "ask";
 export type TaskExecutionAction = TaskAction | "interactive" | "terminal" | null;
@@ -495,8 +494,6 @@ export interface Task {
   reviewReason: TaskReviewReason;
   logs: string[];
   enqueued: boolean;
-  scheduledStartAt?: string | null;
-  scheduledEndAt?: string | null;
   createdAt: string;
   updatedAt: string;
   startedAt: string | null;
@@ -1138,7 +1135,6 @@ export const getTaskExecutionStatus = (
 
   if (
     task.executionStatus === "idle" ||
-    task.executionStatus === "scheduled" ||
     task.executionStatus === "queued" ||
     task.executionStatus === "preparing" ||
     task.executionStatus === "running" ||
@@ -1146,10 +1142,6 @@ export const getTaskExecutionStatus = (
     task.executionStatus === "cancelled"
   ) {
     return task.executionStatus;
-  }
-
-  if (task.status === "scheduled") {
-    return "scheduled";
   }
 
   if (isQueuedTaskStatus(task.status)) {
@@ -1230,7 +1222,7 @@ export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingChe
     return "review";
   }
 
-  if (task.status === "draft" || task.status === "scheduled") {
+  if (task.status === "draft") {
     return "backlog";
   }
 
@@ -1269,7 +1261,6 @@ export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
 export const getTaskStatusLabel = (status: TaskStatus): string =>
   ({
     draft: "Draft",
-    scheduled: "Scheduled",
     build_queued: "Build Queued",
     preparing_workspace: "Preparing Workspace",
     building: "Building",
@@ -1301,7 +1292,6 @@ export const getTaskWorkflowStatusLabel = (status: TaskWorkflowStatus): string =
 export const getTaskExecutionStatusLabel = (status: TaskExecutionStatus): string =>
   ({
     idle: "Idle",
-    scheduled: "Scheduled",
     queued: "Queued",
     preparing: "Preparing",
     running: "Running",

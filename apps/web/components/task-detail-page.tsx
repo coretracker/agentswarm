@@ -4510,8 +4510,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     return (
       <Space direction="vertical" size={6} style={{ width: "100%" }}>
         <Flex align="flex-start" justify="space-between" gap={8} wrap="wrap">
-          <Space size={6} wrap>
-            <Typography.Text strong>{event.title}</Typography.Text>
+          <Space size={6} wrap style={{ minWidth: 0, flex: "1 1 auto" }}>
+            <Typography.Text strong style={{ whiteSpace: "normal", wordBreak: "break-word" }}>
+              {event.title}
+            </Typography.Text>
             {event.toolName ? <Tag color="blue">{event.toolName}</Tag> : null}
             {event.status ? <Tag>{event.status}</Tag> : null}
             {event.exitCode != null ? <Tag color={event.exitCode === 0 ? "green" : "red"}>exit {event.exitCode}</Tag> : null}
@@ -4682,7 +4684,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }}
       >
         <Timeline
-          mode="left"
           items={items.map((item) => ({
             key: item.id,
             color: getTimelineDisplayItemColor(item),
