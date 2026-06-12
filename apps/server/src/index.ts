@@ -195,6 +195,7 @@ const bootstrap = async (): Promise<void> => {
   });
   registerMcpRoutes(app, {
     auth,
+    githubImportService,
     repositoryStore,
     settingsStore,
     taskStore,

@@ -43,6 +43,7 @@ export const compactTask = (task: Task) => ({
   autoApplyCheckpoints: task.autoApplyCheckpoints,
   branchName: task.branchName,
   baseBranch: task.baseBranch,
+  branchStrategy: task.branchStrategy,
   updatedAt: task.updatedAt,
   createdAt: task.createdAt
 });
@@ -60,7 +61,6 @@ export const detailTask = (task: Task) => {
     providerProfile: task.providerProfile,
     modelOverride: task.modelOverride,
     codexCredentialSource: task.codexCredentialSource,
-    branchStrategy: task.branchStrategy,
     deadline: task.deadline,
     startedAt: task.startedAt,
     finishedAt: task.finishedAt,

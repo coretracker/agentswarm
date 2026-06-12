@@ -337,6 +337,7 @@ Supported MCP methods:
 Phase 1 tools:
 
 - `agentswarm_list_repositories`
+- `agentswarm_list_repository_branches`
 - `agentswarm_list_tasks`
 - `agentswarm_get_task`
 - `agentswarm_create_task`

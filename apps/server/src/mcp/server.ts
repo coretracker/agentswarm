@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AuthService } from "../lib/auth.js";
+import type { GitHubImportService } from "../services/github-import-service.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
@@ -63,6 +64,7 @@ export const registerMcpRoutes = (
   app: FastifyInstance,
   deps: {
     auth: AuthService;
+    githubImportService: GitHubImportService;
     repositoryStore: RepositoryStore;
     settingsStore: SettingsStore;
     taskStore: TaskStore;
@@ -76,6 +78,7 @@ export const registerMcpRoutes = (
   const toolDeps: McpToolDeps = {
     repositoryStore: deps.repositoryStore,
     settingsStore: deps.settingsStore,
+    githubImportService: deps.githubImportService,
     taskStore: deps.taskStore,
     taskQueueStore: deps.taskQueueStore,
     scheduler: deps.scheduler,

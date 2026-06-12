@@ -24,9 +24,10 @@
 - Users can generate or regenerate their MCP personal access token from the Profile modal, with the raw token shown only once.
 - Personal access tokens are stored hashed at rest and authenticate bearer requests.
 - MCP endpoint supports `initialize`, `tools/list`, and `tools/call`.
-- Phase 1 tools are available: list repositories, list tasks, get task, create task, update draft, start task, add task message, update auto-apply config.
+- Phase 1 tools are available: list repositories, list repository branches, list tasks, get task, create task, update draft, start task, add task message, update auto-apply config.
 - MCP tools enforce existing user/scopes/repository/task access restrictions.
 - MCP task creation/start returns promptly while repository checkout continues, with `executionStatus: "preparing"` visible to UI and MCP clients.
+- MCP clients can discover repository branches and see valid task branch strategies before creating tasks.
 - Large MCP responses are bounded/truncated.
 - Existing web/API behavior remains unchanged.
 
@@ -37,6 +38,7 @@
 - `apps/server/src/index.ts`
 - `apps/server/src/services/*`
 - `apps/server/src/mcp/*`
+- `apps/server/src/services/github-import-service.ts`
 - `apps/web/components/app-shell.tsx`
 - `apps/web/src/api/client.ts`
 - `packages/shared-types/src/index.ts`
@@ -91,6 +93,7 @@
 - 2026-06-12 10:24 UTC: Focused MCP/token/task/scheduler tests passed; server and web TypeScript lint passed; whitespace and human-gated flow checks passed.
 - 2026-06-12 10:55 UTC: Added Profile modal UI for generating/regenerating the MCP personal access token and showing the raw token only once.
 - 2026-06-12 11:40 UTC: Added non-blocking task start for MCP/UI create-start flows and exposed checkout as `executionStatus: "preparing"`.
+- 2026-06-12 11:55 UTC: Added MCP repository branch discovery and exposed `branchStrategy` in compact task responses.
 
 ## Decisions
 - 2026-06-12: Implement minimal HTTP JSON-RPC MCP endpoint without adding an SDK dependency in this pass.
@@ -99,6 +102,7 @@
 ## Completion Notes
 - Implemented Phase 1 MCP server at `POST /mcp` with `initialize`, `tools/list`, and `tools/call`.
 - Implemented Phase 1 tools: repository listing, task listing/detail, task creation, draft update, task start, task message/follow-up, and auto-apply config update.
+- Added branch discovery through `agentswarm_list_repository_branches`; `agentswarm_create_task` accepts `baseBranch` and `branchStrategy`, and task responses include `branchStrategy`.
 - Added personal access token create/list/revoke routes under `/auth/personal-access-tokens`; token values are returned only at creation and stored as hashes.
 - Personal access token management is available in the Profile modal for the default MCP token; lower-level token metadata remains available through the API.
 - Start/create-start requests now return while workspace checkout continues; clients should poll or subscribe for task updates instead of keeping the MCP tool call open until the agent run finishes.
