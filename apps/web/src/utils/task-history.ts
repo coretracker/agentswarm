@@ -128,9 +128,9 @@ export function buildTaskHistoryEntries(input: {
     compareIso(left.createdAt, right.createdAt, left.id, right.id)
   );
   const sortedRuns = [...input.runs].sort((left, right) => compareIso(left.startedAt, right.startedAt, left.id, right.id));
-  const sortedProposals = [...input.proposals].sort((left, right) =>
-    compareIso(left.createdAt, right.createdAt, left.id, right.id)
-  );
+  const sortedProposals = input.proposals
+    .filter((proposal) => proposal.status !== "applying")
+    .sort((left, right) => compareIso(left.createdAt, right.createdAt, left.id, right.id));
 
   const consumedMessageIds = new Set<string>();
   const consumedRunIds = new Set<string>();

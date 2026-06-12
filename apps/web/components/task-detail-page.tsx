@@ -267,6 +267,8 @@ function checkpointStatusLabel(status: TaskChangeProposal["status"]): string {
   switch (status) {
     case "pending":
       return "Pending";
+    case "applying":
+      return "Applying";
     case "applied":
       return "Applied";
     case "rejected":
@@ -282,6 +284,8 @@ function checkpointStatusColor(status: TaskChangeProposal["status"]): string {
   switch (status) {
     case "pending":
       return "orange";
+    case "applying":
+      return "processing";
     case "applied":
       return "green";
     case "reverted":
@@ -2199,12 +2203,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     task && !githubPullRequestLookupPending ? getGitHubDiffTarget(task, existingGitHubPullRequest) : null;
   const hasReadOnlyTaskAccess = !canEditTask;
   const showCheckpointState = task?.autoApplyCheckpoints !== true;
+  const visibleChangeProposals = useMemo(
+    () => changeProposals.filter((proposal) => proposal.status !== "applying"),
+    [changeProposals]
+  );
   const pendingChangeProposal = useMemo(
-    () => (showCheckpointState ? changeProposals.find((p) => p.status === "pending") ?? null : null),
-    [changeProposals, showCheckpointState]
+    () => (showCheckpointState ? visibleChangeProposals.find((p) => p.status === "pending") ?? null : null),
+    [showCheckpointState, visibleChangeProposals]
   );
   const latestAppliedChangeProposalId = useMemo(() => {
-    const applied = changeProposals.filter((p) => p.status === "applied");
+    const applied = visibleChangeProposals.filter((p) => p.status === "applied");
     if (applied.length === 0) {
       return null;
     }
@@ -2217,7 +2225,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       }
     }
     return best.id;
-  }, [changeProposals]);
+  }, [visibleChangeProposals]);
   const activeTerminalStatus =
     gitTerminalStatus?.activeInteractiveSession && gitTerminalStatus.terminalMode === "git"
       ? gitTerminalStatus
@@ -2313,10 +2321,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       buildTaskHistoryEntries({
         messages: taskMessages,
         runs: taskRuns,
-        proposals: changeProposals,
+        proposals: visibleChangeProposals,
         interactiveTerminalRunning: interactiveTerminalRunning || interactiveTerminalLaunchPending
       }),
-    [changeProposals, interactiveTerminalLaunchPending, interactiveTerminalRunning, taskMessages, taskRuns]
+    [interactiveTerminalLaunchPending, interactiveTerminalRunning, taskMessages, taskRuns, visibleChangeProposals]
   );
   const activeTerminalHistoryEntry = useMemo(
     () =>

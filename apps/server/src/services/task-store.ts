@@ -69,6 +69,9 @@ const DEFAULT_HISTORY_PAGE_LIMIT = 25;
 const MAX_HISTORY_PAGE_LIMIT = 100;
 const LEGACY_START_MODE_FIELD = "start" + "Mode";
 
+const isUnresolvedChangeProposalStatus = (status: TaskChangeProposalStatus): boolean =>
+  status === "pending" || status === "applying";
+
 const nowIso = (): string => new Date().toISOString();
 const POSTGRES_DEADLOCK_ERROR_CODE = "40P01";
 const POSTGRES_SERIALIZATION_ERROR_CODE = "40001";
@@ -1484,7 +1487,11 @@ export class RedisTaskStore implements TaskStore {
     const status: TaskChangeProposalStatus =
       rawStatus === "accepted"
         ? "applied"
-        : rawStatus === "pending" || rawStatus === "applied" || rawStatus === "rejected" || rawStatus === "reverted"
+        : rawStatus === "pending" ||
+            rawStatus === "applying" ||
+            rawStatus === "applied" ||
+            rawStatus === "rejected" ||
+            rawStatus === "reverted"
           ? rawStatus
           : "pending";
 
@@ -1669,12 +1676,12 @@ export class RedisTaskStore implements TaskStore {
   }
 
   /**
-   * Creates a pending checkpoint. Fails if the task already has another pending checkpoint.
+   * Creates an unresolved checkpoint. Fails if the task already has another pending/applying checkpoint.
    * Diff and metadata are persisted for later apply/reject/revert.
    */
   async createChangeProposal(input: Omit<TaskChangeProposal, "resolvedAt" | "revertedAt"> & { resolvedAt?: null; revertedAt?: null }): Promise<TaskChangeProposal | null> {
     const existingList = await this.listChangeProposals(input.taskId);
-    if (existingList.some((p) => p.status === "pending")) {
+    if (existingList.some((p) => isUnresolvedChangeProposalStatus(p.status))) {
       return null;
     }
 
@@ -1685,7 +1692,9 @@ export class RedisTaskStore implements TaskStore {
       revertedAt: null
     };
     const task = await this.getStoredTask(input.taskId);
-    const nextTask = task ? { ...task, hasPendingCheckpoint: task.autoApplyCheckpoints ? false : true, logs: [] } : null;
+    const nextTask = task
+      ? { ...task, hasPendingCheckpoint: input.status === "pending" && !task.autoApplyCheckpoints, logs: [] }
+      : null;
     const pipeline = this.redis
       .multi()
       .set(this.taskChangeProposalKey(proposal.id), JSON.stringify(proposal))
@@ -1892,7 +1901,11 @@ export class PostgresTaskStore implements TaskStore {
     const status: TaskChangeProposalStatus =
       rawStatus === "accepted"
         ? "applied"
-        : rawStatus === "pending" || rawStatus === "applied" || rawStatus === "rejected" || rawStatus === "reverted"
+        : rawStatus === "pending" ||
+            rawStatus === "applying" ||
+            rawStatus === "applied" ||
+            rawStatus === "rejected" ||
+            rawStatus === "reverted"
           ? rawStatus
           : "pending";
 
@@ -3018,7 +3031,7 @@ export class PostgresTaskStore implements TaskStore {
 
   async createChangeProposal(input: CreateTaskChangeProposalInput): Promise<TaskChangeProposal | null> {
     const existingList = await this.listChangeProposals(input.taskId);
-    if (existingList.some((proposal) => proposal.status === "pending")) {
+    if (existingList.some((proposal) => isUnresolvedChangeProposalStatus(proposal.status))) {
       return null;
     }
 
@@ -3029,7 +3042,9 @@ export class PostgresTaskStore implements TaskStore {
       revertedAt: null
     };
     const task = await this.getStoredTask(input.taskId);
-    const nextTask = task ? { ...task, hasPendingCheckpoint: task.autoApplyCheckpoints ? false : true, logs: [] } : null;
+    const nextTask = task
+      ? { ...task, hasPendingCheckpoint: input.status === "pending" && !task.autoApplyCheckpoints, logs: [] }
+      : null;
 
     await withPostgresTransaction(this.pool, async (client) => {
       await client.query(

@@ -113,7 +113,7 @@ describe("SpawnerService workspace provisioning", () => {
     const bypassed = await spawner.applyChangeProposal(runningTask, "proposal-1", { allowDuringExecution: true });
     assert.deepEqual(bypassed, {
       ok: false,
-      message: "Checkpoint must be pending or reverted to apply."
+      message: "Checkpoint must be pending, applying, or reverted to apply."
     });
   });
 

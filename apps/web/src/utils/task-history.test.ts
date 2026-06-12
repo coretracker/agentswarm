@@ -99,6 +99,37 @@ test("groups a build run with its prompt, summary message, and proposal", () => 
   assert.equal(entries[0].proposal?.id, "p1");
 });
 
+test("hides applying checkpoint proposals from history", () => {
+  const run = createRun({
+    id: "r1",
+    action: "build",
+    startedAt: "2026-03-24T10:01:00.000Z",
+    finishedAt: "2026-03-24T10:02:30.000Z",
+    status: "succeeded"
+  });
+  const proposal = createProposal({
+    id: "p1",
+    sourceType: "build_run",
+    sourceId: "r1",
+    status: "applying",
+    createdAt: "2026-03-24T10:03:30.000Z",
+    diff: "diff --git a/a b/a"
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [],
+    runs: [run],
+    proposals: [proposal]
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.kind, "grouped_auto_run");
+  if (entries[0]?.kind !== "grouped_auto_run") {
+    throw new Error("Expected grouped_auto_run");
+  }
+  assert.equal(entries[0].proposal, null);
+});
+
 test("groups ask runs without forcing a diff section", () => {
   const prompt = createMessage({
     id: "m1",

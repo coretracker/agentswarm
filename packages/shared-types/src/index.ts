@@ -749,7 +749,7 @@ export interface TaskGitOperation {
 
 export type TaskChangeProposalSourceType = "build_run" | "interactive_session";
 
-export type TaskChangeProposalStatus = "pending" | "applied" | "rejected" | "reverted";
+export type TaskChangeProposalStatus = "pending" | "applying" | "applied" | "rejected" | "reverted";
 
 export interface TaskChangeProposal {
   id: string;

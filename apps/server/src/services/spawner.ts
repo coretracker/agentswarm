@@ -3062,7 +3062,7 @@ export class SpawnerService {
     }
 
     const proposal = await this.taskStore.getChangeProposal(proposalId);
-    if (!proposal || proposal.taskId !== taskId || proposal.status !== "pending") {
+    if (!proposal || proposal.taskId !== taskId || (proposal.status !== "pending" && proposal.status !== "applying")) {
       return;
     }
 
@@ -3072,7 +3072,8 @@ export class SpawnerService {
       allowDuringExecution: true
     });
     if (!result.ok) {
-      await this.taskStore.patchTask(taskId, { autoApplyCheckpoints: false });
+      await this.taskStore.patchTask(taskId, { autoApplyCheckpoints: false, hasPendingCheckpoint: true });
+      await this.taskStore.updateChangeProposalStatus(proposal.id, "pending", taskId);
       await this.taskStore.appendLog(
         taskId,
         `Checkpoint ${proposal.id}: auto-apply failed (${result.message}). Auto-apply was disabled for recovery.`
@@ -3546,7 +3547,7 @@ export class SpawnerService {
       taskId: task.id,
       sourceType: "build_run",
       sourceId: runId,
-      status: "pending",
+      status: task.autoApplyCheckpoints ? "applying" : "pending",
       fromRef,
       toRef,
       diff,
@@ -3692,7 +3693,7 @@ export class SpawnerService {
         taskId,
         sourceType: "interactive_session",
       sourceId: sessionId,
-      status: "pending",
+      status: task.autoApplyCheckpoints ? "applying" : "pending",
       fromRef: active.checkpointRef,
       toRef,
       diff,
@@ -3855,8 +3856,8 @@ export class SpawnerService {
     if (checkpointBlocked) {
       return { ok: false, message: checkpointBlocked };
     }
-    if (proposal.status !== "pending" && proposal.status !== "reverted") {
-      return { ok: false, message: "Checkpoint must be pending or reverted to apply." };
+    if (proposal.status !== "pending" && proposal.status !== "applying" && proposal.status !== "reverted") {
+      return { ok: false, message: "Checkpoint must be pending, applying, or reverted to apply." };
     }
 
     const isReapply = proposal.status === "reverted";
@@ -5097,6 +5098,10 @@ export class SpawnerService {
             })
           : null;
       const nextBranchDiff = changedFiles.length > 0 ? branchDiff : task.branchDiff;
+      if (task.autoApplyCheckpoints && createdProposal) {
+        await this.autoApplyCheckpointIfEnabled(task.id, createdProposal.id);
+      }
+
       if (
         !(await this.syncTaskStatusForRunningRuns(task.id, {
           finishedAt,
@@ -5115,10 +5120,6 @@ export class SpawnerService {
           branchName,
           errorMessage: null
         });
-      }
-
-      if (task.autoApplyCheckpoints && createdProposal) {
-        await this.autoApplyCheckpointIfEnabled(task.id, createdProposal.id);
       }
 
       await appendRunLog(
@@ -5596,6 +5597,10 @@ export class SpawnerService {
               })
             : null;
         const nextBranchDiff = branchDiff.length > 0 ? branchDiff : task.branchDiff;
+        if (task.autoApplyCheckpoints && createdProposal) {
+          await this.autoApplyCheckpointIfEnabled(task.id, createdProposal.id);
+        }
+
         if (
           !(await this.syncTaskStatusForRunningRuns(task.id, {
             finishedAt,
@@ -5614,10 +5619,6 @@ export class SpawnerService {
             branchName,
             errorMessage: null
           });
-        }
-
-        if (task.autoApplyCheckpoints && createdProposal) {
-          await this.autoApplyCheckpointIfEnabled(task.id, createdProposal.id);
         }
       }
 
