@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useEffect, useRef, useState, type ReactNode } from "react";
-import { App, Button, Card, Divider, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Skeleton, Spin, Typography, message, theme as antTheme } from "antd";
+import { Alert, App, Button, Card, Divider, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Skeleton, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
 import {
   AppstoreOutlined,
   CopyOutlined,
@@ -34,6 +34,7 @@ import type {
   AgentFormattingStyle,
   AgentJargonLevel,
   AudienceType,
+  PersonalAccessToken,
   UserNotes
 } from "@agentswarm/shared-types";
 import {
@@ -59,6 +60,17 @@ const DEFAULT_NOTES_PANEL_WIDTH = 420;
 const NOTES_PANEL_MIN_WIDTH = 320;
 const NOTES_PANEL_MAX_WIDTH = 720;
 const NOTES_PANEL_COLLAPSED_RAIL_WIDTH = 56;
+const MCP_PROFILE_TOKEN_NAME = "AgentSwarm MCP";
+
+const formatDateTime = (value: string | null): string => {
+  if (!value) {
+    return "Never";
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(value));
+};
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -79,6 +91,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileCodexConfigured, setProfileCodexConfigured] = useState(false);
+  const [personalAccessTokens, setPersonalAccessTokens] = useState<PersonalAccessToken[]>([]);
+  const [personalAccessTokenLoading, setPersonalAccessTokenLoading] = useState(false);
+  const [generatedPersonalAccessToken, setGeneratedPersonalAccessToken] = useState<string | null>(null);
   const [rightPanel, setRightPanel] = useState<AppRightPanelConfig | null>(null);
   const [workspaceNotes, setWorkspaceNotes] = useState<UserNotes | null>(null);
   const [workspaceNotesDraft, setWorkspaceNotesDraft] = useState("");
@@ -292,8 +307,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   const openProfile = async (): Promise<void> => {
     setProfileOpen(true);
     setProfileLoading(true);
+    setPersonalAccessTokenLoading(true);
+    setGeneratedPersonalAccessToken(null);
     try {
-      const profile = await api.getProfile();
+      const [profile, tokens] = await Promise.all([api.getProfile(), api.listPersonalAccessTokens()]);
       profileForm.setFieldsValue({
         name: profile.name,
         gitAuthorName: profile.gitAuthorName ?? "",
@@ -308,10 +325,12 @@ export function AppShell({ children }: { children: ReactNode }) {
         extraInstructions: profile.agentResponsePreference.extraInstructions ?? ""
       });
       setProfileCodexConfigured(profile.codexAuthJsonConfigured);
+      setPersonalAccessTokens(tokens);
     } catch (error) {
       message.error(error instanceof Error ? error.message : "Failed to load profile");
     } finally {
       setProfileLoading(false);
+      setPersonalAccessTokenLoading(false);
     }
   };
 
@@ -369,6 +388,37 @@ export function AppShell({ children }: { children: ReactNode }) {
       message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");
     } finally {
       setSavingProfile(false);
+    }
+  };
+
+  const activeMcpTokens = personalAccessTokens.filter((token) => token.name === MCP_PROFILE_TOKEN_NAME && !token.revokedAt);
+  const currentMcpToken = activeMcpTokens[0] ?? null;
+
+  const regenerateMcpPersonalAccessToken = async (): Promise<void> => {
+    setPersonalAccessTokenLoading(true);
+    setGeneratedPersonalAccessToken(null);
+    try {
+      await Promise.all(activeMcpTokens.map((token) => api.revokePersonalAccessToken(token.id)));
+      const token = await api.createPersonalAccessToken({ name: MCP_PROFILE_TOKEN_NAME });
+      setGeneratedPersonalAccessToken(token.token);
+      setPersonalAccessTokens(await api.listPersonalAccessTokens());
+      message.success(currentMcpToken ? "Personal access token regenerated" : "Personal access token generated");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to generate personal access token");
+    } finally {
+      setPersonalAccessTokenLoading(false);
+    }
+  };
+
+  const copyGeneratedPersonalAccessToken = async (): Promise<void> => {
+    if (!generatedPersonalAccessToken) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(generatedPersonalAccessToken);
+      message.success("Token copied");
+    } catch {
+      message.error("Failed to copy token");
     }
   };
 
@@ -652,7 +702,10 @@ export function AppShell({ children }: { children: ReactNode }) {
       <Modal
         title="Profile"
         open={profileOpen}
-        onCancel={() => setProfileOpen(false)}
+        onCancel={() => {
+          setGeneratedPersonalAccessToken(null);
+          setProfileOpen(false);
+        }}
         onOk={() => {
           void saveProfile();
         }}
@@ -722,6 +775,55 @@ export function AppShell({ children }: { children: ReactNode }) {
                 Clear Codex auth.json
               </Button>
             </div>
+            <Divider orientation="left" plain>
+              Personal Access Token
+            </Divider>
+            <Card size="small" loading={personalAccessTokenLoading}>
+              <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                <Typography.Text>
+                  Use this token for MCP clients. The token value is shown only once after generation.
+                </Typography.Text>
+                {currentMcpToken ? (
+                  <Space direction="vertical" size={4}>
+                    <Space wrap>
+                      <Tag color="green">Active</Tag>
+                      <Typography.Text code>{currentMcpToken.tokenPrefix}...</Typography.Text>
+                    </Space>
+                    <Typography.Text type="secondary">
+                      Created {formatDateTime(currentMcpToken.createdAt)} · Last used {formatDateTime(currentMcpToken.lastUsedAt)}
+                    </Typography.Text>
+                  </Space>
+                ) : (
+                  <Typography.Text type="secondary">No active MCP personal access token.</Typography.Text>
+                )}
+                {generatedPersonalAccessToken ? (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message="Copy your new token now"
+                    description={
+                      <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                        <Typography.Text>
+                          This token will not be shown again. Store it in your MCP client now.
+                        </Typography.Text>
+                        <Input.TextArea value={generatedPersonalAccessToken} readOnly autoSize={{ minRows: 2, maxRows: 4 }} />
+                        <Button icon={<CopyOutlined />} onClick={() => { void copyGeneratedPersonalAccessToken(); }}>
+                          Copy token
+                        </Button>
+                      </Space>
+                    }
+                  />
+                ) : null}
+                <Button
+                  type={currentMcpToken ? "default" : "primary"}
+                  danger={Boolean(currentMcpToken)}
+                  loading={personalAccessTokenLoading}
+                  onClick={() => { void regenerateMcpPersonalAccessToken(); }}
+                >
+                  {currentMcpToken ? "Regenerate Token" : "Generate Token"}
+                </Button>
+              </Space>
+            </Card>
           </Form>
         </Spin>
       </Modal>

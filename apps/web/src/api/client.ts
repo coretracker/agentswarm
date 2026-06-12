@@ -13,6 +13,9 @@ import type {
   GitHubBranchReference,
   GitHubPullRequestReference,
   LoginInput,
+  CreatedPersonalAccessToken,
+  PersonalAccessToken,
+  PermissionScope,
   ProviderModelOption,
   Repository,
   Role,
@@ -155,6 +158,16 @@ export const api = {
   logout: () =>
     request<void>("/auth/logout", {
       method: "POST"
+    }),
+  listPersonalAccessTokens: () => request<PersonalAccessToken[]>("/auth/personal-access-tokens"),
+  createPersonalAccessToken: (input: { name: string; scopes?: PermissionScope[]; expiresAt?: string | null }) =>
+    request<CreatedPersonalAccessToken>("/auth/personal-access-tokens", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  revokePersonalAccessToken: (id: string) =>
+    request<PersonalAccessToken>(`/auth/personal-access-tokens/${encodeURIComponent(id)}`, {
+      method: "DELETE"
     }),
   getSession: () => request<AuthSession>("/auth/session"),
   listUsers: () => request<User[]>("/users"),

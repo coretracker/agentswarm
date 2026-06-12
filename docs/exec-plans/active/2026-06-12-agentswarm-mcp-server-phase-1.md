@@ -21,6 +21,7 @@
 
 ## Acceptance Criteria
 - Users can create, list, and revoke personal access tokens through authenticated HTTP routes.
+- Users can generate or regenerate their MCP personal access token from the Profile modal, with the raw token shown only once.
 - Personal access tokens are stored hashed at rest and authenticate bearer requests.
 - MCP endpoint supports `initialize`, `tools/list`, and `tools/call`.
 - Phase 1 tools are available: list repositories, list tasks, get task, create task, update draft, start task, add task message, update auto-apply config.
@@ -35,6 +36,8 @@
 - `apps/server/src/index.ts`
 - `apps/server/src/services/*`
 - `apps/server/src/mcp/*`
+- `apps/web/components/app-shell.tsx`
+- `apps/web/src/api/client.ts`
 - `packages/shared-types/src/index.ts`
 - Server tests and docs as needed.
 
@@ -55,7 +58,7 @@
 - User Approval To Start: Yes
 - Baseline Checks Run: Yes; focused task-store, scheduler, and server lint passed before implementation
 - Visible Task List Updated: Yes
-- Task-Level Tests/Lint/Build: Focused MCP/token/task/scheduler tests passed; server TypeScript lint passed
+- Task-Level Tests/Lint/Build: Focused MCP/token/task/scheduler tests passed; server and web TypeScript lint passed
 - Self Review Complete: Yes
 - Code Review Complete: Agent self-review only
 - Final Verification Complete: Focused verification complete; full harness not run in this pass
@@ -84,6 +87,7 @@
 - 2026-06-12 09:44 UTC: Started Phase 1 implementation after user approval.
 - 2026-06-12 10:18 UTC: Added personal access token persistence/auth/routes, minimal HTTP JSON-RPC MCP endpoint, Phase 1 tools, focused tests, and README documentation.
 - 2026-06-12 10:24 UTC: Focused MCP/token/task/scheduler tests passed; server and web TypeScript lint passed; whitespace and human-gated flow checks passed.
+- 2026-06-12 10:55 UTC: Added Profile modal UI for generating/regenerating the MCP personal access token and showing the raw token only once.
 
 ## Decisions
 - 2026-06-12: Implement minimal HTTP JSON-RPC MCP endpoint without adding an SDK dependency in this pass.
@@ -93,4 +97,4 @@
 - Implemented Phase 1 MCP server at `POST /mcp` with `initialize`, `tools/list`, and `tools/call`.
 - Implemented Phase 1 tools: repository listing, task listing/detail, task creation, draft update, task start, task message/follow-up, and auto-apply config update.
 - Added personal access token create/list/revoke routes under `/auth/personal-access-tokens`; token values are returned only at creation and stored as hashes.
-- Personal access token management is API-only in this pass; a web UI card can be added as a follow-up.
+- Personal access token management is available in the Profile modal for the default MCP token; lower-level token metadata remains available through the API.
