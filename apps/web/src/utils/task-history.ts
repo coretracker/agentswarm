@@ -106,6 +106,18 @@ function isInteractiveTerminalEndMessage(message: TaskMessage): boolean {
   );
 }
 
+function isPendingQueuedFollowUpMessage(message: TaskMessage): boolean {
+  return (
+    message.role === "user" &&
+    (message.action === "ask" || message.action === "build") &&
+    message.queueState === "pending"
+  );
+}
+
+function isQueuedHistoryEntry(entry: TaskHistoryEntry): boolean {
+  return entry.kind === "message" && isPendingQueuedFollowUpMessage(entry.message);
+}
+
 export function buildTaskHistoryEntries(input: {
   messages: TaskMessage[];
   runs: TaskRun[];
@@ -362,5 +374,13 @@ export function buildTaskHistoryEntries(input: {
     )
   ];
 
-  return entries.sort((left, right) => compareIso(left.timestamp, right.timestamp, left.key, right.key));
+  return entries.sort((left, right) => {
+    const leftQueued = isQueuedHistoryEntry(left);
+    const rightQueued = isQueuedHistoryEntry(right);
+    if (leftQueued !== rightQueued) {
+      return leftQueued ? 1 : -1;
+    }
+
+    return compareIso(left.timestamp, right.timestamp, left.key, right.key);
+  });
 }

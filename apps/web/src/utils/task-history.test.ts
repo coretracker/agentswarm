@@ -218,6 +218,51 @@ test("keeps unmatched messages and proposals as raw entries when a run has no ma
   assert.equal(grouped.promptText, "No matched user prompt was found for this run.");
 });
 
+test("keeps pending queued follow-ups grouped at the bottom of history", () => {
+  const earlierQueued = createMessage({
+    id: "m1",
+    createdAt: "2026-03-24T11:58:00.000Z",
+    role: "user",
+    action: "build",
+    content: "Queued follow-up one",
+    queueState: "pending"
+  });
+  const historyMessage = createMessage({
+    id: "m2",
+    createdAt: "2026-03-24T12:00:00.000Z",
+    role: "user",
+    action: "comment",
+    content: "History comment"
+  });
+  const laterQueued = createMessage({
+    id: "m3",
+    createdAt: "2026-03-24T12:02:00.000Z",
+    role: "user",
+    action: "ask",
+    content: "Queued follow-up two",
+    queueState: "pending"
+  });
+  const proposal = createProposal({
+    id: "p1",
+    sourceType: "build_run",
+    sourceId: "missing-run",
+    status: "pending",
+    createdAt: "2026-03-24T12:01:00.000Z",
+    diff: "diff --git a/a b/a"
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [laterQueued, historyMessage, earlierQueued],
+    runs: [],
+    proposals: [proposal]
+  });
+
+  assert.deepEqual(
+    entries.map((entry) => entry.kind === "message" ? entry.message.id : entry.kind === "proposal" ? entry.proposal.id : entry.key),
+    ["m2", "p1", "m1", "m3"]
+  );
+});
+
 test("groups completed terminal sessions with a diff proposal", () => {
   const start = createMessage({
     id: "m1",

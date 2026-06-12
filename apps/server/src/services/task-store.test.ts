@@ -92,23 +92,30 @@ class FakeRedis {
 
   multi(): {
     set: (key: string, value: string) => unknown;
+    get: (key: string) => unknown;
     rpush: (key: string, ...values: string[]) => unknown;
     ltrim: (key: string, start: number, stop: number) => unknown;
     sadd: (key: string, ...members: string[]) => unknown;
     del: (...keys: string[]) => unknown;
     exec: () => Promise<unknown[]>;
   } {
-    const operations: Array<() => void> = [];
+    const operations: Array<() => unknown> = [];
     const chain = {
       set: (key: string, value: string) => {
         operations.push(() => {
           this.kv.set(key, value);
+          return "OK";
         });
+        return chain;
+      },
+      get: (key: string) => {
+        operations.push(() => this.kv.get(key) ?? null);
         return chain;
       },
       rpush: (key: string, ...values: string[]) => {
         operations.push(() => {
           this.getList(key).push(...values);
+          return this.getList(key).length;
         });
         return chain;
       },
@@ -118,6 +125,7 @@ class FakeRedis {
           const normalizedStart = this.normalizeIndex(list.length, start);
           const normalizedStop = stop < 0 ? list.length + stop : Math.min(stop, list.length - 1);
           this.lists.set(key, normalizedStop < normalizedStart ? [] : list.slice(normalizedStart, normalizedStop + 1));
+          return "OK";
         });
         return chain;
       },
@@ -127,6 +135,7 @@ class FakeRedis {
           for (const member of members) {
             set.add(member);
           }
+          return set.size;
         });
         return chain;
       },
@@ -137,14 +146,12 @@ class FakeRedis {
             this.lists.delete(key);
             this.sets.delete(key);
           }
+          return keys.length;
         });
         return chain;
       },
       exec: async () => {
-        for (const operation of operations) {
-          operation();
-        }
-        return [] as unknown[];
+        return operations.map((operation) => [null, operation()]);
       }
     };
     return chain;
@@ -286,5 +293,60 @@ describe("TaskStore.createTask", () => {
     );
 
     assert.equal(task.deadline, "2026-06-15T08:30:00.000Z");
+  });
+
+  it("persists auto-apply checkpoint mode", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(
+      {
+        ...createTaskInput,
+        autoApplyCheckpoints: true
+      },
+      repository,
+      "user-1"
+    );
+
+    assert.equal(task.autoApplyCheckpoints, true);
+  });
+});
+
+describe("TaskStore change proposals", () => {
+  it("keeps pending checkpoints hidden from task state when auto-apply mode is enabled", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(
+      {
+        ...createTaskInput,
+        autoApplyCheckpoints: true
+      },
+      repository,
+      "user-1"
+    );
+
+    const proposal = await taskStore.createChangeProposal({
+      id: "proposal-1",
+      taskId: task.id,
+      sourceType: "build_run",
+      sourceId: "run-1",
+      status: "pending",
+      fromRef: "abc123",
+      toRef: "def456",
+      diff: "diff --git a/a.ts b/a.ts",
+      diffStat: "1 file changed",
+      changedFiles: ["src/a.ts"],
+      diffTruncated: false,
+      untrackedPathsAtCheckpoint: [],
+      createdAt: "2026-06-12T08:00:00.000Z"
+    });
+
+    assert.ok(proposal);
+    const refreshed = await taskStore.getTask(task.id);
+    assert.equal(refreshed?.autoApplyCheckpoints, true);
+    assert.equal(refreshed?.hasPendingCheckpoint, false);
   });
 });

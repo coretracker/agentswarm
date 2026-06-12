@@ -38,6 +38,7 @@ const buildTask = (status: Task["status"], overrides: Partial<Task> = {}): Task 
   deadline: null,
   pinned: false,
   hasPendingCheckpoint: false,
+  autoApplyCheckpoints: false,
   activeInteractiveSession: false,
   activeTerminalSessionMode: null,
   ownerUserId: "user-1",

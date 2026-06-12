@@ -65,6 +65,7 @@ import {
   Spin,
   Select,
   Space,
+  Switch,
   Tag,
   Tabs,
   Tooltip,
@@ -771,6 +772,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [modelInput, setModelInput] = useState<string>("gpt-5.4");
   const [codexCredentialSourceInput, setCodexCredentialSourceInput] = useState<CodexCredentialSource>("auto");
   const [branchStrategyInput, setBranchStrategyInput] = useState<TaskBranchStrategy>("feature_branch");
+  const [autoApplyCheckpointsInput, setAutoApplyCheckpointsInput] = useState(false);
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(providerInput);
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>(null);
   const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "diff" | "files">("chat");
@@ -1152,11 +1154,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const currentTaskModelOverride = task?.modelOverride?.trim() ?? "";
   const currentTaskModel = currentTaskModelOverride || getProviderDefaultModel(currentTaskProvider, settings);
   const currentTaskCodexCredentialSource = task?.codexCredentialSource ?? "auto";
+  const currentTaskAutoApplyCheckpoints = task?.autoApplyCheckpoints === true;
   const interactiveTerminalConfigDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
     modelInput !== currentTaskModel ||
-    (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource);
+    (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource) ||
+    autoApplyCheckpointsInput !== currentTaskAutoApplyCheckpoints;
   const currentTaskBranchStrategy = task?.branchStrategy ?? "feature_branch";
   const hasExecutionContext = Boolean(task?.executionSummary?.trim());
   const configDirty =
@@ -1164,6 +1168,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     providerProfileInput !== currentTaskProviderProfile ||
     modelInput !== currentTaskModel ||
     (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource) ||
+    autoApplyCheckpointsInput !== currentTaskAutoApplyCheckpoints ||
     (isImplementationTask && branchStrategyInput !== currentTaskBranchStrategy);
 
   const resultStatusText = lifecycle.resultStatusText;
@@ -1179,6 +1184,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setModelInput(nextTask.modelOverride ?? getProviderDefaultModel(nextTask.provider ?? "codex", settings));
     setCodexCredentialSourceInput(nextTask.codexCredentialSource ?? "auto");
     setBranchStrategyInput(nextTask.branchStrategy ?? "feature_branch");
+    setAutoApplyCheckpointsInput(nextTask.autoApplyCheckpoints === true);
   };
   const applyUpdatedTask = (updatedTask: Task): void => {
     setTask((current) =>
@@ -1341,6 +1347,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     modelOverride,
     codexCredentialSource,
     branchStrategy,
+    autoApplyCheckpoints,
     notify = true,
     refreshTaskOnFailure = false
   }: {
@@ -1349,6 +1356,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     modelOverride: string;
     codexCredentialSource: CodexCredentialSource;
     branchStrategy?: TaskBranchStrategy;
+    autoApplyCheckpoints: boolean;
     notify?: boolean;
     refreshTaskOnFailure?: boolean;
   }): Promise<void> => {
@@ -1366,7 +1374,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         providerProfile,
         modelOverride: modelOverride || null,
         codexCredentialSource,
-        branchStrategy
+        branchStrategy,
+        autoApplyCheckpoints
       });
 
       if (requestId !== executionConfigSaveRequestIdRef.current) {
@@ -1558,6 +1567,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     task?.modelOverride,
     task?.codexCredentialSource,
     task?.branchStrategy,
+    task?.autoApplyCheckpoints,
     configDirty,
     submitting
   ]);
@@ -1595,6 +1605,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         modelOverride: modelInput,
         codexCredentialSource: codexCredentialSourceInput,
         branchStrategy: isImplementationTask ? branchStrategyInput : undefined,
+        autoApplyCheckpoints: autoApplyCheckpointsInput,
         notify: false,
         refreshTaskOnFailure: true
       }).catch((error) => {
@@ -1619,6 +1630,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     codexCredentialSourceInput,
     isImplementationTask,
     branchStrategyInput,
+    autoApplyCheckpointsInput,
     messageApi
   ]);
 
@@ -2186,9 +2198,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const githubDiffTarget =
     task && !githubPullRequestLookupPending ? getGitHubDiffTarget(task, existingGitHubPullRequest) : null;
   const hasReadOnlyTaskAccess = !canEditTask;
+  const showCheckpointState = task?.autoApplyCheckpoints !== true;
   const pendingChangeProposal = useMemo(
-    () => changeProposals.find((p) => p.status === "pending") ?? null,
-    [changeProposals]
+    () => (showCheckpointState ? changeProposals.find((p) => p.status === "pending") ?? null : null),
+    [changeProposals, showCheckpointState]
   );
   const latestAppliedChangeProposalId = useMemo(() => {
     const applied = changeProposals.filter((p) => p.status === "applied");
@@ -2760,6 +2773,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       modelOverride: modelInput,
       codexCredentialSource: codexCredentialSourceInput,
       branchStrategy: isImplementationTask ? branchStrategyInput : undefined,
+      autoApplyCheckpoints: autoApplyCheckpointsInput,
       notify,
       refreshTaskOnFailure: true
     });
@@ -5175,14 +5189,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           size="small"
           style={getHistoryContextCardStyle(entryKey, {
             width: "100%",
-            borderColor: proposal.status === "pending" ? "rgba(250,173,20,0.45)" : undefined
+            borderColor: showCheckpointState && proposal.status === "pending" ? "rgba(250,173,20,0.45)" : undefined
           })}
         >
           <Flex justify="space-between" align="flex-start" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
             <Space wrap size={8}>
               <Typography.Text strong>Checkpoint</Typography.Text>
               <Tag>{changeProposalSourceLabel(proposal.sourceType)}</Tag>
-              <Tag color={checkpointStatusColor(proposal.status)}>{checkpointStatusLabel(proposal.status)}</Tag>
+              {showCheckpointState ? <Tag color={checkpointStatusColor(proposal.status)}>{checkpointStatusLabel(proposal.status)}</Tag> : null}
               {proposal.diffTruncated ? <Tag>Truncated preview</Tag> : null}
             </Space>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -5273,7 +5287,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Tag>{taskActionLabel[entry.run.action]}</Tag>
             {entry.run.action === "build" && entry.run.changeOutcome === "no_change" ? <Tag color="default">No code changes</Tag> : null}
             <Tag>{getAgentProviderLabel(entry.run.provider)}</Tag>
-            {entry.proposal ? <Tag color={checkpointStatusColor(entry.proposal.status)}>{checkpointStatusLabel(entry.proposal.status)}</Tag> : null}
+            {showCheckpointState && entry.proposal ? <Tag color={checkpointStatusColor(entry.proposal.status)}>{checkpointStatusLabel(entry.proposal.status)}</Tag> : null}
             {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
           </Space>
         }
@@ -5330,7 +5344,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     const terminalSentenceLabel = getTaskTerminalSessionSentenceLabel(terminalMode);
     const terminalStatusTag = entry.active
       ? { color: "processing", label: "Active" }
-      : entry.proposal
+      : showCheckpointState && entry.proposal
         ? { color: checkpointStatusColor(entry.proposal.status), label: checkpointStatusLabel(entry.proposal.status) }
         : null;
     const showTerminalSessionControls = entry.active && canEditTask && task && !isArchived;
@@ -5648,6 +5662,23 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               style={{ width: "100%", marginTop: 6 }}
               disabled={!canEditTask || isArchived || interactiveTerminalRunning || providerInput !== "codex"}
             />
+          </div>
+          <div>
+            <Flex align="center" justify="space-between" gap={12}>
+              <div>
+                <Typography.Text type="secondary">Checkpoint Apply Mode</Typography.Text>
+                <Typography.Paragraph type="secondary" style={{ marginBottom: 0, marginTop: 6 }}>
+                  Auto-apply checkpoints and continue queued work without manual review.
+                </Typography.Paragraph>
+              </div>
+              <Switch
+                checked={autoApplyCheckpointsInput}
+                onChange={setAutoApplyCheckpointsInput}
+                checkedChildren="Auto"
+                unCheckedChildren="Manual"
+                disabled={!canEditTask || isArchived || interactiveTerminalRunning}
+              />
+            </Flex>
           </div>
         </Flex>
       </Modal>

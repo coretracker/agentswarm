@@ -70,6 +70,8 @@ import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
 import { env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
+import { executeCodexUtility, CodexUtilityUnavailableError } from "./codex-utility-service.js";
+import { buildDiffAssistPromptContext, executeOpenAiDiffAssist } from "./openai-diff-assist-service.js";
 import type { TaskStore } from "./task-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { UserStore } from "./user-store.js";
@@ -79,9 +81,26 @@ import { RepoSyncManager, type RepoSyncOperation } from "./repo-sync-manager.js"
 
 const ansiPattern = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\))/g;
 const LIVE_TIMELINE_POLL_INTERVAL_MS = 1_000;
+const AUTO_APPLY_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
+const AUTO_APPLY_COMMIT_MESSAGE_PROFILE = "low";
+const AUTO_APPLY_COMMIT_MESSAGE_PROMPT =
+  "Generate one git commit subject line based on these changes. Do not use conventional commit prefixes (for example: feat:, feat(scope):, fix:, chore:). Return only a plain subject line with no quotes, bullets, markdown, or explanation.";
 
 const sanitizeChunk = (chunk: string): string =>
   chunk.replace(/\r/g, "\n").replace(ansiPattern, "").replace(/[^\x09\x0A\x20-\x7E]/g, "");
+
+const normalizeGeneratedCommitSubject = (raw: string): string | null => {
+  const firstLine = raw
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (!firstLine) {
+    return null;
+  }
+
+  return firstLine.replace(/^[-*]\s*/, "").replace(/^["'`]+|["'`]+$/g, "").trim() || null;
+};
 
 const stripIncompleteTrailingJsonlLine = (rawJsonl: string): string => {
   if (rawJsonl.length === 0 || rawJsonl.endsWith("\n") || rawJsonl.endsWith("\r")) {
@@ -2957,6 +2976,110 @@ export class SpawnerService {
     return formatCommitSubject(input);
   }
 
+  private buildAutoApplyFallbackCommitSubject(task: Task, proposal: TaskChangeProposal): string {
+    const primaryPath = proposal.changedFiles[0]?.trim() ?? "";
+    const primaryName = primaryPath ? primaryPath.split("/").at(-1) ?? primaryPath : "";
+    if (primaryName) {
+      return this.toCommitSubject(`Apply checkpoint changes for ${primaryName}`);
+    }
+    return this.toCommitSubject(`Apply checkpoint changes for ${task.title}`);
+  }
+
+  private async generateAutoApplyCommitSubject(task: Task, proposal: TaskChangeProposal): Promise<string> {
+    const fallback = this.buildAutoApplyFallbackCommitSubject(task, proposal);
+    const filePath = proposal.changedFiles[0];
+    const diffSnippet = proposal.diff.slice(0, 48_000);
+    if (!filePath || !diffSnippet.trim() || diffSnippet.trim() === "(no changes)") {
+      return fallback;
+    }
+
+    const [settings, credentials] = await Promise.all([
+      this.settingsStore.getSettings(),
+      this.settingsStore.getRuntimeCredentials(task.ownerUserId, task.codexCredentialSource ?? "auto")
+    ]);
+
+    try {
+      if (credentials.codexAuthJson) {
+        try {
+          const context = await buildDiffAssistPromptContext({
+            taskId: task.id,
+            userPrompt: AUTO_APPLY_COMMIT_MESSAGE_PROMPT,
+            filePath,
+            selectedSnippet: diffSnippet
+          });
+          const text = await executeCodexUtility({
+            prompt: [
+              "You write concise git commit subjects.",
+              "",
+              context,
+              "",
+              "Return only the requested commit subject line."
+            ].join("\n"),
+            model: AUTO_APPLY_COMMIT_MESSAGE_MODEL,
+            providerProfile: AUTO_APPLY_COMMIT_MESSAGE_PROFILE,
+            credentials
+          });
+          const candidate = normalizeGeneratedCommitSubject(text);
+          if (candidate) {
+            return this.toCommitSubject(candidate);
+          }
+        } catch (error) {
+          if (!credentials.openaiApiKey || !(error instanceof CodexUtilityUnavailableError)) {
+            throw error;
+          }
+        }
+      }
+
+      if (!credentials.openaiApiKey) {
+        return fallback;
+      }
+
+      const result = await executeOpenAiDiffAssist({
+        taskId: task.id,
+        model: AUTO_APPLY_COMMIT_MESSAGE_MODEL,
+        providerProfile: AUTO_APPLY_COMMIT_MESSAGE_PROFILE,
+        userPrompt: AUTO_APPLY_COMMIT_MESSAGE_PROMPT,
+        filePath,
+        selectedSnippet: diffSnippet,
+        openaiApiKey: credentials.openaiApiKey,
+        openaiBaseUrl: settings.openaiBaseUrl
+      });
+      const candidate = normalizeGeneratedCommitSubject(result.text);
+      return candidate ? this.toCommitSubject(candidate) : fallback;
+    } catch (error) {
+      await this.taskStore.appendLog(
+        task.id,
+        `Checkpoint ${proposal.id}: auto-apply commit subject generation failed; using fallback subject. ${error instanceof Error ? error.message : String(error)}`
+      );
+      return fallback;
+    }
+  }
+
+  private async autoApplyCheckpointIfEnabled(taskId: string, proposalId: string): Promise<void> {
+    const task = await this.taskStore.getTask(taskId);
+    if (!task?.autoApplyCheckpoints) {
+      return;
+    }
+
+    const proposal = await this.taskStore.getChangeProposal(proposalId);
+    if (!proposal || proposal.taskId !== taskId || proposal.status !== "pending") {
+      return;
+    }
+
+    const commitMessage = await this.generateAutoApplyCommitSubject(task, proposal);
+    const result = await this.applyChangeProposal(task, proposal.id, { commitMessage });
+    if (!result.ok) {
+      await this.taskStore.patchTask(taskId, { autoApplyCheckpoints: false });
+      await this.taskStore.appendLog(
+        taskId,
+        `Checkpoint ${proposal.id}: auto-apply failed (${result.message}). Auto-apply was disabled for recovery.`
+      );
+      throw new Error(`Checkpoint auto-apply failed: ${result.message}`);
+    }
+
+    await this.taskStore.appendLog(taskId, `Checkpoint ${proposal.id}: auto-applied.`);
+  }
+
   private async getStagedFiles(
     workspacePath: string,
     githubToken?: string | null,
@@ -3383,14 +3506,14 @@ export class SpawnerService {
           toRef: string;
         }
       | undefined
-  ): Promise<void> {
+  ): Promise<TaskChangeProposal | null> {
     const run = await this.taskStore.getRun(runId);
     if (!run || run.taskId !== task.id) {
-      return;
+      return null;
     }
     const fromRef = run.changeProposalCheckpointRef?.trim();
     if (!fromRef) {
-      return;
+      return null;
     }
 
     const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
@@ -3399,7 +3522,7 @@ export class SpawnerService {
       .then(() => true)
       .catch(() => false);
     if (!exists) {
-      return;
+      return null;
     }
 
     const { diff, diffStat, changedFiles, diffTruncated, toRef } =
@@ -3409,7 +3532,7 @@ export class SpawnerService {
 
     if (changedFiles.length === 0) {
       await this.taskStore.appendLog(task.id, `Build run ${runId}: no changes since checkpoint; checkpoint not created.`);
-      return;
+      return null;
     }
 
     const createdAt = new Date().toISOString();
@@ -3437,6 +3560,8 @@ export class SpawnerService {
         "Checkpoint for this build could not be created because another pending checkpoint already exists."
       );
     }
+
+    return proposal ?? null;
   }
 
   private async syncTaskReviewStatus(taskId: string): Promise<Task | null> {
@@ -3559,10 +3684,10 @@ export class SpawnerService {
       sessionId
     });
 
-    const proposal = await this.taskStore.createChangeProposal({
-      id: nanoid(),
-      taskId,
-      sourceType: "interactive_session",
+      const proposal = await this.taskStore.createChangeProposal({
+        id: nanoid(),
+        taskId,
+        sourceType: "interactive_session",
       sourceId: sessionId,
       status: "pending",
       fromRef: active.checkpointRef,
@@ -3581,6 +3706,10 @@ export class SpawnerService {
         "Checkpoint for this terminal session could not be created because another pending checkpoint already exists."
       );
       return;
+    }
+
+    if (task.autoApplyCheckpoints) {
+      await this.autoApplyCheckpointIfEnabled(taskId, proposal.id);
     }
 
     await this.syncTaskReviewStatus(taskId);
@@ -4952,18 +5081,17 @@ export class SpawnerService {
         });
       }
 
-      if (runId && changedFiles.length > 0) {
-        await this.createBuildRunChangeProposal(task, runId, workspacePath, {
-          fromRef: diffBaseRef,
-          diff: branchDiff,
-          diffStat,
-          changedFiles,
-          diffTruncated,
-          toRef
-        });
-      }
-
-      const hasPendingCheckpoint = await this.taskStore.hasPendingChangeProposal(task.id);
+      const createdProposal =
+        runId && changedFiles.length > 0
+          ? await this.createBuildRunChangeProposal(task, runId, workspacePath, {
+              fromRef: diffBaseRef,
+              diff: branchDiff,
+              diffStat,
+              changedFiles,
+              diffTruncated,
+              toRef
+            })
+          : null;
       const nextBranchDiff = changedFiles.length > 0 ? branchDiff : task.branchDiff;
       if (
         !(await this.syncTaskStatusForRunningRuns(task.id, {
@@ -4983,6 +5111,10 @@ export class SpawnerService {
           branchName,
           errorMessage: null
         });
+      }
+
+      if (task.autoApplyCheckpoints && createdProposal) {
+        await this.autoApplyCheckpointIfEnabled(task.id, createdProposal.id);
       }
 
       await appendRunLog(
@@ -5448,18 +5580,18 @@ export class SpawnerService {
             changeOutcome
           });
         }
-        if (runId && action === "build") {
-          await this.createBuildRunChangeProposal(task, runId, workspace.workspacePath, {
-            fromRef: diffBaseRef,
-            diff: branchDiff,
-            diffStat,
-            changedFiles,
-            diffTruncated,
-            toRef
-          });
-        }
+        const createdProposal =
+          runId && action === "build"
+            ? await this.createBuildRunChangeProposal(task, runId, workspace.workspacePath, {
+                fromRef: diffBaseRef,
+                diff: branchDiff,
+                diffStat,
+                changedFiles,
+                diffTruncated,
+                toRef
+              })
+            : null;
         const nextBranchDiff = branchDiff.length > 0 ? branchDiff : task.branchDiff;
-        const hasPendingCheckpoint = await this.taskStore.hasPendingChangeProposal(task.id);
         if (
           !(await this.syncTaskStatusForRunningRuns(task.id, {
             finishedAt,
@@ -5478,6 +5610,10 @@ export class SpawnerService {
             branchName,
             errorMessage: null
           });
+        }
+
+        if (task.autoApplyCheckpoints && createdProposal) {
+          await this.autoApplyCheckpointIfEnabled(task.id, createdProposal.id);
         }
       }
 

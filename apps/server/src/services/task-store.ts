@@ -234,6 +234,11 @@ const withDerivedTaskState = (task: Task): Task => ({
   reviewReason: getTaskReviewReason(task)
 });
 
+const getUserVisiblePendingCheckpoint = (
+  task: Pick<Task, "hasPendingCheckpoint" | "autoApplyCheckpoints">,
+  hasPendingProposal: boolean
+): boolean => (task.autoApplyCheckpoints ? false : task.hasPendingCheckpoint || hasPendingProposal);
+
 const normalizeCodexCredentialSource = (value: string | null | undefined): CodexCredentialSource => {
   if (value === "profile" || value === "global") {
     return value;
@@ -336,6 +341,7 @@ export type TaskMetadata = Pick<
   | "executionStatus"
   | "executionAction"
   | "hasPendingCheckpoint"
+  | "autoApplyCheckpoints"
   | "activeInteractiveSession"
   | "activeTerminalSessionMode"
   | "provider"
@@ -451,6 +457,7 @@ export class RedisTaskStore implements TaskStore {
       deadline: normalizeDeadline(legacyTask.deadline),
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
+      autoApplyCheckpoints: legacyTask.autoApplyCheckpoints === true,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
       activeTerminalSessionMode:
         legacyTask.activeTerminalSessionMode === "git" || legacyTask.activeTerminalSessionMode === "interactive"
@@ -573,7 +580,10 @@ export class RedisTaskStore implements TaskStore {
       this.listChangeProposals(task.id),
       this.getActiveInteractiveSession(task.id)
     ]);
-    const hasPendingCheckpoint = hydratedTask.hasPendingCheckpoint || proposals.some((proposal) => proposal.status === "pending");
+    const hasPendingCheckpoint = getUserVisiblePendingCheckpoint(
+      hydratedTask,
+      proposals.some((proposal) => proposal.status === "pending")
+    );
     return {
       ...this.withPendingCheckpointState({
         ...hydratedTask,
@@ -666,6 +676,7 @@ export class RedisTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
+    const autoApplyCheckpoints = input.autoApplyCheckpoints === true;
     const taskSource = "blank";
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
@@ -676,6 +687,7 @@ export class RedisTaskStore implements TaskStore {
       deadline,
       pinned: false,
       hasPendingCheckpoint: false,
+      autoApplyCheckpoints,
       activeInteractiveSession: false,
       activeTerminalSessionMode: null,
       ownerUserId,
@@ -749,6 +761,7 @@ export class RedisTaskStore implements TaskStore {
       executionStatus: task.executionStatus,
       executionAction: task.executionAction,
       hasPendingCheckpoint: task.hasPendingCheckpoint,
+      autoApplyCheckpoints: task.autoApplyCheckpoints,
       activeInteractiveSession: task.activeInteractiveSession,
       activeTerminalSessionMode: task.activeTerminalSessionMode,
       provider: task.provider,
@@ -1672,7 +1685,7 @@ export class RedisTaskStore implements TaskStore {
       revertedAt: null
     };
     const task = await this.getStoredTask(input.taskId);
-    const nextTask = task ? { ...task, hasPendingCheckpoint: true, logs: [] } : null;
+    const nextTask = task ? { ...task, hasPendingCheckpoint: task.autoApplyCheckpoints ? false : true, logs: [] } : null;
     const pipeline = this.redis
       .multi()
       .set(this.taskChangeProposalKey(proposal.id), JSON.stringify(proposal))
@@ -1710,7 +1723,12 @@ export class RedisTaskStore implements TaskStore {
     };
 
     const task = await this.getStoredTask(taskId);
-    const nextHasPendingCheckpoint = next.status === "pending" ? true : existing.status === "pending" ? false : (task?.hasPendingCheckpoint ?? false);
+    const nextHasPendingCheckpoint = task
+      ? getUserVisiblePendingCheckpoint(
+          task,
+          next.status === "pending" ? true : existing.status === "pending" ? false : false
+        )
+      : next.status === "pending";
     const nextTask = task ? { ...task, hasPendingCheckpoint: nextHasPendingCheckpoint, logs: [] } : null;
     const pipeline = this.redis.multi().set(this.taskChangeProposalKey(proposalId), JSON.stringify(next));
     if (nextTask) {
@@ -1788,6 +1806,7 @@ export class PostgresTaskStore implements TaskStore {
       deadline: normalizeDeadline(legacyTask.deadline),
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
+      autoApplyCheckpoints: legacyTask.autoApplyCheckpoints === true,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
       activeTerminalSessionMode:
         legacyTask.activeTerminalSessionMode === "git" || legacyTask.activeTerminalSessionMode === "interactive"
@@ -1967,7 +1986,10 @@ export class PostgresTaskStore implements TaskStore {
       this.listChangeProposals(task.id),
       this.getActiveInteractiveSession(task.id)
     ]);
-    const hasPendingCheckpoint = hydratedTask.hasPendingCheckpoint || proposals.some((proposal) => proposal.status === "pending");
+    const hasPendingCheckpoint = getUserVisiblePendingCheckpoint(
+      hydratedTask,
+      proposals.some((proposal) => proposal.status === "pending")
+    );
     return {
       ...this.withPendingCheckpointState({
         ...hydratedTask,
@@ -2080,6 +2102,7 @@ export class PostgresTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
+    const autoApplyCheckpoints = input.autoApplyCheckpoints === true;
     const taskSource = "blank";
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
@@ -2090,6 +2113,7 @@ export class PostgresTaskStore implements TaskStore {
       deadline,
       pinned: false,
       hasPendingCheckpoint: false,
+      autoApplyCheckpoints,
       activeInteractiveSession: false,
       activeTerminalSessionMode: null,
       ownerUserId,
@@ -2163,6 +2187,7 @@ export class PostgresTaskStore implements TaskStore {
       executionStatus: task.executionStatus,
       executionAction: task.executionAction,
       hasPendingCheckpoint: task.hasPendingCheckpoint,
+      autoApplyCheckpoints: task.autoApplyCheckpoints,
       activeInteractiveSession: task.activeInteractiveSession,
       activeTerminalSessionMode: task.activeTerminalSessionMode,
       provider: task.provider,
@@ -3004,7 +3029,7 @@ export class PostgresTaskStore implements TaskStore {
       revertedAt: null
     };
     const task = await this.getStoredTask(input.taskId);
-    const nextTask = task ? { ...task, hasPendingCheckpoint: true, logs: [] } : null;
+    const nextTask = task ? { ...task, hasPendingCheckpoint: task.autoApplyCheckpoints ? false : true, logs: [] } : null;
 
     await withPostgresTransaction(this.pool, async (client) => {
       await client.query(
@@ -3046,8 +3071,12 @@ export class PostgresTaskStore implements TaskStore {
     };
 
     const task = await this.getStoredTask(taskId);
-    const nextHasPendingCheckpoint =
-      next.status === "pending" ? true : existing.status === "pending" ? false : (task?.hasPendingCheckpoint ?? false);
+    const nextHasPendingCheckpoint = task
+      ? getUserVisiblePendingCheckpoint(
+          task,
+          next.status === "pending" ? true : existing.status === "pending" ? false : false
+        )
+      : next.status === "pending";
     const nextTask = task ? { ...task, hasPendingCheckpoint: nextHasPendingCheckpoint, logs: [] } : null;
 
     await withPostgresTransaction(this.pool, async (client) => {

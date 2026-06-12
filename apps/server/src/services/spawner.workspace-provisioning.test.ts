@@ -13,6 +13,7 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     deadline: null,
     pinned: false,
     hasPendingCheckpoint: false,
+    autoApplyCheckpoints: false,
     activeInteractiveSession: false,
     activeTerminalSessionMode: null,
     ownerUserId: null,

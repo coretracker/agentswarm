@@ -459,6 +459,7 @@ export interface Task {
   deadline: string | null;
   pinned: boolean;
   hasPendingCheckpoint: boolean;
+  autoApplyCheckpoints: boolean;
   activeInteractiveSession?: boolean;
   activeTerminalSessionMode?: TaskTerminalSessionMode | null;
   ownerUserId: string | null;
@@ -908,6 +909,7 @@ export interface CreateTaskInput {
   codexCredentialSource?: CodexCredentialSource;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
+  autoApplyCheckpoints?: boolean;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
 }
@@ -1003,6 +1005,7 @@ export interface UpdateTaskConfigInput {
   modelOverride?: string | null;
   codexCredentialSource?: CodexCredentialSource;
   branchStrategy?: TaskBranchStrategy;
+  autoApplyCheckpoints?: boolean;
 }
 
 export interface UpdateTaskPinInput {

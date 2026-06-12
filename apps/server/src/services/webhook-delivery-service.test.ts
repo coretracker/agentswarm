@@ -116,6 +116,7 @@ const baseTask = (): Task => ({
   deadline: null,
   pinned: false,
   hasPendingCheckpoint: false,
+  autoApplyCheckpoints: false,
   ownerUserId: "user-1",
   repoId: "repo-1",
   repoName: "Repo",
