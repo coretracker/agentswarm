@@ -7,7 +7,7 @@ import {
   type Task,
   type TaskAction
 } from "@agentswarm/shared-types";
-import { orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
+import { beginTaskStart } from "../lib/task-start-orchestrator.js";
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
 import { canUserAccessRepository, canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
 import type { RepositoryStore } from "../services/repository-store.js";
@@ -199,7 +199,7 @@ const startTask = async (context: McpToolContext, task: Task, action?: TaskActio
 
   const messages = await context.deps.taskStore.listMessages(task.id);
   const firstUserMessage = messages.find((message) => message.role === "user") ?? null;
-  const result = await orchestrateTaskStart(
+  const result = await beginTaskStart(
     {
       taskStore: context.deps.taskStore,
       scheduler: context.deps.scheduler,
@@ -215,17 +215,10 @@ const startTask = async (context: McpToolContext, task: Task, action?: TaskActio
     }
   );
   if (!result.ok) {
-    if (task.status === "draft") {
-      await context.deps.taskStore.setStatus(task.id, "draft", {
-        executionStatus: "idle",
-        executionAction: null,
-        enqueued: false
-      });
-    }
     throw new McpToolError(result.statusCode, result.message);
   }
 
-  return (await context.deps.taskStore.getTask(task.id)) ?? result.task;
+  return result.task;
 };
 
 export const createMcpTools = (): McpToolDefinition[] => [

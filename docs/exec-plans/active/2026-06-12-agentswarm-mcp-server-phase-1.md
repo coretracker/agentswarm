@@ -26,6 +26,7 @@
 - MCP endpoint supports `initialize`, `tools/list`, and `tools/call`.
 - Phase 1 tools are available: list repositories, list tasks, get task, create task, update draft, start task, add task message, update auto-apply config.
 - MCP tools enforce existing user/scopes/repository/task access restrictions.
+- MCP task creation/start returns promptly while repository checkout continues, with `executionStatus: "preparing"` visible to UI and MCP clients.
 - Large MCP responses are bounded/truncated.
 - Existing web/API behavior remains unchanged.
 
@@ -58,7 +59,7 @@
 - User Approval To Start: Yes
 - Baseline Checks Run: Yes; focused task-store, scheduler, and server lint passed before implementation
 - Visible Task List Updated: Yes
-- Task-Level Tests/Lint/Build: Focused MCP/token/task/scheduler tests passed; server and web TypeScript lint passed
+- Task-Level Tests/Lint/Build: Focused MCP/token/task/scheduler/start-orchestrator tests passed; server and web TypeScript lint passed
 - Self Review Complete: Yes
 - Code Review Complete: Agent self-review only
 - Final Verification Complete: Focused verification complete; full harness not run in this pass
@@ -66,6 +67,7 @@
 - Docs/Changelog Updated: README updated
 
 ## Validation Commands
+- `node --import tsx --test apps/server/src/lib/task-start-orchestrator.test.ts apps/server/src/mcp/tools.test.ts apps/server/src/services/scheduler.test.ts`
 - `node --import tsx --test apps/server/src/mcp/tools.test.ts apps/server/src/services/personal-access-token-store.test.ts apps/server/src/services/task-store.test.ts apps/server/src/services/scheduler.test.ts`
 - `npm run lint -w @agentswarm/server`
 - `npm run lint -w @agentswarm/web`
@@ -88,6 +90,7 @@
 - 2026-06-12 10:18 UTC: Added personal access token persistence/auth/routes, minimal HTTP JSON-RPC MCP endpoint, Phase 1 tools, focused tests, and README documentation.
 - 2026-06-12 10:24 UTC: Focused MCP/token/task/scheduler tests passed; server and web TypeScript lint passed; whitespace and human-gated flow checks passed.
 - 2026-06-12 10:55 UTC: Added Profile modal UI for generating/regenerating the MCP personal access token and showing the raw token only once.
+- 2026-06-12 11:40 UTC: Added non-blocking task start for MCP/UI create-start flows and exposed checkout as `executionStatus: "preparing"`.
 
 ## Decisions
 - 2026-06-12: Implement minimal HTTP JSON-RPC MCP endpoint without adding an SDK dependency in this pass.
@@ -98,3 +101,4 @@
 - Implemented Phase 1 tools: repository listing, task listing/detail, task creation, draft update, task start, task message/follow-up, and auto-apply config update.
 - Added personal access token create/list/revoke routes under `/auth/personal-access-tokens`; token values are returned only at creation and stored as hashes.
 - Personal access token management is available in the Profile modal for the default MCP token; lower-level token metadata remains available through the API.
+- Start/create-start requests now return while workspace checkout continues; clients should poll or subscribe for task updates instead of keeping the MCP tool call open until the agent run finishes.

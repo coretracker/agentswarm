@@ -19,7 +19,7 @@ import type { RepositoryStore } from "../services/repository-store.js";
 import type { SnippetStore } from "../services/snippet-store.js";
 import type { UserStore } from "../services/user-store.js";
 import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
-import { getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
+import { beginTaskStart, getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
 import { buildDiffAssistPromptContext, executeOpenAiDiffAssist } from "../services/openai-diff-assist-service.js";
 import { executeTaskPromptMagic } from "../services/openai-task-prompt-magic-service.js";
 import { CodexUtilityError, CodexUtilityUnavailableError, executeCodexUtility } from "../services/codex-utility-service.js";
@@ -1210,7 +1210,7 @@ export const registerTaskRoutes = (
       const draftTask = (await deps.taskStore.getTask(createdTask.id)) ?? createdTask;
       return reply.status(201).send(await withTaskCreatorName(deps.userStore, draftTask));
     }
-    const startResult = await orchestrateTaskStart(
+    const startResult = await beginTaskStart(
       {
         taskStore: deps.taskStore,
         scheduler: deps.scheduler,
@@ -1303,7 +1303,7 @@ export const registerTaskRoutes = (
     const startTask = promotedTask ?? task;
     const messages = await deps.taskStore.listMessages(task.id);
     const firstUserMessage = messages.find((message) => message.role === "user") ?? null;
-    const startResult = await orchestrateTaskStart(
+    const startResult = await beginTaskStart(
       {
         taskStore: deps.taskStore,
         scheduler: deps.scheduler,
@@ -1319,11 +1319,6 @@ export const registerTaskRoutes = (
       }
     );
     if (!startResult.ok) {
-      await deps.taskStore.setStatus(task.id, "draft", {
-        executionStatus: "idle",
-        executionAction: null,
-        enqueued: false
-      });
       return reply.status(startResult.statusCode).send({ message: startResult.message });
     }
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Task } from "@agentswarm/shared-types";
-import { getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "./task-start-orchestrator.js";
+import { beginTaskStart, getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "./task-start-orchestrator.js";
 
 const createTask = (overrides: Partial<Task> = {}): Task =>
   ({
@@ -55,9 +55,16 @@ describe("orchestrateTaskStart", () => {
     const task = createTask();
     const prepared: string[] = [];
     const triggered: Array<{ taskId: string; action: string }> = [];
+    const executionStates: string[] = [];
     const result = await orchestrateTaskStart(
       {
-        taskStore: { getTask: async () => task } as never,
+        taskStore: {
+          getTask: async () => task,
+          setExecutionState: async (_taskId: string, status: string) => {
+            executionStates.push(status);
+            return task;
+          }
+        } as never,
         scheduler: {
           triggerAction: async (taskId: string, action: string) => {
             triggered.push({ taskId, action });
@@ -81,6 +88,7 @@ describe("orchestrateTaskStart", () => {
     if (result.ok) {
       assert.equal(result.task.id, task.id);
     }
+    assert.deepEqual(executionStates, ["preparing", "idle"]);
     assert.deepEqual(prepared, [task.id]);
     assert.deepEqual(triggered, [{ taskId: task.id, action: "build" }]);
   });
@@ -89,7 +97,10 @@ describe("orchestrateTaskStart", () => {
     const task = createTask();
     const result = await orchestrateTaskStart(
       {
-        taskStore: { getTask: async () => task } as never,
+        taskStore: {
+          getTask: async () => task,
+          setExecutionState: async () => task
+        } as never,
         scheduler: { triggerAction: async () => false } as never,
         spawner: { prepareTaskWorkspaceOnly: async () => task } as never
       },
@@ -109,6 +120,59 @@ describe("orchestrateTaskStart", () => {
   it("maps new task action from task type", () => {
     assert.equal(getTriggerActionForNewTask(createTask({ taskType: "build" })), "build");
     assert.equal(getTriggerActionForNewTask(createTask({ taskType: "ask" })), "ask");
+  });
+});
+
+describe("beginTaskStart", () => {
+  it("returns preparing task before workspace preparation completes", async () => {
+    const task = createTask();
+    let resolvePrepare!: () => void;
+    const prepareStarted = new Promise<void>((resolve) => {
+      resolvePrepare = resolve;
+    });
+    const states: string[] = [];
+    const triggered: Array<{ taskId: string; action: string }> = [];
+
+    const result = await beginTaskStart(
+      {
+        taskStore: {
+          setExecutionState: async (_taskId: string, status: string) => {
+            states.push(status);
+            return { ...task, executionStatus: status as Task["executionStatus"] };
+          },
+          appendLog: async () => undefined
+        } as never,
+        scheduler: {
+          triggerAction: async (taskId: string, action: string) => {
+            triggered.push({ taskId, action });
+            return true;
+          }
+        } as never,
+        spawner: {
+          prepareTaskWorkspaceOnly: async () => {
+            await prepareStarted;
+            return task;
+          }
+        } as never
+      },
+      {
+        task,
+        fallbackMessage: "Task start failed"
+      }
+    );
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.task.executionStatus, "preparing");
+    }
+    assert.deepEqual(states, ["preparing"]);
+    assert.deepEqual(triggered, []);
+
+    resolvePrepare();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(states, ["preparing", "idle"]);
+    assert.deepEqual(triggered, [{ taskId: task.id, action: "build" }]);
   });
 });
 
