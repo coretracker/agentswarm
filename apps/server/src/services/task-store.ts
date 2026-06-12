@@ -354,7 +354,7 @@ export type TaskMetadata = Pick<
 >;
 
 export type CreateTaskChangeProposalInput = Omit<TaskChangeProposal, "resolvedAt" | "revertedAt"> & {
-  resolvedAt?: null;
+  resolvedAt?: string | null;
   revertedAt?: null;
 };
 
@@ -1688,7 +1688,7 @@ export class RedisTaskStore implements TaskStore {
     const proposal: TaskChangeProposal = {
       ...input,
       untrackedPathsAtCheckpoint: Array.isArray(input.untrackedPathsAtCheckpoint) ? input.untrackedPathsAtCheckpoint : [],
-      resolvedAt: null,
+      resolvedAt: input.status === "pending" || input.status === "applying" ? null : (input.resolvedAt ?? nowIso()),
       revertedAt: null
     };
     const task = await this.getStoredTask(input.taskId);
@@ -3038,7 +3038,7 @@ export class PostgresTaskStore implements TaskStore {
     const proposal: TaskChangeProposal = {
       ...input,
       untrackedPathsAtCheckpoint: Array.isArray(input.untrackedPathsAtCheckpoint) ? input.untrackedPathsAtCheckpoint : [],
-      resolvedAt: null,
+      resolvedAt: input.status === "pending" || input.status === "applying" ? null : (input.resolvedAt ?? nowIso()),
       revertedAt: null
     };
     const task = await this.getStoredTask(input.taskId);

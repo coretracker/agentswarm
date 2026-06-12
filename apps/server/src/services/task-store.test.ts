@@ -442,6 +442,37 @@ describe("TaskStore change proposals", () => {
     assert.equal(refreshed?.hasPendingCheckpoint, true);
   });
 
+  it("records initially applied checkpoints as resolved without pending task state", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
+
+    const proposal = await taskStore.createChangeProposal({
+      id: "proposal-applied",
+      taskId: task.id,
+      sourceType: "build_run",
+      sourceId: "run-1",
+      status: "applied",
+      fromRef: "abc123",
+      toRef: "def456",
+      diff: "diff --git a/a.ts b/a.ts",
+      diffStat: "1 file changed",
+      changedFiles: ["src/a.ts"],
+      diffTruncated: false,
+      untrackedPathsAtCheckpoint: [],
+      createdAt: "2026-06-12T08:00:00.000Z"
+    });
+
+    assert.ok(proposal);
+    assert.equal(proposal.status, "applied");
+    assert.equal(typeof proposal.resolvedAt, "string");
+    assert.equal(await taskStore.hasPendingChangeProposal(task.id), false);
+    const refreshed = await taskStore.getTask(task.id);
+    assert.equal(refreshed?.hasPendingCheckpoint, false);
+  });
+
   it("does not report a pending checkpoint blocker from stale stored task state", async () => {
     const redis = new FakeRedis();
     const taskStore = new RedisTaskStore(redis as never, {

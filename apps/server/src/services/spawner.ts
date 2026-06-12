@@ -3508,6 +3508,7 @@ export class SpawnerService {
           changedFiles: string[];
           diffTruncated: boolean;
           toRef: string;
+          alreadyApplied?: boolean;
         }
       | undefined
   ): Promise<TaskChangeProposal | null> {
@@ -3547,7 +3548,7 @@ export class SpawnerService {
       taskId: task.id,
       sourceType: "build_run",
       sourceId: runId,
-      status: task.autoApplyCheckpoints ? "applying" : "pending",
+      status: precomputed?.alreadyApplied ? "applied" : task.autoApplyCheckpoints ? "applying" : "pending",
       fromRef,
       toRef,
       diff,
@@ -3562,6 +3563,11 @@ export class SpawnerService {
       await this.taskStore.appendLog(
         task.id,
         "Checkpoint for this build could not be created because another pending checkpoint already exists."
+      );
+    } else if (proposal.status === "applied") {
+      await this.taskStore.appendLog(
+        task.id,
+        `Checkpoint ${proposal.id}: marked applied because the agent already created local commit ${toRef.slice(0, 7)}.`
       );
     }
 
@@ -5593,7 +5599,8 @@ export class SpawnerService {
                 diffStat,
                 changedFiles,
                 diffTruncated,
-                toRef
+                toRef,
+                alreadyApplied: providerCommitted
               })
             : null;
         const nextBranchDiff = branchDiff.length > 0 ? branchDiff : task.branchDiff;

@@ -117,6 +117,55 @@ describe("SpawnerService workspace provisioning", () => {
     });
   });
 
+  it("marks provider-created local commit checkpoints as already applied", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-provider-commit-"));
+    let createdStatus: string | null = null;
+    const logs: string[] = [];
+    const spawner = new SpawnerService(
+      {
+        getRun: async () => ({
+          id: "run-1",
+          taskId: "task-1",
+          changeProposalCheckpointRef: "abc123",
+          changeProposalUntrackedPaths: []
+        }),
+        createChangeProposal: async (input: any) => {
+          createdStatus = input.status;
+          return {
+            ...input,
+            resolvedAt: input.status === "applied" ? "2026-06-12T08:00:00.000Z" : null,
+            revertedAt: null
+          };
+        },
+        appendLog: async (_taskId: string, line: string) => {
+          logs.push(line);
+        }
+      } as never,
+      {
+        getRuntimeCredentials: async () => ({
+          githubToken: null,
+          gitUsername: "x-access-token"
+        })
+      } as never,
+      {} as never,
+      {} as never
+    );
+
+    const proposal = await spawner.createBuildRunChangeProposal(createTask(), "run-1", root, {
+      fromRef: "abc123",
+      diff: "diff --git a/src/example.ts b/src/example.ts",
+      diffStat: "1 file changed",
+      changedFiles: ["src/example.ts"],
+      diffTruncated: false,
+      toRef: "def456789",
+      alreadyApplied: true
+    });
+
+    assert.equal(createdStatus, "applied");
+    assert.equal(proposal?.status, "applied");
+    assert.equal(logs.some((line) => line.includes("marked applied because the agent already created local commit def4567")), true);
+  });
+
   it("ignores incomplete trailing raw JSON events during live timeline parsing", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
