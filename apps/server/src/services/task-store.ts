@@ -237,7 +237,7 @@ const withDerivedTaskState = (task: Task): Task => ({
 const getUserVisiblePendingCheckpoint = (
   task: Pick<Task, "hasPendingCheckpoint" | "autoApplyCheckpoints">,
   hasPendingProposal: boolean
-): boolean => (task.autoApplyCheckpoints ? false : task.hasPendingCheckpoint || hasPendingProposal);
+): boolean => (task.autoApplyCheckpoints ? false : hasPendingProposal);
 
 const normalizeCodexCredentialSource = (value: string | null | undefined): CodexCredentialSource => {
   if (value === "profile" || value === "global") {
@@ -1475,8 +1475,8 @@ export class RedisTaskStore implements TaskStore {
   }
 
   async hasPendingChangeProposal(taskId: string): Promise<boolean> {
-    const task = await this.getStoredTask(taskId);
-    return task?.hasPendingCheckpoint ?? false;
+    const proposals = await this.listChangeProposals(taskId);
+    return proposals.some((proposal) => proposal.status === "pending");
   }
 
   private normalizeStoredProposal(parsed: TaskChangeProposal): TaskChangeProposal {
@@ -2823,8 +2823,8 @@ export class PostgresTaskStore implements TaskStore {
   }
 
   async hasPendingChangeProposal(taskId: string): Promise<boolean> {
-    const task = await this.getStoredTask(taskId);
-    return task?.hasPendingCheckpoint ?? false;
+    const proposals = await this.listChangeProposals(taskId);
+    return proposals.some((proposal) => proposal.status === "pending");
   }
 
   async getActiveInteractiveSession(taskId: string): Promise<TaskActiveInteractiveSession | null> {

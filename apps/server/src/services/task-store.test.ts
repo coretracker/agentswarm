@@ -349,4 +349,20 @@ describe("TaskStore change proposals", () => {
     assert.equal(refreshed?.autoApplyCheckpoints, true);
     assert.equal(refreshed?.hasPendingCheckpoint, false);
   });
+
+  it("does not report a pending checkpoint blocker from stale stored task state", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
+    await taskStore.patchTask(task.id, {
+      hasPendingCheckpoint: true,
+      status: "awaiting_review"
+    });
+
+    assert.equal(await taskStore.hasPendingChangeProposal(task.id), false);
+    const refreshed = await taskStore.getTask(task.id);
+    assert.equal(refreshed?.hasPendingCheckpoint, false);
+  });
 });
