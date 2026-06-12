@@ -414,5 +414,25 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       ALTER TABLE system_settings
       ADD COLUMN IF NOT EXISTS claude_models jsonb NOT NULL DEFAULT '[]'::jsonb;
     `
+  },
+  {
+    id: "20260612_01_personal_access_tokens",
+    sql: `
+      CREATE TABLE IF NOT EXISTS personal_access_tokens (
+        id text PRIMARY KEY,
+        user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name text NOT NULL,
+        token_hash text NOT NULL UNIQUE,
+        token_prefix text NOT NULL,
+        scopes jsonb NOT NULL,
+        expires_at text NULL,
+        last_used_at text NULL,
+        revoked_at text NULL,
+        created_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS personal_access_tokens_user_created_at_idx
+        ON personal_access_tokens(user_id, created_at DESC);
+    `
   }
 ];

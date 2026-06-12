@@ -1,7 +1,9 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
+import { ALL_PERMISSION_SCOPES, type PermissionScope } from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import type { CredentialStore } from "../services/credential-store.js";
+import type { PersonalAccessTokenStore } from "../services/personal-access-token-store.js";
 import type { SessionStore } from "../services/session-store.js";
 import type { UserStore } from "../services/user-store.js";
 
@@ -30,6 +32,12 @@ const updateProfileSchema = z.object({
   agentResponsePreference: responsePreferenceSchema.optional()
 });
 
+const personalAccessTokenSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  scopes: z.array(z.enum(ALL_PERMISSION_SCOPES as [PermissionScope, ...PermissionScope[]])).optional(),
+  expiresAt: z.string().trim().min(1).nullable().optional()
+});
+
 export const registerAuthRoutes = (
   app: FastifyInstance,
   deps: {
@@ -37,6 +45,7 @@ export const registerAuthRoutes = (
     userStore: UserStore;
     sessionStore: SessionStore;
     credentialStore: CredentialStore;
+    personalAccessTokenStore: PersonalAccessTokenStore;
   }
 ): void => {
   app.post("/auth/login", async (request, reply) => {
@@ -73,6 +82,38 @@ export const registerAuthRoutes = (
       agentResponsePreference: authUser.agentResponsePreference,
       codexAuthJsonConfigured: await deps.credentialStore.hasCodexAuthJsonForUser(authUser.id)
     };
+  });
+
+  app.get("/auth/personal-access-tokens", { preHandler: deps.auth.requireAuth() }, async (request) => {
+    return deps.personalAccessTokenStore.listTokens(request.auth!.user.id);
+  });
+
+  app.post("/auth/personal-access-tokens", { preHandler: deps.auth.requireAuth() }, async (request, reply) => {
+    const parsed = personalAccessTokenSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    try {
+      const token = await deps.personalAccessTokenStore.createToken({
+        userId: request.auth!.user.id,
+        name: parsed.data.name,
+        scopes: parsed.data.scopes,
+        expiresAt: parsed.data.expiresAt ?? null
+      });
+      return reply.status(201).send(token);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Personal access token could not be created.";
+      return reply.status(400).send({ message });
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>("/auth/personal-access-tokens/:id", { preHandler: deps.auth.requireAuth() }, async (request, reply) => {
+    const token = await deps.personalAccessTokenStore.revokeToken(request.auth!.user.id, request.params.id);
+    if (!token) {
+      return reply.status(404).send({ message: "Personal access token not found" });
+    }
+    return reply.send(token);
   });
 
   app.patch("/auth/profile", { preHandler: deps.auth.requireAuth() }, async (request, reply) => {

@@ -13,6 +13,7 @@ import { PostgresTaskStore } from "./task-store.js";
 import { PostgresUserStore } from "./user-store.js";
 import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
 import { RedisGitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
+import { PostgresPersonalAccessTokenStore } from "./personal-access-token-store.js";
 
 export const createPostgresStores = (
   pool: Pool,
@@ -29,6 +30,7 @@ export const createPostgresStores = (
   const credentialStore = new PostgresCredentialStore(pool);
   const roleStore = new PostgresRoleStore(pool);
   const userStore = new PostgresUserStore(pool, roleStore, repositoryStore);
+  const personalAccessTokenStore = new PostgresPersonalAccessTokenStore(pool, userStore);
   const sessionStore = new RedisSessionStore(redisClients.command, sessionTtlDays);
   const settingsStore = new PostgresSettingsStore(pool, eventBus, credentialStore);
 
@@ -42,6 +44,7 @@ export const createPostgresStores = (
     credentialStore,
     roleStore,
     userStore,
+    personalAccessTokenStore,
     sessionStore,
     settingsStore
   };

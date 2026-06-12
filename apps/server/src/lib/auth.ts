@@ -3,6 +3,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AuthSession, PermissionScope, RealtimeEvent } from "@agentswarm/shared-types";
 import type { Server as SocketIOServer, Socket } from "socket.io";
 import type { CredentialStore } from "../services/credential-store.js";
+import type { PersonalAccessTokenStore } from "../services/personal-access-token-store.js";
 import type { SessionStore } from "../services/session-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { UserStore } from "../services/user-store.js";
@@ -62,6 +63,7 @@ export interface AuthService {
   requireAllScopes: (scopes: PermissionScope[]) => AuthPreHandler;
   /** Cookie-based auth for raw Node HTTP upgrades (e.g. interactive terminal WebSocket). */
   authenticateCookieHeader: (headers: IncomingHttpHeaders) => Promise<RequestAuthContext | null>;
+  authenticateBearerToken: (token: string | null) => Promise<RequestAuthContext | null>;
   setSessionCookie: (reply: FastifyReply, token: string, expiresAt: string) => void;
   clearSessionCookie: (reply: FastifyReply) => void;
   clearSessionFromRequest: (request: FastifyRequest) => Promise<void>;
@@ -81,13 +83,15 @@ export const createAuthService = ({
   sessionStore,
   userStore,
   taskStore,
-  credentialStore
+  credentialStore,
+  personalAccessTokenStore
 }: {
   cookieName: string;
   sessionStore: SessionStore;
   userStore: UserStore;
   taskStore: TaskStore;
   credentialStore: CredentialStore;
+  personalAccessTokenStore?: PersonalAccessTokenStore;
 }): AuthService => {
   const getRequestToken = (request: FastifyRequest): string | null => {
     const token = request.cookies?.[cookieName];
@@ -123,6 +127,34 @@ export const createAuthService = ({
       session: {
         user: sessionUser,
         expiresAt: session.expiresAt
+      }
+    };
+  };
+
+  const buildBearerAuthContext = async (token: string | null): Promise<RequestAuthContext | null> => {
+    if (!token || !personalAccessTokenStore) {
+      return null;
+    }
+
+    const user = await personalAccessTokenStore.authenticateToken(token);
+    if (!user) {
+      return null;
+    }
+    const codexAuthJsonConfigured = await credentialStore.hasCodexAuthJsonForUser(user.id);
+    const sessionUser = {
+      ...user,
+      codexAuthJsonConfigured
+    };
+    const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+
+    return {
+      user: sessionUser,
+      scopes: new Set(sessionUser.scopes),
+      sessionToken: "",
+      expiresAt,
+      session: {
+        user: sessionUser,
+        expiresAt
       }
     };
   };
@@ -265,6 +297,9 @@ export const createAuthService = ({
       const cookies = parseCookieHeader(cookieHeader);
       const token = cookies[cookieName]?.trim() ? cookies[cookieName].trim() : null;
       return buildAuthContext(token);
+    },
+    authenticateBearerToken(token) {
+      return buildBearerAuthContext(token);
     },
     setSessionCookie(reply, token, expiresAt) {
       reply.setCookie(cookieName, token, {

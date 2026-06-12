@@ -27,6 +27,7 @@ import { registerImportRoutes } from "./routes/imports.js";
 import { registerSnippetRoutes } from "./routes/snippets.js";
 import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
+import { registerMcpRoutes } from "./mcp/server.js";
 
 const readHeaderValue = (value: string | string[] | undefined): string | null => {
   if (typeof value === "string") {
@@ -134,6 +135,7 @@ const bootstrap = async (): Promise<void> => {
     credentialStore,
     roleStore,
     userStore,
+    personalAccessTokenStore,
     sessionStore,
     settingsStore
   } = createPostgresStores(
@@ -147,7 +149,8 @@ const bootstrap = async (): Promise<void> => {
     sessionStore,
     cookieName: env.AUTH_COOKIE_NAME,
     taskStore,
-    credentialStore
+    credentialStore,
+    personalAccessTokenStore
   });
   const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
   const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
@@ -163,7 +166,7 @@ const bootstrap = async (): Promise<void> => {
     password: env.DEFAULT_ADMIN_PASSWORD
   });
 
-  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore });
+  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore, personalAccessTokenStore });
   registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
   registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
   registerTaskRoutes(app, {
@@ -189,6 +192,15 @@ const bootstrap = async (): Promise<void> => {
     scheduler,
     spawner,
     snippetStore
+  });
+  registerMcpRoutes(app, {
+    auth,
+    repositoryStore,
+    settingsStore,
+    taskStore,
+    taskQueueStore,
+    scheduler,
+    spawner
   });
 
   app.get("/health", async () => ({ ok: true }));

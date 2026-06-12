@@ -317,6 +317,36 @@ The repository uses execution-plan and human-gated-flow checks for non-trivial c
 - `docs/development/pr-workflow.md`
 - `docs/development/agent-review.md`
 
+## MCP Server
+
+AgentSwarm exposes a Phase 1 MCP-compatible HTTP JSON-RPC endpoint at `/mcp`.
+
+Authentication uses user personal access tokens:
+
+1. Create a token with `POST /auth/personal-access-tokens` while signed in.
+2. Store the returned `token` securely; it is only returned once.
+3. Call `/mcp` with `Authorization: Bearer <token>`.
+4. Revoke tokens with `DELETE /auth/personal-access-tokens/:id`.
+
+Supported MCP methods:
+
+- `initialize`
+- `tools/list`
+- `tools/call`
+
+Phase 1 tools:
+
+- `agentswarm_list_repositories`
+- `agentswarm_list_tasks`
+- `agentswarm_get_task`
+- `agentswarm_create_task`
+- `agentswarm_update_draft`
+- `agentswarm_start_task`
+- `agentswarm_add_task_message`
+- `agentswarm_update_task_config`
+
+Checkpoint mutation, push/merge, attachments, terminal control, and summarization are intentionally deferred to later phases.
+
 ## FAQ
 
 ### Where do I configure API keys?
