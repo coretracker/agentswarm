@@ -83,6 +83,40 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
   });
 
+  it("allows internal checkpoint apply flow to bypass the running-task guard", async () => {
+    const spawner = new SpawnerService(
+      {
+        getChangeProposal: async () => ({
+          id: "proposal-1",
+          taskId: "task-1",
+          sourceType: "build_run",
+          sourceId: "run-1",
+          status: "applied",
+          fromRef: "abc123",
+          toRef: "def456",
+          diff: "diff --git a/src/example.ts b/src/example.ts",
+          diffStat: "1 file changed",
+          changedFiles: ["src/example.ts"],
+          diffTruncated: false,
+          untrackedPathsAtCheckpoint: [],
+          createdAt: "2026-06-12T08:00:00.000Z",
+          resolvedAt: null,
+          revertedAt: null
+        })
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never
+    );
+
+    const runningTask = createTask({ executionStatus: "running" });
+    const bypassed = await spawner.applyChangeProposal(runningTask, "proposal-1", { allowDuringExecution: true });
+    assert.deepEqual(bypassed, {
+      ok: false,
+      message: "Checkpoint must be pending or reverted to apply."
+    });
+  });
+
   it("ignores incomplete trailing raw JSON events during live timeline parsing", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;

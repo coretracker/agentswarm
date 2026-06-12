@@ -3067,7 +3067,10 @@ export class SpawnerService {
     }
 
     const commitMessage = await this.generateAutoApplyCommitSubject(task, proposal);
-    const result = await this.applyChangeProposal(task, proposal.id, { commitMessage });
+    const result = await this.applyChangeProposal(task, proposal.id, {
+      commitMessage,
+      allowDuringExecution: true
+    });
     if (!result.ok) {
       await this.taskStore.patchTask(taskId, { autoApplyCheckpoints: false });
       await this.taskStore.appendLog(
@@ -3838,14 +3841,15 @@ export class SpawnerService {
   async applyChangeProposal(
     task: Task,
     proposalId: string,
-    options?: { commitMessage?: string | null }
+    options?: { commitMessage?: string | null; allowDuringExecution?: boolean }
   ): Promise<{ ok: true } | { ok: false; message: string }> {
     const proposal = await this.taskStore.getChangeProposal(proposalId);
     if (!proposal || proposal.taskId !== task.id) {
       return { ok: false, message: "Proposal not found." };
     }
     const checkpointBlocked =
-      task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running"
+      !options?.allowDuringExecution &&
+      (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running")
         ? "Checkpoint actions are unavailable while task execution is queued or running."
         : null;
     if (checkpointBlocked) {
