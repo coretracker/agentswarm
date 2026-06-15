@@ -94,6 +94,7 @@
 - 2026-06-12 10:55 UTC: Added Profile modal UI for generating/regenerating the MCP personal access token and showing the raw token only once.
 - 2026-06-12 11:40 UTC: Added non-blocking task start for MCP/UI create-start flows and exposed checkout as `executionStatus: "preparing"`.
 - 2026-06-12 11:55 UTC: Added MCP repository branch discovery and exposed `branchStrategy` in compact task responses.
+- 2026-06-15 08:42 UTC: Closed Phase 1 as complete; Phase 2 checkpoint review tools remain tracked separately.
 
 ## Decisions
 - 2026-06-12: Implement minimal HTTP JSON-RPC MCP endpoint without adding an SDK dependency in this pass.

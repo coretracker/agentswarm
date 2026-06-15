@@ -1,0 +1,1 @@
+Remove legacy logs from agentswarm
