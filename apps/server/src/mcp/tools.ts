@@ -446,6 +446,8 @@ export const createMcpTools = (): McpToolDefinition[] => [
       if (action !== "comment") {
         if (task.executionStatus === "idle" && !isBusy && !hasOlderPendingActionMessages && !(await context.deps.taskStore.hasPendingChangeProposal(task.id)) && message) {
           await context.deps.scheduler.triggerAction(task.id, action, { content: input.content }, { promptMessageId: message.id });
+        } else if ((task.executionStatus === "failed" || task.executionStatus === "cancelled") && !(await context.deps.taskStore.hasPendingChangeProposal(task.id))) {
+          await context.deps.scheduler.triggerNextPendingAction(task.id, "manual");
         }
       }
       return { task: compactTask((await context.deps.taskStore.getTask(task.id)) ?? task), messageId: message?.id ?? null };

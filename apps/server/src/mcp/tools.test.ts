@@ -259,4 +259,69 @@ describe("MCP Phase 1 tools", () => {
       createdAt: "2026-01-01T00:00:00.000Z"
     });
   });
+
+  it("resumes the next pending follow-up when a message is added to a failed task", async () => {
+    const tool = toolByName("agentswarm_add_task_message");
+    const task = createTask({
+      status: "open",
+      executionStatus: "failed",
+      errorMessage: "Runtime container exited with code 1"
+    });
+    const messages: unknown[] = [];
+    const runNextCalls: Array<{ taskId: string; reason: string }> = [];
+
+    const result = await tool.handler(
+      {
+        taskId: task.id,
+        action: "build",
+        content: "Try the next fix"
+      },
+      {
+        user,
+        deps: {
+          repositoryStore: {} as never,
+          githubImportService: {} as never,
+          settingsStore: {} as never,
+          taskStore: {
+            getTask: async () => task,
+            hasPendingActionMessage: async () => false,
+            hasPendingChangeProposal: async () => false,
+            getActiveInteractiveSession: async () => null,
+            appendMessage: async (_taskId: string, input: unknown) => {
+              messages.push(input);
+              return {
+                id: "message-1",
+                taskId: task.id,
+                role: "user",
+                action: "build",
+                content: "Try the next fix",
+                queueState: "pending",
+                createdAt: "2026-01-01T00:00:00.000Z"
+              };
+            }
+          },
+          taskQueueStore: {} as never,
+          scheduler: {
+            triggerNextPendingAction: async (taskId: string, reason: string) => {
+              runNextCalls.push({ taskId, reason });
+              return true;
+            }
+          },
+          spawner: {} as never
+        } as never
+      }
+    );
+
+    assert.deepEqual(messages, [
+      {
+        role: "user",
+        action: "build",
+        content: "Try the next fix",
+        queueState: "pending",
+        queueSource: "user"
+      }
+    ]);
+    assert.deepEqual(runNextCalls, [{ taskId: "task-1", reason: "manual" }]);
+    assert.equal((result as { messageId: string }).messageId, "message-1");
+  });
 });

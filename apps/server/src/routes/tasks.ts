@@ -1764,6 +1764,8 @@ export const registerTaskRoutes = (
           promptMessageId: createdMessage.id
         }
       );
+    } else if ((task.executionStatus === "failed" || task.executionStatus === "cancelled") && !(await deps.taskStore.hasPendingChangeProposal(task.id))) {
+      await deps.scheduler.triggerNextPendingAction(task.id, "manual");
     }
 
     const refreshed = await deps.taskStore.getTask(task.id);
