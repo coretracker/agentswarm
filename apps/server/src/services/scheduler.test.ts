@@ -304,4 +304,90 @@ describe("SchedulerService.triggerAction", () => {
     ]);
     assert.deepEqual(autoTriggers, [{ taskId: "task-6", reason: "auto" }]);
   });
+
+  it("unsticks stale queued tasks before resuming the next pending follow-up", async () => {
+    const removedTasks: string[] = [];
+    const idleTransitions: Array<{ taskId: string; status: string; patch: unknown }> = [];
+    const logs: string[] = [];
+    const autoTriggers: Array<{ taskId: string; reason: string }> = [];
+
+    const taskStore = {
+      getTask: async () => ({
+        id: "task-7",
+        status: "open",
+        executionStatus: "queued"
+      }),
+      hasPendingChangeProposal: async () => false,
+      getActiveInteractiveSession: async () => null,
+      listRuns: async () => [],
+      hasPendingActionMessage: async () => true,
+      setExecutionState: async (taskId: string, status: string, patch: unknown) => {
+        idleTransitions.push({ taskId, status, patch });
+        return null;
+      },
+      appendLog: async (_taskId: string, line: string) => {
+        logs.push(line);
+      }
+    };
+    const taskQueueStore = {
+      removeTask: async (taskId: string) => {
+        removedTasks.push(taskId);
+      }
+    };
+    const scheduler = new SchedulerService(taskStore as never, taskQueueStore as never, {} as never, {} as never);
+    (scheduler as any).triggerNextPendingAction = async (taskId: string, reason: string) => {
+      autoTriggers.push({ taskId, reason });
+      return true;
+    };
+
+    const accepted = await scheduler.unstickTaskQueue("task-7", "manual");
+
+    assert.equal(accepted, true);
+    assert.deepEqual(removedTasks, ["task-7"]);
+    assert.deepEqual(idleTransitions, [
+      {
+        taskId: "task-7",
+        status: "idle",
+        patch: {
+          enqueued: false,
+          executionAction: null,
+          errorMessage: null
+        }
+      }
+    ]);
+    assert.match(logs[0] ?? "", /reset stale queued state/i);
+    assert.deepEqual(autoTriggers, [{ taskId: "task-7", reason: "manual" }]);
+  });
+
+  it("does not unstick a task while a run is still active", async () => {
+    let removed = false;
+    let triggered = false;
+    const taskStore = {
+      getTask: async () => ({
+        id: "task-8",
+        status: "open",
+        executionStatus: "queued"
+      }),
+      hasPendingChangeProposal: async () => false,
+      getActiveInteractiveSession: async () => null,
+      listRuns: async () => [{ id: "run-1", taskId: "task-8", action: "build", status: "running" }],
+      hasPendingActionMessage: async () => true
+    };
+    const taskQueueStore = {
+      removeTask: async () => {
+        removed = true;
+      }
+    };
+    const scheduler = new SchedulerService(taskStore as never, taskQueueStore as never, {} as never, {} as never);
+    (scheduler as any).triggerNextPendingAction = async () => {
+      triggered = true;
+      return true;
+    };
+
+    const accepted = await scheduler.unstickTaskQueue("task-8", "manual");
+
+    assert.equal(accepted, false);
+    assert.equal(removed, false);
+    assert.equal(triggered, false);
+  });
 });

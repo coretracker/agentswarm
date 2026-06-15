@@ -2340,8 +2340,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     () => chatTimeline,
     [chatTimeline]
   );
-  const queuePausedAfterFailure = Boolean(task && (task.executionStatus === "failed" || task.executionStatus === "cancelled") && pendingQueuedMessages.length > 0);
-  const canRunNextQueuedItem = canEditTask && !!task && !isArchived && queuePausedAfterFailure;
+  const canUnstickQueue = Boolean(
+    canEditTask &&
+      task &&
+      !isArchived &&
+      !isDraft &&
+      pendingChangeProposal === null &&
+      pendingQueuedMessages.length > 0 &&
+      task.executionStatus !== "preparing" &&
+      task.executionStatus !== "running"
+  );
   const historyTotalCount = historicalChatTimeline.length;
   const loadedHistoryPageCount = Math.max(1, Math.ceil(Math.max(0, historyTotalCount) / HISTORY_PAGE_SIZE));
   const hasActiveTerminalHistoryEntry = activeTerminalHistoryEntry !== null;
@@ -2690,14 +2698,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
-  const handleRunNextQueuedItem = async () => {
+  const handleUnstickQueue = async () => {
     if (!task) {
       return;
     }
 
     setSubmitting("message");
     try {
-      const updatedTask = await api.runNextQueuedTaskMessage(task.id);
+      const updatedTask = await api.unstickTaskQueue(task.id);
       setTask((current) =>
         current
           ? {
@@ -2707,9 +2715,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             }
           : updatedTask
       );
-      messageApi.success("Next queued follow-up started");
+      messageApi.success("Queue resumed");
     } catch (error) {
-      showTaskActionError(error, "Next queued follow-up could not be started");
+      showTaskActionError(error, "Queue could not be resumed");
     } finally {
       setSubmitting(null);
     }
@@ -6073,13 +6081,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                               Cancel
                             </Button>
                           ) : null}
-                          {canRunNextQueuedItem ? (
+                          {canUnstickQueue ? (
                             <Button
-                              onClick={() => void handleRunNextQueuedItem()}
+                              onClick={() => void handleUnstickQueue()}
                               icon={<ArrowRightOutlined />}
                               loading={submitting === "message"}
                             >
-                              Run Next Queued Item
+                              Unstick Queue
                             </Button>
                           ) : null}
 

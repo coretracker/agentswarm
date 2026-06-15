@@ -1833,6 +1833,29 @@ export const registerTaskRoutes = (
     }
   );
 
+  app.post<{ Params: { id: string } }>(
+    "/tasks/:id/queue/unstick",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const accepted = await deps.scheduler.unstickTaskQueue(task.id, "manual");
+      if (!accepted) {
+        return reply.status(409).send({ message: "No stuck queued follow-up is ready to resume." });
+      }
+
+      const refreshed = await deps.taskStore.getTask(task.id);
+      return reply.send(refreshed);
+    }
+  );
+
   app.patch<{ Params: { id: string; messageId: string } }>(
     "/tasks/:id/messages/:messageId",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },

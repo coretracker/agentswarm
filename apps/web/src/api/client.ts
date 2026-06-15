@@ -442,6 +442,10 @@ export const api = {
     request<Task>(`/tasks/${taskId}/queue/run-next`, {
       method: "POST"
     }),
+  unstickTaskQueue: (taskId: string) =>
+    request<Task>(`/tasks/${taskId}/queue/unstick`, {
+      method: "POST"
+    }),
   cancelTask: (id: string) =>
     request<Task>(`/tasks/${id}/cancel`, {
       method: "POST"

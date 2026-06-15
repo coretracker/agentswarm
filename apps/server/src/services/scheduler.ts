@@ -121,6 +121,46 @@ export class SchedulerService {
     );
   }
 
+  async unstickTaskQueue(taskId: string, reason: QueueReason = "manual"): Promise<boolean> {
+    const task = await this.taskStore.getTask(taskId);
+    if (!task || task.status === "archived" || task.status === "draft") {
+      return false;
+    }
+
+    if (isExecutionActive(task)) {
+      return false;
+    }
+
+    if (await this.taskStore.hasPendingChangeProposal(taskId)) {
+      return false;
+    }
+
+    if (await this.taskStore.getActiveInteractiveSession(taskId)) {
+      return false;
+    }
+
+    const runningRuns = (await this.taskStore.listRuns(taskId)).filter((run) => run.status === "running");
+    if (runningRuns.length > 0) {
+      return false;
+    }
+
+    if (!(await this.taskStore.hasPendingActionMessage(taskId))) {
+      return false;
+    }
+
+    if (isExecutionQueued(task)) {
+      await this.taskQueueStore.removeTask(taskId);
+      await this.taskStore.setExecutionState(taskId, "idle", {
+        enqueued: false,
+        executionAction: null,
+        errorMessage: null
+      });
+      await this.taskStore.appendLog(taskId, "Scheduler: reset stale queued state before resuming queued follow-up.");
+    }
+
+    return this.triggerNextPendingAction(taskId, reason);
+  }
+
   async triggerPostflight(taskId: string): Promise<boolean> {
     const task = await this.taskStore.getTask(taskId);
     if (!task || task.taskType !== "build") {
