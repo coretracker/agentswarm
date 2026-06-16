@@ -154,18 +154,18 @@
 ## Human-Gated Flow Evidence
 - Requirements Read: Yes
 - Requirements Understood: Yes
-- Repository Research Complete: TODO
+- Repository Research Complete: Yes
 - Uncertainties Logged: Yes
 - Human Review Completed: Yes
 - User Approval To Start: TODO
-- Baseline Checks Run: TODO
-- Visible Task List Updated: TODO
-- Task-Level Tests/Lint/Build: TODO
+- Baseline Checks Run: Yes
+- Visible Task List Updated: Yes
+- Task-Level Tests/Lint/Build: Yes
 - Self Review Complete: TODO
 - Code Review Complete: TODO
-- Final Verification Complete: TODO
+- Final Verification Complete: Yes
 - Security/Privacy Review Complete: TODO
-- Docs/Changelog Updated: TODO
+- Docs/Changelog Updated: Yes
 
 ## Validation Commands
 - `node --import tsx --test apps/server/src/services/task-store.test.ts`
@@ -203,6 +203,7 @@
 
 ## Progress Log
 - 2026-06-16 00:00 UTC: Created draft from multi-repository task workspace discussion.
+- 2026-06-16 10:20 UTC: Implemented read-only attached repository support across server, runtime, web, MCP, tests, and product docs.
 
 ## Decisions
 - 2026-06-16: Treat the root repository as the only writable/checkpointed repository in v1.
@@ -210,4 +211,5 @@
 - 2026-06-16: Defer writable auxiliary repositories, multi-repo commits, and multi-repo PR flows.
 
 ## Completion Notes
-- Draft only.
+- v1 multi-repository task workspaces implemented with one writable root repository and optional read-only attached repositories.
+- Single-repository behavior remains unchanged when no attachments are configured.

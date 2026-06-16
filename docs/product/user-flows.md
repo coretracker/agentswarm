@@ -231,3 +231,10 @@ flowchart TD
 
   G2 -- Checkpoint --> G22 --> G23 --> G24
 ```
+
+## Attached Repositories
+
+1. When creating a task or editing a draft, you can optionally add read-only attached repositories.
+2. Each attached repository needs a stable mount name. The root repository remains the writable workspace root.
+3. On task detail, attached repositories are shown alongside the root repository. When the task is idle and no terminal is active, eligible tasks can open the attachment editor to add new read-only repositories or, for draft tasks, adjust the full attachment list.
+4. During runs and active interactive terminal sessions, attachment changes are blocked so the workspace layout stays stable.

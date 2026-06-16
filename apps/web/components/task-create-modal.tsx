@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import dayjs from "dayjs";
-import { getDefaultModelForProvider, type Task, type UpdateTaskDraftInput } from "@agentswarm/shared-types";
+import { getDefaultModelForProvider, type Task, type TaskAttachedRepositoryInput, type UpdateTaskDraftInput } from "@agentswarm/shared-types";
 import { App, Button, Form, Modal } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
 import { trackEvent } from "../src/utils/analytics";
@@ -28,6 +28,12 @@ const getDraftTaskInitialValues = (task: Task): Partial<TaskDefinitionFormValues
   title: task.title,
   deadline: task.deadline ? dayjs(task.deadline) : null,
   repoId: task.repoId,
+  attachedRepositories: (task.attachedRepositories ?? []).map((attachment): TaskAttachedRepositoryInput => ({
+    repositoryId: attachment.repositoryId,
+    mountName: attachment.mountName,
+    accessMode: attachment.accessMode,
+    purpose: attachment.purpose
+  })),
   prompt: task.prompt === "(No prompt provided.)" ? "" : task.prompt,
   notes: task.notes ?? "",
   taskType: task.taskType,
@@ -50,7 +56,8 @@ const buildDraftUpdateInput = (values: TaskDefinitionFormValues): UpdateTaskDraf
   modelOverride: values.model?.trim() || null,
   ...(values.provider === "codex" || !values.provider ? { codexCredentialSource: values.codexCredentialSource ?? "auto" } : {}),
   baseBranch: values.baseBranch?.trim() ?? "",
-  branchStrategy: values.branchStrategy ?? "feature_branch"
+  branchStrategy: values.branchStrategy ?? "feature_branch",
+  ...(values.attachedRepositories ? { attachedRepositories: values.attachedRepositories } : {})
 });
 
 export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask }: TaskCreateModalProps) {

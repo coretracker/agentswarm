@@ -22,6 +22,7 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     repoName: "repo",
     repoUrl: "https://github.com/example/repo.git",
     repoDefaultBranch: "main",
+    attachedRepositories: [],
     taskType: "build",
     provider: "codex",
     providerProfile: "high",

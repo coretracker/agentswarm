@@ -32,6 +32,7 @@ export const compactTask = (task: Task) => ({
   title: task.title,
   repoId: task.repoId,
   repoName: task.repoName,
+  attachedRepositories: task.attachedRepositories,
   taskType: task.taskType,
   status: task.status,
   workflowStatus: task.workflowStatus,
@@ -64,7 +65,8 @@ export const detailTask = (task: Task) => {
     deadline: task.deadline,
     startedAt: task.startedAt,
     finishedAt: task.finishedAt,
-    lastAction: task.lastAction
+    lastAction: task.lastAction,
+    attachedRepositories: task.attachedRepositories
   };
 };
 

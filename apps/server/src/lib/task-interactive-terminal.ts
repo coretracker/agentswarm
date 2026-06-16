@@ -1,6 +1,6 @@
 import { spawn as spawnChild } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, constants, rm } from "node:fs/promises";
+import { access, constants, mkdir, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import path from "node:path";
 import type { Duplex } from "node:stream";
@@ -48,6 +48,7 @@ import {
   buildGitTerminalEnvEntries,
   buildInteractiveWorkspaceGitEnvEntries
 } from "./task-interactive-terminal-git-env.js";
+import { buildTaskWorkspaceEnvEntries, remapTaskWorkspaceMapRoot } from "./task-workspace.js";
 import {
   emitDockerSocketEnabledEventOnce,
   emitNestedContainerSpawnedEvent,
@@ -213,7 +214,8 @@ type InteractiveRuntimeCredentials = Awaited<ReturnType<SettingsStore["getRuntim
 
 function resolveGitTerminalRuntimeConfig(
   credentials: InteractiveRuntimeCredentials,
-  gitIdentity?: GitCommitIdentity | null
+  gitIdentity?: GitCommitIdentity | null,
+  additionalSafeDirectories: string[] = []
 ):
   | {
       ok: true;
@@ -235,6 +237,7 @@ function resolveGitTerminalRuntimeConfig(
     image,
     envEntries: buildGitTerminalEnvEntries({
       workspacePath: INTERACTIVE_WORKSPACE_PATH,
+      additionalSafeDirectories,
       githubToken: credentials.githubToken,
       gitUsername: credentials.gitUsername,
       gitIdentity
@@ -255,7 +258,8 @@ function resolveInteractiveTerminalModel(task: Pick<TaskMetadata, "provider" | "
 function resolveInteractiveTerminalRuntimeConfig(
   task: Pick<TaskMetadata, "provider" | "providerProfile" | "modelOverride">,
   settings: InteractiveRuntimeSettings,
-  credentials: InteractiveRuntimeCredentials
+  credentials: InteractiveRuntimeCredentials,
+  additionalSafeDirectories: string[] = []
 ): InteractiveTerminalRuntimeConfig {
   const model = resolveInteractiveTerminalModel(task);
   const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(settings.mcpServers);
@@ -291,7 +295,7 @@ function resolveInteractiveTerminalRuntimeConfig(
         ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
         ...(typeof thinkingBudgetTokens === "number" ? [["MAX_THINKING_TOKENS", String(thinkingBudgetTokens)] as [string, string]] : []),
         ...collectMcpServerEnvEntries(settings.mcpServers),
-        ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
+        ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH, additionalSafeDirectories)
       ],
       startScript: buildClaudeStartScript(
         model,
@@ -321,7 +325,7 @@ function resolveInteractiveTerminalRuntimeConfig(
     ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
     ["CODEX_TRUST_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
     ...collectMcpServerEnvEntries(settings.mcpServers),
-    ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
+    ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH, additionalSafeDirectories)
   ];
   if (settings.openaiBaseUrl?.trim()) {
     envEntries.push(["OPENAI_BASE_URL", settings.openaiBaseUrl.trim()]);
@@ -680,16 +684,29 @@ async function initializeTaskInteractiveTerminalWebSocket(
     const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
     const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
+    const credentials = await deps.settingsStore.getRuntimeCredentials(userId);
+    const workspaceMap = remapTaskWorkspaceMapRoot(
+      await deps.spawner.prepareTaskWorkspaceMap(task, credentials.githubToken, credentials.gitUsername),
+      INTERACTIVE_WORKSPACE_PATH
+    );
+    const workspaceEnvEntries = buildTaskWorkspaceEnvEntries(workspaceMap);
+    const workspaceMountArgs = workspaceMap.attachedRepositories.flatMap((attachment) => [
+      "-v",
+      `${path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId, ".attached-repositories", attachment.mountName)}:${attachment.mountPath}:ro`
+    ]);
     if (mode === "git") {
-      const [credentials, gitIdentity, repositoryRuntimeEnvEntries] = await Promise.all([
-        deps.settingsStore.getRuntimeCredentials(userId),
+      const [gitIdentity, repositoryRuntimeEnvEntries] = await Promise.all([
         resolveTaskGitCommitIdentity(task, deps.userStore, {
           name: env.GIT_USER_NAME,
           email: env.GIT_USER_EMAIL
         }),
         deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
       ]);
-      const runtime = resolveGitTerminalRuntimeConfig(credentials, gitIdentity);
+      const runtime = resolveGitTerminalRuntimeConfig(
+        credentials,
+        gitIdentity,
+        workspaceMap.attachedRepositories.map((attachment) => attachment.mountPath)
+      );
       if (!runtime.ok) {
         throw new Error(runtime.reason);
       }
@@ -697,6 +714,9 @@ async function initializeTaskInteractiveTerminalWebSocket(
       const sessionName = `aswgit-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
       const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "interactive-env", taskId, interactiveSessionId);
       sessionRepositoryEnvDir = repositoryEnvDir;
+      await mkdir(repositoryEnvDir, { recursive: true });
+      const workspaceMapPath = path.join(repositoryEnvDir, "workspace-map.json");
+      await writeFile(workspaceMapPath, JSON.stringify(workspaceMap, null, 2), "utf8");
       const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
         destinationDir: repositoryEnvDir,
         entries: repositoryRuntimeEnvEntries,
@@ -709,6 +729,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       })) {
         dockerEnv.push("-e", `${name}=${value}`);
       }
+      dockerEnv.push("-e", `TASK_WORKSPACE_MAP_FILE=${workspaceMapPath}`);
       dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
 
       const dockerArgs = [
@@ -722,6 +743,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         "-v",
         `${dockerBindSource}:/workspace:rw`,
+        ...workspaceMountArgs,
         ...gitRuntimeMounts,
         ...dockerEnv,
         runtime.image,
@@ -752,12 +774,16 @@ async function initializeTaskInteractiveTerminalWebSocket(
       return;
     }
 
-    const [credentials, settings, repositoryRuntimeEnvEntries] = await Promise.all([
-      deps.settingsStore.getRuntimeCredentials(userId),
+    const [settings, repositoryRuntimeEnvEntries] = await Promise.all([
       deps.settingsStore.getSettings(),
       deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
     ]);
-    const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
+    const runtime = resolveInteractiveTerminalRuntimeConfig(
+      task,
+      settings,
+      credentials,
+      workspaceMap.attachedRepositories.map((attachment) => attachment.mountPath)
+    );
     if (!runtime.ok) {
       throw new Error(runtime.reason);
     }
@@ -770,6 +796,9 @@ async function initializeTaskInteractiveTerminalWebSocket(
     const sessionName = `aswix-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
     const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "interactive-env", taskId, interactiveSessionId);
     sessionRepositoryEnvDir = repositoryEnvDir;
+    await mkdir(repositoryEnvDir, { recursive: true });
+    const workspaceMapPath = path.join(repositoryEnvDir, "workspace-map.json");
+    await writeFile(workspaceMapPath, JSON.stringify(workspaceMap, null, 2), "utf8");
     const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
       destinationDir: repositoryEnvDir,
       entries: repositoryRuntimeEnvEntries,
@@ -785,6 +814,10 @@ async function initializeTaskInteractiveTerminalWebSocket(
     for (const [name, value] of runtime.envEntries) {
       dockerEnv.push("-e", `${name}=${value}`);
     }
+    for (const [name, value] of workspaceEnvEntries) {
+      dockerEnv.push("-e", `${name}=${value}`);
+    }
+    dockerEnv.push("-e", `TASK_WORKSPACE_MAP_FILE=${workspaceMapPath}`);
     for (const [name, value] of repositoryRuntimeEnv) {
       dockerEnv.push("-e", `${name}=${value}`);
     }
@@ -804,6 +837,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
       "-v",
       `${dockerBindSource}:/workspace:rw`,
+      ...workspaceMountArgs,
       ...dockerSocketMountArgs,
       ...gitRuntimeMounts,
       ...(statePaths && runtime.persistentState

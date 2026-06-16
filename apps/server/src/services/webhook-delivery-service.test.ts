@@ -122,6 +122,7 @@ const baseTask = (): Task => ({
   repoName: "Repo",
   repoUrl: "https://github.com/example/repo.git",
   repoDefaultBranch: "main",
+  attachedRepositories: [],
   taskType: "build",
   provider: "codex",
   providerProfile: "medium",

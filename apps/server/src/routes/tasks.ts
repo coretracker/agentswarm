@@ -31,6 +31,9 @@ import { buildExecutionSummaryFromPrompt, classifyTaskComplexity } from "../lib/
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
 import { persistTaskPromptAttachments, readTaskPromptAttachmentBuffer } from "../lib/task-prompt-attachments.js";
 import {
+  validateTaskAttachedRepositoriesInput
+} from "../lib/task-workspace.js";
+import {
   requireInteractiveTerminalAccess,
   requireTaskActionCapabilityAccess,
   requireTaskCapabilityAccess,
@@ -48,6 +51,15 @@ const taskPromptAttachmentInputSchema = z.object({
   dataBase64: z.string().trim().min(1)
 });
 
+const taskAttachedRepositoryInputSchema = z
+  .object({
+    repositoryId: z.string().trim().min(1),
+    mountName: z.string().trim().min(1),
+    accessMode: z.literal("read-only").optional(),
+    purpose: z.string().trim().max(200).nullable().optional()
+  })
+  .strict();
+
 const deadlineSchema = z
   .string()
   .trim()
@@ -61,6 +73,7 @@ const createTaskSchema = z
     draft: z.boolean().optional(),
     deadline: deadlineSchema.optional(),
     repoId: z.string().min(1),
+    attachedRepositories: z.array(taskAttachedRepositoryInputSchema).max(12).optional(),
     prompt: z.string().default(""),
     notes: z.string().max(40_000).optional(),
     attachments: z.array(taskPromptAttachmentInputSchema).max(TASK_PROMPT_ATTACHMENT_MAX_COUNT).optional(),
@@ -125,7 +138,12 @@ const updateTaskDraftSchema = z.object({
   modelOverride: z.string().trim().min(1).nullable().optional(),
   codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
   baseBranch: z.string().trim().min(1),
-  branchStrategy: z.enum(["feature_branch", "work_on_branch"])
+  branchStrategy: z.enum(["feature_branch", "work_on_branch"]),
+  attachedRepositories: z.array(taskAttachedRepositoryInputSchema).max(12).optional()
+});
+
+const updateTaskWorkspaceAttachmentsSchema = z.object({
+  attachedRepositories: z.array(taskAttachedRepositoryInputSchema).max(12)
 });
 
 const updateTaskStateSchema = z.object({
@@ -306,6 +324,48 @@ export const withTaskCreatorName = async (
     ...task,
     creatorName
   };
+};
+
+const resolveTaskWorkspaceAttachments = async (
+  reply: FastifyReply,
+  repositoryStore: RepositoryStore,
+  user: Parameters<typeof canUserAccessRepository>[0],
+  rootRepositoryId: string,
+  rawAttachments: unknown,
+  options: {
+    currentAttachments?: Task["attachedRepositories"] | null;
+    allowExistingAttachmentUpdates: boolean;
+    hasTaskRun: boolean;
+  }
+): Promise<Task["attachedRepositories"] | null> => {
+  const validation = validateTaskAttachedRepositoriesInput(rawAttachments ?? [], {
+    rootRepositoryId,
+    currentAttachments: options.currentAttachments ?? [],
+    allowExistingAttachmentUpdates: options.allowExistingAttachmentUpdates,
+    hasTaskRun: options.hasTaskRun
+  });
+  if (!validation.ok) {
+    reply.status(400).send({ message: validation.message });
+    return null;
+  }
+
+  const resolved: Task["attachedRepositories"] = [];
+  for (const attachment of validation.attachments) {
+    const repository = await repositoryStore.getRepository(attachment.repositoryId);
+    if (!repository || !canUserAccessRepository(user, repository.id)) {
+      reply.status(404).send({ message: "Repository not found" });
+      return null;
+    }
+
+    resolved.push({
+      repositoryId: repository.id,
+      mountName: attachment.mountName,
+      accessMode: "read-only",
+      purpose: attachment.purpose ?? null
+    });
+  }
+
+  return resolved;
 };
 
 const getChatActionForTask = (task: Task): TaskAction => {
@@ -1170,9 +1230,26 @@ export const registerTaskRoutes = (
       return;
     }
 
+    const attachedRepositories = await resolveTaskWorkspaceAttachments(
+      reply,
+      deps.repositoryStore,
+      request.auth!.user,
+      repository.id,
+      createPayload.attachedRepositories,
+      {
+        currentAttachments: [],
+        allowExistingAttachmentUpdates: true,
+        hasTaskRun: false
+      }
+    );
+    if (!attachedRepositories) {
+      return;
+    }
+
     const task = await deps.taskStore.createTask(
       {
         ...createPayload,
+        attachedRepositories,
         prompt: createPayload.prompt.trim(),
         notes: createPayload.notes?.trim() ?? ""
       },
@@ -1443,6 +1520,22 @@ export const registerTaskRoutes = (
       return;
     }
 
+    const attachedRepositories = await resolveTaskWorkspaceAttachments(
+      reply,
+      deps.repositoryStore,
+      request.auth!.user,
+      repository.id,
+      parsed.data.attachedRepositories,
+      {
+        currentAttachments: task.attachedRepositories ?? [],
+        allowExistingAttachmentUpdates: true,
+        hasTaskRun: false
+      }
+    );
+    if (!attachedRepositories) {
+      return;
+    }
+
     const prompt = parsed.data.prompt.trim().length > 0 ? parsed.data.prompt.trim() : "(No prompt provided.)";
     const title = parsed.data.title.trim();
     const baseBranch = parsed.data.baseBranch.trim();
@@ -1464,7 +1557,8 @@ export const registerTaskRoutes = (
       branchName: parsed.data.branchStrategy === "work_on_branch" ? baseBranch : null,
       complexity: classifyTaskComplexity(title, prompt),
       executionSummary: buildExecutionSummaryFromPrompt(title, prompt),
-      lastAction: action
+      lastAction: action,
+      attachedRepositories
     });
     if (!updated) {
       return reply.status(404).send({ message: "Task not found" });
@@ -1484,6 +1578,69 @@ export const registerTaskRoutes = (
 
     return reply.send(await withTaskCreatorName(deps.userStore, await withBranchSyncCounts(deps.spawner, updated)));
   });
+
+  app.patch<{ Params: { id: string } }>(
+    "/tasks/:id/workspace",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const parsed = updateTaskWorkspaceAttachmentsSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const blocked = await getMutationBlocked(deps.taskStore, task.id);
+      if (blocked?.code === "active_terminal_session") {
+        return replyWithMutationBlocked(reply, blocked);
+      }
+
+      if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
+        return reply.status(409).send({ message: "Task is already running" });
+      }
+
+      const repository = await deps.repositoryStore.getRepository(task.repoId);
+      if (!repository) {
+        return reply.status(404).send({ message: "Repository not found" });
+      }
+      if (!canUserAccessRepository(request.auth?.user, repository.id)) {
+        return reply.status(403).send({ message: "Repository access denied" });
+      }
+
+      const allowExistingAttachmentUpdates = task.startedAt === null;
+      const attachedRepositories = await resolveTaskWorkspaceAttachments(
+        reply,
+        deps.repositoryStore,
+        request.auth!.user,
+        repository.id,
+        parsed.data.attachedRepositories,
+        {
+          currentAttachments: task.attachedRepositories ?? [],
+          allowExistingAttachmentUpdates,
+          hasTaskRun: task.startedAt !== null
+        }
+      );
+      if (!attachedRepositories) {
+        return;
+      }
+
+      const updated = await deps.taskStore.patchTask(task.id, {
+        attachedRepositories
+      });
+      if (!updated) {
+        return reply.status(404).send({ message: "Task not found" });
+      }
+
+      return reply.send(await withTaskCreatorName(deps.userStore, updated));
+    }
+  );
 
   app.patch<{ Params: { id: string } }>("/tasks/:id/config", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const parsed = updateTaskConfigSchema.safeParse(request.body);

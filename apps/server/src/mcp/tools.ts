@@ -10,6 +10,7 @@ import {
 import { beginTaskStart } from "../lib/task-start-orchestrator.js";
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
 import { canUserAccessRepository, canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
+import { validateTaskAttachedRepositoriesInput } from "../lib/task-workspace.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
@@ -77,6 +78,13 @@ const getTaskSchema = z.object({
   include: z.array(z.enum(["messages", "runs", "checkpoints", "logs"])).optional()
 });
 
+const taskAttachedRepositorySchema = z.object({
+  repositoryId: z.string().trim().min(1),
+  mountName: z.string().trim().min(1),
+  accessMode: z.enum(["read-only"]).optional(),
+  purpose: z.string().trim().max(200).nullable().optional()
+});
+
 const createTaskSchema = z.object({
   title: z.string().trim().min(1),
   repoId: z.string().trim().min(1),
@@ -90,11 +98,17 @@ const createTaskSchema = z.object({
   baseBranch: z.string().trim().min(1).optional(),
   branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
   notes: z.string().max(40_000).optional(),
-  deadline: z.string().trim().min(1).nullable().optional()
+  deadline: z.string().trim().min(1).nullable().optional(),
+  attachedRepositories: z.array(taskAttachedRepositorySchema).max(12).optional()
 });
 
 const updateDraftSchema = createTaskSchema.omit({ repoId: true, draft: true }).partial().extend({
   taskId: z.string().trim().min(1)
+});
+
+const updateWorkspaceAttachmentsSchema = z.object({
+  taskId: z.string().trim().min(1),
+  attachedRepositories: z.array(taskAttachedRepositorySchema).max(12)
 });
 
 const startTaskSchema = z.object({
@@ -171,6 +185,44 @@ const getAccessibleTask = async (context: McpToolContext, taskId: string): Promi
     throw new McpToolError(404, "Task not found", "not_found");
   }
   return task;
+};
+
+const resolveTaskWorkspaceAttachments = async (
+  context: McpToolContext,
+  rootRepositoryId: string,
+  rawAttachments: unknown,
+  options: {
+    currentAttachments?: Task["attachedRepositories"] | null;
+    allowExistingAttachmentUpdates: boolean;
+    hasTaskRun: boolean;
+  }
+): Promise<Task["attachedRepositories"]> => {
+  const validation = validateTaskAttachedRepositoriesInput(rawAttachments ?? [], {
+    rootRepositoryId,
+    currentAttachments: options.currentAttachments ?? [],
+    allowExistingAttachmentUpdates: options.allowExistingAttachmentUpdates,
+    hasTaskRun: options.hasTaskRun
+  });
+  if (!validation.ok) {
+    throw new McpToolError(400, validation.message, "invalid_attachments");
+  }
+
+  const resolved: Task["attachedRepositories"] = [];
+  for (const attachment of validation.attachments) {
+    const repository = await context.deps.repositoryStore.getRepository(attachment.repositoryId);
+    if (!repository || !canUserAccessRepository(context.user, repository.id)) {
+      throw new McpToolError(404, "Repository not found", "not_found");
+    }
+
+    resolved.push({
+      repositoryId: repository.id,
+      mountName: attachment.mountName,
+      accessMode: "read-only",
+      purpose: attachment.purpose ?? null
+    });
+  }
+
+  return resolved;
 };
 
 const ensureNotArchived = (task: Task): void => {
@@ -346,11 +398,17 @@ export const createMcpTools = (): McpToolDefinition[] => [
         throw new McpToolError(404, "Repository not found", "not_found");
       }
       const providerConfig = await getDefaultedProviderConfig(context, input);
+      const attachedRepositories = await resolveTaskWorkspaceAttachments(context, repository.id, input.attachedRepositories, {
+        currentAttachments: [],
+        allowExistingAttachmentUpdates: true,
+        hasTaskRun: false
+      });
       const task = await context.deps.taskStore.createTask(
         {
           ...input,
           ...providerConfig,
           draft: true,
+          attachedRepositories,
           prompt: input.prompt,
           notes: input.notes ?? ""
         },
@@ -388,6 +446,11 @@ export const createMcpTools = (): McpToolDefinition[] => [
         providerProfile: input.providerProfile ?? task.providerProfile,
         modelOverride: input.modelOverride ?? task.modelOverride ?? undefined
       });
+      const attachedRepositories = await resolveTaskWorkspaceAttachments(context, task.repoId, input.attachedRepositories, {
+        currentAttachments: task.attachedRepositories ?? [],
+        allowExistingAttachmentUpdates: true,
+        hasTaskRun: false
+      });
       const updated = await context.deps.taskStore.patchTask(task.id, {
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
@@ -396,10 +459,48 @@ export const createMcpTools = (): McpToolDefinition[] => [
         ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
         ...(input.branchStrategy !== undefined ? { branchStrategy: input.branchStrategy } : {}),
         ...(input.deadline !== undefined ? { deadline: input.deadline } : {}),
+        ...(input.attachedRepositories !== undefined ? { attachedRepositories } : {}),
         provider: providerConfig.provider,
         providerProfile: providerConfig.providerProfile,
         modelOverride: providerConfig.modelOverride,
         codexCredentialSource: input.codexCredentialSource ?? task.codexCredentialSource
+      });
+      return { task: compactTask(updated ?? task) };
+    }
+  },
+  {
+    name: "agentswarm_update_workspace_attachments",
+    description: "Update attached repositories for an editable task workspace.",
+    inputSchema: schemaToJson(updateWorkspaceAttachmentsSchema),
+    scopes: ["task:edit"],
+    async handler(rawInput, context) {
+      const input = updateWorkspaceAttachmentsSchema.parse(rawInput ?? {});
+      const task = await getAccessibleTask(context, input.taskId);
+      ensureNotArchived(task);
+      const blocked = await getMutationBlocked(context.deps.taskStore, task.id);
+      if (blocked?.code === "active_terminal_session") {
+        throw new McpToolError(409, blocked.message, blocked.code);
+      }
+      if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
+        throw new McpToolError(409, "Task is already running", "task_running");
+      }
+
+      const repository = await context.deps.repositoryStore.getRepository(task.repoId);
+      if (!repository) {
+        throw new McpToolError(404, "Repository not found", "not_found");
+      }
+      if (!canUserAccessRepository(context.user, repository.id)) {
+        throw new McpToolError(403, "Repository access denied", "forbidden");
+      }
+
+      const attachedRepositories = await resolveTaskWorkspaceAttachments(context, repository.id, input.attachedRepositories, {
+        currentAttachments: task.attachedRepositories ?? [],
+        allowExistingAttachmentUpdates: task.startedAt === null,
+        hasTaskRun: task.startedAt !== null
+      });
+
+      const updated = await context.deps.taskStore.patchTask(task.id, {
+        attachedRepositories
       });
       return { task: compactTask(updated ?? task) };
     }

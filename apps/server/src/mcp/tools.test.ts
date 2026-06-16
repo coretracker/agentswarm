@@ -4,15 +4,15 @@ import type { AuthSessionUser, Repository, Task } from "@agentswarm/shared-types
 import { createMcpTools } from "./tools.js";
 
 const user: AuthSessionUser = {
-  id: "user-1",
-  name: "User",
-  email: "user@example.com",
+      id: "user-1",
+      name: "User",
+      email: "user@example.com",
   gitAuthorName: null,
   gitAuthorEmail: null,
-  active: true,
-  agentResponsePreference: {},
-  roles: [],
-  repositoryIds: ["repo-1"],
+      active: true,
+      agentResponsePreference: {},
+      roles: [],
+      repositoryIds: ["repo-1", "repo-2"],
   lastLoginAt: null,
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
@@ -54,6 +54,7 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     repoName: "Repo",
     repoUrl: repository.url,
     repoDefaultBranch: "main",
+    attachedRepositories: [],
     taskType: "build",
     provider: "codex",
     providerProfile: "high",
@@ -124,6 +125,15 @@ describe("MCP Phase 1 tools", () => {
         {
           id: "repo-1",
           name: "Repo",
+          url: "https://github.com/example/repo.git",
+          defaultBranch: "main",
+          webhookEnabled: false,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z"
+        },
+        {
+          id: "repo-2",
+          name: "Private",
           url: "https://github.com/example/repo.git",
           defaultBranch: "main",
           webhookEnabled: false,
@@ -243,6 +253,7 @@ describe("MCP Phase 1 tools", () => {
       title: "Task",
       repoId: "repo-1",
       repoName: "Repo",
+      attachedRepositories: [],
       taskType: "build",
       status: "draft",
       workflowStatus: "backlog",
@@ -258,6 +269,74 @@ describe("MCP Phase 1 tools", () => {
       updatedAt: "2026-01-01T00:00:00.000Z",
       createdAt: "2026-01-01T00:00:00.000Z"
     });
+  });
+
+  it("persists attached repositories when creating a task", async () => {
+    const tool = toolByName("agentswarm_create_task");
+    let createdInput: unknown = null;
+    const task = createTask();
+
+    await tool.handler(
+      {
+        title: "Task",
+        repoId: "repo-1",
+        prompt: "Do work",
+        attachedRepositories: [
+          {
+            repositoryId: "repo-2",
+            mountName: "shared-utils",
+            accessMode: "read-only",
+            purpose: "Shared code"
+          }
+        ]
+      },
+      {
+        user,
+        deps: {
+          repositoryStore: {
+            getRepository: async (repositoryId: string) =>
+              repositoryId === "repo-1"
+                ? repository
+                : {
+                    ...repository,
+                    id: "repo-2",
+                    name: "Shared utils",
+                    url: "https://github.com/example/shared-utils.git"
+                  }
+          },
+          githubImportService: {} as never,
+          settingsStore: {
+            getSettings: async () => ({
+              defaultProvider: "codex",
+              codexDefaultEffort: "high",
+              claudeDefaultEffort: "high",
+              codexDefaultModel: "gpt-5.5",
+              claudeDefaultModel: "claude-opus-4-8"
+            })
+          },
+          taskStore: {
+            createTask: async (input: unknown) => {
+              createdInput = input;
+              return task;
+            },
+            appendMessage: async () => null,
+            getTask: async () => task
+          },
+          taskQueueStore: {} as never,
+          scheduler: {} as never,
+          spawner: {} as never
+        } as never
+      }
+    );
+
+    assert.deepEqual((createdInput as { attachedRepositories?: unknown[] }).attachedRepositories, [
+      {
+        repositoryId: "repo-2",
+        mountName: "shared-utils",
+        accessMode: "read-only",
+        purpose: "Shared code"
+      }
+    ]);
   });
 
   it("resumes the next pending follow-up when a message is added to a failed task", async () => {

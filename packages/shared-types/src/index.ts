@@ -94,6 +94,75 @@ export const TASK_PROMPT_ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
 export type TaskReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type TaskComplexity = "trivial" | "normal" | "complex";
 export type TaskBranchStrategy = "feature_branch" | "work_on_branch";
+export type TaskRepositoryAccessMode = "read-only";
+
+export interface TaskAttachedRepositoryInput {
+  repositoryId: string;
+  mountName: string;
+  accessMode?: TaskRepositoryAccessMode;
+  purpose?: string | null;
+}
+
+export interface TaskAttachedRepository {
+  repositoryId: string;
+  mountName: string;
+  accessMode: TaskRepositoryAccessMode;
+  purpose: string | null;
+}
+
+export interface TaskWorkspaceRepositoryMount {
+  repositoryName: string;
+  repositoryUrl: string;
+  repositoryDefaultBranch: string;
+  mountPath: string;
+  isRoot: boolean;
+  repositoryId: string;
+  mountName: string;
+  accessMode: TaskRepositoryAccessMode | "read-write";
+  purpose: string | null;
+}
+
+export interface TaskWorkspaceMap {
+  root: TaskWorkspaceRepositoryMount;
+  attachedRepositories: TaskWorkspaceRepositoryMount[];
+}
+
+export const TASK_WORKSPACE_ROOT_MOUNT_NAME = "root";
+export const TASK_WORKSPACE_REPOSITORIES_DIR_NAME = "repos";
+
+const TASK_REPOSITORY_MOUNT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const TASK_REPOSITORY_MOUNT_RESERVED_NAMES = new Set([
+  "",
+  ".",
+  "..",
+  "root",
+  "repos",
+  "workspace",
+  TASK_WORKSPACE_ROOT_MOUNT_NAME,
+  TASK_WORKSPACE_REPOSITORIES_DIR_NAME
+]);
+
+export function normalizeTaskRepositoryMountName(value: string): string | null {
+  const normalized = value.trim();
+  if (!normalized || normalized.includes("/") || normalized.includes("\\") || normalized.includes("\0")) {
+    return null;
+  }
+  if (!TASK_REPOSITORY_MOUNT_NAME_PATTERN.test(normalized)) {
+    return null;
+  }
+  if (TASK_REPOSITORY_MOUNT_RESERVED_NAMES.has(normalized.toLowerCase())) {
+    return null;
+  }
+  return normalized;
+}
+
+export function normalizeTaskRepositoryMountAlias(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
 export type AudienceType = "technical" | "non_technical" | "mixed";
 export type AgentResponseStyle = Extract<AudienceType, "technical" | "non_technical">;
 export type AgentExplanationDepth = "one_line" | "brief" | "standard" | "detailed" | "deep_dive";
@@ -483,6 +552,7 @@ export interface Task {
   repoName: string;
   repoUrl: string;
   repoDefaultBranch: string;
+  attachedRepositories: TaskAttachedRepository[];
   taskType: TaskType;
   provider: AgentProvider;
   providerProfile: ProviderProfile;
@@ -914,6 +984,7 @@ export interface CreateTaskInput {
   draft?: boolean;
   deadline?: string | null;
   repoId: string;
+  attachedRepositories?: TaskAttachedRepositoryInput[];
   prompt: string;
   notes?: string;
   attachments?: CreateTaskPromptAttachmentInput[];
@@ -933,6 +1004,7 @@ export interface TaskDefinitionInput {
   title: string;
   deadline?: string | null;
   repoId: string;
+  attachedRepositories?: TaskAttachedRepositoryInput[];
   prompt: string;
   notes?: string;
   attachments?: CreateTaskPromptAttachmentInput[];
@@ -979,6 +1051,7 @@ export interface UpdateSnippetInput {
 export interface CreateTaskFromIssueInput {
   repoId: string;
   draft?: boolean;
+  attachedRepositories?: TaskAttachedRepositoryInput[];
   issueNumber: number;
   includeComments?: boolean;
   notes?: string;
@@ -998,6 +1071,7 @@ export interface CreateTaskFromIssueInput {
 export interface CreateTaskFromPullRequestInput {
   repoId: string;
   draft?: boolean;
+  attachedRepositories?: TaskAttachedRepositoryInput[];
   pullRequestNumber: number;
   title?: string;
   notes?: string;
@@ -1051,6 +1125,7 @@ export interface UpdateTaskDraftInput {
   codexCredentialSource?: CodexCredentialSource;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
+  attachedRepositories?: TaskAttachedRepositoryInput[];
 }
 
 export interface UpdateUserNotesInput {

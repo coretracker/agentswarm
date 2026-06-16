@@ -18,7 +18,9 @@ import {
   type AgentProvider,
   type NormalizedAgentEvent,
   type McpServerConfig,
+  type Repository,
   type Task,
+  type TaskAttachedRepository,
   type TaskChangeProposal,
   type TaskExecutionInput,
   type TaskLiveDiff,
@@ -34,6 +36,7 @@ import {
   type TaskWorkspaceCommit,
   type TaskWorkspaceCommitLog,
   type TaskGitStateSnapshot,
+  type TaskWorkspaceMap,
   type TaskGitOperation,
   type TaskGitOperationFailureCode,
   type TaskGitOperationType
@@ -77,6 +80,11 @@ import type { SettingsStore } from "./settings-store.js";
 import type { UserStore } from "./user-store.js";
 import type { RepositoryStore } from "./repository-store.js";
 import { RepositoryEnvFileStore } from "./repository-env-file-store.js";
+import {
+  buildTaskWorkspaceEnvEntries,
+  buildTaskWorkspaceMap,
+  remapTaskWorkspaceMapRoot
+} from "../lib/task-workspace.js";
 import { RepoSyncManager, type RepoSyncOperation } from "./repo-sync-manager.js";
 
 const ansiPattern = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\))/g;
@@ -170,6 +178,8 @@ interface RuntimeManifest {
   resolvedThinkingBudgetTokens?: number;
   agentResponsePreference: AgentResponsePreference;
   workspacePath: string;
+  workspaceMap: TaskWorkspaceMap;
+  workspaceMapPath: string;
   resultMarkdownPath: string;
   resultJsonPath: string;
   rawEventsJsonlPath: string;
@@ -192,6 +202,7 @@ interface WorkspacePreparation {
   kind: "clone";
   ephemeral: boolean;
   cleanupRepoPath: string | null;
+  workspaceMap: TaskWorkspaceMap;
 }
 
 type WorkspacePrepareFailureReason =
@@ -277,7 +288,7 @@ export class SpawnerService {
     private readonly taskStore: TaskStore,
     private readonly settingsStore: SettingsStore,
     private readonly userStore: UserStore,
-    private readonly repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries">,
+    private readonly repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries" | "getRepository">,
     private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore()
   ) {}
 
@@ -1454,6 +1465,16 @@ export class SpawnerService {
     await chmod(scriptPath, 0o755);
 
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
+    const postflightWorkspaceMap = remapTaskWorkspaceMapRoot(workspace.workspaceMap, "/workspace");
+    const workspaceEnvEntries = buildTaskWorkspaceEnvEntries(postflightWorkspaceMap);
+    const workspaceGitEnvEntries = buildTaskRuntimeGitEnvEntries({
+      workspacePath: "/workspace",
+      additionalSafeDirectories: postflightWorkspaceMap.attachedRepositories.map((attachment) => attachment.mountPath)
+    });
+    const workspaceMountArgs = postflightWorkspaceMap.attachedRepositories.flatMap((attachment) => [
+      "-v",
+      `${this.resolveAttachedRepositoryHostPath(task.id, attachment.mountName)}:${attachment.mountPath}:ro`
+    ]);
     const containerName = `agentswarm-postflight-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
     await appendRunLog(
       `Spawner: running postflight (${config.steps.length} step${config.steps.length === 1 ? "" : "s"}) in ${config.runner.image}.`
@@ -1474,7 +1495,10 @@ export class SpawnerService {
           `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
           "-v",
           `${workspace.hostWorkspacePath}:/workspace:rw`,
+          ...workspaceMountArgs,
           ...gitRuntimeMounts,
+          ...workspaceEnvEntries.flatMap(([name, value]) => ["-e", `${name}=${value}`]),
+          ...workspaceGitEnvEntries.flatMap(([name, value]) => ["-e", `${name}=${value}`]),
           "-w",
           "/workspace",
           config.runner.image,
@@ -1716,6 +1740,84 @@ export class SpawnerService {
   private resolveRepoCachePath(task: Task): string {
     const repoCacheKey = sanitizePathSegment(task.repoId || task.repoName || "repo").replace(/\//g, "-");
     return path.join(env.REPO_CACHE_ROOT, "repos", repoCacheKey);
+  }
+
+  private resolveAttachedRepositoryHostPath(taskId: string, mountName: string): string {
+    return path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId, ".attached-repositories", mountName);
+  }
+
+  private async prepareAttachedRepositoryWorkspace(
+    task: Task,
+    attachment: TaskAttachedRepository,
+    repository: Repository,
+    githubToken?: string | null,
+    gitUsername = "x-access-token"
+  ): Promise<string> {
+    const workspacePath = this.resolveAttachedRepositoryHostPath(task.id, attachment.mountName);
+    await mkdir(path.dirname(workspacePath), { recursive: true });
+
+    const gitDirPath = path.join(workspacePath, ".git");
+    const repoExists = await access(gitDirPath)
+      .then(() => true)
+      .catch(() => false);
+
+    if (!repoExists) {
+      await rm(workspacePath, { recursive: true, force: true });
+      await this.gitCommand(["clone", "--no-local", "--branch", repository.defaultBranch, repository.url, workspacePath], githubToken, gitUsername);
+      return workspacePath;
+    }
+
+    await this.gitCommand(["-C", workspacePath, "remote", "set-url", "origin", repository.url], githubToken, gitUsername).catch(async () => {
+      await this.gitCommand(["-C", workspacePath, "remote", "add", "origin", repository.url], githubToken, gitUsername);
+    });
+    await this.gitCommand(["-C", workspacePath, "fetch", "--prune", "origin"], githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "reset", "--hard", `origin/${repository.defaultBranch}`], githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "clean", "-fdx"], githubToken, gitUsername);
+    return workspacePath;
+  }
+
+  async prepareTaskWorkspaceMap(
+    task: Task,
+    githubToken?: string | null,
+    gitUsername = "x-access-token",
+    options?: { rootMountPath?: string }
+  ): Promise<TaskWorkspaceMap> {
+    const rootMountPath = options?.rootMountPath ?? this.resolveWorkspacePath(task.id);
+    const rootRepository: Repository = {
+      id: task.repoId,
+      name: task.repoName,
+      url: task.repoUrl,
+      defaultBranch: task.repoDefaultBranch,
+      envVars: [],
+      webhookUrl: null,
+      webhookEnabled: false,
+      webhookSecretConfigured: false,
+      webhookLastAttemptAt: null,
+      webhookLastStatus: null,
+      webhookLastError: null,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt
+    };
+
+    const attachments = await Promise.all(
+      (task.attachedRepositories ?? []).map(async (attachment) => {
+        const repository = await this.repositoryStore.getRepository(attachment.repositoryId);
+        if (!repository) {
+          throw new Error(`Attached repository ${attachment.repositoryId} is unavailable.`);
+        }
+        const mountPath = await this.prepareAttachedRepositoryWorkspace(task, attachment, repository, githubToken, gitUsername);
+        return {
+          attachment,
+          repository: {
+            ...repository,
+            defaultBranch: repository.defaultBranch
+          },
+          mountPath
+        };
+      })
+    );
+
+    return buildTaskWorkspaceMap(rootRepository, attachments, { rootMountPath });
   }
 
   private resolveRepoProfilePath(task: Task): string {
@@ -2758,6 +2860,7 @@ export class SpawnerService {
         "branch_missing"
       );
     }
+    const workspaceMap = await this.prepareTaskWorkspaceMap(task, githubToken, gitUsername);
     return {
       workspacePath,
       hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
@@ -2765,7 +2868,8 @@ export class SpawnerService {
       workspaceBaseRef: task.workspaceBaseRef ?? startRef,
       kind: WORKSPACE_KIND,
       ephemeral: false,
-      cleanupRepoPath: null
+      cleanupRepoPath: null,
+      workspaceMap
     };
   }
 
@@ -2827,6 +2931,7 @@ export class SpawnerService {
         "branch_missing"
       );
     }
+    const workspaceMap = await this.prepareTaskWorkspaceMap(task, githubToken, gitUsername);
     return {
       workspacePath,
       hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
@@ -2834,7 +2939,8 @@ export class SpawnerService {
       workspaceBaseRef: task.workspaceBaseRef ?? startRef,
       kind: WORKSPACE_KIND,
       ephemeral: false,
-      cleanupRepoPath: null
+      cleanupRepoPath: null,
+      workspaceMap
     };
   }
 
@@ -2864,6 +2970,7 @@ export class SpawnerService {
     if (!startRef) {
       throw new Error("Task workspace has no commits yet. Prepare the task workspace again after creating an initial commit.");
     }
+    const workspaceMap = await this.prepareTaskWorkspaceMap(task, githubToken, gitUsername);
     return {
       workspacePath: taskWorkspacePath,
       hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
@@ -2871,7 +2978,8 @@ export class SpawnerService {
       workspaceBaseRef: task.workspaceBaseRef ?? startRef,
       kind: WORKSPACE_KIND,
       ephemeral: false,
-      cleanupRepoPath: null
+      cleanupRepoPath: null,
+      workspaceMap
     };
   }
 
@@ -2898,6 +3006,7 @@ export class SpawnerService {
     if (!startRef) {
       throw new Error("Task workspace has no commits yet. Prepare the task workspace again after creating an initial commit.");
     }
+    const workspaceMap = await this.prepareTaskWorkspaceMap(task, githubToken, gitUsername);
     return {
       workspacePath,
       hostWorkspacePath: this.resolveWorkspaceHostPath(task.id),
@@ -2905,7 +3014,8 @@ export class SpawnerService {
       workspaceBaseRef: task.workspaceBaseRef ?? startRef,
       kind: WORKSPACE_KIND,
       ephemeral: false,
-      cleanupRepoPath: null
+      cleanupRepoPath: null,
+      workspaceMap
     };
   }
 
@@ -2926,6 +3036,7 @@ export class SpawnerService {
   ): Promise<{
     payloadDir: string;
     manifestPath: string;
+    workspaceMapPath: string;
     providerConfigPath: string;
     resultMarkdownPath: string;
     resultJsonPath: string;
@@ -2935,18 +3046,20 @@ export class SpawnerService {
     await mkdir(payloadDir, { recursive: true });
 
     const manifestPath = path.join(payloadDir, "task-manifest.json");
+    const workspaceMapPath = manifest.workspaceMapPath;
     const providerConfigPath = manifest.providerConfigPath;
     const resultMarkdownPath = manifest.resultMarkdownPath;
     const resultJsonPath = manifest.resultJsonPath;
 
     await Promise.all([
       writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8"),
+      writeFile(workspaceMapPath, JSON.stringify(manifest.workspaceMap, null, 2), "utf8"),
       writeFile(providerConfigPath, providerConfigContent, "utf8"),
       writeFile(resultMarkdownPath, "", "utf8"),
       writeFile(resultJsonPath, "", "utf8")
     ]);
 
-    return { payloadDir, manifestPath, providerConfigPath, resultMarkdownPath, resultJsonPath };
+    return { payloadDir, manifestPath, workspaceMapPath, providerConfigPath, resultMarkdownPath, resultJsonPath };
   }
 
   private async readRuntimeResult(resultMarkdownPath: string, resultJsonPath: string): Promise<RuntimeResultPayload> {
@@ -4356,11 +4469,13 @@ export class SpawnerService {
     const payloadDir = this.resolveRuntimePayloadDir(task.id);
     const workspacePath = this.resolveWorkspacePath(task.id);
     const promptAttachmentRoot = resolveTaskPromptAttachmentRoot(task.id);
+    const attachedRepoRoot = path.join(env.TASK_WORKSPACE_HOST_ROOT, task.id, ".attached-repositories");
     const taskStateRootPath = resolveTaskStateRootPaths(task.id).serverPath;
     const legacyCodexStatePath = resolveTaskProviderStatePaths(task.id, "codex").legacyServerPath;
     const legacyClaudeStatePath = resolveTaskProviderStatePaths(task.id, "claude").legacyServerPath;
     await rm(payloadDir, { recursive: true, force: true });
     await rm(promptAttachmentRoot, { recursive: true, force: true }).catch(() => undefined);
+    await rm(attachedRepoRoot, { recursive: true, force: true }).catch(() => undefined);
     const repoCachePath = this.resolveRepoCachePath(task);
     await this.withRepoLock(repoCachePath, async () => {
       const repoExists = await access(path.join(repoCachePath, ".git"))
@@ -5062,7 +5177,10 @@ export class SpawnerService {
         workspaceBaseRef: task.workspaceBaseRef ?? checkpointRef,
         kind: WORKSPACE_KIND,
         ephemeral: false,
-        cleanupRepoPath: null
+        cleanupRepoPath: null,
+        workspaceMap: await this.prepareTaskWorkspaceMap(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, {
+          rootMountPath: "/workspace"
+        })
       };
 
       await appendRunLog("Spawner: starting manual postflight run.");
@@ -5241,6 +5359,7 @@ export class SpawnerService {
         runtimeCredentials.gitUsername
       );
       this.ensureTaskNotCancelled(task.id);
+      const workspaceMap = workspace.workspaceMap;
       if (action === "build" && !task.workspaceBaseRef) {
         await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
       }
@@ -5249,6 +5368,7 @@ export class SpawnerService {
       const providerConfigPath = path.join(payloadDir, providerDefinition.configFileName);
       const resultMarkdownPath = path.join(payloadDir, "result.md");
       const resultJsonPath = path.join(payloadDir, "result.json");
+      const workspaceMapPath = path.join(payloadDir, "workspace-map.json");
       const resolvedModel = providerDefinition.getResolvedModel(task.modelOverride, task.providerProfile);
       const resolvedProfileSettings = providerDefinition.getResolvedProfileSettings(task.providerProfile, resolvedModel);
       const normalizedInput =
@@ -5297,6 +5417,8 @@ export class SpawnerService {
         resolvedThinkingBudgetTokens: resolvedProfileSettings.thinkingBudgetTokens,
         agentResponsePreference: responsePreferenceUser?.agentResponsePreference ?? {},
         workspacePath: workspace.workspacePath,
+        workspaceMap,
+        workspaceMapPath,
         resultMarkdownPath,
         resultJsonPath,
         rawEventsJsonlPath,
@@ -5313,6 +5435,12 @@ export class SpawnerService {
         entries: repositoryRuntimeEnvEntries,
         fileStore: this.repositoryEnvFileStore
       });
+      const workspaceEnvEntries = buildTaskWorkspaceEnvEntries(workspaceMap);
+      const workspaceSafeDirectories = workspaceMap.attachedRepositories.map((attachment) => attachment.mountPath);
+      const workspaceMountArgs = workspaceMap.attachedRepositories.flatMap((attachment) => [
+        "-v",
+        `${this.resolveAttachedRepositoryHostPath(task.id, attachment.mountName)}:${attachment.mountPath}:ro`
+      ]);
       await appendRunLog(`Spawner: runtime payload files ready at ${payloadDir}.`);
       this.ensureTaskNotCancelled(task.id);
 
@@ -5366,6 +5494,7 @@ export class SpawnerService {
       const dockerSocketEnvEntries = resolveDockerSocketEnvEntries(dockerSocketPolicy);
       const taskRuntimeGitEnvEntries = buildTaskRuntimeGitEnvEntries({
         workspacePath: workspace.workspacePath,
+        additionalSafeDirectories: workspaceSafeDirectories,
         githubToken: runtimeCredentials.githubToken,
         gitUsername: runtimeCredentials.gitUsername,
         gitIdentity
@@ -5388,6 +5517,7 @@ export class SpawnerService {
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         "-v",
         `${env.TASK_WORKSPACE_HOST_ROOT}:${env.TASK_WORKSPACE_ROOT}:${workspaceMountMode}`,
+        ...workspaceMountArgs,
         ...(rawEventsMount ? ["-v", `${rawEventsMount.hostDir}:${rawEventsMount.containerDir}:rw`] : []),
         ...gitRuntimeMounts,
         "-v",
@@ -5395,6 +5525,8 @@ export class SpawnerService {
         ...dockerSocketMountArgs,
         "-e",
         `TASK_MANIFEST_FILE=${payloadPaths.manifestPath}`,
+        "-e",
+        `TASK_WORKSPACE_MAP_FILE=${payloadPaths.workspaceMapPath}`,
         "-e",
         `PROVIDER_CONFIG_FILE=${payloadPaths.providerConfigPath}`,
         "-e",
@@ -5418,6 +5550,9 @@ export class SpawnerService {
         args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
       }
       for (const [name, value] of Object.entries(runtimeMcpEnv)) {
+        args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
+      }
+      for (const [name, value] of workspaceEnvEntries) {
         args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
       }
       for (const [name, value] of taskRuntimeGitEnvEntries) {

@@ -2,9 +2,14 @@ import type { GitCommitIdentity } from "./task-git-identity.js";
 
 export function buildInteractiveWorkspaceGitEnvEntries(
   workspacePath: string,
+  additionalSafeDirectories: string[] = [],
   configEntries: Array<[string, string]> = []
 ): Array<[string, string]> {
-  const gitConfigEntries: Array<[string, string]> = [["safe.directory", workspacePath], ...configEntries];
+  const gitConfigEntries: Array<[string, string]> = [
+    ["safe.directory", workspacePath],
+    ...additionalSafeDirectories.filter((directory) => directory.trim().length > 0).map((directory) => ["safe.directory", directory] as [string, string]),
+    ...configEntries
+  ];
   const envEntries: Array<[string, string]> = [["GIT_CONFIG_COUNT", String(gitConfigEntries.length)]];
 
   gitConfigEntries.forEach(([key, value], index) => {
@@ -16,6 +21,7 @@ export function buildInteractiveWorkspaceGitEnvEntries(
 
 export function buildTaskRuntimeGitEnvEntries(options: {
   workspacePath: string;
+  additionalSafeDirectories?: string[];
   githubToken?: string | null;
   gitUsername?: string | null;
   gitIdentity?: GitCommitIdentity | null;
@@ -26,6 +32,7 @@ export function buildTaskRuntimeGitEnvEntries(options: {
     ["GIT_OPTIONAL_LOCKS", "0"],
     ...buildInteractiveWorkspaceGitEnvEntries(
       options.workspacePath,
+      options.additionalSafeDirectories ?? [],
       identityName && identityEmail
         ? [
             ["user.name", identityName],
@@ -54,6 +61,7 @@ export function buildTaskRuntimeGitEnvEntries(options: {
 
 export function buildGitTerminalEnvEntries(options: {
   workspacePath: string;
+  additionalSafeDirectories?: string[];
   githubToken?: string | null;
   gitUsername?: string | null;
   gitIdentity?: GitCommitIdentity | null;

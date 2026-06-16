@@ -519,6 +519,11 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
+  updateTaskWorkspaceAttachments: (id: string, input: { attachedRepositories: Array<{ repositoryId: string; mountName: string; accessMode: "read-only"; purpose?: string | null }> }) =>
+    request<Task>(`/tasks/${id}/workspace`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
   updateTaskState: (id: string, input: UpdateTaskStateInput) =>
     request<Task>(`/tasks/${id}/state`, {
       method: "PATCH",

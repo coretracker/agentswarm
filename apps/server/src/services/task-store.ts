@@ -44,6 +44,7 @@ import {
   reconcileTaskStatusWithPendingCheckpoint
 } from "../lib/task-status.js";
 import { buildExecutionSummaryFromPrompt, classifyTaskComplexity } from "../lib/task-intelligence.js";
+import { normalizeTaskAttachedRepositoryInput } from "../lib/task-workspace.js";
 
 function resolveTaskTitleForCreate(input: CreateTaskInput): string {
   return (input.title ?? "").trim();
@@ -241,6 +242,22 @@ const getUserVisiblePendingCheckpoint = (
   task: Pick<Task, "hasPendingCheckpoint" | "autoApplyCheckpoints">,
   hasPendingProposal: boolean
 ): boolean => (task.autoApplyCheckpoints ? false : hasPendingProposal);
+
+const normalizeTaskAttachedRepositories = (value: unknown): Task["attachedRepositories"] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((attachment) => normalizeTaskAttachedRepositoryInput(attachment))
+    .filter((attachment): attachment is NonNullable<typeof attachment> => attachment !== null)
+    .map((attachment) => ({
+      repositoryId: attachment.repositoryId,
+      mountName: attachment.mountName,
+      accessMode: "read-only" as const,
+      purpose: attachment.purpose ?? null
+    }));
+};
 
 const normalizeCodexCredentialSource = (value: string | null | undefined): CodexCredentialSource => {
   if (value === "profile" || value === "global") {
@@ -451,6 +468,7 @@ export class RedisTaskStore implements TaskStore {
       notes?: string;
       taskSource?: Task["taskSource"];
       snippetId?: string;
+      attachedRepositories?: Task["attachedRepositories"];
     };
     const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
     delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
@@ -486,7 +504,8 @@ export class RedisTaskStore implements TaskStore {
       lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
       // Prefer the new prompt field; fall back to legacy requirements for older tasks.
       prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim(),
-      notes: (legacyTask.notes ?? "").trim()
+      notes: (legacyTask.notes ?? "").trim(),
+      attachedRepositories: normalizeTaskAttachedRepositories(legacyTask.attachedRepositories)
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
     const legacyStatus = currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as TaskStatus) : "open";
@@ -680,6 +699,7 @@ export class RedisTaskStore implements TaskStore {
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
     const autoApplyCheckpoints = input.autoApplyCheckpoints === true;
+    const attachedRepositories = normalizeTaskAttachedRepositories(input.attachedRepositories);
     const taskSource = "blank";
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
@@ -698,6 +718,7 @@ export class RedisTaskStore implements TaskStore {
       repoName: repository.name,
       repoUrl: repository.url,
       repoDefaultBranch: repository.defaultBranch,
+      attachedRepositories,
       taskType,
       provider,
       providerProfile,
@@ -1806,6 +1827,7 @@ export class PostgresTaskStore implements TaskStore {
       notes?: string;
       taskSource?: Task["taskSource"];
       snippetId?: string;
+      attachedRepositories?: Task["attachedRepositories"];
     };
     const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
     delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
@@ -1840,7 +1862,8 @@ export class PostgresTaskStore implements TaskStore {
       resultMarkdown: legacyTask.resultMarkdown ?? null,
       lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
       prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim(),
-      notes: (legacyTask.notes ?? "").trim()
+      notes: (legacyTask.notes ?? "").trim(),
+      attachedRepositories: normalizeTaskAttachedRepositories(legacyTask.attachedRepositories)
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
     const legacyStatus = currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as TaskStatus) : "open";
@@ -2116,6 +2139,7 @@ export class PostgresTaskStore implements TaskStore {
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
     const autoApplyCheckpoints = input.autoApplyCheckpoints === true;
+    const attachedRepositories = normalizeTaskAttachedRepositories(input.attachedRepositories);
     const taskSource = "blank";
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
@@ -2134,6 +2158,7 @@ export class PostgresTaskStore implements TaskStore {
       repoName: repository.name,
       repoUrl: repository.url,
       repoDefaultBranch: repository.defaultBranch,
+      attachedRepositories,
       taskType,
       provider,
       providerProfile,

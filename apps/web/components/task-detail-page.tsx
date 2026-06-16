@@ -92,6 +92,7 @@ import { Diff, Hunk, type FileData } from "react-diff-view";
 import remarkGfm from "remark-gfm";
 import { api, ApiError, type TaskInteractiveTerminalStatus } from "../src/api/client";
 import { useSnippets } from "../src/hooks/useSnippets";
+import { useRepositories } from "../src/hooks/useRepositories";
 import { useTask } from "../src/hooks/useTask";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useTaskMessages } from "../src/hooks/useTaskMessages";
@@ -119,6 +120,7 @@ import { CheckpointFileEditorModal } from "./checkpoint-file-editor-modal";
 import { TaskFilesTab } from "./task-files-tab";
 import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 import { TaskCreateModal } from "./task-create-modal";
+import { TaskWorkspaceAttachmentsModal } from "./task-workspace-attachments-modal";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 import { useThemeMode } from "./theme-provider";
 import { getPrismTheme } from "../src/theme/code-highlighting";
@@ -751,6 +753,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   } = useTaskChangeProposals(taskId);
   const canUseSnippets = can("snippet:list");
   const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
+  const { repositories } = useRepositories();
   const [liveDiff, setLiveDiff] = useState<TaskLiveDiff | null>(null);
   const [liveDiffLoading, setLiveDiffLoading] = useState(false);
   const [liveDiffError, setLiveDiffError] = useState<string | null>(null);
@@ -953,6 +956,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [deleteRemoteBranchAfterMerge, setDeleteRemoteBranchAfterMerge] = useState(false);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
   const [draftEditModalOpen, setDraftEditModalOpen] = useState(false);
+  const [attachmentsModalOpen, setAttachmentsModalOpen] = useState(false);
   const [taskStateModalOpen, setTaskStateModalOpen] = useState(false);
   const [taskStateDraft, setTaskStateDraft] = useState<EditableTaskState>("ready");
   const [renameModalOpen, setRenameModalOpen] = useState(false);
@@ -1159,6 +1163,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const currentTaskModel = currentTaskModelOverride || getProviderDefaultModel(currentTaskProvider, settings);
   const currentTaskCodexCredentialSource = task?.codexCredentialSource ?? "auto";
   const currentTaskAutoApplyCheckpoints = task?.autoApplyCheckpoints === true;
+  const attachedRepositories = task?.attachedRepositories ?? [];
+  const attachedRepositoryNameById = new Map(repositories.map((repository) => [repository.id, repository.name]));
   const interactiveTerminalConfigDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
@@ -2242,6 +2248,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const activeTerminalLabel = activeTerminalMode ? getTaskTerminalSessionLabel(activeTerminalMode) : "Terminal";
   const activeTerminalSentenceLabel = activeTerminalMode ? getTaskTerminalSessionSentenceLabel(activeTerminalMode) : "Terminal";
   const showWorkingIndicator = hasTaskWorkingState || interactiveTerminalRunning;
+  const canManageAttachments = canEditTask && !!task && !isArchived && !isDraft && !interactiveTerminalRunning && !isActive;
   const workingIndicatorLabel = task
     ? getTaskWorkingLabel({
         ...task,
@@ -2911,6 +2918,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const closeDraftEditModal = () => {
     setDraftEditModalOpen(false);
   };
+  const openAttachmentsModal = () => {
+    if (!task || isArchived) {
+      return;
+    }
+
+    setAttachmentsModalOpen(true);
+  };
+  const closeAttachmentsModal = () => {
+    setAttachmentsModalOpen(false);
+  };
   const confirmRenameTask = async () => {
     if (!task) {
       return;
@@ -3508,6 +3525,35 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       <Card size="small">
         <Descriptions column={2} size="small">
           <Descriptions.Item label="Repository">{task?.repoName}</Descriptions.Item>
+          <Descriptions.Item label="Attached repositories" span={2}>
+            <Flex vertical gap={8}>
+              {attachedRepositories.length > 0 ? (
+                <Space direction="vertical" size={6}>
+                  {attachedRepositories.map((attachment) => {
+                    const repositoryName = attachedRepositoryNameById.get(attachment.repositoryId) ?? attachment.repositoryId;
+                    return (
+                      <Flex key={`${attachment.repositoryId}:${attachment.mountName}`} vertical gap={2}>
+                        <Typography.Text strong>
+                          {repositoryName}
+                        </Typography.Text>
+                        <Typography.Text type="secondary">
+                          Mount: <Typography.Text code>{attachment.mountName}</Typography.Text>
+                          {attachment.purpose ? ` · ${attachment.purpose}` : ""}
+                        </Typography.Text>
+                      </Flex>
+                    );
+                  })}
+                </Space>
+              ) : (
+                <Typography.Text type="secondary">None</Typography.Text>
+              )}
+              {canManageAttachments ? (
+                <Button size="small" onClick={openAttachmentsModal}>
+                  Manage attachments
+                </Button>
+              ) : null}
+            </Flex>
+          </Descriptions.Item>
           <Descriptions.Item label="Creator">{task?.creatorName ?? (task?.ownerUserId ? task.ownerUserId : "System")}</Descriptions.Item>
           <Descriptions.Item label="Assignee">
             {canAssignTask ? (
@@ -5617,6 +5663,15 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           applyUpdatedTask(updatedTask);
           syncExecutionConfigInputs(updatedTask);
           setDraftEditModalOpen(false);
+          void refetchTaskMessages();
+        }}
+      />
+      <TaskWorkspaceAttachmentsModal
+        task={task}
+        open={attachmentsModalOpen}
+        onClose={closeAttachmentsModal}
+        onUpdated={(updatedTask) => {
+          applyUpdatedTask(updatedTask);
           void refetchTaskMessages();
         }}
       />

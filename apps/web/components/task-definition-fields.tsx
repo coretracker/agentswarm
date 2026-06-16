@@ -13,17 +13,19 @@ import type {
   Snippet,
   SystemSettings,
   TaskBranchStrategy,
+  TaskAttachedRepositoryInput,
   TaskDefinitionInput,
   TaskType
 } from "@agentswarm/shared-types";
+import { normalizeTaskRepositoryMountName } from "@agentswarm/shared-types";
 import {
   getAgentProviderLabel,
   getDefaultModelForProvider,
   getEffortOptionsForProvider,
   getModelsForProvider
 } from "@agentswarm/shared-types";
-import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Typography, message } from "antd";
-import { RobotOutlined } from "@ant-design/icons";
+import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Space, Typography, message } from "antd";
+import { DeleteOutlined, PlusOutlined, RobotOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
@@ -39,6 +41,7 @@ export type TaskDefinitionFormValues = {
   title?: string;
   deadline?: string | null | Dayjs;
   repoId?: string;
+  attachedRepositories?: TaskAttachedRepositoryInput[];
   prompt?: string;
   notes?: string;
   taskType?: TaskType;
@@ -105,6 +108,161 @@ const deriveTitleFromPrompt = (prompt: string): string => {
   return lines[0];
 };
 
+interface TaskWorkspaceAttachmentsEditorProps {
+  form: FormInstance<TaskDefinitionFormValues>;
+  rootRepositoryId?: string | null;
+  disabled?: boolean;
+}
+
+export function TaskWorkspaceAttachmentsEditor({ form, rootRepositoryId, disabled = false }: TaskWorkspaceAttachmentsEditorProps) {
+  const { repositories } = useRepositories();
+  const attachedRepositories = (Form.useWatch("attachedRepositories", form) as TaskAttachedRepositoryInput[] | undefined) ?? [];
+  const repositoryOptions = repositories
+    .filter((repository) => repository.id !== rootRepositoryId)
+    .map((repository) => ({ label: repository.name, value: repository.id }));
+
+  return (
+    <div style={{ marginTop: 20 }}>
+      <Flex align="center" justify="space-between" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
+        <div>
+          <Typography.Text strong>Attached repositories</Typography.Text>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Optional read-only checkouts mounted alongside the root workspace.
+            </Typography.Text>
+          </div>
+        </div>
+        <Button
+          icon={<PlusOutlined />}
+          onClick={() => {
+            const next = [
+              ...attachedRepositories,
+              {
+                repositoryId: "",
+                mountName: "",
+                accessMode: "read-only" as const,
+                purpose: ""
+              }
+            ];
+            form.setFieldValue("attachedRepositories", next);
+          }}
+          disabled={disabled || repositoryOptions.length === 0}
+        >
+          Add repository
+        </Button>
+      </Flex>
+
+      {attachedRepositories.length === 0 ? (
+        <Alert
+          type="info"
+          showIcon
+          message="No attached repositories"
+          description="Add optional read-only repositories for reference code, shared assets, or cross-repo changes."
+        />
+      ) : null}
+
+      <Space direction="vertical" style={{ width: "100%", marginTop: attachedRepositories.length === 0 ? 12 : 0 }} size={12}>
+        <Form.List name="attachedRepositories">
+          {(fields, { remove }) => (
+            <>
+              {fields.map((field) => {
+                const repositoryId = attachedRepositories[field.name]?.repositoryId ?? "";
+                const selectedRepository = repositories.find((repository) => repository.id === repositoryId) ?? null;
+                const mountName = attachedRepositories[field.name]?.mountName ?? "";
+                return (
+                  <Card key={field.key} size="small" style={{ borderColor: "rgba(0,0,0,0.08)" }}>
+                    <Flex vertical gap={12}>
+                      <Flex justify="space-between" align="center" gap={12} wrap="wrap">
+                        <Typography.Text strong>Attachment {field.name + 1}</Typography.Text>
+                        <Button
+                          danger
+                          type="text"
+                          icon={<DeleteOutlined />}
+                          onClick={() => remove(field.name)}
+                          disabled={disabled}
+                        >
+                          Remove
+                        </Button>
+                      </Flex>
+
+                      <Row gutter={12}>
+                        <Col xs={24} lg={12}>
+                          <Form.Item
+                            {...field}
+                            name={[field.name, "repositoryId"]}
+                            label="Repository"
+                            rules={[{ required: true, message: "Select a repository" }]}
+                          >
+                            <Select
+                              showSearch
+                              optionFilterProp="label"
+                              placeholder="Select repository"
+                              options={repositoryOptions}
+                              disabled={disabled}
+                              onChange={(repositoryId) => {
+                                const repository = repositories.find((item) => item.id === repositoryId) ?? null;
+                                const currentMountName = (form.getFieldValue(["attachedRepositories", field.name, "mountName"]) as string | undefined) ?? "";
+                                if (!currentMountName.trim()) {
+                                  form.setFieldValue(
+                                    ["attachedRepositories", field.name, "mountName"],
+                                    normalizeTaskRepositoryMountName(repository?.name ?? repository?.id ?? "") ?? ""
+                                  );
+                                }
+                              }}
+                            />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={24} lg={12}>
+                          <Form.Item
+                            {...field}
+                            name={[field.name, "mountName"]}
+                            label="Mount name"
+                            rules={[{ required: true, message: "Enter a mount name" }]}
+                            extra={
+                              selectedRepository ? (
+                                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                  Will mount at <Typography.Text code>repos/{mountName || "name"}</Typography.Text>
+                                </Typography.Text>
+                              ) : (
+                                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                  Use a short, stable name. It becomes part of the workspace path.
+                                </Typography.Text>
+                              )
+                            }
+                          >
+                            <Input
+                              placeholder="shared-utils"
+                              disabled={disabled}
+                              onBlur={(event) => {
+                                const normalized = normalizeTaskRepositoryMountName(event.target.value);
+                                if (normalized && normalized !== event.target.value) {
+                                  form.setFieldValue(["attachedRepositories", field.name, "mountName"], normalized);
+                                }
+                              }}
+                            />
+                          </Form.Item>
+                        </Col>
+                      </Row>
+
+                      <Form.Item {...field} name={[field.name, "purpose"]} label="Purpose">
+                        <Input.TextArea
+                          autoSize={{ minRows: 2, maxRows: 4 }}
+                          placeholder="Why is this repository attached?"
+                          disabled={disabled}
+                        />
+                      </Form.Item>
+                    </Flex>
+                  </Card>
+                );
+              })}
+            </>
+          )}
+        </Form.List>
+      </Space>
+    </div>
+  );
+}
+
 export const getTaskDefinitionDeadlineIso = (value: TaskDefinitionFormValues["deadline"]): string | undefined => {
   if (!value) {
     return undefined;
@@ -124,7 +282,8 @@ export const getTaskDefinitionInitialValues = (
     model: getProviderDefaultModel(provider, settings),
     providerProfile: getProviderDefaultProfile(provider, settings),
     codexCredentialSource: "auto",
-    branchStrategy: "feature_branch"
+    branchStrategy: "feature_branch",
+    attachedRepositories: []
   };
 };
 
@@ -134,6 +293,23 @@ export const buildTaskDefinitionInput = (
 ): TaskDefinitionInput => {
   const provider = values.provider ?? "codex";
   const codexCredentialSource = provider === "codex" ? (values.codexCredentialSource ?? "auto") : undefined;
+  const attachedRepositories = (values.attachedRepositories ?? [])
+    .map((attachment): TaskAttachedRepositoryInput | null => {
+      const repositoryId = attachment.repositoryId?.trim() ?? "";
+      const mountName = normalizeTaskRepositoryMountName(attachment.mountName ?? "") ?? "";
+      const purpose = attachment.purpose?.trim() ?? "";
+      if (!repositoryId || !mountName) {
+        return null;
+      }
+
+      return {
+        repositoryId,
+        mountName,
+        accessMode: "read-only" as const,
+        purpose: purpose.length > 0 ? purpose : null
+      };
+    })
+    .filter((attachment): attachment is TaskAttachedRepositoryInput => attachment !== null);
 
   return {
     title: values.title?.trim() ?? "",
@@ -142,6 +318,7 @@ export const buildTaskDefinitionInput = (
     prompt: values.prompt?.trim() ?? "",
     notes: values.notes?.trim() || undefined,
     ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
+    ...(attachedRepositories.length > 0 ? { attachedRepositories } : {}),
     taskType: values.taskType ?? "build",
     provider,
     model: values.model?.trim() ?? "",
@@ -660,6 +837,8 @@ export function TaskDefinitionFields({
                 />
               </Form.Item>
             ) : null}
+
+            <TaskWorkspaceAttachmentsEditor form={form} rootRepositoryId={selectedRepoId} />
           </Card>
         </Col>
 

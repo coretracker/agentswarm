@@ -47,6 +47,7 @@ const buildTask = (status: Task["status"], overrides: Partial<Task> = {}): Task 
   repoName: "Repo",
   repoUrl: "https://github.com/acme/repo",
   repoDefaultBranch: "main",
+  attachedRepositories: [],
   taskType: "build",
   provider: "codex",
   providerProfile: "medium",
