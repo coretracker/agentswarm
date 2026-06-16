@@ -703,6 +703,7 @@ export function TaskDefinitionFields({
           placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
         />
       </Form.Item>
+      <TaskWorkspaceAttachmentsEditor form={form} rootRepositoryId={selectedRepoId} />
     </>
   );
 
@@ -838,7 +839,6 @@ export function TaskDefinitionFields({
               </Form.Item>
             ) : null}
 
-            <TaskWorkspaceAttachmentsEditor form={form} rootRepositoryId={selectedRepoId} />
           </Card>
         </Col>
 
