@@ -142,6 +142,5 @@
 - 2026-06-12: The current parallel-ask exception is removed so in-task queue order stays strict.
 
 ## Completion Notes
-- Implementation in progress.
-- Core queue behavior is wired through server, realtime, and task detail UI.
-- Final verification and self-review are still pending before merge.
+- Implemented message-backed task follow-up queues with FIFO scheduler execution, prompt-to-run linkage, pending queue history entries, removal before start, auto-continuation after successful runs, checkpoint-resolution continuation, and paused queue recovery controls.
+- Focused server and web verification passed during implementation. Full harness checks remained blocked by unrelated existing docs/sandbox issues noted in the progress log.
