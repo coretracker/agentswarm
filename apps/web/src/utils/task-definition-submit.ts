@@ -16,6 +16,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput, option
     notes: definition.notes,
     deadline: definition.deadline,
     attachments: definition.attachments,
+    attachedRepositories: definition.attachedRepositories,
     taskType: definition.taskType,
     provider: definition.provider,
     providerProfile: definition.providerProfile,
