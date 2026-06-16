@@ -396,4 +396,44 @@ describe("SpawnerService workspace provisioning", () => {
     await spawner.runTaskPostflight(task);
     assert.equal(workspaceKindSeen, "clone");
   });
+
+  it("exposes attached repositories through the virtual repos workspace folder", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-attached-repos-"));
+    const workspacePath = path.join(root, "workspace");
+    const attachmentRoot = path.join(workspacePath, ".attached-repositories", "shared-utils");
+    await mkdir(path.join(attachmentRoot, "src"), { recursive: true });
+    await writeFile(path.join(attachmentRoot, "README.md"), "# shared utils", "utf8");
+    await writeFile(path.join(attachmentRoot, "src", "index.ts"), "export const value = 1;\n", "utf8");
+
+    const task = createTask();
+    task.attachedRepositories = [
+      {
+        repositoryId: "repo-2",
+        mountName: "shared-utils",
+        accessMode: "read-only",
+        purpose: "Shared helpers"
+      }
+    ];
+
+    spawnerAny.resolveWorkspacePath = () => workspacePath;
+    spawnerAny.resolveAttachedRepositoryHostPath = () => attachmentRoot;
+
+    const reposListing = await spawner.listTaskWorkspaceFiles(task, { prefix: "repos" });
+    assert.deepEqual(reposListing.entries.map((entry) => entry.path), ["repos/shared-utils"]);
+
+    const attachmentListing = await spawner.listTaskWorkspaceFiles(task, { prefix: "repos/shared-utils" });
+    assert.deepEqual(
+      attachmentListing.entries.map((entry) => entry.path).sort(),
+      ["repos/shared-utils/README.md", "repos/shared-utils/src"]
+    );
+
+    const preview = await spawner.getTaskWorkspaceFilePreview(task, "repos/shared-utils/README.md", null);
+    assert.equal(preview?.kind, "text");
+    assert.match(preview?.content ?? "", /shared utils/);
+
+    const target = spawnerAny.resolveTaskWorkspaceFileTarget(task, "repos/shared-utils/README.md");
+    assert.equal(target?.source, "attachment");
+  });
 });

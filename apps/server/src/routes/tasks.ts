@@ -859,6 +859,14 @@ export const registerTaskRoutes = (
         return reply.status(409).send({ message: "Close the terminal session before editing files." });
       }
 
+      const target = deps.spawner.resolveTaskWorkspaceFileTarget(task, parsed.data.path);
+      if (!target) {
+        return reply.status(404).send({ message: "Workspace file not found or is outside the task workspace." });
+      }
+      if (target.source === "attachment") {
+        return reply.status(409).send({ message: "Attached repositories are read-only." });
+      }
+
       const preview = await deps.spawner.getTaskWorkspaceFilePreview(task, parsed.data.path, null);
       if (preview === null) {
         return reply.status(404).send({ message: "Workspace file not found or is outside the task workspace." });

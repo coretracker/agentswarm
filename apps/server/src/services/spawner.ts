@@ -6,6 +6,7 @@ import { nanoid } from "nanoid";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  TASK_WORKSPACE_REPOSITORIES_DIR_NAME,
   type AgentResponsePreference,
   getCheckpointMutationBlockedReason,
   getTaskStatusLabel,
@@ -57,7 +58,6 @@ import {
 } from "../lib/task-prompt-attachments.js";
 import {
   normalizeSafeWorkspaceRelativePath,
-  readSafeWorkspaceFileBuffer,
   resolveSafeWorkspaceFilePath
 } from "../lib/safe-workspace-file.js";
 import { materializeRepositoryRuntimeEnvEntries } from "../lib/repository-runtime-env.js";
@@ -1746,6 +1746,125 @@ export class SpawnerService {
     return path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId, ".attached-repositories", mountName);
   }
 
+  private getTaskAttachedRepository(task: Task, mountName: string): TaskAttachedRepository | null {
+    return (task.attachedRepositories ?? []).find((attachment) => attachment.mountName === mountName) ?? null;
+  }
+
+  private async ensureAttachedRepositoriesIgnored(workspacePath: string): Promise<void> {
+    const attachedRepoRoot = path.join(workspacePath, ".attached-repositories");
+    const attachedRepoExists = await access(attachedRepoRoot)
+      .then(() => true)
+      .catch(() => false);
+    if (!attachedRepoExists) {
+      return;
+    }
+
+    const excludePath = (
+      await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "--git-path", "info/exclude"])
+    ).trim();
+    if (!excludePath) {
+      return;
+    }
+
+    const excludeMarker = ".attached-repositories/";
+    const currentExclude = await readFile(excludePath, "utf8").catch(() => "");
+    if (currentExclude.includes(excludeMarker)) {
+      return;
+    }
+
+    await mkdir(path.dirname(excludePath), { recursive: true });
+    const nextExclude = currentExclude.length === 0
+      ? `${excludeMarker}\n`
+      : `${currentExclude.endsWith("\n") ? currentExclude : `${currentExclude}\n`}${excludeMarker}\n`;
+    await writeFile(excludePath, nextExclude, "utf8");
+  }
+
+  public resolveTaskWorkspaceFileTarget(
+    task: Task,
+    filePath: string
+  ): { absolutePath: string; relativePath: string; source: "root" | "attachment"; mountName?: string } | null {
+    const normalizedPath = normalizeSafeWorkspaceRelativePath(filePath);
+    if (!normalizedPath) {
+      return null;
+    }
+
+    const pathParts = normalizedPath.split("/");
+    if (pathParts[0] === TASK_WORKSPACE_REPOSITORIES_DIR_NAME) {
+      const mountName = pathParts[1];
+      if (!mountName) {
+        return null;
+      }
+
+      const attachment = this.getTaskAttachedRepository(task, mountName);
+      if (!attachment) {
+        return null;
+      }
+
+      const attachmentRoot = this.resolveAttachedRepositoryHostPath(task.id, mountName);
+      const relativePath = pathParts.slice(2).join("/");
+      if (!relativePath) {
+        return {
+          absolutePath: attachmentRoot,
+          relativePath: "",
+          source: "attachment",
+          mountName
+        };
+      }
+
+      const absolutePath = resolveSafeWorkspaceFilePath(attachmentRoot, relativePath);
+      if (!absolutePath) {
+        return null;
+      }
+
+      return {
+        absolutePath,
+        relativePath,
+        source: "attachment",
+        mountName
+      };
+    }
+
+    const workspacePath = this.resolveWorkspacePath(task.id);
+    const absolutePath = resolveSafeWorkspaceFilePath(workspacePath, normalizedPath);
+    if (!absolutePath) {
+      return null;
+    }
+
+    return {
+      absolutePath,
+      relativePath: normalizedPath,
+      source: "root"
+    };
+  }
+
+  private async readWorkspaceDirectoryEntries(absolutePath: string, prefix: string): Promise<TaskWorkspaceFileTreeEntry[]> {
+    let children: Dirent[];
+    try {
+      children = await readdir(absolutePath, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+
+    children.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+    const entries: TaskWorkspaceFileTreeEntry[] = [];
+    for (const child of children) {
+      if (child.name === ".git" || child.name === ".attached-repositories") {
+        continue;
+      }
+      if (!child.isDirectory() && !child.isFile()) {
+        continue;
+      }
+
+      entries.push({
+        path: prefix ? `${prefix}/${child.name}` : child.name,
+        name: child.name,
+        kind: child.isDirectory() ? "directory" : "file"
+      });
+    }
+
+    return entries;
+  }
+
   private async prepareAttachedRepositoryWorkspace(
     task: Task,
     attachment: TaskAttachedRepository,
@@ -1798,6 +1917,10 @@ export class SpawnerService {
       createdAt: task.createdAt,
       updatedAt: task.updatedAt
     };
+
+    if ((task.attachedRepositories ?? []).length > 0) {
+      await this.ensureAttachedRepositoriesIgnored(this.resolveWorkspacePath(task.id));
+    }
 
     const attachments = await Promise.all(
       (task.attachedRepositories ?? []).map(async (attachment) => {
@@ -1995,7 +2118,99 @@ export class SpawnerService {
       };
     }
 
-    const targetPath = normalizedPrefix ? resolveSafeWorkspaceFilePath(workspacePath, normalizedPrefix) : workspacePath;
+    const attachments = task.attachedRepositories ?? [];
+
+    if (!normalizedPrefix) {
+      const rootEntries = (await this.readWorkspaceDirectoryEntries(workspacePath, "")).filter(
+        (entry) => entry.name !== ".attached-repositories" && !(attachments.length > 0 && entry.name === TASK_WORKSPACE_REPOSITORIES_DIR_NAME)
+      );
+      if (attachments.length > 0 && !rootEntries.some((entry) => entry.path === TASK_WORKSPACE_REPOSITORIES_DIR_NAME)) {
+        rootEntries.push({
+          path: TASK_WORKSPACE_REPOSITORIES_DIR_NAME,
+          name: TASK_WORKSPACE_REPOSITORIES_DIR_NAME,
+          kind: "directory"
+        });
+      }
+
+      rootEntries.sort((left, right) => {
+        if (left.kind !== right.kind) {
+          return left.kind === "directory" ? -1 : 1;
+        }
+        return left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+      });
+
+      return {
+        prefix: null,
+        entries: rootEntries.slice(0, safeLimit),
+        fetchedAt: new Date().toISOString(),
+        truncated: rootEntries.length > safeLimit,
+        totalCount: rootEntries.length
+      };
+    }
+
+    if (normalizedPrefix === TASK_WORKSPACE_REPOSITORIES_DIR_NAME) {
+      const attachmentEntries = attachments
+        .map((attachment) => ({
+          path: `${TASK_WORKSPACE_REPOSITORIES_DIR_NAME}/${attachment.mountName}`,
+          name: attachment.mountName,
+          kind: "directory" as const
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+
+      return {
+        prefix: normalizedPrefix,
+        entries: attachmentEntries.slice(0, safeLimit),
+        fetchedAt: new Date().toISOString(),
+        truncated: attachmentEntries.length > safeLimit,
+        totalCount: attachmentEntries.length
+      };
+    }
+
+    if (normalizedPrefix.startsWith(`${TASK_WORKSPACE_REPOSITORIES_DIR_NAME}/`)) {
+      const [_, mountName, ...restParts] = normalizedPrefix.split("/");
+      if (!mountName) {
+        return {
+          prefix: normalizedPrefix,
+          entries: [],
+          fetchedAt: new Date().toISOString(),
+          truncated: false,
+          totalCount: 0
+        };
+      }
+
+      if (!this.getTaskAttachedRepository(task, mountName)) {
+        return {
+          prefix: normalizedPrefix,
+          entries: [],
+          fetchedAt: new Date().toISOString(),
+          truncated: false,
+          totalCount: 0
+        };
+      }
+
+      const attachmentRoot = this.resolveAttachedRepositoryHostPath(task.id, mountName);
+      const targetPath = restParts.length === 0 ? attachmentRoot : resolveSafeWorkspaceFilePath(attachmentRoot, restParts.join("/"));
+      if (!targetPath) {
+        return {
+          prefix: normalizedPrefix,
+          entries: [],
+          fetchedAt: new Date().toISOString(),
+          truncated: false,
+          totalCount: 0
+        };
+      }
+
+      const entries = await this.readWorkspaceDirectoryEntries(targetPath, normalizedPrefix);
+      return {
+        prefix: normalizedPrefix,
+        entries: entries.slice(0, safeLimit),
+        fetchedAt: new Date().toISOString(),
+        truncated: entries.length > safeLimit,
+        totalCount: entries.length
+      };
+    }
+
+    const targetPath = resolveSafeWorkspaceFilePath(workspacePath, normalizedPrefix);
     if (!targetPath) {
       return {
         prefix: normalizedPrefix || null,
@@ -2006,48 +2221,12 @@ export class SpawnerService {
       };
     }
 
-    let children: Dirent[];
-    try {
-      children = await readdir(targetPath, { withFileTypes: true });
-    } catch {
-      return {
-        prefix: normalizedPrefix || null,
-        entries: [],
-        fetchedAt: new Date().toISOString(),
-        truncated: false,
-        totalCount: 0
-      };
-    }
-
-    children.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
-    const entries: TaskWorkspaceFileTreeEntry[] = [];
-    let truncated = false;
-    for (const child of children) {
-      if (child.name === ".git") {
-        continue;
-      }
-      if (!child.isDirectory() && !child.isFile()) {
-        continue;
-      }
-
-      const relativePath = normalizedPrefix ? `${normalizedPrefix}/${child.name}` : child.name;
-      entries.push({
-        path: relativePath,
-        name: child.name,
-        kind: child.isDirectory() ? "directory" : "file"
-      });
-
-      if (entries.length >= safeLimit) {
-        truncated = true;
-        break;
-      }
-    }
-
+    const entries = await this.readWorkspaceDirectoryEntries(targetPath, normalizedPrefix);
     return {
       prefix: normalizedPrefix || null,
-      entries,
+      entries: entries.slice(0, safeLimit),
       fetchedAt: new Date().toISOString(),
-      truncated,
+      truncated: entries.length > safeLimit,
       totalCount: entries.length
     };
   }
@@ -2086,6 +2265,7 @@ export class SpawnerService {
     }
 
     const results: string[] = [];
+    const attachments = task.attachedRepositories ?? [];
     const queue: Array<{ absolutePath: string; relativePath: string }> = [{ absolutePath: workspacePath, relativePath: "" }];
 
     while (queue.length > 0 && results.length < safeLimit) {
@@ -2094,44 +2274,49 @@ export class SpawnerService {
         break;
       }
 
-      let children: Dirent[];
-      try {
-        children = await readdir(current.absolutePath, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-
-      children.sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+      const children = await this.readWorkspaceDirectoryEntries(current.absolutePath, current.relativePath);
       const directoriesToVisit: Array<{ absolutePath: string; relativePath: string }> = [];
 
       for (const child of children) {
-        if (child.name === ".git") {
+        const childRelativePath = child.path;
+        if (current.relativePath === "" && attachments.length > 0 && child.name === TASK_WORKSPACE_REPOSITORIES_DIR_NAME) {
           continue;
         }
-
-        const relativePath = current.relativePath ? `${current.relativePath}/${child.name}` : child.name;
-        if (child.isDirectory()) {
-          const safeDirectoryPath = resolveSafeWorkspaceFilePath(workspacePath, relativePath);
+        if (child.kind === "directory") {
+          const safeDirectoryPath = resolveSafeWorkspaceFilePath(current.absolutePath, child.name);
           if (!safeDirectoryPath) {
             continue;
           }
           directoriesToVisit.push({
             absolutePath: safeDirectoryPath,
-            relativePath
+            relativePath: childRelativePath
           });
           continue;
         }
 
-        if (!child.isFile()) {
-          continue;
-        }
-
-        const candidate = relativePath.toLowerCase();
+        const candidate = childRelativePath.toLowerCase();
         if (candidate.includes(query)) {
-          results.push(relativePath);
+          results.push(childRelativePath);
           if (results.length >= safeLimit) {
             break;
           }
+        }
+      }
+
+      if (current.relativePath === "") {
+        for (const attachment of attachments) {
+          const attachmentRoot = this.resolveAttachedRepositoryHostPath(task.id, attachment.mountName);
+          const exists = await access(attachmentRoot)
+            .then(() => true)
+            .catch(() => false);
+          if (!exists) {
+            continue;
+          }
+
+          queue.push({
+            absolutePath: attachmentRoot,
+            relativePath: `${TASK_WORKSPACE_REPOSITORIES_DIR_NAME}/${attachment.mountName}`
+          });
         }
       }
 
@@ -2154,7 +2339,6 @@ export class SpawnerService {
     filePath: string,
     ref?: string | null
   ): Promise<TaskWorkspaceFilePreview | null> {
-    const workspacePath = this.resolveWorkspacePath(task.id);
     const relativePath = normalizeSafeWorkspaceRelativePath(filePath);
     if (!relativePath) {
       return null;
@@ -2165,12 +2349,22 @@ export class SpawnerService {
       return null;
     }
 
+    const resolvedTarget = this.resolveTaskWorkspaceFileTarget(task, relativePath);
+    if (!resolvedTarget) {
+      return null;
+    }
+
     let buffer: Buffer | null;
     if (refValue) {
+      if (resolvedTarget.source === "attachment") {
+        return null;
+      }
+
+      const workspacePath = this.resolveWorkspacePath(task.id);
       const runtimeCredentials = await this.settingsStore.getRuntimeCredentials();
-      buffer = await this.readGitFileBuffer(workspacePath, refValue, relativePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      buffer = await this.readGitFileBuffer(workspacePath, refValue, resolvedTarget.relativePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
     } else {
-      buffer = await readSafeWorkspaceFileBuffer(workspacePath, relativePath);
+      buffer = await readFile(resolvedTarget.absolutePath).catch(() => null);
     }
 
     if (buffer === null) {
@@ -2181,10 +2375,10 @@ export class SpawnerService {
       throw new Error(`File is too large to preview (${buffer.length} bytes).`);
     }
 
-    const mimeType = getPreviewMimeType(relativePath);
+    const mimeType = getPreviewMimeType(resolvedTarget.relativePath || relativePath);
     if (mimeType) {
       return {
-        path: relativePath,
+        path: resolvedTarget.relativePath || relativePath,
         ref: refValue,
         kind: "image",
         mimeType,
