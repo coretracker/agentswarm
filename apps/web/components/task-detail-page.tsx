@@ -806,6 +806,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "deadline"
     | "state"
     | "renameTitle"
+    | "linkTask"
     | "editComment"
   >(null);
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
@@ -963,6 +964,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [editCheckpointModalState, setEditCheckpointModalState] = useState<CheckpointEditorModalState | null>(null);
   const [killTerminalConfirmOpen, setKillTerminalConfirmOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [linkTaskModalOpen, setLinkTaskModalOpen] = useState(false);
+  const [linkTaskCandidates, setLinkTaskCandidates] = useState<Task[]>([]);
+  const [linkTaskCandidatesLoading, setLinkTaskCandidatesLoading] = useState(false);
+  const [selectedLinkedTaskId, setSelectedLinkedTaskId] = useState<string | undefined>();
   const [commentEditModalOpen, setCommentEditModalOpen] = useState(false);
   const [editingComment, setEditingComment] = useState<TaskMessage | null>(null);
   const [commentEditDraft, setCommentEditDraft] = useState("");
@@ -1140,7 +1145,19 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canDelete = canDeleteTask && !!task && !isActive;
   const canArchive = canEditTask && !!task && !isActive && !isArchived;
   const canChangeTaskState = canEditTask && !!task && !isArchived;
+  const canLinkTaskWorkspace = canEditTask && !!task && !isArchived;
   const canAssignTask = canEditTask && canListUsers && isAdminTaskUser && !!task && !isArchived;
+  const linkedWorkspaceIds = useMemo(() => new Set((task?.linkedWorkspaces ?? []).map((link) => link.taskId)), [task?.linkedWorkspaces]);
+  const linkTaskOptions = useMemo(
+    () =>
+      linkTaskCandidates
+        .filter((candidate) => candidate.id !== task?.id && candidate.status !== "archived" && !linkedWorkspaceIds.has(candidate.id))
+        .map((candidate) => ({
+          value: candidate.id,
+          label: `${candidate.title} · ${candidate.repoName}`
+        })),
+    [linkTaskCandidates, linkedWorkspaceIds, task?.id]
+  );
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
   const roleAllowedModels = session?.user.allowedModels ?? [];
   const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
@@ -2862,6 +2879,73 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       }
     });
   };
+  const openLinkTaskModal = async () => {
+    if (!task || !canLinkTaskWorkspace) {
+      return;
+    }
+
+    setSelectedLinkedTaskId(undefined);
+    setLinkTaskModalOpen(true);
+    setLinkTaskCandidatesLoading(true);
+    try {
+      const candidates = await api.listTasks({ view: "active", limit: 500 });
+      setLinkTaskCandidates(candidates);
+    } catch (error) {
+      showTaskActionError(error, "Could not load tasks");
+    } finally {
+      setLinkTaskCandidatesLoading(false);
+    }
+  };
+  const handleLinkTaskWorkspace = async () => {
+    if (!task || !selectedLinkedTaskId) {
+      return;
+    }
+
+    setSubmitting("linkTask");
+    try {
+      const updatedTask = await api.linkTaskWorkspace(task.id, selectedLinkedTaskId);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      setLinkTaskModalOpen(false);
+      setSelectedLinkedTaskId(undefined);
+      messageApi.success("Task workspace linked");
+    } catch (error) {
+      showTaskActionError(error, "Could not link task workspace");
+    } finally {
+      setSubmitting((current) => (current === "linkTask" ? null : current));
+    }
+  };
+  const handleUnlinkTaskWorkspace = async (linkedTaskId: string) => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("linkTask");
+    try {
+      const updatedTask = await api.unlinkTaskWorkspace(task.id, linkedTaskId);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success("Task workspace unlinked");
+    } catch (error) {
+      showTaskActionError(error, "Could not unlink task workspace");
+    } finally {
+      setSubmitting((current) => (current === "linkTask" ? null : current));
+    }
+  };
   const openTaskStateModal = () => {
     if (!task) {
       return;
@@ -3493,6 +3577,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     ? [
         hasBranchForSync ? { key: "refreshGitStatus", label: "Refresh Git Status" } : null,
         canEditTask && !isArchived ? { key: "newSession", label: "New Session" } : null,
+        canLinkTaskWorkspace ? { key: "linkTask", label: "Link Task" } : null,
         canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Session", danger: true } : null,
         canChangeTaskState ? { key: "changeState", label: "Change State" } : null,
         canEditTask && !isArchived ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
@@ -3558,6 +3643,26 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               {codexCredentialSourceOptions.find((option) => option.value === currentTaskCodexCredentialSource)?.label ?? "Auto"}
             </Descriptions.Item>
           ) : null}
+          <Descriptions.Item label="Linked Workspaces" span={2}>
+            {task?.linkedWorkspaces?.length ? (
+              <Space size={[8, 8]} wrap>
+                {task.linkedWorkspaces.map((link) => (
+                  <Tag
+                    key={link.taskId}
+                    closable={canLinkTaskWorkspace}
+                    onClose={(event) => {
+                      event.preventDefault();
+                      void handleUnlinkTaskWorkspace(link.taskId);
+                    }}
+                  >
+                    {link.title} <Typography.Text code>{`.linked-workspace/${link.alias}`}</Typography.Text>
+                  </Tag>
+                ))}
+              </Space>
+            ) : (
+              <Typography.Text type="secondary">None</Typography.Text>
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label="Status">
             {task ? (
               showWorkingIndicator ? (
@@ -3774,6 +3879,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               return;
             }
 
+            if (key === "linkTask") {
+              void openLinkTaskModal();
+              return;
+            }
+
             if (key === "changeState") {
               openTaskStateModal();
               return;
@@ -3801,7 +3911,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }}
         trigger={["click"]}
       >
-        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "killTerminal" || submitting === "merge" || submitting === "state"}>
+        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "killTerminal" || submitting === "merge" || submitting === "state" || submitting === "linkTask"}>
           More
         </Button>
       </Dropdown>
@@ -5947,6 +6057,38 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             />
           ) : null}
         </Space>
+      </Modal>
+      <Modal
+        title="Link Task"
+        open={linkTaskModalOpen}
+        onCancel={() => {
+          if (submitting === "linkTask") {
+            return;
+          }
+          setLinkTaskModalOpen(false);
+          setSelectedLinkedTaskId(undefined);
+        }}
+        destroyOnClose
+        onOk={() => void handleLinkTaskWorkspace()}
+        okText="Link"
+        confirmLoading={submitting === "linkTask"}
+        okButtonProps={{ disabled: !selectedLinkedTaskId }}
+      >
+        <Form layout="vertical">
+          <Form.Item label="Task" required>
+            <Select
+              showSearch
+              placeholder={linkTaskCandidatesLoading ? "Loading tasks..." : "Select task"}
+              loading={linkTaskCandidatesLoading}
+              value={selectedLinkedTaskId}
+              onChange={(value) => setSelectedLinkedTaskId(value)}
+              optionFilterProp="label"
+              options={linkTaskOptions}
+              disabled={submitting === "linkTask"}
+              notFoundContent={linkTaskCandidatesLoading ? <Spin size="small" /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />}
+            />
+          </Form.Item>
+        </Form>
       </Modal>
       <WorkspaceFilePreviewModal
         open={workspaceFilePreview.open}

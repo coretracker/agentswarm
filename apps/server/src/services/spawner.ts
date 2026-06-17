@@ -43,6 +43,7 @@ import { buildGitProcessEnv } from "../lib/git-env.js";
 import { extractGitLockPathFromErrorMessage, isPathInside, resolveGitTargetLockKey } from "../lib/git-locks.js";
 import { resolveGitPaths } from "../lib/git-paths.js";
 import { resolveWorkspaceGitRuntimeMounts } from "../lib/git-runtime-mounts.js";
+import { buildLinkedWorkspaceMountPlan, LINKED_WORKSPACE_DIRNAME } from "../lib/linked-workspaces.js";
 import { buildTaskRuntimeGitEnvEntries } from "../lib/task-interactive-terminal-git-env.js";
 import { reconcileTaskStatusWithPendingCheckpoint, resolveTaskReadyStatus } from "../lib/task-status.js";
 import { buildTaskCommitSubject, formatCommitSubject } from "../lib/task-commit-subject.js";
@@ -1267,6 +1268,7 @@ export class SpawnerService {
 
   private async stripEphemeralWorkspaceFiles(workspacePath: string): Promise<void> {
     await rm(path.join(workspacePath, ".agentswarm-runtime"), { recursive: true, force: true }).catch(() => undefined);
+    await rm(path.join(workspacePath, LINKED_WORKSPACE_DIRNAME), { recursive: true, force: true }).catch(() => undefined);
   }
 
   private async loadPostflightConfig(workspacePath: string): Promise<PostflightConfig | null> {
@@ -5359,6 +5361,15 @@ export class SpawnerService {
       const workspaceMountMode = action === "ask" ? "ro" : "rw";
       const rawEventsMount = runId ? this.resolveTaskRunRawEventsMount(task.id, runId) : null;
       const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
+      const attachmentRoot = manifestAttachments.length > 0 ? resolveTaskPromptAttachmentRoot(task.id) : null;
+      const attachmentHostRoot = attachmentRoot
+        ? path.join(env.TASK_WORKSPACE_HOST_ROOT, path.relative(env.TASK_WORKSPACE_ROOT, attachmentRoot))
+        : null;
+      const linkedWorkspaceMountPlan = await buildLinkedWorkspaceMountPlan({
+        rootWorkspacePath: workspace.workspacePath,
+        containerWorkspacePath: workspace.workspacePath,
+        linkedWorkspaces: task.linkedWorkspaces
+      });
       const providerStateContainerPath = this.resolveProviderStateContainerPath(task.provider);
       const providerStatePaths = await ensureTaskProviderStatePaths(task.id, task.provider);
       const dockerSocketPolicy = resolveDockerSocketAccessPolicy(task.provider);
@@ -5372,6 +5383,16 @@ export class SpawnerService {
       });
       if (workspaceMountMode === "ro") {
         await appendRunLog("Spawner: mounting workspace read-only (ask mode).");
+      }
+      if (linkedWorkspaceMountPlan.mounted.length > 0) {
+        await appendRunLog(
+          `Spawner: mounted ${linkedWorkspaceMountPlan.mounted.length} linked workspace${linkedWorkspaceMountPlan.mounted.length === 1 ? "" : "s"} read-only under ${LINKED_WORKSPACE_DIRNAME}.`
+        );
+      }
+      if (linkedWorkspaceMountPlan.skipped.length > 0) {
+        await appendRunLog(
+          `Spawner: skipped ${linkedWorkspaceMountPlan.skipped.length} linked workspace mount${linkedWorkspaceMountPlan.skipped.length === 1 ? "" : "s"} because the workspace folder was unavailable.`
+        );
       }
       if (dockerSocketPolicy.enabled) {
         emitDockerSocketEnabledEventOnce({ provider: task.provider, policy: dockerSocketPolicy });
@@ -5387,8 +5408,10 @@ export class SpawnerService {
         "-v",
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         "-v",
-        `${env.TASK_WORKSPACE_HOST_ROOT}:${env.TASK_WORKSPACE_ROOT}:${workspaceMountMode}`,
+        `${workspace.hostWorkspacePath}:${workspace.workspacePath}:${workspaceMountMode}`,
+        ...(attachmentRoot && attachmentHostRoot ? ["-v", `${attachmentHostRoot}:${attachmentRoot}:ro`] : []),
         ...(rawEventsMount ? ["-v", `${rawEventsMount.hostDir}:${rawEventsMount.containerDir}:rw`] : []),
+        ...linkedWorkspaceMountPlan.mountArgs,
         ...gitRuntimeMounts,
         "-v",
         `${providerStatePaths.hostPath}:${providerStateContainerPath}:rw`,

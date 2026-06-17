@@ -234,6 +234,15 @@ export const api = {
     return request<Task[]>(`/tasks${query ? `?${query}` : ""}`);
   },
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
+  linkTaskWorkspace: (id: string, linkedTaskId: string) =>
+    request<Task>(`/tasks/${id}/linked-workspaces`, {
+      method: "POST",
+      body: JSON.stringify({ linkedTaskId })
+    }),
+  unlinkTaskWorkspace: (id: string, linkedTaskId: string) =>
+    request<Task>(`/tasks/${id}/linked-workspaces/${encodeURIComponent(linkedTaskId)}`, {
+      method: "DELETE"
+    }),
   startTask: (id: string) =>
     request<Task>(`/tasks/${id}/start`, {
       method: "POST"

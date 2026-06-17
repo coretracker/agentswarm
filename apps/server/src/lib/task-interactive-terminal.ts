@@ -27,6 +27,7 @@ import type { TaskMetadata, TaskStore } from "../services/task-store.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import { canUserAccessTask } from "./task-ownership.js";
 import { resolveWorkspaceGitRuntimeMounts } from "./git-runtime-mounts.js";
+import { buildLinkedWorkspaceMountPlan } from "./linked-workspaces.js";
 import { materializeRepositoryRuntimeEnvEntries } from "./repository-runtime-env.js";
 import {
   claudeModelSupportsThinkingBudget,
@@ -680,6 +681,11 @@ async function initializeTaskInteractiveTerminalWebSocket(
     const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
     const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
+    const linkedWorkspaceMountPlan = await buildLinkedWorkspaceMountPlan({
+      rootWorkspacePath: workspaceOnServer,
+      containerWorkspacePath: INTERACTIVE_WORKSPACE_PATH,
+      linkedWorkspaces: task.linkedWorkspaces
+    });
     if (mode === "git") {
       const [credentials, gitIdentity, repositoryRuntimeEnvEntries] = await Promise.all([
         deps.settingsStore.getRuntimeCredentials(userId),
@@ -722,6 +728,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         "-v",
         `${dockerBindSource}:/workspace:rw`,
+        ...linkedWorkspaceMountPlan.mountArgs,
         ...gitRuntimeMounts,
         ...dockerEnv,
         runtime.image,
@@ -804,6 +811,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
       "-v",
       `${dockerBindSource}:/workspace:rw`,
+      ...linkedWorkspaceMountPlan.mountArgs,
       ...dockerSocketMountArgs,
       ...gitRuntimeMounts,
       ...(statePaths && runtime.persistentState

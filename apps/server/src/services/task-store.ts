@@ -16,6 +16,7 @@ import {
   type TaskAction,
   type TaskExecutionAction,
   type TaskExecutionStatus,
+  type TaskLinkedWorkspace,
   type TaskMessage,
   type TaskPromptAttachment,
   type TaskReasoningEffort,
@@ -186,6 +187,38 @@ const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
     ...(attachments.length > 0 ? { attachments } : {}),
     ...(sessionId !== null || "sessionId" in message ? { sessionId } : {})
   };
+};
+
+const normalizeTaskLinkedWorkspaces = (value: unknown): TaskLinkedWorkspace[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+
+    const raw = item as Partial<TaskLinkedWorkspace>;
+    const taskId = typeof raw.taskId === "string" ? raw.taskId.trim() : "";
+    const alias = typeof raw.alias === "string" ? raw.alias.trim() : "";
+    const linkedAt = typeof raw.linkedAt === "string" ? raw.linkedAt : "";
+    const linkedByUserId = typeof raw.linkedByUserId === "string" ? raw.linkedByUserId.trim() : "";
+    if (!taskId || !alias || !linkedAt || !linkedByUserId) {
+      return [];
+    }
+
+    return [
+      {
+        taskId,
+        alias,
+        title: typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : taskId,
+        repoName: typeof raw.repoName === "string" && raw.repoName.trim() ? raw.repoName.trim() : "",
+        linkedAt,
+        linkedByUserId
+      }
+    ];
+  });
 };
 
 const normalizeTaskExecutionStatus = (value: unknown, fallbackTask: Pick<Task, "status" | "activeInteractiveSession">): TaskExecutionStatus => {
@@ -468,6 +501,7 @@ export class RedisTaskStore implements TaskStore {
           : legacyTask.activeInteractiveSession === true
             ? "interactive"
             : null,
+      linkedWorkspaces: normalizeTaskLinkedWorkspaces(legacyTask.linkedWorkspaces),
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
       taskType: normalizeLegacyTaskType(legacyTask.taskType),
       provider: normalizeProvider(legacyTask.provider),
@@ -693,6 +727,7 @@ export class RedisTaskStore implements TaskStore {
       autoApplyCheckpoints,
       activeInteractiveSession: false,
       activeTerminalSessionMode: null,
+      linkedWorkspaces: [],
       ownerUserId,
       repoId: repository.id,
       repoName: repository.name,
@@ -1823,6 +1858,7 @@ export class PostgresTaskStore implements TaskStore {
           : legacyTask.activeInteractiveSession === true
             ? "interactive"
             : null,
+      linkedWorkspaces: normalizeTaskLinkedWorkspaces(legacyTask.linkedWorkspaces),
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
       taskType: normalizeLegacyTaskType(legacyTask.taskType),
       provider: normalizeProvider(legacyTask.provider),
@@ -2129,6 +2165,7 @@ export class PostgresTaskStore implements TaskStore {
       autoApplyCheckpoints,
       activeInteractiveSession: false,
       activeTerminalSessionMode: null,
+      linkedWorkspaces: [],
       ownerUserId,
       repoId: repository.id,
       repoName: repository.name,

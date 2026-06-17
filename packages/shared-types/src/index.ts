@@ -468,6 +468,15 @@ export interface Repository {
 export type TaskTerminalSessionMode = "interactive" | "git";
 export type CodexCredentialSource = "auto" | "profile" | "global";
 
+export interface TaskLinkedWorkspace {
+  taskId: string;
+  alias: string;
+  title: string;
+  repoName: string;
+  linkedAt: string;
+  linkedByUserId: string;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -477,6 +486,7 @@ export interface Task {
   autoApplyCheckpoints: boolean;
   activeInteractiveSession?: boolean;
   activeTerminalSessionMode?: TaskTerminalSessionMode | null;
+  linkedWorkspaces?: TaskLinkedWorkspace[];
   ownerUserId: string | null;
   creatorName?: string | null;
   repoId: string;

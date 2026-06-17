@@ -1,6 +1,6 @@
 import path from "node:path";
-import { createReadStream } from "node:fs";
-import { rm, stat } from "node:fs/promises";
+import { constants, createReadStream } from "node:fs";
+import { access, rm, stat } from "node:fs/promises";
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
@@ -10,6 +10,7 @@ import {
   TASK_PROMPT_ATTACHMENT_MAX_COUNT,
   type Task,
   type TaskAction,
+  type TaskLinkedWorkspace,
   type TaskPromptAttachment,
   type TaskTerminalSessionMode
 } from "@agentswarm/shared-types";
@@ -41,6 +42,7 @@ import { writeSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
 import { env } from "../config/env.js";
 import { normalizeProvider } from "../lib/provider-config.js";
 import { resolveTaskProviderStatePaths } from "../lib/task-provider-state.js";
+import { isSafeLinkedWorkspaceAlias } from "../lib/linked-workspaces.js";
 
 const taskPromptAttachmentInputSchema = z.object({
   name: z.string().trim().min(1).max(255),
@@ -134,6 +136,10 @@ const updateTaskStateSchema = z.object({
 
 const updateTaskAssigneeSchema = z.object({
   ownerUserId: z.string().trim().min(1)
+});
+
+const linkTaskWorkspaceSchema = z.object({
+  linkedTaskId: z.string().trim().min(1)
 });
 
 const applyTaskChangeProposalSchema = z.object({
@@ -418,6 +424,97 @@ export const registerTaskRoutes = (
 
     return withTaskCreatorName(deps.userStore, task);
   });
+
+  app.post<{ Params: { id: string } }>(
+    "/tasks/:id/linked-workspaces",
+    { preHandler: deps.auth.requireAllScopes(["task:edit", "task:read"]) },
+    async (request, reply) => {
+      const parsed = linkTaskWorkspaceSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const linkedTaskId = parsed.data.linkedTaskId;
+      if (linkedTaskId === task.id) {
+        return reply.status(400).send({ message: "A task cannot link its own workspace." });
+      }
+
+      const linkedTask = await deps.taskStore.getTask(linkedTaskId);
+      if (!linkedTask || !canUserAccessTask(request.auth?.user, linkedTask)) {
+        return reply.status(404).send({ message: "Linked task not found" });
+      }
+
+      const alias = linkedTask.id;
+      if (!isSafeLinkedWorkspaceAlias(alias)) {
+        return reply.status(400).send({ message: "Linked task id cannot be used as a workspace folder name." });
+      }
+
+      const linkedWorkspacePath = path.join(env.TASK_WORKSPACE_ROOT, linkedTask.id);
+      try {
+        await access(linkedWorkspacePath, constants.R_OK | constants.X_OK);
+      } catch {
+        return reply.status(409).send({ message: "Linked task workspace does not exist yet." });
+      }
+
+      const existing = task.linkedWorkspaces ?? [];
+      if (existing.some((link) => link.taskId === linkedTask.id || link.alias === alias)) {
+        return reply.send(await withTaskCreatorName(deps.userStore, task));
+      }
+
+      const nextLink: TaskLinkedWorkspace = {
+        taskId: linkedTask.id,
+        alias,
+        title: linkedTask.title,
+        repoName: linkedTask.repoName,
+        linkedAt: new Date().toISOString(),
+        linkedByUserId: request.auth!.user.id
+      };
+      const updated = await deps.taskStore.patchTask(task.id, {
+        linkedWorkspaces: [...existing, nextLink]
+      });
+      if (!updated) {
+        return reply.status(404).send({ message: "Task not found" });
+      }
+
+      return reply.send(await withTaskCreatorName(deps.userStore, updated));
+    }
+  );
+
+  app.delete<{ Params: { id: string; linkedTaskId: string } }>(
+    "/tasks/:id/linked-workspaces/:linkedTaskId",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const nextLinks = (task.linkedWorkspaces ?? []).filter((link) => link.taskId !== request.params.linkedTaskId);
+      if (nextLinks.length === (task.linkedWorkspaces ?? []).length) {
+        return reply.send(await withTaskCreatorName(deps.userStore, task));
+      }
+
+      const updated = await deps.taskStore.patchTask(task.id, {
+        linkedWorkspaces: nextLinks
+      });
+      if (!updated) {
+        return reply.status(404).send({ message: "Task not found" });
+      }
+
+      return reply.send(await withTaskCreatorName(deps.userStore, updated));
+    }
+  );
 
   app.get<{ Params: { id: string } }>(
     "/tasks/:id/branch-sync-counts",
