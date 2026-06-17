@@ -107,6 +107,10 @@ export const registerMcpRoutes = (
       );
     }
 
+    if (parsed.data.method.startsWith("notifications/")) {
+      return reply.status(202).send();
+    }
+
     const auth = await deps.auth.authenticateBearerToken(readBearerToken(request));
     if (!auth) {
       return reply.status(401).send(error(id, -32001, "Authentication required"));
