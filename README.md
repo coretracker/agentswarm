@@ -198,38 +198,14 @@ Most runtime configuration starts in `.env`. Provider API keys and GitHub creden
 | `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
 | `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
 | `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
-| `APP_ENVIRONMENT` | Runtime environment label. | `local` |
 
 ### Storage
 
 | Variable | Description | Default |
 | --- | --- | --- |
 | `DATABASE_URL` | Postgres connection string. | see `.env.example` |
-| `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start. | `true` |
-| `REDIS_HOST_PORT` | Host port for Redis in local Docker setups. | `6379` |
-| `POSTGRES_HOST_PORT` | Host port for Postgres in local Docker setups. | `5432` |
 
 Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub.
-
-### Git and Workspaces
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `GIT_USER_NAME` | Git author name used by the server. | `AgentSwarm Bot` |
-| `GIT_USER_EMAIL` | Git author email used by the server. | `agentswarm@local.dev` |
-| `TASK_WORKSPACE_HOST_ROOT` | Absolute host path for task workspaces. | unset |
-| `LOCAL_PLANS_HOST_ROOT` | Absolute host path for local plan storage. | unset |
-
-`TASK_WORKSPACE_HOST_ROOT` is important in Docker setups because the server and runtime containers must mount the same host workspace directory.
-
-### Frontend API Routing
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `NEXT_PUBLIC_API_URL` | Explicit public API base URL. | empty |
-| `NEXT_PUBLIC_SOCKET_URL` | Explicit public Socket.IO URL. | empty |
-
-Leave these empty to use the bundled same-origin `/api` proxy.
 
 ### Runtime Images
 
@@ -237,9 +213,6 @@ Leave these empty to use the bundled same-origin `/api` proxy.
 | --- | --- | --- |
 | `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
 | `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
-| `GIT_TERMINAL_IMAGE` | Restricted Git terminal image. | `local/git-terminal:latest` |
-| `CODEX_INTERACTIVE_IMAGE` | Interactive Codex terminal image. | `local/codex-interactive:latest` |
-| `CLAUDE_INTERACTIVE_IMAGE` | Interactive Claude terminal image. | `local/claude-interactive:latest` |
 
 ### Docker Socket Access
 

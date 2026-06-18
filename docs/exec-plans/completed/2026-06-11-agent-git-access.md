@@ -57,7 +57,7 @@
 1. Confirm credential and identity requirements.
    - Verify whether GitHub token should remain global only or whether per-user/per-repository token support is needed.
    - Define required GitHub token permissions for private repos, branch pushes, PR imports, and status/comment automation.
-   - Confirm fallback Git identity values from `GIT_USER_NAME` and `GIT_USER_EMAIL`.
+   - Confirm fallback Git identity values.
 2. Add a shared automated-runtime Git env builder.
    - Reuse existing `buildGitProcessEnv`/interactive Git env behavior where practical.
    - Produce env entries suitable for Docker `-e` injection into Codex and Claude task containers.

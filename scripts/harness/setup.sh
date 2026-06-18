@@ -42,8 +42,8 @@ else
   log ".env already exists"
 fi
 
-mkdir -p local-plans task-workspaces
-log "ensured local runtime directories exist (local-plans, task-workspaces)"
+mkdir -p task-workspaces
+log "ensured local runtime directory exists (task-workspaces)"
 
 if [[ "${HARNESS_INSTALL_NPM_DEPS:-0}" == "1" ]]; then
   require_cmd npm

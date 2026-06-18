@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import type { Task } from "@agentswarm/shared-types";
+import { env } from "../config/env.js";
 import { SpawnerService } from "./spawner.js";
 
 const createTask = (overrides: Partial<Task> = {}): Task =>
@@ -79,7 +80,7 @@ describe("SpawnerService workspace provisioning", () => {
 
     const mount = spawner.resolveTaskRunRawEventsMount("task-123", "run-with-spaces");
 
-    assert.equal(mount.hostDir, "/tmp/agentswarm-task-workspaces/.task-state/task-123/raw-runs");
+    assert.equal(mount.hostDir, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/raw-runs"));
     assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
   });
 

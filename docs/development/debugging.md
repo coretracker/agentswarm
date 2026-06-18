@@ -50,11 +50,10 @@ Fix:
 Symptoms:
 - `start.sh` never reaches healthy state.
 - Browser cannot open `http://localhost:3217/login`.
-- Setup/start fails with bind errors for `6379` or `5432`.
+- Setup/start fails with a bind error for the web port.
 
 Fix:
 - Change `PUBLIC_PORT` in `.env`.
-- If Redis/Postgres ports conflict, change `REDIS_HOST_PORT` and `POSTGRES_HOST_PORT` in `.env`.
 - Re-run `./scripts/harness/start.sh`.
 
 ### Environment file missing or incomplete

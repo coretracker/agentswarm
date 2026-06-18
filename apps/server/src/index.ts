@@ -5,7 +5,7 @@ import cors from "@fastify/cors";
 import * as Sentry from "@sentry/node";
 import { Server as SocketIOServer } from "socket.io";
 import type { RealtimeEvent } from "@agentswarm/shared-types";
-import { env } from "./config/env.js";
+import { AUTO_RUN_POSTGRES_MIGRATIONS, env } from "./config/env.js";
 import { createAuthService } from "./lib/auth.js";
 import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
 import { createRedisClients } from "./lib/redis.js";
@@ -106,10 +106,10 @@ const bootstrap = async (): Promise<void> => {
       corsOrigin: env.CORS_ORIGIN,
       durableStores: "postgres",
       runtimeServices: "redis",
-      postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
+      postgresAutoMigrate: AUTO_RUN_POSTGRES_MIGRATIONS,
       sentryEnabled,
       taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
-      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
+      taskWorkspaceDockerSource: env.TASK_WORKSPACE_DOCKER_SOURCE
     },
     "Server configuration loaded"
   );
@@ -117,7 +117,7 @@ const bootstrap = async (): Promise<void> => {
   const redisClients = createRedisClients(env.REDIS_URL);
   const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
   const postgresPool = createPostgresPool(env.DATABASE_URL);
-  if (env.POSTGRES_AUTO_MIGRATE) {
+  if (AUTO_RUN_POSTGRES_MIGRATIONS) {
     app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
     await runPostgresMigrations(postgresPool);
     app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");

@@ -69,7 +69,7 @@ import {
 } from "../lib/docker-socket-access.js";
 import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
-import { env } from "../config/env.js";
+import { DEFAULT_GIT_COMMIT_IDENTITY, INTERACTIVE_RUNTIME_IMAGES, env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
 import { executeCodexUtility, CodexUtilityUnavailableError } from "./codex-utility-service.js";
 import { buildDiffAssistPromptContext, executeOpenAiDiffAssist } from "./openai-diff-assist-service.js";
@@ -511,10 +511,7 @@ export class SpawnerService {
   }
 
   private buildGitWorkerDockerArgs(args: string[], gitEnv: NodeJS.ProcessEnv): string[] {
-    const image = env.GIT_TERMINAL_IMAGE?.trim();
-    if (!image) {
-      throw new Error("Git worker container is not configured (set GIT_TERMINAL_IMAGE on the server).");
-    }
+    const image = INTERACTIVE_RUNTIME_IMAGES.gitTerminal;
 
     const dockerEnv: string[] = [
       "-e",
@@ -552,7 +549,7 @@ export class SpawnerService {
       "--rm",
       "-i",
       "-v",
-      `${env.TASK_WORKSPACE_HOST_ROOT}:${env.TASK_WORKSPACE_ROOT}:rw`,
+      `${env.TASK_WORKSPACE_DOCKER_SOURCE}:${env.TASK_WORKSPACE_ROOT}:rw`,
       "-v",
       `${repoCacheMountSource}:${env.REPO_CACHE_ROOT}:rw`,
       ...dockerEnv,
@@ -598,8 +595,7 @@ export class SpawnerService {
     const workspacePath = args[0] === "-C" && typeof args[1] === "string" && args[1].startsWith("/") ? args[1] : null;
     const gitIdentity = task
       ? await resolveTaskGitCommitIdentity(task, this.userStore, {
-          name: env.GIT_USER_NAME,
-          email: env.GIT_USER_EMAIL
+          ...DEFAULT_GIT_COMMIT_IDENTITY
         })
       : null;
     return buildGitProcessEnv({
@@ -1531,7 +1527,7 @@ export class SpawnerService {
   }
 
   private resolveWorkspaceHostPath(taskId: string): string {
-    return path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
+    return path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, taskId);
   }
 
   resolveTaskRunRawEventsJsonlPath(taskId: string, runId: string): string {
@@ -5185,8 +5181,7 @@ export class SpawnerService {
       this.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId),
       task.ownerUserId ? this.userStore.getAuthSessionUser(task.ownerUserId) : Promise.resolve(null),
       resolveTaskGitCommitIdentity(task, this.userStore, {
-        name: env.GIT_USER_NAME,
-        email: env.GIT_USER_EMAIL
+        ...DEFAULT_GIT_COMMIT_IDENTITY
       })
     ]);
     const runtimeCredentials = runtimeCredentialsRaw;
@@ -5363,7 +5358,7 @@ export class SpawnerService {
       const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
       const attachmentRoot = manifestAttachments.length > 0 ? resolveTaskPromptAttachmentRoot(task.id) : null;
       const attachmentHostRoot = attachmentRoot
-        ? path.join(env.TASK_WORKSPACE_HOST_ROOT, path.relative(env.TASK_WORKSPACE_ROOT, attachmentRoot))
+        ? path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, path.relative(env.TASK_WORKSPACE_ROOT, attachmentRoot))
         : null;
       const linkedWorkspaceMountPlan = await buildLinkedWorkspaceMountPlan({
         rootWorkspacePath: workspace.workspacePath,

@@ -17,12 +17,12 @@
 - Required with remote mode: `REMOTE_BUILD_IMAGE`.
 - Optional override: `REMOTE_BUILD_RUNNER_URL` (default: `http://host.docker.internal:38127`).
 - Remote runs use `TASK_WORKSPACE_PATH` when present for the runner `workdir`.
-- Remote mode auto-derives `TASK_WORKSPACE_HOST_ROOT`, `LOCAL_PLANS_HOST_ROOT`, and `NGINX_CONF_HOST_PATH` from the remote workdir unless explicitly set.
+- Remote mode uses `TASK_WORKSPACE_PATH` as the runner workdir when present.
 - Set `REMOTE_BUILD=0` (or unset it) to run harness scripts locally.
 - Runner API note: `/run` expects `cmd` as a non-empty string array, not a single string.
 - Remote runner image should include: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
 - For remote browser E2E: if the runner is musl-based, harness auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`).
-- If host ports are occupied, override: `PUBLIC_PORT`, `REDIS_HOST_PORT`, `POSTGRES_HOST_PORT`.
+- If the web host port is occupied, override `PUBLIC_PORT`.
 
 ## Root Package Manager Commands
 - `npm run dev`: runs server and web dev processes together.

@@ -10,7 +10,6 @@ BASE_BRANCH="${BASE_BRANCH:-develop}"
 REPO_DEFAULT_BRANCH="${REPO_DEFAULT_BRANCH:-$BASE_BRANCH}"
 BRANCH_NAME="${BRANCH_NAME:-agentswarm/task}"
 TASK_TITLE="${TASK_TITLE:-AgentSwarm task}"
-TASK_PLAN_PATH="${TASK_PLAN_PATH:-local-plans/plan.md}"
 TASK_BRANCH_STRATEGY="${TASK_BRANCH_STRATEGY:-feature_branch}"
 TASK_PROMPT_FILE="${TASK_PROMPT_FILE:-}"
 TASK_PLAN_MARKDOWN_FILE="${TASK_PLAN_MARKDOWN_FILE:-}"
@@ -23,8 +22,6 @@ REPO_CACHE_PATH="${REPO_CACHE_PATH:-}"
 TASK_MODEL="${TASK_MODEL:-}"
 TASK_REASONING_EFFORT="${TASK_REASONING_EFFORT:-}"
 EXECUTION_ACTION="${EXECUTION_ACTION:-build}"
-GIT_USER_NAME="${GIT_USER_NAME:-AgentSwarm Bot}"
-GIT_USER_EMAIL="${GIT_USER_EMAIL:-agentswarm@local.dev}"
 GIT_USERNAME="${GIT_USERNAME:-x-access-token}"
 GIT_TOKEN="${GIT_TOKEN:-}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-}"
@@ -328,8 +325,8 @@ if [[ "$CODEX_EXIT" -ne 0 ]]; then
   exit "$CODEX_EXIT"
 fi
 
-git config user.name "$GIT_USER_NAME"
-git config user.email "$GIT_USER_EMAIL"
+git config user.name "AgentSwarm Bot"
+git config user.email "agentswarm@local.dev"
 
 if [[ "$EXECUTION_ACTION" == "review" ]]; then
   echo "[runtime] branch diff begin"
@@ -344,7 +341,7 @@ if [[ "$EXECUTION_ACTION" == "plan" || "$EXECUTION_ACTION" == "iterate" || "$EXE
   fi
 
   if [[ "$EXECUTION_ACTION" == "plan" || "$EXECUTION_ACTION" == "iterate" ]]; then
-    echo "[runtime] plan markdown generated; local storage handled by AgentSwarm server at $TASK_PLAN_PATH"
+    echo "[runtime] plan markdown generated; local storage handled by AgentSwarm server"
   else
     echo "[runtime] result markdown generated"
   fi
