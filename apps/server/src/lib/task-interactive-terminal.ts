@@ -19,7 +19,7 @@ import {
   type TaskTerminalSessionMode
 } from "@agentswarm/shared-types";
 
-import { env } from "../config/env.js";
+import { DEFAULT_GIT_COMMIT_IDENTITY, INTERACTIVE_RUNTIME_IMAGES, env } from "../config/env.js";
 import type { AuthService } from "./auth.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
@@ -226,14 +226,9 @@ function resolveGitTerminalRuntimeConfig(
       ok: false;
       reason: string;
     } {
-  const image = env.GIT_TERMINAL_IMAGE?.trim();
-  if (!image) {
-    return { ok: false, reason: "Terminal is not configured (set GIT_TERMINAL_IMAGE on the server)." };
-  }
-
   return {
     ok: true,
-    image,
+    image: INTERACTIVE_RUNTIME_IMAGES.gitTerminal,
     envEntries: buildGitTerminalEnvEntries({
       workspacePath: INTERACTIVE_WORKSPACE_PATH,
       githubToken: credentials.githubToken,
@@ -262,10 +257,7 @@ function resolveInteractiveTerminalRuntimeConfig(
   const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(settings.mcpServers);
 
   if (task.provider === "claude") {
-    const image = env.CLAUDE_INTERACTIVE_IMAGE?.trim();
-    if (!image) {
-      return { ok: false, reason: "Interactive Claude Code is not configured (set CLAUDE_INTERACTIVE_IMAGE on the server)." };
-    }
+    const image = INTERACTIVE_RUNTIME_IMAGES.claude;
     if (!credentials.anthropicApiKey) {
       return { ok: false, reason: "Anthropic API key is not configured in Settings." };
     }
@@ -303,10 +295,7 @@ function resolveInteractiveTerminalRuntimeConfig(
     };
   }
 
-  const image = env.CODEX_INTERACTIVE_IMAGE?.trim();
-  if (!image) {
-    return { ok: false, reason: "Interactive Codex is not configured (set CODEX_INTERACTIVE_IMAGE on the server)." };
-  }
+  const image = INTERACTIVE_RUNTIME_IMAGES.codex;
   if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
     return { ok: false, reason: "OpenAI API key or Codex auth.json is not configured." };
   }
@@ -679,7 +668,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
     const started = await deps.spawner.beginInteractiveTerminalSession(taskId, mode);
     interactiveSessionId = started.sessionId;
     const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
-    const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
+    const dockerBindSource = path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, taskId);
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
     const linkedWorkspaceMountPlan = await buildLinkedWorkspaceMountPlan({
       rootWorkspacePath: workspaceOnServer,
@@ -690,8 +679,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       const [credentials, gitIdentity, repositoryRuntimeEnvEntries] = await Promise.all([
         deps.settingsStore.getRuntimeCredentials(userId),
         resolveTaskGitCommitIdentity(task, deps.userStore, {
-          name: env.GIT_USER_NAME,
-          email: env.GIT_USER_EMAIL
+          ...DEFAULT_GIT_COMMIT_IDENTITY
         }),
         deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
       ]);

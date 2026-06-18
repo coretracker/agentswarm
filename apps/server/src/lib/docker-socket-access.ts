@@ -1,5 +1,5 @@
 import type { AgentProvider } from "@agentswarm/shared-types";
-import { env } from "../config/env.js";
+import { DEPLOYMENT_ENVIRONMENT_LABEL, env } from "../config/env.js";
 
 export type DockerSocketAccessDeniedReason = "feature_disabled" | "invalid_socket_path";
 
@@ -59,7 +59,7 @@ export function resolveDockerSocketAccessPolicy(provider: AgentProvider): Docker
     provider === "claude" ? env.DOCKER_SOCKET_CONTAINER_PATH_CLAUDE : env.DOCKER_SOCKET_CONTAINER_PATH_CODEX;
   return evaluateDockerSocketAccessPolicy({
     enabled: env.DOCKER_SOCKET_ACCESS_ENABLED,
-    appEnvironment: env.APP_ENVIRONMENT,
+    appEnvironment: DEPLOYMENT_ENVIRONMENT_LABEL,
     hostPath: env.DOCKER_SOCKET_HOST_PATH,
     containerPath
   });

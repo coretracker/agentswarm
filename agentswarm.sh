@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME="$(basename "$0")"
 DEFAULT_PUBLIC_PORT="3217"
+RESTRICTED_GIT_TERMINAL_TAG="local/git-terminal:latest"
+INTERACTIVE_CODEX_TAG="local/codex-interactive:latest"
+INTERACTIVE_CLAUDE_TAG="local/claude-interactive:latest"
 
 print_usage() {
   cat <<EOF
@@ -77,7 +80,7 @@ print_access_hint() {
 
 warn_if_missing_interactive_images() {
   local image
-  for image in "$GIT_TERMINAL_IMAGE" "$CODEX_INTERACTIVE_IMAGE" "$CLAUDE_INTERACTIVE_IMAGE"; do
+  for image in "$RESTRICTED_GIT_TERMINAL_TAG" "$INTERACTIVE_CODEX_TAG" "$INTERACTIVE_CLAUDE_TAG"; do
     if ! docker image inspect "$image" >/dev/null 2>&1; then
       echo "warning: interactive image '$image' is not built." >&2
     fi
@@ -112,28 +115,28 @@ build_runtime_images() {
 }
 
 build_interactive_images() {
-  echo "Building restricted Git terminal image: $GIT_TERMINAL_IMAGE"
+  echo "Building restricted Git terminal image: $RESTRICTED_GIT_TERMINAL_TAG"
   docker build \
     --pull \
     --no-cache \
     -f "$ROOT_DIR/tools/codex-web-terminal/Dockerfile.git" \
-    -t "$GIT_TERMINAL_IMAGE" \
+    -t "$RESTRICTED_GIT_TERMINAL_TAG" \
     "$ROOT_DIR/tools/codex-web-terminal"
 
-  echo "Building interactive Codex image: $CODEX_INTERACTIVE_IMAGE"
+  echo "Building interactive Codex image: $INTERACTIVE_CODEX_TAG"
   docker build \
     --pull \
     --no-cache \
     -f "$ROOT_DIR/tools/codex-web-terminal/Dockerfile.codex" \
-    -t "$CODEX_INTERACTIVE_IMAGE" \
+    -t "$INTERACTIVE_CODEX_TAG" \
     "$ROOT_DIR/tools/codex-web-terminal"
 
-  echo "Building interactive Claude image: $CLAUDE_INTERACTIVE_IMAGE"
+  echo "Building interactive Claude image: $INTERACTIVE_CLAUDE_TAG"
   docker build \
     --pull \
     --no-cache \
     -f "$ROOT_DIR/tools/codex-web-terminal/Dockerfile.claude" \
-    -t "$CLAUDE_INTERACTIVE_IMAGE" \
+    -t "$INTERACTIVE_CLAUDE_TAG" \
     "$ROOT_DIR/tools/codex-web-terminal"
 }
 
@@ -174,9 +177,6 @@ main() {
       cd "$ROOT_DIR"
       CODEX_RUNTIME_IMAGE="${CODEX_RUNTIME_IMAGE:-agentswarm-agent-runtime-codex:latest}"
       CLAUDE_RUNTIME_IMAGE="${CLAUDE_RUNTIME_IMAGE:-agentswarm-agent-runtime-claude:latest}"
-      GIT_TERMINAL_IMAGE="${GIT_TERMINAL_IMAGE:-local/git-terminal:latest}"
-      CODEX_INTERACTIVE_IMAGE="${CODEX_INTERACTIVE_IMAGE:-local/codex-interactive:latest}"
-      CLAUDE_INTERACTIVE_IMAGE="${CLAUDE_INTERACTIVE_IMAGE:-local/claude-interactive:latest}"
 
       case "$command" in
         start)

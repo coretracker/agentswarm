@@ -19,7 +19,7 @@ Before running harness commands in that mode:
 - Ensure the remote image includes: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
 
 To run commands locally instead, set `REMOTE_BUILD=0`.
-If host ports are already in use, set `PUBLIC_PORT`, `REDIS_HOST_PORT`, and `POSTGRES_HOST_PORT`.
+If the web host port is already in use, set `PUBLIC_PORT`.
 
 ## 1) Setup Command (Clean Checkout)
 Run from repository root:
@@ -30,7 +30,7 @@ HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
 
 What it does:
 - Creates `.env` from `.env.example` if missing.
-- Ensures runtime folders exist (`local-plans`, `task-workspaces`).
+- Ensures the runtime workspace folder exists (`task-workspaces`).
 - Runs `./agentswarm.sh init` (builds and starts required containers).
 - Installs npm dependencies (because `HARNESS_INSTALL_NPM_DEPS=1` is set above).
 
@@ -62,11 +62,6 @@ If `.env` is missing, setup creates it automatically.
 
 Important values in template:
 - `PUBLIC_PORT` (default `3217`)
-- `REDIS_HOST_PORT` (default `6379`)
-- `POSTGRES_HOST_PORT` (default `5432`)
-- `TASK_WORKSPACE_HOST_ROOT` (optional absolute host path override)
-- `LOCAL_PLANS_HOST_ROOT` (optional absolute host path override)
-- `NGINX_CONF_HOST_PATH` (optional absolute host path override)
 - `DEFAULT_ADMIN_EMAIL`
 - `DEFAULT_ADMIN_PASSWORD`
 - `DATABASE_URL`
