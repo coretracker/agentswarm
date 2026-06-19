@@ -4,10 +4,11 @@
 - Use one Debian-based agent toolbox image for Codex, Claude, terminal, and common task tooling.
 
 ## Goal
-- Replace the current provider-specific and terminal-specific runtime images with one Docker image that contains Codex, Claude Code, Node/npm, Python, Git, Docker CLI, shell tools, and other task dependencies.
+- Replace the current provider-specific and terminal-specific official runtime images with one Docker image that contains Codex, Claude Code, Node/npm, Python, Git, Docker CLI, shell tools, and other task dependencies.
 - Use that image for automated Codex runs, automated Claude runs, interactive Codex sessions, interactive Claude sessions, Codex utility runs, and terminal sessions.
 - Make terminal mode open a full-access shell in a container started from the same image and mounted to the task workspace.
 - Move from Alpine/Node base images to a Debian base image so native dependencies, `node-pty`, Playwright/browser dependencies, Claude Code, Codex, Python, and Docker tooling have a consistent runtime.
+- Keep the official image surface intentionally small and rely on user-provided custom images for specialized tooling beyond the default toolbox.
 
 ## Non-goals
 - Do not change provider selection, model selection, credentials storage, task lifecycle, checkpointing, or repository sync behavior.
@@ -15,6 +16,8 @@
 - Do not make automated ask mode writable; ask mode should keep the workspace read-only.
 - Do not remove human-gated checkpoint behavior.
 - Do not solve production image publishing unless implementation scope is explicitly expanded.
+- Do not maintain a broad catalog of specialized first-party runtime images.
+- Do not bundle browser/E2E dependencies into the default toolbox unless a later implementation pass proves the size and rebuild cost are acceptable.
 
 ## Current State
 - Automated Codex uses `agent-runtime-codex/Dockerfile`, image `agentswarm-agent-runtime-codex:latest`, and `agent-runtime-codex/run-task.mjs`.
@@ -36,8 +39,11 @@
 - Automated Codex and Claude task runs both use the unified image while preserving their existing provider-specific entry behavior.
 - Interactive Codex and Claude sessions both use the unified image while preserving provider credentials, MCP config, persistent state, session resume, and model/profile behavior.
 - Terminal mode uses the unified image and launches a full-access shell against the mounted task workspace.
+- Runtime image configuration supports an operator-provided custom image for advanced deployments without requiring a new first-party Dockerfile.
+- Playwright/browser E2E continues to use the existing dedicated Playwright image fallback unless explicitly configured otherwise.
 - Runtime image build/warning paths build and check one primary toolbox image instead of separate Codex/Claude/interactive images.
 - Documentation names the unified image and explains how to rebuild it.
+- Documentation states the product security posture: AgentSwarm is an advanced developer tool, runtime image choice and mounted capabilities are operator responsibilities, and Docker socket access remains highly privileged.
 - Existing tests for runtime config, terminal behavior, Docker socket policy, and provider config pass.
 
 ## Affected Files
@@ -65,8 +71,9 @@
 ## Step-by-Step Plan
 1. Confirm image semantics.
    - Decide final image tag and env var names, for example `AGENT_RUNTIME_IMAGE=agentswarm-agent-toolbox:latest`.
-   - Decide whether the old restricted Git terminal is removed entirely or retained as a separate restricted mode. The requested direction implies terminal mode should use the full toolbox image.
-   - Decide whether Playwright browser dependencies are included in this image or still handled by the existing `PLAYWRIGHT_DOCKER_IMAGE` fallback.
+   - Remove the old restricted Git terminal image from the default path; terminal mode should use the full toolbox image.
+   - Keep Playwright browser dependencies in the existing `PLAYWRIGHT_DOCKER_IMAGE` fallback rather than the default toolbox image.
+   - Preserve image override configuration so operators can bring a custom image for specialized workflows.
 
 2. Create the unified Debian image.
    - Base on Debian or a Debian-based Node image, preferably `node:20-bookworm` unless there is a reason to install Node manually.
@@ -104,6 +111,7 @@
    - Update warnings and build hints to mention the unified image.
    - Update setup/commands docs and terminal README to remove stale image-specific instructions.
    - Add `.env.example` overrides if the unified image tag should be user-configurable.
+   - Document that AgentSwarm is intended for experienced developers/operators and that runtime image contents, mounted secrets, Docker socket access, and repository permissions are part of the operator security boundary.
 
 8. Add or update tests.
    - Test provider definitions map both providers to the unified image but preserve provider config names and credential behavior.
@@ -120,10 +128,10 @@
 
 ## Human-Gated Flow Evidence
 - Requirements Read: YES
-- Requirements Understood: PARTIAL - core direction is clear; terminal/restricted-mode and Playwright scope need confirmation.
+- Requirements Understood: YES
 - Repository Research Complete: YES
 - Uncertainties Logged: YES
-- Human Review Completed: TODO
+- Human Review Completed: YES
 - User Approval To Start: TODO
 - Baseline Checks Run: PARTIAL - `./scripts/harness/doctor.sh` failed because `python3` is missing in this shell.
 - Visible Task List Updated: TODO
@@ -147,12 +155,13 @@
 - `./scripts/harness/test.sh`
 
 ## Risks
-- A single image increases size and rebuild time, especially if browser dependencies are included.
+- A single image increases size and rebuild time; keeping browser dependencies in the Playwright fallback limits that growth.
 - Combining Codex and Claude in one filesystem can expose assumptions around `HOME`, user IDs, writable state directories, and executable locations.
 - Claude installation has historically needed native compatibility packages; Debian should reduce Alpine-specific issues but still needs verification.
-- Full-access terminal mode is less restrictive than the current Git terminal image. This should be an intentional product/security decision.
+- Full-access terminal mode is less restrictive than the current Git terminal image. This is an intentional product/security decision for an advanced developer tool, and documentation must make the operator responsibility explicit.
 - If Docker CLI and Docker socket access are present in every runtime image, socket mount policy must remain the real enforcement point.
 - Existing running tasks or persisted provider states may assume old home paths.
+- Supporting custom images shifts more compatibility and security responsibility to operators; docs should distinguish first-party supported defaults from user-owned images.
 
 ## Rollback Plan
 - Keep the existing provider-specific Dockerfiles and image constants until the unified flow is verified.
@@ -162,9 +171,13 @@
 
 ## Progress Log
 - 2026-06-19 07:39 UTC: Researched runtime Dockerfiles, interactive terminal flow, provider runtime definitions, Codex utility runner, build script, and docs. Created draft plan.
+- 2026-06-19 08:18 UTC: Captured product decision to continue with one full-access toolbox image, avoid a broad first-party image catalog, keep Playwright in a dedicated fallback image, and document operator-owned security responsibilities.
 
 ## Decisions
 - 2026-06-19: Draft plan recommends one Debian-based toolbox image for provider and terminal runtimes.
+- 2026-06-19: Use a small first-party image surface: one default toolbox image plus the existing dedicated Playwright/browser fallback, with custom images for specialized user needs.
+- 2026-06-19: Treat full-access terminal mode as the default product direction; do not keep the restricted Git terminal image in the default runtime path.
+- 2026-06-19: Make runtime image and mounted capability security an explicit operator responsibility in product/docs.
 
 ## Completion Notes
 - TODO
