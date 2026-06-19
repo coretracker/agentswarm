@@ -19,7 +19,7 @@ import {
   type TaskTerminalSessionMode
 } from "@agentswarm/shared-types";
 
-import { DEFAULT_GIT_COMMIT_IDENTITY, INTERACTIVE_RUNTIME_IMAGES, env } from "../config/env.js";
+import { AGENT_RUNTIME_IMAGE, DEFAULT_GIT_COMMIT_IDENTITY, env } from "../config/env.js";
 import type { AuthService } from "./auth.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
@@ -228,7 +228,7 @@ function resolveGitTerminalRuntimeConfig(
     } {
   return {
     ok: true,
-    image: INTERACTIVE_RUNTIME_IMAGES.gitTerminal,
+    image: AGENT_RUNTIME_IMAGE,
     envEntries: buildGitTerminalEnvEntries({
       workspacePath: INTERACTIVE_WORKSPACE_PATH,
       githubToken: credentials.githubToken,
@@ -257,7 +257,7 @@ function resolveInteractiveTerminalRuntimeConfig(
   const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(settings.mcpServers);
 
   if (task.provider === "claude") {
-    const image = INTERACTIVE_RUNTIME_IMAGES.claude;
+    const image = AGENT_RUNTIME_IMAGE;
     if (!credentials.anthropicApiKey) {
       return { ok: false, reason: "Anthropic API key is not configured in Settings." };
     }
@@ -295,7 +295,7 @@ function resolveInteractiveTerminalRuntimeConfig(
     };
   }
 
-  const image = INTERACTIVE_RUNTIME_IMAGES.codex;
+  const image = AGENT_RUNTIME_IMAGE;
   if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
     return { ok: false, reason: "OpenAI API key or Codex auth.json is not configured." };
   }
@@ -353,10 +353,8 @@ function forceRemoveDockerSession(containerName: string): void {
   child.unref();
 }
 
-function terminalImageBuildHint(mode: TaskTerminalSessionMode, provider: Task["provider"], image: string): string {
-  const dockerfile =
-    mode === "git" ? "Dockerfile.git" : provider === "claude" ? "Dockerfile.claude" : "Dockerfile.codex";
-  return `docker build -f tools/codex-web-terminal/${dockerfile} -t ${image} tools/codex-web-terminal`;
+function terminalImageBuildHint(_mode: TaskTerminalSessionMode, _provider: Task["provider"], image: string): string {
+  return `docker build -f agent-runtime/Dockerfile -t ${image} agent-runtime`;
 }
 
 async function dockerImageExists(image: string): Promise<boolean> {

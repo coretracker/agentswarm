@@ -9,8 +9,7 @@ import { buildGitTerminalDockerEnvEntries, buildGitTerminalEnvEntries, buildTask
 import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
-const gitTerminalShellPath = path.join(repoRoot, "tools/codex-web-terminal/git-terminal-shell.sh");
-const gitTerminalDockerfilePath = path.join(repoRoot, "tools/codex-web-terminal/Dockerfile.git");
+const runtimeDockerfilePath = path.join(repoRoot, "agent-runtime/Dockerfile");
 
 describe("buildGitTerminalStartScript", () => {
   it("generates shell syntax that parses under sh", () => {
@@ -20,17 +19,19 @@ describe("buildGitTerminalStartScript", () => {
     assert.equal(result.status, 0, result.stderr || "expected sh -n to accept git terminal start script");
     assert.match(script, /\n\s+printf '%s\\n'/);
     assert.doesNotMatch(script, /then;\s/);
-    assert.match(script, /exec git-terminal-shell$/);
+    assert.match(script, /Full toolbox shell available/);
+    assert.match(script, /exec bash -l/);
+    assert.match(script, /exec sh -l$/);
   });
 
-  it("ships the git terminal wrapper with a restricted bash shell", () => {
-    const shellScript = readFileSync(gitTerminalShellPath, "utf8");
-    const dockerfile = readFileSync(gitTerminalDockerfilePath, "utf8");
-    const result = spawnSync("sh", ["-n", gitTerminalShellPath], { encoding: "utf8" });
+  it("ships the unified runtime toolbox with shell and git tooling", () => {
+    const dockerfile = readFileSync(runtimeDockerfilePath, "utf8");
 
-    assert.equal(result.status, 0, result.stderr || "expected sh -n to accept git terminal shell wrapper");
-    assert.match(shellScript, /exec \/bin\/bash --noprofile --norc --restricted -i/);
-    assert.match(dockerfile, /\bapk add --no-cache bash git vim( neovim)? diffutils ca-certificates\b/);
+    assert.match(dockerfile, /FROM node:20-bookworm/);
+    assert.match(dockerfile, /\bgh\b/);
+    assert.match(dockerfile, /\bdocker\.io\b/);
+    assert.match(dockerfile, /COPY run-task-codex\.mjs/);
+    assert.match(dockerfile, /COPY run-task-claude\.mjs/);
   });
 });
 
@@ -57,6 +58,7 @@ describe("buildGitTerminalEnvEntries", () => {
     assert.equal(env.GIT_CONFIG_KEY_2, "user.email");
     assert.equal(env.GIT_CONFIG_VALUE_2, "ada@example.com");
     assert.equal(env.GIT_TOKEN, "secret-token");
+    assert.equal(env.GH_TOKEN, "secret-token");
     assert.equal(env.GIT_USERNAME, "octocat");
     assert.equal(env.GIT_AUTHOR_NAME, "Ada Lovelace");
     assert.equal(env.GIT_COMMITTER_EMAIL, "ada@example.com");
@@ -101,6 +103,7 @@ describe("buildGitTerminalEnvEntries", () => {
     assert.equal(env.GIT_CONFIG_KEY_0, "safe.directory");
     assert.equal(env.GIT_CONFIG_VALUE_0, "/workspace");
     assert.equal(env.GIT_TOKEN, "secret-token");
+    assert.equal(env.GH_TOKEN, "secret-token");
     assert.equal(env.GIT_USERNAME, "octocat");
     assert.equal(env.GIT_AUTHOR_NAME, undefined);
     assert.equal(env.GIT_AUTHOR_EMAIL, undefined);

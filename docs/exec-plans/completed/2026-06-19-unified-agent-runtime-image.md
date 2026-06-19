@@ -145,22 +145,23 @@
 - Repository Research Complete: YES
 - Uncertainties Logged: YES
 - Human Review Completed: YES
-- User Approval To Start: TODO
-- Baseline Checks Run: PARTIAL - `./scripts/harness/doctor.sh` failed because `python3` is missing in this shell.
-- Visible Task List Updated: TODO
-- Task-Level Tests/Lint/Build: TODO
-- Self Review Complete: TODO
+- User Approval To Start: YES
+- Baseline Checks Run: PARTIAL - `./scripts/harness/doctor.sh` failed because `python3` is missing in this shell; `./scripts/harness/check-human-gated-flow.sh` passed.
+- Visible Task List Updated: YES
+- Task-Level Tests/Lint/Build: YES
+- Self Review Complete: YES
 - Code Review Complete: TODO
-- Final Verification Complete: TODO
-- Security/Privacy Review Complete: TODO
-- Docs/Changelog Updated: TODO
+- Final Verification Complete: PARTIAL - focused tests, server lint, unit harness, Docker build, and Docker smoke checks passed; `./scripts/harness/check.sh` remains blocked by pre-existing broken links in `docs/repomix.md`.
+- Security/Privacy Review Complete: YES
+- Docs/Changelog Updated: YES
 
 ## Validation Commands
 - `./scripts/harness/doctor.sh`
 - `./scripts/harness/check-human-gated-flow.sh`
 - `docker build -f agent-runtime/Dockerfile -t agentswarm-agent-toolbox:latest agent-runtime`
-- `node --check agent-runtime-codex/run-task.mjs`
-- `node --check agent-runtime-claude/run-task.mjs`
+- `node --check agent-runtime/run-task-codex.mjs`
+- `node --check agent-runtime/run-task-claude.mjs`
+- `docker run --rm agentswarm-agent-toolbox:test sh -lc 'node --version && npm --version && git --version && gh --version | head -n 1 && docker --version && python3 --version && rg --version | head -n 1 && codex --version && claude --version && test -f /usr/local/bin/run-task-codex.mjs && test -f /usr/local/bin/run-task-claude.mjs && test -x /usr/local/bin/su-exec'`
 - `npm run build -w @agentswarm/server`
 - `npm run build -w @agentswarm/web`
 - `TEST_SCOPE=unit ./scripts/harness/test.sh`
@@ -187,6 +188,7 @@
 - 2026-06-19 07:39 UTC: Researched runtime Dockerfiles, interactive terminal flow, provider runtime definitions, Codex utility runner, build script, and docs. Created draft plan.
 - 2026-06-19 08:18 UTC: Captured product decision to continue with one full-access toolbox image, avoid a broad first-party image catalog, keep Playwright in a dedicated fallback image, and document operator-owned security responsibilities.
 - 2026-06-19 08:30 UTC: Rechecked transition readiness across build scripts, provider runtime definitions, env config, interactive terminal launch, hidden Git worker usage, Codex utility runner, docs, and tests. Added missing plan coverage for Git worker migration, single-image env config, existing `agent-runtime/Dockerfile` state, and restricted-wrapper test replacement. `git diff --check` and `check-human-gated-flow.sh` passed; `doctor.sh` still fails because `python3` is missing in this shell.
+- 2026-06-19 09:55 UTC: Implemented unified toolbox runtime image, single `AGENT_RUNTIME_IMAGE` config, provider-specific runner commands, full-shell Git terminal, Git worker/utility migration, `GH_TOKEN` propagation, build script simplification, docs updates, and focused tests. Verified Docker build and image smoke after fixing Claude install path/PATH handling.
 
 ## Decisions
 - 2026-06-19: Draft plan recommends one Debian-based toolbox image for provider and terminal runtimes.
@@ -196,4 +198,4 @@
 - 2026-06-19: Include GitHub CLI (`gh`) in the default toolbox image, with authentication supplied only at runtime by operator-controlled credentials.
 
 ## Completion Notes
-- TODO
+- Implemented. Remaining known verification gap: full `./scripts/harness/check.sh` is blocked by existing broken internal links in `docs/repomix.md`; `./scripts/harness/doctor.sh` still fails in this shell because `python3` is not installed locally.

@@ -45,7 +45,9 @@ export function buildTaskRuntimeGitEnvEntries(options: {
   }
 
   if (options.githubToken?.trim()) {
-    envEntries.push(["GIT_TOKEN", options.githubToken.trim()]);
+    const githubToken = options.githubToken.trim();
+    envEntries.push(["GIT_TOKEN", githubToken]);
+    envEntries.push(["GH_TOKEN", githubToken]);
     envEntries.push(["GIT_USERNAME", options.gitUsername?.trim() || "x-access-token"]);
   }
 

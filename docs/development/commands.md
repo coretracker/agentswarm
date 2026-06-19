@@ -66,6 +66,8 @@ Notes:
 - `./agentswarm.sh rebuild`
 - `./agentswarm.sh stop`
 
+`init` and `rebuild` build the unified agent toolbox image from `agent-runtime/Dockerfile`. Override the tag with `AGENT_RUNTIME_IMAGE` when testing a custom runtime image.
+
 ## CI / Local Parity Notes
 - CI workflow: `.github/workflows/harness-check.yml`.
 - CI runs:

@@ -14,6 +14,13 @@ const envSchema = z.object({
   RUNTIME_PAYLOAD_VOLUME: z.string().default("agentswarm_runtime_payloads"),
   REPOSITORY_ENV_FILE_STORE_ROOT: z.string().default("/secrets/repository-env-files"),
   TASK_WORKSPACE_ROOT: z.string().default("/task-workspaces"),
+  AGENT_RUNTIME_IMAGE: z
+    .string()
+    .default(
+      process.env.CODEX_RUNTIME_IMAGE?.trim() ||
+        process.env.CLAUDE_RUNTIME_IMAGE?.trim() ||
+        "agentswarm-agent-toolbox:latest"
+    ),
   SECRET_KEY_PATH: z.string().default("/secrets/agentswarm.key"),
   CORS_ORIGIN: z.string().default("http://localhost:3217"),
   DEFAULT_ADMIN_NAME: z.string().default("Administrator"),
@@ -48,10 +55,6 @@ export const DEFAULT_GIT_COMMIT_IDENTITY = {
   name: "AgentSwarm Bot",
   email: "agentswarm@local.dev"
 } as const;
-export const INTERACTIVE_RUNTIME_IMAGES = {
-  gitTerminal: "local/git-terminal:latest",
-  codex: "local/codex-interactive:latest",
-  claude: "local/claude-interactive:latest"
-} as const;
+export const AGENT_RUNTIME_IMAGE = parsed.AGENT_RUNTIME_IMAGE;
 
 export const env = { ...parsed, TASK_WORKSPACE_DOCKER_SOURCE: taskWorkspaceDockerSource };

@@ -44,7 +44,7 @@ Create a local environment file:
 cp .env.example .env
 ```
 
-Initialize the Docker stack and runtime images:
+Initialize the Docker stack and agent runtime image:
 
 ```bash
 ./agentswarm.sh init
@@ -91,9 +91,9 @@ Stop the app:
 
 | Command | Description |
 | --- | --- |
-| `./agentswarm.sh init` | Build runtime images, rebuild compose images, and start the stack. |
+| `./agentswarm.sh init` | Build the agent toolbox runtime image, rebuild compose images, and start the stack. |
 | `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
-| `./agentswarm.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
+| `./agentswarm.sh rebuild` | Rebuild the agent toolbox runtime and compose images, then restart the stack. |
 | `./agentswarm.sh stop` | Stop the Docker Compose stack. |
 | `./scripts/harness/start.sh` | Start the development stack and wait for health. |
 
@@ -211,8 +211,9 @@ Durable application data is stored in Postgres. Redis is still required for sess
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
-| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
+| `AGENT_RUNTIME_IMAGE` | Unified toolbox image for automated Codex/Claude runs, interactive terminals, utility runs, and Git worker containers. | `agentswarm-agent-toolbox:latest` |
+
+The toolbox image includes Codex CLI, Claude Code, Git, GitHub CLI (`gh`), Docker CLI, Python, Node/npm, shell tools, and common build dependencies. Runtime image contents and mounted capabilities are part of the operator security boundary. GitHub CLI authentication is supplied at runtime from configured GitHub credentials; credentials are not baked into the image.
 
 ### Docker Socket Access
 
@@ -236,8 +237,9 @@ Mounting `docker.sock` is highly privileged and can effectively grant host-level
 |   +-- web/             # Next.js web app
 +-- packages/
 |   +-- shared-types/    # Shared TypeScript types used by server and web
-+-- agent-runtime-codex/ # Automated Codex task runtime
-+-- agent-runtime-claude/# Automated Claude task runtime
++-- agent-runtime/       # Unified agent toolbox runtime
++-- agent-runtime-codex/ # Legacy Codex runtime kept for rollback/reference
++-- agent-runtime-claude/# Legacy Claude runtime kept for rollback/reference
 +-- tools/               # Supporting runtime and terminal tooling
 +-- docs/                # Architecture, development, product, and quality docs
 +-- scripts/harness/     # Canonical setup, check, test, and PR scripts
