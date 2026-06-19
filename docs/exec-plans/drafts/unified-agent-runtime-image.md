@@ -25,7 +25,9 @@
 - Interactive Codex uses `tools/codex-web-terminal/Dockerfile.codex`, image `local/codex-interactive:latest`.
 - Interactive Claude uses `tools/codex-web-terminal/Dockerfile.claude`, image `local/claude-interactive:latest`.
 - Git terminal uses `tools/codex-web-terminal/Dockerfile.git`, image `local/git-terminal:latest`, and a restricted wrapper path.
+- Git worker operations in `SpawnerService` also use `INTERACTIVE_RUNTIME_IMAGES.gitTerminal`, so the restricted Git image is both a UI terminal dependency and a hidden Git worker dependency.
 - `agentswarm.sh` builds five runtime/terminal images today.
+- `agent-runtime/Dockerfile` already exists, but it is currently an Alpine/Node shell image and is not yet the planned Debian toolbox image.
 - `apps/server/src/providers/runtime-definitions.ts` owns automated provider image names and build contexts.
 - `apps/server/src/config/env.ts` owns interactive image names.
 - `apps/server/src/lib/task-interactive-terminal.ts` selects terminal images and currently has different persistent state paths for Codex and Claude.
@@ -36,9 +38,11 @@
 ## Acceptance Criteria
 - One Debian-based Dockerfile builds a single image, for example `agentswarm-agent-toolbox:latest`.
 - The image includes at least: `bash`, `sh`, `git`, GitHub CLI (`gh`), `openssh-client`, `curl`, `ca-certificates`, `ripgrep`, `vim`/`neovim`, `diffutils`, `python3`, `make`, `g++`, `node`, `npm`, Docker CLI, Codex CLI, and Claude Code CLI.
+- `AGENT_RUNTIME_IMAGE` or an equivalent single env var replaces separate automated and interactive image constants in server runtime selection and `agentswarm.sh`.
 - Automated Codex and Claude task runs both use the unified image while preserving their existing provider-specific entry behavior.
 - Interactive Codex and Claude sessions both use the unified image while preserving provider credentials, MCP config, persistent state, session resume, and model/profile behavior.
 - Terminal mode uses the unified image and launches a full-access shell against the mounted task workspace.
+- Git worker container operations use the unified image and invoke `git` directly without depending on the old restricted Git terminal wrapper.
 - Runtime image configuration supports an operator-provided custom image for advanced deployments without requiring a new first-party Dockerfile.
 - Playwright/browser E2E continues to use the existing dedicated Playwright image fallback unless explicitly configured otherwise.
 - Runtime image build/warning paths build and check one primary toolbox image instead of separate Codex/Claude/interactive images.
@@ -65,6 +69,8 @@
 - `apps/server/src/providers/runtime-definitions.ts`
 - `apps/server/src/config/env.ts`
 - `apps/server/src/lib/task-interactive-terminal.ts`
+- `apps/server/src/lib/task-interactive-terminal-start-script.ts`
+- `apps/server/src/lib/task-commit-subject.ts`
 - `apps/server/src/services/codex-utility-service.ts`
 - `apps/server/src/services/spawner.ts`
 - Runtime/terminal-related tests under `apps/server/src/lib/*.test.ts` and `apps/server/src/services/*.test.ts`
@@ -72,6 +78,7 @@
 ## Step-by-Step Plan
 1. Confirm image semantics.
    - Decide final image tag and env var names, for example `AGENT_RUNTIME_IMAGE=agentswarm-agent-toolbox:latest`.
+   - Replace the old `CODEX_RUNTIME_IMAGE`, `CLAUDE_RUNTIME_IMAGE`, `INTERACTIVE_RUNTIME_IMAGES.codex`, `INTERACTIVE_RUNTIME_IMAGES.claude`, and `INTERACTIVE_RUNTIME_IMAGES.gitTerminal` defaults with one toolbox image setting.
    - Remove the old restricted Git terminal image from the default path; terminal mode should use the full toolbox image.
    - Keep Playwright browser dependencies in the existing `PLAYWRIGHT_DOCKER_IMAGE` fallback rather than the default toolbox image.
    - Preserve image override configuration so operators can bring a custom image for specialized workflows.
@@ -101,6 +108,8 @@
 5. Refactor interactive runtime image selection.
    - Replace `INTERACTIVE_RUNTIME_IMAGES.codex` and `.claude` with the unified image.
    - Replace `gitTerminal` image use for terminal mode with the unified image if full-access terminal mode is approved.
+   - Replace `gitTerminal` image use for Git worker containers with the unified image.
+   - Change Git terminal startup from the restricted `git-terminal-shell` wrapper to a normal shell startup that keeps Git credentials and repository env injection.
    - Update Codex/Claude interactive start scripts only where their assumptions conflict with the unified filesystem layout.
    - Standardize persistent home paths if practical, but avoid migrating existing state paths unless necessary.
 
@@ -119,6 +128,8 @@
    - Test provider definitions map both providers to the unified image but preserve provider config names and credential behavior.
    - Test terminal availability/build hints for the unified image.
    - Test automated runtime launch args include provider-specific command/entry behavior.
+   - Test Git worker Docker args use the unified image and invoke `git` without the restricted terminal wrapper.
+   - Replace restricted Git terminal wrapper tests with tests for the full-shell startup script or remove wrapper-only assertions if the wrapper is deleted.
    - Run shell syntax checks for runtime scripts and Dockerfile smoke checks where practical.
 
 9. Validate.
@@ -175,6 +186,7 @@
 ## Progress Log
 - 2026-06-19 07:39 UTC: Researched runtime Dockerfiles, interactive terminal flow, provider runtime definitions, Codex utility runner, build script, and docs. Created draft plan.
 - 2026-06-19 08:18 UTC: Captured product decision to continue with one full-access toolbox image, avoid a broad first-party image catalog, keep Playwright in a dedicated fallback image, and document operator-owned security responsibilities.
+- 2026-06-19 08:30 UTC: Rechecked transition readiness across build scripts, provider runtime definitions, env config, interactive terminal launch, hidden Git worker usage, Codex utility runner, docs, and tests. Added missing plan coverage for Git worker migration, single-image env config, existing `agent-runtime/Dockerfile` state, and restricted-wrapper test replacement. `git diff --check` and `check-human-gated-flow.sh` passed; `doctor.sh` still fails because `python3` is missing in this shell.
 
 ## Decisions
 - 2026-06-19: Draft plan recommends one Debian-based toolbox image for provider and terminal runtimes.
