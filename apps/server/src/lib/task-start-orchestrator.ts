@@ -12,6 +12,7 @@ export interface TaskStartOrchestratorDeps {
 
 export interface OrchestrateTaskStartOptions {
   task: Task;
+  action?: TaskAction;
   input?: TaskExecutionInput;
   fallbackMessage: string;
 }
@@ -55,7 +56,7 @@ export async function orchestrateTaskStart(
   deps: TaskStartOrchestratorDeps,
   options: OrchestrateTaskStartOptions
 ): Promise<OrchestratedTaskStartResult> {
-  const action = getTriggerActionForNewTask(options.task);
+  const action = options.action ?? getTriggerActionForNewTask(options.task);
   try {
     await deps.taskStore.setExecutionState(options.task.id, "preparing", {
       executionAction: action,
@@ -89,7 +90,7 @@ export async function beginTaskStart(
   deps: TaskStartOrchestratorDeps,
   options: OrchestrateTaskStartOptions
 ): Promise<BegunTaskStartResult> {
-  const action = getTriggerActionForNewTask(options.task);
+  const action = options.action ?? getTriggerActionForNewTask(options.task);
   const preparingTask =
     (await deps.taskStore.setExecutionState(options.task.id, "preparing", {
       executionAction: action,

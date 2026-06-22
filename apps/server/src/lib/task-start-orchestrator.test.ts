@@ -174,6 +174,47 @@ describe("beginTaskStart", () => {
     assert.deepEqual(states, ["preparing", "idle"]);
     assert.deepEqual(triggered, [{ taskId: task.id, action: "build" }]);
   });
+
+  it("uses an explicit action override when provided", async () => {
+    const task = createTask({ taskType: "build" });
+    let resolvePrepare!: () => void;
+    const prepareStarted = new Promise<void>((resolve) => {
+      resolvePrepare = resolve;
+    });
+    const triggered: Array<{ taskId: string; action: string }> = [];
+
+    const result = await beginTaskStart(
+      {
+        taskStore: {
+          setExecutionState: async (_taskId: string, status: string) => ({ ...task, executionStatus: status as Task["executionStatus"] }),
+          appendLog: async () => undefined
+        } as never,
+        scheduler: {
+          triggerAction: async (taskId: string, action: string) => {
+            triggered.push({ taskId, action });
+            return true;
+          }
+        } as never,
+        spawner: {
+          prepareTaskWorkspaceOnly: async () => {
+            await prepareStarted;
+            return task;
+          }
+        } as never
+      },
+      {
+        task,
+        action: "ask",
+        fallbackMessage: "Task start failed"
+      }
+    );
+
+    assert.equal(result.ok, true);
+    resolvePrepare();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(triggered, [{ taskId: task.id, action: "ask" }]);
+  });
 });
 
 describe("orchestrateTaskActionStart", () => {
