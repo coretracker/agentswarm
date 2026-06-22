@@ -54,7 +54,7 @@ export function TasksPage() {
   const [createdAtFilter, setCreatedAtFilter] = useState<string | null>(null);
   const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
-  const canCreateTask = can("task:create") && (can("task:build") || can("task:ask") || can("task:interactive"));
+  const canCreateTask = can("task:create") && (can("task:build") || can("task:ask") || can("task:terminal"));
   const canEditTask = can("task:edit");
   const canDeleteTask = can("task:delete");
   useEffect(() => {

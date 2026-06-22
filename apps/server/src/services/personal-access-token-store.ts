@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import type { Pool } from "pg";
 import {
   ALL_PERMISSION_SCOPES,
+  normalizePermissionScope,
   type AuthSessionUser,
   type CreatedPersonalAccessToken,
   type PermissionScope,
@@ -35,8 +36,14 @@ const hashToken = (token: string): string => createHash("sha256").update(token, 
 
 const normalizeName = (name: string): string => name.trim().replace(/\s+/g, " ");
 
-const normalizeScopes = (scopes: PermissionScope[] | undefined): PermissionScope[] =>
-  Array.from(new Set((scopes ?? ALL_PERMISSION_SCOPES).filter((scope) => validScopes.has(scope)))).sort(
+const normalizeScopes = (scopes: PermissionScope[] | string[] | undefined): PermissionScope[] =>
+  Array.from(
+    new Set(
+      (scopes ?? ALL_PERMISSION_SCOPES)
+        .map((scope) => normalizePermissionScope(String(scope)))
+        .filter((scope): scope is PermissionScope => scope !== null && validScopes.has(scope))
+    )
+  ).sort(
     (left, right) => ALL_PERMISSION_SCOPES.indexOf(left) - ALL_PERMISSION_SCOPES.indexOf(right)
   );
 
@@ -59,9 +66,7 @@ export class PostgresPersonalAccessTokenStore implements PersonalAccessTokenStor
   ) {}
 
   private mapTokenRow(row: Record<string, unknown>): PersonalAccessToken {
-    const scopes = Array.isArray(row.scopes)
-      ? normalizeScopes(row.scopes.filter((scope): scope is PermissionScope => typeof scope === "string" && validScopes.has(scope as PermissionScope)) as PermissionScope[])
-      : [];
+    const scopes = Array.isArray(row.scopes) ? normalizeScopes(row.scopes.filter((scope): scope is string => typeof scope === "string")) : [];
     return {
       id: String(row.id),
       name: String(row.name ?? ""),
@@ -189,7 +194,7 @@ export class PostgresPersonalAccessTokenStore implements PersonalAccessTokenStor
 
     const rawScopes = Array.isArray(row.scopes) ? (row.scopes as unknown[]) : [];
     const tokenScopes = rawScopes.length > 0
-      ? normalizeScopes(rawScopes.filter((scope): scope is PermissionScope => typeof scope === "string" && validScopes.has(scope as PermissionScope)))
+      ? normalizeScopes(rawScopes.filter((scope): scope is string => typeof scope === "string"))
       : [];
     const userScopes = new Set(user.scopes);
     const scopes = tokenScopes.filter((scope) => userScopes.has(scope));

@@ -65,7 +65,7 @@ export const requireInteractiveTerminalAccess = (request: FastifyRequest, reply:
   requireScopes(
     request,
     reply,
-    ["task:interactive"],
+    ["task:terminal"],
     "Terminal access is not permitted for this role."
   );
 

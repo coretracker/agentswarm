@@ -243,7 +243,7 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
   const { can } = useAuth();
   const canListTasks = can("task:list");
   const canEditTask = can("task:edit");
-  const canCreateTask = can("task:create") && (can("task:build") || can("task:ask") || can("task:interactive"));
+  const canCreateTask = can("task:create") && (can("task:build") || can("task:ask") || can("task:terminal"));
   const { tasks, setTasks, loading } = useTasks({ enabled: canListTasks, view: "active" });
   const [query, setQuery] = useState("");
   const [pinningTaskId, setPinningTaskId] = useState<string | null>(null);

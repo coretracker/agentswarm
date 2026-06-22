@@ -1114,7 +1114,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canCreateTask = can("task:create");
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
-  const canUseInteractiveTerminal = can("task:interactive");
+  const canUseInteractiveTerminal = can("task:terminal");
   const canDeleteTask = can("task:delete");
   const canListUsers = can("user:list");
   const isAdminTaskUser = Boolean(session?.user.roles.some((role) => role.id === SYSTEM_ADMIN_ROLE_ID));

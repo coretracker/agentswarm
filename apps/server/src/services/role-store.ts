@@ -3,6 +3,7 @@ import type Redis from "ioredis";
 import type { Pool } from "pg";
 import {
   ALL_PERMISSION_SCOPES,
+  normalizePermissionScope,
   type AgentProvider,
   type CreateRoleInput,
   type PermissionScope,
@@ -60,10 +61,14 @@ const normalizeAllowedModels = (models: string[] | undefined): string[] =>
 
 const expandLegacyTaskModeScopes = (scopes: string[]): string[] => {
   const expanded = new Set(scopes);
+  if (expanded.has("task:interactive")) {
+    expanded.delete("task:interactive");
+    expanded.add("task:terminal");
+  }
   if (expanded.has("task:create") || expanded.has("task:edit")) {
     expanded.add("task:build");
     expanded.add("task:ask");
-    expanded.add("task:interactive");
+    expanded.add("task:terminal");
   }
   return Array.from(expanded);
 };
@@ -80,7 +85,10 @@ const normalizeScopes = (
     )
   );
   const expandedScopes = options?.legacyTaskModes ? expandLegacyTaskModeScopes(uniqueScopesRaw) : uniqueScopesRaw;
-  const uniqueScopes = options?.legacyTaskModes ? expandedScopes.filter((scope) => !deprecatedPermissionScopes.has(scope)) : expandedScopes;
+  const migratedScopes = expandedScopes.map((scope) => normalizePermissionScope(scope) ?? scope);
+  const uniqueScopes = Array.from(
+    new Set(options?.legacyTaskModes ? migratedScopes.filter((scope) => !deprecatedPermissionScopes.has(scope)) : migratedScopes)
+  );
   if (uniqueScopes.length === 0) {
     if (options?.legacyTaskModes && uniqueScopesRaw.some((scope) => deprecatedPermissionScopes.has(scope))) {
       return [];

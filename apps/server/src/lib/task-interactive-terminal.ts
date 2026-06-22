@@ -612,8 +612,8 @@ export function attachTaskInteractiveTerminalUpgrade(httpServer: HttpServer, dep
         denySocket(socket, 403, "task:edit scope required");
         return;
       }
-      if (!auth.scopes.has("task:interactive")) {
-        denySocket(socket, 403, "task:interactive scope required");
+      if (!auth.scopes.has("task:terminal")) {
+        denySocket(socket, 403, "task:terminal scope required");
         return;
       }
 

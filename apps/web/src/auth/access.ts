@@ -30,7 +30,7 @@ export const getRequiredScopesForPathname = (pathname: string): PermissionScope[
   }
 
   if (/^\/tasks\/[^/]+\/interactive$/.test(pathname)) {
-    return ["task:edit", "task:interactive"];
+    return ["task:edit", "task:terminal"];
   }
 
   if (pathname.startsWith("/tasks/")) {

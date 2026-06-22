@@ -139,7 +139,7 @@ export type PermissionScope =
   | "task:edit"
   | "task:build"
   | "task:ask"
-  | "task:interactive"
+  | "task:terminal"
   | "task:delete"
   | "snippet:list"
   | "snippet:create"
@@ -166,7 +166,7 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "task:edit",
   "task:build",
   "task:ask",
-  "task:interactive",
+  "task:terminal",
   "task:delete",
   "snippet:list",
   "snippet:create",
@@ -187,13 +187,22 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "user:delete"
 ];
 
+export const LEGACY_PERMISSION_SCOPE_ALIASES: Record<string, PermissionScope> = {
+  "task:interactive": "task:terminal"
+};
+
+export const normalizePermissionScope = (scope: string): PermissionScope | null => {
+  const normalized = LEGACY_PERMISSION_SCOPE_ALIASES[scope.trim()] ?? scope.trim();
+  return ALL_PERMISSION_SCOPES.includes(normalized as PermissionScope) ? (normalized as PermissionScope) : null;
+};
+
 export interface PermissionScopeGroup {
   label: string;
   scopes: PermissionScope[];
 }
 
 export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
-  { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:interactive", "task:delete"] },
+  { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:terminal", "task:delete"] },
   { label: "Snippets", scopes: ["snippet:list", "snippet:create", "snippet:read", "snippet:edit", "snippet:delete"] },
   { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
   { label: "Settings", scopes: ["settings:read", "settings:edit"] },

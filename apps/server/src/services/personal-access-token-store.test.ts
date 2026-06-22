@@ -92,4 +92,29 @@ describe("PostgresPersonalAccessTokenStore", () => {
     await store.revokeToken(user.id, created.id);
     assert.equal(await store.authenticateToken(created.token), null);
   });
+
+  it("migrates legacy interactive terminal token scopes to terminal access", async () => {
+    const pool = new FakePool();
+    const terminalUser: AuthSessionUser = {
+      ...user,
+      scopes: ["task:terminal"]
+    };
+    const store = new PostgresPersonalAccessTokenStore(pool as never, {
+      getAuthSessionUser: async () => terminalUser
+    } as never);
+
+    const created = await store.createToken({
+      userId: user.id,
+      name: "Terminal",
+      scopes: ["task:interactive" as never]
+    });
+    assert.deepEqual(pool.rows[0]?.scopes, ["task:terminal"]);
+
+    pool.rows[0]!.scopes = ["task:interactive"];
+    const listed = await store.listTokens(user.id);
+    assert.deepEqual(listed[0]?.scopes, ["task:terminal"]);
+
+    const authenticated = await store.authenticateToken(created.token);
+    assert.deepEqual(authenticated?.scopes, ["task:terminal"]);
+  });
 });

@@ -434,5 +434,51 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       CREATE INDEX IF NOT EXISTS personal_access_tokens_user_created_at_idx
         ON personal_access_tokens(user_id, created_at DESC);
     `
+  },
+  {
+    id: "20260622_01_migrate_terminal_permission_scope",
+    sql: `
+      UPDATE roles AS r
+      SET scopes = COALESCE(
+        (
+          SELECT jsonb_agg(value ORDER BY value)
+          FROM (
+            SELECT DISTINCT
+              CASE value
+                WHEN 'task:interactive' THEN 'task:terminal'
+                ELSE value
+              END AS value
+            FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+          ) AS deduped
+        ),
+        '[]'::jsonb
+      )
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+        WHERE value = 'task:interactive'
+      );
+
+      UPDATE personal_access_tokens AS t
+      SET scopes = COALESCE(
+        (
+          SELECT jsonb_agg(value ORDER BY value)
+          FROM (
+            SELECT DISTINCT
+              CASE value
+                WHEN 'task:interactive' THEN 'task:terminal'
+                ELSE value
+              END AS value
+            FROM jsonb_array_elements_text(t.scopes) AS scope(value)
+          ) AS deduped
+        ),
+        '[]'::jsonb
+      )
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(t.scopes) AS scope(value)
+        WHERE value = 'task:interactive'
+      );
+    `
   }
 ];
