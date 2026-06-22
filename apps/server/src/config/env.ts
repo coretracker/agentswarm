@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { hostname } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -43,12 +45,40 @@ const envSchema = z.object({
 
 const parsed = envSchema.parse(process.env);
 
+type DockerMount = {
+  Type?: string;
+  Source?: string;
+  Destination?: string;
+  Name?: string;
+};
+
+function resolveOwnDockerMountSource(containerPath: string): string | null {
+  try {
+    const output = execFileSync("docker", ["inspect", hostname(), "--format", "{{json .Mounts}}"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2000
+    }).trim();
+    const mounts = JSON.parse(output) as DockerMount[];
+    const mount = mounts.find((candidate) => candidate.Destination === containerPath);
+    if (mount?.Type === "bind" && mount.Source) {
+      return mount.Source;
+    }
+    if (mount?.Type === "volume" && mount.Name) {
+      return mount.Name;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 const configuredTaskWorkspaceDockerSource = parsed.TASK_WORKSPACE_DOCKER_SOURCE?.trim();
 const taskWorkspaceDockerSource =
   configuredTaskWorkspaceDockerSource ||
   (existsSync("/.dockerenv")
-    ? "agentswarm_task_workspaces"
+    ? (resolveOwnDockerMountSource(parsed.TASK_WORKSPACE_ROOT) ?? "agentswarm_task_workspaces")
     : parsed.TASK_WORKSPACE_ROOT !== "/task-workspaces"
       ? parsed.TASK_WORKSPACE_ROOT
       : path.join(repoRoot, "task-workspaces"));

@@ -30,7 +30,6 @@ services:
       - RUNTIME_PAYLOAD_ROOT=/runtime-payloads
       - RUNTIME_PAYLOAD_VOLUME=agentswarm_runtime_payloads
       - TASK_WORKSPACE_ROOT=/task-workspaces
-      - TASK_WORKSPACE_DOCKER_SOURCE=${PWD}/task-workspaces
       - SECRET_KEY_PATH=/secrets/agentswarm.key
       - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3217}
       - DEFAULT_ADMIN_NAME=${DEFAULT_ADMIN_NAME:-Administrator}
@@ -48,7 +47,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - repo_cache:/repo-cache
       - runtime_payloads:/runtime-payloads
-      - ${PWD}/task-workspaces:/task-workspaces
+      - ./task-workspaces:/task-workspaces
       - server_secrets:/secrets
     depends_on:
       - redis
