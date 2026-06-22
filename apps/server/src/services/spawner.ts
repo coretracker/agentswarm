@@ -550,7 +550,7 @@ export class SpawnerService {
       "--rm",
       "-i",
       "-v",
-      `${env.TASK_WORKSPACE_DOCKER_SOURCE}:${env.TASK_WORKSPACE_ROOT}:rw`,
+      `${env.TASK_WORKSPACE_HOST_ROOT}:${env.TASK_WORKSPACE_ROOT}:rw`,
       "-v",
       `${repoCacheMountSource}:${env.REPO_CACHE_ROOT}:rw`,
       ...dockerEnv,
@@ -1527,12 +1527,12 @@ export class SpawnerService {
   }
 
   private resolveWorkspaceHostPath(taskId: string): string {
-    return path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, taskId);
+    return path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
   }
 
   private buildTaskWorkspaceMountArgs(sourceRelativePath: string, targetPath: string, mode: "ro" | "rw"): string[] {
     return buildDockerWorkspaceMountArgs({
-      sourceRoot: env.TASK_WORKSPACE_DOCKER_SOURCE,
+      sourceRoot: env.TASK_WORKSPACE_HOST_ROOT,
       sourceRelativePath,
       targetPath,
       mode
@@ -5415,7 +5415,7 @@ export class SpawnerService {
           : []),
         ...(rawEventsMount
           ? this.buildTaskWorkspaceMountArgs(
-              path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, rawEventsMount.hostDir),
+              path.relative(env.TASK_WORKSPACE_HOST_ROOT, rawEventsMount.hostDir),
               rawEventsMount.containerDir,
               "rw"
             )
@@ -5423,7 +5423,7 @@ export class SpawnerService {
         ...linkedWorkspaceMountPlan.mountArgs,
         ...gitRuntimeMounts,
         ...this.buildTaskWorkspaceMountArgs(
-          path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, providerStatePaths.hostPath),
+          path.relative(env.TASK_WORKSPACE_HOST_ROOT, providerStatePaths.hostPath),
           providerStateContainerPath,
           "rw"
         ),

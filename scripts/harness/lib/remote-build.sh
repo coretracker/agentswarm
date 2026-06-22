@@ -31,6 +31,8 @@ build_remote_command() {
     AGENTSWARM_TEST_SEED
     PUBLIC_PORT
     TASK_WORKSPACE_PATH
+    TASK_WORKSPACE_HOST_ROOT
+    TASK_WORKSPACE_DOCKER_SOURCE
   )
 
   local -a cmd_parts=("env" "HARNESS_REMOTE_EXECUTING=1")

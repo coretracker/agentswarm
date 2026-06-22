@@ -64,7 +64,7 @@ export async function buildLinkedWorkspaceMountPlan(options: {
     seenAliases.add(link.alias);
 
     const taskWorkspaceRoot = options.taskWorkspaceRoot ?? env.TASK_WORKSPACE_ROOT;
-    const taskWorkspaceHostRoot = options.taskWorkspaceHostRoot ?? env.TASK_WORKSPACE_DOCKER_SOURCE;
+    const taskWorkspaceHostRoot = options.taskWorkspaceHostRoot ?? env.TASK_WORKSPACE_HOST_ROOT;
     const sourceOnServer = path.join(taskWorkspaceRoot, link.taskId);
     try {
       await access(sourceOnServer, constants.R_OK | constants.X_OK);

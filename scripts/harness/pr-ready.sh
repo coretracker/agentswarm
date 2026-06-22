@@ -8,6 +8,8 @@ source "${SCRIPT_DIR}/lib/remote-build.sh"
 ensure_remote_build_execution "$REPO_ROOT" "./scripts/harness/pr-ready.sh" "$@"
 
 cd "$REPO_ROOT"
+TASK_WORKSPACE_HOST_ROOT="${TASK_WORKSPACE_HOST_ROOT:-${TASK_WORKSPACE_DOCKER_SOURCE:-$REPO_ROOT/task-workspaces}}"
+export TASK_WORKSPACE_HOST_ROOT
 
 step() {
   echo "[harness:pr-ready] $1"

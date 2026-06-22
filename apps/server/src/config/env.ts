@@ -14,6 +14,7 @@ const envSchema = z.object({
   RUNTIME_PAYLOAD_VOLUME: z.string().default("agentswarm_runtime_payloads"),
   REPOSITORY_ENV_FILE_STORE_ROOT: z.string().default("/secrets/repository-env-files"),
   TASK_WORKSPACE_ROOT: z.string().default("/task-workspaces"),
+  TASK_WORKSPACE_HOST_ROOT: z.string().optional(),
   TASK_WORKSPACE_DOCKER_SOURCE: z.string().optional(),
   AGENT_RUNTIME_IMAGE: z
     .string()
@@ -44,9 +45,9 @@ const envSchema = z.object({
 const parsed = envSchema.parse(process.env);
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
-const configuredTaskWorkspaceDockerSource = parsed.TASK_WORKSPACE_DOCKER_SOURCE?.trim();
-const taskWorkspaceDockerSource =
-  configuredTaskWorkspaceDockerSource ||
+const configuredTaskWorkspaceHostRoot = parsed.TASK_WORKSPACE_HOST_ROOT?.trim() || parsed.TASK_WORKSPACE_DOCKER_SOURCE?.trim();
+const taskWorkspaceHostRoot =
+  configuredTaskWorkspaceHostRoot ||
   (existsSync("/.dockerenv")
     ? "agentswarm_task_workspaces"
     : parsed.TASK_WORKSPACE_ROOT !== "/task-workspaces"
@@ -61,4 +62,4 @@ export const DEFAULT_GIT_COMMIT_IDENTITY = {
 } as const;
 export const AGENT_RUNTIME_IMAGE = parsed.AGENT_RUNTIME_IMAGE;
 
-export const env = { ...parsed, TASK_WORKSPACE_DOCKER_SOURCE: taskWorkspaceDockerSource };
+export const env = { ...parsed, TASK_WORKSPACE_HOST_ROOT: taskWorkspaceHostRoot };

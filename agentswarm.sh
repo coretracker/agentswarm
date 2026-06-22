@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME="$(basename "$0")"
 DEFAULT_PUBLIC_PORT="3217"
 DEFAULT_AGENT_RUNTIME_IMAGE="agentswarm-agent-toolbox:latest"
+DEFAULT_TASK_WORKSPACE_DIR="$ROOT_DIR/task-workspaces"
 
 print_usage() {
   cat <<EOF
@@ -82,6 +83,12 @@ warn_if_missing_runtime_image() {
   fi
 }
 
+ensure_task_workspace_dir() {
+  if [[ "$TASK_WORKSPACE_HOST_ROOT" = /* || "$TASK_WORKSPACE_HOST_ROOT" = ./* || "$TASK_WORKSPACE_HOST_ROOT" = ../* ]]; then
+    mkdir -p "$TASK_WORKSPACE_HOST_ROOT"
+  fi
+}
+
 build_runtime_image() {
   echo "Building agent toolbox runtime image: $AGENT_RUNTIME_IMAGE"
   docker build \
@@ -94,6 +101,7 @@ build_runtime_image() {
 
 start_stack() {
   echo "Starting AgentSwarm services"
+  ensure_task_workspace_dir
   compose up -d
   warn_if_missing_runtime_image
   print_access_hint
@@ -109,6 +117,7 @@ rebuild_stack() {
   echo "Rebuilding AgentSwarm compose images"
   compose build --pull --no-cache
   echo "Restarting AgentSwarm services"
+  ensure_task_workspace_dir
   compose up -d --force-recreate
   print_access_hint
 }
@@ -126,6 +135,8 @@ main() {
       detect_compose
       cd "$ROOT_DIR"
       AGENT_RUNTIME_IMAGE="${AGENT_RUNTIME_IMAGE:-${CODEX_RUNTIME_IMAGE:-${CLAUDE_RUNTIME_IMAGE:-$DEFAULT_AGENT_RUNTIME_IMAGE}}}"
+      TASK_WORKSPACE_HOST_ROOT="${TASK_WORKSPACE_HOST_ROOT:-${TASK_WORKSPACE_DOCKER_SOURCE:-$DEFAULT_TASK_WORKSPACE_DIR}}"
+      export AGENT_RUNTIME_IMAGE TASK_WORKSPACE_HOST_ROOT
 
       case "$command" in
         start)

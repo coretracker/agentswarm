@@ -109,7 +109,7 @@ const bootstrap = async (): Promise<void> => {
       postgresAutoMigrate: AUTO_RUN_POSTGRES_MIGRATIONS,
       sentryEnabled,
       taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
-      taskWorkspaceDockerSource: env.TASK_WORKSPACE_DOCKER_SOURCE
+      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
     },
     "Server configuration loaded"
   );

@@ -50,7 +50,7 @@ const repositoryEnvFileStore = new RepositoryEnvFileStore();
 
 function buildTaskWorkspaceMountArgs(sourceRelativePath: string, targetPath: string, mode: "ro" | "rw"): string[] {
   return buildDockerWorkspaceMountArgs({
-    sourceRoot: env.TASK_WORKSPACE_DOCKER_SOURCE,
+    sourceRoot: env.TASK_WORKSPACE_HOST_ROOT,
     sourceRelativePath,
     targetPath,
     mode
@@ -407,7 +407,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
     const started = await deps.spawner.beginInteractiveTerminalSession(taskId, mode);
     terminalSessionId = started.sessionId;
     const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
-    const dockerBindSource = path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, taskId);
+    const dockerBindSource = path.join(env.TASK_WORKSPACE_HOST_ROOT, taskId);
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
     const linkedWorkspaceMountPlan = await buildLinkedWorkspaceMountPlan({
       rootWorkspacePath: workspaceOnServer,
@@ -464,12 +464,12 @@ async function initializeTaskInteractiveTerminalWebSocket(
       ...linkedWorkspaceMountPlan.mountArgs,
       ...gitRuntimeMounts,
       ...buildTaskWorkspaceMountArgs(
-        path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, codexProviderStatePaths.hostPath),
+        path.relative(env.TASK_WORKSPACE_HOST_ROOT, codexProviderStatePaths.hostPath),
         "/root/.codex",
         "rw"
       ),
       ...buildTaskWorkspaceMountArgs(
-        path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, claudeProviderStatePaths.hostPath),
+        path.relative(env.TASK_WORKSPACE_HOST_ROOT, claudeProviderStatePaths.hostPath),
         "/root/.claude",
         "rw"
       ),
