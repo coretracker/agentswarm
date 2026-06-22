@@ -622,10 +622,12 @@ export class RedisTaskStore implements TaskStore {
     return {
       ...this.withPendingCheckpointState({
         ...hydratedTask,
-        hasPendingCheckpoint
+        hasPendingCheckpoint,
+        activeInteractiveSession: activeInteractiveSession !== null,
+        activeTerminalSessionMode: activeInteractiveSession?.mode ?? null
       }),
-      activeInteractiveSession: hydratedTask.activeInteractiveSession === true || activeInteractiveSession !== null,
-      activeTerminalSessionMode: activeInteractiveSession?.mode ?? hydratedTask.activeTerminalSessionMode ?? null
+      activeInteractiveSession: activeInteractiveSession !== null,
+      activeTerminalSessionMode: activeInteractiveSession?.mode ?? null
     };
   }
 
@@ -2025,10 +2027,12 @@ export class PostgresTaskStore implements TaskStore {
     return {
       ...this.withPendingCheckpointState({
         ...hydratedTask,
-        hasPendingCheckpoint
+        hasPendingCheckpoint,
+        activeInteractiveSession: activeInteractiveSession !== null,
+        activeTerminalSessionMode: activeInteractiveSession?.mode ?? null
       }),
-      activeInteractiveSession: hydratedTask.activeInteractiveSession === true || activeInteractiveSession !== null,
-      activeTerminalSessionMode: activeInteractiveSession?.mode ?? hydratedTask.activeTerminalSessionMode ?? null
+      activeInteractiveSession: activeInteractiveSession !== null,
+      activeTerminalSessionMode: activeInteractiveSession?.mode ?? null
     };
   }
 

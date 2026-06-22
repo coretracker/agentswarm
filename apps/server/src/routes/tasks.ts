@@ -1813,8 +1813,6 @@ export const registerTaskRoutes = (
       task.executionStatus === "queued" ||
       task.executionStatus === "preparing" ||
       task.executionStatus === "running";
-    const hasOlderPendingActionMessages = action !== "comment" ? await deps.taskStore.hasPendingActionMessage(task.id) : false;
-
     if (action !== "comment") {
       const blocked = await getMutationBlocked(deps.taskStore, task.id);
       if (blocked?.code === "active_terminal_session") {
@@ -1845,24 +1843,13 @@ export const registerTaskRoutes = (
       return reply.send(refreshed);
     }
 
-    const canStartImmediately =
+    const canStartPendingAction =
       task.executionStatus === "idle" &&
       !isBusy &&
-      !hasOlderPendingActionMessages &&
       !(await deps.taskStore.hasPendingChangeProposal(task.id));
 
-    if (canStartImmediately && createdMessage) {
-      await deps.scheduler.triggerAction(
-        task.id,
-        action,
-        {
-          content: parsed.data.content,
-          ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
-        },
-        {
-          promptMessageId: createdMessage.id
-        }
-      );
+    if (canStartPendingAction && createdMessage) {
+      await deps.scheduler.triggerNextPendingAction(task.id, "manual");
     } else if ((task.executionStatus === "failed" || task.executionStatus === "cancelled") && !(await deps.taskStore.hasPendingChangeProposal(task.id))) {
       await deps.scheduler.triggerNextPendingAction(task.id, "manual");
     }
