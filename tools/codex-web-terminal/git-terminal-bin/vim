@@ -1,8 +1,0 @@
-#!/bin/sh
-set -eu
-
-if command -v rvim >/dev/null 2>&1; then
-  exec rvim "$@"
-fi
-
-exec /usr/bin/vim -Z "$@"

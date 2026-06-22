@@ -238,8 +238,6 @@ Mounting `docker.sock` is highly privileged and can effectively grant host-level
 +-- packages/
 |   +-- shared-types/    # Shared TypeScript types used by server and web
 +-- agent-runtime/       # Unified agent toolbox runtime
-+-- agent-runtime-codex/ # Legacy Codex runtime kept for rollback/reference
-+-- agent-runtime-claude/# Legacy Claude runtime kept for rollback/reference
 +-- tools/               # Supporting runtime and terminal tooling
 +-- docs/                # Architecture, development, product, and quality docs
 +-- scripts/harness/     # Canonical setup, check, test, and PR scripts

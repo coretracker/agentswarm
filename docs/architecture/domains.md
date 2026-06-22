@@ -17,10 +17,8 @@ This section lists major code domains visible in the repository.
 ## Runtime Domain
 - Paths:
   - `agent-runtime`
-  - `agent-runtime-codex`
-  - `agent-runtime-claude`
   - `tools/codex-web-terminal`
-- Purpose: execute provider tools inside the unified toolbox container and support interactive terminal sessions. Provider-specific runtime directories are retained for rollback/reference during the unified runtime transition.
+- Purpose: execute provider tools inside the unified toolbox container and support interactive terminal sessions. `tools/codex-web-terminal` is a standalone Codex terminal PoC, not the main AgentSwarm runtime path.
 
 ## Deployment Domain
 - Paths:
