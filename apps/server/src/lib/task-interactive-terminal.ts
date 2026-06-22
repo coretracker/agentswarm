@@ -56,6 +56,7 @@ import {
   resolveDockerSocketEnvEntries,
   resolveDockerSocketMountArgs
 } from "./docker-socket-access.js";
+import { buildDockerWorkspaceMountArgs } from "./docker-workspace-mounts.js";
 import type { UserStore } from "../services/user-store.js";
 import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js";
 
@@ -67,6 +68,15 @@ const INTERACTIVE_EXIT_WAIT_MS = 1_500;
 const INTERACTIVE_TERMINAL_CLOSE_CODE = 1012;
 const PROVIDER_SESSION_ID_FILE = "agentswarm-session-id.txt";
 const repositoryEnvFileStore = new RepositoryEnvFileStore();
+
+function buildTaskWorkspaceMountArgs(sourceRelativePath: string, targetPath: string, mode: "ro" | "rw"): string[] {
+  return buildDockerWorkspaceMountArgs({
+    sourceRoot: env.TASK_WORKSPACE_DOCKER_SOURCE,
+    sourceRelativePath,
+    targetPath,
+    mode
+  });
+}
 
 function normalizeTerminalSessionMode(value: string | null | undefined): TaskTerminalSessionMode {
   return value === "git" ? "git" : "interactive";
@@ -714,8 +724,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
         sessionName,
         "-v",
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
-        "-v",
-        `${dockerBindSource}:/workspace:rw`,
+        ...buildTaskWorkspaceMountArgs(taskId, INTERACTIVE_WORKSPACE_PATH, "rw"),
         ...linkedWorkspaceMountPlan.mountArgs,
         ...gitRuntimeMounts,
         ...dockerEnv,
@@ -797,16 +806,27 @@ async function initializeTaskInteractiveTerminalWebSocket(
       sessionName,
       "-v",
       `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
-      "-v",
-      `${dockerBindSource}:/workspace:rw`,
+      ...buildTaskWorkspaceMountArgs(taskId, INTERACTIVE_WORKSPACE_PATH, "rw"),
       ...linkedWorkspaceMountPlan.mountArgs,
       ...dockerSocketMountArgs,
       ...gitRuntimeMounts,
       ...(statePaths && runtime.persistentState
-        ? ["-v", `${statePaths.hostPath}:${runtime.persistentState.containerPath}:rw`]
+        ? [
+            ...buildTaskWorkspaceMountArgs(
+              path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, statePaths.hostPath),
+              runtime.persistentState.containerPath,
+              "rw"
+            )
+          ]
         : []),
       ...(statePaths && runtime.persistentState?.configContainerPath && statePaths.configHostPath
-        ? ["-v", `${statePaths.configHostPath}:${runtime.persistentState.configContainerPath}:rw`]
+        ? [
+            ...buildTaskWorkspaceMountArgs(
+              path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, statePaths.configHostPath),
+              runtime.persistentState.configContainerPath,
+              "rw"
+            )
+          ]
         : []),
       ...dockerEnv,
       runtime.image,

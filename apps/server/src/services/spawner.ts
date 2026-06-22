@@ -67,6 +67,7 @@ import {
   resolveDockerSocketEnvEntries,
   resolveDockerSocketMountArgs
 } from "../lib/docker-socket-access.js";
+import { buildDockerWorkspaceMountArgs } from "../lib/docker-workspace-mounts.js";
 import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
 import { DEFAULT_GIT_COMMIT_IDENTITY, INTERACTIVE_RUNTIME_IMAGES, env } from "../config/env.js";
@@ -1470,8 +1471,7 @@ export class SpawnerService {
           containerName,
           "-v",
           `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
-          "-v",
-          `${workspace.hostWorkspacePath}:/workspace:rw`,
+          ...this.buildTaskWorkspaceMountArgs(task.id, "/workspace", "rw"),
           ...gitRuntimeMounts,
           "-w",
           "/workspace",
@@ -1528,6 +1528,15 @@ export class SpawnerService {
 
   private resolveWorkspaceHostPath(taskId: string): string {
     return path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, taskId);
+  }
+
+  private buildTaskWorkspaceMountArgs(sourceRelativePath: string, targetPath: string, mode: "ro" | "rw"): string[] {
+    return buildDockerWorkspaceMountArgs({
+      sourceRoot: env.TASK_WORKSPACE_DOCKER_SOURCE,
+      sourceRelativePath,
+      targetPath,
+      mode
+    });
   }
 
   resolveTaskRunRawEventsJsonlPath(taskId: string, runId: string): string {
@@ -5357,9 +5366,7 @@ export class SpawnerService {
       const rawEventsMount = runId ? this.resolveTaskRunRawEventsMount(task.id, runId) : null;
       const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
       const attachmentRoot = manifestAttachments.length > 0 ? resolveTaskPromptAttachmentRoot(task.id) : null;
-      const attachmentHostRoot = attachmentRoot
-        ? path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, path.relative(env.TASK_WORKSPACE_ROOT, attachmentRoot))
-        : null;
+      const attachmentRelativeRoot = attachmentRoot ? path.relative(env.TASK_WORKSPACE_ROOT, attachmentRoot) : null;
       const linkedWorkspaceMountPlan = await buildLinkedWorkspaceMountPlan({
         rootWorkspacePath: workspace.workspacePath,
         containerWorkspacePath: workspace.workspacePath,
@@ -5402,14 +5409,24 @@ export class SpawnerService {
         containerName,
         "-v",
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
-        "-v",
-        `${workspace.hostWorkspacePath}:${workspace.workspacePath}:${workspaceMountMode}`,
-        ...(attachmentRoot && attachmentHostRoot ? ["-v", `${attachmentHostRoot}:${attachmentRoot}:ro`] : []),
-        ...(rawEventsMount ? ["-v", `${rawEventsMount.hostDir}:${rawEventsMount.containerDir}:rw`] : []),
+        ...this.buildTaskWorkspaceMountArgs(task.id, workspace.workspacePath, workspaceMountMode),
+        ...(attachmentRoot && attachmentRelativeRoot
+          ? this.buildTaskWorkspaceMountArgs(attachmentRelativeRoot, attachmentRoot, "ro")
+          : []),
+        ...(rawEventsMount
+          ? this.buildTaskWorkspaceMountArgs(
+              path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, rawEventsMount.hostDir),
+              rawEventsMount.containerDir,
+              "rw"
+            )
+          : []),
         ...linkedWorkspaceMountPlan.mountArgs,
         ...gitRuntimeMounts,
-        "-v",
-        `${providerStatePaths.hostPath}:${providerStateContainerPath}:rw`,
+        ...this.buildTaskWorkspaceMountArgs(
+          path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, providerStatePaths.hostPath),
+          providerStateContainerPath,
+          "rw"
+        ),
         ...dockerSocketMountArgs,
         "-e",
         `TASK_MANIFEST_FILE=${payloadPaths.manifestPath}`,

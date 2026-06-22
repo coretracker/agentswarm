@@ -47,6 +47,35 @@ describe("linked workspaces", () => {
     assert.match(await readFile(path.join(rootWorkspacePath, ".git", "info", "exclude"), "utf8"), /^\.linked-workspace\/$/m);
   });
 
+  it("builds read-only volume subpath mounts for named workspace volumes", async () => {
+    const taskWorkspaceRoot = path.join(root, "server-named-volume");
+    const rootWorkspacePath = path.join(taskWorkspaceRoot, "root-task");
+    await mkdir(rootWorkspacePath, { recursive: true });
+    await mkdir(path.join(taskWorkspaceRoot, "linked-task"), { recursive: true });
+
+    const plan = await buildLinkedWorkspaceMountPlan({
+      rootWorkspacePath,
+      containerWorkspacePath: "/workspace",
+      taskWorkspaceRoot,
+      taskWorkspaceHostRoot: "agentswarm_task_workspaces",
+      linkedWorkspaces: [
+        {
+          taskId: "linked-task",
+          alias: "linked-task",
+          title: "Linked task",
+          repoName: "repo",
+          linkedAt: "2026-06-17T00:00:00.000Z",
+          linkedByUserId: "user-1"
+        }
+      ]
+    });
+
+    assert.deepEqual(plan.mountArgs, [
+      "--mount",
+      "type=volume,src=agentswarm_task_workspaces,dst=/workspace/.linked-workspace/linked-task,volume-subpath=linked-task,readonly"
+    ]);
+  });
+
   it("skips missing linked task workspaces and unsafe aliases", async () => {
     const taskWorkspaceRoot = path.join(root, "server-skip");
     const rootWorkspacePath = path.join(taskWorkspaceRoot, "root-task");
