@@ -260,6 +260,65 @@ describe("MCP Phase 1 tools", () => {
     });
   });
 
+  it("starts a task with the requested action mode", async () => {
+    const tool = toolByName("agentswarm_start_task");
+    const task = createTask({
+      status: "open",
+      workflowStatus: "ready",
+      executionStatus: "idle",
+      taskType: "build"
+    });
+    const triggered: Array<{ taskId: string; action: string; content?: string }> = [];
+
+    await tool.handler(
+      {
+        taskId: task.id,
+        action: "ask"
+      },
+      {
+        user,
+        deps: {
+          repositoryStore: {} as never,
+          githubImportService: {} as never,
+          settingsStore: {} as never,
+          taskStore: {
+            getTask: async () => task,
+            listMessages: async () => [
+              {
+                id: "message-1",
+                taskId: task.id,
+                role: "user",
+                action: "build",
+                content: "Do work",
+                attachments: [],
+                queueState: null,
+                queueSource: null,
+                createdAt: "2026-01-01T00:00:00.000Z"
+              }
+            ],
+            setExecutionState: async (_taskId: string, status: string) => ({
+              ...task,
+              executionStatus: status as Task["executionStatus"]
+            }),
+            appendLog: async () => undefined
+          },
+          taskQueueStore: {} as never,
+          scheduler: {
+            triggerAction: async (taskId: string, action: string, input: { content?: string }) => {
+              triggered.push({ taskId, action, content: input.content });
+              return true;
+            }
+          },
+          spawner: {
+            prepareTaskWorkspaceOnly: async () => task
+          }
+        } as never
+      }
+    );
+
+    assert.deepEqual(triggered, [{ taskId: "task-1", action: "ask", content: "Do work" }]);
+  });
+
   it("resumes the next pending follow-up when a message is added to a failed task", async () => {
     const tool = toolByName("agentswarm_add_task_message");
     const task = createTask({

@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   getCheckpointMutationBlockedReason,
+  getTaskTerminalSessionLabel,
   isActiveTaskStatus,
   isQueuedTaskStatus,
   TASK_PROMPT_ATTACHMENT_MAX_COUNT,
@@ -570,7 +571,7 @@ export const registerTaskRoutes = (
   );
 
   app.get<{ Params: { id: string }; Querystring: { mode?: string } }>(
-    "/tasks/:id/interactive-terminal/status",
+    "/tasks/:id/terminal/status",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
     async (request, reply) => {
       if (!requireInteractiveTerminalAccess(request, reply)) {
@@ -582,7 +583,7 @@ export const registerTaskRoutes = (
         return;
       }
 
-      const terminalMode: TaskTerminalSessionMode = request.query.mode === "git" ? "git" : "interactive";
+      const terminalMode: TaskTerminalSessionMode = "terminal";
       const status = await getTaskInteractiveTerminalStatus(
         deps.taskStore,
         deps.settingsStore,
@@ -595,7 +596,7 @@ export const registerTaskRoutes = (
   );
 
   app.post<{ Params: { id: string } }>(
-    "/tasks/:id/interactive-terminal/kill",
+    "/tasks/:id/terminal/kill",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
     async (request, reply) => {
       if (!requireInteractiveTerminalAccess(request, reply)) {
@@ -620,12 +621,13 @@ export const registerTaskRoutes = (
       if (!killedLiveSession) {
         await deps.spawner.endInteractiveTerminalSession(task.id, activeSession.sessionId);
       }
+      const activeSessionLabel = getTaskTerminalSessionLabel(activeSession.mode);
 
       await deps.taskStore.appendLog(
         task.id,
         killedLiveSession
-          ? `${activeSession.mode === "git" ? "Git" : "Interactive"} terminal session terminated by user via kill switch.`
-          : `${activeSession.mode === "git" ? "Git" : "Interactive"} terminal kill requested after the live terminal process was already unreachable; cleaned up the session from server state.`
+          ? `${activeSessionLabel} session terminated by user via kill switch.`
+          : `${activeSessionLabel} kill requested after the live terminal process was already unreachable; cleaned up the session from server state.`
       );
 
       const refreshed = await deps.taskStore.getTask(task.id);
@@ -634,7 +636,7 @@ export const registerTaskRoutes = (
   );
 
   app.get<{ Params: { id: string; sessionId: string } }>(
-    "/tasks/:id/interactive-terminal/sessions/:sessionId/transcript",
+    "/tasks/:id/terminal/sessions/:sessionId/transcript",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
     async (request, reply) => {
       const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
@@ -1811,8 +1813,6 @@ export const registerTaskRoutes = (
       task.executionStatus === "queued" ||
       task.executionStatus === "preparing" ||
       task.executionStatus === "running";
-    const hasOlderPendingActionMessages = action !== "comment" ? await deps.taskStore.hasPendingActionMessage(task.id) : false;
-
     if (action !== "comment") {
       const blocked = await getMutationBlocked(deps.taskStore, task.id);
       if (blocked?.code === "active_terminal_session") {
@@ -1843,24 +1843,13 @@ export const registerTaskRoutes = (
       return reply.send(refreshed);
     }
 
-    const canStartImmediately =
+    const canStartPendingAction =
       task.executionStatus === "idle" &&
       !isBusy &&
-      !hasOlderPendingActionMessages &&
       !(await deps.taskStore.hasPendingChangeProposal(task.id));
 
-    if (canStartImmediately && createdMessage) {
-      await deps.scheduler.triggerAction(
-        task.id,
-        action,
-        {
-          content: parsed.data.content,
-          ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
-        },
-        {
-          promptMessageId: createdMessage.id
-        }
-      );
+    if (canStartPendingAction && createdMessage) {
+      await deps.scheduler.triggerNextPendingAction(task.id, "manual");
     } else if ((task.executionStatus === "failed" || task.executionStatus === "cancelled") && !(await deps.taskStore.hasPendingChangeProposal(task.id))) {
       await deps.scheduler.triggerNextPendingAction(task.id, "manual");
     }

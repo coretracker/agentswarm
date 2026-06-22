@@ -1,11 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams } from "next/navigation";
 import {
-  getAgentProviderLabel,
-  getDefaultModelForProvider,
-  getProviderProfileLabel,
   getTaskTerminalSessionLabel,
   type TaskTerminalSessionMode
 } from "@agentswarm/shared-types";
@@ -13,11 +10,10 @@ import { Flex, Typography, theme as antTheme } from "antd";
 import { TaskInteractiveTerminalView } from "../../../../components/task-interactive-terminal-view";
 import { useTask } from "../../../../src/hooks/useTask";
 
-export default function TaskInteractiveRoutePage() {
+export default function TaskTerminalRoutePage() {
   const params = useParams();
-  const searchParams = useSearchParams();
   const taskId = typeof params.id === "string" ? params.id : "";
-  const mode: TaskTerminalSessionMode = searchParams.get("mode") === "git" ? "git" : "interactive";
+  const mode: TaskTerminalSessionMode = "terminal";
   const { token } = antTheme.useToken();
   const { task } = useTask(taskId);
 
@@ -25,9 +21,6 @@ export default function TaskInteractiveRoutePage() {
     return null;
   }
 
-  const providerLabel = task ? getAgentProviderLabel(task.provider) : "Interactive Terminal";
-  const modelLabel = task ? task.modelOverride ?? getDefaultModelForProvider(task.provider) : null;
-  const effortLabel = task ? getProviderProfileLabel(task.providerProfile) : null;
   const terminalLabel = getTaskTerminalSessionLabel(mode);
 
   return (
@@ -45,20 +38,10 @@ export default function TaskInteractiveRoutePage() {
       >
         <Flex vertical gap={0} style={{ minWidth: 0 }}>
           <Typography.Text strong style={{ color: token.colorText }}>
-            {mode === "git"
-              ? task
-                ? `Terminal · ${task.branchName ?? task.repoDefaultBranch} in task workspace`
-                : terminalLabel
-              : task
-                ? `Interactive · ${providerLabel} in task workspace`
-                : terminalLabel}
+            {task ? `Terminal · ${task.branchName ?? task.repoDefaultBranch} in task workspace` : terminalLabel}
           </Typography.Text>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {mode === "interactive" && task && modelLabel && effortLabel
-              ? `Model: ${modelLabel} · Effort: ${effortLabel} · Terminal font: Ctrl/⌘ + +/− (numpad works); Ctrl/⌘ + 0 resets.`
-              : mode === "git"
-                ? "Workspace shell for manual git commands. Terminal font: Ctrl/⌘ + +/− (numpad works); Ctrl/⌘ + 0 resets."
-                : "Terminal font: Ctrl/⌘ + +/− (numpad works); Ctrl/⌘ + 0 resets."}
+            Workspace shell for manual commands. Terminal font: Ctrl/⌘ + +/− (numpad works); Ctrl/⌘ + 0 resets.
           </Typography.Text>
         </Flex>
         <Link href={`/tasks/${taskId}`} style={{ color: token.colorLink, flexShrink: 0 }}>

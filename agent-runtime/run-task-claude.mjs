@@ -94,6 +94,13 @@ const resolveClaudeBinary = async (runtimeHome) => {
     return legacyBinary;
   }
 
+  for (const dir of (process.env.PATH ?? "").split(":").filter(Boolean)) {
+    const pathBinary = path.join(dir, "claude");
+    if (await isExecutable(pathBinary)) {
+      return pathBinary;
+    }
+  }
+
   return homeBinary;
 };
 

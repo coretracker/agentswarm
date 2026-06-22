@@ -24,7 +24,7 @@ function getNotificationPermission(): BrowserNotificationPermission {
 }
 
 function getOpenTaskIdFromPathname(pathname: string): string | null {
-  const match = /^\/tasks\/([^/]+)(?:\/interactive)?$/.exec(pathname);
+  const match = /^\/tasks\/([^/]+)(?:\/terminal)?$/.exec(pathname);
   return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 

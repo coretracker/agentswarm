@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ProviderProfile } from "@agentswarm/shared-types";
-import { INTERACTIVE_RUNTIME_IMAGES, env } from "../config/env.js";
+import { AGENT_RUNTIME_IMAGE, env } from "../config/env.js";
 import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
 import type { SettingsRuntimeCredentials } from "./settings-store.js";
 
@@ -86,7 +86,7 @@ export async function executeCodexUtility(input: {
   timeoutMs?: number;
   outputMaxChars?: number;
 }): Promise<string> {
-  const image = INTERACTIVE_RUNTIME_IMAGES.codex;
+  const image = AGENT_RUNTIME_IMAGE;
   if (!input.credentials.openaiApiKey && !input.credentials.codexAuthJson) {
     throw new CodexUtilityUnavailableError("Codex credentials are not configured.");
   }

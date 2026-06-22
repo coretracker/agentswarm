@@ -215,6 +215,7 @@ const startTask = async (context: McpToolContext, task: Task, action?: TaskActio
     },
     {
       task: startTask,
+      action: resolvedAction,
       fallbackMessage: "Task start failed",
       input: {
         content: firstUserMessage?.content?.trim() || startTask.prompt,

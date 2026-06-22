@@ -9,12 +9,14 @@ import {
 } from "../lib/provider-config.js";
 import { serializeClaudeMcpConfig, serializeCodexMcpConfig } from "../lib/mcp-config.js";
 import type { RuntimeCredentials } from "../services/credential-store.js";
+import { AGENT_RUNTIME_IMAGE } from "../config/env.js";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
 
 export interface ProviderRuntimeDefinition {
   provider: AgentProvider;
   image: string;
   context: string;
+  command: string[];
   configFileName: string;
   getMissingCredentialMessage(credentials: RuntimeCredentials): string | null;
   getRuntimeEnv(credentials: RuntimeCredentials & { openaiBaseUrl: string | null }): Record<string, string | undefined>;
@@ -29,8 +31,9 @@ export interface ProviderRuntimeDefinition {
 export const providerRuntimeDefinitions: Record<AgentProvider, ProviderRuntimeDefinition> = {
   codex: {
     provider: "codex",
-    image: "agentswarm-agent-runtime-codex:latest",
-    context: path.join(repoRoot, "agent-runtime-codex"),
+    image: AGENT_RUNTIME_IMAGE,
+    context: path.join(repoRoot, "agent-runtime"),
+    command: ["node", "/usr/local/bin/run-task-codex.mjs"],
     configFileName: "codex-config.toml",
     getMissingCredentialMessage: (credentials) =>
       credentials.openaiApiKey || credentials.codexAuthJson ? null : "OpenAI API key or Codex auth.json is not configured.",
@@ -49,8 +52,9 @@ export const providerRuntimeDefinitions: Record<AgentProvider, ProviderRuntimeDe
   },
   claude: {
     provider: "claude",
-    image: "agentswarm-agent-runtime-claude:latest",
-    context: path.join(repoRoot, "agent-runtime-claude"),
+    image: AGENT_RUNTIME_IMAGE,
+    context: path.join(repoRoot, "agent-runtime"),
+    command: ["node", "/usr/local/bin/run-task-claude.mjs"],
     configFileName: "claude-mcp.json",
     getMissingCredentialMessage: (credentials) =>
       credentials.anthropicApiKey ? null : "Anthropic API key is not configured in Settings.",

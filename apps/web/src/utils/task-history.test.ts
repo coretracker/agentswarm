@@ -336,7 +336,7 @@ test("groups completed terminal sessions with a diff proposal", () => {
   assert.equal(entries[0].active, false);
 });
 
-test("groups completed git terminal sessions with a diff proposal", () => {
+test("groups completed terminal sessions with a diff proposal", () => {
   const start = createMessage({
     id: "m1",
     createdAt: "2026-03-24T13:30:00.000Z",

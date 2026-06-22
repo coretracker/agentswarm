@@ -50,7 +50,7 @@ export interface TaskInteractiveTerminalViewProps {
  */
 export function TaskInteractiveTerminalView({
   taskId,
-  mode = "interactive",
+  mode = "terminal",
   defaultFontSize = DEFAULT_INTERACTIVE_TERMINAL_FONT_SIZE,
   disconnectHint = "Open the terminal again to start a new session.",
   onConnected,
@@ -88,7 +88,7 @@ export function TaskInteractiveTerminalView({
 
     const terminalSentenceLabel = getTaskTerminalSessionSentenceLabel(mode);
     const wsUrl = buildWebSocketUrl(
-      `/tasks/${encodeURIComponent(taskId)}/interactive-terminal${mode === "git" ? "?mode=git" : ""}`
+      `/tasks/${encodeURIComponent(taskId)}/terminal?mode=terminal`
     );
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";

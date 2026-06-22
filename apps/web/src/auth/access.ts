@@ -17,8 +17,8 @@ export const navigationRoutes: NavigationRoute[] = [
 
 export const isPublicPathname = (pathname: string): boolean => pathname === "/login";
 
-export const isTaskInteractiveFullscreenPath = (pathname: string): boolean =>
-  /^\/tasks\/[^/]+\/interactive$/.test(pathname);
+export const isTaskTerminalFullscreenPath = (pathname: string): boolean =>
+  /^\/tasks\/[^/]+\/terminal$/.test(pathname);
 
 export const getRequiredScopesForPathname = (pathname: string): PermissionScope[] => {
   if (pathname === "/tasks" || pathname === "/tasks/board") {
@@ -29,8 +29,8 @@ export const getRequiredScopesForPathname = (pathname: string): PermissionScope[
     return ["task:create", "repo:list"];
   }
 
-  if (/^\/tasks\/[^/]+\/interactive$/.test(pathname)) {
-    return ["task:edit", "task:interactive"];
+  if (/^\/tasks\/[^/]+\/terminal$/.test(pathname)) {
+    return ["task:edit", "task:terminal"];
   }
 
   if (pathname.startsWith("/tasks/")) {

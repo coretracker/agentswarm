@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -75,6 +75,48 @@ describe("buildGitProcessEnv", () => {
       });
 
       await git(["-C", worktreePath, "merge", "--squash", "--no-commit", "origin/feature"], root, gitEnv);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("allows rebases without relying on global git config", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-git-rebase-env-"));
+    const originPath = path.join(root, "origin.git");
+    const seedPath = path.join(root, "seed");
+    const workspacePath = path.join(root, "workspace");
+
+    try {
+      await git(["init", "--bare", originPath], root);
+      await git(["clone", originPath, seedPath], root);
+
+      await git(["checkout", "-b", "main"], seedPath);
+      await writeFile(path.join(seedPath, "base.txt"), "base\n", "utf8");
+      await git(["add", "base.txt"], seedPath);
+      await git(["-c", "user.name=Repo Seeder", "-c", "user.email=seed@example.com", "commit", "-m", "base"], seedPath);
+      await git(["push", "-u", "origin", "main"], seedPath);
+
+      await git(["clone", originPath, workspacePath], root);
+      await git(["checkout", "main"], workspacePath);
+      await writeFile(path.join(workspacePath, "local.txt"), "local\n", "utf8");
+      await git(["add", "local.txt"], workspacePath);
+      await git(["-c", "user.name=Local Author", "-c", "user.email=local@example.com", "commit", "-m", "local"], workspacePath);
+
+      await writeFile(path.join(seedPath, "remote.txt"), "remote\n", "utf8");
+      await git(["add", "remote.txt"], seedPath);
+      await git(["-c", "user.name=Repo Seeder", "-c", "user.email=seed@example.com", "commit", "-m", "remote"], seedPath);
+      await git(["push", "origin", "main"], seedPath);
+      await git(["fetch", "origin", "main"], workspacePath);
+
+      const gitEnv = await buildGitProcessEnv({
+        workspacePath,
+        gitIdentity: {
+          name: "Task Owner",
+          email: "owner@example.com"
+        }
+      });
+
+      await git(["-C", workspacePath, "rebase", "origin/main"], root, gitEnv);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

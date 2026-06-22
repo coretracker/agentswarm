@@ -9,16 +9,11 @@ This is a local experiment only: **no authentication**, and mounting the Docker 
 - Docker (Desktop on macOS is fine)
 - An OpenAI API key in **`OPENAI_API_KEY`**
 
-## Build images (order matters)
+## Build images
 
-Build the restricted **Git terminal** image first if you want AgentSwarm's browser Git terminal to run inside a minimal Alpine container with `git`, `vim`, and `diff3`:
+This standalone PoC uses its own Codex image. The main AgentSwarm app uses the unified toolbox image from `agent-runtime/Dockerfile`.
 
-```bash
-cd tools/codex-web-terminal
-docker build -f Dockerfile.git -t local/git-terminal:latest .
-```
-
-Build the **Codex runtime** image on the Docker host (the name must match `CODEX_IMAGE`, default `local/codex-interactive:latest`):
+Build the PoC **Codex runtime** image on the Docker host (the name must match `CODEX_IMAGE`, default `local/codex-interactive:latest`):
 
 ```bash
 cd tools/codex-web-terminal

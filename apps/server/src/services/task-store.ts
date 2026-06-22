@@ -240,7 +240,10 @@ const normalizeTaskExecutionAction = (
   value: unknown,
   fallbackTask: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode">
 ): TaskExecutionAction => {
-  if (value === "build" || value === "ask" || value === "interactive" || value === "terminal") {
+  if (value === "interactive") {
+    return "terminal";
+  }
+  if (value === "build" || value === "ask" || value === "terminal") {
     return value;
   }
 
@@ -495,12 +498,7 @@ export class RedisTaskStore implements TaskStore {
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       autoApplyCheckpoints: legacyTask.autoApplyCheckpoints === true,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
-      activeTerminalSessionMode:
-        legacyTask.activeTerminalSessionMode === "git" || legacyTask.activeTerminalSessionMode === "interactive"
-          ? legacyTask.activeTerminalSessionMode
-          : legacyTask.activeInteractiveSession === true
-            ? "interactive"
-            : null,
+      activeTerminalSessionMode: legacyTask.activeInteractiveSession === true ? "terminal" : null,
       linkedWorkspaces: normalizeTaskLinkedWorkspaces(legacyTask.linkedWorkspaces),
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
       taskType: normalizeLegacyTaskType(legacyTask.taskType),
@@ -624,10 +622,12 @@ export class RedisTaskStore implements TaskStore {
     return {
       ...this.withPendingCheckpointState({
         ...hydratedTask,
-        hasPendingCheckpoint
+        hasPendingCheckpoint,
+        activeInteractiveSession: activeInteractiveSession !== null,
+        activeTerminalSessionMode: activeInteractiveSession?.mode ?? null
       }),
-      activeInteractiveSession: hydratedTask.activeInteractiveSession === true || activeInteractiveSession !== null,
-      activeTerminalSessionMode: activeInteractiveSession?.mode ?? hydratedTask.activeTerminalSessionMode ?? null
+      activeInteractiveSession: activeInteractiveSession !== null,
+      activeTerminalSessionMode: activeInteractiveSession?.mode ?? null
     };
   }
 
@@ -637,12 +637,7 @@ export class RedisTaskStore implements TaskStore {
       ...task,
       hasPendingCheckpoint,
       activeInteractiveSession: task.activeInteractiveSession === true,
-      activeTerminalSessionMode:
-        task.activeInteractiveSession === true
-          ? task.activeTerminalSessionMode === "git"
-            ? "git"
-            : "interactive"
-          : null
+      activeTerminalSessionMode: task.activeInteractiveSession === true ? "terminal" : null
     });
   }
 
@@ -1560,7 +1555,7 @@ export class RedisTaskStore implements TaskStore {
           checkpointRef: parsed.checkpointRef,
           startedAt: parsed.startedAt,
           untrackedPathsAtCheckpoint: Array.isArray(parsed.untrackedPathsAtCheckpoint) ? parsed.untrackedPathsAtCheckpoint : [],
-          mode: parsed.mode === "git" ? "git" : "interactive"
+          mode: "terminal"
         };
       }
       return null;
@@ -1852,12 +1847,7 @@ export class PostgresTaskStore implements TaskStore {
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       autoApplyCheckpoints: legacyTask.autoApplyCheckpoints === true,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
-      activeTerminalSessionMode:
-        legacyTask.activeTerminalSessionMode === "git" || legacyTask.activeTerminalSessionMode === "interactive"
-          ? legacyTask.activeTerminalSessionMode
-          : legacyTask.activeInteractiveSession === true
-            ? "interactive"
-            : null,
+      activeTerminalSessionMode: legacyTask.activeInteractiveSession === true ? "terminal" : null,
       linkedWorkspaces: normalizeTaskLinkedWorkspaces(legacyTask.linkedWorkspaces),
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
       taskType: normalizeLegacyTaskType(legacyTask.taskType),
@@ -1898,12 +1888,7 @@ export class PostgresTaskStore implements TaskStore {
       ...task,
       hasPendingCheckpoint,
       activeInteractiveSession: task.activeInteractiveSession === true,
-      activeTerminalSessionMode:
-        task.activeInteractiveSession === true
-          ? task.activeTerminalSessionMode === "git"
-            ? "git"
-            : "interactive"
-          : null
+      activeTerminalSessionMode: task.activeInteractiveSession === true ? "terminal" : null
     });
   }
 
@@ -2042,10 +2027,12 @@ export class PostgresTaskStore implements TaskStore {
     return {
       ...this.withPendingCheckpointState({
         ...hydratedTask,
-        hasPendingCheckpoint
+        hasPendingCheckpoint,
+        activeInteractiveSession: activeInteractiveSession !== null,
+        activeTerminalSessionMode: activeInteractiveSession?.mode ?? null
       }),
-      activeInteractiveSession: hydratedTask.activeInteractiveSession === true || activeInteractiveSession !== null,
-      activeTerminalSessionMode: activeInteractiveSession?.mode ?? hydratedTask.activeTerminalSessionMode ?? null
+      activeInteractiveSession: activeInteractiveSession !== null,
+      activeTerminalSessionMode: activeInteractiveSession?.mode ?? null
     };
   }
 
@@ -2898,7 +2885,7 @@ export class PostgresTaskStore implements TaskStore {
           checkpointRef: parsed.checkpointRef,
           startedAt: parsed.startedAt,
           untrackedPathsAtCheckpoint: Array.isArray(parsed.untrackedPathsAtCheckpoint) ? parsed.untrackedPathsAtCheckpoint : [],
-          mode: parsed.mode === "git" ? "git" : "interactive"
+          mode: "terminal"
         };
       }
       return null;

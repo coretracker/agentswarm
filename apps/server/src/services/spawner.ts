@@ -70,7 +70,7 @@ import {
 import { buildDockerWorkspaceMountArgs } from "../lib/docker-workspace-mounts.js";
 import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
-import { DEFAULT_GIT_COMMIT_IDENTITY, INTERACTIVE_RUNTIME_IMAGES, env } from "../config/env.js";
+import { AGENT_RUNTIME_IMAGE, DEFAULT_GIT_COMMIT_IDENTITY, env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
 import { executeCodexUtility, CodexUtilityUnavailableError } from "./codex-utility-service.js";
 import { buildDiffAssistPromptContext, executeOpenAiDiffAssist } from "./openai-diff-assist-service.js";
@@ -265,7 +265,7 @@ function isBinaryBuffer(buffer: Buffer): boolean {
 export class SpawnerService {
   private static readonly MANAGED_REPO_HEAD_REF = "refs/heads/agentswarm-cache";
 
-  private readonly runtimeReady = new Set<AgentProvider>();
+  private readonly runtimeReady = new Set<string>();
   private activeExecutions = new Map<string, Map<string, { label: string; process: ReturnType<typeof spawn>; containerName?: string }>>();
   private cancelRequestedTaskIds = new Set<string>();
   private repoLocks = new Map<string, Promise<void>>();
@@ -512,7 +512,7 @@ export class SpawnerService {
   }
 
   private buildGitWorkerDockerArgs(args: string[], gitEnv: NodeJS.ProcessEnv): string[] {
-    const image = INTERACTIVE_RUNTIME_IMAGES.gitTerminal;
+    const image = AGENT_RUNTIME_IMAGE;
 
     const dockerEnv: string[] = [
       "-e",
@@ -1254,13 +1254,13 @@ export class SpawnerService {
   }
 
   private async ensureRuntimeImage(provider: AgentProvider): Promise<void> {
-    if (this.runtimeReady.has(provider)) {
+    const definition = getProviderRuntimeDefinition(provider);
+    if (this.runtimeReady.has(definition.image)) {
       return;
     }
 
-    const definition = getProviderRuntimeDefinition(provider);
     await this.runCommand("docker", ["build", "-t", definition.image, definition.context]);
-    this.runtimeReady.add(provider);
+    this.runtimeReady.add(definition.image);
   }
 
   private async stripEphemeralWorkspaceFiles(workspacePath: string): Promise<void> {
@@ -3592,7 +3592,7 @@ export class SpawnerService {
     });
   }
 
-  async beginInteractiveTerminalSession(taskId: string, mode: TaskTerminalSessionMode = "interactive"): Promise<{ sessionId: string }> {
+  async beginInteractiveTerminalSession(taskId: string, mode: TaskTerminalSessionMode = "terminal"): Promise<{ sessionId: string }> {
     const task = await this.taskStore.getTask(taskId);
     if (!task) {
       throw new Error("Task not found.");
@@ -3607,7 +3607,7 @@ export class SpawnerService {
       throw new Error("Apply or reject the pending checkpoint before opening a terminal.");
     }
     if (await this.taskStore.getActiveInteractiveSession(taskId)) {
-      throw new Error("An interactive terminal session is already active for this task.");
+      throw new Error("A terminal session is already active for this task.");
     }
 
     const workspacePath = this.resolveWorkspacePath(taskId);
@@ -3733,7 +3733,7 @@ export class SpawnerService {
   }
 
   /**
-   * After an interactive terminal session, changes are only in the working tree.
+   * After a terminal session, changes are only in the working tree.
    * On apply, mirror {@link finalizeBuild}: strip workspace scratch paths, stage all, and commit when needed.
    */
   private async commitWorkspaceAfterCheckpointApply(
@@ -4445,9 +4445,9 @@ export class SpawnerService {
     }
 
     await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "pull");
-    await this.gitCommand(["-C", workspacePath, "rebase", remoteRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
+    await this.gitCommand(["-C", workspacePath, "rebase", remoteRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername, task).catch(
       async (error) => {
-        await this.gitCommand(["-C", workspacePath, "rebase", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
+        await this.gitCommand(["-C", workspacePath, "rebase", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername, task).catch(
           () => undefined
         );
         throw error;
@@ -4534,7 +4534,7 @@ export class SpawnerService {
 
     const { githubToken, gitUsername } = runtimeCredentials;
     const subject = await this.getCommitSubject(workspacePath, commitSha, githubToken, gitUsername).catch(() => "");
-    await this.gitCommand(["-C", workspacePath, "revert", "--no-edit", commitSha], githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "revert", "--no-edit", commitSha], githubToken, gitUsername, task);
     const revertSha = (await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername)).trim();
     const revertSubject = await this.getCommitSubject(workspacePath, revertSha, githubToken, gitUsername).catch(() => "");
     await this.appendGitActivityMessage(
@@ -4648,9 +4648,9 @@ export class SpawnerService {
           runtimeCredentials.githubToken,
           runtimeCredentials.gitUsername
         );
-        await this.gitCommand(["-C", workspacePath, "rebase", `origin/${branchName}`], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
+        await this.gitCommand(["-C", workspacePath, "rebase", `origin/${branchName}`], runtimeCredentials.githubToken, runtimeCredentials.gitUsername, task).catch(
           async (error) => {
-            await this.gitCommand(["-C", workspacePath, "rebase", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
+            await this.gitCommand(["-C", workspacePath, "rebase", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername, task).catch(
               () => undefined
             );
             throw error;
@@ -5439,28 +5439,31 @@ export class SpawnerService {
         "-e",
         `TASK_PROVIDER_STATE_PATH=${providerStateContainerPath}`,
         "-e",
-        `TASK_PROVIDER_HOME=${path.dirname(providerStateContainerPath)}`,
-        providerDefinition.image
+        `TASK_PROVIDER_HOME=${path.dirname(providerStateContainerPath)}`
       ];
 
+      const addRuntimeEnv = (name: string, value: string): void => {
+        args.push("-e", `${name}=${value}`);
+      };
       const providerRuntimeEnv = providerDefinition.getRuntimeEnv(runtimeCredentials);
       for (const [name, value] of Object.entries(providerRuntimeEnv)) {
         if (value) {
-          args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
+          addRuntimeEnv(name, value);
         }
       }
       for (const [name, value] of dockerSocketEnvEntries) {
-        args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
+        addRuntimeEnv(name, value);
       }
       for (const [name, value] of Object.entries(runtimeMcpEnv)) {
-        args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
+        addRuntimeEnv(name, value);
       }
       for (const [name, value] of taskRuntimeGitEnvEntries) {
-        args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
+        addRuntimeEnv(name, value);
       }
       for (const [name, value] of repositoryRuntimeEnv) {
-        args.splice(args.length - 1, 0, "-e", `${name}=${value}`);
+        addRuntimeEnv(name, value);
       }
+      args.push(providerDefinition.image, ...providerDefinition.command);
 
       await appendRunLog(`Spawner: launching ${task.provider} container for branch ${branchName}.`);
       emitNestedContainerSpawnedEvent({

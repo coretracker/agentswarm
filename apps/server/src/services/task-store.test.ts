@@ -247,6 +247,32 @@ describe("TaskStore pending action messages", () => {
   });
 });
 
+describe("TaskStore terminal session hydration", () => {
+  it("ignores stale persisted terminal flags when no active terminal session exists", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
+
+    await taskStore.setExecutionState(task.id, "idle", {
+      enqueued: false,
+      executionAction: null
+    });
+    await taskStore.patchTask(task.id, {
+      activeInteractiveSession: true,
+      activeTerminalSessionMode: "terminal"
+    });
+
+    const refreshed = await taskStore.getTask(task.id);
+
+    assert.equal(refreshed?.activeInteractiveSession, false);
+    assert.equal(refreshed?.activeTerminalSessionMode, null);
+    assert.equal(refreshed?.executionStatus, "idle");
+    assert.notEqual(refreshed?.executionAction, "terminal");
+  });
+});
+
 describe("TaskStore.createTask", () => {
   it("creates new build tasks in the build queue", async () => {
     const redis = new FakeRedis();

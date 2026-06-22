@@ -85,7 +85,7 @@ export type TaskWorkflowStatus = "backlog" | "ready" | "in_progress" | "review" 
 export type TaskExecutionStatus = "idle" | "queued" | "preparing" | "running" | "failed" | "cancelled";
 export type TaskReviewReason = "checkpoint" | "answer" | "manual" | "merge" | null;
 export type TaskAction = "build" | "ask";
-export type TaskExecutionAction = TaskAction | "interactive" | "terminal" | null;
+export type TaskExecutionAction = TaskAction | "terminal" | null;
 export type TaskMessageAction = TaskAction | "comment";
 export const TASK_PROMPT_ATTACHMENT_MAX_COUNT = 6;
 export const TASK_PROMPT_ATTACHMENT_MAX_SIZE_BYTES = 6 * 1024 * 1024;
@@ -139,7 +139,7 @@ export type PermissionScope =
   | "task:edit"
   | "task:build"
   | "task:ask"
-  | "task:interactive"
+  | "task:terminal"
   | "task:delete"
   | "snippet:list"
   | "snippet:create"
@@ -166,7 +166,7 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "task:edit",
   "task:build",
   "task:ask",
-  "task:interactive",
+  "task:terminal",
   "task:delete",
   "snippet:list",
   "snippet:create",
@@ -187,13 +187,22 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "user:delete"
 ];
 
+export const LEGACY_PERMISSION_SCOPE_ALIASES: Record<string, PermissionScope> = {
+  "task:interactive": "task:terminal"
+};
+
+export const normalizePermissionScope = (scope: string): PermissionScope | null => {
+  const normalized = LEGACY_PERMISSION_SCOPE_ALIASES[scope.trim()] ?? scope.trim();
+  return ALL_PERMISSION_SCOPES.includes(normalized as PermissionScope) ? (normalized as PermissionScope) : null;
+};
+
 export interface PermissionScopeGroup {
   label: string;
   scopes: PermissionScope[];
 }
 
 export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
-  { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:interactive", "task:delete"] },
+  { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:terminal", "task:delete"] },
   { label: "Snippets", scopes: ["snippet:list", "snippet:create", "snippet:read", "snippet:edit", "snippet:delete"] },
   { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
   { label: "Settings", scopes: ["settings:read", "settings:edit"] },
@@ -465,7 +474,7 @@ export interface Repository {
   updatedAt: string;
 }
 
-export type TaskTerminalSessionMode = "interactive" | "git";
+export type TaskTerminalSessionMode = "terminal";
 export type CodexCredentialSource = "auto" | "profile" | "global";
 
 export interface TaskLinkedWorkspace {
@@ -673,7 +682,7 @@ export interface TaskMessage {
   queueSource?: "user" | "github" | null;
   /** Optional saved image attachments that were attached when the user submitted this message. */
   attachments?: TaskPromptAttachment[];
-  /** Present for interactive terminal lifecycle messages so history can address the terminal session. */
+  /** Present for terminal lifecycle messages so history can address the terminal session. */
   sessionId?: string | null;
   createdAt: string;
 }
@@ -1202,15 +1211,19 @@ export const getTaskExecutionAction = (
   task: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode"> & { executionAction?: TaskExecutionAction }
 ): TaskExecutionAction => {
   if (task.activeInteractiveSession === true) {
-    return task.activeTerminalSessionMode === "git" ? "terminal" : "interactive";
+    return "terminal";
   }
 
   if (task.status === "draft") {
     return null;
   }
 
-  if (task.executionAction === "build" || task.executionAction === "ask" || task.executionAction === "interactive" || task.executionAction === "terminal") {
-    return task.executionAction;
+  const executionAction = task.executionAction as string | null | undefined;
+  if (executionAction === "build" || executionAction === "ask" || executionAction === "terminal") {
+    return executionAction;
+  }
+  if (executionAction === "interactive") {
+    return "terminal";
   }
 
   if (task.status === "build_queued" || task.status === "preparing_workspace" || task.status === "building") {
@@ -1260,14 +1273,14 @@ export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingChe
   return "ready";
 };
 
-export const getTaskTerminalSessionLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Terminal" : "Interactive Terminal";
+export const getTaskTerminalSessionLabel = (_mode: TaskTerminalSessionMode): string =>
+  "Terminal";
 
-export const getTaskTerminalSessionSentenceLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Terminal" : "Interactive terminal";
+export const getTaskTerminalSessionSentenceLabel = (_mode: TaskTerminalSessionMode): string =>
+  "Terminal";
 
 export const getTaskTerminalSessionStartMessage = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Terminal session started." : `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
+  `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
 
 export const getTaskTerminalSessionEndMessage = (mode: TaskTerminalSessionMode): string =>
   `${getTaskTerminalSessionSentenceLabel(mode)} session ended.`;

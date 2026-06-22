@@ -1,6 +1,6 @@
 import type { GitCommitIdentity } from "./task-git-identity.js";
 
-export function buildInteractiveWorkspaceGitEnvEntries(
+export function buildWorkspaceGitEnvEntries(
   workspacePath: string,
   configEntries: Array<[string, string]> = []
 ): Array<[string, string]> {
@@ -24,7 +24,7 @@ export function buildTaskRuntimeGitEnvEntries(options: {
   const identityEmail = options.gitIdentity?.email.trim() ?? "";
   const envEntries: Array<[string, string]> = [
     ["GIT_OPTIONAL_LOCKS", "0"],
-    ...buildInteractiveWorkspaceGitEnvEntries(
+    ...buildWorkspaceGitEnvEntries(
       options.workspacePath,
       identityName && identityEmail
         ? [
@@ -45,14 +45,16 @@ export function buildTaskRuntimeGitEnvEntries(options: {
   }
 
   if (options.githubToken?.trim()) {
-    envEntries.push(["GIT_TOKEN", options.githubToken.trim()]);
+    const githubToken = options.githubToken.trim();
+    envEntries.push(["GIT_TOKEN", githubToken]);
+    envEntries.push(["GH_TOKEN", githubToken]);
     envEntries.push(["GIT_USERNAME", options.gitUsername?.trim() || "x-access-token"]);
   }
 
   return envEntries;
 }
 
-export function buildGitTerminalEnvEntries(options: {
+export function buildTerminalEnvEntries(options: {
   workspacePath: string;
   githubToken?: string | null;
   gitUsername?: string | null;
@@ -66,7 +68,7 @@ export function buildGitTerminalEnvEntries(options: {
   ];
 }
 
-export function buildGitTerminalDockerEnvEntries(options: {
+export function buildTerminalDockerEnvEntries(options: {
   runtimeEnvEntries: Array<[string, string]>;
   repositoryEnvEntries?: Array<[string, string]> | null;
 }): Array<[string, string]> {

@@ -5,6 +5,8 @@ import {
   claudeThinkingBudgetTokensForProfile,
   codexReasoningEffortForProfile
 } from "./provider-config.js";
+import { AGENT_RUNTIME_IMAGE } from "../config/env.js";
+import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
 
 describe("codexReasoningEffortForProfile", () => {
   it("maps max to high for Codex", () => {
@@ -32,5 +34,19 @@ describe("claudeThinkingBudgetTokensForProfile", () => {
     assert.equal(claudeThinkingBudgetTokensForProfile("medium"), 4096);
     assert.equal(claudeThinkingBudgetTokensForProfile("high"), 16384);
     assert.equal(claudeThinkingBudgetTokensForProfile("max"), undefined);
+  });
+});
+
+describe("provider runtime definitions", () => {
+  it("use the unified toolbox image with provider-specific runner commands", () => {
+    const codex = getProviderRuntimeDefinition("codex");
+    const claude = getProviderRuntimeDefinition("claude");
+
+    assert.equal(codex.image, AGENT_RUNTIME_IMAGE);
+    assert.equal(claude.image, AGENT_RUNTIME_IMAGE);
+    assert.equal(codex.context.endsWith("/agent-runtime"), true);
+    assert.equal(claude.context, codex.context);
+    assert.deepEqual(codex.command, ["node", "/usr/local/bin/run-task-codex.mjs"]);
+    assert.deepEqual(claude.command, ["node", "/usr/local/bin/run-task-claude.mjs"]);
   });
 });
