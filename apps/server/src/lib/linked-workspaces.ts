@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import type { TaskLinkedWorkspace } from "@agentswarm/shared-types";
 import { env } from "../config/env.js";
+import { buildDockerWorkspaceMountArgs } from "./docker-workspace-mounts.js";
 import { resolveGitPaths } from "./git-paths.js";
 
 export const LINKED_WORKSPACE_DIRNAME = ".linked-workspace";
@@ -73,9 +74,15 @@ export async function buildLinkedWorkspaceMountPlan(options: {
     }
 
     await mkdir(path.join(mountRoot, link.alias), { recursive: true });
-    const sourceOnHost = path.join(taskWorkspaceHostRoot, link.taskId);
     const targetInContainer = path.posix.join(options.containerWorkspacePath, LINKED_WORKSPACE_DIRNAME, link.alias);
-    mountArgs.push("-v", `${sourceOnHost}:${targetInContainer}:ro`);
+    mountArgs.push(
+      ...buildDockerWorkspaceMountArgs({
+        sourceRoot: taskWorkspaceHostRoot,
+        sourceRelativePath: link.taskId,
+        targetPath: targetInContainer,
+        mode: "ro"
+      })
+    );
     mounted.push(link);
   }
 
