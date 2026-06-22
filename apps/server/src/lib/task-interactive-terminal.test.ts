@@ -29,7 +29,11 @@ describe("buildGitTerminalStartScript", () => {
 
     assert.match(dockerfile, /FROM node:20-bookworm/);
     assert.match(dockerfile, /\bgh\b/);
-    assert.match(dockerfile, /\bdocker\.io\b/);
+    assert.match(dockerfile, /https:\/\/download\.docker\.com\/linux\/debian/);
+    assert.match(dockerfile, /\bdocker-ce-cli\b/);
+    assert.match(dockerfile, /\bdocker-buildx-plugin\b/);
+    assert.match(dockerfile, /\bdocker-compose-plugin\b/);
+    assert.doesNotMatch(dockerfile, /\bdocker\.io\b/);
     assert.match(dockerfile, /COPY run-task-codex\.mjs/);
     assert.match(dockerfile, /COPY run-task-claude\.mjs/);
   });
