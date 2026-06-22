@@ -4445,9 +4445,9 @@ export class SpawnerService {
     }
 
     await this.refreshWorkspaceRemoteState(task, workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername, "pull");
-    await this.gitCommand(["-C", workspacePath, "rebase", remoteRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
+    await this.gitCommand(["-C", workspacePath, "rebase", remoteRef], runtimeCredentials.githubToken, runtimeCredentials.gitUsername, task).catch(
       async (error) => {
-        await this.gitCommand(["-C", workspacePath, "rebase", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
+        await this.gitCommand(["-C", workspacePath, "rebase", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername, task).catch(
           () => undefined
         );
         throw error;
@@ -4534,7 +4534,7 @@ export class SpawnerService {
 
     const { githubToken, gitUsername } = runtimeCredentials;
     const subject = await this.getCommitSubject(workspacePath, commitSha, githubToken, gitUsername).catch(() => "");
-    await this.gitCommand(["-C", workspacePath, "revert", "--no-edit", commitSha], githubToken, gitUsername);
+    await this.gitCommand(["-C", workspacePath, "revert", "--no-edit", commitSha], githubToken, gitUsername, task);
     const revertSha = (await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername)).trim();
     const revertSubject = await this.getCommitSubject(workspacePath, revertSha, githubToken, gitUsername).catch(() => "");
     await this.appendGitActivityMessage(
@@ -4648,9 +4648,9 @@ export class SpawnerService {
           runtimeCredentials.githubToken,
           runtimeCredentials.gitUsername
         );
-        await this.gitCommand(["-C", workspacePath, "rebase", `origin/${branchName}`], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
+        await this.gitCommand(["-C", workspacePath, "rebase", `origin/${branchName}`], runtimeCredentials.githubToken, runtimeCredentials.gitUsername, task).catch(
           async (error) => {
-            await this.gitCommand(["-C", workspacePath, "rebase", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername).catch(
+            await this.gitCommand(["-C", workspacePath, "rebase", "--abort"], runtimeCredentials.githubToken, runtimeCredentials.gitUsername, task).catch(
               () => undefined
             );
             throw error;
