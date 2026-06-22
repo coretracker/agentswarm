@@ -1,4 +1,4 @@
-export function buildGitTerminalStartScript(): string {
+export function buildTerminalStartScript(): string {
   return [
     'cd "$TASK_INTERACTIVE_WORKSPACE"',
     'printf "\\033[90mTerminal ready in %s. Full toolbox shell available.\\033[0m\\n" "$PWD"',

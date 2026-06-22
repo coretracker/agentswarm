@@ -58,16 +58,16 @@ export type TaskHistoryEntry =
   | GroupedAutoRunHistoryEntry
   | GroupedTerminalHistoryEntry;
 
-export const INTERACTIVE_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("interactive");
+export const INTERACTIVE_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("terminal");
 const LEGACY_INTERACTIVE_TERMINAL_START_MESSAGE = "Interactive terminal session started.";
-export const INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("interactive");
-export const INTERACTIVE_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("interactive").replace(/\.$/, "");
+export const INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("terminal");
+export const INTERACTIVE_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("terminal").replace(/\.$/, "");
 const LEGACY_INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE = "Interactive terminal session ended. Review proposed changes below.";
 const LEGACY_INTERACTIVE_TERMINAL_END_PREFIX = "Interactive terminal session ended";
-export const GIT_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("git");
+export const GIT_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("terminal");
 export const LEGACY_GIT_TERMINAL_START_MESSAGE = "Git terminal session started.";
-export const GIT_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("git");
-export const GIT_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("git").replace(/\.$/, "");
+export const GIT_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("terminal");
+export const GIT_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("terminal").replace(/\.$/, "");
 
 type AutoRunAction = Extract<TaskAction, "ask" | "build">;
 
@@ -91,7 +91,7 @@ function isAssistantSummaryMessage(message: TaskMessage): message is TaskMessage
   return message.role === "assistant" && (message.action === "ask" || message.action === "build");
 }
 
-function isInteractiveTerminalStartMessage(message: TaskMessage): boolean {
+function isTerminalStartMessage(message: TaskMessage): boolean {
   return (
     message.role === "system" &&
     (
@@ -103,7 +103,7 @@ function isInteractiveTerminalStartMessage(message: TaskMessage): boolean {
   );
 }
 
-function isInteractiveTerminalEndMessage(message: TaskMessage): boolean {
+function isTerminalEndMessage(message: TaskMessage): boolean {
   return (
     message.role === "system" &&
     (
@@ -227,8 +227,8 @@ export function buildTaskHistoryEntries(input: {
     });
   }
 
-  const terminalStartMessages = sortedMessages.filter(isInteractiveTerminalStartMessage);
-  const terminalEndMessages = sortedMessages.filter(isInteractiveTerminalEndMessage);
+  const terminalStartMessages = sortedMessages.filter(isTerminalStartMessage);
+  const terminalEndMessages = sortedMessages.filter(isTerminalEndMessage);
   const interactiveProposals = sortedProposals.filter((proposal) => proposal.sourceType === "interactive_session");
   const lastTerminalStartMessageId = terminalStartMessages.at(-1)?.id ?? null;
   const interactiveProposalsBySessionId = new Map<string, TaskChangeProposal>();

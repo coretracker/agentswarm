@@ -25,7 +25,7 @@ function detectScopeForPath(filePath: string): string {
   if (/^apps\/web\//.test(normalized)) return "web";
   if (/^packages\/shared-types\//.test(normalized)) return "shared-types";
   if (/^agent-runtime\//.test(normalized)) return "runtime";
-  if (/^tools\/codex-web-terminal\//.test(normalized)) return "interactive";
+  if (/^tools\/codex-web-terminal\//.test(normalized)) return "terminal";
   if (/^deploy\//.test(normalized) || /^docker-compose\.ya?ml$/i.test(normalized)) return "infra";
 
   return "repo";

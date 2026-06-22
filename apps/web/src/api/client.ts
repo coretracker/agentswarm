@@ -256,12 +256,12 @@ export const api = {
       params.set("mode", options.mode);
     }
     const query = params.toString();
-    return request<TaskInteractiveTerminalStatus>(`/tasks/${id}/interactive-terminal/status${query ? `?${query}` : ""}`);
+    return request<TaskInteractiveTerminalStatus>(`/tasks/${id}/terminal/status${query ? `?${query}` : ""}`);
   },
   getTaskInteractiveTerminalTranscript: (taskId: string, sessionId: string) =>
-    request<TaskInteractiveTerminalTranscript>(`/tasks/${taskId}/interactive-terminal/sessions/${encodeURIComponent(sessionId)}/transcript`),
+    request<TaskInteractiveTerminalTranscript>(`/tasks/${taskId}/terminal/sessions/${encodeURIComponent(sessionId)}/transcript`),
   killTaskInteractiveTerminal: (id: string) =>
-    request<Task>(`/tasks/${id}/interactive-terminal/kill`, {
+    request<Task>(`/tasks/${id}/terminal/kill`, {
       method: "POST"
     }),
   resetTaskSession: (id: string) =>

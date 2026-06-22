@@ -5,18 +5,18 @@ import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { buildGitTerminalDockerEnvEntries, buildGitTerminalEnvEntries, buildTaskRuntimeGitEnvEntries } from "./task-interactive-terminal-git-env.js";
-import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
+import { buildTerminalDockerEnvEntries, buildTerminalEnvEntries, buildTaskRuntimeGitEnvEntries } from "./task-interactive-terminal-git-env.js";
+import { buildTerminalStartScript } from "./task-interactive-terminal-start-script.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
 const runtimeDockerfilePath = path.join(repoRoot, "agent-runtime/Dockerfile");
 
-describe("buildGitTerminalStartScript", () => {
+describe("buildTerminalStartScript", () => {
   it("generates shell syntax that parses under sh", () => {
-    const script = buildGitTerminalStartScript();
+    const script = buildTerminalStartScript();
     const result = spawnSync("sh", ["-n", "-c", script], { encoding: "utf8" });
 
-    assert.equal(result.status, 0, result.stderr || "expected sh -n to accept git terminal start script");
+    assert.equal(result.status, 0, result.stderr || "expected sh -n to accept terminal start script");
     assert.match(script, /\n\s+printf '%s\\n'/);
     assert.doesNotMatch(script, /then;\s/);
     assert.match(script, /Full toolbox shell available/);
@@ -39,7 +39,7 @@ describe("buildGitTerminalStartScript", () => {
   });
 });
 
-describe("buildGitTerminalEnvEntries", () => {
+describe("buildTerminalEnvEntries", () => {
   it("builds Git runtime env entries for automated task containers", () => {
     const env = Object.fromEntries(
       buildTaskRuntimeGitEnvEntries({
@@ -72,7 +72,7 @@ describe("buildGitTerminalEnvEntries", () => {
 
   it("injects git identity as transient config for interactive commits", () => {
     const env = Object.fromEntries(
-      buildGitTerminalEnvEntries({
+      buildTerminalEnvEntries({
         workspacePath: "/workspace",
         gitIdentity: {
           name: "Ada Lovelace",
@@ -96,7 +96,7 @@ describe("buildGitTerminalEnvEntries", () => {
 
   it("keeps token auth and safe.directory when identity is unavailable", () => {
     const env = Object.fromEntries(
-      buildGitTerminalEnvEntries({
+      buildTerminalEnvEntries({
         workspacePath: "/workspace",
         githubToken: "secret-token",
         gitUsername: "octocat"
@@ -116,9 +116,9 @@ describe("buildGitTerminalEnvEntries", () => {
   });
 });
 
-describe("buildGitTerminalDockerEnvEntries", () => {
-  it("appends repository runtime env entries to git terminal runtime env entries", () => {
-    const envEntries = buildGitTerminalDockerEnvEntries({
+describe("buildTerminalDockerEnvEntries", () => {
+  it("appends repository runtime env entries to terminal runtime env entries", () => {
+    const envEntries = buildTerminalDockerEnvEntries({
       runtimeEnvEntries: [
         ["TERM", "xterm-256color"],
         ["TASK_INTERACTIVE_WORKSPACE", "/workspace"]

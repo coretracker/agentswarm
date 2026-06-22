@@ -571,7 +571,7 @@ export const registerTaskRoutes = (
   );
 
   app.get<{ Params: { id: string }; Querystring: { mode?: string } }>(
-    "/tasks/:id/interactive-terminal/status",
+    "/tasks/:id/terminal/status",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
     async (request, reply) => {
       if (!requireInteractiveTerminalAccess(request, reply)) {
@@ -583,7 +583,7 @@ export const registerTaskRoutes = (
         return;
       }
 
-      const terminalMode: TaskTerminalSessionMode = request.query.mode === "git" ? "git" : "interactive";
+      const terminalMode: TaskTerminalSessionMode = "terminal";
       const status = await getTaskInteractiveTerminalStatus(
         deps.taskStore,
         deps.settingsStore,
@@ -596,7 +596,7 @@ export const registerTaskRoutes = (
   );
 
   app.post<{ Params: { id: string } }>(
-    "/tasks/:id/interactive-terminal/kill",
+    "/tasks/:id/terminal/kill",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
     async (request, reply) => {
       if (!requireInteractiveTerminalAccess(request, reply)) {
@@ -636,7 +636,7 @@ export const registerTaskRoutes = (
   );
 
   app.get<{ Params: { id: string; sessionId: string } }>(
-    "/tasks/:id/interactive-terminal/sessions/:sessionId/transcript",
+    "/tasks/:id/terminal/sessions/:sessionId/transcript",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
     async (request, reply) => {
       const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);

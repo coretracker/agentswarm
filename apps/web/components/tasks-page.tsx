@@ -21,7 +21,7 @@ import { useAuth } from "./auth-provider";
 
 function getWorkingIndicatorLabel(task: Task): string {
   if (task.activeInteractiveSession) {
-    return `${getTaskTerminalSessionLabel(task.activeTerminalSessionMode === "git" ? "git" : "interactive")} is running`;
+    return `${getTaskTerminalSessionLabel("terminal")} is running`;
   }
 
   return task.executionStatus !== "idle" ? getTaskExecutionStatusLabel(task.executionStatus) : `${getTaskTypeLabel(task.taskType)} task is working`;

@@ -43,7 +43,7 @@ function isLiveTask(task: Task): boolean {
 
 function getTaskStatusText(task: Task): string {
   if (task.activeInteractiveSession) {
-    return `${getTaskTerminalSessionLabel(task.activeTerminalSessionMode === "git" ? "git" : "interactive")} Running`;
+    return `${getTaskTerminalSessionLabel("terminal")} Running`;
   }
 
   return getTaskExecutionStatusLabel(task.executionStatus);

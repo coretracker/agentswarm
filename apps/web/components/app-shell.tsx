@@ -41,7 +41,7 @@ import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
   isPublicPathname,
-  isTaskInteractiveFullscreenPath,
+  isTaskTerminalFullscreenPath,
   navigationRoutes,
   resolveDefaultPath
 } from "../src/auth/access";
@@ -422,7 +422,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   };
 
-  if (isTaskInteractiveFullscreenPath(pathname)) {
+  if (isTaskTerminalFullscreenPath(pathname)) {
     return (
       <App>
         {hasRouteAccess ? (

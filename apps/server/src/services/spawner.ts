@@ -3592,7 +3592,7 @@ export class SpawnerService {
     });
   }
 
-  async beginInteractiveTerminalSession(taskId: string, mode: TaskTerminalSessionMode = "interactive"): Promise<{ sessionId: string }> {
+  async beginInteractiveTerminalSession(taskId: string, mode: TaskTerminalSessionMode = "terminal"): Promise<{ sessionId: string }> {
     const task = await this.taskStore.getTask(taskId);
     if (!task) {
       throw new Error("Task not found.");
@@ -3607,7 +3607,7 @@ export class SpawnerService {
       throw new Error("Apply or reject the pending checkpoint before opening a terminal.");
     }
     if (await this.taskStore.getActiveInteractiveSession(taskId)) {
-      throw new Error("An interactive terminal session is already active for this task.");
+      throw new Error("A terminal session is already active for this task.");
     }
 
     const workspacePath = this.resolveWorkspacePath(taskId);
@@ -3733,7 +3733,7 @@ export class SpawnerService {
   }
 
   /**
-   * After an interactive terminal session, changes are only in the working tree.
+   * After a terminal session, changes are only in the working tree.
    * On apply, mirror {@link finalizeBuild}: strip workspace scratch paths, stage all, and commit when needed.
    */
   private async commitWorkspaceAfterCheckpointApply(

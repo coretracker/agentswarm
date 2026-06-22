@@ -474,7 +474,7 @@ export interface Repository {
   updatedAt: string;
 }
 
-export type TaskTerminalSessionMode = "interactive" | "git";
+export type TaskTerminalSessionMode = "terminal";
 export type CodexCredentialSource = "auto" | "profile" | "global";
 
 export interface TaskLinkedWorkspace {
@@ -682,7 +682,7 @@ export interface TaskMessage {
   queueSource?: "user" | "github" | null;
   /** Optional saved image attachments that were attached when the user submitted this message. */
   attachments?: TaskPromptAttachment[];
-  /** Present for interactive terminal lifecycle messages so history can address the terminal session. */
+  /** Present for terminal lifecycle messages so history can address the terminal session. */
   sessionId?: string | null;
   createdAt: string;
 }
