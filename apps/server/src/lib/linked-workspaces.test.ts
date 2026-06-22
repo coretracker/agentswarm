@@ -18,7 +18,7 @@ describe("linked workspaces", () => {
 
   it("builds read-only mount args for existing linked task workspaces", async () => {
     const taskWorkspaceRoot = path.join(root, "server");
-    const taskWorkspaceHostRoot = path.join(root, "host");
+    const taskWorkspaceDockerSource = path.join(root, "host");
     const rootWorkspacePath = path.join(taskWorkspaceRoot, "root-task");
     await mkdir(rootWorkspacePath, { recursive: true });
     await mkdir(path.join(rootWorkspacePath, ".git", "info"), { recursive: true });
@@ -28,7 +28,7 @@ describe("linked workspaces", () => {
       rootWorkspacePath,
       containerWorkspacePath: "/workspace",
       taskWorkspaceRoot,
-      taskWorkspaceHostRoot,
+      taskWorkspaceDockerSource,
       linkedWorkspaces: [
         {
           taskId: "linked-task",
@@ -41,7 +41,7 @@ describe("linked workspaces", () => {
       ]
     });
 
-    assert.deepEqual(plan.mountArgs, ["-v", `${path.join(taskWorkspaceHostRoot, "linked-task")}:/workspace/.linked-workspace/linked-task:ro`]);
+    assert.deepEqual(plan.mountArgs, ["-v", `${path.join(taskWorkspaceDockerSource, "linked-task")}:/workspace/.linked-workspace/linked-task:ro`]);
     assert.equal(plan.mounted.length, 1);
     assert.equal(plan.skipped.length, 0);
     assert.match(await readFile(path.join(rootWorkspacePath, ".git", "info", "exclude"), "utf8"), /^\.linked-workspace\/$/m);
@@ -57,7 +57,7 @@ describe("linked workspaces", () => {
       rootWorkspacePath,
       containerWorkspacePath: "/workspace",
       taskWorkspaceRoot,
-      taskWorkspaceHostRoot: "agentswarm_task_workspaces",
+      taskWorkspaceDockerSource: "agentswarm_task_workspaces",
       linkedWorkspaces: [
         {
           taskId: "linked-task",
@@ -85,7 +85,7 @@ describe("linked workspaces", () => {
       rootWorkspacePath,
       containerWorkspacePath: "/workspace",
       taskWorkspaceRoot,
-      taskWorkspaceHostRoot: path.join(root, "host-skip"),
+      taskWorkspaceDockerSource: path.join(root, "host-skip"),
       linkedWorkspaces: [
         {
           taskId: "missing-task",

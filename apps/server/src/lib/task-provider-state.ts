@@ -58,11 +58,11 @@ export function resolveTaskProviderStatePaths(taskId: string, provider: AgentPro
 
   return {
     serverPath: path.join(env.TASK_WORKSPACE_ROOT, relativePath),
-    hostPath: path.join(env.TASK_WORKSPACE_HOST_ROOT, relativePath),
+    hostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, relativePath),
     legacyServerPath: path.join(env.TASK_WORKSPACE_ROOT, legacyRelativePath),
-    legacyHostPath: path.join(env.TASK_WORKSPACE_HOST_ROOT, legacyRelativePath),
+    legacyHostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, legacyRelativePath),
     configServerPath: hasSidecarConfig ? path.join(env.TASK_WORKSPACE_ROOT, stateRootRelativePath, ".claude.json") : null,
-    configHostPath: hasSidecarConfig ? path.join(env.TASK_WORKSPACE_HOST_ROOT, stateRootRelativePath, ".claude.json") : null
+    configHostPath: hasSidecarConfig ? path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, stateRootRelativePath, ".claude.json") : null
   };
 }
 
@@ -71,7 +71,7 @@ export function resolveTaskStateRootPaths(taskId: string): { serverPath: string;
   const relativePath = path.join(TASK_PROVIDER_STATE_ROOT, taskSegment);
   return {
     serverPath: path.join(env.TASK_WORKSPACE_ROOT, relativePath),
-    hostPath: path.join(env.TASK_WORKSPACE_HOST_ROOT, relativePath)
+    hostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, relativePath)
   };
 }
 

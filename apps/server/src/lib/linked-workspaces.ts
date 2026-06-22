@@ -40,7 +40,7 @@ export async function buildLinkedWorkspaceMountPlan(options: {
   containerWorkspacePath: string;
   linkedWorkspaces?: TaskLinkedWorkspace[];
   taskWorkspaceRoot?: string;
-  taskWorkspaceHostRoot?: string;
+  taskWorkspaceDockerSource?: string;
 }): Promise<LinkedWorkspaceMountPlan> {
   const linkedWorkspaces = options.linkedWorkspaces ?? [];
   if (linkedWorkspaces.length === 0) {
@@ -64,7 +64,7 @@ export async function buildLinkedWorkspaceMountPlan(options: {
     seenAliases.add(link.alias);
 
     const taskWorkspaceRoot = options.taskWorkspaceRoot ?? env.TASK_WORKSPACE_ROOT;
-    const taskWorkspaceHostRoot = options.taskWorkspaceHostRoot ?? env.TASK_WORKSPACE_HOST_ROOT;
+    const taskWorkspaceDockerSource = options.taskWorkspaceDockerSource ?? env.TASK_WORKSPACE_DOCKER_SOURCE;
     const sourceOnServer = path.join(taskWorkspaceRoot, link.taskId);
     try {
       await access(sourceOnServer, constants.R_OK | constants.X_OK);
@@ -77,7 +77,7 @@ export async function buildLinkedWorkspaceMountPlan(options: {
     const targetInContainer = path.posix.join(options.containerWorkspacePath, LINKED_WORKSPACE_DIRNAME, link.alias);
     mountArgs.push(
       ...buildDockerWorkspaceMountArgs({
-        sourceRoot: taskWorkspaceHostRoot,
+        sourceRoot: taskWorkspaceDockerSource,
         sourceRelativePath: link.taskId,
         targetPath: targetInContainer,
         mode: "ro"
