@@ -38,6 +38,7 @@ import {
 import { buildDockerWorkspaceMountArgs } from "./docker-workspace-mounts.js";
 import type { UserStore } from "../services/user-store.js";
 import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js";
+import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/terminal$/;
 const INTERACTIVE_WORKSPACE_PATH = "/workspace";
@@ -76,15 +77,33 @@ function resolveGitTerminalRuntimeConfig(
       ok: false;
       reason: string;
     } {
+  const envEntries = buildTerminalEnvEntries({
+    workspacePath: INTERACTIVE_WORKSPACE_PATH,
+    githubToken: credentials.githubToken,
+    gitUsername: credentials.gitUsername,
+    gitIdentity
+  });
+  const addCredentialEnv = (name: string, value: string | null | undefined): void => {
+    const normalized = value?.trim();
+    if (normalized) {
+      envEntries.push([name, normalized]);
+    }
+  };
+
+  addCredentialEnv("OPENAI_API_KEY", credentials.openaiApiKey);
+  addCredentialEnv("OPENAI_BASE_URL", credentials.openaiBaseUrl);
+  addCredentialEnv(
+    "CODEX_AUTH_JSON_B64",
+    credentials.codexAuthJson?.trim()
+      ? Buffer.from(credentials.codexAuthJson.trim(), "utf8").toString("base64")
+      : null
+  );
+  addCredentialEnv("ANTHROPIC_API_KEY", credentials.anthropicApiKey);
+
   return {
     ok: true,
     image: AGENT_RUNTIME_IMAGE,
-    envEntries: buildTerminalEnvEntries({
-      workspacePath: INTERACTIVE_WORKSPACE_PATH,
-      githubToken: credentials.githubToken,
-      gitUsername: credentials.gitUsername,
-      gitIdentity
-    }),
+    envEntries,
     startScript: buildTerminalStartScript()
   };
 }
@@ -266,7 +285,7 @@ export async function getTaskInteractiveTerminalStatus(
     return { available: false, reason: "No workspace folder on disk for this task yet." };
   }
 
-  const credentials = await settingsStore.getRuntimeCredentials(userId);
+  const credentials = await settingsStore.getRuntimeCredentials(userId, task.codexCredentialSource ?? "auto");
   const runtime = resolveGitTerminalRuntimeConfig(credentials);
   if (!runtime.ok) {
     return { available: false, reason: runtime.reason };
@@ -395,12 +414,20 @@ async function initializeTaskInteractiveTerminalWebSocket(
       containerWorkspacePath: INTERACTIVE_WORKSPACE_PATH,
       linkedWorkspaces: task.linkedWorkspaces
     });
-    const [credentials, gitIdentity, repositoryRuntimeEnvEntries] = await Promise.all([
-      deps.settingsStore.getRuntimeCredentials(userId),
+    const [
+      credentials,
+      gitIdentity,
+      repositoryRuntimeEnvEntries,
+      codexProviderStatePaths,
+      claudeProviderStatePaths
+    ] = await Promise.all([
+      deps.settingsStore.getRuntimeCredentials(userId, task.codexCredentialSource ?? "auto"),
       resolveTaskGitCommitIdentity(task, deps.userStore, {
         ...DEFAULT_GIT_COMMIT_IDENTITY
       }),
-      deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
+      deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId),
+      ensureTaskProviderStatePaths(task.id, "codex"),
+      ensureTaskProviderStatePaths(task.id, "claude")
     ]);
     const runtime = resolveGitTerminalRuntimeConfig(credentials, gitIdentity);
     if (!runtime.ok) {
@@ -436,6 +463,16 @@ async function initializeTaskInteractiveTerminalWebSocket(
       ...buildTaskWorkspaceMountArgs(taskId, INTERACTIVE_WORKSPACE_PATH, "rw"),
       ...linkedWorkspaceMountPlan.mountArgs,
       ...gitRuntimeMounts,
+      ...buildTaskWorkspaceMountArgs(
+        path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, codexProviderStatePaths.hostPath),
+        "/root/.codex",
+        "rw"
+      ),
+      ...buildTaskWorkspaceMountArgs(
+        path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, claudeProviderStatePaths.hostPath),
+        "/root/.claude",
+        "rw"
+      ),
       ...dockerEnv,
       runtime.image,
       "sh",

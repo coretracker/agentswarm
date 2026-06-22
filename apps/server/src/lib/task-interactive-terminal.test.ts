@@ -20,6 +20,10 @@ describe("buildTerminalStartScript", () => {
     assert.match(script, /\n\s+printf '%s\\n'/);
     assert.doesNotMatch(script, /then;\s/);
     assert.match(script, /Full toolbox shell available/);
+    assert.match(script, /mkdir -p "\$HOME\/\.codex" "\$HOME\/\.claude"/);
+    assert.match(script, /CODEX_AUTH_JSON_B64/);
+    assert.match(script, /base64 -d > "\$HOME\/\.codex\/auth\.json"/);
+    assert.match(script, /chmod 600 "\$HOME\/\.codex\/auth\.json"/);
     assert.match(script, /exec bash -l/);
     assert.match(script, /exec sh -l$/);
   });

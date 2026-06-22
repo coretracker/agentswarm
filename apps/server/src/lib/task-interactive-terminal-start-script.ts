@@ -3,6 +3,13 @@ export function buildTerminalStartScript(): string {
     'cd "$TASK_INTERACTIVE_WORKSPACE"',
     'printf "\\033[90mTerminal ready in %s. Full toolbox shell available.\\033[0m\\n" "$PWD"',
     [
+      'mkdir -p "$HOME/.codex" "$HOME/.claude"',
+      'if [ -n "${CODEX_AUTH_JSON_B64:-}" ]; then',
+      '  printf "%s" "$CODEX_AUTH_JSON_B64" | base64 -d > "$HOME/.codex/auth.json"',
+      '  chmod 600 "$HOME/.codex/auth.json"',
+      "fi"
+    ].join("\n"),
+    [
       'if [ -n "${GIT_TOKEN:-}" ]; then',
       "  printf '%s\\n' '#!/bin/sh' 'case \"$1\" in' '  *sername*) echo \"${GIT_USERNAME:-x-access-token}\" ;;' '  *assword*) echo \"${GIT_TOKEN:-}\" ;;' '  *) echo \"\" ;;' 'esac' > /tmp/agentswarm-git-askpass.sh",
       "  chmod 700 /tmp/agentswarm-git-askpass.sh",
