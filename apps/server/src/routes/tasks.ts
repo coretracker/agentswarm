@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   getCheckpointMutationBlockedReason,
+  getTaskTerminalSessionLabel,
   isActiveTaskStatus,
   isQueuedTaskStatus,
   TASK_PROMPT_ATTACHMENT_MAX_COUNT,
@@ -620,12 +621,13 @@ export const registerTaskRoutes = (
       if (!killedLiveSession) {
         await deps.spawner.endInteractiveTerminalSession(task.id, activeSession.sessionId);
       }
+      const activeSessionLabel = getTaskTerminalSessionLabel(activeSession.mode);
 
       await deps.taskStore.appendLog(
         task.id,
         killedLiveSession
-          ? `${activeSession.mode === "git" ? "Git" : "Interactive"} terminal session terminated by user via kill switch.`
-          : `${activeSession.mode === "git" ? "Git" : "Interactive"} terminal kill requested after the live terminal process was already unreachable; cleaned up the session from server state.`
+          ? `${activeSessionLabel} session terminated by user via kill switch.`
+          : `${activeSessionLabel} kill requested after the live terminal process was already unreachable; cleaned up the session from server state.`
       );
 
       const refreshed = await deps.taskStore.getTask(task.id);

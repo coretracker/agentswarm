@@ -85,7 +85,7 @@ export type TaskWorkflowStatus = "backlog" | "ready" | "in_progress" | "review" 
 export type TaskExecutionStatus = "idle" | "queued" | "preparing" | "running" | "failed" | "cancelled";
 export type TaskReviewReason = "checkpoint" | "answer" | "manual" | "merge" | null;
 export type TaskAction = "build" | "ask";
-export type TaskExecutionAction = TaskAction | "interactive" | "terminal" | null;
+export type TaskExecutionAction = TaskAction | "terminal" | null;
 export type TaskMessageAction = TaskAction | "comment";
 export const TASK_PROMPT_ATTACHMENT_MAX_COUNT = 6;
 export const TASK_PROMPT_ATTACHMENT_MAX_SIZE_BYTES = 6 * 1024 * 1024;
@@ -1202,15 +1202,19 @@ export const getTaskExecutionAction = (
   task: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode"> & { executionAction?: TaskExecutionAction }
 ): TaskExecutionAction => {
   if (task.activeInteractiveSession === true) {
-    return task.activeTerminalSessionMode === "git" ? "terminal" : "interactive";
+    return "terminal";
   }
 
   if (task.status === "draft") {
     return null;
   }
 
-  if (task.executionAction === "build" || task.executionAction === "ask" || task.executionAction === "interactive" || task.executionAction === "terminal") {
-    return task.executionAction;
+  const executionAction = task.executionAction as string | null | undefined;
+  if (executionAction === "build" || executionAction === "ask" || executionAction === "terminal") {
+    return executionAction;
+  }
+  if (executionAction === "interactive") {
+    return "terminal";
   }
 
   if (task.status === "build_queued" || task.status === "preparing_workspace" || task.status === "building") {
@@ -1260,14 +1264,14 @@ export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingChe
   return "ready";
 };
 
-export const getTaskTerminalSessionLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Terminal" : "Interactive Terminal";
+export const getTaskTerminalSessionLabel = (_mode: TaskTerminalSessionMode): string =>
+  "Terminal";
 
-export const getTaskTerminalSessionSentenceLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Terminal" : "Interactive terminal";
+export const getTaskTerminalSessionSentenceLabel = (_mode: TaskTerminalSessionMode): string =>
+  "Terminal";
 
 export const getTaskTerminalSessionStartMessage = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Terminal session started." : `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
+  `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
 
 export const getTaskTerminalSessionEndMessage = (mode: TaskTerminalSessionMode): string =>
   `${getTaskTerminalSessionSentenceLabel(mode)} session ended.`;

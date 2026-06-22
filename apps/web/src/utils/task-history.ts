@@ -59,8 +59,11 @@ export type TaskHistoryEntry =
   | GroupedTerminalHistoryEntry;
 
 export const INTERACTIVE_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("interactive");
+const LEGACY_INTERACTIVE_TERMINAL_START_MESSAGE = "Interactive terminal session started.";
 export const INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("interactive");
 export const INTERACTIVE_TERMINAL_END_PREFIX = getTaskTerminalSessionEndMessage("interactive").replace(/\.$/, "");
+const LEGACY_INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE = "Interactive terminal session ended. Review proposed changes below.";
+const LEGACY_INTERACTIVE_TERMINAL_END_PREFIX = "Interactive terminal session ended";
 export const GIT_TERMINAL_START_MESSAGE = getTaskTerminalSessionStartMessage("git");
 export const LEGACY_GIT_TERMINAL_START_MESSAGE = "Git terminal session started.";
 export const GIT_TERMINAL_END_REVIEW_MESSAGE = getTaskTerminalSessionReviewMessage("git");
@@ -93,6 +96,7 @@ function isInteractiveTerminalStartMessage(message: TaskMessage): boolean {
     message.role === "system" &&
     (
       message.content === INTERACTIVE_TERMINAL_START_MESSAGE ||
+      message.content === LEGACY_INTERACTIVE_TERMINAL_START_MESSAGE ||
       message.content === GIT_TERMINAL_START_MESSAGE ||
       message.content === LEGACY_GIT_TERMINAL_START_MESSAGE
     )
@@ -102,7 +106,11 @@ function isInteractiveTerminalStartMessage(message: TaskMessage): boolean {
 function isInteractiveTerminalEndMessage(message: TaskMessage): boolean {
   return (
     message.role === "system" &&
-    (message.content.startsWith(INTERACTIVE_TERMINAL_END_PREFIX) || message.content.startsWith(GIT_TERMINAL_END_PREFIX))
+    (
+      message.content.startsWith(INTERACTIVE_TERMINAL_END_PREFIX) ||
+      message.content.startsWith(LEGACY_INTERACTIVE_TERMINAL_END_PREFIX) ||
+      message.content.startsWith(GIT_TERMINAL_END_PREFIX)
+    )
   );
 }
 
@@ -284,7 +292,11 @@ export function buildTaskHistoryEntries(input: {
     const endSessionId = typeof endMessage.sessionId === "string" && endMessage.sessionId.trim().length > 0 ? endMessage.sessionId : null;
     let sessionId = startSessionId ?? endSessionId;
     let proposal: TaskChangeProposal | null = null;
-    if (endMessage.content === INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE || endMessage.content === GIT_TERMINAL_END_REVIEW_MESSAGE) {
+    if (
+      endMessage.content === INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE ||
+      endMessage.content === LEGACY_INTERACTIVE_TERMINAL_END_REVIEW_MESSAGE ||
+      endMessage.content === GIT_TERMINAL_END_REVIEW_MESSAGE
+    ) {
       if (sessionId) {
         const matchedProposal = interactiveProposalsBySessionId.get(sessionId) ?? null;
         if (matchedProposal && !consumedProposalIds.has(matchedProposal.id)) {

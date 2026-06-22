@@ -66,7 +66,7 @@ export const requireInteractiveTerminalAccess = (request: FastifyRequest, reply:
     request,
     reply,
     ["task:interactive"],
-    "Interactive terminal access is not permitted for this role."
+    "Terminal access is not permitted for this role."
   );
 
 export const requireTaskExecutionConfigAccess = (

@@ -130,7 +130,7 @@ const runStatusColor: Record<TaskRun["status"], string> = {
   cancelled: "default"
 };
 
-type ComposerAction = TaskMessageAction | "interactive" | "terminal";
+type ComposerAction = TaskMessageAction | "terminal";
 type SnippetVariableFormValues = Record<string, string>;
 
 const OPENAI_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
@@ -163,7 +163,6 @@ const taskActionLabel: Record<ComposerAction | TaskAction, string> = {
   build: "Build",
   ask: "Ask",
   comment: "Comment",
-  interactive: "Interactive",
   terminal: "Terminal"
 };
 
@@ -180,7 +179,6 @@ function getAllowedComposerActions(
     actions.push("ask");
   }
   if (canUseInteractiveTerminal) {
-    actions.push("interactive");
     actions.push("terminal");
   }
   actions.push("comment");
@@ -188,7 +186,7 @@ function getAllowedComposerActions(
 }
 
 function getDefaultComposerAction(task: Task | null, allowedActions: ComposerAction[]): ComposerAction {
-  const defaultAction = allowedActions.find((action) => action !== "comment" && action !== "interactive" && action !== "terminal") ?? "comment";
+  const defaultAction = allowedActions.find((action) => action !== "comment" && action !== "terminal") ?? "comment";
 
   if (!task) {
     return defaultAction;
@@ -2255,7 +2253,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     activeTerminalStatus?.terminalMode ??
     (task?.activeInteractiveSession ? (task.activeTerminalSessionMode === "git" ? "git" : "interactive") : null);
   const interactiveTerminalRunning = activeTerminalStatus?.activeInteractiveSession === true;
-  const gitTerminalAvailable = gitTerminalStatus?.available === true;
+  const providerTerminalAvailable = interactiveTerminalStatus?.available === true;
   const activeTerminalLabel = activeTerminalMode ? getTaskTerminalSessionLabel(activeTerminalMode) : "Terminal";
   const activeTerminalSentenceLabel = activeTerminalMode ? getTaskTerminalSessionSentenceLabel(activeTerminalMode) : "Terminal";
   const showWorkingIndicator = hasTaskWorkingState || interactiveTerminalRunning;
@@ -2267,14 +2265,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       })
     : "Working";
   const canKillInteractiveTerminal = canEditTask && canUseInteractiveTerminal && !!task && !isArchived && interactiveTerminalRunning;
-  const interactiveComposerSelected = selectedChatAction === "interactive";
   const terminalComposerSelected = selectedChatAction === "terminal";
-  const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive" && selectedChatAction !== "terminal";
+  const selectedChatActionRequiresPrompt = selectedChatAction !== "terminal";
   const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived" || task.status === "draft";
   const promptMagicVisible = (selectedChatAction === "build" || selectedChatAction === "ask") && canCreateTask;
   const autoRunStartBlocked = false;
   const chatDisabled = chatClosed || interactiveTerminalRunning || autoRunStartBlocked;
-  const chatInputDisabled = chatClosed || interactiveTerminalRunning || interactiveComposerSelected || terminalComposerSelected;
+  const chatInputDisabled = chatClosed || interactiveTerminalRunning || terminalComposerSelected;
   const canUsePromptMagic = promptMagicVisible && !chatInputDisabled;
   const promptMagicDisabled = !canUsePromptMagic || chatInput.trim().length === 0 || taskPromptMagicLoading;
   const canAttachPromptImages = selectedChatAction === "build" || selectedChatAction === "ask";
@@ -2289,7 +2286,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const draftActionLabel = taskActionLabel[selectedChatAction].toLowerCase();
   const willQueueSubmittedMessage =
     selectedChatAction !== "comment" &&
-    selectedChatAction !== "interactive" &&
     selectedChatAction !== "terminal" &&
     (pendingChangeProposal !== null || isQueued || isActive || pendingQueuedMessages.length > 0);
   const chatPlaceholder = (() => {
@@ -2303,9 +2299,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return task?.status === "archived"
         ? "This task is archived and read-only."
         : "This task is closed. Create a follow-up task to continue.";
-    }
-    if (selectedChatAction === "interactive") {
-      return "Interactive terminal does not need a prompt. Press Start to open the live session in a new window.";
     }
     if (selectedChatAction === "terminal") {
       return "Terminal does not need a prompt. Press Start to open the task workspace terminal in a new window.";
@@ -2536,7 +2529,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     chatClosed ||
     interactiveTerminalRunning ||
     interactiveTerminalLaunchPending ||
-    !gitTerminalAvailable;
+    !providerTerminalAvailable;
   const chatSubmitDisabled =
     selectedChatAction === "terminal"
       ? terminalSubmitDisabled
@@ -2565,20 +2558,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
-    if (selectedChatAction === "interactive") {
-      setSubmitting("message");
-      try {
-        await handleStartInteractiveTerminalWindow();
-      } finally {
-        setSubmitting(null);
-      }
-      return;
-    }
-
     if (selectedChatAction === "terminal") {
       setSubmitting("message");
       try {
-        await handleStartInteractiveTerminalWindow("git");
+        await handleStartInteractiveTerminalWindow();
       } finally {
         setSubmitting(null);
       }
@@ -4188,7 +4171,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           style={{ minWidth: 220, flex: 1 }}
           disabled={!canEditTask || isArchived || interactiveTerminalRunning}
         />
-        {!interactiveComposerSelected && !terminalComposerSelected && canUseSnippets ? (
+        {!terminalComposerSelected && canUseSnippets ? (
           <Select
             showSearch
             style={{ minWidth: 220, flex: 1 }}
@@ -4205,7 +4188,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             }))}
           />
         ) : null}
-        {!interactiveComposerSelected && !terminalComposerSelected && canUseSnippets ? (
+        {!terminalComposerSelected && canUseSnippets ? (
           <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning}>
             Insert
           </Button>

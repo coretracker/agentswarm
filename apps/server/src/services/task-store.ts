@@ -240,7 +240,10 @@ const normalizeTaskExecutionAction = (
   value: unknown,
   fallbackTask: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode">
 ): TaskExecutionAction => {
-  if (value === "build" || value === "ask" || value === "interactive" || value === "terminal") {
+  if (value === "interactive") {
+    return "terminal";
+  }
+  if (value === "build" || value === "ask" || value === "terminal") {
     return value;
   }
 

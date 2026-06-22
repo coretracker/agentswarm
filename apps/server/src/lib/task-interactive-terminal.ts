@@ -47,7 +47,7 @@ import { resolveTaskGitCommitIdentity, type GitCommitIdentity } from "./task-git
 import {
   buildGitTerminalDockerEnvEntries,
   buildGitTerminalEnvEntries,
-  buildInteractiveWorkspaceGitEnvEntries
+  buildTaskRuntimeGitEnvEntries
 } from "./task-interactive-terminal-git-env.js";
 import {
   emitDockerSocketEnabledEventOnce,
@@ -261,7 +261,8 @@ function resolveInteractiveTerminalModel(task: Pick<TaskMetadata, "provider" | "
 function resolveInteractiveTerminalRuntimeConfig(
   task: Pick<TaskMetadata, "provider" | "providerProfile" | "modelOverride">,
   settings: InteractiveRuntimeSettings,
-  credentials: InteractiveRuntimeCredentials
+  credentials: InteractiveRuntimeCredentials,
+  gitIdentity?: GitCommitIdentity | null
 ): InteractiveTerminalRuntimeConfig {
   const model = resolveInteractiveTerminalModel(task);
   const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(settings.mcpServers);
@@ -294,7 +295,12 @@ function resolveInteractiveTerminalRuntimeConfig(
         ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
         ...(typeof thinkingBudgetTokens === "number" ? [["MAX_THINKING_TOKENS", String(thinkingBudgetTokens)] as [string, string]] : []),
         ...collectMcpServerEnvEntries(settings.mcpServers),
-        ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
+        ...buildTaskRuntimeGitEnvEntries({
+          workspacePath: INTERACTIVE_WORKSPACE_PATH,
+          githubToken: credentials.githubToken,
+          gitUsername: credentials.gitUsername,
+          gitIdentity
+        })
       ],
       startScript: buildClaudeStartScript(
         model,
@@ -321,7 +327,12 @@ function resolveInteractiveTerminalRuntimeConfig(
     ["TASK_INTERACTIVE_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
     ["CODEX_TRUST_WORKSPACE", INTERACTIVE_WORKSPACE_PATH],
     ...collectMcpServerEnvEntries(settings.mcpServers),
-    ...buildInteractiveWorkspaceGitEnvEntries(INTERACTIVE_WORKSPACE_PATH)
+    ...buildTaskRuntimeGitEnvEntries({
+      workspacePath: INTERACTIVE_WORKSPACE_PATH,
+      githubToken: credentials.githubToken,
+      gitUsername: credentials.gitUsername,
+      gitIdentity
+    })
   ];
   if (settings.openaiBaseUrl?.trim()) {
     envEntries.push(["OPENAI_BASE_URL", settings.openaiBaseUrl.trim()]);
@@ -562,7 +573,7 @@ export async function getTaskInteractiveTerminalStatus(
   if (!(await dockerImageExists(runtime.image))) {
     return {
       available: false,
-      reason: `Interactive ${runtime.providerLabel} image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("interactive", task.provider, runtime.image)}`
+      reason: `${runtime.providerLabel} terminal image "${runtime.image}" is not available on the Docker host. Build it first: ${terminalImageBuildHint("interactive", task.provider, runtime.image)}`
     };
   }
 
@@ -754,12 +765,15 @@ async function initializeTaskInteractiveTerminalWebSocket(
       return;
     }
 
-    const [credentials, settings, repositoryRuntimeEnvEntries] = await Promise.all([
+    const [credentials, settings, gitIdentity, repositoryRuntimeEnvEntries] = await Promise.all([
       deps.settingsStore.getRuntimeCredentials(userId),
       deps.settingsStore.getSettings(),
+      resolveTaskGitCommitIdentity(task, deps.userStore, {
+        ...DEFAULT_GIT_COMMIT_IDENTITY
+      }),
       deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId)
     ]);
-    const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials);
+    const runtime = resolveInteractiveTerminalRuntimeConfig(task, settings, credentials, gitIdentity);
     if (!runtime.ok) {
       throw new Error(runtime.reason);
     }

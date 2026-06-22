@@ -25,7 +25,7 @@ export default function TaskInteractiveRoutePage() {
     return null;
   }
 
-  const providerLabel = task ? getAgentProviderLabel(task.provider) : "Interactive Terminal";
+  const providerLabel = task ? getAgentProviderLabel(task.provider) : "Terminal";
   const modelLabel = task ? task.modelOverride ?? getDefaultModelForProvider(task.provider) : null;
   const effortLabel = task ? getProviderProfileLabel(task.providerProfile) : null;
   const terminalLabel = getTaskTerminalSessionLabel(mode);
@@ -50,7 +50,7 @@ export default function TaskInteractiveRoutePage() {
                 ? `Terminal · ${task.branchName ?? task.repoDefaultBranch} in task workspace`
                 : terminalLabel
               : task
-                ? `Interactive · ${providerLabel} in task workspace`
+                ? `Terminal · ${providerLabel} in task workspace`
                 : terminalLabel}
           </Typography.Text>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
