@@ -14,6 +14,7 @@ const envSchema = z.object({
   RUNTIME_PAYLOAD_VOLUME: z.string().default("agentswarm_runtime_payloads"),
   REPOSITORY_ENV_FILE_STORE_ROOT: z.string().default("/secrets/repository-env-files"),
   TASK_WORKSPACE_ROOT: z.string().default("/task-workspaces"),
+  TASK_WORKSPACE_DOCKER_SOURCE: z.string().optional(),
   AGENT_RUNTIME_IMAGE: z
     .string()
     .default(
@@ -43,11 +44,14 @@ const envSchema = z.object({
 const parsed = envSchema.parse(process.env);
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
-const taskWorkspaceDockerSource = existsSync("/.dockerenv")
-  ? "agentswarm_task_workspaces"
-  : parsed.TASK_WORKSPACE_ROOT !== "/task-workspaces"
-    ? parsed.TASK_WORKSPACE_ROOT
-    : path.join(repoRoot, "task-workspaces");
+const configuredTaskWorkspaceDockerSource = parsed.TASK_WORKSPACE_DOCKER_SOURCE?.trim();
+const taskWorkspaceDockerSource =
+  configuredTaskWorkspaceDockerSource ||
+  (existsSync("/.dockerenv")
+    ? "agentswarm_task_workspaces"
+    : parsed.TASK_WORKSPACE_ROOT !== "/task-workspaces"
+      ? parsed.TASK_WORKSPACE_ROOT
+      : path.join(repoRoot, "task-workspaces"));
 
 export const AUTO_RUN_POSTGRES_MIGRATIONS = true;
 export const DEPLOYMENT_ENVIRONMENT_LABEL = "local";
