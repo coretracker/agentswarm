@@ -8,9 +8,10 @@ import type {
   RepositoryEnvSecretInput,
   RepositoryEnvVarInput
 } from "@agentswarm/shared-types";
-import { Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
+import { Alert, Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
 import { ApiError, api } from "../src/api/client";
 import { trackEvent } from "../src/utils/analytics";
+import { buildApiUrl } from "../src/lib/public-url";
 
 interface RepositoryEditorPageProps {
   mode: "create" | "edit";
@@ -27,6 +28,8 @@ type RepositoryFormValues = {
   webhookUrl: string;
   webhookSecret: string;
   clearWebhookSecret: boolean;
+  githubPrWebhookSecret: string;
+  clearGithubPrWebhookSecret: boolean;
 };
 
 const emptyValues = (): RepositoryFormValues => ({
@@ -38,7 +41,9 @@ const emptyValues = (): RepositoryFormValues => ({
   webhookEnabled: false,
   webhookUrl: "",
   webhookSecret: "",
-  clearWebhookSecret: false
+  clearWebhookSecret: false,
+  githubPrWebhookSecret: "",
+  clearGithubPrWebhookSecret: false
 });
 
 const normalizeValues = (values?: Partial<RepositoryFormValues> | null): RepositoryFormValues => ({
@@ -62,7 +67,9 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   webhookEnabled: values?.webhookEnabled === true,
   webhookUrl: typeof values?.webhookUrl === "string" ? values.webhookUrl : "",
   webhookSecret: typeof values?.webhookSecret === "string" ? values.webhookSecret : "",
-  clearWebhookSecret: values?.clearWebhookSecret === true
+  clearWebhookSecret: values?.clearWebhookSecret === true,
+  githubPrWebhookSecret: typeof values?.githubPrWebhookSecret === "string" ? values.githubPrWebhookSecret : "",
+  clearGithubPrWebhookSecret: values?.clearGithubPrWebhookSecret === true
 });
 
 const snapshotValues = (values?: Partial<RepositoryFormValues> | null): string => JSON.stringify(normalizeValues(values));
@@ -180,7 +187,9 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           webhookEnabled: repository.webhookEnabled,
           webhookUrl: repository.webhookUrl ?? "",
           webhookSecret: "",
-          clearWebhookSecret: false
+          clearWebhookSecret: false,
+          githubPrWebhookSecret: "",
+          clearGithubPrWebhookSecret: false
         });
         form.setFieldsValue(initial);
         setInitialSnapshot(snapshotValues(initial));
@@ -369,7 +378,9 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               webhookEnabled: normalized.webhookEnabled,
               webhookUrl: normalized.webhookUrl.trim().length > 0 ? normalized.webhookUrl.trim() : null,
               ...(normalized.webhookSecret.trim().length > 0 ? { webhookSecret: normalized.webhookSecret.trim() } : {}),
-              ...(editingRepository && normalized.clearWebhookSecret ? { clearWebhookSecret: true } : {})
+              ...(editingRepository && normalized.clearWebhookSecret ? { clearWebhookSecret: true } : {}),
+              ...(normalized.githubPrWebhookSecret.trim().length > 0 ? { githubPrWebhookSecret: normalized.githubPrWebhookSecret.trim() } : {}),
+              ...(editingRepository && normalized.clearGithubPrWebhookSecret ? { clearGithubPrWebhookSecret: true } : {})
             };
             if (mode === "edit" && editingRepository) {
               await api.updateRepository(editingRepository.id, payload);
@@ -721,6 +732,80 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 <Checkbox>Clear stored webhook secret</Checkbox>
               </Form.Item>
             ) : null}
+          </Card>
+          <Card bordered={false}>
+            <Flex vertical gap={12}>
+              <Flex vertical gap={4}>
+                <Typography.Title level={4} style={{ margin: 0 }}>
+                  GitHub PR Feedback
+                </Typography.Title>
+                <Typography.Text type="secondary">
+                  Configure this webhook in GitHub so pull request comments and reviews queue follow-up work on linked tasks.
+                </Typography.Text>
+              </Flex>
+              {mode === "edit" && editingRepository ? (
+                <>
+                  <Form.Item label="Payload URL">
+                    <Input
+                      readOnly
+                      value={buildApiUrl(`/github/webhooks/${editingRepository.id}`)}
+                      addonAfter={
+                        <Button
+                          type="link"
+                          size="small"
+                          onClick={() => {
+                            void navigator.clipboard.writeText(buildApiUrl(`/github/webhooks/${editingRepository.id}`));
+                            messageApi.success("Webhook URL copied");
+                          }}
+                        >
+                          Copy
+                        </Button>
+                      }
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    name="githubPrWebhookSecret"
+                    label={
+                      editingRepository.githubPrWebhookSecretConfigured
+                        ? "GitHub PR Webhook Secret (leave blank to keep existing)"
+                        : "GitHub PR Webhook Secret"
+                    }
+                  >
+                    <Input.Password />
+                  </Form.Item>
+                  {editingRepository.githubPrWebhookSecretConfigured ? (
+                    <Form.Item name="clearGithubPrWebhookSecret" valuePropName="checked">
+                      <Checkbox>Clear stored GitHub PR webhook secret</Checkbox>
+                    </Form.Item>
+                  ) : null}
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="Full PR feedback flow"
+                    description={
+                      <Space direction="vertical" size={4}>
+                        <Typography.Text>1. Configure GitHub MCP for agents and let agents create pull requests there.</Typography.Text>
+                        <Typography.Text>
+                          2. After creating a PR, agents call <Typography.Text code>agentswarm_link_pull_request</Typography.Text> with:
+                        </Typography.Text>
+                        <Typography.Text code>{`{ "taskId": "task_id", "prNumber": 123 }`}</Typography.Text>
+                        <Typography.Text>
+                          3. In GitHub, create a webhook with content type <Typography.Text code>application/json</Typography.Text>, this payload URL,
+                          this secret, and events: issue comments, pull request review comments, pull request reviews.
+                        </Typography.Text>
+                      </Space>
+                    }
+                  />
+                </>
+              ) : (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Save the repository first"
+                  description="After creation, AgentSwarm will show the repository-scoped GitHub webhook URL and PR feedback secret setup."
+                />
+              )}
+            </Flex>
           </Card>
         </Flex>
       </Form>

@@ -489,5 +489,12 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       DROP COLUMN IF EXISTS github_automations,
       DROP COLUMN IF EXISTS sync_status_enabled;
     `
+  },
+  {
+    id: "20260623_02_repository_github_pr_feedback_webhook_secret",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_webhook_secret text NULL;
+    `
   }
 ];

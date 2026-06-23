@@ -20,6 +20,7 @@ import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerUserRoutes } from "./routes/users.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
+import { registerGitHubPrWebhookRoutes } from "./routes/github-pr-webhooks.js";
 import { registerSnippetRoutes } from "./routes/snippets.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
 import { registerMcpRoutes } from "./mcp/server.js";
@@ -63,6 +64,15 @@ const bootstrap = async (): Promise<void> => {
   await app.register(cors, {
     origin: env.CORS_ORIGIN,
     credentials: true
+  });
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    try {
+      done(null, rawBody.trim().length > 0 ? JSON.parse(rawBody) : {});
+    } catch (error) {
+      done(error as Error);
+    }
   });
   app.addHook("onRequest", async (request, reply) => {
     const operationId = getOperationIdFromHeaders(request.headers);
@@ -173,6 +183,7 @@ const bootstrap = async (): Promise<void> => {
   });
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
+  registerGitHubPrWebhookRoutes(app, { repositoryStore, taskStore, scheduler });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
   registerMcpRoutes(app, {
     auth,

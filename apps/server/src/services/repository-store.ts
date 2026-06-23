@@ -59,11 +59,13 @@ interface StoredRepositoryEnvFileValue {
 
 type StoredRepositoryEnvValue = StoredRepositoryEnvTextValue | StoredRepositoryEnvFileValue;
 
-type StoredRepository = Omit<Repository, "webhookSecretConfigured" | "envVars" | "envSecrets"> & {
+type StoredRepository = Omit<Repository, "webhookSecretConfigured" | "githubPrWebhookSecretConfigured" | "envVars" | "envSecrets"> & {
   envVars: StoredRepositoryEnvValue[];
   envSecrets: StoredRepositoryEnvValue[];
   webhookSecret: string | null;
+  githubPrWebhookSecret: string | null;
   webhookSecretConfigured?: boolean;
+  githubPrWebhookSecretConfigured?: boolean;
 } & Record<string, unknown>;
 
 const normalizeRepositoryEnvFileName = (value: unknown): string | null => {
@@ -517,6 +519,7 @@ export interface RepositoryStore {
   getRepositoryRuntimeEnvEntries(repositoryId: string): Promise<RepositoryRuntimeEnvEntry[]>;
   updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null>;
   getRepositoryWebhookTarget(repositoryId: string): Promise<RepositoryWebhookTarget | null>;
+  getRepositoryGitHubPrWebhookSecret(repositoryId: string): Promise<string | null>;
   recordWebhookDeliveryResult(
     repositoryId: string,
     input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
@@ -625,6 +628,7 @@ export class RedisRepositoryStore implements RepositoryStore {
 
   private normalizeStoredRepository(repository: StoredRepository): StoredRepository {
     const webhookSecret = this.normalizeWebhookSecret(repository.webhookSecret);
+    const githubPrWebhookSecret = this.normalizeWebhookSecret(repository.githubPrWebhookSecret);
     const webhookUrl = this.normalizeWebhookUrl(repository.webhookUrl as string | null | undefined);
     const webhookEnabled = repository.webhookEnabled === true;
     const envVars = normalizeRepositoryEnvVars(repository.envVars);
@@ -639,6 +643,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookUrl,
       webhookEnabled,
       webhookSecret,
+      githubPrWebhookSecret,
       webhookLastAttemptAt: typeof repository.webhookLastAttemptAt === "string" ? repository.webhookLastAttemptAt : null,
       webhookLastStatus: repository.webhookLastStatus === "success" || repository.webhookLastStatus === "failed" ? repository.webhookLastStatus : null,
       webhookLastError: typeof repository.webhookLastError === "string" && repository.webhookLastError.trim().length > 0
@@ -659,6 +664,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookUrl: normalized.webhookUrl,
       webhookEnabled: normalized.webhookEnabled,
       webhookSecretConfigured: Boolean(normalized.webhookSecret),
+      githubPrWebhookSecretConfigured: Boolean(normalized.githubPrWebhookSecret),
       webhookLastAttemptAt: normalized.webhookLastAttemptAt ?? null,
       webhookLastStatus: normalized.webhookLastStatus ?? null,
       webhookLastError: normalized.webhookLastError ?? null,
@@ -680,6 +686,7 @@ export class RedisRepositoryStore implements RepositoryStore {
     const timestamp = nowIso();
     const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
     const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
+    const githubPrWebhookSecret = this.normalizeWebhookSecret(input.githubPrWebhookSecret);
     const webhookEnabled = input.webhookEnabled === true;
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
     const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
@@ -699,6 +706,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookUrl,
       webhookEnabled,
       webhookSecret,
+      githubPrWebhookSecret,
       webhookLastAttemptAt: null,
       webhookLastStatus: null,
       webhookLastError: null,
@@ -778,6 +786,12 @@ export class RedisRepositoryStore implements RepositoryStore {
         : input.webhookSecret !== undefined
           ? this.normalizeWebhookSecret(input.webhookSecret)
           : current.webhookSecret;
+    const nextGithubPrWebhookSecret =
+      input.clearGithubPrWebhookSecret === true
+        ? null
+        : input.githubPrWebhookSecret !== undefined
+          ? this.normalizeWebhookSecret(input.githubPrWebhookSecret)
+          : current.githubPrWebhookSecret;
     const nextWebhookUrl =
       input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
     const nextWebhookEnabled =
@@ -805,6 +819,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookUrl: nextWebhookUrl,
       webhookEnabled: nextWebhookEnabled,
       webhookSecret: nextWebhookSecret,
+      githubPrWebhookSecret: nextGithubPrWebhookSecret,
       updatedAt: nowIso()
     };
     const next = this.normalizeRepository(nextStored);
@@ -838,6 +853,11 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookUrl: stored.webhookUrl,
       webhookSecret: stored.webhookSecret
     };
+  }
+
+  async getRepositoryGitHubPrWebhookSecret(repositoryId: string): Promise<string | null> {
+    const stored = await this.getStoredRepository(repositoryId);
+    return stored?.githubPrWebhookSecret ?? null;
   }
 
   async recordWebhookDeliveryResult(
@@ -928,6 +948,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookUrl: typeof row.webhook_url === "string" && row.webhook_url.trim().length > 0 ? row.webhook_url.trim() : null,
       webhookEnabled: row.webhook_enabled === true,
       webhookSecretConfigured: typeof row.webhook_secret === "string" && row.webhook_secret.trim().length > 0,
+      githubPrWebhookSecretConfigured:
+        typeof row.github_pr_webhook_secret === "string" && row.github_pr_webhook_secret.trim().length > 0,
       webhookLastAttemptAt: typeof row.webhook_last_attempt_at === "string" ? row.webhook_last_attempt_at : null,
       webhookLastStatus:
         row.webhook_last_status === "success" || row.webhook_last_status === "failed" ? row.webhook_last_status : null,
@@ -947,6 +969,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const timestamp = nowIso();
     const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
     const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
+    const githubPrWebhookSecret = this.normalizeWebhookSecret(input.githubPrWebhookSecret);
     const webhookEnabled = input.webhookEnabled === true;
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
     const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
@@ -966,6 +989,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookUrl,
       webhookEnabled,
       webhookSecretConfigured: Boolean(webhookSecret),
+      githubPrWebhookSecretConfigured: Boolean(githubPrWebhookSecret),
       webhookLastAttemptAt: null,
       webhookLastStatus: null,
       webhookLastError: null,
@@ -989,13 +1013,14 @@ export class PostgresRepositoryStore implements RepositoryStore {
             webhook_url,
             webhook_enabled,
             webhook_secret,
+            github_pr_webhook_secret,
             webhook_last_attempt_at,
             webhook_last_status,
             webhook_last_error,
             created_at,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14)
+          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         `,
         [
           repository.id,
@@ -1007,6 +1032,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           repository.webhookUrl,
           repository.webhookEnabled,
           webhookSecret,
+          githubPrWebhookSecret,
           repository.webhookLastAttemptAt,
           repository.webhookLastStatus,
           repository.webhookLastError,
@@ -1054,6 +1080,10 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const current = this.mapRepositoryRow(currentRow);
     const currentWebhookSecret =
       typeof currentRow.webhook_secret === "string" && currentRow.webhook_secret.trim().length > 0 ? currentRow.webhook_secret.trim() : null;
+    const currentGithubPrWebhookSecret =
+      typeof currentRow.github_pr_webhook_secret === "string" && currentRow.github_pr_webhook_secret.trim().length > 0
+        ? currentRow.github_pr_webhook_secret.trim()
+        : null;
     const currentEnvVars = normalizeRepositoryEnvVars(currentRow.env_vars);
     const currentEnvSecrets = normalizeRepositoryEnvSecretValues(currentRow.env_secrets);
     const nextWebhookSecret =
@@ -1062,6 +1092,12 @@ export class PostgresRepositoryStore implements RepositoryStore {
         : input.webhookSecret !== undefined
           ? this.normalizeWebhookSecret(input.webhookSecret)
           : currentWebhookSecret;
+    const nextGithubPrWebhookSecret =
+      input.clearGithubPrWebhookSecret === true
+        ? null
+        : input.githubPrWebhookSecret !== undefined
+          ? this.normalizeWebhookSecret(input.githubPrWebhookSecret)
+          : currentGithubPrWebhookSecret;
     const nextWebhookUrl =
       input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
     const nextWebhookEnabled =
@@ -1089,6 +1125,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookUrl: nextWebhookUrl,
       webhookEnabled: nextWebhookEnabled,
       webhookSecretConfigured: Boolean(nextWebhookSecret),
+      githubPrWebhookSecretConfigured: Boolean(nextGithubPrWebhookSecret),
       updatedAt: nowIso()
     };
 
@@ -1108,11 +1145,12 @@ export class PostgresRepositoryStore implements RepositoryStore {
             webhook_url = $7,
             webhook_enabled = $8,
             webhook_secret = $9,
-            webhook_last_attempt_at = $10,
-            webhook_last_status = $11,
-            webhook_last_error = $12,
-            created_at = $13,
-            updated_at = $14
+            github_pr_webhook_secret = $10,
+            webhook_last_attempt_at = $11,
+            webhook_last_status = $12,
+            webhook_last_error = $13,
+            created_at = $14,
+            updated_at = $15
           WHERE id = $1
         `,
         [
@@ -1125,6 +1163,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           next.webhookUrl,
           next.webhookEnabled,
           nextWebhookSecret,
+          nextGithubPrWebhookSecret,
           next.webhookLastAttemptAt,
           next.webhookLastStatus,
           next.webhookLastError,
@@ -1161,6 +1200,16 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookUrl: repository.webhookUrl,
       webhookSecret
     };
+  }
+
+  async getRepositoryGitHubPrWebhookSecret(repositoryId: string): Promise<string | null> {
+    const row = await this.getStoredRepositoryRow(repositoryId);
+    if (!row) {
+      return null;
+    }
+    return typeof row.github_pr_webhook_secret === "string" && row.github_pr_webhook_secret.trim().length > 0
+      ? row.github_pr_webhook_secret.trim()
+      : null;
   }
 
   async recordWebhookDeliveryResult(

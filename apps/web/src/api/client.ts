@@ -57,6 +57,7 @@ import type {
   UpdateAuthProfileInput,
   UpdateCredentialSettingsInput,
   UpdateTaskConfigInput,
+  UpdateTaskPullRequestInput,
   UpdateRepositoryInput,
   UpdateSettingsInput,
   UpdateUserInput,
@@ -529,6 +530,11 @@ export const api = {
     }),
   updateTaskAssignee: (id: string, input: UpdateTaskAssigneeInput) =>
     request<Task>(`/tasks/${id}/assignee`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskPullRequest: (id: string, input: UpdateTaskPullRequestInput) =>
+    request<Task>(`/tasks/${id}/github-pr`, {
       method: "PATCH",
       body: JSON.stringify(input)
     }),

@@ -100,6 +100,11 @@ const addTaskMessageSchema = z.object({
   action: z.enum(["build", "ask", "comment"]).optional()
 });
 
+const linkPullRequestSchema = z.object({
+  taskId: z.string().trim().min(1),
+  prNumber: z.number().int().positive()
+});
+
 const updateTaskConfigSchema = z.object({
   taskId: z.string().trim().min(1),
   autoApplyCheckpoints: z.boolean()
@@ -409,6 +414,21 @@ export const createMcpTools = (): McpToolDefinition[] => [
         }
       }
       return { task: compactTask((await context.deps.taskStore.getTask(task.id)) ?? task), messageId: message?.id ?? null };
+    }
+  },
+  {
+    name: "agentswarm_link_pull_request",
+    description: "Link a task to a GitHub pull request number after creating the PR with GitHub MCP.",
+    inputSchema: schemaToJson(linkPullRequestSchema),
+    scopes: ["task:edit"],
+    async handler(rawInput, context) {
+      const input = linkPullRequestSchema.parse(rawInput ?? {});
+      const task = await getAccessibleTask(context, input.taskId);
+      ensureNotArchived(task);
+      const updated = await context.deps.taskStore.patchTask(task.id, {
+        githubPrNumber: input.prNumber
+      });
+      return { task: compactTask(updated ?? task), githubPrNumber: input.prNumber };
     }
   },
   {

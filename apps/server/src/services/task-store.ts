@@ -162,6 +162,13 @@ const normalizeLegacyTaskAction = (action: string | null | undefined): TaskActio
   return action === "ask" ? "ask" : "build";
 };
 
+const normalizeGitHubPrNumber = (value: unknown): number | null => {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    return null;
+  }
+  return value;
+};
+
 const normalizeTaskMessageAction = (action: string | null | undefined): TaskMessage["action"] => {
   if (action === "build" || action === "ask" || action === "comment") {
     return action;
@@ -177,13 +184,15 @@ const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
     : [];
   const sessionId = typeof message.sessionId === "string" && message.sessionId.trim().length > 0 ? message.sessionId : null;
   const queueState = message.queueState === "pending" ? "pending" : null;
-  const queueSource = message.queueSource === "user" ? "user" : null;
+  const queueSource = message.queueSource === "user" || message.queueSource === "github_pr" ? message.queueSource : null;
+  const externalId = typeof message.externalId === "string" && message.externalId.trim().length > 0 ? message.externalId.trim() : null;
 
   return {
     ...message,
     action: normalizeTaskMessageAction(message.action),
     ...(queueState !== null || "queueState" in message ? { queueState } : {}),
     ...(queueSource !== null || "queueSource" in message ? { queueSource } : {}),
+    ...(externalId !== null || "externalId" in message ? { externalId } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
     ...(sessionId !== null || "sessionId" in message ? { sessionId } : {})
   };
@@ -336,6 +345,7 @@ export interface AppendTaskMessageInput {
   action?: TaskMessage["action"];
   queueState?: TaskMessage["queueState"];
   queueSource?: TaskMessage["queueSource"];
+  externalId?: string | null;
   attachments?: TaskPromptAttachment[];
   sessionId?: string | null;
 }
@@ -401,6 +411,7 @@ export type UpdateTaskChangeProposalUpdates = Partial<
 export interface TaskStore {
   createTask(input: CreateTaskInput, repository: Repository, ownerUserId: string): Promise<Task>;
   getTask(taskId: string): Promise<Task | null>;
+  findTaskByGitHubPrNumber(repositoryId: string, githubPrNumber: number): Promise<Task | null>;
   getTaskMetadata(taskId: string): Promise<TaskMetadata | null>;
   listTasks(options?: ListTasksOptions): Promise<Task[]>;
   patchTask(taskId: string, patch: Partial<Omit<Task, "id" | "createdAt">>): Promise<Task | null>;
@@ -501,6 +512,7 @@ export class RedisTaskStore implements TaskStore {
       activeTerminalSessionMode: legacyTask.activeInteractiveSession === true ? "terminal" : null,
       linkedWorkspaces: normalizeTaskLinkedWorkspaces(legacyTask.linkedWorkspaces),
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
+      githubPrNumber: normalizeGitHubPrNumber(legacyTask.githubPrNumber),
       taskType: normalizeLegacyTaskType(legacyTask.taskType),
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
@@ -728,6 +740,7 @@ export class RedisTaskStore implements TaskStore {
       repoName: repository.name,
       repoUrl: repository.url,
       repoDefaultBranch: repository.defaultBranch,
+      githubPrNumber: null,
       taskType,
       provider,
       providerProfile,
@@ -779,6 +792,11 @@ export class RedisTaskStore implements TaskStore {
     }
 
     return this.hydrateTask(task);
+  }
+
+  async findTaskByGitHubPrNumber(repositoryId: string, githubPrNumber: number): Promise<Task | null> {
+    const tasks = await this.listTasks({ view: "active", limit: 1000 });
+    return tasks.find((task) => task.repoId === repositoryId && task.githubPrNumber === githubPrNumber) ?? null;
   }
 
   async getTaskMetadata(taskId: string): Promise<TaskMetadata | null> {
@@ -1125,6 +1143,7 @@ export class RedisTaskStore implements TaskStore {
       action: input.action ?? null,
       ...(input.queueState !== undefined ? { queueState: input.queueState ?? null } : {}),
       ...(input.queueSource !== undefined ? { queueSource: input.queueSource ?? null } : {}),
+      ...(input.externalId !== undefined ? { externalId: input.externalId ?? null } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(input.sessionId !== undefined ? { sessionId: input.sessionId ?? null } : {}),
       createdAt: nowIso()
@@ -2158,6 +2177,7 @@ export class PostgresTaskStore implements TaskStore {
       repoName: repository.name,
       repoUrl: repository.url,
       repoDefaultBranch: repository.defaultBranch,
+      githubPrNumber: null,
       taskType,
       provider,
       providerProfile,
@@ -2209,6 +2229,23 @@ export class PostgresTaskStore implements TaskStore {
     }
 
     return this.hydrateTask(task);
+  }
+
+  async findTaskByGitHubPrNumber(repositoryId: string, githubPrNumber: number): Promise<Task | null> {
+    const result = await this.pool.query(
+      `
+        SELECT task_data
+        FROM tasks
+        WHERE task_data->>'repoId' = $1
+          AND task_data->>'githubPrNumber' = $2
+          AND status <> 'archived'
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [repositoryId, String(githubPrNumber)]
+    );
+    const row = result.rows[0];
+    return row ? this.withPendingCheckpointState({ ...this.mapTaskRow(row), logs: [] }) : null;
   }
 
   async getTaskMetadata(taskId: string): Promise<TaskMetadata | null> {
@@ -2561,6 +2598,7 @@ export class PostgresTaskStore implements TaskStore {
       action: input.action ?? null,
       ...(input.queueState !== undefined ? { queueState: input.queueState ?? null } : {}),
       ...(input.queueSource !== undefined ? { queueSource: input.queueSource ?? null } : {}),
+      ...(input.externalId !== undefined ? { externalId: input.externalId ?? null } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(input.sessionId !== undefined ? { sessionId: input.sessionId ?? null } : {}),
       createdAt: nowIso()

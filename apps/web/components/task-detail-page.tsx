@@ -375,6 +375,30 @@ function renderDiffFileActions(file: FileData, renderFileActions?: (file: FileDa
   return <span onClick={(event) => event.stopPropagation()}>{actions}</span>;
 }
 
+function deriveGitHubPullRequestUrl(repoUrl: string | undefined, prNumber: number | null | undefined): string | null {
+  if (!repoUrl || !prNumber) {
+    return null;
+  }
+  const trimmed = repoUrl.trim();
+  const sshMatch = trimmed.match(/^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/);
+  if (sshMatch) {
+    return `https://github.com/${sshMatch[1]}/${sshMatch[2]}/pull/${prNumber}`;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.hostname !== "github.com") {
+      return null;
+    }
+    const segments = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "").split("/");
+    if (segments.length < 2) {
+      return null;
+    }
+    return `https://github.com/${segments[0]}/${segments[1]}/pull/${prNumber}`;
+  } catch {
+    return null;
+  }
+}
+
 function renderParsedDiff(diffText: string, emptyMessage: string, options?: ParsedDiffRenderOptions): ReactNode {
   if (!diffText.trim()) {
     return (
@@ -744,6 +768,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "state"
     | "renameTitle"
     | "linkTask"
+    | "linkPr"
     | "editComment"
   >(null);
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
@@ -904,6 +929,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [linkTaskCandidates, setLinkTaskCandidates] = useState<Task[]>([]);
   const [linkTaskCandidatesLoading, setLinkTaskCandidatesLoading] = useState(false);
   const [selectedLinkedTaskId, setSelectedLinkedTaskId] = useState<string | undefined>();
+  const [linkPrModalOpen, setLinkPrModalOpen] = useState(false);
+  const [linkPrNumberDraft, setLinkPrNumberDraft] = useState<string>("");
   const [commentEditModalOpen, setCommentEditModalOpen] = useState(false);
   const [editingComment, setEditingComment] = useState<TaskMessage | null>(null);
   const [commentEditDraft, setCommentEditDraft] = useState("");
@@ -1080,6 +1107,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canArchive = canEditTask && !!task && !isActive && !isArchived;
   const canChangeTaskState = canEditTask && !!task && !isArchived;
   const canLinkTaskWorkspace = canEditTask && !!task && !isArchived;
+  const canLinkPullRequest = canEditTask && !!task && !isArchived;
+  const linkedPullRequestUrl = useMemo(
+    () => deriveGitHubPullRequestUrl(task?.repoUrl, task?.githubPrNumber ?? null),
+    [task?.githubPrNumber, task?.repoUrl]
+  );
   const canAssignTask = canEditTask && canListUsers && isAdminTaskUser && !!task && !isArchived;
   const linkedWorkspaceIds = useMemo(() => new Set((task?.linkedWorkspaces ?? []).map((link) => link.taskId)), [task?.linkedWorkspaces]);
   const linkTaskOptions = useMemo(
@@ -2737,6 +2769,45 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting((current) => (current === "linkTask" ? null : current));
     }
   };
+  const openLinkPrModal = () => {
+    if (!task || !canLinkPullRequest) {
+      return;
+    }
+    setLinkPrNumberDraft(task.githubPrNumber ? String(task.githubPrNumber) : "");
+    setLinkPrModalOpen(true);
+  };
+  const confirmLinkPullRequest = async () => {
+    if (!task || !canLinkPullRequest) {
+      return;
+    }
+
+    const trimmed = linkPrNumberDraft.trim();
+    const githubPrNumber = trimmed.length === 0 ? null : Number(trimmed);
+    if (githubPrNumber !== null && (!Number.isInteger(githubPrNumber) || githubPrNumber <= 0)) {
+      messageApi.warning("Enter a positive pull request number.");
+      return;
+    }
+
+    setSubmitting("linkPr");
+    try {
+      const updatedTask = await api.updateTaskPullRequest(task.id, { githubPrNumber });
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      setLinkPrModalOpen(false);
+      messageApi.success(githubPrNumber === null ? "Linked pull request cleared" : `Linked pull request #${githubPrNumber}`);
+    } catch (error) {
+      showTaskActionError(error, "Could not update linked pull request");
+    } finally {
+      setSubmitting((current) => (current === "linkPr" ? null : current));
+    }
+  };
   const openTaskStateModal = () => {
     if (!task) {
       return;
@@ -3351,6 +3422,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         hasBranchForSync ? { key: "refreshGitStatus", label: "Refresh Git Status" } : null,
         canEditTask && !isArchived ? { key: "newSession", label: "New Session" } : null,
         canLinkTaskWorkspace ? { key: "linkTask", label: "Link Task" } : null,
+        canLinkPullRequest ? { key: "linkPr", label: task.githubPrNumber ? "Edit Linked PR" : "Link Pull Request" } : null,
         canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Session", danger: true } : null,
         canChangeTaskState ? { key: "changeState", label: "Change State" } : null,
         canEditTask && !isArchived ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
@@ -3387,6 +3459,19 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Descriptions.Item label={baseBranchLabel}>{task?.baseBranch}</Descriptions.Item>
           {hasBranch ? <Descriptions.Item label="Branch Strategy">{task ? getTaskBranchStrategyLabel(task.branchStrategy) : ""}</Descriptions.Item> : null}
           {hasBranch ? <Descriptions.Item label="Target Branch">{task?.branchName ?? "(pending)"}</Descriptions.Item> : null}
+          <Descriptions.Item label="Linked PR">
+            {task?.githubPrNumber ? (
+              linkedPullRequestUrl ? (
+                <Typography.Link href={linkedPullRequestUrl} target="_blank" rel="noreferrer">
+                  #{task.githubPrNumber}
+                </Typography.Link>
+              ) : (
+                `#${task.githubPrNumber}`
+              )
+            ) : (
+              <Typography.Text type="secondary">None</Typography.Text>
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label="Created">{task ? dayjs(task.createdAt).format("YYYY-MM-DD HH:mm") : ""}</Descriptions.Item>
           <Descriptions.Item label="Deadline">
             {canEditTask && !isArchived ? (
@@ -3637,6 +3722,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               return;
             }
 
+            if (key === "linkPr") {
+              openLinkPrModal();
+              return;
+            }
+
             if (key === "changeState") {
               openTaskStateModal();
               return;
@@ -3664,7 +3754,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }}
         trigger={["click"]}
       >
-        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "killTerminal" || submitting === "merge" || submitting === "state" || submitting === "linkTask"}>
+        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "killTerminal" || submitting === "merge" || submitting === "state" || submitting === "linkTask" || submitting === "linkPr"}>
           More
         </Button>
       </Dropdown>
@@ -5838,6 +5928,33 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               notFoundContent={linkTaskCandidatesLoading ? <Spin size="small" /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />}
             />
           </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        title="Linked Pull Request"
+        open={linkPrModalOpen}
+        onCancel={() => {
+          if (submitting === "linkPr") {
+            return;
+          }
+          setLinkPrModalOpen(false);
+        }}
+        destroyOnClose
+        onOk={() => void confirmLinkPullRequest()}
+        okText="Save"
+        confirmLoading={submitting === "linkPr"}
+      >
+        <Form layout="vertical">
+          <Form.Item label="Pull Request Number">
+            <Input
+              value={linkPrNumberDraft}
+              onChange={(event) => setLinkPrNumberDraft(event.target.value.replace(/[^\d]/g, ""))}
+              onPressEnter={() => void confirmLinkPullRequest()}
+              placeholder="123"
+              disabled={submitting === "linkPr"}
+            />
+          </Form.Item>
+          <Typography.Text type="secondary">Leave blank to clear the linked pull request.</Typography.Text>
         </Form>
       </Modal>
       <WorkspaceFilePreviewModal

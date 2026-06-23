@@ -423,6 +423,7 @@ export interface Repository {
   webhookUrl: string | null;
   webhookEnabled: boolean;
   webhookSecretConfigured: boolean;
+  githubPrWebhookSecretConfigured?: boolean;
   webhookLastAttemptAt: string | null;
   webhookLastStatus: "success" | "failed" | null;
   webhookLastError: string | null;
@@ -458,6 +459,7 @@ export interface Task {
   repoName: string;
   repoUrl: string;
   repoDefaultBranch: string;
+  githubPrNumber?: number | null;
   taskType: TaskType;
   provider: AgentProvider;
   providerProfile: ProviderProfile;
@@ -635,7 +637,8 @@ export interface TaskMessage {
   content: string;
   action: TaskMessageAction | null;
   queueState?: "pending" | null;
-  queueSource?: "user" | null;
+  queueSource?: "user" | "github_pr" | null;
+  externalId?: string | null;
   /** Optional saved image attachments that were attached when the user submitted this message. */
   attachments?: TaskPromptAttachment[];
   /** Present for terminal lifecycle messages so history can address the terminal session. */
@@ -844,6 +847,7 @@ export interface CreateRepositoryInput {
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
+  githubPrWebhookSecret?: string;
 }
 
 export interface UpdateRepositoryInput {
@@ -856,6 +860,8 @@ export interface UpdateRepositoryInput {
   webhookEnabled?: boolean;
   webhookSecret?: string;
   clearWebhookSecret?: boolean;
+  githubPrWebhookSecret?: string;
+  clearGithubPrWebhookSecret?: boolean;
 }
 
 export interface CreateTaskInput {
@@ -978,6 +984,10 @@ export interface UpdateTaskStateInput {
 
 export interface UpdateTaskAssigneeInput {
   ownerUserId: string;
+}
+
+export interface UpdateTaskPullRequestInput {
+  githubPrNumber: number | null;
 }
 
 export interface CreateTaskMessageInput {

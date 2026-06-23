@@ -109,11 +109,13 @@ const createRepositorySchema = z.object({
   envSecrets: repositoryEnvSecretsSchema.optional(),
   webhookUrl: z.string().trim().url().nullable().optional(),
   webhookEnabled: z.boolean().optional(),
-  webhookSecret: z.string().trim().min(1).optional()
+  webhookSecret: z.string().trim().min(1).optional(),
+  githubPrWebhookSecret: z.string().trim().min(1).optional()
 });
 
 const updateRepositorySchema = createRepositorySchema.partial().extend({
-  clearWebhookSecret: z.boolean().optional()
+  clearWebhookSecret: z.boolean().optional(),
+  clearGithubPrWebhookSecret: z.boolean().optional()
 });
 
 type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;
