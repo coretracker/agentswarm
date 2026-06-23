@@ -1,5 +1,6 @@
 const endpoint = process.env.AGENTSWARM_MCP_ENDPOINT?.trim();
 const token = process.env.AGENTSWARM_MCP_TOKEN?.trim();
+const requestTimeoutMs = 10_000;
 
 if (!endpoint) {
   console.error("[agentswarm-mcp] AGENTSWARM_MCP_ENDPOINT is required");
@@ -14,8 +15,7 @@ if (!token) {
 let buffer = Buffer.alloc(0);
 
 const encodeFrame = (message) => {
-  const body = Buffer.from(JSON.stringify(message), "utf8");
-  return Buffer.concat([Buffer.from(`Content-Length: ${body.byteLength}\r\n\r\n`, "utf8"), body]);
+  return `${JSON.stringify(message)}\n`;
 };
 
 const findHeaderEnd = (input) => {
@@ -93,14 +93,17 @@ const toErrorResponse = (id, message) => ({
 });
 
 const forwardMessage = async (message) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json"
     },
+    signal: controller.signal,
     body: JSON.stringify(message)
-  });
+  }).finally(() => clearTimeout(timeout));
 
   const raw = await response.text();
   if (!raw.trim()) {
