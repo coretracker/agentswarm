@@ -50,7 +50,8 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     finishedAt: null,
     errorMessage: null,
     lastAction: "build",
-    enqueued: false
+    enqueued: false,
+    ...overrides
   }) satisfies Task as Task;
 
 const createSpawner = (): SpawnerService =>
@@ -347,6 +348,8 @@ describe("SpawnerService workspace provisioning", () => {
     const spawnerAny = spawner as any;
     const root = await mkdtemp(path.join(tmpdir(), "agentswarm-postflight-"));
     const workspacePath = path.join(root, "workspace");
+    const originalRuntimePayloadRoot = env.RUNTIME_PAYLOAD_ROOT;
+    env.RUNTIME_PAYLOAD_ROOT = path.join(root, "runtime-payloads");
     const task = createTask({ id: "task-postflight" });
     await mkdir(workspacePath, { recursive: true });
 
@@ -393,7 +396,11 @@ describe("SpawnerService workspace provisioning", () => {
       appendLog: async () => undefined
     };
 
-    await spawner.runTaskPostflight(task);
-    assert.equal(workspaceKindSeen, "clone");
+    try {
+      await spawner.runTaskPostflight(task);
+      assert.equal(workspaceKindSeen, "clone");
+    } finally {
+      env.RUNTIME_PAYLOAD_ROOT = originalRuntimePayloadRoot;
+    }
   });
 });
