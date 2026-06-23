@@ -136,12 +136,19 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(runtimeMcp.servers[1].transport, "stdio");
     assert.equal(runtimeMcp.servers[1].command, "node");
     assert.deepEqual(runtimeMcp.servers[1].args, ["/usr/local/bin/agentswarm-mcp-bridge.mjs"]);
-    const expectedEndpoint = existsSync("/.dockerenv")
-      ? `http://127.0.0.1:${env.PORT}/mcp`
-      : `http://host.docker.internal:${env.PORT}/mcp`;
+    const expectedEndpoints = existsSync("/.dockerenv")
+      ? [
+          `http://127.0.0.1:${env.PORT}/mcp`,
+          `http://host.docker.internal:${env.PORT}/mcp`,
+          `http://172.17.0.1:${env.PORT}/mcp`
+        ]
+      : [`http://host.docker.internal:${env.PORT}/mcp`, `http://172.17.0.1:${env.PORT}/mcp`];
+    const expectedEndpoint = expectedEndpoints[0] ?? "";
     assert.equal(runtimeMcp.env.AGENTSWARM_MCP_ENDPOINT, expectedEndpoint);
+    assert.equal(runtimeMcp.env.AGENTSWARM_MCP_ENDPOINTS, expectedEndpoints.join(","));
     assert.deepEqual(runtimeMcp.servers[1].env, {
       AGENTSWARM_MCP_ENDPOINT: expectedEndpoint,
+      AGENTSWARM_MCP_ENDPOINTS: expectedEndpoints.join(","),
       AGENTSWARM_MCP_TOKEN: "runtime-token"
     });
   });

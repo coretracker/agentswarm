@@ -1,9 +1,13 @@
 const endpoint = process.env.AGENTSWARM_MCP_ENDPOINT?.trim();
+const endpoints = (process.env.AGENTSWARM_MCP_ENDPOINTS?.split(",") ?? [])
+  .map((value) => value.trim())
+  .filter(Boolean);
 const token = process.env.AGENTSWARM_MCP_TOKEN?.trim();
 const requestTimeoutMs = 10_000;
+const endpointCandidates = endpoints.length > 0 ? endpoints : endpoint ? [endpoint] : [];
 
-if (!endpoint) {
-  console.error("[agentswarm-mcp] AGENTSWARM_MCP_ENDPOINT is required");
+if (endpointCandidates.length === 0) {
+  console.error("[agentswarm-mcp] AGENTSWARM_MCP_ENDPOINT or AGENTSWARM_MCP_ENDPOINTS is required");
   process.exit(1);
 }
 
@@ -92,10 +96,10 @@ const toErrorResponse = (id, message) => ({
   }
 });
 
-const forwardMessage = async (message) => {
+const requestEndpoint = async (candidateEndpoint, message) => {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
-  const response = await fetch(endpoint, {
+  const response = await fetch(candidateEndpoint, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -120,13 +124,28 @@ const forwardMessage = async (message) => {
   process.stdout.write(encodeFrame(parsed));
 };
 
+const forwardMessage = async (message) => {
+  const failures = [];
+  for (const candidateEndpoint of endpointCandidates) {
+    try {
+      await requestEndpoint(candidateEndpoint, message);
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "request failed";
+      failures.push(`${candidateEndpoint}: ${message}`);
+    }
+  }
+  throw new Error(`AgentSwarm MCP bridge request failed (${failures.join("; ")})`);
+};
+
 const handleMessage = async (message) => {
   try {
     await forwardMessage(message);
   } catch (error) {
-    console.error(`[agentswarm-mcp] ${error instanceof Error ? error.message : "request failed"}`);
+    const errorMessage = error instanceof Error ? error.message : "request failed";
+    console.error(`[agentswarm-mcp] ${errorMessage}`);
     if (message && Object.prototype.hasOwnProperty.call(message, "id")) {
-      process.stdout.write(encodeFrame(toErrorResponse(message.id, "AgentSwarm MCP bridge request failed")));
+      process.stdout.write(encodeFrame(toErrorResponse(message.id, errorMessage)));
     }
   }
 };

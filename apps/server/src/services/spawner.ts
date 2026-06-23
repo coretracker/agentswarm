@@ -90,6 +90,7 @@ const AUTO_APPLY_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
 const AUTO_APPLY_COMMIT_MESSAGE_PROFILE = "low";
 const AGENTSWARM_RUNTIME_MCP_SERVER_NAME = "agentswarm";
 const AGENTSWARM_RUNTIME_MCP_ENDPOINT_ENV = "AGENTSWARM_MCP_ENDPOINT";
+const AGENTSWARM_RUNTIME_MCP_ENDPOINTS_ENV = "AGENTSWARM_MCP_ENDPOINTS";
 const AGENTSWARM_RUNTIME_MCP_TOKEN_ENV = "AGENTSWARM_MCP_TOKEN";
 const AGENTSWARM_RUNTIME_MCP_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const AGENTSWARM_RUNTIME_MCP_SCOPES: PermissionScope[] = [
@@ -2992,10 +2993,18 @@ export class SpawnerService {
   }
 
   private resolveInternalAgentSwarmMcpEndpoint(): string {
+    return this.resolveInternalAgentSwarmMcpEndpoints()[0] ?? `http://127.0.0.1:${env.PORT}/mcp`;
+  }
+
+  private resolveInternalAgentSwarmMcpEndpoints(): string[] {
     if (existsSync("/.dockerenv")) {
-      return `http://127.0.0.1:${env.PORT}/mcp`;
+      return [
+        `http://127.0.0.1:${env.PORT}/mcp`,
+        `http://host.docker.internal:${env.PORT}/mcp`,
+        `http://172.17.0.1:${env.PORT}/mcp`
+      ];
     }
-    return `http://host.docker.internal:${env.PORT}/mcp`;
+    return [`http://host.docker.internal:${env.PORT}/mcp`, `http://172.17.0.1:${env.PORT}/mcp`];
   }
 
   private buildInternalAgentSwarmMcpDockerArgs(): string[] {
@@ -3045,8 +3054,10 @@ export class SpawnerService {
       return { servers: baseServers, env: baseEnv, injectedAgentSwarmMcp: false };
     }
 
+    const agentSwarmMcpEndpoints = this.resolveInternalAgentSwarmMcpEndpoints();
     const agentSwarmMcpEnv = {
-      [AGENTSWARM_RUNTIME_MCP_ENDPOINT_ENV]: this.resolveInternalAgentSwarmMcpEndpoint(),
+      [AGENTSWARM_RUNTIME_MCP_ENDPOINT_ENV]: agentSwarmMcpEndpoints[0] ?? this.resolveInternalAgentSwarmMcpEndpoint(),
+      [AGENTSWARM_RUNTIME_MCP_ENDPOINTS_ENV]: agentSwarmMcpEndpoints.join(","),
       [AGENTSWARM_RUNTIME_MCP_TOKEN_ENV]: token.token
     };
 
