@@ -83,7 +83,7 @@ test("GitHub PR webhook queues linked PR comments", async () => {
     queueSource: "github_pr",
     externalId: "github:pr_comment:1001",
     content:
-      "A new GitHub pull request feedback item was added to linked PR #42.\n\nType: pr_comment\nAuthor: @alice\nURL: https://github.com/acme/repo/pull/42#issuecomment-1001\n\nFeedback:\nPlease add a regression test."
+      "A new GitHub pull request feedback item was added to linked PR #42.\n\nType: pr_comment\nAuthor: @alice\nURL: https://github.com/acme/repo/pull/42#issuecomment-1001\n\nFeedback:\nPlease add a regression test.\n\nAfter handling this feedback, reply on GitHub at the URL above with a brief status."
   });
   assert.equal(triggeredActions.length, 1);
   assert.deepEqual(triggeredActions[0], ["task-1", "build", { content: (appendedMessages[0] as { content: string }).content }, { promptMessageId: "message-1" }]);

@@ -159,7 +159,13 @@ const formatFeedbackMessage = (feedback: GitHubPrFeedback): string => {
   if (feedback.diffHunk) {
     lines.push("", "Diff context:", "```diff", feedback.diffHunk, "```");
   }
-  lines.push("", "Feedback:", feedback.body.trim() || "(No body provided.)");
+  lines.push(
+    "",
+    "Feedback:",
+    feedback.body.trim() || "(No body provided.)",
+    "",
+    "After handling this feedback, reply on GitHub at the URL above with a brief status."
+  );
   return lines.join("\n");
 };
 
